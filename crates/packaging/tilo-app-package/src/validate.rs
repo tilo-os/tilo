@@ -364,12 +364,7 @@ fn validate_image(m: &Manifest) -> Result<(), ManifestError> {
 /// What the app claims to open and the resource kinds its records hold.
 fn validate_declarations(m: &Manifest) -> Result<(), ManifestError> {
     for ext in &m.providers.ext {
-        if ext.is_empty()
-            || ext.len() > 64
-            || !ext
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'_'))
-        {
+        if !valid_extension(ext) {
             return Err(ManifestError::BadProviderExtension(ext.clone()));
         }
     }
@@ -524,7 +519,15 @@ fn validate_atspi_acceptance(m: &Manifest) -> Result<(), ManifestError> {
     Ok(())
 }
 
-fn valid_mime(mime: &str) -> bool {
+pub(crate) fn valid_extension(ext: &str) -> bool {
+    !ext.is_empty()
+        && ext.len() <= 64
+        && ext
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'_'))
+}
+
+pub(crate) fn valid_mime(mime: &str) -> bool {
     let Some((top, subtype)) = mime.split_once('/') else {
         return false;
     };
@@ -548,7 +551,7 @@ fn valid_mime_token(token: &str) -> bool {
         })
 }
 
-fn valid_scheme(scheme: &str) -> bool {
+pub(crate) fn valid_scheme(scheme: &str) -> bool {
     let mut chars = scheme.chars();
     !scheme.is_empty()
         && scheme.len() <= 32

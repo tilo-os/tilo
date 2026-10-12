@@ -18,8 +18,8 @@ python3 tools/perf/store.py fetch https://code.tilo.so
 `fetch` leaves out the records of a gate test (`meta.synthetic_series`), whose
 values are multiplied on purpose; `--synthetic` prints them too.
 
-[Performance results](../../DEVELOPMENT.md#performance-results) in
-DEVELOPMENT.md explains the record format and the regression rule, and how to
+[Performance results](../measurements/performance.md)
+explains the record format and the regression rule, and how to
 add a benchmark. If you add an investigation here, keep its raw output in
 the JSON file. Once its benchmark is in the lane, cite the lane's records
 instead of copying their numbers.

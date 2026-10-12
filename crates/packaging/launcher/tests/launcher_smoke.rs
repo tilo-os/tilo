@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use launcher::capabilities::CapabilityPlan;
-use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox, read_manifest};
+use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox, ServiceReq, read_manifest};
 use launcher::run::{RunError, RunOptions, run, run_with, run_with_captured};
 use launcher::services::EXIT_REQUIRED_SERVICE_MISSING;
 use tilo_test_env::{ScopedEnv, TestHome};
@@ -40,7 +40,11 @@ fn runtime_dir_env(dir: &Path) -> ScopedEnv {
 // `with_glibc_binds` is gone: those loader paths are in the launcher's
 // system read profile now, so every app gets them without declaring.
 
-fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> ManifestView {
+fn service_req(raw: &str) -> ServiceReq {
+    ServiceReq::parse("", raw).expect("valid service requirement")
+}
+
+fn hello_manifest(payload_root: &Path, services: BTreeMap<String, ServiceReq>) -> ManifestView {
     let _ = payload_root;
     ManifestView {
         package_id: "com.example.hello".to_string(),
@@ -163,7 +167,8 @@ fn manifest_errors_fail_before_exec_and_manifests_round_trip() {
         assert_eq!(m.package_id, "com.example.demo");
         assert_eq!(m.version, "1.2.3");
         assert_eq!(m.entrypoint.bin, "bin/demo");
-        assert_eq!(m.sandbox.services.get("collab").unwrap(), "required@1");
+        let collab = &m.sandbox.services["collab"];
+        assert!(collab.is_required() && collab.version == 1);
     }
 }
 
@@ -180,7 +185,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
         let _env = runtime_dir_env(dir.path());
 
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "required@1".to_string());
+        svcs.insert("collab".to_string(), service_req("required@1"));
         let m = hello_manifest(dir.path(), svcs);
         let opts = RunOptions {
             no_services: false,
@@ -199,7 +204,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
         // step succeeds; the spawn step is exercised by the live tests.
         let _dir = tempfile::tempdir().unwrap();
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "required@1".to_string());
+        svcs.insert("collab".to_string(), service_req("required@1"));
         let resolved =
             launcher::services::resolve_service_binds(&svcs, true).expect("no-services infallible");
         assert!(resolved.is_empty());
@@ -210,7 +215,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
         let payload = hello_payload();
         let data = tempfile::tempdir().unwrap();
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "required@1".to_string());
+        svcs.insert("collab".to_string(), service_req("required@1"));
         let m = hello_manifest(payload, svcs);
         let opts = RunOptions {
             no_services: true,
@@ -233,7 +238,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
         let payload = hello_payload();
 
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "optional@1".to_string());
+        svcs.insert("collab".to_string(), service_req("optional@1"));
         let m = hello_manifest(payload, svcs);
         let opts = RunOptions {
             no_services: false,

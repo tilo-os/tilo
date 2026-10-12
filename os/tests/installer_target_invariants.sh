@@ -236,12 +236,22 @@ fi
 
 installer_identity_fixture() (
   id() { printf 0; }
+  local generation
+  generation="$(mktemp -d)"
+  trap 'rm -rf -- "$generation"' EXIT
+  export generation
   # The installed helper lives in /usr; execute the same production Python
   # from this checkout when exercising the backend outside a Tilo image.
   python3() {
     if [ "$1" = /usr/lib/tilo/hardware_profile.py ]; then
       shift
       command python3 "$repo_root/os/dev/hardware_profile.py" "$@"
+    elif [ "$#" -eq 2 ] \
+      && [ "$1" = /usr/libexec/tilo-installer-prepared-setup-extract.py ] \
+      && [ "$2" = selected-generation ]; then
+      # Simulate only native generation selection with no prepared payload.
+      # Disk identity validation still executes in the production backend.
+      printf '%s\n' "$generation"
     else
       command python3 "$@"
     fi
@@ -409,7 +419,7 @@ if grep -Fq "refusing to modify pre-existing account" "$firstboot_user" \
    && grep -Fq '[a-z_]* ) valid_user=1' "$firstboot_user" \
    && grep -Fq 'valid_sha512_crypt "$hash"' "$firstboot_user" \
    && grep -Fq 'rounds=([1-9][0-9]{3,8})' "$firstboot_user" \
-   && grep -Fq -- '-M -d "$native_home" -p "$lock_value"' "$firstboot_user" \
+   && grep -Fq -- '-M -e 1970-01-02 -d "$native_home" -p "$lock_value"' "$firstboot_user" \
    && ! grep -Fq 'useradd -m ' "$firstboot_user" \
    && ! grep -Fq -- '-p "$hash"' "$firstboot_user" \
    && grep -Fq '| chpasswd --encrypted' "$firstboot_user"; then

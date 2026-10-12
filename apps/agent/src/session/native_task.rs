@@ -1,8 +1,20 @@
 //! Steering on the existing native task lease. Receipt alone never acknowledges it.
 use super::{
-    CollabEvent, CollabRequest, Duration, Result, Session, StepOutcome, TASK_ACTION_WAIT,
-    TaskAction, TaskActionStop, Uuid,
+    CollabEvent, CollabRequest, Duration, Following, Instant, Result, Session, StepOutcome,
+    TaskActionStop, Uuid,
 };
+use tilo_actions::remote::UpdateMark;
+
+/// How long the host may hold one re-ask of a running child before it
+/// answers with the child as it is. While a step runs and nothing happens,
+/// the agent wakes about once per hold.
+const REASK_HOLD: Duration = Duration::from_secs(1);
+/// How soon a child is re-asked when its host answered at once with nothing
+/// new: a host that does not hold re-asks is asked at the old cadence rather
+/// than in a loop.
+const REASK_PACE: Duration = Duration::from_millis(50);
+/// While the model is still writing the turn, a wait looks at it this often.
+const TURN_PUMP: Duration = Duration::from_millis(100);
 
 #[derive(Default)]
 pub(super) struct NativeTaskState {
@@ -15,58 +27,163 @@ pub(super) struct NativeTaskState {
     pub pending: Option<runtime_collab::TaskRunControl>,
 }
 
+/// How a native task's child is observed: by re-asking for it with its
+/// stable id, at most one re-ask out at a time, which its host holds until
+/// the child moves on.
+#[derive(Debug, Default)]
+pub(super) struct Reask {
+    /// The re-ask out: its request id and when it was sent.
+    out: Option<(u64, Instant)>,
+    /// Not re-asked before this: a host that answers at once is paced.
+    not_before: Option<Instant>,
+}
+
+/// One answer to a task action request: its request id and result.
+type TaskActionAnswer = (u64, Result<(u64, tilo_actions::InvocationUpdate), String>);
+
 impl Session {
-    pub(super) fn follow_native_invocation(
+    /// Follow started native children, together, until each has its
+    /// outcome. Each running child has one re-ask out, which its host holds
+    /// until the child moves past what was seen, settles, or the run is
+    /// cancelled; the agent sleeps until one of them answers. Every answer
+    /// is the host's observation of the child, authorized when it is given.
+    /// A cancelled run stops every child: the host cancels them when it
+    /// reads the run cancelled, and each is reported cancelled here.
+    pub(super) fn follow_native(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
-        action: &TaskAction,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-        invocation: tilo_actions::InvocationId,
-        mut update: tilo_actions::InvocationUpdate,
-    ) -> Result<Result<StepOutcome, TaskActionStop>> {
-        let lease = self.task_lease(run);
-        let deadline = self.task_wait_deadline(TASK_ACTION_WAIT);
-        while !update.is_terminal() && ui::time::now() < deadline {
-            if self.task_cancelled(run)? {
-                // The same status request asks the host's existing cooperative
-                // cancellation system to stop cancellable children of this run.
-                return Ok(Err(TaskActionStop::Cancelled(Some(
-                    "Cancelled from Task Center".into(),
-                ))));
+        followed: &mut [Following],
+    ) -> Result<()> {
+        loop {
+            for following in followed.iter_mut() {
+                conclude_native(following);
             }
-            let request_id = self.next_request_id();
-            self.link.send(&CollabRequest::InvokeTaskAction {
-                request_id,
-                invocation,
-                run_id: run.run_id,
-                lease: lease.clone(),
-                step: None,
-                peer_id: action.peer_id,
-                resource: action.resource.clone(),
-                action: action.action.clone(),
-                arguments: arguments.clone(),
-            })?;
-            update = match self.wait_for_task_action_result(request_id)? {
-                Ok((_, update)) => update,
-                Err(error) => return Ok(Err(TaskActionStop::Failed(error))),
-            };
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        match update {
-            tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
-                Ok(Ok(StepOutcome { output }))
+            if followed.iter().all(|following| following.outcome.is_some()) {
+                return Ok(());
             }
-            tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
-                Ok(Err(TaskActionStop::Cancelled(message)))
+            // One poll out at a time, read without waiting: it is answered
+            // ahead of the re-asks sent after it.
+            self.poll_cancellation(run)?;
+            if self.cancellation_known()? {
+                cancel_running(followed);
+                return Ok(());
             }
-            tilo_actions::InvocationUpdate::Failed { error, .. } => {
-                Ok(Err(TaskActionStop::Failed(error.message)))
+            let now = ui::time::now();
+            for following in followed
+                .iter_mut()
+                .filter(|following| following.outcome.is_none())
+            {
+                self.reask_native(run, following, now)?;
             }
-            _ => Ok(Err(TaskActionStop::Failed(
-                "Native action outcome remains unknown; review history before retrying".into(),
-            ))),
+            let asked: Vec<u64> = followed
+                .iter()
+                .filter_map(|following| following.reask.as_ref()?.out.map(|(id, _)| id))
+                .collect();
+            let until = followed
+                .iter()
+                .filter(|following| following.outcome.is_none())
+                .flat_map(|following| {
+                    let paced = following
+                        .reask
+                        .as_ref()
+                        .filter(|reask| reask.out.is_none())
+                        .and_then(|reask| reask.not_before);
+                    [Some(following.deadline), paced]
+                })
+                .flatten()
+                .min()
+                .unwrap_or(now);
+            if let Some((request_id, result)) = self.await_task_replies(&asked, until)? {
+                // The host refuses to observe a child of a run it has just
+                // read cancelled: that is the run's cancellation, not the
+                // step's failure.
+                if result.is_err() && self.task_cancelled(run)? {
+                    cancel_running(followed);
+                    return Ok(());
+                }
+                take_reask_answer(followed, request_id, result);
+            }
         }
     }
+
+    /// Re-ask for `following`'s child with the identical request, held by
+    /// the host until the child moves past its latest state; nothing when a
+    /// re-ask is already out or the child is being paced.
+    fn reask_native(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        following: &mut Following,
+        now: Instant,
+    ) -> Result<()> {
+        let Some(reask) = following.reask.as_mut() else {
+            return Ok(());
+        };
+        if reask.out.is_some() || reask.not_before.is_some_and(|at| now < at) {
+            return Ok(());
+        }
+        let request_id = self.next_request_id();
+        let hold = u32::try_from(REASK_HOLD.as_millis()).unwrap_or(u32::MAX);
+        self.link.send(&CollabRequest::InvokeTaskAction {
+            request_id,
+            invocation: following.invocation,
+            run_id: run.run_id,
+            lease: self.task_lease(run),
+            peer_id: following.action.peer_id,
+            resource: following.action.resource.clone(),
+            action: following.action.action.clone(),
+            arguments: following.arguments.clone(),
+            wait: Some(runtime_collab::TaskChildWait {
+                wait_ms: hold,
+                seen: UpdateMark::of(&following.update),
+            }),
+        })?;
+        reask.out = Some((request_id, now));
+        reask.not_before = None;
+        Ok(())
+    }
+
+    /// Wait until `until` for the answer to any of the task action requests
+    /// `requests`; `None` when none arrived. A model turn still being
+    /// written is kept moving meanwhile; catalogue updates are applied and
+    /// every other event keeps its place.
+    fn await_task_replies(
+        &mut self,
+        requests: &[u64],
+        until: Instant,
+    ) -> Result<Option<TaskActionAnswer>> {
+        let mut deferred = Vec::new();
+        let answer = loop {
+            self.pump_turn();
+            let now = ui::time::now();
+            if now >= until {
+                break None;
+            }
+            let left = until - now;
+            let wait = if self.turn_streaming() {
+                left.min(TURN_PUMP)
+            } else {
+                left
+            };
+            match self.link.recv(wait)? {
+                Some(CollabEvent::TaskActionInvocationResult {
+                    request_id, result, ..
+                }) if requests.contains(&request_id) => break Some((request_id, result)),
+                // A late answer to a re-ask no longer out, or document
+                // traffic: nothing waits for either.
+                Some(
+                    CollabEvent::TaskActionInvocationResult { .. } | CollabEvent::Document { .. },
+                )
+                | None => {}
+                Some(CollabEvent::ActionCatalogue { surfaces }) => {
+                    self.set_broker_surfaces(surfaces);
+                }
+                Some(event) => deferred.push(event),
+            }
+        };
+        self.link.defer(deferred);
+        Ok(answer)
+    }
+
     pub(super) fn wait_for_native_report(&mut self, request_id: u64) -> Result<()> {
         let deadline = self.task_wait_deadline(Duration::from_secs(5));
         let mut deferred = Vec::new();
@@ -184,4 +301,75 @@ impl Session {
             .ok_or_else(|| anyhow::anyhow!("native task step index exhausted"))?;
         Ok(tilo_actions::InvocationId(Uuid::from_bytes(bytes)))
     }
+}
+
+/// Take in the answer to the re-ask `request_id`: the child's newer state,
+/// or the host's refusal to observe it, which settles it as failed. A host
+/// that answered at once with nothing new does not hold re-asks: its child
+/// is re-asked at the old cadence.
+fn take_reask_answer(
+    followed: &mut [Following],
+    request_id: u64,
+    result: Result<(u64, tilo_actions::InvocationUpdate), String>,
+) {
+    let Some(following) = followed.iter_mut().find(|following| {
+        following
+            .reask
+            .as_ref()
+            .and_then(|reask| reask.out)
+            .is_some_and(|(id, _)| id == request_id)
+    }) else {
+        return;
+    };
+    let Some(reask) = following.reask.as_mut() else {
+        return;
+    };
+    let Some((_, sent)) = reask.out.take() else {
+        return;
+    };
+    match result {
+        Ok((_, update)) => {
+            let news = update.is_terminal()
+                || UpdateMark::of(&update) != UpdateMark::of(&following.update);
+            if !news && sent.elapsed() < REASK_HOLD / 2 {
+                reask.not_before = sent.checked_add(REASK_PACE);
+            }
+            following.update = update;
+        }
+        Err(error) => following.outcome = Some(Err(TaskActionStop::Failed(error))),
+    }
+}
+
+/// Settle every child still running as cancelled from Task Center.
+fn cancel_running(followed: &mut [Following]) {
+    for following in followed
+        .iter_mut()
+        .filter(|following| following.outcome.is_none())
+    {
+        following.outcome = Some(Err(TaskActionStop::Cancelled(Some(
+            "Cancelled from Task Center".into(),
+        ))));
+    }
+}
+
+/// Settle `following` once its child is terminal or its time is up.
+fn conclude_native(following: &mut Following) {
+    if following.outcome.is_some() {
+        return;
+    }
+    following.outcome = match &following.update {
+        tilo_actions::InvocationUpdate::Succeeded { output, .. } => Some(Ok(StepOutcome {
+            output: output.clone(),
+        })),
+        tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
+            Some(Err(TaskActionStop::Cancelled(message.clone())))
+        }
+        tilo_actions::InvocationUpdate::Failed { error, .. } => {
+            Some(Err(TaskActionStop::Failed(error.message.clone())))
+        }
+        _ if ui::time::now() >= following.deadline => Some(Err(TaskActionStop::Failed(
+            "Native action outcome remains unknown; review history before retrying".into(),
+        ))),
+        _ => None,
+    };
 }

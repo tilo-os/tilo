@@ -448,19 +448,6 @@ pub enum CollabRequest {
     },
     /// Lifecycle record for a broker-minted task lease. Only an admitted
     /// agent connection can make this request; the broker checks the lease.
-    SubscribeEnrolledTasks {
-        request_id: u64,
-    },
-    AcceptEnrolledTask {
-        request_id: u64,
-        acceptance: runtime_collab::EnrolledTaskAcceptance,
-    },
-    ReportEnrolledTask {
-        request_id: u64,
-        acceptance: runtime_collab::EnrolledTaskAcceptance,
-        sequence: u64,
-        update: runtime_collab::TaskRunUpdate,
-    },
     ReportTaskRun {
         request_id: Option<u64>,
         run_id: u64,
@@ -469,9 +456,6 @@ pub enum CollabRequest {
     },
     /// Invoke an already permission-filtered published action under the
     /// broker-owned task context. `request_id` correlates the async reply.
-    /// `step` names the task's durable parent step: the host maps it to one
-    /// child before execution and answers a re-send of the same step with
-    /// that child's committed result instead of a new invocation.
     InvokeTaskAction {
         request_id: u64,
         /// The caller's id for this invocation. A retry reuses it; the
@@ -480,11 +464,15 @@ pub enum CollabRequest {
         invocation: tilo_actions::InvocationId,
         run_id: u64,
         lease: String,
-        step: Option<u32>,
         peer_id: u64,
         resource: String,
         action: String,
         arguments: serde_json::Map<String, serde_json::Value>,
+        /// On a re-ask of a native task's own child: let the broker hold
+        /// the answer until the child moves on (see
+        /// [`runtime_collab::TaskChildWait`]). The connection's other
+        /// requests do not wait behind it.
+        wait: Option<runtime_collab::TaskChildWait>,
     },
     /// Poll the native Task Center's cooperative cancellation bit for a
     /// lease. It cannot cancel a task and carries no task state itself.
@@ -812,24 +800,9 @@ pub enum CollabEvent {
     /// A run addressed to this admitted agent. The envelope is broker-minted
     /// and contains a lease, not a caller-selected authority token.
     TaskRun(runtime_collab::TaskRunEnvelope),
-    EnrolledTask(runtime_collab::EnrolledTaskEnvelope),
-    EnrolledTaskReply {
-        request_id: u64,
-        result: Result<(), String>,
-    },
-    EnrolledTaskDisconnected {
-        detail: String,
-    },
     TaskActionInvocationResult {
         request_id: u64,
         result: Result<(u64, tilo_actions::InvocationUpdate), String>,
-        /// For a stepped request the host committed: the parent's committed
-        /// next-step continuation (the result carries id 0 and the committed
-        /// terminal update). `None` for a non-step invocation reply.
-        continuation: Option<Vec<u8>>,
-        /// The step is bound but not settled yet, or its reply was lost.
-        /// The caller must re-send the identical step; `result` is an error.
-        retry_step: bool,
     },
     TaskRunCancellation {
         request_id: u64,

@@ -210,7 +210,7 @@ impl ShareControlServer {
             ShareControlOperationV1::CreateNamed { .. }
                 | ShareControlOperationV1::CreateBearerV2 { .. }
         ) {
-            self.reachability.wake("a share is being created");
+            crate::reachability::wake(&self.reachability, "a share is being created");
         }
         let result = match request.operation {
             ShareControlOperationV1::CreateNamed {
@@ -434,7 +434,8 @@ mod tests {
 
     use super::*;
     use crate::record_publisher::RecordPublisher;
-    use crate::share_authority::{ShareAuthority, ShareGrantStatus};
+    use crate::share_authority::ShareAuthority;
+    use fs_protocol::ShareGrantStatus;
 
     const NOW: u64 = 20_000;
 

@@ -28,7 +28,7 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
 
     def test_signed_target_without_firstboot_payload_gets_executable_handoff(self):
         with tempfile.TemporaryDirectory() as work:
-            work = Path(work)
+            work = Path(work).resolve()
             source = work / "live"
             target = work / "target" / "etc"
             target.mkdir(parents=True)
@@ -55,6 +55,8 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             self.assertEqual(result.returncode, 0, result.stderr)
             helper = target / "tilo/firstboot-user"
             self.assertEqual(helper.read_bytes(), (source / "usr/libexec/tilo-firstboot-user").read_bytes())
+            self.assertEqual((target / "tilo/tilo-firstboot-files.py").read_bytes(),
+                             (source / "usr/libexec/tilo-firstboot-files.py").read_bytes())
             self.assertEqual(helper.stat().st_mode & 0o777, 0o644)
             files = target / "tilo/tilo-firstboot-files.py"
             self.assertEqual(files.read_bytes(), (source / "usr/libexec/tilo-firstboot-files.py").read_bytes())

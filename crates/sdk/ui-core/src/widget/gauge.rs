@@ -721,14 +721,6 @@ impl BarGauge {
         self
     }
 
-    pub fn style(&self) -> &GaugeStyle {
-        &self.style
-    }
-
-    pub fn style_mut(&mut self) -> &mut GaugeStyle {
-        &mut self.style
-    }
-
     #[must_use]
     pub fn with_height(mut self, height: f32) -> Self {
         self.height = height;

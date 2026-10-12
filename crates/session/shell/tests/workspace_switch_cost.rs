@@ -5,10 +5,12 @@
 //! a Notes notebook restored from the saved session and a Terminal opened
 //! through the desktop's own action, both framework apps the compositor hosts,
 //! and a second, empty workspace. After a first, untimed visit, Super+Page Down
-//! goes to the empty workspace and Super+Page Up comes back, twice, as
+//! goes to the empty workspace and Super+Page Up comes back, as
 //! vm-acceptance W16 does once. The frame loop's own trace
 //! (`TILO_FRAME_TRACE`) gives each tick's thread CPU and its phases; the gate
-//! is the costliest tick of either timed switch back.
+//! is the median of five switch-backs' costliest ticks. Each sample includes
+//! the entire switch, so a consistently costly remount still fails, without
+//! letting a single unrelated service/control wake set the frame budget.
 //!
 //! Coming back used to build the workspace again from nothing: both apps were
 //! mounted afresh (their records opened, their first sync and update) and every
@@ -30,6 +32,13 @@ use crate::idle_wakeups::{Desktop, notes_desktop};
 /// kept: 90–108 ms in each switch back (scene 78–97 ms). Putting the kept
 /// content back: the costliest tick of four timed switch backs 19.5–19.9 ms.
 const SWITCH_BACK_TICK_CPU_BUDGET_MS: f64 = 33.4;
+
+/// Fixed independent observations, not retries: every round is measured and
+/// reported, even if it exceeds the budget. Shared-runner cache contention and
+/// periodic service work can inflate a single tick's actual thread CPU, not
+/// just wall time. Gate the typical peak, never the median animation tick
+/// (which would hide a consistently expensive first frame).
+const SWITCH_ROUNDS: usize = 5;
 
 /// The frame loop writes its trace a tick at least this long after the last
 /// write, so a window is on disk once two ticks this far apart have run.
@@ -221,6 +230,55 @@ fn table(ticks: &[Tick]) -> String {
         .join("\n")
 }
 
+/// Reduce whole journeys, not individual animation frames. Require CPU on
+/// every tick so an incomplete trace cannot silently select a cheaper peak.
+fn median_peak<'a>(rounds: &[&'a [Tick]]) -> &'a Tick {
+    assert_eq!(rounds.len(), SWITCH_ROUNDS);
+    let mut peaks: Vec<&Tick> = rounds
+        .iter()
+        .map(|ticks| {
+            assert!(
+                ticks.iter().any(|tick| tick.painted),
+                "no switch frame observed"
+            );
+            assert!(
+                ticks.iter().all(|tick| tick.cpu_us.is_some()),
+                "thread CPU missing from the switch trace"
+            );
+            ticks
+                .iter()
+                .max_by_key(|tick| tick.cpu_us)
+                .expect("a painted tick exists")
+        })
+        .collect();
+    peaks.sort_unstable_by_key(|tick| tick.cpu_us);
+    peaks[SWITCH_ROUNDS / 2]
+}
+
+#[test]
+fn sampling_keeps_a_repeated_expensive_first_tick_but_not_one_outlier() {
+    let make = |cpu_us| Tick {
+        seq: 0,
+        painted: true,
+        phases: vec![0; PHASES.len()],
+        cpu_us: Some(cpu_us),
+        input_step: "services".into(),
+        paint_reasons: "session".into(),
+    };
+    let ordinary = vec![make(19_900), make(2_000), make(2_000)];
+    let remounted = vec![make(90_000), make(2_000), make(2_000)];
+    assert_eq!(
+        median_peak(&[&ordinary, &ordinary, &remounted, &ordinary, &ordinary]).cpu_us,
+        Some(19_900)
+    );
+    assert!(
+        median_peak(&[&remounted, &remounted, &ordinary, &remounted, &remounted])
+            .cpu_ms()
+            .unwrap()
+            > SWITCH_BACK_TICK_CPU_BUDGET_MS
+    );
+}
+
 #[test]
 fn switching_back_to_a_workspace_with_apps_stays_within_its_cpu_budget() {
     let trace_dir = tempfile::tempdir().expect("a directory for the frame trace");
@@ -262,13 +320,13 @@ fn switching_back_to_a_workspace_with_apps_stays_within_its_cpu_budget() {
     // A first visit to the other workspace, untimed, as W16 runs after W10
     // made and visited it: it builds the empty workspace, and both apps here
     // took wakes while hidden whose frames (their own, 11–15 ms each in this
-    // build) the first switch back then ran in its tick. Then twice there and
-    // back, timed.
+    // build) the first switch back then ran in its tick. Then five times there
+    // and back, timed.
     switch(&desktop, &trace, "PageDown", &elsewhere);
     switch(&desktop, &trace, "PageUp", &home);
     wait_for_quiet_apps(&desktop, &trace);
     let mut rounds = Vec::new();
-    for _ in 0..2 {
+    for _ in 0..SWITCH_ROUNDS {
         let there = switch(&desktop, &trace, "PageDown", &elsewhere);
         let back = switch(&desktop, &trace, "PageUp", &home);
         rounds.push((there, back));
@@ -285,29 +343,27 @@ fn switching_back_to_a_workspace_with_apps_stays_within_its_cpu_budget() {
         .collect::<Vec<_>>()
         .join("\n");
     eprintln!("{report}");
-    let worst = rounds
-        .iter()
-        .flat_map(|(_, back)| back)
-        .max_by_key(|tick| tick.cpu_us.unwrap_or_default())
-        .unwrap_or_else(|| {
-            panic!(
-                "the trace holds no tick of a switch back, so its cost was not observed:\n{report}"
-            )
-        });
-    let cpu = worst.cpu_ms().unwrap_or_else(|| {
-        panic!("the frame trace carries no per-tick CPU (cpu_us), so the switch back's cost was not observed:\n{report}")
-    });
+    let backs: Vec<&[Tick]> = rounds.iter().map(|(_, back)| back.as_slice()).collect();
+    let peak = median_peak(&backs);
+    let cpu = peak.cpu_ms().expect("every observed tick has thread CPU");
     assert!(
         rounds
             .iter()
             .all(|(_, back)| back.iter().any(|tick| tick.painted)),
         "a switch back painted no frame, so its cost was not observed:\n{report}"
     );
+    // A second writer of the session's state file refuses every save the
+    // compositor makes, and used to stall its loop for seconds besides.
+    assert!(
+        !desktop.logged("file lease is busy"),
+        "the compositor under test did not own its state file's writer. Log:\n{}",
+        desktop.log_tail()
+    );
     // One machine-readable line for a scheduled lane.
     println!("WORKSPACE-SWITCH-BACK tick_cpu_ms={cpu:.2}");
     assert!(
         cpu <= SWITCH_BACK_TICK_CPU_BUDGET_MS,
-        "switching back to the workspace with Notes and a Terminal spent {cpu:.2} ms of the loop thread's CPU in one tick, over its budget of {SWITCH_BACK_TICK_CPU_BUDGET_MS} ms ({}):\n{report}",
-        worst.describe()
+        "switching back to the workspace with Notes and a Terminal spent a median peak of {cpu:.2} ms of the loop thread's CPU, over its budget of {SWITCH_BACK_TICK_CPU_BUDGET_MS} ms ({}):\n{report}",
+        peak.describe()
     );
 }

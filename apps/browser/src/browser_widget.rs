@@ -342,6 +342,22 @@ struct PendingHistory {
     document_revision: u64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CompositionView {
+    Page { find: bool },
+    Settings,
+    Library(LibrarySection),
+}
+
+#[derive(Clone, PartialEq)]
+struct CompositionKey {
+    theme: Theme,
+    view: CompositionView,
+    compact: bool,
+    immersive: bool,
+    window_scale: f32,
+}
+
 /// Root widget for the browser app. See module docs.
 #[allow(
     clippy::struct_excessive_bools,
@@ -371,6 +387,8 @@ pub struct BrowserWidget {
     service_forget: Option<crate::service_sessions::PendingForget>,
     browsing_mode: BrowsingMode,
     composed: ui::widget::Composed,
+    composition_key: Option<CompositionKey>,
+    composition_dirty: bool,
     bootstrap_done: bool,
     /// `--shots` mode: no network, no filter loader, deterministic page.
     headless: bool,
@@ -1139,6 +1157,8 @@ impl BrowserWidget {
             engine,
             browsing_mode,
             composed: ui::widget::Composed::default(),
+            composition_key: None,
+            composition_dirty: false,
             bootstrap_done: false,
             service_selections: Vec::new(),
             service_destination: None,
@@ -2499,6 +2519,42 @@ impl BrowserWidget {
                 retryable: false,
             },
         });
+    }
+
+    /// Ordinary layout passes retain control state, including pending native paste replies.
+    /// Rebuild when the view, theme or chrome structure changes.
+    fn retain_composition(&mut self, theme: &Theme) -> Box<dyn Widget> {
+        let key = CompositionKey {
+            theme: theme.clone(),
+            view: if self.show_settings {
+                CompositionView::Settings
+            } else if self.show_library {
+                CompositionView::Library(self.library_section)
+            } else {
+                CompositionView::Page {
+                    find: self.daily.open,
+                }
+            },
+            compact: self.compact_chrome,
+            immersive: self.content_fullscreen && self.window_fullscreen_active,
+            window_scale: self.window_scale,
+        };
+        if !self.composition_dirty
+            && !self.structure_dirty
+            && self.composition_key.as_ref() == Some(&key)
+            && let Some(composed) = self.composed.take()
+        {
+            return composed;
+        }
+        let address = self.composed.element().and_then(address_state);
+        let mut composed = self.build_composition(theme);
+        if let Some((id, state)) = address {
+            restore_address(composed.as_mut(), &id, &state);
+        }
+        self.composition_key = Some(key);
+        self.composition_dirty = false;
+        self.structure_dirty = false;
+        composed
     }
 
     #[allow(
@@ -4016,7 +4072,6 @@ impl Widget for BrowserWidget {
     ) -> NodeId {
         self.pending_chrome_focus = None;
         let page_focused = self.control_focused("browser.surface");
-        let address_state = self.composed.element().and_then(address_state);
         // The tiers and the labelled widths follow the text scale, which is
         // only known here; the one-frame capture seed set them at 1×.
         self.text_scale = theme.text_scale;
@@ -4025,14 +4080,11 @@ impl Widget for BrowserWidget {
         if self.rect.width() > 0.0 {
             self.compact_chrome = is_compact_chrome(self.chrome_width(), self.compact_breakpoint);
         }
-        // The popover is anchored to controls of the composition on screen,
-        // which the new one replaces below.
+        // Anchor the popover to the controls currently on screen before laying
+        // out either the retained composition or its replacement.
         let anchored_panel = self.build_anchored_panel(theme);
-        let mut composed = self.build_composition(theme);
+        let mut composed = self.retain_composition(theme);
         let child_node = composed.build_layout(taffy, theme, node_map);
-        if let Some((id, state)) = address_state {
-            restore_address(composed.as_mut(), &id, &state);
-        }
         composed.set_motion_reduced(self.motion_reduced);
         self.composed.replace(composed);
         if let Some(id) = self.daily.focus_pending.take() {
@@ -4178,7 +4230,9 @@ impl Widget for BrowserWidget {
 
     fn take_structure_dirty(&mut self) -> bool {
         // Toggling the settings pane swaps the content widget → rebuild.
-        std::mem::take(&mut self.structure_dirty) || self.composed.take_structure_dirty()
+        let own = std::mem::take(&mut self.structure_dirty);
+        self.composition_dirty |= own;
+        own || self.composed.take_structure_dirty()
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -4655,7 +4709,7 @@ impl BrowserWidget {
         self.search_index
             .resource(id)
             .or_else(|| crate::personal_bookmarks::resolve(&self.personal_bookmarks, id))
-            .map(live_row)
+            .map(ui::framework::LiveRow::from_resource)
     }
 
     /// What only this window knows, as rows beneath the browser resource:
@@ -4667,7 +4721,7 @@ impl BrowserWidget {
         self.published()
             .children
             .into_iter()
-            .map(live_row)
+            .map(ui::framework::LiveRow::from_resource)
             .collect()
     }
 
@@ -5003,25 +5057,6 @@ impl BrowserWidget {
         }
         browser
     }
-}
-
-/// `resource` as the live row it is published as.
-fn live_row(resource: Resource) -> ui::framework::LiveRow {
-    let mut row = ui::framework::LiveRow::new(
-        resource.id.as_str(),
-        resource.kind.clone(),
-        resource.label.clone(),
-    );
-    if let Some(presentation) = resource.presentation {
-        row = row.presentation(presentation);
-    }
-    for action in resource.actions {
-        row = row.operation(action);
-    }
-    for child in resource.children {
-        row = row.row(live_row(child));
-    }
-    row
 }
 
 impl ui::widget::controls::ActionControls for BrowserWidget {
@@ -5557,6 +5592,67 @@ mod architecture_tests {
             None,
             ElementState::Pressed,
         ))
+    }
+
+    #[test]
+    fn delayed_address_paste_survives_layout() {
+        use std::sync::{Arc, Mutex, mpsc};
+        use ui::clipboard::{ClipboardBackend, ClipboardTarget};
+
+        #[derive(Default)]
+        struct Delayed {
+            reply: Mutex<Option<mpsc::Sender<Option<String>>>>,
+        }
+        impl ClipboardBackend for Delayed {
+            fn set_text(&self, _: ClipboardTarget, _: &str) -> bool {
+                false
+            }
+            fn text(&self, _: ClipboardTarget) -> Option<String> {
+                None
+            }
+            fn request_text(&self, _: ClipboardTarget) -> mpsc::Receiver<Option<String>> {
+                let (reply, result) = mpsc::channel();
+                *self.reply.lock().unwrap() = Some(reply);
+                result
+            }
+            fn name(&self) -> &'static str {
+                "delayed-address-paste"
+            }
+        }
+        let clipboard = Arc::new(Delayed::default());
+        let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
+        let _host = ui::host::enter(&services);
+        let mut widget = BrowserWidget::with_engine(TestEngine::new(), true);
+        let (tree, node) =
+            super::tests::layout_keeping_tree(&mut widget, 900.0, 700.0, &Theme::dark());
+        assert!(widget.focus_address_input());
+        let mut event = key(WNamedKey::Enter);
+        if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+            event.logical_key = WKey::Character("v".into());
+        }
+        let mut document = AutoCommit::new();
+        let handled = ui::testing::Dispatch::new()
+            .doc(&mut document)
+            .layout(&tree, node)
+            .modifiers(winit::keyboard::ModifiersState::CONTROL)
+            .send(&mut widget, &event)
+            .handled;
+        assert!(handled);
+        let reply = clipboard
+            .reply
+            .lock()
+            .unwrap()
+            .take()
+            .expect("native paste requested");
+        super::tests::layout_at(&mut widget, 900.0, 700.0);
+        reply
+            .send(Some("https://example.test/pasted".into()))
+            .expect("layout retains the pending paste");
+        widget.sync(&document, &automerge::ROOT);
+        assert_eq!(
+            widget.address.with(Clone::clone),
+            "https://example.test/pasted"
+        );
     }
 
     /// Find-in-page focus handoff, DPI through find reflow and the daily shortcut capture set.
@@ -7166,7 +7262,7 @@ mod tests {
 
     /// Lay the widget out and hand back the tree and the widget's node, for
     /// tests that dispatch events against it.
-    fn layout_keeping_tree(
+    pub(super) fn layout_keeping_tree(
         widget: &mut BrowserWidget,
         width: f32,
         height: f32,

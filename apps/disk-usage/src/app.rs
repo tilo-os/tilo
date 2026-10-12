@@ -15,7 +15,7 @@ use ui::vello::Scene;
 use ui::vello::kurbo::Affine;
 use ui::widget::{
     Button, Column, Container, Element, EmptyState, ListRow, NavShell, PieChart, PieSlice,
-    Scrollable, Section, SectionHeader, Text, Widget,
+    PieStyle, Scrollable, Section, SectionHeader, Text, Widget,
 };
 
 use crate::scan::{Entry, ScanCancellation, ScanResult};
@@ -136,8 +136,12 @@ impl SliceChart {
         inspected: Option<&str>,
         inbox: Inbox,
     ) -> Self {
-        let mut chart = PieChart::new(Vec::new()).with_legend();
-        chart.style_mut().tooltip = false;
+        let chart = PieChart::new(Vec::new())
+            .with_legend()
+            .with_style(PieStyle {
+                tooltip: false,
+                ..PieStyle::default()
+            });
         let mut this = Self {
             chart,
             rows,

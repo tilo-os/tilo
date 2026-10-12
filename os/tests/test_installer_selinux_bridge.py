@@ -22,7 +22,7 @@ class BridgeContract(unittest.TestCase):
         helper = backend[backend.index('label_installed_tilo_path() {'):]
         helper = helper[:helper.index('\n}')]
         self.assertIn('matchpathcon -n -- "$installed"', helper)
-        self.assertIn('chcon -- "$context" "$staged"', helper)
+        self.assertIn('chcon --no-dereference -- "$context" "$staged"', helper)
 
         # The deployed /etc tree is accessed through /run during installation.
         # Atomic rename retains the temporary inode's label, so each staged

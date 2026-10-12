@@ -247,11 +247,17 @@ fn read_spec() -> tilo_actions::ActionSpec {
                 "A nested resource's id, as the first read lists it (default: the whole resource)",
             )
             .nullable(),
+            tilo_actions::ActionParam::optional(
+                "version",
+                tilo_actions::ParamType::Text,
+                "A change id, exact causal frontier, or checkpoint name (default: current)",
+            )
+            .nullable(),
         ],
         |args| {
             tilo_actions::EncodedAction::encode_operation(
                 READ_TYPE,
-                &serde_json::json!({ "item": args.text("item") }),
+                &serde_json::json!({ "item": args.text("item"), "version": args.text("version") }),
             )
             .unwrap_or_else(|_| tilo_actions::EncodedAction {
                 type_id: READ_TYPE.into(),
@@ -261,7 +267,7 @@ fn read_spec() -> tilo_actions::ActionSpec {
     )
     .of_kind(tilo_actions::ActionKind::Read)
     .with_description(
-        "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content.",
+        "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content. With version, read frozen historical content and its exact heads without changing the live resource.",
     );
     spec.contract.result = tilo_actions::ResultSpec::Json {
         schema: serde_json::json!({"type": "object"}),
@@ -283,8 +289,25 @@ fn read(
         tilo_actions::decode_json(payload).map_err(|error| error.to_string())?
     };
     let item = args.get("item").and_then(serde_json::Value::as_str);
+    let value = match args.get("version").and_then(serde_json::Value::as_str) {
+        Some(version) => {
+            let heads = ui_core::history_source::steps::resolve(doc, version)?;
+            let frozen = doc
+                .clone()
+                .fork_at(&heads)
+                .map_err(|error| error.to_string())?;
+            let past = typed.read(&frozen).map_err(|error| error.to_string())?;
+            let content = typed.read_content(past.as_ref(), &frozen, item)?;
+            super::history::review::bounded(serde_json::json!({
+                "version": heads.iter().map(ToString::to_string).collect::<Vec<_>>().join("+"),
+                "heads": heads.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                "content": content,
+            }))?
+        }
+        None => typed.read_content(state, doc, item)?,
+    };
     Ok(tilo_actions::ActionOutput {
-        value: Some(typed.read_content(state, doc, item)?),
+        value: Some(value),
         resources: Vec::new(),
     })
 }
@@ -2617,6 +2640,8 @@ mod tests {
             "undo",
             "redo",
             "restore",
+            "restore-reviewed",
+            "review-restore",
             "checkpoint",
             "history",
             "diff",
