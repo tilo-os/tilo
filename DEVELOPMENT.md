@@ -1289,6 +1289,10 @@ cache is sized: [docs/measurements/build-speed.md](docs/measurements/build-speed
 One worktree's `target/` reaches 150+ GB. Delete `target/` from worktrees whose
 branches have landed; sccache retains reusable compilation results.
 
+The Linux linker compresses test binaries' debug sections with zlib, keeping
+file:line backtraces and reducing disk use. Measurements and why split debug
+info is unsuitable with sccache: [debug info in test binaries](docs/measurements/build-speed.md#debug-info-in-test-binaries).
+
 If builds *hang* rather than run slowly — uninterruptible sleep, no progress at
 all — that is btrfs metadata exhaustion, and deleting files alone will not fix
 it: freed space returns inside existing chunks, so `df` moves while

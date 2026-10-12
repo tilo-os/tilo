@@ -105,7 +105,7 @@ fgj workflow run perf-scheduled.yml -R tilo/tilo --hostname code.tilo.so \
 ```
 
 One job per group in `kpis` (`hosting`, `latency`, `render`, `agent`,
-`wakeups`, `fs`; `footprint` is bytes of published artifacts and has no A/B)
+`wakeups`, `fs`, `search`; `footprint` is bytes of published artifacts and has no A/B)
 builds the base and the candidate in one checkout, one after the other, and
 runs that group's existing benchmark on both, alternating, for `ab_rounds`
 rounds on one runner (`tools/perf/ab.py`). Odd rounds run the base first and
