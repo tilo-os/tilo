@@ -18,11 +18,12 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::availability::{
-    AvailabilityPolicy, AvailabilityRegistry, EvictionBlocker, EvictionDecision,
-    EvictionRequirements, RecordAvailability, RecordKind, Residency, pinned_in_snapshot,
+    AvailabilityRegistry, EvictionBlocker, EvictionDecision, EvictionRequirements,
+    RecordAvailability, RecordKind, pinned_in_snapshot,
 };
 use crate::clock::unix_now_ms;
 use crate::{FileHistoryStore, Hydrator};
+use fs_protocol::{AvailabilityPolicy, Residency};
 
 /// Bound catalog I/O so opening Settings does not serialize one backend
 /// status query per chunk across a large workspace.

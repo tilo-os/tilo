@@ -162,8 +162,12 @@ impl FilesIndex {
                     walk_and_index(&home, &existing, &mut writer);
                     // Each commit reloads the reader on this worker, so the
                     // reconciled generation is published here and never on
-                    // the compositor's per-keystroke query path.
-                    let _ = writer.commit();
+                    // the compositor's per-keystroke query path. Closing
+                    // lets the walk's last merges finish instead of
+                    // abandoning them to the next session's writer.
+                    if let Err(error) = writer.close() {
+                        tracing::warn!(%error, "could not finish the Files body index");
+                    }
                 })
                 .ok();
             if let Ok(mut slot) = writer_handle.write() {
