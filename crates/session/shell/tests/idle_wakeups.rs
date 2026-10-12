@@ -144,7 +144,7 @@ const FIXTURE_RECORD_SCOPE: &str = "00000000-0000-0000-0000-000000000000";
 static STARTED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// A line the compositor printed, with when the test read it.
-type Log = Arc<Mutex<Vec<(Instant, String)>>>;
+pub(crate) type Log = Arc<Mutex<Vec<(Instant, String)>>>;
 
 pub(crate) struct Desktop {
     child: Child,
@@ -158,12 +158,19 @@ impl Desktop {
     /// Notes tab saved in its session; returns once its control socket
     /// answers with a laid-out frame.
     fn start() -> Self {
-        Self::start_with(&notes_desktop())
+        Self::start_with(notes_desktop())
     }
 
     /// The same with `tree` as the saved session (`idle_memory` starts an
     /// empty desktop).
-    pub(crate) fn start_with(tree: &shell::shell::state::WorkspaceTree) -> Self {
+    pub(crate) fn start_with(tree: shell::shell::state::WorkspaceTree) -> Self {
+        Self::start_with_door(tree, false)
+    }
+
+    /// [`Self::start_with`], serving the agent door at
+    /// `tilo-session/agent.sock` in its runtime directory (where a client
+    /// inside the login looks) when `door`.
+    pub(crate) fn start_with_door(tree: shell::shell::state::WorkspaceTree, door: bool) -> Self {
         tilo_test_env::require_isolated_desktop();
         // SUN_LEN caps a unix socket path, so the runtime dir stays short.
         // One per desktop: this module's tests run beside each other.
@@ -176,8 +183,12 @@ impl Desktop {
         let _ = std::fs::remove_dir_all(&runtime_dir);
         std::fs::create_dir_all(&runtime_dir).expect("create the private runtime dir");
         let state_path = runtime_dir.join("state.json");
-        shell::shell::persist::save_tree_to(tree, &state_path).expect("seed the saved session");
-        seed_tab_records(&runtime_dir, tree);
+        shell::shell::persist::save_tree_to(&tree, &state_path).expect("seed the saved session");
+        seed_tab_records(&runtime_dir, &tree);
+        // Saving made this tree the state file's writer: it holds the file's
+        // `.writer-lock` until it is dropped. The compositor is the only writer
+        // of the session it restores, so release it before that starts.
+        drop(tree);
         let identity_root = seed_identity(&runtime_dir);
         let control = runtime_dir.join("ctl");
 
@@ -191,7 +202,7 @@ impl Desktop {
                 Path::new(&cache).join("gst-registry.bin"),
             );
         }
-        let mut child = command
+        command
             .args(["--mode", "native", "--backend", "headless"])
             .env("XDG_RUNTIME_DIR", &runtime_dir)
             .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
@@ -212,7 +223,14 @@ impl Desktop {
             .env("TILO_IDLE_BLANK_SECS", "0")
             // A `paint-tick:` line per loop iteration (see `LoopStats`).
             .env("TILO_PAINT_STATS", "ticks")
-            .env("RUST_LOG", "warn")
+            .env("RUST_LOG", "warn");
+        if door {
+            command.env(
+                "TILO_AGENT_DOOR",
+                runtime_dir.join("tilo-session/agent.sock"),
+            );
+        }
+        let mut child = command
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
             .stdout(Stdio::piped())
@@ -250,7 +268,25 @@ impl Desktop {
             log,
         };
         desktop.wait_for("a laid-out first frame", |targets| !targets.is_empty());
+        // A compositor that cannot take its own state file's writer lease runs
+        // without its durable owner and its collaboration service: nothing
+        // published to the broker, and every app that waits for it stays dark.
+        let busy = matching(&desktop.log, &["file lease is busy"], 3);
+        assert!(
+            busy.is_empty(),
+            "the compositor found its state file's writer lease taken:\n{busy}"
+        );
         desktop
+    }
+
+    /// The control socket.
+    pub(crate) fn control_path(&self) -> &Path {
+        &self.control
+    }
+
+    /// The private runtime directory the compositor runs in.
+    pub(crate) fn runtime_dir(&self) -> &Path {
+        &self.runtime_dir
     }
 
     pub(crate) fn pid(&self) -> u32 {
@@ -273,6 +309,11 @@ impl Desktop {
 
     /// The last lines the compositor printed, leaving out its per-iteration
     /// `paint-tick` lines, which the report summarises.
+    /// The compositor's log, shared with the thread that fills it.
+    pub(crate) fn log_handle(&self) -> Log {
+        Arc::clone(&self.log)
+    }
+
     pub(crate) fn log_tail(&self) -> String {
         self.log
             .lock()
@@ -341,6 +382,23 @@ impl Desktop {
     }
 }
 
+/// The last `count` lines of `log` holding any of `needles`.
+pub(crate) fn matching(log: &Log, needles: &[&str], count: usize) -> String {
+    log.lock()
+        .map(|log| {
+            let mut found: Vec<&str> = log
+                .iter()
+                .rev()
+                .map(|(_, line)| line.as_str())
+                .filter(|line| needles.iter().any(|needle| line.contains(needle)))
+                .take(count)
+                .collect();
+            found.reverse();
+            found.join("\n")
+        })
+        .unwrap_or_default()
+}
+
 impl Drop for Desktop {
     fn drop(&mut self) {
         if std::thread::panicking() {
@@ -354,7 +412,7 @@ impl Drop for Desktop {
 
 /// A signed-in person's desktop with one Notes notebook open, as a saved
 /// session restores it.
-fn notes_desktop() -> shell::shell::state::WorkspaceTree {
+pub(crate) fn notes_desktop() -> shell::shell::state::WorkspaceTree {
     let mut tree = shell::shell::state::WorkspaceTree::bootstrap_demo();
     // Keep the demo's first workspace with only its Notes tab; an untouched
     // demo tree would be migrated away as legacy sample data on load.
