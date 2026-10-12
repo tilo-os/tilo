@@ -3292,21 +3292,8 @@ mod tests {
         ) -> NodeId {
             taffy.widget_leaf(Style::default(), node_map, self)
         }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-        fn draw(
-            &mut self,
-            _s: &mut Scene,
-            _t: Affine,
-            _tr: &mut TextRenderer,
-            _th: &Theme,
-            _p: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "Scribe"
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
         fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
             Some(
@@ -3385,21 +3372,8 @@ mod tests {
         ) -> NodeId {
             taffy.widget_leaf(Style::default(), node_map, self)
         }
-        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _tr: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "FloatingProbe"
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
     }
 
@@ -3778,19 +3752,6 @@ mod tests {
             let node = tree.leaf_node(Style::default());
             nodes.insert(node, self as *mut dyn Widget);
             node
-        }
-        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
     }
 
@@ -4193,24 +4154,11 @@ mod tests {
         ) -> NodeId {
             taffy.widget_leaf(Style::default(), node_map, self)
         }
-        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _tr: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
-        }
         fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
             self.0.set(self.0.get().checked_add(1).unwrap());
         }
         fn name(&self) -> &'static str {
             "EventProbe"
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
     }
 
@@ -4244,21 +4192,8 @@ mod tests {
                 .push(super::super::panic_scope::current());
             taffy.widget_leaf(Style::default(), node_map, self)
         }
-        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _tr: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "ScopeProbe"
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
     }
 
@@ -4512,7 +4447,6 @@ mod tests {
         ) -> NodeId {
             taffy.widget_leaf(Style::default(), node_map, self)
         }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
             &mut self,
             scene: &mut Scene,
@@ -4566,7 +4500,6 @@ mod tests {
         ) -> NodeId {
             taffy.widget_leaf(Style::default(), node_map, self)
         }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
             &mut self,
             scene: &mut Scene,
@@ -4627,7 +4560,6 @@ mod tests {
         ) -> NodeId {
             taffy.leaf_node(Style::default())
         }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
             &mut self,
             scene: &mut Scene,
@@ -4689,7 +4621,6 @@ mod tests {
         ) -> NodeId {
             taffy.leaf_node(Style::default())
         }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
             &mut self,
             _scene: &mut Scene,

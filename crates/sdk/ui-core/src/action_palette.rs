@@ -2902,7 +2902,6 @@ impl Widget for ActionPalette {
         nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
     fn get_rect(&self) -> Rect {
         self.rect
     }

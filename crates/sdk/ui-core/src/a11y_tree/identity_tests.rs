@@ -13,14 +13,14 @@ struct Parent {
 }
 
 impl Widget for Leaf {
-    crate::testing::inert_widget_methods!(apply_layout, draw, get_rect, leaf_layout, name_field);
+    crate::testing::inert_widget_methods!(leaf_layout, name_field);
     fn accessibility(&self) -> Option<AccessNode> {
         Some(AccessNode::new(Role::Button).with_semantic_key("child"))
     }
 }
 
 impl Widget for Parent {
-    crate::testing::inert_widget_methods!(apply_layout, draw, get_rect, name_field);
+    crate::testing::inert_widget_methods!(name_field);
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
