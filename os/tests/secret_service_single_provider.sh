@@ -37,6 +37,17 @@ else
   bad 'the image still lets GNOME Keyring activate for org.freedesktop.secrets or the portal backend'
 fi
 
+# The package's activation file is excluded at install time (it may not be
+# replaced afterwards: verify-rpm-files.sh rejects an image file that differs
+# from the package that owns it), and the build proves it is absent before
+# tilo-secret-service's own file is copied there.
+if grep -Fq '%_netsharedpath /usr/share/dbus-1/services/org.freedesktop.secrets.service' "$container" \
+   && grep -Fq 'test ! -e /usr/share/dbus-1/services/org.freedesktop.secrets.service' "$container"; then
+  ok 'GNOME Keyring'"'"'s org.freedesktop.secrets activation file is never installed'
+else
+  bad 'the image would overwrite a package-owned org.freedesktop.secrets activation file'
+fi
+
 if grep -Fq -- '-p tilo-secret-service' "$container" \
    && grep -Fq -- '--bin tilo-secret-service' "$container" \
    && grep -Fq 'name = "secret-service"' "$components"; then

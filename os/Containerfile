@@ -1578,6 +1578,15 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # It also ships `polkit-agent-helper-1` (and its activation socket), which the
     # compositor's authentication agent drives to run PAM for administrator
     # prompts from pkexec, GNOME Disks, virt-manager and system Flatpak installs.
+    #
+    # GNOME Keyring's own D-Bus activation file for org.freedesktop.secrets is
+    # not installed at all: tilo-secret-service ships the file at that path
+    # (below), and an image file that differs from the package that owns it fails
+    # verify-rpm-files.sh. rpm's netshared-path rule skips the one path at
+    # install time and records it as not installed, so the package never
+    # owns bytes the image replaces.
+    && printf '%s\n' '%_netsharedpath /usr/share/dbus-1/services/org.freedesktop.secrets.service' \
+        > /etc/rpm/macros.tilo-secret-service \
     && dnf install -y --setopt=reposdir=/repo \
     greetd \
     fprintd \
@@ -1585,6 +1594,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     gnome-keyring \
     gnome-keyring-pam \
     polkit \
+    && rm -f /etc/rpm/macros.tilo-secret-service \
+    && test ! -e /usr/share/dbus-1/services/org.freedesktop.secrets.service \
     && dnf clean all \
     # System utilities. Wi-Fi needs NetworkManager's separately packaged plugin
     # and cfg80211's signed regulatory database; neither is supplied by the base
