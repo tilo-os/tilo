@@ -35,5 +35,29 @@ bypass permission checks or confirmation. Headless peer tests prove resource
 merging; real device transport and authenticated membership need separate
 integration journeys.
 
+## Verify an installed resource workflow
+
+Use the authorized session's `tilo-control` socket. Discover the current
+permission-filtered descriptors with `actions list`, then invoke the returned
+provider and id with the declared parameters. Keep the same caller, workspace
+and record throughout the test.
+
+- **Completion:** `accepted` means admitted. Retain `broker_invocation_id`
+  and follow it with `tilo-control actions status ID --wait`. If status becomes
+  unavailable, record the outcome as unknown; do not repeat a mutation just
+  because its reply was lost.
+- **Result:** observe the changed resource through its current action surface
+  and production view. Allow a bounded wait for cold resource publication;
+  an empty first listing does not establish that the record is empty. Resolve
+  the returned resource identity rather than guessing one from a title.
+- **Reopening:** close the view, restart the owned test session if that is the
+  subject, and open the application normally with the original caller and
+  workspace. Verify the original record and changed content without replaying
+  the edit. A closed-tab undo stack is not a restart/reopen API.
+- **Durability and sync:** saved local bytes and a repainted view prove those
+  observations. Where the contract requires an owner acknowledgement or
+  remote delivery, observe that boundary separately using the real authorized
+  owner or peer. In-memory replica tests do not prove device transport.
+
 More: [Build an app](../../app-development.md),
 [Headless testing](../../headless-testing.md).
