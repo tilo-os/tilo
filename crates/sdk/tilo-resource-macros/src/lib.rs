@@ -32,7 +32,10 @@ fn krate() -> Tokens {
 /// stored; the containing type's `Default` on read), `#[model(atom)]` on a
 /// `String` (written whole, last writer wins, as `Atom` is),
 /// `#[model(whole)]` (read every part of a value that loads on demand,
-/// rich text's paragraphs), `#[model(remove = "quiet")]` on a collection whose items are cheap to
+/// rich text's paragraphs), `#[model(resource)]` on a field whose type is a
+/// resource with its own operations (rich text: published beneath the
+/// record's resource, an item's or the record's own, at `<record>/<key>`,
+/// its actions applied as field edits; see `tilo_resource::child`), `#[model(remove = "quiet")]` on a collection whose items are cheap to
 /// remove (removing one by field edit asks no confirmation).
 ///
 /// A struct's `Model::SHAPE` lists its stored fields, so layout-aware services
@@ -128,6 +131,7 @@ struct FieldOptions {
     atom: bool,
     quiet_remove: bool,
     whole: bool,
+    resource: bool,
 }
 
 fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
@@ -149,6 +153,8 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
                 options.atom = true;
             } else if meta.path.is_ident("whole") {
                 options.whole = true;
+            } else if meta.path.is_ident("resource") {
+                options.resource = true;
             } else if meta.path.is_ident("remove") {
                 let how: syn::LitStr = meta.value()?.parse()?;
                 if how.value() != "quiet" {
@@ -158,7 +164,7 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
             } else {
                 return Err(meta.error(
                     "expected `skip`, `rename = \"...\"`, `label`, `readonly`, `unit`, `atom`, \
-                     `whole` or `remove = \"quiet\"`",
+                     `whole`, `resource` or `remove = \"quiet\"`",
                 ));
             }
             Ok(())
@@ -590,6 +596,11 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         reach_mut.push(quote!(#index => ::core::option::Option::Some(&mut value.#ident),));
         checks_const.push(quote!(<#ty as #krate::Model>::CHECKS));
         ops_const.push(quote!(<#ty as #krate::Model>::OPS));
+        let resource = if options.resource {
+            quote!(::core::option::Option::Some(#krate::child::NestedResource::of::<#ty>()))
+        } else {
+            quote!(::core::option::Option::None)
+        };
         let ty_text = quote!(#ty)
             .to_string()
             .replace(" < ", "<")
@@ -614,6 +625,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             schema: <#ty as #krate::Model>::value_schema,
             text: #krate::stored_text::<#ty>,
             absent: #krate::absent_scalar::<#ty>,
+            resource: #resource,
         }));
         path_fields.push(quote!(#field_vis #ident: <#ty as #krate::Model>::Paths<__R>));
         path_inits.push(quote!(#ident: <#ty as #krate::Model>::paths_at(
