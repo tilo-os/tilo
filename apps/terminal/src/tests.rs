@@ -277,6 +277,56 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         assert_eq!(after, Some(long));
     }
 
+    // Case `a_session_that_marks_its_runs_opens_and_keeps_the_key`.
+    {
+        use std::io::BufRead as _;
+        use std::os::fd::AsRawFd;
+
+        // The supervisor's reply byte for byte as `ServeResponse::Session`
+        // serialises it for a bash session whose request named a key (ush's
+        // `a_session_reply_keeps_its_wire_form` pins this form). Every Terminal
+        // open names a key, so this is the reply of every default-environment open.
+        const REPLY: &[u8] = b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"runs\":true}\n";
+        let (terminal_end, supervisor_end) =
+            std::os::unix::net::UnixStream::pair().expect("socket pair");
+        let supervisor = std::thread::spawn(move || {
+            let mut request = String::new();
+            std::io::BufReader::new(&supervisor_end)
+                .read_line(&mut request)
+                .unwrap();
+            let pair = portable_pty::native_pty_system()
+                .openpty(PtySize::default())
+                .unwrap();
+            runtime_portal::fd_transport::send_with_fd(
+                supervisor_end.as_raw_fd(),
+                REPLY,
+                pair.master.as_raw_fd().unwrap(),
+            )
+            .unwrap();
+            (request, supervisor_end, pair)
+        });
+        let opened = crate::inner::ush_backend_on(
+            &terminal_end,
+            &[],
+            &crate::target::SessionTarget::default_environment(),
+            crate::Requester::Person,
+            None,
+        );
+        let (request, _supervisor_end, _pair) = supervisor.join().unwrap();
+        let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+        let backend = match opened {
+            Ok(backend) => backend,
+            Err(error) => panic!("a session reply that marks runs must open: {error:?}"),
+        };
+        assert_eq!(backend.shell_name, "ush");
+        assert_eq!(
+            backend.runs.as_deref(),
+            request["runs"].as_str(),
+            "the session marks its runs with the key the request named"
+        );
+        assert!(backend.runs.is_some());
+    }
+
     // Case `service_fd_is_detected_only_when_the_descriptor_is_actually_open`.
     {
         // The service path is selected on a *live* descriptor, not on the mere
