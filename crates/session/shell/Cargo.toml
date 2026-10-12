@@ -78,6 +78,7 @@ private-fs = { path = "../../system/private-fs" }
 tempfile.workspace = true
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
+tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settings" }
 notify.workspace = true
 tilo-paths.workspace = true
 # Where the control sockets live, shared with the `tilo-control` client.

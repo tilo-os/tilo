@@ -1,307 +1,93 @@
-# The app's public surface, written by `tilo-app surface`: its resources' verbs
-# and stored fields. Review changes to it like an API change; `tilo-app check`
-# fails when the code and this file disagree.
+# Written by `tilo-app surface`; review changes like an API change.
 
 [[resources]]
 kind = "chip_design.project"
 label = "Chip Design"
 version = 1
-
-[[resources.fields]]
-owner = "project"
-path = "reports"
-readonly = true
-stored = "value"
-title = "Analytical storage reports, the exact imported JSON by its content"
-type = "BTreeMap<String, Atom>"
-
-[[resources.fields]]
-owner = "project"
-path = "verifications"
-readonly = true
-stored = "value"
-title = "Hardware verification receipts, as stored on import, by the content"
-type = "BTreeMap<String, Atom>"
-
-[[resources.fields]]
-owner = "project"
-path = "nodes"
-stored = "keyed"
-title = "Operators of the structural design"
-type = "Keyed<OperatorNode>"
-
-[[resources.fields]]
-owner = "operator-node"
-path = "nodes.*.id"
-readonly = true
-stored = "value"
-title = "Stable node identity"
-type = "String"
-
-[[resources.fields]]
-owner = "operator-node"
-path = "nodes.*.kind"
-readonly = true
-stored = "value"
-title = "Operator"
-type = "OperatorKind"
-
-[[resources.fields]]
-owner = "operator-node"
-path = "nodes.*.shape"
-readonly = true
-stored = "value"
-title = "F32 tensor shape, up to four positive dimensions; its last axis is the"
-type = "Vec<u16>"
-
-[[resources.fields]]
-owner = "operator-node"
-path = "nodes.*.normalization_width"
-readonly = true
-stored = "value"
-title = "Last-axis normalization width"
-type = "u16"
-
-[[resources.fields]]
-owner = "operator-node"
-path = "nodes.*.output_width"
-stored = "value"
-title = "Structural matrix output width; no matrix payload is held in the"
-type = "Option<u32>"
-
-[[resources.fields]]
-owner = "operator-node"
-path = "nodes.*.x"
-stored = "value"
-title = "Horizontal position"
-type = "u16"
-
-[[resources.fields]]
-owner = "operator-node"
-path = "nodes.*.y"
-stored = "value"
-title = "Vertical position"
-type = "u16"
-
-[[resources.fields]]
-owner = "project"
-path = "connections"
-readonly = true
-stored = "value"
-title = "Connections between operator ports"
-type = "Set<Connection>"
+fields = [
+  { path = "reports", type = "BTreeMap<String, Atom>", readonly = true },
+  { path = "verifications", type = "BTreeMap<String, Atom>", readonly = true },
+  { path = "nodes", type = "Keyed<OperatorNode>", stored = "keyed" },
+  { path = "nodes.*.id", type = "String", readonly = true },
+  { path = "nodes.*.kind", type = "OperatorKind", readonly = true },
+  { path = "nodes.*.shape", type = "Vec<u16>", readonly = true },
+  { path = "nodes.*.normalization_width", type = "u16", readonly = true },
+  { path = "nodes.*.output_width", type = "Option<u32>" },
+  { path = "nodes.*.x", type = "u16" },
+  { path = "nodes.*.y", type = "u16" },
+  { path = "connections", type = "Set<Connection>", readonly = true },
+]
 
 [[resources.verbs]]
-description = "Import reported storage evidence; does not authenticate the model or validate chip performance. The same report imported twice is kept once."
 id = "import-report"
 kind = "undoable"
-label = "Import analytical report"
-
-[[resources.verbs.params]]
-name = "json"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
+params = [
+  { name = "json", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
 id = "remove-report"
 kind = "undoable"
-label = "Remove report"
-
-[[resources.verbs.params]]
-name = "report"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
+params = [
+  { name = "report", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
-description = "Import reported engineering evidence; does not authenticate artifacts or establish model quality, silicon measurements, or manufacturability."
 id = "import-verification"
 kind = "undoable"
-label = "Import hardware verification receipt"
-
-[[resources.verbs.params]]
-name = "json"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
+params = [
+  { name = "json", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
 id = "remove-verification"
 kind = "undoable"
-label = "Remove verification receipt"
-
-[[resources.verbs.params]]
-name = "report"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
+params = [
+  { name = "report", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
-description = "Edit a structural operator design; does not execute or qualify a netlist. Adding the same node twice keeps it once."
 id = "add-node"
 kind = "undoable"
-label = "Add operator"
-
-[[resources.verbs.params]]
-name = "node"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "kind"
-required = true
-
-[resources.verbs.params.schema]
-enum = [
-    "input",
-    "gate_input",
-    "norm_weight_input",
-    "rms_norm",
-    "apply_norm_weight",
-    "silu",
-    "multiply",
-    "projection_input",
-    "matrix_weight_input",
-    "linear_projection",
-    "add",
+params = [
+  { name = "node", required = true, schema = { type = "string" } },
+  { name = "kind", required = true, schema = { type = "string", enum = ["input", "gate_input", "norm_weight_input", "rms_norm", "apply_norm_weight", "silu", "multiply", "projection_input", "matrix_weight_input", "linear_projection", "add"] } },
+  { name = "shape", required = true, schema = { type = "array", items = { type = "integer", maximum = 65535, minimum = 0 } } },
+  { name = "output_width", required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
+  { name = "x", required = true, schema = { type = "integer", maximum = 65535, minimum = 0 } },
+  { name = "y", required = true, schema = { type = "integer", maximum = 65535, minimum = 0 } },
 ]
-type = "string"
-
-[[resources.verbs.params]]
-name = "shape"
-required = true
-
-[resources.verbs.params.schema]
-type = "array"
-
-[resources.verbs.params.schema.items]
-maximum = 65535
-minimum = 0
-type = "integer"
-
-[[resources.verbs.params]]
-name = "output_width"
-required = false
-
-[resources.verbs.params.schema]
-maximum = 4294967295
-minimum = 0
-type = [
-    "integer",
-    "null",
-]
-
-[[resources.verbs.params]]
-name = "x"
-required = true
-
-[resources.verbs.params.schema]
-maximum = 65535
-minimum = 0
-type = "integer"
-
-[[resources.verbs.params]]
-name = "y"
-required = true
-
-[resources.verbs.params.schema]
-maximum = 65535
-minimum = 0
-type = "integer"
 
 [[resources.verbs]]
-description = "Its last axis sets the normalization width."
 id = "set-shape"
 kind = "undoable"
-label = "Set operator input shape"
-
-[[resources.verbs.params]]
-name = "node"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "shape"
-required = true
-
-[resources.verbs.params.schema]
-type = "array"
-
-[resources.verbs.params.schema.items]
-maximum = 65535
-minimum = 0
-type = "integer"
+params = [
+  { name = "node", required = true, schema = { type = "string" } },
+  { name = "shape", required = true, schema = { type = "array", items = { type = "integer", maximum = 65535, minimum = 0 } } },
+]
 
 [[resources.verbs]]
-description = "Its connections go with it."
 id = "remove-node"
 kind = "undoable"
-label = "Remove operator"
-
-[[resources.verbs.params]]
-name = "node"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
+params = [
+  { name = "node", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
 id = "connect"
 kind = "undoable"
-label = "Connect operator ports"
-
-[[resources.verbs.params]]
-name = "from_node"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "from_port"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "to_node"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "to_port"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
+params = [
+  { name = "from_node", required = true, schema = { type = "string" } },
+  { name = "from_port", required = true, schema = { type = "string" } },
+  { name = "to_node", required = true, schema = { type = "string" } },
+  { name = "to_port", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
 id = "disconnect"
 kind = "undoable"
-label = "Disconnect input"
+params = [
+  { name = "node", required = true, schema = { type = "string" } },
+  { name = "port", required = true, schema = { type = "string" } },
+]
 
-[[resources.verbs.params]]
-name = "node"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "port"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"

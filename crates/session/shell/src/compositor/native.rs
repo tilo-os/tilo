@@ -13826,7 +13826,8 @@ mod tests {
 
     #[test]
     fn pointer_hover_preserves_touch_keyboard_until_pointer_activation() {
-        use crate::compositor::input_method::{OskInput, OskPreference, osk_wanted};
+        use crate::compositor::input_method::{OskInput, osk_wanted};
+        use tilo_accessibility_settings::OnScreenKeyboard;
 
         let mut ctx = TestControlCtx::new();
         let mut fb = FrameBuilder::new((800, 600));
@@ -13841,17 +13842,20 @@ mod tests {
             &mut fb,
         );
         assert!(osk_wanted(
-            OskPreference::Auto,
+            OnScreenKeyboard::Auto,
             OskInput::from_environment(&ctx.input)
         ));
         ctx.note_injected_input(&PlannedAction::CursorMoved { x: 110.0, y: 100.0 }, &mut fb);
         assert!(
-            osk_wanted(OskPreference::Auto, OskInput::from_environment(&ctx.input)),
+            osk_wanted(
+                OnScreenKeyboard::Auto,
+                OskInput::from_environment(&ctx.input)
+            ),
             "incidental pointer hover must not dismiss a touch-started keyboard"
         );
         ctx.note_injected_input(&PlannedAction::MouseLeftButton { pressed: true }, &mut fb);
         assert!(!osk_wanted(
-            OskPreference::Auto,
+            OnScreenKeyboard::Auto,
             OskInput::from_environment(&ctx.input)
         ));
     }

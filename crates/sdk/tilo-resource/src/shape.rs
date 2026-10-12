@@ -79,6 +79,23 @@ pub struct FieldShape {
     pub absent: fn() -> Option<serde_json::Value>,
 }
 
+/// `value`, the JSON form of a value of `shape`, without the record fields
+/// that hold what their absent key reads as: what an edit that writes a new
+/// value carries of it, which reads back as the whole value.
+#[must_use]
+pub(crate) fn without_absent(shape: Shape, mut value: serde_json::Value) -> serde_json::Value {
+    if let (Shape::Record(fields), serde_json::Value::Object(map)) = (shape, &mut value) {
+        for field in fields {
+            if let Some(absent) = (field.absent)()
+                && map.get(field.key) == Some(&absent)
+            {
+                map.remove(field.key);
+            }
+        }
+    }
+    value
+}
+
 /// The value an absent key of a scalar `T` reads as, in JSON; `None` for a
 /// type stored as an object or without an empty value.
 #[must_use]

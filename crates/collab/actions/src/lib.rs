@@ -122,6 +122,7 @@ macro_rules! read_through_json_value {
 }
 
 pub mod action;
+pub mod compact;
 pub mod content;
 pub mod context;
 pub mod contract;
@@ -130,6 +131,7 @@ pub mod entry;
 pub mod envelope;
 pub mod executor;
 pub mod framework;
+pub mod group_form;
 pub mod interaction;
 pub mod key;
 pub mod optimistic;

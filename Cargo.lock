@@ -14033,6 +14033,7 @@ dependencies = [
  "taffy",
  "tempfile",
  "test-http",
+ "tilo-accessibility-settings",
  "tilo-actions",
  "tilo-app",
  "tilo-app-package",
@@ -14330,6 +14331,7 @@ dependencies = [
  "terminal",
  "thiserror 2.0.21",
  "threshold-identity",
+ "tilo-accessibility-settings",
  "tilo-action-broker",
  "tilo-action-policy",
  "tilo-actions",
@@ -15805,6 +15807,17 @@ dependencies = [
  "quick-error 2.0.1",
  "weezl",
  "zune-jpeg",
+]
+
+[[package]]
+name = "tilo-accessibility-settings"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "settings-store",
+ "tilo-resource",
+ "workspace-hack",
 ]
 
 [[package]]

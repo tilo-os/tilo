@@ -3,7 +3,7 @@
 impl App {
     fn configured_screen_reader() -> crate::screen_reader::ScreenReader {
         let mut reader = crate::screen_reader::ScreenReader::new();
-        reader.configure(&settings_store::screen_reader::ScreenReaderSettings::load());
+        reader.configure(&settings_store::accessibility::ScreenReaderSettings::load());
         reader
     }
 
