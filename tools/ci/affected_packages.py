@@ -73,6 +73,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/check_changed_rust_allows.py": "tools/tests/test_changed_rust_comparison.py",
     "tools/ci/check_lock_update.py": "tools/tests/test_lock_update.py",
     "tools/ci/measure.sh": "tools/tests/test_ci_measure.py",
+    "tools/ci/compiler_cache_metrics.py": "tools/tests/test_ci_compiler_cache_metrics.py",
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
     "tools/ci/app_sdk_affected.py": "tools/tests/test_app_sdk_affected.py",
     "tools/ci/macos_apps.py": "tools/tests/test_dev_macos_workflows.py",
