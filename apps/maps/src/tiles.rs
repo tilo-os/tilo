@@ -26,16 +26,13 @@ use std::num::NonZeroUsize;
 
 use lru::LruCache;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 use ui::time::Instant;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
-use vello::peniko::{
-    Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat as Format,
-};
+use vello::peniko::{Color, Fill, ImageBrush, ImageData as PenikoImage};
 
 use ui::theme::Theme;
 
@@ -991,13 +988,7 @@ fn make_image(rgba: Vec<u8>, w: u32, h: u32) -> Option<PenikoImage> {
     if rgba.len() != (w as usize) * (h as usize) * 4 {
         return None;
     }
-    Some(PenikoImage {
-        data: Blob::new(Arc::new(rgba)),
-        format: Format::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: w,
-        height: h,
-    })
+    Some(ui::raster::rgba8(rgba, w, h))
 }
 
 /// Decode a PNG to RGBA8. Errors are stringly-typed; the caller only cares

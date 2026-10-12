@@ -37,9 +37,7 @@ use tilo_clock::unix_now_ms;
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{
-    BlendMode, Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as ImageFmt,
-};
+use vello::peniko::{BlendMode, Blob, Color, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -7047,13 +7045,7 @@ impl BooksApp {
         if cover.rgba.len() != expected {
             return None;
         }
-        let img = PenikoImage {
-            data: Blob::new(cover.rgba.clone()),
-            format: ImageFmt::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: cover.width,
-            height: cover.height,
-        };
+        let img = ui::raster::rgba8(Blob::new(cover.rgba.clone()), cover.width, cover.height);
         self.cover_cache.insert(book.id.clone(), img.clone());
         Some(img)
     }

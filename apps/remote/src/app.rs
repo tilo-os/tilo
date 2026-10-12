@@ -29,9 +29,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{
-    Blob, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat,
-};
+use vello::peniko::{Blob, Fill, ImageBrush, ImageData as PenikoImage};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 
@@ -355,26 +353,18 @@ impl SessionCore {
             Some(LiveSession::Ssh(s)) => changed = s.pump(),
             Some(LiveSession::Vnc(s)) => {
                 if let Some(fb) = s.take_frame() {
-                    self.fb_image = Some(PenikoImage {
-                        data: Blob::new(fb.data),
-                        format: ImageFormat::Rgba8,
-                        alpha_type: ImageAlphaType::Alpha,
-                        width: u32::from(fb.width),
-                        height: u32::from(fb.height),
-                    });
+                    self.fb_image = Some(ui::raster::rgba8(
+                        Blob::new(fb.data),
+                        u32::from(fb.width),
+                        u32::from(fb.height),
+                    ));
                     changed = true;
                 }
             }
             Some(LiveSession::Tilo(session)) => {
                 if let Some(frame) = session.take_latest_frame() {
                     session.size = Some((frame.width, frame.height));
-                    self.fb_image = Some(PenikoImage {
-                        data: Blob::new(Arc::new(frame.rgba)),
-                        format: ImageFormat::Rgba8,
-                        alpha_type: ImageAlphaType::Alpha,
-                        width: frame.width,
-                        height: frame.height,
-                    });
+                    self.fb_image = Some(ui::raster::rgba8(frame.rgba, frame.width, frame.height));
                     changed = true;
                 }
             }
@@ -739,13 +729,7 @@ impl RemoteApp {
             ))));
         } else {
             let (width, height) = crate::sample::DESKTOP_SIZE;
-            session.fb_image = Some(PenikoImage {
-                data: Blob::new(Arc::new(crate::sample::desktop())),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width,
-                height,
-            });
+            session.fb_image = Some(ui::raster::rgba8(crate::sample::desktop(), width, height));
             session.live = Some(LiveSession::Sample(SampleSurface::Desktop));
         }
         drop(session);
