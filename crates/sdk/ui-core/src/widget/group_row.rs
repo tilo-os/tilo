@@ -1992,10 +1992,35 @@ impl GroupRow {
         true
     }
 
+    /// The pan that brings `group_id` wholly into view, aimed at where the
+    /// group will be once the slot-width springs of it and the groups before
+    /// it have settled, not at where they are this frame.
+    ///
+    /// A window that has just opened grows from zero width over several
+    /// frames. Aiming at its first frames' rect ends the pan short of it, and
+    /// the host's edge-triggered framing (which keys on destination widths)
+    /// sees nothing change afterwards and never frames it again: the focused
+    /// new window is left off screen.
     fn scroll_target_for(&self, group_id: u64) -> Option<f64> {
         let g = self.groups.iter().find(|g| g.id == group_id)?;
+        // No layout pass has placed this group yet, so it has no position.
+        if !self.laid_group_ids.contains(&group_id) {
+            return None;
+        }
         let lane = self.lane_of_group(group_id).unwrap_or(0);
-        self.pan_of_lane(lane).scroll_target_for(g.get_rect())
+        let mut rect = g.get_rect();
+        let mut shift = 0.0;
+        for earlier in &self.groups {
+            if earlier.id == group_id {
+                break;
+            }
+            if self.lane_of_group(earlier.id).unwrap_or(0) == lane {
+                shift += earlier.dest_width_px() - earlier.layout_width_px();
+            }
+        }
+        let own = g.dest_width_px() - g.layout_width_px();
+        rect = Rect::new(rect.x0 + shift, rect.y0, rect.x1 + shift + own, rect.y1);
+        self.pan_of_lane(lane).scroll_target_for(rect)
     }
 
     /// Whether, in any run, one group is severed by the viewport's left
@@ -5753,6 +5778,39 @@ mod tests {
     }
 
     #[test]
+        fn the_reveal_target_of_a_group_still_growing_is_where_it_will_end() {
+            // A new window's slot grows from zero width. The pan toward it
+            // must aim at the finished layout, not at the first frames' rect.
+            let layout = |animate: bool| {
+                let (mut row, _taffy, _root) =
+                    make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4], &[5]]);
+                row.set_rect_for_test(Rect::new(0.0, 0.0, 700.0, 600.0));
+                if animate {
+                    row.groups.last_mut().expect("groups").start_spawn_animation();
+                    let (relaid, _t, _r) = relayout_row_owned(row, 700.0);
+                    row = relaid;
+                    row.set_rect_for_test(Rect::new(0.0, 0.0, 700.0, 600.0));
+                }
+                row
+            };
+            let settled = layout(false);
+            let growing = layout(true);
+            let last = growing.groups.last().expect("groups");
+            assert!(
+                last.dest_width_px() > last.layout_width_px() + 1.0,
+                "the fixture must still be growing: {} of {}",
+                last.layout_width_px(),
+                last.dest_width_px()
+            );
+            let id = last.id;
+            assert_eq!(
+                growing.scroll_target_for(id),
+                settled.scroll_target_for(id),
+                "the pan aims at the finished layout"
+            );
+        }
+
+        #[test]
     fn scroll_group_into_view_pans_or_eases_only_when_offscreen() {
         fn scroll_group_into_view_pans_to_reveal_offscreen_group() {
             let (mut row, _taffy, _root) =
