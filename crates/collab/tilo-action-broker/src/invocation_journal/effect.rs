@@ -91,7 +91,8 @@ impl PreparedEffect {
             | InvocationOwner::AuthenticatedLocal {
                 root, agent: None, ..
             } => Some(super::super::principal_id_for_root(*root)),
-            InvocationOwner::AuthenticatedLocal {
+            InvocationOwner::NativeTask { agent, .. }
+            | InvocationOwner::AuthenticatedLocal {
                 agent: Some(agent), ..
             } => Some(format!("agent:{agent}")),
             // Its exact current task/source admission is checked by the observing caller.
@@ -102,11 +103,12 @@ impl PreparedEffect {
                 .map_err(|_| "prepared context invalid")?;
         let status = tilo_actions::EffectReceiptStatus::from_terminal(&self.update)
             .ok_or("prepared effect is not terminal")?;
-        let expected = crate::policy::redacted_effect_receipt(
+        let expected = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
             record.key.invocation,
             &receipt.actor,
             context,
             status,
+            tilo_clock::unix_now_i64(),
         );
         // completed_at belongs to the original preparation, never recovery time.
         if receipt.invocation != expected.invocation

@@ -38,6 +38,16 @@ jobs:
           esac
       - name: Checkout public-trust context fixture
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          filter: blob:none
+          sparse-checkout: |
+            tools/ci/resolve_builder.py
+            tools/ci/images.toml
+            os/tests/named_public_trust_context.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
       - name: Resolve the CI builder before starting job containers
         id: resolve
         env:
@@ -83,10 +93,11 @@ jobs:
             cargo install --locked wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
           fi
       - name: Build tilo-app
-        run: cargo build --locked -p tilo-app-cli --bin tilo-app
+        run: bash tools/ci/measure.sh "SDK release web tool build" -- cargo build --locked -p tilo-app-cli --bin tilo-app
       - name: Release desktop bundle within its size budget
         run: |
-          target/debug/tilo-app build --target web --bundle desktop --release apps/calculator
+          bash tools/ci/measure.sh "SDK release desktop bundle build" -- \
+            target/debug/tilo-app build --target web --bundle desktop --release apps/calculator
           python3 tools/web/wasm_size_ratchet.py measure desktop target/tilo-app/web/calculator/bundle
       - name: Stage exact release private image worker
         run: |
@@ -138,8 +149,7 @@ jobs:
         run: |
           command -v node || dnf install -y nodejs
           # Chrome's shared-library dependencies; present on current builders.
-          dnf install -y nss atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage \
-            libXrandr mesa-libgbm pango alsa-lib libxkbcommon || true
+          bash tools/ci/ensure-browser-dependencies.sh
           npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
             | tee "$RUNNER_TEMP/chrome.txt"
           echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"

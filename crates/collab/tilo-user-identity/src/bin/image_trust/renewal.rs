@@ -5,14 +5,15 @@
 //! our duplicate must never explicitly unlock the parent's descriptor.
 
 use super::{
-    ImageEndorsement, Path, PathBuf, RevocationEntry, RevocationList, canonical_bytes,
-    decode_sha256, from_canonical_bytes, lock_generation_state, next_path,
-    open_readonly_without_symlinks, parse_u64, read_device_key, read_generation_floor,
-    read_private_bounded, required_marker_is_armed, sign_image_endorsement, usage,
+    ImageEndorsement, PathBuf, RevocationEntry, RevocationList, canonical_bytes, decode_sha256,
+    from_canonical_bytes, lock_generation_state, next_path, open_readonly_without_symlinks,
+    parse_u64, read_device_key, read_generation_floor, read_private_bounded,
+    required_marker_is_armed, sign_image_endorsement, usage,
     verify_image_endorsement_with_revocations_at,
 };
-use std::os::fd::{FromRawFd, RawFd};
+use std::os::fd::RawFd;
 use std::os::unix::fs::MetadataExt;
+use tilo_user_identity::update_lock::inherit as inherited_lock;
 
 struct Request {
     trust: PathBuf,
@@ -44,40 +45,6 @@ pub(super) fn run(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<
         return Err(usage());
     }
     renew(&request)
-}
-
-fn inherited_lock(fd: RawFd, path: &Path) -> Result<std::fs::File, String> {
-    // SAFETY: fcntl duplicates an existing descriptor without transferring the
-    // caller's ownership; successful results are new owned descriptors.
-    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
-    if duplicate < 0 {
-        return Err("cannot duplicate inherited update lock descriptor".into());
-    }
-    // SAFETY: the successful fcntl result is uniquely owned here.
-    let inherited = unsafe { std::fs::File::from_raw_fd(duplicate) };
-    let observed = inherited.metadata().map_err(|error| error.to_string())?;
-    let probe = open_readonly_without_symlinks(path).map_err(|error| error.to_string())?;
-    let expected = probe.metadata().map_err(|error| error.to_string())?;
-    // SAFETY: geteuid has no pointer arguments and cannot fail.
-    if !observed.is_file()
-        || observed.uid() != unsafe { libc::geteuid() }
-        || observed.mode() & 0o777 != 0o600
-        || observed.nlink() != 1
-        || observed.dev() != expected.dev()
-        || observed.ino() != expected.ino()
-    {
-        return Err("inherited update lock is not the exact private transaction inode".into());
-    }
-    // A separate open must be blocked, while the inherited open description
-    // must already own the lock. An unlocked or unrelated descriptor refuses.
-    match advisory_lock::FileLock::try_exclusive(probe) {
-        Err(advisory_lock::TryLockError::WouldBlock) => {}
-        Err(_) => return Err("cannot establish current update lock ownership".into()),
-        Ok(_) => return Err("inherited update transaction is not already locked".into()),
-    }
-    advisory_lock::FileLock::try_exclusive(inherited)
-        .map(advisory_lock::FileLock::into_file_preserving_lock)
-        .map_err(|_| "inherited descriptor does not own the update transaction".into())
 }
 
 fn renew(request: &Request) -> Result<(), String> {

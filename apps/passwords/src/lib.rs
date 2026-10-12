@@ -36,11 +36,7 @@ enum Vault {
 
 const CLOSED: &str = "the vault is not open in this window";
 
-pub(crate) static CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("../locales/en-US.ftl"))],
-    "passwords-credential-permission",
-);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VaultHealth {
@@ -203,17 +199,6 @@ impl PasswordsModel {
         }
         .map_err(|error| format!("could not revoke app access: {error:?}"))
     }
-    /// Revoke all durable vault access for an application.
-    ///
-    /// # Errors
-    /// Returns an error if the vault cannot durably store the revocations.
-    pub fn revoke_all_app_grants(&mut self, app_id: &str) -> Result<usize, String> {
-        match &mut self.store {
-            Some(Vault::Shared(owner)) => owner.revoke_app(app_id),
-            _ => self.edit(|store| store.revoke_app_grants(app_id))?,
-        }
-        .map_err(|error| format!("could not revoke app access: {error:?}"))
-    }
     pub fn search(&self, query: &str) -> Vec<SecretItem> {
         let query = query.trim().to_lowercase();
         self.items()
@@ -333,7 +318,7 @@ impl PasswordsModel {
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<PasswordsShell>()
+    ui::built_in_definition!(PasswordsShell)
 }
 
 #[cfg(test)]

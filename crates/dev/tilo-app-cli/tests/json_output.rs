@@ -142,7 +142,7 @@ fn guides_permissions_aliases_are_offline_and_explain_live_refusal() {
             "docs/developers/tasks/permissions.md"
         );
         let content = guide["result"]["content"].as_str().unwrap();
-        assert!(content.contains("PermissionRequirement::Admin"));
+        assert!(content.contains("ActionKind::Outside"));
         assert!(content.contains("set_role"));
         assert!(content.contains("invoke"));
         assert!(content.contains("outside the replicated resource"));
@@ -448,5 +448,61 @@ fn a_failed_verdict_still_carries_its_report() {
     assert!(
         checks.iter().any(|check| check["status"] == "fail"),
         "{report}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn missing_fonts_are_reported_before_any_cargo_quality_command() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let checkout = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .unwrap();
+    let app = dir.path().join("demo");
+    let new = Command::new(env!("CARGO_BIN_EXE_tilo-app"))
+        .args(["new", "demo", "--id", "org.example.demo", "--directory"])
+        .arg(&app)
+        .arg("--ui-path")
+        .arg(checkout.join("crates/sdk/ui-core"))
+        .current_dir(dir.path())
+        .env_remove("TILO_UI_PATH")
+        .output()
+        .unwrap();
+    assert!(new.status.success(), "{new:?}");
+
+    let marker = dir.path().join("cargo-invoked");
+    let cargo = dir.path().join("cargo-guard");
+    std::fs::write(&cargo, "#!/bin/sh\n: > \"$CARGO_GUARD_MARKER\"\nexit 91\n").unwrap();
+    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let output = Command::new(checkout.join("tools/with-test-environment.sh"))
+        .arg("env")
+        .arg(format!("XDG_DATA_DIRS={}", dir.path().display()))
+        .arg(format!("XDG_DATA_HOME={}", dir.path().display()))
+        .arg(env!("CARGO_BIN_EXE_tilo-app"))
+        .args(["check", "--json"])
+        .arg(&app)
+        .env("CARGO", &cargo)
+        .env("CARGO_GUARD_MARKER", &marker)
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    let report = document(&output);
+    assert_eq!(report["ok"], false);
+    assert!(
+        report.to_string().contains("google-noto-sans-fonts"),
+        "{report}"
+    );
+    assert!(
+        report
+            .to_string()
+            .contains("runtime fonts preflight failed"),
+        "{report}"
+    );
+    assert!(
+        !marker.exists(),
+        "Cargo ran before the missing-font diagnosis"
     );
 }

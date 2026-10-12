@@ -1,5 +1,25 @@
 //! Test helpers for synthesizing shell-level input in unit tests.
 
+/// A canonical package manifest for an installed-app fixture: `package` is
+/// the body of `[package]`, `tail` the tables after the sandbox
+/// (`[entrypoint]`, `[providers]`, ...). Manifests are decoded through the
+/// canonical schema, so a fixture carries its publisher and sandbox too;
+/// `[sandbox.net]` is `off` unless `tail` sets it.
+#[cfg(test)]
+pub(crate) fn canonical_manifest(package: &str, tail: &str) -> String {
+    let net = if tail.contains("[sandbox.net]") {
+        ""
+    } else {
+        "[sandbox.net]\nmode = \"off\"\n"
+    };
+    format!(
+        "[package]\n{package}\n[publisher]\nidentity = \"ed25519:{}\"\n\
+         [sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
+         {net}{tail}",
+        "00".repeat(32)
+    )
+}
+
 #[cfg(test)]
 pub(crate) struct PopulatedShellFixture {
     pub(crate) frame: crate::shell::frame::FrameBuilder,

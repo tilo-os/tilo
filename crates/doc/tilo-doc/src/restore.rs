@@ -16,7 +16,6 @@
 //! difference is an error, never a silently different document.
 
 use crate::document::DocError;
-use crate::history::commit_stamped_with_message;
 use automerge::marks::{ExpandMark, Mark};
 use automerge::transaction::Transactable;
 use automerge::{
@@ -25,6 +24,7 @@ use automerge::{
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use tilo_automerge::ApplyIncoming;
+use tilo_resource::history::commit_stamped_with_message;
 
 /// Write into `doc`'s open transaction the operations that take its current
 /// state to the state it had at `target`, whose changes `doc` must hold.

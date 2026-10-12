@@ -292,7 +292,7 @@ pub fn svg(
 
 /// The dialog's body: format, size, how much and the background, and what
 /// that comes to.
-pub fn body(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Element {
+pub fn body(cx: &ViewCx<crate::model::Artwork>, tools: &Tools) -> Element {
     let choices = tools.export.clone();
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let format = ui::widget::ToggleGroup::from_state(
@@ -400,7 +400,7 @@ pub fn body(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Ele
 /// The picture the export makes, as it is set now: the whole artwork,
 /// the part in view or the selection, on its ground or on the squares
 /// that say it has none.
-fn preview(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Element {
+fn preview(cx: &ViewCx<crate::model::Artwork>, tools: &Tools) -> Element {
     let choices = tools.export.clone();
     let reads = tools.clone();
     let cut: Rc<RefCell<Option<CutKey>>> = Rc::default();
@@ -536,7 +536,7 @@ struct CutKey {
 
 /// What the export comes to: its size and format, about how many bytes,
 /// or why there is none.
-fn summary(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Text {
+fn summary(cx: &ViewCx<crate::model::Artwork>, tools: &Tools) -> Text {
     let tools = tools.clone();
     let live = cx.live().clone();
     let sizes = RefCell::new(Sizes::default());

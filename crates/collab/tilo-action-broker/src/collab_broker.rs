@@ -422,6 +422,23 @@ impl AppActionBroker {
         self.state.certified_local_action_host(caller, presentation)
     }
 
+    /// [`Self::certified_local_action_host`] handed to agent `agent` by the
+    /// person's own device; see
+    /// [`CapnpBrokerState::certified_local_agent_host`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::certified_local_action_host`].
+    pub fn certified_local_agent_host(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        presentation: &[u8],
+        agent: &str,
+    ) -> Result<std::sync::Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>, String> {
+        self.state
+            .certified_local_agent_host(caller, presentation, agent)
+    }
+
     /// Reuse the checked signed person-room admission for native owner checks.
     /// # Errors
     /// Refuses non-person, foreign, stale or unadmitted execution; grants none.
@@ -848,11 +865,6 @@ impl BrokerHandle {
         usize::try_from(self.fanout.connections_seen()).unwrap_or(usize::MAX)
     }
 
-    /// Every typed connection joins a channel as part of setup.
-    pub fn announced_peer_count(&self) -> usize {
-        self.peer_count()
-    }
-
     /// Fan a `CollabEvent` to the peers `route` addresses. `except`
     /// skips one peer id, for the Iroh bridge. No "reach everyone"
     /// form exists — see [`FanoutState::fanout_to_route`].
@@ -946,23 +958,6 @@ impl BrokerHandle {
         if let Ok(mut ch) = self.channels.lock() {
             ch.register_channel_state(artifact, state);
         }
-    }
-
-    /// Audit-log entries for one artifact.
-    pub fn audit_for(&self, artifact: ArtifactId) -> Vec<AuditEntry> {
-        self.channels
-            .lock()
-            .map(|g| g.audit.for_artifact(artifact))
-            .unwrap_or_default()
-    }
-
-    /// Structured redaction records for one artifact, independent of
-    /// `audit_for` so the compliance surface skips filtering drops.
-    pub fn redactions_for(&self, artifact: ArtifactId) -> Vec<RedactionRecord> {
-        self.channels
-            .lock()
-            .map(|g| g.redactions.for_artifact(artifact))
-            .unwrap_or_default()
     }
 }
 impl Drop for BrokerHandle {

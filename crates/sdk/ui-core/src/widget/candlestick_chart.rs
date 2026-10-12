@@ -5,10 +5,7 @@
     reason = "financial chart projection is bounded floating-point geometry"
 )]
 
-use std::collections::HashMap;
-
 use crate::widget::ModelPath;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -20,10 +17,10 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::Widget;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_item,
 };
-use crate::widget::{TaffyTreeExt, Widget};
 
 #[derive(Clone, Debug)]
 pub struct Candle {
@@ -166,10 +163,6 @@ impl CandlestickChart {
     pub fn with_height(mut self, height: f32) -> Self {
         self.height = height.max(160.0);
         self
-    }
-    pub fn set_candles(&mut self, candles: Vec<Candle>) {
-        self.candles = candles;
-        self.hovered = None;
     }
     pub fn take_activated(&mut self) -> Option<String> {
         self.activated.take()
@@ -407,25 +400,7 @@ impl InteractiveChart for CandlestickChart {
 }
 
 impl Widget for CandlestickChart {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::widget::chart_navigation::chart_leaf!();
 
     #[allow(
         clippy::too_many_lines,
@@ -598,41 +573,29 @@ impl Widget for CandlestickChart {
         )
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = key_path.last() else {
+        let Some(id) = crate::widget::chart_navigation::activated_id(
+            action,
+            key_path,
+            self.candles.iter().map(|c| &c.id),
+        ) else {
             return false;
         };
-        if let Some(candle) = self
-            .candles
-            .iter()
-            .find(|c| crate::a11y::hash_key(&c.id) == *key)
-        {
-            self.activated = Some(candle.id.clone());
-            return true;
-        }
-        false
+        self.activated = Some(id.clone());
+        true
     }
 
     fn name(&self) -> &'static str {
         "CandlestickChart"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn is_focusable(&self) -> bool {
         true
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
     }
 }
 

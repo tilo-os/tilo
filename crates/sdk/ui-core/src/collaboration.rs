@@ -99,14 +99,15 @@ mod portable_committed {
         pub(crate) fn applied(&self) {
             match self.never {}
         }
+        pub(crate) fn applies_to(&self, _document: &impl automerge::ReadDoc) -> bool {
+            match self.never {}
+        }
+        pub(crate) fn refuse(&self) {
+            match self.never {}
+        }
     }
 }
 pub use history::{DocumentHistory, HISTORY_PAGE_SIZE, HISTORY_PREFETCH_MARGIN};
-
-#[cfg(any(test, feature = "test-support"))]
-mod loopback;
-#[cfg(any(test, feature = "test-support"))]
-pub use loopback::{LoopbackPeer, LoopbackTransport};
 
 /// Reserved `invokePublishedAction.peerId` meaning "the application
 /// connection making this request". Live broker peer ids are allocated from
@@ -444,6 +445,7 @@ pub enum CollabRequest {
         update: runtime_collab::TaskRunUpdate,
     },
     ReportTaskRun {
+        request_id: Option<u64>,
         run_id: u64,
         lease: String,
         update: runtime_collab::TaskRunUpdate,
@@ -550,13 +552,7 @@ pub struct BrokerActionInput {
 }
 
 #[derive(serde::Deserialize)]
-#[cfg_attr(
-    not(feature = "broker-transport"),
-    allow(
-        dead_code,
-        reason = "only the broker transport decodes the catalogue wire"
-    )
-)]
+#[cfg(feature = "broker-transport")]
 pub(crate) struct BrokerActionCatalogueWire {
     pub(crate) surfaces: Vec<BrokerActionSurface>,
 }
@@ -809,6 +805,14 @@ pub enum CollabEvent {
         request_id: u64,
         result: Result<bool, String>,
     },
+    TaskRunControl {
+        request_id: u64,
+        control: runtime_collab::TaskRunControl,
+    },
+    TaskRunReportResult {
+        request_id: u64,
+        result: Result<(), String>,
+    },
     WorkspaceControl {
         session_id: u64,
         event: runtime_collab::WorkspaceControlEvent,
@@ -1019,7 +1023,7 @@ impl SigningIdentity {
         &mut self,
         payload: Vec<u8>,
         artifact: collab_types::ArtifactId,
-        op_class: collab_types::OpClass,
+        kind: collab_types::OpKind,
     ) -> Result<collab_types::SignedOp, SignedSendError> {
         let timestamp = crate::time::wall();
         let sequence = self
@@ -1031,7 +1035,7 @@ impl SigningIdentity {
             artifact,
             self.public_key,
             self.attestation_id,
-            op_class,
+            kind,
             timestamp,
             sequence,
         );
@@ -1420,10 +1424,10 @@ impl CollaborationManager {
         &mut self,
         payload: Vec<u8>,
         artifact: collab_types::ArtifactId,
-        op_class: collab_types::OpClass,
+        kind: collab_types::OpKind,
     ) -> Result<(), SignedSendError> {
         let identity = self.identity.as_mut().ok_or(SignedSendError::NoIdentity)?;
-        let envelope = identity.sign_op(payload, artifact, op_class)?;
+        let envelope = identity.sign_op(payload, artifact, kind)?;
         self.send(CollabRequest::SignedOperation {
             envelope: Box::new(envelope),
         });
@@ -1643,12 +1647,17 @@ impl CollaborationManager {
     }
 
     /// Whether the actual route's original document history has been applied.
-    /// This is the same transport gate used before document publication.
+    /// This is the same transport gate used before document publication. A
+    /// closed transport never reopens, so its routes stop being ready the
+    /// moment it closes, before the worker clears their read state.
     pub(crate) fn document_route_ready(&self, route: Option<&RouteSpec>) -> bool {
         let channel = route.map(RouteSpec::channel_id);
         !self.awaiting_primary
             && match &self.backend {
-                Backend::Transport(transport) => transport.document_publishable(channel.as_deref()),
+                Backend::Transport(transport) => {
+                    !matches!(transport.status(), TransportStatus::Closed(_))
+                        && transport.document_publishable(channel.as_deref())
+                }
                 Backend::Disabled(_) => false,
             }
     }
@@ -1960,9 +1969,9 @@ pub mod channel_key {
 ///
 /// 1. `TILO_PACKAGE_ID` / `TILO_WORKSPACE_ID` — launcher-set for every
 ///    compositor-started app.
-/// 2. `QUICK_APP_ID` / `QUICK_CLUSTER_ID` — standalone-dev override,
-///    ranked below `TILO_PACKAGE_ID` so a dev identity never fragments
-///    routing under a real session.
+/// 2. `QUICK_APP_ID` — standalone-dev app id, ranked below
+///    `TILO_PACKAGE_ID` so a dev identity never fragments routing under a
+///    real session.
 /// 3. A fresh random app id + the nil cluster — fails closed: nothing
 ///    else announces the same id, so nothing is ever delivered here.
 ///
@@ -2076,23 +2085,7 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
     let cluster_id = identity
         .workspace_id
         .clone()
-        .and_then(|s| {
-            if let Ok(id) = Uuid::parse_str(&s) {
-                Some(id)
-            } else {
-                tracing::debug!(
-                    "TILO_WORKSPACE_ID={s:?} is not a uuid; \
-                 falling back to QUICK_CLUSTER_ID for collaboration routing"
-                );
-                None
-            }
-        })
-        .or_else(|| {
-            identity
-                .cluster_id
-                .as_deref()
-                .and_then(|s| Uuid::parse_str(s).ok())
-        })
+        .and_then(|s| Uuid::parse_str(&s).ok())
         .unwrap_or_else(Uuid::nil);
 
     (app_id, cluster_id)
@@ -2123,33 +2116,6 @@ mod task4_route_tests {
         assert!(state.current(true).is_none());
         state.accept(Ok(b)).unwrap();
         assert!(state.current(true).is_some());
-    }
-}
-
-/// A host-owned document commit resolving to the broker-signed envelope.
-pub type HostDocumentCommit =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<SignedOp, String>> + Send + 'static>>;
-
-/// Host-local capability, never selected by a wire peer. Called on the SDK
-/// shovel thread, while the application's ordinary owner thread keeps pumping.
-/// Implementations bind an exact route and revalidate current authority.
-/// Native launcher and explicit-key endpoints retain their existing signer.
-pub trait HostDocumentCommitter: Send + Sync {
-    fn commit(
-        &self,
-        route: &RouteSpec,
-        mutation: collab_types::DocumentMutation,
-    ) -> HostDocumentCommit;
-
-    /// Required custody must reach the concrete final owner intact. A legacy
-    /// committer cannot silently downgrade it to its unqualified commit method.
-    fn commit_scoped(
-        &self,
-        _route: &RouteSpec,
-        _mutation: collab_types::DocumentMutation,
-        _authorization: crate::invocation_scope::DocumentAuthorization,
-    ) -> HostDocumentCommit {
-        Box::pin(async { Err("host has no final scoped document evaluator".into()) })
     }
 }
 

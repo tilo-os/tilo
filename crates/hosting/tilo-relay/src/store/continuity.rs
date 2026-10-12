@@ -275,12 +275,11 @@ pub(super) fn write(
         .create_new(true)
         .open(marker(raw))?;
     output.write_all(&encoded)?;
-    output.sync_all()?;
-    File::open(
+    crate::store::fsync(&output)?;
+    crate::store::fsync(&File::open(
         raw.parent()
             .ok_or_else(|| invalid("continuity copy has no parent"))?,
-    )?
-    .sync_all()?;
+    )?)?;
     #[cfg(test)]
     super::test_barrier::check(store.root(), "continuity-marker-durable")?;
     Ok(())
@@ -338,7 +337,7 @@ fn copy_inner(
             .write(true)
             .open(capture)?;
         file.write_all(&encoded)?;
-        file.sync_all()?;
+        crate::store::fsync(&file)?;
     }
     Ok(Some(association.receipt))
 }
@@ -388,12 +387,12 @@ pub(super) fn cleanup_pending(
     let parent = source
         .parent()
         .ok_or_else(|| invalid("pending copy has no parent"))?;
-    File::open(parent)?.sync_all()?;
+    crate::store::fsync(&File::open(parent)?)?;
     #[cfg(test)]
     super::test_barrier::check(store.root(), "continuity-pending-raw-removed")?;
     if captured_matches()? {
         fs::remove_file(marker(source))?;
-        File::open(parent)?.sync_all()?;
+        crate::store::fsync(&File::open(parent)?)?;
     }
     Ok(true)
 }

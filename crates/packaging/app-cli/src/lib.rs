@@ -34,7 +34,6 @@ pub use tilo_app_package::version::{ReleaseChannel, compare as compare_versions}
 
 pub mod client;
 pub mod config;
-pub mod dev_env;
 pub mod install;
 
 use serde::{Deserialize, Serialize};
@@ -161,11 +160,6 @@ fn os_interfaces() -> Option<&'static registry_types::ProvidedInterfaces> {
     PROVIDED
         .get_or_init(package_store::interfaces::system_interfaces)
         .as_ref()
-}
-
-/// Whether this OS serves every system interface `version` requires.
-pub fn serves_interfaces(version: &registry_types::RegistryVersion) -> bool {
-    os_interfaces().is_none_or(|provided| provided.meets_wire(&version.target.interfaces))
 }
 
 /// [`installable_versions`] on an OS serving `provided`: a version that
@@ -502,7 +496,7 @@ pub fn installed_versions() -> Result<std::collections::HashMap<String, String>,
 }
 
 fn installed_manifest_version(path: &std::path::Path) -> Option<String> {
-    launcher::manifest::read_manifest(path)
+    tilo_app_package::view::read_manifest(path)
         .ok()
         .map(|manifest| manifest.version)
         .filter(|version| !version.is_empty())
@@ -981,6 +975,18 @@ mod tests {
     [package]
     id = "so.tilo.browser"
     version = "1.2.3"
+    kind = "app"
+
+    [publisher]
+    identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+
+    [sandbox]
+    namespaces = []
+    seccomp = "tilo-default"
+    landlock = "strict"
+
+    [sandbox.net]
+    mode = "off"
 
     [entrypoint]
     bin = "bin/browser"

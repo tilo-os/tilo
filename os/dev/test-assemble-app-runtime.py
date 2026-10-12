@@ -18,6 +18,30 @@ ASSEMBLER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ASSEMBLER)
 
 
+class RuntimeEngines(unittest.TestCase):
+    def test_listed_engines_are_signed_beside_the_toolkit(self):
+        with tempfile.TemporaryDirectory(prefix='runtime-engines-') as name:
+            directory = Path(name)
+            (directory / 'libtilo_typst_engine.so').write_bytes(b'\x7fELF engine')
+            (directory / 'runtime-engines').write_text('libtilo_typst_engine.so\n')
+            self.assertEqual(ASSEMBLER.runtime_engines(directory),
+                             [directory / 'libtilo_typst_engine.so'])
+            (directory / 'runtime-engines').write_text('')
+            self.assertEqual(ASSEMBLER.runtime_engines(directory), [])
+
+    def test_a_missing_list_or_library_refuses_the_sdk(self):
+        with tempfile.TemporaryDirectory(prefix='runtime-engines-') as name:
+            directory = Path(name)
+            with self.assertRaisesRegex(ValueError, 'no runtime engine list'):
+                ASSEMBLER.runtime_engines(directory)
+            (directory / 'runtime-engines').write_text('libtilo_typst_engine.so\n')
+            with self.assertRaisesRegex(ValueError, 'not a built library'):
+                ASSEMBLER.runtime_engines(directory)
+            (directory / 'runtime-engines').write_text('../libc.so.6\n')
+            with self.assertRaisesRegex(ValueError, 'not a built library'):
+                ASSEMBLER.runtime_engines(directory)
+
+
 class RuntimeFonts(unittest.TestCase):
     def test_sdk_catalog_is_the_verified_standalone_payload(self):
         repo = SOURCE.parents[2]
@@ -100,8 +124,14 @@ class NativeClosure(unittest.TestCase):
             bundle = directory / 'bundle'
             lib = bundle / 'lib'
             lib.mkdir(parents=True)
+            # As tilo-runtime-bundle signs them: each library at the top of
+            # lib/, the loader (executable) there and at its interpreter path.
             for path in paths:
-                shutil.copyfile(path, lib / path.name)
+                shutil.copy(path, lib / path.name)
+                if path.name.startswith('ld-linux'):
+                    loader = lib / str(path).lstrip('/')
+                    loader.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy(path, loader)
             # Small real ELF stand-ins meet the SDK name contract without Rust
             # compilation; the application's actual DT_NEEDED is the subject.
             for name in ('libruntime_dylib.so', 'libstd-fixture.so'):

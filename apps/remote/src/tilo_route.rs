@@ -114,18 +114,6 @@ impl TiloRouteProvider for MeshTiloRouteProvider {
     }
 }
 
-/// Short non-authoritative device fingerprint for status/error copy.
-pub fn short_device_id(device: &DeviceKey) -> String {
-    let mut bytes = device.iter().copied();
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}",
-        bytes.next().unwrap_or_default(),
-        bytes.next().unwrap_or_default(),
-        bytes.next().unwrap_or_default(),
-        bytes.next().unwrap_or_default()
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

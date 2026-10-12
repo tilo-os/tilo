@@ -185,7 +185,7 @@ impl DesktopSearch {
                     entry
                         .group(label.clone())
                         .group_total(group.total)
-                        .icon(hit.kind.icon()),
+                        .icon(ui::search::system::icon_for_kind(&hit.kind)),
                 );
                 rows.push(hit);
             }

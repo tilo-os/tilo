@@ -164,6 +164,8 @@ pub struct HandedBook {
     pub book: Book,
     /// The bytes' full content hash when a content store now holds them.
     pub content: Option<String>,
+    /// How many bytes the book is.
+    pub size: u64,
 }
 
 /// Parse a handed-over EPUB under the usual byte and archive bounds, then
@@ -183,7 +185,11 @@ pub fn open_handed_book(
         .map(|store| store.put(bytes))
         .transpose()
         .map_err(|error| format!("the book could not be kept: {error}"))?;
-    Ok(HandedBook { book, content })
+    Ok(HandedBook {
+        book,
+        content,
+        size: byte_count(bytes),
+    })
 }
 
 /// A book ready to join the shelf: parsed, its bytes where the shelf finds
@@ -216,6 +222,7 @@ pub fn place_chosen_book(
             .map(|store| store.put(bytes))
             .transpose()
             .map_err(|error| format!("the book could not be kept: {error}"))?,
+        size: byte_count(bytes),
     };
     Ok(placed(handed))
 }
@@ -235,6 +242,10 @@ pub fn placed(mut handed: HandedBook) -> Placed {
     }
 }
 
+fn byte_count(bytes: &[u8]) -> u64 {
+    u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+}
+
 /// The library row for a handed-over book.
 pub fn handed_book_entry(handed: &HandedBook) -> LibraryEntry {
     LibraryEntry {
@@ -244,15 +255,19 @@ pub fn handed_book_entry(handed: &HandedBook) -> LibraryEntry {
         author: handed.book.author.clone(),
         subject: handed.book.subject.clone(),
         added: unix_now_ms(),
-        content: handed.content.clone(),
+        content: handed
+            .content
+            .as_deref()
+            .and_then(|hash| LibraryEntry::stored(hash, handed.size))
+            .unwrap_or_default(),
     }
 }
 
 /// A recorded book whose bytes a content store holds, verified against both
 /// the hash the row names and the row's content id.
 fn content_book(entry: &LibraryEntry, store: &tilo_content::ContentStore) -> Option<LoadedBook> {
-    let hash = entry.content.as_deref()?;
-    let bytes = store.read(hash)?;
+    let hash = entry.content_hash()?;
+    let bytes = store.read(&hash)?;
     let mut book = parse_epub(&bytes, 0, "EPUB").ok()?;
     if book.id != entry.id {
         tracing::warn!(expected = %entry.id, actual = %book.id, "ebook: refused content whose id does not match its library row");
@@ -261,7 +276,7 @@ fn content_book(entry: &LibraryEntry, store: &tilo_content::ContentStore) -> Opt
     book.cover_tint = tint_for(&book.id);
     Some(LoadedBook {
         book,
-        path: content_path(hash),
+        path: content_path(&hash),
     })
 }
 
@@ -276,7 +291,7 @@ pub fn prepare_imported_book(path: &Path, mut book: Book) -> (Book, LibraryEntry
         author: book.author.clone(),
         subject: book.subject.clone(),
         added: unix_now_ms(),
-        content: None,
+        content: ui::tilo_resource::Bytes::Empty,
     };
     (book, entry)
 }
@@ -664,20 +679,22 @@ mod tests {
     //! when dropped.
 
     use super::*;
-    use crate::doc::BooksDoc;
-    use automerge::AutoCommit;
     use serial_test::serial;
-    use tilo_actions::Action;
+
+    type Library = ui::tilo_resource::Replica<crate::resource::Ebook>;
 
     /// Read, place and shelve the EPUB at `path` as the reader's importer
     /// does, returning the parsed book.
-    fn shelve_path(doc: &mut AutoCommit, path: &Path) -> Book {
+    fn shelve_path(doc: &mut Library, path: &Path) -> Book {
         let (book, path) = parse_shared_path_detailed(path).expect("a real epub imports");
         let (book, entry) = prepare_imported_book(&path, book);
-        crate::actions::restore_library_book_action(&entry)
-            .apply(doc)
-            .unwrap();
+        doc.apply(crate::resource::shelve(&entry)).unwrap();
         book
+    }
+
+    /// The shelf rows `doc` holds.
+    fn shelf(doc: &Library) -> Vec<LibraryEntry> {
+        doc.state().unwrap().entries.values().cloned().collect()
     }
 
     fn workspace_env(path: &Path) -> tilo_test_env::ScopedEnv {
@@ -778,7 +795,7 @@ mod tests {
             std::fs::write(&path, SAMPLE_EPUB).unwrap();
             let mut library_env = tilo_test_env::ScopedEnv::new();
             library_env.set(LIBRARY_DIR_ENV, tmp.path());
-            let mut doc = AutoCommit::new();
+            let mut doc = Library::new();
 
             let book = shelve_path(&mut doc, &path);
             assert!(
@@ -786,8 +803,8 @@ mod tests {
                 "the import produced a content id"
             );
             // Recorded once, and hydrating the library yields exactly that book.
-            assert_eq!(BooksDoc::read_library_entries(&doc).len(), 1);
-            let lib = hydrate_library(&BooksDoc::read_library_entries(&doc), &HashMap::new(), None);
+            assert_eq!(shelf(&doc).len(), 1);
+            let lib = hydrate_library(&shelf(&doc), &HashMap::new(), None);
             drop(library_env);
             assert_eq!(lib.len(), 1, "the imported book is on the shelf");
             assert_eq!(lib[0].book.id, book.id);
@@ -801,11 +818,7 @@ mod tests {
 
             // Importing the very same file again does not duplicate the shelf entry.
             shelve_path(&mut doc, &path);
-            assert_eq!(
-                BooksDoc::read_library_entries(&doc).len(),
-                1,
-                "same file → one entry"
-            );
+            assert_eq!(shelf(&doc).len(), 1, "same file → one entry");
         }
 
         // --- phase: device_local_source_rehydrates_a_one_off_import_after_restart ---
@@ -817,13 +830,12 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("one-off.epub");
             std::fs::write(&path, SAMPLE_EPUB).unwrap();
-            let mut doc = AutoCommit::new();
+            let mut doc = Library::new();
             let book = shelve_path(&mut doc, &path);
             let mut local_books = HashMap::new();
             local_books.insert(book.id.clone(), path.clone());
 
-            let restored =
-                hydrate_library(&BooksDoc::read_library_entries(&doc), &local_books, None);
+            let restored = hydrate_library(&shelf(&doc), &local_books, None);
             assert_eq!(restored.len(), 1);
             assert_eq!(restored[0].book.id, book.id);
             assert_eq!(restored[0].path, path);
@@ -842,15 +854,14 @@ mod tests {
             assert_eq!(found.len(), 2, "both epubs found, the .txt ignored");
             // Both epubs are the *same bytes*, so they share a content id and collapse
             // to a single library entry.
-            let mut doc = AutoCommit::new();
+            let mut doc = Library::new();
             let mut local_books = HashMap::new();
             for book in &found {
-                crate::actions::shelve_found_book_action(&book.entry)
-                    .apply(&mut doc)
+                doc.apply(crate::resource::shelve_found(&book.entry))
                     .unwrap();
                 local_books.insert(book.entry.id.clone(), book.path.clone());
             }
-            let lib = hydrate_library(&BooksDoc::read_library_entries(&doc), &local_books, None);
+            let lib = hydrate_library(&shelf(&doc), &local_books, None);
             assert_eq!(
                 lib.len(),
                 1,
@@ -912,12 +923,10 @@ mod tests {
             // The parser/materialiser owns no CRDT authority; the UI worker is
             // free to discard a superseded result without leaving a ghost shelf
             // row behind.
-            let mut doc = AutoCommit::new();
+            let mut doc = Library::new();
             let (recorded, entry) = prepare_imported_book(&destination, book);
-            crate::actions::restore_library_book_action(&entry)
-                .apply(&mut doc)
-                .unwrap();
-            let entries = BooksDoc::read_library_entries(&doc);
+            doc.apply(crate::resource::shelve(&entry)).unwrap();
+            let entries = shelf(&doc);
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0].id, recorded.id);
             assert!(entries[0].shared);
@@ -950,11 +959,12 @@ mod tests {
             );
             // The library records canonical shared availability, not a workspace
             // root that might mean something different on another device.
-            let mut doc = AutoCommit::new();
-            crate::actions::restore_library_book_action(&prepare_imported_book(&dest, after).1)
-                .apply(&mut doc)
-                .unwrap();
-            let entries = BooksDoc::read_library_entries(&doc);
+            let mut doc = Library::new();
+            doc.apply(crate::resource::shelve(
+                &prepare_imported_book(&dest, after).1,
+            ))
+            .unwrap();
+            let entries = shelf(&doc);
             assert_eq!(entries.len(), 1);
             assert!(entries[0].shared, "the shared copy is discoverable by id");
         }
@@ -997,14 +1007,12 @@ mod tests {
         // A regular file cannot contain a `Books` directory: no workspace copy.
         let workspace = tempfile::NamedTempFile::new().unwrap();
         let _workspace = workspace_env(workspace.path());
-        let mut doc = AutoCommit::new();
+        let mut doc = Library::new();
         let entry = bundled_book_entry().expect("the bundled book has a shelf row");
-        crate::actions::restore_library_book_action(&entry)
-            .apply(&mut doc)
-            .unwrap();
+        doc.apply(crate::resource::shelve(&entry)).unwrap();
         let id = entry.id;
         assert_eq!(id, content_id(SAMPLE_EPUB));
-        let entries = BooksDoc::read_library_entries(&doc);
+        let entries = shelf(&doc);
         assert_eq!(entries.len(), 1);
         assert!(
             !entries[0].shared,
@@ -1030,13 +1038,12 @@ mod tests {
         assert_eq!(handed.content.as_deref(), Some(hash.as_str()));
         assert_eq!(store.read(&hash).as_deref(), Some(bytes.as_slice()));
 
-        let mut doc = AutoCommit::new();
-        crate::actions::restore_library_book_action(&handed_book_entry(&handed))
-            .apply(&mut doc)
+        let mut doc = Library::new();
+        doc.apply(crate::resource::shelve(&handed_book_entry(&handed)))
             .unwrap();
-        let entries = BooksDoc::read_library_entries(&doc);
+        let entries = shelf(&doc);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].content.as_deref(), Some(hash.as_str()));
+        assert_eq!(entries[0].content_hash().as_deref(), Some(hash.as_str()));
         assert!(!entries[0].shared, "a handed book is nobody's shared file");
 
         let library = hydrate_library(&entries, &HashMap::new(), Some(&store));
@@ -1046,28 +1053,19 @@ mod tests {
         // A device without the bytes keeps the row but has nothing to show.
         let elsewhere = tilo_content::ContentStore::memory();
         assert!(hydrate_library(&entries, &HashMap::new(), Some(&elsewhere)).is_empty());
-        assert_eq!(BooksDoc::read_library_entries(&doc).len(), 1);
+        assert_eq!(shelf(&doc).len(), 1);
 
         // Content that is not the row's book is never shown as it.
         let other = crate::test_epub::long_classic(2, 1);
         let other_hash = store.put(&other).unwrap();
-        let mut forged = AutoCommit::new();
         let mut entry = handed_book_entry(&handed);
-        entry.content = Some(other_hash);
-        BooksDoc::upsert_library_entry(&mut forged, &entry);
+        entry.content = LibraryEntry::stored(&other_hash, 1).unwrap();
+        assert!(hydrate_library(&[entry.clone()], &HashMap::new(), Some(&store)).is_empty());
         assert!(
-            hydrate_library(
-                &BooksDoc::read_library_entries(&forged),
-                &HashMap::new(),
-                Some(&store)
-            )
-            .is_empty()
-        );
-        assert!(
-            crate::actions::restore_library_book_action(&entry)
-                .apply(&mut AutoCommit::new())
+            Library::new()
+                .apply(crate::resource::shelve(&entry))
                 .is_err(),
-            "the action refuses a hash that does not name its book"
+            "the library refuses a hash that does not name its book"
         );
         // A failed open says why in a plain sentence, not the parser's words.
         assert_eq!(

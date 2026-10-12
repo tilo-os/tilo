@@ -38,11 +38,7 @@ fn installed_bytes(binary: &[u8]) -> (tempfile::TempDir, InstalledManagedPackage
     let root = tempfile::tempdir().unwrap();
     let key = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
     let public = key.verifying_key().to_bytes();
-    let hex: String = public.iter().fold(String::new(), |mut out, b| {
-        use std::fmt::Write as _;
-        let _ = write!(out, "{b:02x}");
-        out
-    });
+    let hex = hex::encode(public);
     let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
         r#"
 [package]
@@ -300,8 +296,11 @@ fn managed_descriptors_are_bound_and_consumed_once() {
     )
     .unwrap();
     let required = [
-        ("collab".into(), "required@1".into()),
-        ("model-gateway".into(), "required@1".into()),
+        ("collab".into(), crate::manifest::service_req("required@1")),
+        (
+            "model-gateway".into(),
+            crate::manifest::service_req("required@1"),
+        ),
     ]
     .into_iter()
     .collect();

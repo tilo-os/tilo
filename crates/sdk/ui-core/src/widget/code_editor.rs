@@ -101,12 +101,7 @@ pub struct LineSpans {
     pub carry: HlState,
 }
 
-impl LineSpans {
-    /// No carry — for a line-local highlighter.
-    pub fn line_local(spans: Vec<Span>) -> Self {
-        Self { spans, carry: 0 }
-    }
-}
+impl LineSpans {}
 
 /// A pluggable, per-line source tokenizer. The [`CodeEditor`] owns rendering,
 /// caret, and selection; a `Highlighter` owns *only* the language lexing —
@@ -642,26 +637,6 @@ impl Widget for CodeEditor {
         self.draw_diagnostics(scene, transform, theme);
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.inner.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-        self.draw_diagnostics(scene, transform, theme);
-    }
-
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -763,13 +738,14 @@ impl Widget for CodeEditor {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if self.read_only && matches!(action, crate::a11y::Action::SetValue(_)) {
             return false;
         }
-        self.inner.perform_action(action, state, path)
+        self.inner.perform_action(action, &[], state, path)
     }
 
     fn wants_pointer_capture(&self) -> bool {

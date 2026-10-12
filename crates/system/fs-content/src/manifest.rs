@@ -95,10 +95,6 @@ impl Manifest {
         &self.chunks
     }
 
-    pub fn into_chunks(self) -> Vec<ChunkRef> {
-        self.chunks
-    }
-
     pub fn total_len(&self) -> u64 {
         self.ends.last().copied().unwrap_or(0)
     }

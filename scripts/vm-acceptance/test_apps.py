@@ -7,13 +7,19 @@ folder listing and GPU adapter verdicts.
 import contextlib
 import io
 import json
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from acceptance import gpu  # noqa: E402
+from acceptance.checks import apps  # noqa: E402
 from acceptance.checks.apps import (FLAT_STDDEV, AppLaunch, Proc, app_launch,  # noqa: E402
                                     first_textured, lingering, parse_procs)
 from acceptance.checks.startup import (ATSPI_PROBE, first_frame_budget, judge_listing,  # noqa: E402
@@ -138,6 +144,273 @@ class AttributionTests(unittest.TestCase):
         self.assertFalse(AppLaunch(frozenset({99}), frozenset()).owns(3, table[3], table))
 
 
+
+def undo_toast(title, body="Select to undo, or press Ctrl+Shift+T later", **fields):
+    return {"title": title, "body": body, "severity": "Info", "persistent": False, **fields}
+
+
+class UndoCloseTests(unittest.TestCase):
+    def test_only_captured_titles_match_independent_of_reopen_binding(self):
+        titles = {"Wine File", "Wine Mono Installer"}
+        for heading, body in [
+            ("Closed Wine File", "Select to undo, or press Ctrl+Shift+T later"),
+            ("Closed Wine Mono Installer", "Select to undo, or press Alt+R later"),
+            ("Closed Wine Mono Installer", "Select to undo"),
+            ("Wine Mono Installer geschlossen", "Zum Rückgängigmachen auswählen oder später Strg+Umschalt+T drücken"),
+            ("Wine File geschlossen", "Zum Rückgängigmachen auswählen"),
+        ]:
+            with self.subTest(heading=heading, body=body):
+                self.assertTrue(any(apps._is_undo_close(undo_toast(heading, body), title) for title in titles))
+
+    def test_unrelated_titles_and_non_undo_messages_are_rejected(self):
+        for heading, body in [
+            ("Closed Notes", "Select to undo, or press Super+Shift+T later"),
+            ("Closed Wine File backup", "Select to undo"),
+            ("Wine File crashed", "Select to undo, or press Super+Shift+T later"),
+            ("Closed Wine File", "Wine File crashed"),
+            ("Wine File updated", "Select to undo"),
+        ]:
+            with self.subTest(heading=heading, body=body):
+                self.assertFalse(apps._is_undo_close(undo_toast(heading, body), "Wine File"))
+
+    def test_errors_and_persistent_toasts_are_rejected_even_for_closed_titles(self):
+        for fields in [{"severity": "Error"}, {"severity": "Warning"}, {"persistent": True}]:
+            with self.subTest(fields=fields):
+                self.assertFalse(apps._is_undo_close(undo_toast("Closed Wine File", **fields), "Wine File"))
+
+    def test_missing_or_empty_titles_cannot_match_a_reopen_hint(self):
+        for title in [None, "", "   "]:
+            with self.subTest(title=title):
+                self.assertFalse(apps._is_undo_close(undo_toast("Closed ", "Select to undo, or press Super+Shift+T later"), title))
+        for heading in [None, ""]:
+            self.assertFalse(apps._is_undo_close(undo_toast(heading), "Wine File"))
+
+
+class CloseFixture:
+    """VM boundary fixture; run the production close and process/window checks."""
+    def __init__(self, extra_toast=None, cascade=False, processes="", keep_main=False):
+        self.groups = [{"id": 1, "tabs": [{"title": "Existing"}]},
+                       {"id": 2, "tabs": [{"title": "Wine File", "tile": {"Foreign": {"app_id": "wineboot.exe"}}}]},
+                       {"id": 3, "tabs": [{"title": "Wine Mono Installer", "tile": {"Foreign": {"app_id": "control.exe"}}}]}]
+        self.toasts = [undo_toast("Old notification")]
+        self.extra_toast = extra_toast
+        self.cascade = cascade
+        self.processes = processes
+        self.keep_main = keep_main
+        self.facts = {"groups_before:A07-x11": {1},
+                      "launch:A07-x11": AppLaunch(frozenset({4100}), frozenset({4101}))}
+        self.vm = self
+
+    def state(self):
+        return {"workspace_tree": {"workspaces": [{"strips": [{"window_groups": self.groups}]}]},
+                "chrome": {"notifications": self.toasts}}
+
+    def invoke(self, provider, action):
+        gid = int(action.split(":")[1])
+        closing = [g for g in self.groups if g["id"] == gid or self.cascade and g["id"] == 3]
+        if self.keep_main and gid == 2:
+            return
+        self.groups = [g for g in self.groups if g not in closing]
+        for group in closing:
+            self.toasts.append(undo_toast("Closed " + group["tabs"][0]["title"]))
+        if gid == 2 and self.extra_toast:
+            self.toasts.append(self.extra_toast)
+
+    def wait_state(self, predicate, timeout, why):
+        apps.expect(predicate(self.state()), why)
+
+    def exec(self, script):
+        installer = any(g["id"] == 3 for g in self.groups)
+        return self.processes + ("\n" + row(4131, 900, 4101, "C:\\windows\\system32\\control.exe appwiz.cpl install_mono")
+                                 if installer else "")
+
+
+class CloseNotificationRegressionTests(unittest.TestCase):
+    def close(self, ctx):
+        res = SimpleNamespace(metrics={})
+        with patch.object(apps, "CLOSE_GRACE_S", 0):
+            apps._close(ctx, res, "A07-x11", 2, {}, 1)
+        return res.metrics
+
+    def test_main_and_first_run_dialog_undo_toasts_pass(self):
+        for cascade in [False, True]:
+            with self.subTest(cascade=cascade):
+                ctx = CloseFixture(cascade=cascade)
+                try:
+                    metrics = self.close(ctx)
+                except apps.CheckFailed as exc:
+                    self.fail(str(exc))
+                self.assertEqual(len(metrics["undo_toasts"]), 2)
+                self.assertEqual(metrics["toasts"], [])
+                self.assertEqual(metrics["extra_windows"], 1)
+                self.assertEqual([g["id"] for g in ctx.groups], [1])
+
+    def test_unrelated_errors_persistent_and_crash_notifications_still_fail(self):
+        for toast in [undo_toast("Closed Notes", "Select to undo, or press Super+Shift+T later"),
+                      undo_toast("Closed Wine File", severity="Error"),
+                      undo_toast("Closed Wine Mono Installer", persistent=True),
+                      undo_toast("Wine File crashed", "Exited unexpectedly")]:
+            with self.subTest(toast=toast):
+                with self.assertRaisesRegex(apps.CheckFailed, "unexpected notifications"):
+                    self.close(CloseFixture(extra_toast=toast))
+
+    def test_lingering_app_process_still_fails(self):
+        ctx = CloseFixture(processes=row(4101, 900, 4101, "wine winefile.exe"))
+        with self.assertRaisesRegex(apps.CheckFailed, "processes still running"):
+            self.close(ctx)
+
+    def test_main_window_that_lingers_still_fails(self):
+        with self.assertRaisesRegex(apps.CheckFailed, "window gone after close"):
+            self.close(CloseFixture(keep_main=True))
+
+
+class LateWindowCloseTests(unittest.TestCase):
+    close = CloseNotificationRegressionTests.close
+    def test_installer_appearing_at_main_close_guard_is_closed_and_classified(self):
+        class LateInstaller(CloseFixture):
+            def __init__(self):
+                super().__init__()
+                self.installer = self.groups.pop()
+                self.reads = 0
+
+            def state(self):
+                self.reads += 1
+                if self.reads == 2:
+                    self.groups.append(self.installer)
+                return super().state()
+
+        ctx = LateInstaller()
+        try:
+            metrics = self.close(ctx)
+        except apps.CheckFailed as exc:
+            self.fail(str(exc))
+        self.assertEqual([g["id"] for g in ctx.groups], [1])
+        self.assertEqual(metrics["closed_titles"], ["Wine File", "Wine Mono Installer"])
+        self.assertEqual([t["title"] for t in metrics["undo_toasts"]],
+                         ["Closed Wine File", "Closed Wine Mono Installer"])
+        self.assertEqual(metrics["lingering_after_close"], [])
+
+    def test_new_unrelated_and_preexisting_same_app_windows_are_left_open(self):
+        ctx = CloseFixture()
+        ctx.groups[0]["tabs"][0]["tile"] = {"Foreign": {"app_id": "control.exe"}}
+        ctx.groups.append({"id": 4, "tabs": [{"title": "Unrelated editor", "tile": {"Foreign": {"app_id": "gedit"}}}]})
+        metrics = self.close(ctx)
+        self.assertEqual([g["id"] for g in ctx.groups], [1, 4])
+        self.assertEqual(metrics["closed_titles"], ["Wine File", "Wine Mono Installer"])
+
+    def test_ambiguous_app_identity_is_not_closed(self):
+        ctx = CloseFixture(processes=row(5001, 900, 5001, "C:\\windows\\system32\\control.exe unrelated-prefix"))
+        with self.assertRaisesRegex(apps.CheckFailed, "processes still running"):
+            self.close(ctx)
+        self.assertEqual([g["id"] for g in ctx.groups], [1, 3])
+
+    def test_group_containing_an_unrelated_tab_is_not_closed(self):
+        ctx = CloseFixture()
+        ctx.groups[2]["tabs"].append({"title": "Unrelated editor", "tile": {"Foreign": {"app_id": "gedit"}}})
+        with self.assertRaisesRegex(apps.CheckFailed, "processes still running"):
+            self.close(ctx)
+        self.assertEqual([g["id"] for g in ctx.groups], [1, 3])
+
+    def test_queued_installer_is_revalidated_at_its_close_guard(self):
+        for transition in ["unrelated_tab", "ambiguous_process"]:
+            class ChangedInstaller(CloseFixture):
+                def __init__(self):
+                    super().__init__()
+                    self.reads = 0
+                    self.invoked = []
+
+                def state(self):
+                    self.reads += 1
+                    if self.reads == 4:
+                        if transition == "unrelated_tab":
+                            self.groups[-1]["tabs"].append({"title": "Editor", "tile": {"Foreign": {"app_id": "gedit"}}})
+                        else:
+                            self.processes = row(5001, 900, 5001, "C:\\windows\\system32\\control.exe unrelated-prefix")
+                    return super().state()
+
+                def invoke(self, provider, action):
+                    self.invoked.append(action)
+                    super().invoke(provider, action)
+
+            with self.subTest(transition=transition):
+                ctx = ChangedInstaller()
+                with self.assertRaisesRegex(apps.CheckFailed, "processes still running"):
+                    self.close(ctx)
+                self.assertEqual(ctx.invoked, ["group.close:2"])
+                self.assertEqual([g["id"] for g in ctx.groups], [1, 3])
+
+    def test_invoked_close_keeps_title_while_foreign_group_removal_is_delayed(self):
+        class DelayedRemoval(CloseFixture):
+            def __init__(self):
+                super().__init__()
+                self.pending = None
+                self.reads_after_close = 0
+
+            def invoke(self, provider, action):
+                if action == "group.close:3":
+                    self.pending = self.groups[-1]
+                    self.toasts.append(undo_toast("Closed Wine Mono Installer"))
+                else:
+                    super().invoke(provider, action)
+
+            def state(self):
+                if self.pending:
+                    self.reads_after_close += 1
+                    if self.reads_after_close == 2:
+                        self.groups.remove(self.pending)
+                        self.pending = None
+                return super().state()
+
+            def exec(self, script):
+                return "" if self.pending else super().exec(script)
+
+        metrics = self.close(DelayedRemoval())
+        self.assertEqual(metrics["closed_titles"], ["Wine File", "Wine Mono Installer"])
+        self.assertEqual(len(metrics["undo_toasts"]), 2)
+        self.assertEqual(metrics["lingering_after_close"], [])
+
+    def test_owned_multitab_group_uses_exact_localized_group_toast(self):
+        for heading, body in [("Closed 2 tabs", "Select to undo"),
+                              ("2 Tabs geschlossen", "Zum Rückgängigmachen auswählen oder später Strg+Umschalt+T drücken")]:
+            class GroupToast(CloseFixture):
+                def invoke(self, provider, action):
+                    super().invoke(provider, action)
+                    if action == "group.close:3":
+                        self.toasts[-1] = undo_toast(heading, body)
+
+            with self.subTest(heading=heading):
+                ctx = GroupToast()
+                ctx.groups[2]["tabs"].append({"title": "Second installer", "tile": {"Foreign": {"app_id": "control.exe"}}})
+                metrics = self.close(ctx)
+                self.assertEqual(len(metrics["undo_toasts"]), 2)
+                self.assertEqual(metrics["closed_titles"], ["Wine File", "Wine Mono Installer", "Second installer"])
+                self.assertEqual([g["id"] for g in ctx.groups], [1])
+
+    def test_group_toasts_with_wrong_count_errors_or_persistence_fail(self):
+        for toast in [undo_toast("Closed 3 tabs"), undo_toast("Closed 2 tabs", severity="Error"),
+                      undo_toast("Closed 2 tabs", persistent=True)]:
+            with self.subTest(toast=toast):
+                with self.assertRaisesRegex(apps.CheckFailed, "unexpected notifications"):
+                    self.close(CloseFixture(extra_toast=toast))
+
+    def test_continually_created_app_windows_fail_within_the_close_budget(self):
+        class Reopening(CloseFixture):
+            def invoke(self, provider, action):
+                super().invoke(provider, action)
+                next_id = max(g["id"] for g in self.groups) + 1
+                if next_id > 30:
+                    raise AssertionError("close loop exceeded the fixture safety limit")
+                self.groups.append({"id": next_id, "tabs": [{"title": "New installer", "tile": {"Foreign": {"app_id": "control.exe"}}}]})
+
+            def exec(self, script):
+                return row(4131, 900, 4101, "C:\\windows\\system32\\control.exe")
+
+        tick = iter(range(0, 100, 2))
+        with patch.object(apps.time, "monotonic", lambda: next(tick)):
+            with self.assertRaisesRegex(apps.CheckFailed, "while closing A07-x11"):
+                self.close(Reopening())
+
+
 class FirstTexturedTests(unittest.TestCase):
     def run_samples(self, values, timeout=5.0, interval=0.5):
         now = [0.0]
@@ -211,14 +484,17 @@ class StartupMarksTests(unittest.TestCase):
         self.assertIsNone(open_segments(4_000, got))
 
 
-# One warm open: requested at 10 000 ms, the launcher ran 10 120–10 190 ms, the app's main
-# at 10 230.5 ms (41 ms after its process was created), its first frame 400 ms later.
+# One warm open: requested at 10 000 ms, the launcher ran 10 120–10 190 ms, bubblewrap
+# until 10 200 ms, the Landlock shim exec'd the app at 10 215 ms, its main ran at
+# 10 230.5 ms and its first frame 400 ms later.
 SPLIT_OPEN = {
-    "origin_epoch_ms": 10_230, "origin_epoch_us": 10_230_500, "exec_to_main_us": 41_000,
+    "origin_epoch_ms": 10_230, "origin_epoch_us": 10_230_500,
     "launcher": [{"name": "launcher-start", "epoch_us": 10_120_000},
                  {"name": "package-verified", "epoch_us": 10_150_000},
                  {"name": "dbus-proxies-ready", "epoch_us": 10_175_000},
-                 {"name": "sandbox-argv-ready", "epoch_us": 10_190_000}],
+                 {"name": "sandbox-argv-ready", "epoch_us": 10_190_000},
+                 {"name": "sandbox-entered", "epoch_us": 10_200_000},
+                 {"name": "sandbox-exec", "epoch_us": 10_215_000}],
     "events": [{"name": "app-launch-start", "ns": 10_000}, {"name": "first-frame-presented", "ns": 400_000_000}],
 }
 
@@ -230,9 +506,10 @@ class OpenSegmentTests(unittest.TestCase):
     def test_the_segments_add_up_to_the_open(self):
         got = open_segments(10_000, self.marks())
         self.assertEqual(got, {"request_to_launcher": 120.0, "launcher": 70.0, "sandbox_to_main": 40.5,
-                               "main_to_first_frame": 400.0, "exec_to_main": 41.0,
+                               "main_to_first_frame": 400.0, "exec_to_main": 15.5,
                                "launcher_phases": {"package-verified": 30.0, "dbus-proxies-ready": 25.0,
-                                                   "sandbox-argv-ready": 15.0}})
+                                                   "sandbox-argv-ready": 15.0, "sandbox-entered": 10.0,
+                                                   "sandbox-exec": 15.0}})
         whole = sum(got[name] for name in ("request_to_launcher", "launcher", "sandbox_to_main",
                                            "main_to_first_frame"))
         self.assertAlmostEqual(whole, 630.5)
@@ -244,7 +521,7 @@ class OpenSegmentTests(unittest.TestCase):
         series = segment_series([open_, unsplit])
         self.assertEqual(series["request_to_launcher"], [120.0])
         self.assertEqual(series["launcher_phase.dbus-proxies-ready"], [25.0])
-        self.assertEqual(series["exec_to_main"], [41.0])
+        self.assertEqual(series["exec_to_main"], [15.5])
         self.assertEqual(series["request_to_spawn"], [9.0, 8.0])
         self.assertNotIn("main_to_first_frame", series)
 
@@ -274,14 +551,18 @@ class LaunchLatencyTests(unittest.TestCase):
     def test_every_compositor_segment_of_one_open(self):
         log = "\n".join([
             "INFO tilo::launch_latency: application launcher spawned package_id=so.tilo.notes pid=9 "
-            "request_to_spawn_us=8400",
+            "request_to_spawn_us=8400 dispatch_phases=preflight:0.3,identity:1.2,command:0.9,worker:3.0,"
+            "spawned:1.5,registered:1.5",
             "INFO tilo::launch_latency: application toplevel mapped package_id=so.tilo.notes surface_id=3 "
             "request_to_map_us=610000 spawn_to_map_us=601600",
             self.LINE.format(pkg="so.tilo.notes"),
         ])
         self.assertEqual(parse_launch_latencies(log, "so.tilo.notes"),
                          {"request_to_spawn": 8.4, "spawn_to_map": 601.6,
-                          "request_to_first_present": 2140.0})
+                          "request_to_first_present": 2140.0,
+                          "dispatch_phase.preflight": 0.3, "dispatch_phase.identity": 1.2,
+                          "dispatch_phase.command": 0.9, "dispatch_phase.worker": 3.0,
+                          "dispatch_phase.spawned": 1.5, "dispatch_phase.registered": 1.5})
 
 
 class FirstFrameBudgetTests(unittest.TestCase):
@@ -297,7 +578,9 @@ class FirstFrameBudgetTests(unittest.TestCase):
         ids = {c.id for c in run.core.REGISTRY}
         self.assertLessEqual({"A14", "R05"}, ids)
         self.assertLess(run.ORDER.index("A14"), run.ORDER.index("R02"))
-        self.assertEqual(run.ORDER[-2:], ["R05", "P03"])
+        # R05 reads the adapter line of every app the run opened; R08 opens none in the slot
+        # (it signs seat0's greeter in), so only it and P03 may follow R05.
+        self.assertEqual(run.ORDER[-3:], ["R05", "R08", "P03"])
         self.assertEqual(sorted(run.ORDER), sorted(ids - set(run.DE_PASS)))
 
 
@@ -315,8 +598,45 @@ class ListingTests(unittest.TestCase):
     def test_an_unreadable_tree_is_unobservable(self):
         self.assertEqual(judge_listing({"error": "no AT-SPI bus"}, "m")[0], "unobservable")
 
-    def test_the_guest_probe_is_valid_python(self):
-        compile(ATSPI_PROBE, "atspi-probe", "exec")
+
+class GuestAtspiProbeTests(unittest.TestCase):
+    def probe(self, client, no_commands):
+        proc = subprocess.run(
+            [sys.executable, "-", "file-explorer", "Files activity", "Files", "0"],
+            input=ATSPI_PROBE, text=True, capture_output=True, timeout=10,
+            env={**os.environ, "TILO_ATSPI_CLIENT": str(client), "PATH": str(no_commands)})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout)
+
+    def test_the_guest_probe_loads_the_real_client(self):
+        client = Path(__file__).resolve().parents[2] / "tools/atspi_external_client.py"
+        with tempfile.TemporaryDirectory() as empty:
+            probe = self.probe(client, empty)
+        self.assertTrue(probe["error"].startswith("no AT-SPI bus:"), probe)
+        self.assertIn("gdbus", probe["error"])
+        self.assertEqual(judge_listing(probe, "m")[0], "unobservable")
+
+    def test_a_missing_client_reports_its_path(self):
+        with tempfile.TemporaryDirectory() as empty:
+            client = Path(empty) / "missing.py"
+            probe = self.probe(client, empty)
+        self.assertTrue(probe["error"].startswith(f"no AT-SPI client at {client}:"), probe)
+
+    def test_an_existing_client_import_error_is_a_load_failure(self):
+        with tempfile.TemporaryDirectory() as empty:
+            client = Path(empty) / "broken.py"
+            client.write_text("raise RuntimeError('broken client')\n")
+            probe = self.probe(client, empty)
+        self.assertIn("failed to load: RuntimeError: broken client", probe["error"])
+        self.assertNotIn("no AT-SPI client", probe["error"])
+
+    def test_a_missing_import_dependency_is_a_load_failure(self):
+        with tempfile.TemporaryDirectory() as empty:
+            client = Path(empty) / "dependency.py"
+            client.write_text(f"open({str(Path(empty) / 'missing-data')!r})\n")
+            probe = self.probe(client, empty)
+        self.assertIn("failed to load: FileNotFoundError:", probe["error"])
+        self.assertNotIn("no AT-SPI client", probe["error"])
 
 
 def adapter_line(app, kind, name="llvmpipe (LLVM 19.1.7, 256 bits)", backend="Vulkan", driver="llvmpipe"):
@@ -399,6 +719,24 @@ class GpuTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("::notice::", text)
         self.assertEqual(gate(f"{OK}\n{gpu.LOG_SEPARATOR}\n")[0], 1)
+
+
+class TerminalShellPerformanceTests(unittest.TestCase):
+    def test_old_baseline_fails_even_within_readiness_timeout(self):
+        from acceptance import core
+        self.assertLess(39.6, core.TERMINAL_SHELL_S)
+        with self.assertRaises(core.CheckFailed):
+            core.assert_terminal_shell_performance(39.6)
+
+    def test_measured_batched_import_passes(self):
+        from acceptance import core
+        core.assert_terminal_shell_performance(21.0)
+
+    def test_missing_readiness_and_performance_boundary_fail(self):
+        from acceptance import core
+        for seconds in (None, core.TERMINAL_SHELL_PERFORMANCE_S):
+            with self.subTest(seconds=seconds), self.assertRaises(core.CheckFailed):
+                core.assert_terminal_shell_performance(seconds)
 
 
 if __name__ == "__main__":

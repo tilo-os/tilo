@@ -1141,12 +1141,7 @@ fn version_file(path: &Path, name: String) -> Result<VersionFile> {
 }
 
 fn hex_digest(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .fold(String::with_capacity(64), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
+    hex::encode(Sha256::digest(bytes))
 }
 
 /// `JSON.stringify(files)` exactly, whose SHA-256 is the version digest.

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use collab_types::ArtifactId;
 #[cfg(test)]
 use collab_types::{
-    DocumentMutation, OpClass, ValidationError, document_artifact_id, document_attestation_id,
+    DocumentMutation, OpKind, ValidationError, document_artifact_id, document_attestation_id,
 };
 use ui::collaboration::CollabEvent;
 
@@ -273,19 +273,28 @@ pub fn spawn_native_harness(
         None,
         &publisher,
         Some(membership),
-        CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices)),
+        CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices), None),
         None,
     )
 }
 
-/// Production owner/read pipeline with explicitly authorized synthetic devices.
-/// No enrollment or input grant is created by this test-only constructor.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) type NativeReadHarnessWrapper = Arc<
+    dyn Fn(
+            Arc<dyn tilo_action_broker::services::NativeDocumentReads>,
+        ) -> Arc<dyn tilo_action_broker::services::NativeDocumentReads>
+        + Send
+        + Sync,
+>;
 #[cfg(test)]
-pub(crate) fn spawn_native_owner_harness(
+/// Production owner/read pipeline with already-authorized synthetic devices.
+/// The wrapper is confined to this test harness; enrollment and custody checks stay intact.
+pub(crate) fn spawn_native_owner_harness_with_reads(
     socket: PathBuf,
     membership: crate::shell::state::WorkspaceTreeHandle,
     trusted_devices: Vec<[u8; 32]>,
     network: &Arc<ShellNetwork>,
+    reads: Option<NativeReadHarnessWrapper>,
 ) -> std::io::Result<BrokerHandle> {
     let publisher = PeerPublisher::with_optional_owner_commit(
         Some(network.clone()),
@@ -299,7 +308,7 @@ pub(crate) fn spawn_native_owner_harness(
         Some(network),
         &publisher,
         Some(membership),
-        CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices)),
+        CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices), reads),
         None,
     )
 }
@@ -340,7 +349,7 @@ pub fn spawn_native_peer(
 enum CertificateProvisioning {
     Production,
     #[cfg(any(test, feature = "test-support"))]
-    HarnessDevices(Arc<Vec<[u8; 32]>>),
+    HarnessDevices(Arc<Vec<[u8; 32]>>, Option<NativeReadHarnessWrapper>),
 }
 
 impl CertificateProvisioning {
@@ -348,7 +357,7 @@ impl CertificateProvisioning {
         match self {
             Self::Production => false,
             #[cfg(any(test, feature = "test-support"))]
-            Self::HarnessDevices(_) => true,
+            Self::HarnessDevices(..) => true,
         }
     }
 }
@@ -396,6 +405,9 @@ struct DrainQueues {
     /// application broker is up; its invocation ledger lives as long as
     /// the drainer so retries stay idempotent.
     action_host: std::sync::OnceLock<crate::shell::remote_actions::BrokerActionHost>,
+    /// Set while remote requests wait for the application broker. The drain
+    /// thread polls instead of parking until the next inbound message.
+    awaiting_action_host: std::sync::atomic::AtomicBool,
     table: Arc<FanoutState>,
     channels: Arc<Mutex<BrokerChannels>>,
     net: Arc<ShellNetwork>,
@@ -413,6 +425,14 @@ impl DrainQueues {
         self.channel_encryption
             .as_ref()
             .and_then(|service| service.pump_until_due(&*self.net))
+    }
+
+    /// Arm `watch` while stewards wait for a policy announcement; `false`
+    /// when one already arrived and governance must be pumped again now.
+    fn arm_policy_watch(&self, watch: &tilo_identity_host::policy_change::Watch) -> bool {
+        self.channel_encryption
+            .as_ref()
+            .is_none_or(|service| service.arm_policy_watch(watch))
     }
 
     /// Run one pass over every inbound queue, in the same order the
@@ -490,6 +510,28 @@ impl DrainQueues {
                 ))
             }))
         });
+        let drained = if host.is_some() {
+            self.awaiting_action_host.store(false, Ordering::Relaxed);
+            drained
+        } else {
+            // The drain thread starts before the broker attaches. A request
+            // that arrives first waits for it instead of being refused; a
+            // device that has just started otherwise loses the first open
+            // sent to it. Records need no broker.
+            let (records, waiting): (Vec<_>, Vec<_>) = drained.into_iter().partition(|request| {
+                matches!(
+                    request.message,
+                    tilo_actions::remote::RemoteActionMessage::RecordRequest { .. }
+                )
+            });
+            let any_waiting = !waiting.is_empty();
+            let Some(overflow) = wait_for_action_host(&self.remote_actions, waiting) else {
+                return false;
+            };
+            self.awaiting_action_host
+                .store(any_waiting, Ordering::Relaxed);
+            records.into_iter().chain(overflow).collect()
+        };
         answer_remote_actions(&self.net, host, drained);
         true
     }
@@ -523,6 +565,20 @@ impl DrainQueues {
                 labels,
                 announced,
             );
+            // Who acted is what the sender's certified identity supports.
+            let (user_id, payload) = match payload {
+                ui::collaboration::PresencePayload::Interaction(update) => {
+                    let actor = update.actor.from_peer(&user_id, entry.person.as_deref());
+                    let sequence = update.sequence;
+                    (
+                        actor.id.clone(),
+                        ui::collaboration::PresencePayload::Interaction(Box::new(
+                            update.normalized_by_broker(actor, sequence),
+                        )),
+                    )
+                }
+                payload => (user_id, payload),
+            };
             let route = CrdtRoute::cluster(entry.cluster_id.clone());
             let event = CollabEvent::RemotePresenceUpdate {
                 user_id,
@@ -553,7 +609,7 @@ impl DrainQueues {
                 app_id: entry.app_id,
                 cluster_id: entry.cluster_id,
                 record_id: entry.record_id,
-                role: entry.role,
+                author: entry.author,
                 replayed: entry.replayed,
                 envelope: *entry.envelope,
             };
@@ -714,6 +770,7 @@ fn spawn_inner(
             record_content_inbound: net.inbound_record_content_handle(),
             record_content: record_content.clone(),
             action_host: std::sync::OnceLock::new(),
+            awaiting_action_host: std::sync::atomic::AtomicBool::new(false),
             table: Arc::clone(&table),
             channels: Arc::clone(&channels),
             net: Arc::clone(net),
@@ -733,12 +790,32 @@ fn spawn_inner(
                 // rather than every frame — the lookup takes the
                 // replica's lock and parses every peer id it holds.
                 let mut labels: HashMap<String, (Instant, PeerLabels)> = HashMap::new();
+                // A steward re-checks its channels' access policy when an
+                // input announces a change or an expiry it registered comes
+                // due, not on a clock (TIL-707). The watch is armed only
+                // while stewards wait for that, so a device stewarding no
+                // channel sleeps through every announcement.
+                let policy_watch = {
+                    let wake = std::sync::Arc::clone(&wake);
+                    tilo_identity_host::policy_change::Watch::new(move || wake.poke())
+                };
                 while !quit.load(Ordering::Relaxed) {
-                    let governance_due = queues.pump_governance();
+                    let mut governance_due = queues.pump_governance();
                     if !queues.drain_once(&mut labels, &mut announced) {
                         break;
                     }
-                    wake.wait(governance_due);
+                    if !queues.arm_policy_watch(&policy_watch) {
+                        governance_due = Some(Duration::ZERO);
+                    }
+                    let timeout = if queues.awaiting_action_host.load(Ordering::Relaxed) {
+                        Some(
+                            governance_due
+                                .map_or(ACTION_HOST_POLL, |due| due.min(ACTION_HOST_POLL)),
+                        )
+                    } else {
+                        governance_due
+                    };
+                    wake.wait(timeout);
                 }
             })
             .ok()
@@ -750,14 +827,20 @@ fn spawn_inner(
     } else {
         tilo_action_broker::services::HostServices::default()
     };
+    #[cfg(any(test, feature = "test-support"))]
+    if let CertificateProvisioning::HarnessDevices(_, Some(wrap)) = &certificate_provisioning {
+        services.committed_documents = services.committed_documents.map(|reads| wrap(reads));
+    }
     services.record_content = record_content;
     // The same service the identity broker answers key requests from: its
-    // changes tell each route's endpoint when to ask again.
-    services.channel_keys = channel_encryption.clone().map(|access| {
-        let keys = crate::shell::channel_encryption::ChannelKeyProvider::default();
-        keys.set(Some(access));
-        keys
-    });
+    // changes tell each route's endpoint when to ask again. A session broker
+    // follows even without one; a configured peer broker never has one and
+    // still says it cannot follow.
+    services.channel_keys = if config.is_none() {
+        Some(session_channel_keys(channel_encryption.clone()))
+    } else {
+        None
+    };
     services.audio_output = Some(Arc::new(super::audio_output::AudioOutputService::new(
         local_session.lifecycle(),
     )));
@@ -824,7 +907,7 @@ fn spawn_inner(
             )?
         }
         #[cfg(any(test, feature = "test-support"))]
-        CertificateProvisioning::HarnessDevices(trusted_devices) => {
+        CertificateProvisioning::HarnessDevices(trusted_devices, _) => {
             tilo_action_broker::collab_broker::spawn_with_test_services(
                 capnp_socket_path,
                 authority,
@@ -872,6 +955,23 @@ fn spawn_inner(
         channel_encryption,
         peer_departures: peer_sync.map(|net| net.peer_departure_history()),
     })
+}
+
+/// What a session broker's endpoints follow for their channels' key changes
+/// (`channelKeysChanged`): the session's channel service, or none.
+///
+/// Without a service a route holds no keys (the identity service answers
+/// from the same slot, so it says `Unavailable`), and nothing changes for
+/// this broker's lifetime. The follow then stays pending at no cost.
+/// Refusing it instead tells the endpoint that this broker cannot say when
+/// keys change, and it falls back to asking the identity service for every
+/// route once a second, forever (TIL-754).
+fn session_channel_keys(
+    access: Option<crate::shell::channel_encryption::ChannelKeyAccess>,
+) -> crate::shell::channel_encryption::ChannelKeyProvider {
+    let keys = crate::shell::channel_encryption::ChannelKeyProvider::default();
+    keys.set(access);
+    keys
 }
 
 /// The broker's session services: the durable history store and the
@@ -949,14 +1049,24 @@ fn open_channel_encryption(
     // An endpoint opening a channel queues governance the parked drain
     // must send now (a genesis, an access request): it pokes the drain.
     let drain_wake = net.as_ref().map(|net| Arc::clone(&net.drain_wake));
-    let authenticated: crate::shell::channel_policy::AuthenticatedDevices = match net {
-        Some(net) => Box::new(move |user| net.authenticated_devices_of(user)),
-        None => Box::new(|_| Vec::new()),
+    let (authenticated, authenticated_changes): (
+        crate::shell::channel_policy::AuthenticatedDevices,
+        crate::shell::channel_policy::AuthenticatedChanges,
+    ) = match net {
+        Some(net) => {
+            let changes = Arc::clone(&net);
+            (
+                Box::new(move |user| net.authenticated_devices_of(user)),
+                Box::new(move |after| changes.authenticated_devices_next_change(after)),
+            )
+        }
+        None => (Box::new(|_| Vec::new()), Box::new(|_| None)),
     };
     let directory = crate::shell::channel_policy::WorkspaceChannelDirectory::new(
         workspaces,
         crate::shell::channel_policy::WorkspaceChannelDirectory::session_fleet_with(authenticated),
-    );
+    )
+    .with_authenticated_changes(authenticated_changes);
     match crate::shell::channel_encryption::ChannelEncryption::open(
         crate::shell::channel_encryption::ChannelEncryptionConfig {
             root: vault.channel_state_root(),
@@ -978,6 +1088,26 @@ fn open_channel_encryption(
             None
         }
     }
+}
+
+/// Requests kept while the application broker is not attached yet.
+const MAX_REQUESTS_AWAITING_ACTION_HOST: usize = 32;
+/// How often the drain thread looks for the broker while requests wait.
+const ACTION_HOST_POLL: Duration = Duration::from_millis(250);
+
+/// Put `waiting` back ahead of anything that arrived while they were out of
+/// the queue. Returns the oldest requests past the bound, to be refused, or
+/// `None` when the queue lock is poisoned.
+fn wait_for_action_host(
+    queue: &Mutex<Vec<crate::shell::remote_action_link::InboundRemoteAction>>,
+    waiting: Vec<crate::shell::remote_action_link::InboundRemoteAction>,
+) -> Option<Vec<crate::shell::remote_action_link::InboundRemoteAction>> {
+    let mut buf = queue.lock().ok()?;
+    let arrived_since = std::mem::take(&mut *buf);
+    buf.extend(waiting);
+    buf.extend(arrived_since);
+    let excess = buf.len().saturating_sub(MAX_REQUESTS_AWAITING_ACTION_HOST);
+    Some(buf.drain(..excess).collect())
 }
 
 /// Answer each request through `host` and send the answer back to the
@@ -1141,6 +1271,81 @@ fn roster_announcement(said: Option<&str>, known: Option<&str>, id: &str) -> Opt
 mod tests {
     use super::*;
 
+    fn inbound_for_test(topic: u64) -> crate::shell::remote_action_link::InboundRemoteAction {
+        crate::shell::remote_action_link::InboundRemoteAction {
+            workspace_topic: topic,
+            from: iroh::SecretKey::generate().public(),
+            caller: tilo_actions::remote::Caller::authenticated([1; 32], [2; 32]),
+            message: tilo_actions::remote::RemoteActionMessage::Observe {
+                invocation: tilo_actions::InvocationId::new(),
+                wait_ms: None,
+                seen: None,
+            },
+        }
+    }
+
+    /// A session broker without a channel service answers an endpoint's
+    /// `channelKeysChanged` with a wait, not a refusal: a refusal makes the
+    /// endpoint ask the identity service for every route once a second
+    /// (TIL-754). The wait still ends when the slot it follows changes.
+    #[test]
+    fn a_session_broker_without_a_channel_service_keeps_key_follows_pending() {
+        use std::future::Future as _;
+        let keys = session_channel_keys(None);
+        let channel = collab_types::document_channel_id(
+            "so.tilo.terminal",
+            "00000000-0000-0000-0000-000000000000",
+            "tab",
+        );
+        let mut follow = std::pin::pin!(keys.channel_changed(channel, 0));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(
+            follow.as_mut().poll(&mut cx).is_pending(),
+            "with no channel service nothing changes, so the follow waits"
+        );
+        assert!(
+            follow.as_mut().poll(&mut cx).is_pending(),
+            "and keeps waiting"
+        );
+        keys.set(None);
+        assert_eq!(
+            follow.as_mut().poll(&mut cx),
+            std::task::Poll::Ready(0),
+            "a change of the followed slot ends the wait"
+        );
+    }
+
+    #[test]
+    fn requests_wait_in_order_for_the_action_host_up_to_a_bound() {
+        let queue = Mutex::new(vec![inbound_for_test(2)]);
+        let overflow = wait_for_action_host(&queue, vec![inbound_for_test(1)]).expect("queue");
+        assert!(overflow.is_empty());
+        let topics: Vec<u64> = queue
+            .lock()
+            .expect("queue")
+            .iter()
+            .map(|action| action.workspace_topic)
+            .collect();
+        assert_eq!(topics, vec![1, 2], "a waiting request keeps its place");
+
+        let waiting = (3..=u64::try_from(MAX_REQUESTS_AWAITING_ACTION_HOST).unwrap() + 2)
+            .map(inbound_for_test)
+            .collect();
+        let overflow = wait_for_action_host(&queue, waiting).expect("queue");
+        assert_eq!(
+            overflow
+                .iter()
+                .map(|action| action.workspace_topic)
+                .collect::<Vec<_>>(),
+            vec![3, 4],
+            "the oldest requests past the bound are refused"
+        );
+        assert_eq!(
+            queue.lock().expect("queue").len(),
+            MAX_REQUESTS_AWAITING_ACTION_HOST
+        );
+    }
+
     #[test]
     fn application_peer_ids_skip_reserved_values_and_never_wrap() {
         fn allocated_application_peers_skip_reserved_ids_and_preserve_connection_counts() {
@@ -1202,7 +1407,7 @@ mod tests {
                 document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
                 author,
                 document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-                OpClass::Splice,
+                OpKind::Change,
                 std::time::SystemTime::now(),
                 1,
             );
@@ -1242,7 +1447,7 @@ mod tests {
                 document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
                 author,
                 document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-                OpClass::Splice,
+                OpKind::Change,
                 std::time::SystemTime::now(),
                 1,
                 collab_types::EncryptionMetadata::mls_application(9, expected_channel),

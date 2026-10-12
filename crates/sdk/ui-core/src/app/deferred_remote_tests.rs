@@ -27,7 +27,6 @@ fn deferred_counter_resource(
                 .unwrap()
             },
         )
-        .requiring(PermissionRequirement::Write)
         .with_continuation_identity(|query| {
             matches!(query, ContinuationQuery::Draft).then(|| ContinuationEvidence::Draft {
                 resolution_domain: ContinuationKey::new("counter-create", [b"owner"]),

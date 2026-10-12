@@ -23,13 +23,13 @@ use tilo_agent::tools::Answer;
 use tilo_browser_peer::DocumentRoute;
 use tilo_model_gateway::openai::{self, Failure, Target as ApiTarget};
 
-use crate::planner::{PlanContext, Planner, Step, StepAction, steps_from_json};
+use crate::planner::{PlanContext, Planner, Step, StepAction, written_steps};
 
 /// The most steps one task may be planned into.
 pub const MOST_STEPS: usize = 8;
 
 /// Chooses operations for a task from a catalogue.
-pub trait PlanModel {
+pub trait PlanModel: Send {
     /// The operations (by offer id) and their arguments that carry out
     /// `task`, using only `catalogue`.
     ///
@@ -190,10 +190,8 @@ fn catalogue(context: &PlanContext) -> (Catalogue, BTreeMap<String, Target>) {
 
 impl Planner for ModelPlanner {
     fn plan(&mut self, task: &str, context: &PlanContext) -> Result<Vec<Step>, String> {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(task)
-            && (value.is_array() || value.is_object())
-        {
-            return steps_from_json(&value, context);
+        if let Some(steps) = written_steps(task, context) {
+            return steps;
         }
         let (catalogue, targets) = catalogue(context);
         let answer = self.model.choose(task, &catalogue, MOST_STEPS)?;

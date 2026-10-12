@@ -335,18 +335,18 @@ fn dictionary_identity_owner() -> Option<[u8; 32]> {
         .map(|identity| identity.group_public_key)
 }
 
-fn legacy_dictionary_owner() -> Option<[u8; 32]> {
-    let store = identity_provisioning::DiskIdentityStore::from_env().ok()?;
-    let path = store.path().parent()?.join("primary.json");
-    runtime_identity::load_metadata_from_path(&path)
-        .ok()
-        .map(|identity| identity.group_public_key)
-}
-
 fn session_host_view(
     session: std::sync::Arc<settings_store::SessionSettings>,
+    copy_watched: bool,
 ) -> std::sync::Arc<dyn settings_store::SettingsSource> {
-    match session.host_view() {
+    // With the copy watched, its watch takes other processes' writes in and
+    // the view sleeps between reads; without it the view looks on a timer.
+    let view = if copy_watched {
+        session.host_view()
+    } else {
+        session.host_view_polling_copy(settings_store::live::POLL_INTERVAL)
+    };
+    match view {
         Ok(source) => source,
         Err(error) => {
             tracing::warn!(%error, "settings read view unavailable; using synchronous records");
@@ -367,7 +367,7 @@ fn install_session_settings() {
             // Another process writing the copy (Settings, a CLI) is taken in
             // as it lands, which wakes every app following its settings.
             let taken_in = std::sync::Arc::downgrade(&session);
-            match settings_store::watch::watch_settings_at(&copy, move || {
+            let copy_watched = match settings_store::watch::watch_settings_at(&copy, move || {
                 if let Some(session) = taken_in.upgrade() {
                     session.refresh();
                 }
@@ -375,55 +375,30 @@ fn install_session_settings() {
                 Ok(watch) => {
                     static COPY_WATCH: std::sync::OnceLock<settings_store::watch::SettingsWatch> =
                         std::sync::OnceLock::new();
-                    let _ = COPY_WATCH.set(watch);
+                    // Only the first session's watch is kept; a later one
+                    // would be dropped here and watch nothing.
+                    COPY_WATCH.set(watch).is_ok()
                 }
-                Err(error) => tracing::warn!(
-                    %error,
-                    "settings copy watch unavailable; other processes' writes reach apps when the session next reads"
-                ),
-            }
-            let source = session_host_view(session);
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "settings copy watch unavailable; other processes' writes reach apps within a second"
+                    );
+                    false
+                }
+            };
+            let source = session_host_view(session, copy_watched);
             let dictionary_root = copy.parent().map(|root| root.join("personal-dictionary"));
             let source = match dictionary_root
                 .and_then(|root| settings_store::personal_dictionary::Service::new(root).ok())
             {
                 Some(service) => {
-                    use settings_store::personal_dictionary::Vocabulary as _;
-                    // The legacy global file has no account identity. Claim it
-                    // once for the verified local person, never for an app or
-                    // a room's XDG directory and never again after reset.
-                    let legacy_owner = legacy_dictionary_owner();
-                    if let Some(owner) = dictionary_identity_owner()
-                        && Some(owner) == legacy_owner
-                        && let Some(reader) = service.bind(Some(owner))
-                        && let Some(path) = copy.parent().map(|root| root.join("userdict.txt"))
-                        && let Ok(metadata) = std::fs::symlink_metadata(&path)
-                        && metadata.file_type().is_file()
-                        && metadata.len() <= 512 * 1024
-                    {
-                        use std::io::Read;
-                        use std::os::unix::fs::OpenOptionsExt;
-                        let mut text = String::new();
-                        if let Ok(file) = std::fs::OpenOptions::new()
-                            .read(true)
-                            .custom_flags(libc::O_NOFOLLOW)
-                            .open(&path)
-                            && file.take(512 * 1024 + 1).read_to_string(&mut text).is_ok()
-                            && let Ok(snapshot) = reader.snapshot()
-                            && let Err(error) =
-                                service.import_legacy(&reader, snapshot.revision, owner, &text)
-                        {
-                            tracing::warn!(%error, "legacy personal dictionary import unavailable");
-                        }
-                    }
-                    let host = std::sync::Arc::new(
-                        settings_store::personal_dictionary::host::Host::new(
+                    let host =
+                        std::sync::Arc::new(settings_store::personal_dictionary::host::Host::new(
                             source,
                             std::sync::Arc::new(service),
                             std::sync::Arc::new(dictionary_identity_owner),
-                        )
-                        .with_legacy_owner(legacy_owner),
-                    );
+                        ));
                     if let Ok(store) = identity_provisioning::DiskIdentityStore::from_env()
                         && let Some(directory) =
                             store.path().parent().filter(|directory| directory.is_dir())
@@ -483,6 +458,7 @@ pub fn run() -> std::process::ExitCode {
         eprintln!("error: {refusal}");
         return std::process::ExitCode::from(2);
     }
+    shell::shell::decide_receipt_against_surfaces();
     if let Err(error) = shell::shell::install_approved_checks_from_args(std::env::args_os().skip(1))
     {
         eprintln!("approved project check configuration refused: {error}");
@@ -547,6 +523,9 @@ pub fn run() -> std::process::ExitCode {
     // Pinning here, while `main` is still single-threaded, makes the
     // compositor and every launched app agree on one device.
     let gpu_pin = paints.then(compositor::render_node::pin_process).flatten();
+    // The single-threaded start is over: startup marks are written from their
+    // own thread from here on, never by the thread that marks.
+    tilo_startup_metrics::start_writer();
 
     // Cold-start warmup on a background thread, as early as possible.
     // cosmic-text's `FontSystem::new` (mmaps every face, up to ~1s) and

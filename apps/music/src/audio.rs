@@ -57,31 +57,20 @@ mod pipeline_controls;
 /// worker to finish, so repeated load/stop never creates parallel initializers.
 struct Initialization<T> {
     result: Option<std::sync::mpsc::Receiver<Result<T, String>>>,
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(
-            dead_code,
-            reason = "only the GStreamer backend initializes on a worker"
-        )
-    )]
+    #[cfg(any(feature = "audio", test))]
     finished: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl<T> Initialization<T> {
     /// A job that already finished on the caller's thread: a backend that
     /// needs no native initialization (the page's media element).
-    #[cfg_attr(
-        feature = "audio",
-        allow(
-            dead_code,
-            reason = "the GStreamer build always initializes on a worker"
-        )
-    )]
+    #[cfg(not(feature = "audio"))]
     fn ready(result: Result<T, String>) -> Self {
         let (sender, receiver) = std::sync::mpsc::channel();
         let _ = sender.send(result);
         Self {
             result: Some(receiver),
+            #[cfg(test)]
             finished: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
@@ -100,26 +89,14 @@ impl<T> Initialization<T> {
         self.result = None;
     }
 
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(
-            dead_code,
-            reason = "only the GStreamer backend initializes on a worker"
-        )
-    )]
+    #[cfg(any(feature = "audio", test))]
     fn canceled_and_finished(&self) -> bool {
         self.result.is_none() && self.finished.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
 impl<T: Send + 'static> Initialization<T> {
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(
-            dead_code,
-            reason = "only the GStreamer backend initializes on a worker"
-        )
-    )]
+    #[cfg(any(feature = "audio", test))]
     fn spawn(initialize: impl FnOnce() -> Result<T, String> + Send + 'static) -> Self {
         let (sender, receiver) = std::sync::mpsc::channel();
         let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -197,10 +174,7 @@ pub struct CapturedPcm {
 pub struct PcmCapture(std::sync::Arc<(std::sync::Mutex<CapturedPcm>, std::sync::Condvar)>);
 
 impl PcmCapture {
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(dead_code, reason = "only the native sink records")
-    )]
+    #[cfg(feature = "audio")]
     fn record(&self, bytes: &[u8]) {
         let (state, changed) = &*self.0;
         let mut pcm = state
@@ -218,10 +192,7 @@ impl PcmCapture {
         changed.notify_all();
     }
 
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(dead_code, reason = "only the native sink renders")
-    )]
+    #[cfg(feature = "audio")]
     fn note_rendered(&self) {
         let (state, changed) = &*self.0;
         state
@@ -374,12 +345,6 @@ impl AudioEngine {
         }
         #[cfg(not(feature = "spotify-native"))]
         let _ = uri;
-    }
-
-    pub fn uses_spotify(&self) -> bool {
-        self.current_uri
-            .as_ref()
-            .is_some_and(|uri| uri.starts_with("spotify:track:"))
     }
 
     pub fn take_spotify_transition(&mut self) -> Option<String> {
@@ -637,10 +602,7 @@ impl AudioEngine {
     }
 
     /// A settled PLAYING state, excluding a pipeline merely transitioning there.
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(dead_code, reason = "only the GStreamer backend confirms playback")
-    )]
+    #[cfg(feature = "audio")]
     pub(crate) fn is_playing_confirmed(&self) -> bool {
         #[cfg(feature = "spotify-native")]
         if let Some(native) = &self.native {
@@ -1053,7 +1015,6 @@ impl AudioBackend {
     #[cfg_attr(
         not(feature = "audio"),
         allow(
-            dead_code,
             clippy::unnecessary_wraps,
             reason = "the silent build never starts a backend"
         )
@@ -1459,32 +1420,21 @@ impl AudioBackend {
         }
     }
 
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(dead_code, reason = "only the GStreamer backend confirms playback")
-    )]
+    #[cfg(feature = "audio")]
     fn is_playing_confirmed(&self) -> bool {
-        #[cfg(feature = "audio")]
-        {
-            use gstreamer::prelude::*;
-            self.current_uri.is_some()
-                && self
-                    .inner
-                    .controls
-                    .as_ref()
-                    .is_none_or(pipeline_controls::Controls::ready)
-                && !self.reached_eos()
-                && !self
-                    .inner
-                    .errored
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                && self.inner.playbin.state(gstreamer::ClockTime::ZERO).1
-                    == gstreamer::State::Playing
-        }
-        #[cfg(not(feature = "audio"))]
-        {
-            self.is_playing_real() && !self.inner.eos
-        }
+        use gstreamer::prelude::*;
+        self.current_uri.is_some()
+            && self
+                .inner
+                .controls
+                .as_ref()
+                .is_none_or(pipeline_controls::Controls::ready)
+            && !self.reached_eos()
+            && !self
+                .inner
+                .errored
+                .load(std::sync::atomic::Ordering::Relaxed)
+            && self.inner.playbin.state(gstreamer::ClockTime::ZERO).1 == gstreamer::State::Playing
     }
 
     /// Service the `GStreamer` bus (non-blocking): drain pending messages so they
@@ -1963,7 +1913,7 @@ fn ua_for_uri(uri: &str) -> &'static str {
             _ => IOS_UA,
         };
     }
-    crate::backend::proxy::BROWSER_UA
+    tilo_invidious::BROWSER_UA
 }
 
 /// Parse the `clen=` (content-length) query param off a googlevideo url, so the
@@ -2193,7 +2143,7 @@ fn download_into(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        if off == 0 && !ct.is_empty() && !crate::backend::proxy::content_type_is_media(&ct) {
+        if off == 0 && !ct.is_empty() && !tilo_invidious::content_type_is_media(&ct) {
             tracing::warn!(target: "music::audio", %uri, content_type = %ct, "stream fetch: non-media Content-Type — discarding, will try fallback");
             break;
         }
@@ -2229,7 +2179,7 @@ fn download_into(
                 tracing::warn!(target: "music::audio", %uri, off, "stream fetch: source ignored bounded range");
                 return 0;
             }
-            if off == 0 && crate::backend::proxy::body_sniffs_as_html(&first) {
+            if off == 0 && tilo_invidious::body_sniffs_as_html(&first) {
                 tracing::warn!(target: "music::audio", %uri, "stream fetch: body sniffs as HTML — discarding, will try fallback");
                 return 0;
             }
@@ -3405,8 +3355,81 @@ mod tests {
         );
         eprintln!("[audio test] rendered {frames} buffers to real sink `{sink_name}`");
 
+        // Tearing the real sink down once hung in CI until the runner killed
+        // the test, with nothing to say where. Bound it by the hang bound and
+        // report where every thread waits and each element's state.
+        let elements = engine
+            .backend
+            .as_ref()
+            .map(|backend| backend.inner.playbin.clone());
+        let (torn_down, watched) = std::sync::mpsc::channel::<()>();
+        let watchdog = std::thread::spawn(move || {
+            if watched.recv_timeout(tilo_test_env::hang_bound())
+                != Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            {
+                return;
+            }
+            // Threads first: reading an element's state takes its lock,
+            // which a stuck state change may hold.
+            eprintln!("tearing down the real sink hung:\n{}", thread_waits());
+            eprintln!("{}", element_states(elements.as_ref()));
+            std::process::abort();
+        });
         engine.stop();
+        drop(engine);
+        let _ = torn_down.send(());
+        watchdog.join().unwrap();
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Where each thread of this process waits (Linux `/proc`): what a hung
+    /// teardown is stuck on.
+    #[cfg(feature = "audio")]
+    fn thread_waits() -> String {
+        use std::fmt::Write as _;
+        let mut report = String::new();
+        for task in std::fs::read_dir("/proc/self/task")
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let read = |name: &str| {
+                std::fs::read_to_string(task.path().join(name))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned()
+            };
+            let _ = writeln!(
+                report,
+                "thread {:?} {}: wchan {}, syscall {}",
+                task.file_name(),
+                read("comm"),
+                read("wchan"),
+                read("syscall")
+            );
+        }
+        report
+    }
+
+    /// The state of each element of `pipeline`.
+    #[cfg(feature = "audio")]
+    fn element_states(pipeline: Option<&gstreamer::Element>) -> String {
+        use gstreamer::prelude::*;
+        use std::fmt::Write as _;
+        let mut report = String::new();
+        if let Some(bin) = pipeline.and_then(|pipeline| pipeline.downcast_ref::<gstreamer::Bin>()) {
+            let elements = std::iter::once(bin.clone().upcast::<gstreamer::Element>())
+                .chain(bin.iterate_recurse().into_iter().flatten());
+            for element in elements {
+                let (result, current, pending) = element.state(gstreamer::ClockTime::ZERO);
+                let _ = writeln!(
+                    report,
+                    "{}: {result:?} {current:?} -> {pending:?}",
+                    element.path_string()
+                );
+            }
+        }
+        report
     }
 
     /// Build a minimal PCM WAV: `secs` seconds of a 220 Hz sine, 16-bit mono.

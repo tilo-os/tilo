@@ -62,6 +62,13 @@ pub(super) enum InvocationOwner {
         run: String,
         channel: String,
     },
+    /// Run-scoped replay data. Access still requires the current signed agent
+    /// channel and the canonical owner's task admission on every attempt.
+    NativeTask {
+        agent: String,
+        task: String,
+        epoch: u64,
+    },
 }
 
 // Unlike serde's implicit Option default, an omitted field must not silently
@@ -74,6 +81,17 @@ fn required_agent<'de, D: serde::Deserializer<'de>>(
 
 impl InvocationOwner {
     pub(super) fn validate(&self) -> Result<(), String> {
+        if let Self::NativeTask { agent, task, epoch } = self
+            && (agent.is_empty()
+                || agent.len() > 512
+                || agent.chars().any(char::is_control)
+                || task.is_empty()
+                || task.len() > 256
+                || !task.starts_with("task:")
+                || *epoch == 0)
+        {
+            return Err("invalid native task invocation owner".into());
+        }
         if let Self::AuthenticatedLocal {
             agent: Some(agent), ..
         } = self
@@ -315,7 +333,7 @@ impl Loaded {
         guarded::preflight(&mut &*head)?;
         let snapshot: Snapshot = serde_json::from_slice(head)
             .map_err(|_| "invocation journal snapshot is corrupt or unsupported")?;
-        if !matches!(snapshot.version, 1..=5) || snapshot.host.is_nil() {
+        if !matches!(snapshot.version, 1..=6) || snapshot.host.is_nil() {
             return Err("invocation journal version or host unsupported".into());
         }
         let mut loaded = Self {
@@ -361,7 +379,7 @@ impl Loaded {
     }
 
     fn replay(&mut self, entry: Entry) -> Result<(), String> {
-        if !matches!(entry.version, 1..=5) || entry.version < self.snapshot.version {
+        if !matches!(entry.version, 1..=6) || entry.version < self.snapshot.version {
             return Err("invocation journal entry downgrades the writer floor".into());
         }
         check_record(&entry.record, entry.version, self.snapshot.host)?;
@@ -393,6 +411,9 @@ impl Loaded {
 /// Every check one stored row must pass under the writer floor `version`.
 fn check_record(record: &DurableInvocation, version: u32, host: uuid::Uuid) -> Result<(), String> {
     record.key.owner.validate()?;
+    if version < 6 && matches!(record.key.owner, InvocationOwner::NativeTask { .. }) {
+        return Err("native task replay ownership requires journal version 6".into());
+    }
     if let Some(prepared) = &record.prepared_effect {
         if version < 5 {
             return Err("prepared effect requires journal version 5".into());
@@ -708,6 +729,9 @@ impl InvocationJournal {
         }
         if matches!(key.owner, InvocationOwner::AuthenticatedLocal { .. }) {
             self.snapshot.version = self.snapshot.version.max(4);
+        }
+        if matches!(key.owner, InvocationOwner::NativeTask { .. }) {
+            self.snapshot.version = self.snapshot.version.max(6);
         }
         let (intent, request_digest) = retained_intent(intent);
         let at = self.index.insert(

@@ -5,6 +5,7 @@
 //! returned by [`CollaboratorsOverlay::hit_test`].
 
 use std::collections::HashMap;
+use ui::num::f64_of_usize;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -75,14 +76,6 @@ fn draw_direction_arrow(
         None,
         &vello::kurbo::Line::new(right, to),
     );
-}
-
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "a popover can never contain enough rows to exceed f64 integer precision"
-)]
-fn row_count_as_f64(count: usize) -> f64 {
-    count as f64
 }
 
 /// What a pointer press on the open popover means to the shell.
@@ -407,9 +400,9 @@ impl CollaboratorsOverlay {
             .chain(live_rows.iter().map(|row| row.color))
             .take(4)
             .collect::<Vec<_>>();
-        let dots_x = here_x - 8.0 - row_count_as_f64(dot_colors.len()) * 7.0;
+        let dots_x = here_x - 8.0 - f64_of_usize(dot_colors.len()) * 7.0;
         for (index, color) in dot_colors.into_iter().enumerate() {
-            let x = dots_x + row_count_as_f64(index) * 7.0;
+            let x = dots_x + f64_of_usize(index) * 7.0;
             let dot = vello::kurbo::Circle::new(Point::new(x + 3.0, rect.y0 + 25.0), 3.0);
             scene.fill(Fill::NonZero, transform, color, None, &dot);
         }
@@ -518,7 +511,7 @@ impl CollaboratorsOverlay {
                 theme,
                 &RowFrame {
                     row,
-                    y: list_top + row_count_as_f64(visible_index) * self.row_height.max(64.0),
+                    y: list_top + f64_of_usize(visible_index) * self.row_height.max(64.0),
                     followed: model.followed_id == Some(row.id.as_str()),
                     relationship,
                     relationship_partner,
@@ -1434,7 +1427,7 @@ impl CollaboratorsOverlay {
             .saturating_add(ROSTER_PAGE_SIZE)
             .min(member_count);
         self.roster_range = self.roster_offset..end;
-        let rows = row_count_as_f64(self.roster_range.len().max(1));
+        let rows = f64_of_usize(self.roster_range.len().max(1));
         let warning_h = if unavailable {
             self.warning_height.max(24.0)
         } else {
@@ -1487,7 +1480,7 @@ impl CollaboratorsOverlay {
                     + self.status_block_height.max(92.0)
                     + exposure_h
                     + warning_h
-                    + row_count_as_f64(visible_index) * self.row_height.max(64.0);
+                    + f64_of_usize(visible_index) * self.row_height.max(64.0);
                 self.row_action_rect(self.panel, y)
             })
             .collect();
@@ -1504,7 +1497,7 @@ impl CollaboratorsOverlay {
                     + self.status_block_height.max(92.0)
                     + exposure_h
                     + warning_h
-                    + row_count_as_f64(visible_index) * self.row_height.max(64.0);
+                    + f64_of_usize(visible_index) * self.row_height.max(64.0);
                 Rect::new(
                     self.panel.x0 + 8.0,
                     y,
@@ -1583,7 +1576,7 @@ impl CollaboratorsOverlay {
         .into_iter()
         .enumerate()
         .map(|(index, mode)| {
-            let index = row_count_as_f64(index);
+            let index = f64_of_usize(index);
             let rect = if self.stacked_modes {
                 let top = mode_top + index * (self.mode_height + 4.0);
                 Rect::new(
@@ -2437,20 +2430,16 @@ pub fn collaborator_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<
         }
     }
     let colors = roster_colors_with_local_user(&roster, local_user);
-    let agent_members = desktop.active_workspace().map_or_else(
-        Vec::new,
-        crate::authority::WorkspaceAuthority::agent_members,
-    );
+    let workspace = desktop.active_workspace();
+    let now = tilo_clock::unix_now();
     let rows: Vec<RosterRow> = roster
         .iter()
         .map(|participant| {
-            let agent_role = agent_members
-                .iter()
-                .find(|(agent, _)| {
-                    agent.eq_ignore_ascii_case(&participant.id)
-                        || agent.eq_ignore_ascii_case(&participant.name)
-                })
-                .map(|(_, role)| *role);
+            let agent_role = workspace.and_then(|workspace| {
+                workspace
+                    .agent_role_at(&participant.id, now)
+                    .or_else(|| workspace.agent_role_at(&participant.name, now))
+            });
             let is_agent = agent_role.is_some();
             let (red, green, blue) = colors
                 .get(&participant.id)
@@ -2555,7 +2544,6 @@ fn active_tab_title(desktop: &DesktopTree, tab_id: u64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::authority::WorkspaceAuthority as _;
 
     #[test]
     #[allow(
@@ -2694,21 +2682,20 @@ mod tests {
     )]
     fn collaborators_accessibility_and_roster_separate_identity_action_and_intent() {
         fn agent_classification_uses_stable_identity_not_display_label() {
-            use collab_types::caps::{CapOverride, Subject, Verb};
             use tilo_desktop_model::{Workspace, WorkspaceId};
 
             let mut workspace = Workspace::new(WorkspaceId(71), "Shared");
-            workspace.owner = Some("owner".into());
-            workspace
-                .grant_as(
+            workspace.set_owner("owner");
+            assert!(
+                !crate::workspace_settings::admit_agent(
+                    &mut workspace,
                     &"owner".to_string(),
-                    CapOverride::membership(
-                        Subject::agent("scribe"),
-                        workspace.id.raw().to_string(),
-                        Verb::Write,
-                    ),
+                    "scribe",
+                    crate::workspace_settings::AgentPreset::Operator,
                 )
-                .expect("owner admits agent");
+                .is_empty(),
+                "owner admits agent"
+            );
             workspace
                 .collaborators
                 .push(Collaborator::new("scribe", "Release Notes Agent"));

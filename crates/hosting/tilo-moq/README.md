@@ -74,9 +74,44 @@ retransmission and no head-of-line blocking. The datagram payload is a
 *bundle*: the newest `tilo-voice/1` object followed by up to two earlier
 objects (`MAX_BUNDLE_OBJECTS` = 3), each byte-identical to its stream form
 and self-delimited by its payload length. A receiver that lost the datagram
-carrying object N recovers it from the next datagram 20 ms later. Group
-streams remain the fallback and are still accepted everywhere; the native
-client drains both channels and deduplicates by object sequence.
+carrying object N recovers it from a later datagram. Group streams remain
+the fallback and are still accepted everywhere; the native client drains both
+channels and deduplicates by object sequence.
+
+Redundancy is spent only where loss is measured, hop by hop
+(`voice::Redundancy`). Each hop reads the loss its own QUIC connection
+reports. Below 1% it carries every object once. From 1% it adds one earlier
+object, which repairs an isolated loss 20 ms later. From 5% it adds two,
+which repairs a 40 ms burst. It steps up within a one-second window and
+steps down one level after 5 s of lower loss. The browser publisher applies
+the policy to its uplink. If the browser's WebTransport reports no loss
+counters, it adds one object. The relay re-bundles each subscriber's
+downlink by that subscriber's loss (`voice::Rebundler`, per session in
+`mirror::Downlink`). A clean downlink receives each object exactly once,
+even from an older publisher that always sends three. Earlier objects from
+before a DTX pause are never attached, because they would arrive after
+their playout.
+
+Both encoders run Opus DTX. In silence they send one comfort-noise update
+every 400 ms and nothing in between. Sequence numbers stay contiguous and
+media time jumps, so receivers treat the gap as silence, not loss. A
+grouped (native) publisher closes its partial group when a talk spurt ends.
+The native receiver therefore does not count the unsent rest of that group
+as dropped. Receivers fill the gap with the update's comfort noise: Opus
+PLC in `opusdec` on native receivers, the looped update in the browser
+worklet.
+
+Measured on loopback QUIC (`tests/relay.rs`,
+`forwarded_voice_costs_its_opus_bitrate_while_speaking_and_almost_nothing_while_silent`),
+per forwarded stream, IPv4 wire bytes, with Opus at 32 kbit/s:
+
+| Publisher | Speaking | Silent |
+| --- | --- | --- |
+| Before: three-object bundles every 20 ms, no DTX | 161 kbit/s | 108 kbit/s |
+| After: one object per frame, DTX | 74 kbit/s | 3.4 kbit/s |
+
+A four-person call with one speaker costs about 253 kbit/s of relay egress,
+down from about 1.45 Mbit/s.
 
 ## Voice wire layout
 

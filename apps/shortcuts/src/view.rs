@@ -25,6 +25,7 @@ use ui::framework::{Actions, Live};
 use ui::icons::Icon;
 use ui::prelude::*;
 use ui::tilo_actions::{ActionParam, ParamType};
+use ui::tilo_resource::Path;
 use ui::widget::{
     Actions as ActionGroup, ButtonRole, ControlSize, ListRow, ModalDialog, NumberInput, Section,
     SectionHeader, labeled_field,
@@ -136,12 +137,11 @@ fn shape_of(steps: &[Step], out: &mut String) {
         out.push('(');
         match &step.kind {
             StepKind::Invoke {
-                app_id,
-                resource,
                 action,
+                resource,
                 args,
             } => {
-                let _ = write!(out, "{app_id}/{resource:?}/{action}");
+                let _ = write!(out, "{action}/{resource:?}");
                 for (name, binding) in args {
                     let _ = write!(out, ";{name}={}", shape_of_binding(binding));
                 }
@@ -209,6 +209,30 @@ impl Ui {
         action: impl ui::tilo_resource::Binds<Workbench, I>,
     ) -> C {
         self.actions.bind(control, action)
+    }
+
+    /// `control`, setting the field at `path` to what `value` makes of its
+    /// input.
+    fn edit<T, I, C>(
+        &self,
+        control: C,
+        path: Path<Workbench, T>,
+        value: impl Fn(I) -> T + Send + Sync + 'static,
+    ) -> C
+    where
+        T: ui::tilo_resource::Settable + 'static,
+        I: 'static,
+        C: ActionControl<I>,
+    {
+        let binding = self
+            .actions
+            .edit_binding(path.cast::<I>(), move |path, input| {
+                path.clone().cast::<T>().set(value(input))
+            });
+        match binding {
+            Some(binding) => control.bind_action(binding),
+            None => control.unavailable(),
+        }
     }
 
     /// `button`, invoking one door effect.
@@ -988,7 +1012,10 @@ impl<K: PartialEq + 'static> ui::widget::Decorator for Keyed<K> {
 
 /// What the save sheet's body is built from: the open draft with the
 /// permissions it needs, and the checker's problems.
-type SheetKey = (Option<(Id, Vec<Permission>)>, BTreeMap<String, Vec<String>>);
+type SheetKey = (
+    Option<(Id, Vec<Permission>, Vec<tilo_automation::TriggerSpec>)>,
+    BTreeMap<String, Vec<String>>,
+);
 
 type SaveDialog = ModalDialog<ModelView<SheetKey>>;
 
@@ -1027,6 +1054,7 @@ fn save_dialog(ui: &Ui, blocked: bool) -> SaveDialog {
                     (
                         id.clone(),
                         grant::least_privilege(&draft.program().steps, &input.catalog),
+                        draft.program().triggers,
                     )
                 }),
                 input.problems.clone(),
@@ -1118,16 +1146,16 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
         return overview_page(ui);
     };
     let draft_id = id.clone();
-    let name = ui.bind(
-        TextInput::local()
-            .with_id("draft-name")
-            .with_accessible_name("shortcuts-name")
-            .with_initial_value(&draft.name),
-        Workbench::RENAME.map({
-            let draft = draft_id.clone();
-            move |name: String| (draft.clone(), name)
-        }),
-    );
+    let name = match ui.actions.edit_binding(
+        Workbench::paths().drafts.item(&draft_id).name,
+        |path, name: String| path.replace(name),
+    ) {
+        Some(binding) => TextInput::local().on_action(binding),
+        None => TextInput::local().disabled(true),
+    }
+    .with_id("draft-name")
+    .with_accessible_name("shortcuts-name")
+    .with_initial_value(&draft.name);
     let review = {
         let sheet = ui.sheet.clone();
         Button::new("review-save", "shortcuts-review")
@@ -1135,7 +1163,7 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
             .on_view(move || sheet.set(true))
     };
     let discard = ui.bind(
-        Button::new("discard-draft", "shortcuts-discard").role(ButtonRole::Destructive),
+        Button::new("discard-draft", "shortcuts-discard-button").role(ButtonRole::Destructive),
         Workbench::DISCARD.map({
             let draft = draft_id.clone();
             move |()| draft.clone()
@@ -1170,6 +1198,7 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
                 .with_message(reason.clone()),
         ));
     }
+    items.push(schedule_section(ui, &draft_id));
     items.push(inputs_section(ui, &draft_id, draft));
     items.push(Box::new(Section::titled(
         ui::i18n!("shortcuts-steps"),
@@ -1177,6 +1206,127 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
     )));
     items.push(output_section(ui, input, &draft_id, draft));
     page(ui, items)
+}
+
+/// Scheduling edits only this draft; the existing save sheet reviews authority.
+fn schedule_section(ui: &Ui, draft_id: &Id) -> Element {
+    let id = draft_id.clone();
+    let controls_id = draft_id.clone();
+    let builder = ui.clone();
+    Box::new(ModelView::from_state_by(
+        &ui.editor,
+        move |input| {
+            input
+                .draft
+                .as_ref()
+                .filter(|(draft, _)| draft == &id)
+                .map(|(_, draft)| draft.program().triggers)
+        },
+        move |input| {
+            let time = input
+                .draft
+                .as_ref()
+                .filter(|(id, _)| id == &controls_id)
+                .and_then(|(_, draft)| {
+                    let triggers = draft.program().triggers;
+                    triggers.iter().find_map(|trigger| match trigger {
+                        tilo_automation::TriggerSpec::Schedule {
+                            schedule: tilo_automation::Schedule::Calendar { at, weekdays },
+                            ..
+                        } if weekdays.is_empty() => Some(*at),
+                        _ => None,
+                    })
+                });
+            schedule_controls(&builder, controls_id.clone(), time)
+        },
+    ))
+}
+fn schedule_controls(ui: &Ui, draft_id: Id, time: Option<tilo_automation::TimeOfDay>) -> Element {
+    let time = time.unwrap_or(tilo_automation::TimeOfDay { hour: 8, minute: 0 });
+    let enabled = LocalState::new(time_is_enabled(ui, &draft_id));
+    let hour = LocalState::new(format!("{:02}", time.hour));
+    let minute = LocalState::new(format!("{:02}", time.minute));
+    let checkbox = ui.bind(
+        Checkbox::from_state(&enabled)
+            .with_id("schedule-enabled")
+            .with_label("shortcuts-schedule-enabled"),
+        Workbench::SET_SCHEDULE.map({
+            let draft = draft_id.clone();
+            let hour = hour.clone();
+            let minute = minute.clone();
+            move |enabled: bool| {
+                (
+                    draft.clone(),
+                    enabled,
+                    hour.get().parse::<i64>().unwrap_or(8),
+                    minute.get().parse::<i64>().unwrap_or(0),
+                )
+            }
+        }),
+    );
+    let hour_control = ui.bind(
+        Dropdown::from_state((0..24).map(|hour| format!("{hour:02}")).collect(), &hour)
+            .with_id("schedule-hour")
+            .with_accessible_name("shortcuts-schedule-hour"),
+        Workbench::SET_SCHEDULE.map({
+            let draft = draft_id.clone();
+            let enabled = enabled.clone();
+            let minute = minute.clone();
+            move |hour: String| {
+                (
+                    draft.clone(),
+                    enabled.get(),
+                    hour.parse::<i64>().unwrap_or(8),
+                    minute.get().parse::<i64>().unwrap_or(0),
+                )
+            }
+        }),
+    );
+    let minute_control = ui.bind(
+        Dropdown::from_state(
+            (0..60).map(|minute| format!("{minute:02}")).collect(),
+            &minute,
+        )
+        .with_id("schedule-minute")
+        .with_accessible_name("shortcuts-schedule-minute"),
+        Workbench::SET_SCHEDULE.map({
+            move |minute: String| {
+                (
+                    draft_id.clone(),
+                    enabled.get(),
+                    hour.get().parse::<i64>().unwrap_or(8),
+                    minute.parse::<i64>().unwrap_or(0),
+                )
+            }
+        }),
+    );
+    Box::new(Section::titled(
+        ui::i18n!("shortcuts-schedule"),
+        vec![
+            Box::new(checkbox),
+            Box::new(labeled_field("shortcuts-schedule-hour", hour_control)),
+            Box::new(labeled_field("shortcuts-schedule-minute", minute_control)),
+            Box::new(
+                Text::new(&ui::i18n!("shortcuts-schedule-description"))
+                    .with_role(TextRole::Caption),
+            ),
+        ],
+    ))
+}
+fn time_is_enabled(ui: &Ui, draft_id: &Id) -> bool {
+    ui.editor.with(|input| {
+        input
+            .draft
+            .as_ref()
+            .filter(|(id, _)| id == draft_id)
+            .is_some_and(|(_, draft)| {
+                draft
+                    .program()
+                    .triggers
+                    .iter()
+                    .any(|trigger| matches!(trigger, tilo_automation::TriggerSpec::Schedule { schedule: tilo_automation::Schedule::Calendar { weekdays, .. }, .. } if weekdays.is_empty()))
+            })
+    })
 }
 
 fn inputs_section(ui: &Ui, draft_id: &Id, draft: &Draft) -> Element {
@@ -1209,7 +1359,7 @@ fn inputs_section(ui: &Ui, draft_id: &Id, draft: &Draft) -> Element {
     let name = LocalState::new(String::new());
     let kind = LocalState::new(String::from("text"));
     let add = ui.bind(
-        Button::new("add-input", "shortcuts-add-input").control_size(FIELD_HEIGHT),
+        Button::new("add-input", "shortcuts-add-input-button").control_size(FIELD_HEIGHT),
         Workbench::ADD_INPUT.map({
             let draft = draft_id.clone();
             let name = name.clone();
@@ -1262,12 +1412,12 @@ fn output_section(ui: &Ui, input: &EditorInput, draft_id: &Id, draft: &Draft) ->
         .with_accessible_name("shortcuts-output")
         .control_size(FIELD_HEIGHT);
     picker.set_value_options(values);
-    let picker = ui.bind(
+    let picker = ui.edit(
         picker,
-        Workbench::SET_OUTPUT.map({
-            let draft = draft_id.clone();
-            move |value: String| (draft.clone(), binding_text(&value))
-        }),
+        Workbench::paths().drafts.item(draft_id).output,
+        |value: String| {
+            Json(binding_json(&value).and_then(|value| serde_json::from_value(value).ok()))
+        },
     );
     Box::new(Section::titled(
         ui::i18n!("shortcuts-output"),
@@ -1368,7 +1518,7 @@ fn add_controls(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> E
     let address = address.to_owned();
     Box::new(
         Row::new().push(Box::new(
-            Button::new(&format!("add-action-{key}"), "shortcuts-add-step")
+            Button::new(&format!("add-action-{key}"), "shortcuts-add-step-button")
                 .on_view(move || picker.set(Some(address.clone()))),
         )),
     )
@@ -1493,8 +1643,9 @@ fn action_picker(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> 
         })));
     }
     Box::new(
-        Section::new(groups)
-            .with_header(SectionHeader::heading(ui::i18n!("shortcuts-add-step")).action(close)),
+        Section::new(groups).with_header(
+            SectionHeader::heading(ui::i18n!("shortcuts-add-step-button")).action(close),
+        ),
     )
 }
 
@@ -1572,7 +1723,7 @@ fn step_text(
             .with_id(&format!("step-{suffix}-{path}"))
             .with_accessible_name(label)
             .with_initial_value(current),
-        Workbench::SET_STEP.map({
+        Workbench::REPLACE_STEP.map({
             let draft = draft_id.clone();
             let path = path.to_owned();
             move |text: String| (draft.clone(), path.clone(), rewrite(text))
@@ -1617,7 +1768,7 @@ fn value_row(
     let rewrite = std::sync::Arc::new(rewrite);
     let picker = ui.bind(
         picker,
-        Workbench::SET_STEP.map({
+        Workbench::REPLACE_STEP.map({
             let draft = draft_id.clone();
             let path = path.to_owned();
             let rewrite = std::sync::Arc::clone(&rewrite);
@@ -1643,7 +1794,7 @@ fn value_row(
                 .with_id(&format!("step-{suffix}-literal-{path}"))
                 .with_accessible_name(label)
                 .with_initial_value(&text),
-            Workbench::SET_STEP.map({
+            Workbench::REPLACE_STEP.map({
                 let draft = draft_id.clone();
                 let path = path.to_owned();
                 move |text: String| {
@@ -1694,7 +1845,7 @@ fn argument_row(
     source.set_value_options(values);
     let source = ui.bind(
         source,
-        Workbench::SET_ARGUMENT.map({
+        Workbench::BIND_ARGUMENT.map({
             let draft = draft_id.clone();
             let path = path.to_owned();
             let param = param.clone();
@@ -1747,7 +1898,7 @@ fn literal_control(
             let state = LocalState::new(value.as_bool().unwrap_or(false));
             Box::new(ui.bind(
                 Toggle::from_state(&state).with_id(&id),
-                Workbench::SET_ARGUMENT.map(move |on: bool| {
+                Workbench::BIND_ARGUMENT.map(move |on: bool| {
                     (
                         draft.clone(),
                         path.clone(),
@@ -1766,7 +1917,7 @@ fn literal_control(
                         .with_id(&id)
                         .with_accessible_name(param.name.to_string())
                         .with_precision(if integer { 0 } else { 2 }),
-                    Workbench::SET_ARGUMENT.map(move |number: f64| {
+                    Workbench::BIND_ARGUMENT.map(move |number: f64| {
                         #[expect(
                             clippy::cast_possible_truncation,
                             reason = "an integer parameter's control steps in whole numbers"
@@ -1794,7 +1945,7 @@ fn literal_control(
                         .with_id(&id)
                         .with_accessible_name(param.name.to_string())
                         .with_initial_value(&editor::literal_text(value)),
-                    Workbench::SET_ARGUMENT.map(move |text: String| {
+                    Workbench::BIND_ARGUMENT.map(move |text: String| {
                         let literal = editor::literal(&text, &param);
                         (
                             draft.clone(),
@@ -1819,7 +1970,35 @@ fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
     let mut body = Column::new()
         .with_intrinsic_height()
         .with_no_padding()
-        .push(Box::new(Text::new("shortcuts-grant-explain")));
+        .push(Box::new(
+            Text::new("shortcuts-grant-explain").with_id("shortcuts-grant-explain"),
+        ));
+    for (index, trigger) in draft.program().triggers.iter().enumerate() {
+        if let tilo_automation::TriggerSpec::Schedule {
+            schedule: tilo_automation::Schedule::Calendar { at, .. },
+            catch_up,
+        } = trigger
+        {
+            body = body.push(Box::new(
+                Text::with_args(
+                    "shortcuts-schedule-review",
+                    &[(
+                        "time",
+                        ui::i18n::ArgValue::from(ui::clock::hour_minute(
+                            at.hour.into(),
+                            at.minute.into(),
+                        )),
+                    )],
+                )
+                .with_role(TextRole::Caption)
+                .with_id(format!("schedule-review-{index}")),
+            ));
+            body = body.push(Box::new(caption(match catch_up {
+                tilo_automation::CatchUp::RunOnce => "shortcuts-schedule-missed-once",
+                tilo_automation::CatchUp::Skip => "shortcuts-schedule-missed-skip",
+            })));
+        }
+    }
     if permissions.is_empty() {
         body = body.push(Box::new(caption("shortcuts-grant-none")));
     } else {
@@ -1827,7 +2006,7 @@ fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
             body = body.push(Box::new(Text::new(&format!(
                 "{} ({})",
                 permission.label,
-                verb_label(permission.verb)
+                permission.kind.phrase()
             ))));
         }
     }
@@ -1839,16 +2018,6 @@ fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
         ));
     }
     Box::new(body)
-}
-
-const fn verb_label(verb: collab_types::Verb) -> &'static str {
-    match verb {
-        collab_types::Verb::Read => "read",
-        collab_types::Verb::Comment => "comment",
-        collab_types::Verb::Write => "change",
-        collab_types::Verb::Invite => "invite",
-        collab_types::Verb::Admin => "administer",
-    }
 }
 
 /// A step's own actions: move it up or down its block, or remove it.

@@ -8,16 +8,22 @@ contains this project's longer workflow. Use `tilo-app --help` or a command's
 
 1. Put durable state in the `#[derive(Model)]` resource. Give collection items
    stable ids. Widget structs hold visual caches, not a second copy of app state.
-2. Expose each edit as an `#[action]` method on a `#[resource]` implementation.
-   Bind the view to that action through `ViewCx`: `cx.input`, `cx.checkbox`,
-   `cx.button`, `cx.control`, or `cx.each`. A click handler alone is not the app's
+2. Edit fields at their typed paths and make everything else an `#[action]`
+   verb on the `#[resource]` implementation; never write a setter verb. Bind the
+   view through `ViewCx`: `cx.input(p.title)`, `cx.checkbox(key, p.done)`,
+   `cx.control(make, p.level)` for fields, `cx.button(key, Verb.with(..))` for
+   verbs, `cx.form::<Params>()` for a verb's parameters, and `cx.each` for
+   collections (`let p = cx.paths()`). A click handler alone is not the app's
    public API: accessibility, automation and collaborators use the same actions.
+   Commit the public surface with `tilo-app surface`.
 3. Use shared widgets and the theme. Put visible strings in `locales/*.ftl`,
    and pass Fluent message ids to controls. Start empty; keep sample data in
    tests or explicit demos. Tilo OS owns window chrome.
 4. Extend `tests/app.rs`. `Replica` tests actions without a window; `TestApp`
    drives the production resource and view. Check the visible result, undo,
-   reopening, and refusal of edits by a viewer where relevant.
+   reopening, and refusal of edits by a viewer where relevant. A destructive
+   action asks the host first: confirm it with `app.confirm_asked()` (never
+   a dialog of the app's own).
 
 Storage, history, per-author undo/redo, permissions and collaboration belong
 in the resource runtime. Keep edits on that path so they can be attributed,

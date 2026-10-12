@@ -816,29 +816,17 @@ mod tests {
         assert!(running.owner.quiescent.load(Ordering::Acquire));
         assert!(exited(&descendant).unwrap());
     }
-    fn context_switches(tid: libc::pid_t) -> u64 {
-        std::fs::read_to_string(format!("/proc/self/task/{tid}/status"))
-            .unwrap()
-            .lines()
-            .filter(|line| line.contains("ctxt_switches:"))
-            .map(|line| {
-                line.split_whitespace()
-                    .last()
-                    .unwrap()
-                    .parse::<u64>()
-                    .unwrap()
-            })
-            .sum()
-    }
+    use tilo_test_env::idle::context_switches;
+
     #[test]
     fn owned_service_supervisor_sleeps_while_child_runs() {
         let mut running = Running::with_script(
             "trap 'touch /fixture/termed; exit 0' TERM; @WRITER@ while :; do sleep 0.02; done",
         );
-        let tid = running.worker_tid;
-        let before = context_switches(tid);
+        let tid = running.worker_tid.to_string();
+        let before = context_switches(&tid);
         std::thread::sleep(Duration::from_millis(400));
-        let idle = context_switches(tid).saturating_sub(before);
+        let idle = context_switches(&tid).saturating_sub(before);
         // Only the authority recheck may wake it; the 10 ms poll this
         // replaces switched about forty times here.
         let allowed = u64::try_from(400 / AUTHORITY_RECHECK.as_millis() + 1).unwrap();
@@ -848,9 +836,9 @@ mod tests {
         );
         // Cancel right after a recheck: only the cancellation ring, not the
         // next recheck, can then deliver SIGTERM well inside one period.
-        let ticked = context_switches(tid);
+        let ticked = context_switches(&tid);
         let deadline = Instant::now().checked_add(Duration::from_secs(2)).unwrap();
-        while context_switches(tid) == ticked && Instant::now() < deadline {
+        while context_switches(&tid) == ticked && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(1));
         }
         let cancelled = Instant::now();

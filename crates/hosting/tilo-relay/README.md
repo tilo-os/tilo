@@ -74,8 +74,14 @@ endpoint id and local addresses on the current network. Set
 
 1. Iroh QUIC (NAT hole-punched, node id is stable).
 2. `tilo-relay/1`, `tilo-relay/3` (private actions and agent reads),
-   `tilo-relay/4` (device-signed actions) or `tilo-relay/5` (`/4` whose
-   zero-signature deltas go without the signature) ALPN.
+   `tilo-relay/4` (device-signed actions), `tilo-relay/5` (`/4` whose
+   zero-signature deltas go without the signature), `tilo-relay/6` (`/5`
+   whose presence arrives batched and slot-coded) or `tilo-relay/7` (`/6`
+   whose live deltas arrive coded against the previous one from the same
+   author) ALPN. Every protocol
+   gets its presence coalesced and paced per connection
+   (`src/presence_mailbox.rs`), and presence that may go early rides in the
+   same write as a delta (TIL-776).
 3. Three-message auth handshake — mutual proof-of-possession of certified
    device signing keys. Home hosts require the same user root; provider hosts
    authenticate their pinned host identity and authorize tenant devices with
@@ -110,9 +116,16 @@ What a relay costs per active collaborator is measured, not estimated:
   subscribers read.
 - **Load bench** (`examples/relay_load`, nightly in
   `perf-scheduled.yml`): 100 collaborators in rooms of four, each typing 30
-  characters, then pointing for four seconds at 30 Hz, then idle, every
+  characters, then pointing for four seconds at 30 Hz (which each client's
+  session writer paces to the relay's 20 Hz before it is sent), then idle, every
   minute, against one relay process. It records CPU-seconds, resident MiB and
-  egress bytes per collaborator-hour, and fan-out latency.
+  egress bytes per collaborator-hour; packets per collaborator-hour, from the
+  collaborators' own QUIC connection counters (datagrams they sent and of
+  those the ones carrying data, datagrams the relay sent and of those the
+  ones carrying only acknowledgements), so the same bytes in more packets
+  fail a budget too; fan-out latency, and the workspace
+  store's fsyncs per committed edit (`store::fsyncs`; the durability
+  contract is in `src/persistence.rs`).
   `tools/perf/adapters.py hosting-load` prices each minute with
   `tools/perf/prices.toml` (provider, VM price and date stated there) into $
   per collaborator-hour and per active user-month (88 h);

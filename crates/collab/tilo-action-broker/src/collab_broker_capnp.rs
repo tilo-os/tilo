@@ -36,6 +36,9 @@ mod invoker;
 #[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
 mod native_effect_recovery_tests;
 mod native_media;
+mod native_task_execution;
+#[cfg(test)]
+mod policy_turn_tests;
 #[cfg(target_os = "linux")]
 mod process_binding;
 mod published_invocation;
@@ -46,7 +49,7 @@ mod workspace_memberships;
 mod workspace_tasks;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
-    DocumentBytes, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
+    DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
 };
 use durable_local_invocation::DurableContext;
 pub(crate) use invocation_journal::DurableInvocation;
@@ -82,8 +85,8 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use collab_types::{
-    Actor, ArtifactId, ArtifactKind, CapDecision, RedactedMarker, ResourceRef, SignedOp,
-    ValidationError, Verb, role_permits, validate_admitted_inbound_op,
+    ArtifactId, ArtifactKind, RedactedMarker, SignedOp, ValidationError,
+    validate_admitted_inbound_op,
 };
 #[cfg(test)]
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
@@ -91,6 +94,9 @@ use runtime_collab::raw::{
     OpKind, action_catalogue_stream, action_directory, blob_stream, channel_handle, collab_service,
     context_stream, invocation_stream, presence_event, presence_handle, presence_payload,
     presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
+};
+use tilo_action_policy::{
+    ActionKind, Answer, Authority, Grant, RoomPolicy, Subject, TreePath, roles,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
@@ -100,9 +106,7 @@ use crate::collab_broker::{
 };
 use crate::collab_outbound::PeerPublisher;
 use crate::services::{HostServices, WorkspaceAuthorityHandle as WorkspaceTreeHandle};
-use collab_types::foreign_device::{cap_applies, foreign_device_role, on_foreign_device};
 use collab_types::{Principal, Role as CapRole};
-#[cfg(test)]
 use tilo_desktop_model::DesktopTree;
 use tilo_desktop_model::WorkspaceTaskStatus;
 
@@ -520,7 +524,8 @@ fn cap_applies_in(
     let governs = authority
         .zip(uuid::Uuid::parse_str(room).ok())
         .is_some_and(|(authority, room)| authority.governs(room, device));
-    cap_applies(foreign, governs)
+    // A foreign device is held to the bound only in a room it does not govern.
+    foreign && !governs
 }
 
 /// [`cap_applies_in`] for `cert`'s device.
@@ -550,11 +555,17 @@ struct AdmittedJoinIdentity {
     display_handle: Option<String>,
     /// Workspace admission role from the live owner/capability roster.
     /// Certified document operations use this directly instead of requiring
-    /// a second, channel-local role attestation for the same person.
+    /// a second, channel-local role attestation for the same person. For a
+    /// delegated agent it is the agent's role
+    /// ([`roles::agent_policy::role`]): its preset's, capped by its person's.
     role: CapRole,
     /// Delegated agent principal for this channel. The certified device still
     /// proves which person launched it, while policy uses this revocable id.
     agent_id: Option<String>,
+    /// The agent is one this person's own device handed the session to (an
+    /// MCP client): it carries the delegation a device gives its agents,
+    /// not grants the room holds for it.
+    session_delegated: bool,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -563,6 +574,13 @@ pub struct BrokerActor {
     is_agent: bool,
     /// A person acting from a foreign device in a room it does not govern.
     capped: bool,
+    /// The person an agent acts for, when one delegated it: the agent then
+    /// may do only what both may.
+    for_person: Option<String>,
+    /// The person's own device delegated the agent for this session: it
+    /// carries the delegation a device gives its agents (read and undoable
+    /// actions, outside ones asking first, no governance).
+    session_delegated: bool,
 }
 
 impl BrokerActor {
@@ -572,6 +590,8 @@ impl BrokerActor {
             id: id.into(),
             is_agent: false,
             capped: false,
+            for_person: None,
+            session_delegated: false,
         }
     }
 
@@ -581,7 +601,32 @@ impl BrokerActor {
             id: id.into(),
             is_agent: true,
             capped: false,
+            for_person: None,
+            session_delegated: false,
         }
+    }
+
+    /// The same agent, acting for `person`.
+    #[must_use]
+    pub fn for_person(mut self, person: impl Into<String>) -> Self {
+        self.for_person = Some(person.into());
+        self
+    }
+
+    /// The same actor, held to the foreign-device bound when `capped`: from
+    /// a device that is not its person's.
+    #[must_use]
+    pub fn capped(mut self, capped: bool) -> Self {
+        self.capped = capped;
+        self
+    }
+
+    /// The same agent, delegated by its person's own device for this
+    /// session.
+    #[must_use]
+    pub fn session_delegated(mut self) -> Self {
+        self.session_delegated = true;
+        self
     }
 
     /// The policy principal id (`agent:`-prefixed for an agent).
@@ -595,49 +640,255 @@ impl BrokerActor {
         self.is_agent
     }
 
-    /// Who this actor is to `workspace`'s capability policy at `now`. An
-    /// application (`app:<package id>`) holds no role there: only what the
-    /// workspace grants that application.
-    pub(crate) fn policy_in(&self, workspace: &tilo_desktop_model::Workspace, now: u64) -> Actor {
+    /// The grant subject this actor is when it is not a person.
+    fn delegate(&self) -> Option<Subject> {
         if let Some(app) = self.id.strip_prefix("app:") {
-            return Actor::app(app).in_room(workspace.room.to_string());
+            return Some(Subject::App(app.to_owned()));
         }
-        if self.is_agent {
-            workspace.actor_for_agent(self.id.strip_prefix("agent:").unwrap_or(&self.id))
+        self.is_agent
+            .then(|| Subject::agent(self.id.strip_prefix("agent:").unwrap_or(&self.id)))
+    }
+
+    /// What this actor may do in `workspace`: a person's own authority (held
+    /// to `foreign_bound` from a device not theirs); an agent's bounded by
+    /// the person it acts for; an application, or an agent nobody delegated,
+    /// only what the room grants it.
+    pub(crate) fn with_authority_in<T>(
+        &self,
+        workspace: &tilo_desktop_model::Workspace,
+        foreign_bound: &[Grant],
+        decide: impl FnOnce(&Authority<'_>) -> T,
+    ) -> T {
+        match (self.delegate(), &self.for_person) {
+            (None, _) => {
+                decide(&workspace.person_authority_on(&self.id, self.capped, foreign_bound))
+            }
+            (Some(delegate), Some(person)) => {
+                let carried = self.session_grants(&workspace.room.to_string(), person);
+                decide(
+                    &workspace
+                        .person_authority_on(person, self.capped, foreign_bound)
+                        .bounded_by(workspace.policy.party_of(delegate).with_grants(&carried)),
+                )
+            }
+            (Some(delegate), None) => decide(&workspace.subject_authority(delegate)),
+        }
+    }
+
+    /// The delegation a session-delegated agent carries in `room`, given by
+    /// `person`; nothing for any other actor.
+    fn session_grants(&self, room: &str, person: &str) -> Vec<Grant> {
+        if !self.session_delegated {
+            return Vec::new();
+        }
+        let agent = self.id.strip_prefix("agent:").unwrap_or(&self.id);
+        roles::AgentPreset::Operator.grants(room, agent, &Subject::Person(person.to_owned()))
+    }
+
+    /// Whether this actor is a person acting from their own device: the one
+    /// whose own gesture answers a grant that asks first.
+    pub(crate) fn direct(&self) -> bool {
+        self.delegate().is_none() && !self.capped
+    }
+
+    /// The person this actor is, when a person acts from their own device:
+    /// the only actor a host lets govern a room.
+    #[must_use]
+    pub fn direct_person(&self) -> Option<&str> {
+        self.direct().then_some(self.id.as_str())
+    }
+
+    /// The answer for an action of `kind` at `node` in `workspace` at `now`.
+    pub(crate) fn answer_in(
+        &self,
+        workspace: &tilo_desktop_model::Workspace,
+        node: &TreePath,
+        kind: ActionKind,
+        now: u64,
+    ) -> Answer {
+        self.verdict_in(workspace, node, kind, false, now).0
+    }
+
+    /// The answer for the action `action` on `resource` (of kind
+    /// `resource_kind`) the app `app` publishes, which `need` describes, in
+    /// `workspace` at `now`: decided at its node, and as privileged when
+    /// `need` is ([`tilo_action_policy::Verdict::privileged`]).
+    pub(crate) fn action_answer_in(
+        &self,
+        workspace: &tilo_desktop_model::Workspace,
+        app: &str,
+        (resource_kind, resource, action): (&str, &str, &str),
+        need: &tilo_actions::ActionNeed,
+        now: u64,
+    ) -> Answer {
+        self.action_verdict_in(workspace, app, (resource_kind, resource, action), need, now)
+            .0
+    }
+
+    /// [`Self::action_answer_in`] for running the action: the answer, and the
+    /// `Once` grants running it spends ([`tilo_action_policy::Verdict::spent`]).
+    pub(crate) fn action_verdict_in(
+        &self,
+        workspace: &tilo_desktop_model::Workspace,
+        app: &str,
+        (resource_kind, resource, action): (&str, &str, &str),
+        need: &tilo_actions::ActionNeed,
+        now: u64,
+    ) -> (Answer, Vec<tilo_action_policy::GrantId>) {
+        let node = tilo_actions::action_node(
+            &workspace.node(),
+            app,
+            resource_kind,
+            resource,
+            need.field.as_deref(),
+            action,
+        );
+        self.verdict_in(workspace, &node, need.kind, need.privileged, now)
+    }
+
+    /// Admit `action`, published on `surface`, in `workspace` at `now`:
+    /// whether the room's grants ask first (`true`), when the invocation
+    /// then needs the confirmation of the person it is made for, and the
+    /// `Once` grants admitting it spends. Decided on one sample: the action
+    /// where it is published; the task the call works in (`task`, and every
+    /// task an agent runs: [`tilo_desktop_model::Workspace::task_bound_at`]);
+    /// and, for a person, a change of the route record it acts on, so a
+    /// person restricted on one record cannot act on it through an action
+    /// they may otherwise use.
+    ///
+    /// # Errors
+    /// The refusal: a reserved or malformed route record, or grants that
+    /// refuse the action, the task's work or the record.
+    pub(crate) fn admit_published_in(
+        &self,
+        workspace: &tilo_desktop_model::Workspace,
+        now: u64,
+        task: Option<&str>,
+        (surface, action): (&PublishedSurface, &PublishedAction),
+    ) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
+        let refused = || "caller no longer authorized for invocation".to_owned();
+        let record = if self.is_agent {
+            None
         } else {
-            crate::policy::WorkspacePolicy::actor_for_person_on_device_at(
-                workspace,
-                &self.id,
-                self.capped,
-                now,
-            )
+            Some(crate::published_authorization::canonical_record(
+                &surface.route.record_id,
+            )?)
+        };
+        let need = action.contract.need();
+        let node = published_node(workspace, &surface.app_id, action);
+        let (answer, spent) = self.verdict_in(workspace, &node, need.kind, need.privileged, now);
+        let mut asks = match answer {
+            Answer::Allow => false,
+            Answer::Ask => true,
+            Answer::Deny => return Err(refused()),
+        };
+        let agent = self
+            .is_agent
+            .then(|| self.id.strip_prefix("agent:").unwrap_or(&self.id));
+        match workspace.task_bound_at(agent, task, &node, need.kind, now) {
+            Some(Answer::Deny) => return Err("the task's grants do not cover this action".into()),
+            Some(Answer::Ask) => asks = true,
+            Some(Answer::Allow) | None => {}
         }
+        if let Some(record) = record {
+            let node = collab_types::validator::document_node(
+                &workspace.policy.room,
+                &surface.app_id,
+                &record,
+            );
+            match self.answer_in(workspace, &node, need.kind, now) {
+                Answer::Allow => {}
+                Answer::Ask => asks = true,
+                Answer::Deny => return Err(refused()),
+            }
+        }
+        Ok((asks, spent))
+    }
+
+    fn verdict_in(
+        &self,
+        workspace: &tilo_desktop_model::Workspace,
+        node: &TreePath,
+        kind: ActionKind,
+        privileged: bool,
+        now: u64,
+    ) -> (Answer, Vec<tilo_action_policy::GrantId>) {
+        let bound = roles::foreign_device_bound();
+        self.with_authority_in(workspace, &bound, |authority| {
+            let mut verdict = authority.decide(node, kind, &tilo_desktop_model::context_at(now));
+            if privileged {
+                verdict = verdict.privileged();
+            }
+            (verdict.answer, verdict.spent())
+        })
+    }
+
+    /// Whether this actor may take an action of `kind` at `node` in
+    /// `workspace` at `now` ([`Answer::admits`]).
+    pub(crate) fn may_in(
+        &self,
+        workspace: &tilo_desktop_model::Workspace,
+        node: &TreePath,
+        kind: ActionKind,
+        now: u64,
+    ) -> bool {
+        self.answer_in(workspace, node, kind, now)
+            .admits(self.direct())
+    }
+
+    /// Whether this actor takes part in `workspace` at `now`: it may at
+    /// least read the room.
+    pub(crate) fn reads_in(&self, workspace: &tilo_desktop_model::Workspace, now: u64) -> bool {
+        self.answer_in(workspace, &workspace.node(), ActionKind::Read, now) != Answer::Deny
     }
 }
 
-/// `actor`, held to `workspace`'s foreign-device cap when `capped`.
-fn capped_if(
-    actor: Actor,
-    capped: bool,
+/// The node of `action` published by `app` in `workspace`.
+pub(crate) fn published_node(
     workspace: &tilo_desktop_model::Workspace,
-    now: u64,
-) -> Actor {
-    if capped {
-        on_foreign_device(actor, &workspace.capabilities, now)
-    } else {
-        actor
-    }
+    app: &str,
+    action: &PublishedAction,
+) -> TreePath {
+    tilo_actions::action_node(
+        &workspace.node(),
+        app,
+        &action.resource_kind,
+        &action.resource,
+        action.contract.field.as_deref(),
+        &action.action,
+    )
+}
+
+/// The node of opening the application `app` in `workspace`: launching it is
+/// an action of the app itself.
+pub(crate) fn app_node(workspace: &tilo_desktop_model::Workspace, app: &str) -> TreePath {
+    workspace.node().app(app)
 }
 
 impl AdmittedJoinIdentity {
-    fn broker_actor(&self) -> BrokerActor {
-        match &self.agent_id {
-            Some(agent) => BrokerActor::agent(format!("agent:{agent}")),
-            None => BrokerActor {
-                capped: self.verified.capped,
-                ..BrokerActor::person(self.principal_id.clone())
-            },
+    /// This admission handed to `agent` by the person's own device, if any.
+    fn delegated_to(mut self, agent: Option<&str>) -> Self {
+        if let Some(agent) = agent {
+            self.agent_id = Some(agent.to_owned());
+            self.session_delegated = true;
         }
+        self
+    }
+
+    fn broker_actor(&self) -> BrokerActor {
+        let actor = match &self.agent_id {
+            Some(agent) => {
+                let actor = BrokerActor::agent(format!("agent:{agent}"))
+                    .for_person(self.principal_id.clone());
+                if self.session_delegated {
+                    actor.session_delegated()
+                } else {
+                    actor
+                }
+            }
+            None => BrokerActor::person(self.principal_id.clone()),
+        };
+        actor.capped(self.verified.capped)
     }
 
     /// The caller this admitted connection is, confined to its room.
@@ -674,25 +925,85 @@ impl AdmittedJoinIdentity {
         .from_foreign_device(verified.capped || restricted)
     }
 
-    fn policy_actor(&self, workspace: &tilo_desktop_model::Workspace, now: u64) -> Actor {
-        let room = workspace.room.to_string();
-        if let Some(agent) = &self.agent_id {
-            return Actor::agent(agent).in_room(room);
+    /// Run `decide` with what this identity may do in `room` (its person
+    /// room, or a workspace in `tree`).
+    /// [`Self::with_authority`] over the committed authority of
+    /// `membership`, borrowed for the one decision.
+    fn with_current_authority<T>(
+        &self,
+        membership: Option<&WorkspaceTreeHandle>,
+        room: &str,
+        decide: impl FnOnce(&Authority<'_>) -> T,
+    ) -> Result<T, String> {
+        match membership {
+            Some(membership) => membership
+                .decide_in_tree(|tree| self.with_authority(Some(tree), room, decide))
+                .and_then(std::convert::identity),
+            None => self.with_authority(None, room, decide),
         }
-        let person = Actor::person(Some(self.role), self.principal_id.clone()).in_room(room);
-        capped_if(person, self.verified.capped, workspace, now)
+    }
+
+    fn with_authority<T>(
+        &self,
+        tree: Option<&DesktopTree>,
+        room: &str,
+        decide: impl FnOnce(&Authority<'_>) -> T,
+    ) -> Result<T, String> {
+        let bound = roles::foreign_device_bound();
+        if (self.agent_id.is_none() || self.session_delegated)
+            && self.verified.owns_person_room(room)
+        {
+            // The person room's devices are its owner's; a foreign one is
+            // held to the foreign-device bound there as anywhere, and an
+            // agent one of them was handed to, to that delegation too.
+            let policy = RoomPolicy::new(room, self.principal_id.clone());
+            let authority =
+                policy.person_on_device(&self.principal_id, self.verified.capped, &bound);
+            let actor = self.broker_actor();
+            let carried = actor.session_grants(room, &self.principal_id);
+            let authority = match actor.delegate() {
+                Some(delegate) => {
+                    authority.bounded_by(tilo_action_policy::Party::new(vec![delegate], &carried))
+                }
+                None => authority,
+            };
+            return Ok(decide(&authority));
+        }
+        let workspace = tree
+            .ok_or("the identity has no workspace authority")?
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == room)
+            .ok_or("the identity's workspace is no longer hosted")?;
+        Ok(self
+            .broker_actor()
+            .with_authority_in(workspace, &bound, decide))
     }
 }
 
-/// Whether `evidence` is what `offered`'s confirmation policy asks for.
-/// Minting the grant that binds it to one delivery is
+/// Answer a remote-action request with `error`, refusing it.
+fn refused(
+    message: &tilo_actions::remote::RemoteActionMessage,
+    error: tilo_actions::remote::ActionHostError,
+    results: channel_handle::RemoteActionResults,
+) -> Promise<(), capnp::Error> {
+    match tilo_actions::remote::refuse(message, error) {
+        Some(refusal) => reply_frame(refusal, results),
+        None => Promise::err(capnp::Error::failed(
+            "only remote-action requests are answered".into(),
+        )),
+    }
+}
+
+/// Whether `evidence` is what the confirmation `policy` asks for. Minting
+/// the grant that binds it to one delivery is
 /// [`CapnpBrokerState::confirmation_token`]'s job.
 fn confirmation_satisfied(
-    offered: &PublishedAction,
+    policy: &tilo_actions::ConfirmationPolicy,
     evidence: Option<&tilo_actions::remote::Confirmation>,
 ) -> bool {
     use tilo_actions::remote::Confirmation;
-    match (&offered.contract.advertised_confirmation(), evidence) {
+    match (policy, evidence) {
         (tilo_actions::ConfirmationPolicy::None, _)
         | (tilo_actions::ConfirmationPolicy::Confirm, Some(Confirmation::Confirmed)) => true,
         (
@@ -700,19 +1011,6 @@ fn confirmation_satisfied(
             Some(Confirmation::Phrase(phrase)),
         ) => phrase.len() <= DIRECTORY_MAX_CONFIRMATION_BYTES && phrase == expected,
         _ => false,
-    }
-}
-
-/// The capability verb an action's declared permission requires, if any.
-/// The one mapping every admission and catalogue check uses.
-fn permission_verb(requirement: tilo_actions::PermissionRequirement) -> Option<Verb> {
-    match requirement {
-        tilo_actions::PermissionRequirement::None => None,
-        tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
-        tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-        tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
-        tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-        tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
     }
 }
 
@@ -752,11 +1050,7 @@ fn admit_verified_join_at(
     // acting as the room's owner — a foreign device with the foreign-device
     // cap's role, there as in any room. Any other room id is a workspace.
     if verified.owns_person_room(&route.cluster_id) {
-        let role = if verified.capped {
-            foreign_device_role(CapRole::Owner, &[], now)
-        } else {
-            CapRole::Owner
-        };
+        let role = CapRole::Owner;
         return Ok(AdmittedJoinIdentity {
             host_scope: None,
             worker_registration: None,
@@ -766,19 +1060,17 @@ fn admit_verified_join_at(
             role,
             display_handle: None,
             agent_id: None,
+            session_delegated: false,
         });
     }
     let workspace = workspace
         .ok_or_else(|| "certified join names a workspace this session does not host".to_string())?;
-    let mut role = workspace
-        .role_of_at(&principal_id, now)
-        .ok_or_else(|| "certified collaboration identity is not a workspace member".to_string())?;
-    if verified.capped {
-        role = foreign_device_role(role, &workspace.capabilities, now);
+    // Taking part is being allowed to read the room now: as a member, or
+    // by a grant for a while.
+    if !BrokerActor::person(principal_id.clone()).reads_in(workspace, now) {
+        return Err("certified collaboration identity is not a workspace member".into());
     }
-    if role == CapRole::Denied {
-        return Err("certified collaboration identity is blocked in this workspace".into());
-    }
+    let role = workspace.role_of(&principal_id).unwrap_or(CapRole::Viewer);
     Ok(AdmittedJoinIdentity {
         host_scope: None,
         worker_registration: None,
@@ -788,6 +1080,7 @@ fn admit_verified_join_at(
         role,
         display_handle: None,
         agent_id: None,
+        session_delegated: false,
     })
 }
 
@@ -821,23 +1114,34 @@ fn admit_agent_delegation_at(
     let workspace =
         workspace.ok_or_else(|| "agent delegation names an unavailable workspace".to_string())?;
     if admitted.verified.capped
-        || (workspace.owner.as_ref() != Some(&admitted.principal_id)
-            && workspace.decide_at(
-                &workspace.actor_for_person_at(&admitted.principal_id, now),
-                &ResourceRef::Workspace,
-                Verb::Admin,
-                now,
-            ) != CapDecision::Allow)
+        || !workspace.may_govern_at(&admitted.principal_id, roles::governance::GRANT, now)
     {
         return Err("only a workspace administrator may launch a delegated agent session".into());
     }
-    let role = workspace
-        .role_of_agent_at(agent_id, now)
-        .filter(|role| *role != CapRole::Denied)
-        .ok_or_else(|| "the requested agent is not an active workspace member".to_string())?;
-    admitted.role = role;
+    // The agent takes part with the role its room admission (its preset)
+    // grants, never more than its person's: revoking either ends it here,
+    // and every revalidation of the session asks again.
+    let granted = workspace
+        .agent_role_at(agent_id, now)
+        .ok_or("the requested agent is not an active workspace member")?;
+    admitted.role = roles::agent_policy::role(admitted.role, granted);
     admitted.agent_id = Some(agent_id.to_string());
     admitted.display_handle = Some(agent_id.to_string());
+    Ok(())
+}
+
+/// Whether the launched app `app` may join `route` in its person's own
+/// room: only a record of the person's whose kind its surface declares
+/// (its own, or another app's it reads). The person's room holds nothing
+/// else for an app.
+fn person_record_join(app: &str, route: &CrdtRoute) -> Result<(), String> {
+    let kind = collab_types::person_record_kind(&route.record_id)
+        .ok_or("an app joins the person's room only for one of their records")?;
+    if !ui::app_surface::keeps_person_record(app, kind) {
+        return Err(format!(
+            "{app} declares no record of the person's of kind {kind}"
+        ));
+    }
     Ok(())
 }
 
@@ -1187,8 +1491,8 @@ pub struct PublishedSurface {
     pub route: CrdtRoute,
     pub actions: Vec<PublishedAction>,
     /// False for a permission-filterable catalogue retained after the app
-    /// closes. Only actions that explicitly opted into launchable/durable
-    /// discovery are ever retained this way.
+    /// closes: what it last published, offered so invoking it launches the
+    /// app.
     pub live: bool,
 }
 
@@ -1223,6 +1527,15 @@ pub struct InvocationEnvelope {
     context: Option<tilo_actions::ActionContext>,
 }
 
+impl InvocationEnvelope {
+    /// The context the host set for the invocation: who invoked it, of what
+    /// kind, for whom, in which run.
+    #[must_use]
+    pub fn context(&self) -> Option<&tilo_actions::ActionContext> {
+        self.context.as_ref()
+    }
+}
+
 #[derive(Clone, Debug)]
 struct TaskRunEnvelope {
     task_id: String,
@@ -1250,6 +1563,7 @@ struct PendingTaskRun {
     lease: String,
     action_context: tilo_actions::ActionContext,
     terminal: bool,
+    native: Option<crate::services::NativeTaskBinding>,
 }
 
 /// The application's terminal answer to a directed invocation.
@@ -1312,9 +1626,21 @@ pub(crate) struct VerifiedActionCaller {
     network: Option<tilo_relay_session::client::CertifiedAction>,
     policy_time: Option<crate::peer_actions::PolicyTime>,
     admitted: AdmittedJoinIdentity,
+    /// The agent this person's own device handed the session to, kept
+    /// across every re-verification of the person's admission.
+    delegated: Option<String>,
 }
 
 impl VerifiedActionCaller {
+    /// The same admission, handed by the person's own device to agent
+    /// `agent`: it acts for the person with the delegation a device gives
+    /// its agents.
+    fn delegated_to(mut self, agent: &str) -> Self {
+        self.delegated = Some(agent.to_owned());
+        self.admitted = self.admitted.delegated_to(self.delegated.as_deref());
+        self
+    }
+
     fn owner(&self) -> InvocationOwner {
         InvocationOwner::Certified {
             root: self.admitted.verified.user_public_key,
@@ -1451,7 +1777,7 @@ impl ContinuingCaller {
                 foreign_restriction: false,
                 direct: None,
             },
-            DurableContext::Local { caller, .. } => {
+            DurableContext::Local { caller, .. } | DurableContext::Task { caller, .. } => {
                 let (room, admitted) = caller.admitted_in();
                 Self::Admitted {
                     room,
@@ -1579,6 +1905,7 @@ mod admission_memo;
 mod app_consent;
 mod launchable;
 mod local_action_host;
+mod witness;
 pub use local_action_host::CertifiedPersonContext;
 
 pub use launchable::launchable_provider;
@@ -1590,6 +1917,8 @@ mod document_imports;
 mod peer_action_broker;
 #[path = "policy_context.rs"]
 mod policy_context;
+#[path = "room_service.rs"]
+mod room_service;
 #[path = "workspace_collaboration.rs"]
 mod workspace_collaboration;
 
@@ -1651,6 +1980,7 @@ impl CapnpBrokerState {
             network: None,
             policy_time: self.registered_policy_time()?,
             admitted,
+            delegated: None,
         })
     }
 
@@ -1669,15 +1999,12 @@ impl CapnpBrokerState {
         caller: &tilo_actions::remote::Caller,
         room: &str,
     ) -> BrokerActor {
-        BrokerActor {
-            capped: cap_applies_in(
-                self.certificate_authority.get().map(AsRef::as_ref),
-                room,
-                caller.is_foreign_device(),
-                caller.device_public_key(),
-            ),
-            ..BrokerActor::for_caller(caller)
-        }
+        BrokerActor::for_caller(caller).capped(cap_applies_in(
+            self.certificate_authority.get().map(AsRef::as_ref),
+            room,
+            caller.is_foreign_device(),
+            caller.device_public_key(),
+        ))
     }
 
     /// The person `cert` certifies, acting in `room` from that certificate's device.
@@ -1707,7 +2034,7 @@ impl CapnpBrokerState {
         if current.owner() != caller.owner() {
             return Err("certified caller changed".into());
         }
-        Ok(current.admitted)
+        Ok(current.admitted.delegated_to(caller.delegated.as_deref()))
     }
 
     fn caller_key(
@@ -1752,6 +2079,11 @@ impl CapnpBrokerState {
             .get("resource")
             .and_then(serde_json::Value::as_str)
             .ok_or("journal resource invalid")?;
+        let resource_kind = record
+            .intent
+            .get("resource_kind")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("journal resource kind invalid")?;
         let action = record
             .intent
             .get("action")
@@ -1759,10 +2091,8 @@ impl CapnpBrokerState {
             .ok_or("journal action invalid")?;
         self.authorize_invocation_permission(
             &caller.room,
-            app,
-            resource,
-            action,
-            contract.permission,
+            (app, resource_kind, resource, action),
+            &contract.need(),
             &current.broker_actor(),
             now,
         )
@@ -2604,6 +2934,16 @@ fn validate_directory_target_input(
     Ok(())
 }
 
+/// A person's confirmation, given on their own device, of one invocation
+/// someone acting for them makes.
+struct Witness {
+    actor: String,
+    resource: String,
+    action: String,
+    argument_digest: [u8; 32],
+    expires: std::time::Instant,
+}
+
 struct ConfirmationGrant {
     peer_id: u64,
     resource: String,
@@ -2771,7 +3111,7 @@ pub struct CapnpBrokerState {
     /// moving it. A launch waiting for an app to publish an action and open
     /// its stream wakes on either.
     surface_changes: tokio::sync::watch::Sender<u64>,
-    /// Last launchable projection per app, workspace and record, kept across
+    /// Last published surface per app, workspace and record, kept across
     /// restarts. Catalogue state, never an executable capability by itself.
     launchable: launchable::LaunchableCatalogue,
     /// Pull-only, revisioned directories owned by currently connected apps.
@@ -2822,6 +3162,9 @@ pub struct CapnpBrokerState {
     workspace_membership_peers: Mutex<HashMap<String, u64>>,
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
+    /// Confirmations people gave on their own device for an invocation
+    /// someone acting for them makes; see [`Self::witness_confirmation`].
+    witnessed_confirmations: Mutex<HashMap<String, Witness>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
     task_subscribers: Mutex<HashMap<u64, TaskSubscription>>,
     pending_task_runs: Mutex<HashMap<u64, PendingTaskRun>>,
@@ -2949,6 +3292,8 @@ impl CapnpBrokerState {
     pub(crate) fn request_stop(&self) {
         self.accepting.store(false, Ordering::Release);
         self.local_turn.notify_one();
+        // Held committed-read waits re-check custody, which now refuses.
+        tilo_identity_host::policy_change::announce();
     }
 
     /// Hold the broker lifecycle read side for one complete shell-facade
@@ -3263,8 +3608,7 @@ impl CapnpBrokerState {
                     .publish_status(pending.activity.as_ref(), ExecutionStatus::OutcomeUnknown);
                 continue;
             }
-            self.execution_activity
-                .publish(pending.activity.as_ref(), &update);
+            self.publish_activity(pending.activity.as_ref(), &update);
             self.record_completion(id, pending.completion_owner(), update.clone());
             if let Ok(mut requests) = self.cancellation_requests.lock() {
                 requests.remove(&id);
@@ -3383,11 +3727,12 @@ impl CapnpBrokerState {
                 }
                 previous.request.clone()
             } else {
-                let receipt = crate::policy::redacted_effect_receipt(
+                let receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
                     update.invocation(),
                     &pending.actor,
                     pending.context.clone(),
                     status,
+                    tilo_clock::unix_now_i64(),
                 );
                 let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
                     room: pending.cluster_id.clone(),
@@ -3596,6 +3941,7 @@ impl CapnpBrokerState {
                 workspace_membership_peers: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 confirmation_grants: Mutex::new(HashMap::new()),
+                witnessed_confirmations: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
                 task_subscribers: Mutex::new(HashMap::new()),
                 pending_task_runs: Mutex::new(HashMap::new()),
@@ -4299,10 +4645,17 @@ impl CapnpBrokerState {
         contract: &tilo_actions::ActionContract,
         confirmation: Option<DirectoryActionConfirmation>,
     ) -> Result<Option<String>, ActionDirectoryBridgeError> {
+        // Only a person acting themselves confirms by their own word.
+        let confirmation = confirmation.filter(|_| actor.direct());
         match &contract.confirmation {
+            tilo_actions::ConfirmationPolicy::Confirm | tilo_actions::ConfirmationPolicy::None
+                if matches!(confirmation, Some(DirectoryActionConfirmation::Confirmed)) =>
+            {
+                // Without a confirmation policy, a confirmation given anyway
+                // answers the room's ask, if the grants ask; admission
+                // decides whether they do.
+            }
             tilo_actions::ConfirmationPolicy::None => return Ok(None),
-            tilo_actions::ConfirmationPolicy::Confirm
-                if matches!(confirmation, Some(DirectoryActionConfirmation::Confirmed)) => {}
             tilo_actions::ConfirmationPolicy::Phrase { phrase } if matches!(&confirmation, Some(DirectoryActionConfirmation::Phrase(value)) if value == phrase) =>
                 {}
             _ => return Err(ActionDirectoryBridgeError::ConfirmationRequired),
@@ -4343,10 +4696,7 @@ impl CapnpBrokerState {
         actor: &BrokerActor,
         app_id: &str,
         questions: &[DirectoryQuestion<'_>],
-    ) -> Result<Vec<bool>, capnp::Error> {
-        if questions.iter().all(|question| question.verb.is_none()) {
-            return Ok(vec![true; questions.len()]);
-        }
+    ) -> Result<Vec<Answer>, capnp::Error> {
         let now = self.policy_now_ns().map_err(capnp::Error::failed)? / 1_000_000_000;
         let membership = self.membership.as_ref().ok_or_else(|| {
             capnp::Error::failed("the action broker has no workspace authority".into())
@@ -4355,23 +4705,19 @@ impl CapnpBrokerState {
             .decide_in_room(cluster_id, |workspace| {
                 let workspace = workspace
                     .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
-                let caller = actor.policy_in(workspace, now);
-                Ok::<Vec<bool>, String>(
+                Ok::<Vec<Answer>, String>(
                     questions
                         .iter()
                         .map(|question| {
-                            question.verb.is_none_or(|verb| {
-                                workspace.decide_at(
-                                    &caller,
-                                    &ResourceRef::Action {
-                                        app: app_id.to_string(),
-                                        resource: question.resource.to_string(),
-                                        action: question.action.to_string(),
-                                    },
-                                    verb,
-                                    now,
-                                ) == CapDecision::Allow
-                            })
+                            let node = tilo_actions::action_node(
+                                &workspace.node(),
+                                app_id,
+                                question.resource_kind,
+                                question.resource,
+                                question.field,
+                                question.action,
+                            );
+                            actor.answer_in(workspace, &node, question.kind, now)
                         })
                         .collect(),
                 )
@@ -4452,31 +4798,33 @@ impl CapnpBrokerState {
         let (published, applications) = membership.decide_in_room(cluster_id, |workspace| {
             let workspace = workspace
                 .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
-            let caller = actor.policy_in(workspace, now);
-            let allows = |resource: &ResourceRef, verb: Verb| {
-                workspace.decide_at(&caller, resource, verb, now) == CapDecision::Allow
-            };
             let published = published
                 .into_iter()
                 .map(|mut surface| {
+                    // Listed when the actor may take it, or would be asked
+                    // first.
                     surface.actions.retain(|action| {
-                        permission_verb(action.contract.permission).is_none_or(|verb| {
-                            allows(
-                                &ResourceRef::Action {
-                                    app: surface.app_id.clone(),
-                                    resource: action.resource.clone(),
-                                    action: action.action.clone(),
-                                },
-                                verb,
-                            )
-                        })
+                        actor.action_answer_in(
+                            workspace,
+                            &surface.app_id,
+                            (&action.resource_kind, &action.resource, &action.action),
+                            &action.contract.need(),
+                            now,
+                        ) != Answer::Deny
                     });
                     surface
                 })
                 .collect::<Vec<_>>();
             let applications = applications
                 .into_iter()
-                .filter(|app| allows(&ResourceRef::App(app.package_id.clone()), Verb::Write))
+                .filter(|app| {
+                    actor.may_in(
+                        workspace,
+                        &app_node(workspace, &app.package_id),
+                        ActionKind::Undoable,
+                        now,
+                    )
+                })
                 .collect::<Vec<_>>();
             Ok::<_, String>((published, applications))
         })??;
@@ -4877,7 +5225,7 @@ impl CapnpBrokerState {
         );
         owner.validate()?;
         // Never trust an envelope's invoker: the host sets it.
-        let context = invoker::host_set_invoker(context, actor, execution.as_ref())?;
+        let context = invoker::host_set_invoker(context, actor, caller, execution.as_ref())?;
         // A certified local origin retains its original registered clock and
         // exact person/room through an asynchronous directory lookup. Never
         // recapture a replacement origin at dispatch or accept a payload actor.
@@ -4956,33 +5304,20 @@ impl CapnpBrokerState {
         // Every check of this admission is decided on one committed sample,
         // so a policy change cannot land between the action check and the
         // record check.
-        self.membership
+        // Work done in a task — the one the call names, or the task its
+        // agent is running — is bounded by the task's grant set.
+        let task = context
+            .as_ref()
+            .and_then(|context| context.group.as_ref())
+            .filter(|group| group.kind == "task")
+            .map(|group| group.id.clone());
+        let (asks, spent) = self
+            .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
             .decide_in_room(&offered.0.route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("workspace no longer hosted")?;
-                durable_local_invocation::authorize_action_in(
-                    workspace,
-                    &offered.0.app_id,
-                    &offered.1.resource,
-                    &offered.1.action,
-                    offered.1.contract.permission,
-                    actor,
-                    now,
-                )?;
-                if !actor.is_agent {
-                    // A person is authorized on the route record (Artifact)
-                    // too, not only on (app, action).
-                    crate::published_authorization::authorize_person_published(
-                        workspace,
-                        now,
-                        &actor.id,
-                        actor.capped,
-                        &offered.0,
-                        &offered.1,
-                    )?;
-                }
-                Ok::<(), String>(())
+                actor.admit_published_in(workspace, now, task.as_deref(), (&offered.0, &offered.1))
             })??;
 
         if (durable.is_some() || execution.is_some())
@@ -5003,10 +5338,15 @@ impl CapnpBrokerState {
         if durable.is_some() && journal.is_none() {
             return Err("durable admission unavailable".into());
         }
-        if !matches!(
-            offered.1.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::None
-        ) {
+        // Where the room's grants ask first, the person's confirmation in
+        // the host is the answer: the invocation needs a confirmation token
+        // even when the action itself asks for none.
+        if asks
+            || !matches!(
+                offered.1.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::None
+            )
+        {
             let token = confirmation_token.ok_or_else(|| {
                 "action_confirmation_required: request and present a one-use confirmation token"
                     .to_string()
@@ -5053,12 +5393,19 @@ impl CapnpBrokerState {
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let mut receipt_context = tilo_actions::ActionContext::for_resource(
-            &offered.1.action_label,
             &offered.1.resource,
             &offered.1.resource_kind,
             &offered.1.resource_label,
         )
-        .with_app(&offered.0.app_id, &offered.0.app_id);
+        .with_app(&offered.0.app_id, &offered.0.app_id)
+        .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new(
+                &offered.0.app_id,
+                &offered.1.resource_kind,
+                &offered.1.action,
+            ),
+            [],
+        )));
         if let Some(ambient) = &context {
             receipt_context = receipt_context.enriched_by(ambient);
         }
@@ -5079,8 +5426,8 @@ impl CapnpBrokerState {
             let intent = serde_json::json!({ "request": request,
                 "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
                 "context": receipt_context, "actor": actor.id, "app_id": offered.0.app_id,
-                "resource": offered.1.resource, "action": offered.1.action,
-                "revision": revision });
+                "resource": offered.1.resource, "resource_kind": offered.1.resource_kind,
+                "action": offered.1.action, "revision": revision });
             if let Some(context) = durable {
                 context.before_admission(self, journal.host(), peer_id, &offered, &sender)?;
             }
@@ -5092,6 +5439,7 @@ impl CapnpBrokerState {
             None
         };
         drop(journal_guard);
+        self.spend_once_grants(&offered.0.route.cluster_id, &spent);
         // Keep acceptance before an immediately completing application's first
         // update. Sending to the unbounded app queue and bounded observation
         // bus never waits or calls back into the broker.
@@ -5103,7 +5451,12 @@ impl CapnpBrokerState {
             id,
             PendingInvocation {
                 caller: continuing,
-                activity: ActivityTarget::new(execution.clone(), actor, &offered.0, &offered.1),
+                activity: ActivityTarget::new(
+                    execution.clone(),
+                    (actor, caller, context.as_ref()),
+                    &offered.0,
+                    &offered.1,
+                ),
                 owner,
                 network_evidence: durable.and_then(DurableContext::network),
                 original: OriginalInvocationData::capture(
@@ -5182,8 +5535,7 @@ impl CapnpBrokerState {
             return Err("the application invocation stream closed; outcome unknown".into());
         }
         if let Some(pending) = registry.get(&id) {
-            self.execution_activity
-                .publish(pending.activity.as_ref(), &pending.update);
+            self.publish_activity(pending.activity.as_ref(), &pending.update);
         }
         drop(registry);
         self.local_turn.notify_one();
@@ -5191,6 +5543,84 @@ impl CapnpBrokerState {
     }
 
     /// Observe subsequent broker execution events without scheduling app work.
+    /// Report an invocation's progress on the observation bus, and in the
+    /// view it runs in for an actor that view does not already show: an
+    /// agent, an app, someone acting for a person, a person on another
+    /// device. Nothing is performed out of sight; the view names who acts.
+    fn publish_activity(
+        &self,
+        target: Option<&ActivityTarget>,
+        update: &tilo_actions::InvocationUpdate,
+    ) {
+        self.execution_activity.publish(target, update);
+        let Some((target, shown)) = target.and_then(|target| Some((target, target.shown()?)))
+        else {
+            return;
+        };
+        let phase = match update {
+            tilo_actions::InvocationUpdate::Accepted { .. }
+            | tilo_actions::InvocationUpdate::Progress { .. }
+            | tilo_actions::InvocationUpdate::Item { .. } => {
+                tilo_actions::InteractionPhase::Applying
+            }
+            tilo_actions::InvocationUpdate::Succeeded { .. } => {
+                tilo_actions::InteractionPhase::Committed
+            }
+            tilo_actions::InvocationUpdate::Failed { error, .. } => {
+                tilo_actions::InteractionPhase::Failed {
+                    code: Some(error.code.clone()),
+                    message: error.message.clone(),
+                }
+            }
+            tilo_actions::InvocationUpdate::Cancelled { .. } => {
+                tilo_actions::InteractionPhase::Cancelled { message: None }
+            }
+        };
+        self.publish_interaction(target.route(), shown, update.invocation(), phase);
+    }
+
+    /// Show `shown` in the view `route` names, in `phase` of `invocation`.
+    fn publish_interaction(
+        &self,
+        route: &CrdtRoute,
+        shown: &execution_activity::ShownActor,
+        invocation: tilo_actions::InvocationId,
+        phase: tilo_actions::InteractionPhase,
+    ) {
+        let sequence = shown
+            .sequence
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .saturating_add(1);
+        let interaction = tilo_actions::SemanticInteraction {
+            version: tilo_actions::INTERACTION_VERSION,
+            invocation,
+            sequence,
+            actor: shown.actor.clone(),
+            phase,
+            action: shown.action.clone(),
+            resource: shown.resource.clone(),
+            anchor: tilo_actions::InteractionAnchor::Resource,
+            group: shown.group.clone(),
+        };
+        if interaction.validate().is_err() {
+            return;
+        }
+        let key = PresenceKey::resource(&route.app_id, &shown.resource.id, &shown.resource.kind);
+        let payload = PresencePayload::Interaction(Box::new(interaction));
+        // Peers see it too; their ingress keeps the actor only as far as
+        // this device's certified person vouches for it.
+        self.publish_presence(route, &key, &payload);
+        let event = CollabEvent::RemotePresenceUpdate {
+            user_id: shown.actor.id.clone(),
+            key,
+            payload,
+        };
+        if let Some(fanout) = self.fanout.upgrade() {
+            // No connection is peer 0: the view the action runs in sees it too.
+            fanout.fanout_to_route(&event, 0, &route.to_cluster_scope());
+        }
+    }
+
     /// The fixed 256-event buffer reports `Lagged` rather than concealing loss;
     /// consumers must clear stale presence on lag/closure. Dropping a receiver
     /// changes neither sessions nor app state. This is host-local provenance,
@@ -5251,17 +5681,32 @@ impl CapnpBrokerState {
         peer_id: u64,
         offered: &PublishedAction,
         argument: Option<&str>,
-        actor: &str,
+        actor: &BrokerActor,
         evidence: Option<&tilo_actions::remote::Confirmation>,
     ) -> Result<Option<String>, tilo_actions::remote::ActionHostError> {
-        use tilo_actions::remote::ActionHostError;
-        if matches!(
-            offered.contract.advertised_confirmation(),
-            tilo_actions::ConfirmationPolicy::None
-        ) {
-            return Ok(None);
-        }
-        if !confirmation_satisfied(offered, evidence) {
+        use tilo_actions::remote::{ActionHostError, Confirmation};
+        // Only a person acting themselves confirms by their own word; anyone
+        // acting for them carries the answer the person gave on their device.
+        let witnessed = match evidence {
+            Some(Confirmation::Witnessed(token)) => self.take_witness(
+                token,
+                &actor.id,
+                (&offered.resource, &offered.action),
+                argument,
+            ),
+            _ => false,
+        };
+        let own = actor.direct().then_some(evidence).flatten();
+        // Decided from the arguments, without the app's code: a field edit
+        // asks only when it removes what a person may want back.
+        let policy = offered.contract.confirmation_for_argument(argument);
+        if matches!(policy, tilo_actions::ConfirmationPolicy::None) {
+            // A confirmation given anyway answers the room's ask, if the
+            // grants ask; admission decides whether they do.
+            if !witnessed && !matches!(own, Some(Confirmation::Confirmed)) {
+                return Ok(None);
+            }
+        } else if !witnessed && !confirmation_satisfied(&policy, own) {
             return Err(ActionHostError::ConfirmationRequired);
         }
         let unavailable = || ActionHostError::Unavailable {
@@ -5281,12 +5726,68 @@ impl CapnpBrokerState {
                 resource: offered.resource.clone(),
                 action: offered.action.clone(),
                 argument_digest: argument_digest(argument),
-                actor: actor.to_string(),
+                actor: actor.id.clone(),
                 expires,
             },
         );
         drop(grants);
         Ok(Some(token))
+    }
+
+    /// Record that the person `actor` acts for confirmed `actor`'s invocation
+    /// of `action` on `resource` with `argument` on their own device. The
+    /// returned token, carried as [`Confirmation::Witnessed`], answers that
+    /// one invocation once, within a minute.
+    ///
+    /// [`Confirmation::Witnessed`]: tilo_actions::remote::Confirmation::Witnessed
+    pub(crate) fn witness_confirmation(
+        &self,
+        actor: &str,
+        (resource, action): (&str, &str),
+        argument: Option<&str>,
+    ) -> Option<String> {
+        let now = std::time::Instant::now();
+        let expires = now.checked_add(std::time::Duration::from_secs(60))?;
+        let token = uuid::Uuid::new_v4().to_string();
+        let mut witnessed = self.witnessed_confirmations.lock().ok()?;
+        witnessed.retain(|_, witness| witness.expires >= now);
+        witnessed.insert(
+            token.clone(),
+            Witness {
+                actor: actor.to_owned(),
+                resource: resource.to_owned(),
+                action: action.to_owned(),
+                argument_digest: argument_digest(argument),
+                expires,
+            },
+        );
+        drop(witnessed);
+        Some(token)
+    }
+
+    /// Spend the person's answer `token` names, when it was given for this
+    /// very invocation.
+    fn take_witness(
+        &self,
+        token: &str,
+        actor: &str,
+        (resource, action): (&str, &str),
+        argument: Option<&str>,
+    ) -> bool {
+        let Ok(mut witnessed) = self.witnessed_confirmations.lock() else {
+            return false;
+        };
+        let matches = witnessed.get(token).is_some_and(|witness| {
+            witness.expires >= std::time::Instant::now()
+                && witness.actor == actor
+                && witness.resource == resource
+                && witness.action == action
+                && witness.argument_digest == argument_digest(argument)
+        });
+        if matches {
+            witnessed.remove(token);
+        }
+        matches
     }
 
     pub fn invocation_status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
@@ -5450,6 +5951,9 @@ impl CapnpBrokerState {
     /// Returns an error when workspace authority, task ownership, or a live
     /// task-capable subscriber is unavailable.
     pub fn dispatch_workspace_task(&self, cluster_id: &str, task_id: &str) -> Result<u64, String> {
+        if self.native_tasks(cluster_id).is_some() {
+            return self.dispatch_native_task(cluster_id, task_id);
+        }
         if self.services.legacy_workspace.is_none() {
             return Err("task mutation service unsupported".into());
         }
@@ -5523,6 +6027,7 @@ impl CapnpBrokerState {
                     lease,
                     action_context: context,
                     terminal: false,
+                    native: None,
                 },
             );
         let actor = format!("agent:{agent_id}");
@@ -5554,7 +6059,11 @@ impl CapnpBrokerState {
             .filter(|run| {
                 run.peer_id == peer_id
                     && run.agent_id == agent_id
-                    && run.lease == lease
+                    && (run.lease == lease
+                        || (run.native.is_some()
+                            && runtime_collab::native_task_revision(&run.lease)
+                                .zip(runtime_collab::native_task_revision(lease))
+                                .is_some_and(|(old, new)| old.0 == new.0)))
                     && !run.terminal
             })
             .cloned()
@@ -5574,6 +6083,9 @@ impl CapnpBrokerState {
         lease: &str,
     ) -> Result<bool, String> {
         let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
+        if run.native.is_some() {
+            return Ok(self.native_task_status(&run, lease)?.cancelled);
+        }
         let membership = self
             .membership
             .as_ref()
@@ -5589,7 +6101,7 @@ impl CapnpBrokerState {
         })?
     }
 
-    fn record_task_run_update(
+    async fn record_task_run_update(
         &self,
         peer_id: u64,
         agent_id: &str,
@@ -5598,7 +6110,13 @@ impl CapnpBrokerState {
         update: runtime_collab::TaskRunUpdate,
     ) -> Result<(), String> {
         let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
+        if run.native.is_some() {
+            return self.report_native_task(run, update).await;
+        }
         let (summary, status, terminal) = match update {
+            runtime_collab::TaskRunUpdate::DirectionsApplied { .. } => {
+                return Err("native directions are unavailable on a legacy task".into());
+            }
             runtime_collab::TaskRunUpdate::Accepted => {
                 ("Agent accepted run".to_string(), None, false)
             }
@@ -5658,6 +6176,10 @@ impl CapnpBrokerState {
         run_id: u64,
         lease: &str,
         target: runtime_collab::TaskAction<'_>,
+        provenance: Option<&(
+            durable_local_invocation::LocalCaller,
+            tilo_actions::InvocationId,
+        )>,
     ) -> Result<InvocationJob, String> {
         let runtime_collab::TaskAction {
             peer_id: target_peer,
@@ -5669,23 +6191,22 @@ impl CapnpBrokerState {
         if self.task_run_cancelled(peer_id, agent_id, run_id, lease)? {
             return Err("the task was cancelled; no further action may start".into());
         }
-        let confirmation_required = self
+        let (surface, descriptor) = self
             .surfaces
             .lock()
-            .ok()
-            .and_then(|surfaces| surfaces.get(&target_peer).cloned())
-            .and_then(|surface| {
-                (surface.route.cluster_id == run.cluster_id)
-                    .then_some(surface)
-                    .and_then(|surface| {
-                        surface.actions.into_iter().find(|candidate| {
-                            candidate.resource == resource && candidate.action == action
-                        })
-                    })
-            })
-            .ok_or_else(|| "the task action is no longer published in this workspace".to_string())?
-            .contract
-            .confirmation;
+            .map_err(|_| "task action surface unavailable")?
+            .get(&target_peer)
+            .filter(|surface| surface.route.cluster_id == run.cluster_id)
+            .and_then(|surface| surface.action_projection(resource, action))
+            .ok_or("the task action is no longer published in this workspace")?;
+        let requirement = crate::services::NativeTaskActionRequirement {
+            app: surface.app_id,
+            resource_kind: descriptor.resource_kind.clone(),
+            resource: resource.into(),
+            action: descriptor.action.clone(),
+            need: descriptor.contract.need(),
+        };
+        let confirmation_required = descriptor.contract.confirmation;
         if !matches!(
             confirmation_required,
             tilo_actions::ConfirmationPolicy::None
@@ -5694,20 +6215,34 @@ impl CapnpBrokerState {
                 "task action requires an interactive confirmation and cannot run unattended".into(),
             );
         }
-        self.start_invocation_confirmed_for(
-            target_peer,
-            resource,
-            action,
-            InvocationInputs {
-                requested: None,
-                caller: None,
-                execution: None,
-                argument,
-                actor: &BrokerActor::agent(run.agent_id),
-                confirmation_token: None,
-                context: Some(run.action_context),
-            },
-        )
+        if let Some(binding) = &run.native {
+            let (caller, invocation) =
+                provenance.ok_or("native task action requires authenticated original caller")?;
+            let mut current = binding.clone();
+            current.revision = runtime_collab::native_task_revision(lease)
+                .ok_or("invalid native lease")?
+                .1;
+            self.native_tasks(&run.cluster_id)
+                .ok_or("native task owner unavailable")?
+                .admit(&run.cluster_id, &current, &requirement, &mut || {
+                    self.start_native_task_invocation(&run, target, caller, *invocation)
+                })
+        } else {
+            self.start_invocation_confirmed_for(
+                target_peer,
+                resource,
+                action,
+                InvocationInputs {
+                    requested: None,
+                    caller: None,
+                    execution: None,
+                    argument,
+                    actor: &BrokerActor::agent(run.agent_id),
+                    confirmation_token: None,
+                    context: Some(run.action_context),
+                },
+            )
+        }
     }
 
     fn disconnect_device_media(&self, peer_id: u64) {
@@ -5758,9 +6293,7 @@ impl CapnpBrokerState {
         if let Ok(mut subscribers) = self.action_catalogue_subscribers.lock() {
             subscribers.remove(&peer_id);
         }
-        if let Ok(mut subscribers) = self.task_subscribers.lock() {
-            subscribers.remove(&peer_id);
-        }
+        self.disconnect_native_task_stream(peer_id);
         if let Ok(mut pending) = self.pending_invocations.lock() {
             let ids = pending
                 .iter()
@@ -5807,8 +6340,7 @@ impl CapnpBrokerState {
                         );
                         continue;
                     }
-                    self.execution_activity
-                        .publish(invocation.activity.as_ref(), &update);
+                    self.publish_activity(invocation.activity.as_ref(), &update);
                     self.record_completion(id, invocation.completion_owner(), update.clone());
                     if let Ok(mut requests) = self.cancellation_requests.lock() {
                         requests.remove(&id);
@@ -5827,6 +6359,15 @@ impl CapnpBrokerState {
         }
         if let Some(clipboard) = self.services.file_clipboard.as_ref() {
             clipboard.disconnect(peer_id);
+        }
+    }
+
+    fn disconnect_native_task_stream(&self, peer_id: u64) {
+        if let Ok(mut subscribers) = self.task_subscribers.lock() {
+            subscribers.remove(&peer_id);
+        }
+        if let Ok(mut runs) = self.pending_task_runs.lock() {
+            runs.retain(|_, run| run.native.is_none() || run.peer_id != peer_id);
         }
     }
 
@@ -5971,58 +6512,35 @@ impl CapnpBrokerState {
             ));
         }
         drop(broker_channels);
-        if admitted.agent_id.is_none() && admitted.verified.owns_person_room(&route.cluster_id) {
-            // The person room's devices hold the role their admission gave
-            // them (owner, or a foreign device's cap); there is no workspace
-            // policy to narrow it further.
-            if !role_permits(admitted.role, ArtifactKind::Note, envelope.op_class) {
-                return Err(capnp::Error::failed(
-                    "this device may not perform this document action in the person room".into(),
-                ));
-            }
-            return Ok(AuthorizedDocumentRoute {
-                artifact: envelope.artifact,
-                channel,
-                payload,
-            });
-        }
-        let membership = self.membership.as_ref().ok_or_else(|| {
-            capnp::Error::failed("certified session lost its membership authority".into())
-        })?;
-        let allowed = membership
-            .decide_in_room(&route.cluster_id, |workspace| {
-                let workspace = workspace.ok_or_else(|| {
-                    "certified document workspace is no longer available".to_string()
-                })?;
-                let mut role = match &admitted.agent_id {
-                    Some(agent) => workspace.role_of_agent_at(agent, now),
-                    None => workspace.role_of_at(&admitted.principal_id, now),
-                }
-                .ok_or_else(|| "current document membership expired".to_string())?;
-                if admitted.verified.capped {
-                    role = foreign_device_role(role, &workspace.capabilities, now);
-                }
-                let mut current = admitted.clone();
-                current.role = role;
-                let actor = current
-                    .policy_actor(workspace, now)
-                    .with_principal(Principal::App(route.app_id.clone()));
-                let resource = ResourceRef::Artifact {
-                    app: Some(route.app_id.clone()),
-                    kind: ArtifactKind::Note,
-                    instance: envelope.artifact,
+        // The change the op makes must be allowed outright: a signed op
+        // carries no answer to a grant that would ask first.
+        let record = collab_types::Record {
+            room: &route.cluster_id,
+            app: &route.app_id,
+            record: &route.record_id,
+        };
+        let allowed = admitted
+            .with_current_authority(self.membership.as_ref(), &route.cluster_id, |authority| {
+                let allows = |node: &tilo_action_policy::TreePath, kind| {
+                    authority
+                        .decide(node, kind, &tilo_desktop_model::context_at(now))
+                        .answer
+                        == Answer::Allow
                 };
-                let required = collab_types::caps::verb_for_opclass(envelope.op_class);
-                Ok::<bool, String>(
-                    workspace.decide_at(&actor, &resource, required, now) == CapDecision::Allow
-                        && role_permits(role, ArtifactKind::Note, envelope.op_class),
+                collab_types::decide_op(
+                    envelope,
+                    &record,
+                    None,
+                    None,
+                    &collab_types::Surfaces::process(),
+                    &allows,
                 )
+                .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit)
             })
-            .and_then(std::convert::identity)
             .map_err(capnp::Error::failed)?;
         if !allowed {
             return Err(capnp::Error::failed(
-                "current workspace capability denies this document action".into(),
+                "current workspace grants deny this document action".into(),
             ));
         }
         Ok(AuthorizedDocumentRoute {
@@ -6145,6 +6663,8 @@ impl CapnpBrokerState {
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }
             | CollabEvent::TaskRunCancellation { .. }
+            | CollabEvent::TaskRunControl { .. }
+            | CollabEvent::TaskRunReportResult { .. }
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
@@ -6361,6 +6881,7 @@ impl CapnpBrokerState {
                 permissions: Vec::new(),
             });
         }
+        let certified = native.is_some();
         if let Ok(mut m) = self.channels.lock() {
             m.entry(channel_id.to_owned())
                 .or_insert_with(ChannelSubscribers::default)
@@ -6371,6 +6892,11 @@ impl CapnpBrokerState {
                     native,
                     private_alias: false,
                 });
+        }
+        if certified {
+            // A new admitted session brings its own certificate expiry: the
+            // policy turn re-checks, and from then on wakes at that expiry.
+            tilo_identity_host::policy_change::announce();
         }
         rx
     }
@@ -6415,16 +6941,21 @@ impl CapnpBrokerState {
             .ok_or("native context has no membership authority")?
             .decide_in_room(&route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("native context workspace is unavailable")?;
-                let mut agents = workspace.agent_members_in_room_at(&route.cluster_id, now);
+                let mut agents = workspace.agent_members_at(now);
                 agents.sort_by(|left, right| left.0.cmp(&right.0));
-                let mut people = workspace.roster_in_room_at(&route.cluster_id, now);
-                people.sort_by(|left, right| left.0.cmp(&right.0));
+                let mut people: Vec<String> = workspace
+                    .roster()
+                    .into_iter()
+                    .map(|(person, _)| person)
+                    .filter(|person| !workspace.is_blocked(person))
+                    .collect();
+                people.sort();
                 // Presence may supply a label, but only owner-backed
                 // membership supplies the identity. An offline member
                 // remains a member.
                 let people = people
                     .into_iter()
-                    .map(|(person, _)| {
+                    .map(|person| {
                         let name = workspace
                             .collaborators
                             .iter()
@@ -6589,6 +7120,99 @@ impl CapnpBrokerState {
         Ok(())
     }
 
+    /// Re-check every membership surface and native context subscriber
+    /// (TIL-707), and register with
+    /// [`tilo_identity_host::policy_change::wake_at`] the first instant at
+    /// which a time-bound input they read (a capability's expiry, a
+    /// subscriber certificate's validity) changes the answer. Returns whether
+    /// the next re-check must come on the one-second clock instead of on an
+    /// announcement: an input nothing announces, or a check that failed.
+    fn refresh_policy_surfaces(self: &Arc<Self>) -> bool {
+        if self.services.workspace_memberships.is_none() || self.membership.is_none() {
+            // No membership surface, and no native context subscriber can
+            // be admitted: nothing here changes with policy.
+            return false;
+        }
+        // Sampled before anything is read: an expiry between this sample
+        // and a read is registered as well, so none is skipped.
+        let before = self.policy_now_ns();
+        let mut clocked = false;
+        if let Err(error) = self.refresh_workspace_membership_services() {
+            tracing::debug!(%error, "native membership surface could not be refreshed");
+            clocked = true;
+        }
+        if let Err(error) = self.refresh_workspace_context_services() {
+            tracing::debug!(%error, "native membership context could not be refreshed");
+            clocked = true;
+        }
+        let announced = self
+            .membership
+            .as_ref()
+            .is_some_and(|membership| membership.announces_policy_changes())
+            && tilo_identity_host::policy_change::timers_reliable();
+        let Ok(before) = before else {
+            return true;
+        };
+        if clocked || !announced {
+            return true;
+        }
+        let Ok((next, reads_fleet)) = self.next_policy_change(before) else {
+            return true;
+        };
+        if reads_fleet && !tilo_identity_host::policy_change::identity_files_watched() {
+            // Another process may revoke a device in the fleet file; without
+            // its watch, the fleet is re-read every second as before.
+            return true;
+        }
+        if let Some(at) = next {
+            let Ok(policy_now) = self.policy_now_ns() else {
+                return true;
+            };
+            tilo_identity_host::policy_change::wake_at(crate::policy_schedule::wall_instant(
+                at,
+                policy_now,
+                tilo_clock::unix_now_ns(),
+            ));
+        }
+        false
+    }
+
+    /// The first policy instant (Unix nanoseconds) after `after` at which a
+    /// membership surface or a native context subscriber can be answered
+    /// differently with nothing written, and whether a subscriber's
+    /// revalidation reads the device fleet.
+    fn next_policy_change(&self, after: u64) -> Result<(Option<u64>, bool), String> {
+        let capabilities = match self.membership.as_ref() {
+            Some(membership) => membership
+                .decide_in_tree(|tree| tree.next_grant_expiry_after(after / 1_000_000_000))?
+                .map(|seconds| seconds.saturating_mul(1_000_000_000)),
+            None => None,
+        };
+        let fleet_authority = self.certificate_authority.get().is_some();
+        let mut reads_fleet = false;
+        let certificates = self
+            .channels
+            .lock()
+            .map_err(|_| "native context subscriptions unavailable")?
+            .values()
+            .flat_map(|subscribers| subscribers.context.iter())
+            .filter_map(|subscriber| subscriber.native.as_ref()?.admitted.certificate.as_ref())
+            .filter_map(|certificate| {
+                reads_fleet |= fleet_authority;
+                // Not yet valid until issued; no longer valid once expired.
+                [Some(certificate.issued_at_ns), certificate.expires_at_ns]
+                    .into_iter()
+                    .flatten()
+                    .filter(|at| *at > after)
+                    .min()
+            })
+            .min();
+        Ok((
+            capabilities.into_iter().chain(certificates).min(),
+            reads_fleet,
+        ))
+    }
+
     /// Ask one local subscriber of every record channel in `cluster_id` for
     /// its document snapshot, on behalf of no local connection: how another
     /// device that just came back catches up on what it missed. Returns how
@@ -6746,6 +7370,13 @@ impl collab_service::Server for CapnpCollabService {
             .map_err(|error| {
                 capnp::Error::failed(format!("collaboration join identity rejected: {error}"))
             })?;
+            if let Some(app) = self.lease.local_media.as_ref()
+                && verified_identity
+                    .verified
+                    .owns_person_room(&route.cluster_id)
+            {
+                person_record_join(&app.app_id, &route).map_err(capnp::Error::failed)?;
+            }
             if let Some(worker) = &self.worker {
                 if route != worker.route
                     || verified_identity.verified.user_public_key != worker.root
@@ -7424,12 +8055,20 @@ impl channel_handle::Server for CapnpChannelHandle {
 
     /// The caller-side door to published actions: one remote-action request
     /// frame in, one answer out, as the caller this channel was admitted as.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one door: admission, an app's grant question and the person's confirmation decide each request in order"
+    )]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the action host moves into the future that answers the request"
+    )]
     fn remote_action(
         self: Rc<Self>,
         params: channel_handle::RemoteActionParams,
         mut results: channel_handle::RemoteActionResults,
     ) -> Promise<(), capnp::Error> {
-        use tilo_actions::remote::{RemoteActionFrame, serve};
+        use tilo_actions::remote::RemoteActionFrame;
         let current = match self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)
@@ -7475,6 +8114,36 @@ impl channel_handle::Server for CapnpChannelHandle {
             return self.resource_view_query(*correlation, query.clone(), results);
         }
 
+        if tilo_actions::remote::refuse(
+            &request.message,
+            tilo_actions::remote::ActionHostError::UnknownAction,
+        )
+        .is_none()
+        {
+            return Promise::err(capnp::Error::failed(
+                "only remote-action requests are answered".into(),
+            ));
+        }
+        // An application reaching for another app's action it holds no
+        // grant for: the person using it is asked first, or it is refused.
+        let consent = match (caller.principal(), &request.message) {
+            (
+                tilo_actions::remote::CallerPrincipal::App(app_id),
+                tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
+            ) => match self.state.app_action_consent(&person, app_id, invoke) {
+                app_consent::ConsentStep::Serve => None,
+                app_consent::ConsentStep::Refuse => {
+                    return refused(
+                        &request.message,
+                        tilo_actions::remote::ActionHostError::NotPermitted,
+                        results,
+                    );
+                }
+                app_consent::ConsentStep::Ask(consent) => Some(consent),
+            },
+            _ => None,
+        };
+        let admitting_person = current.principal_id.clone();
         let host = action_host::ConnectionActionHost {
             state: Arc::clone(&self.state),
             own_peer: self.peer_id,
@@ -7483,45 +8152,25 @@ impl channel_handle::Server for CapnpChannelHandle {
                 admitted: Box::new(current),
             },
         };
-        // An application reaching for another app's action it holds no
-        // grant for: the person using it is asked first, or it is refused.
-        if let (
-            tilo_actions::remote::CallerPrincipal::App(app_id),
-            tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
-        ) = (caller.principal(), &request.message)
-        {
-            match self.state.app_action_consent(&person, app_id, invoke) {
-                app_consent::ConsentStep::Serve => {}
-                app_consent::ConsentStep::Refuse => {
-                    let refused = tilo_actions::remote::RemoteActionMessage::Receipt(
-                        tilo_actions::remote::InvocationReceipt {
-                            invocation: invoke.invocation,
-                            status: tilo_actions::remote::ReceiptStatus::Rejected {
-                                error: tilo_actions::remote::ActionHostError::NotPermitted,
-                            },
-                        },
-                    );
-                    return reply_frame(refused, results);
-                }
-                app_consent::ConsentStep::Ask(consent) => {
-                    return app_consent::serve_after_consent(
-                        Arc::clone(&self.state),
-                        consent,
-                        host,
-                        caller,
-                        request.message,
-                        results,
-                    );
-                }
-            }
+        if let Some(consent) = consent {
+            return app_consent::serve_after_consent(
+                Arc::clone(&self.state),
+                consent,
+                host,
+                caller,
+                request.message,
+                results,
+            );
         }
-        let answer = serve(&host, &caller, request.message);
-        drop(host);
-        let Some(answer) = answer else {
-            return Promise::err(capnp::Error::failed(
-                "only remote-action requests are answered".into(),
-            ));
-        };
+        // An invocation the caller may not confirm itself is put to the
+        // person who admitted the connection, on their own device.
+        let answer = witness::serve_answering(
+            Arc::clone(&self.state),
+            host,
+            caller,
+            admitting_person,
+            request.message,
+        );
         // Awaited on this local set, which is also where an application's
         // directory answers; the connection's other calls keep flowing.
         Promise::from_future(async move {
@@ -7541,11 +8190,30 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::CommittedDocumentParams,
         mut results: channel_handle::CommittedDocumentResults,
     ) -> Promise<(), capnp::Error> {
-        Promise::from((|| {
+        use runtime_collab::committed_document::Request;
+        let decoded = (|| {
             let reader = params.get()?;
-            let request =
-                runtime_collab::committed_document::Request::decode(reader.get_request()?)
-                    .map_err(|e| capnp::Error::failed(e.into()))?;
+            Request::decode(reader.get_request()?).map_err(|e| capnp::Error::failed(e.into()))
+        })();
+        let request = match decoded {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        if let Request::Await { known_revision } = request {
+            // Held without blocking the channel: answered on this LocalSet
+            // when the read may have changed.
+            return Promise::from_future(async move {
+                let reply = self
+                    .await_committed_change(known_revision)
+                    .await
+                    .map_err(capnp::Error::failed)?;
+                results
+                    .get()
+                    .set_reply(&reply.encode().map_err(|e| capnp::Error::failed(e.into()))?);
+                Ok(())
+            });
+        }
+        Promise::from((|| {
             let reply = self
                 .committed_document_dispatch(&request)
                 .map_err(capnp::Error::failed)?;
@@ -7990,13 +8658,17 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "only Effects produce durable invocation receipts".into(),
             ));
         }
+        let what = tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new(&surface.app_id, &offered.resource_kind, &offered.action),
+            [],
+        );
         let mut context = tilo_actions::ActionContext::for_resource(
-            offered.action_label,
             offered.resource,
             offered.resource_kind,
             offered.resource_label,
         )
-        .with_app(&surface.app_id, &surface.app_id);
+        .with_app(&surface.app_id, &surface.app_id)
+        .with_described(tilo_actions::Described::new(what));
         let actor = current.broker_actor().id;
         if self.state.durable_owner_required
             || self
@@ -8005,11 +8677,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .requires_owner_for(&surface.route.cluster_id)
         {
             context.purpose = None;
-            let receipt = crate::policy::redacted_effect_receipt(
+            let receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
                 update.invocation(),
                 &actor,
                 context,
                 status,
+                tilo_clock::unix_now_i64(),
             );
             let state = self.state.clone();
             let route = self.route();
@@ -8741,9 +9414,11 @@ impl channel_handle::Server for CapnpChannelHandle {
         _params: channel_handle::SubscribeTaskRunsParams,
         mut results: channel_handle::SubscribeTaskRunsResults,
     ) -> Promise<(), capnp::Error> {
-        if self.state.services.legacy_workspace.is_none() {
+        if self.state.services.legacy_workspace.is_none()
+            && self.state.native_tasks(&self.route().cluster_id).is_none()
+        {
             return Promise::err(capnp::Error::failed(
-                "task mutation service unsupported".into(),
+                "task execution service unsupported".into(),
             ));
         }
         let current = match self
@@ -8773,6 +9448,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "task subscription registry unavailable".into(),
             ));
         }
+        // A replacement stream needs the canonical approved run again, even
+        // when the authenticated connection itself did not change.
+        if let Ok(mut runs) = self.state.pending_task_runs.lock() {
+            runs.retain(|_, run| run.peer_id != self.peer_id || run.native.is_none());
+        }
+        self.state.local_turn.notify_one();
         let client: task_run_stream::Client = capnp_rpc::new_client(TaskRunStreamServer {
             host_guard: HostWorkerReadGuard::for_channel(
                 &self.state,
@@ -8782,6 +9463,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             rx: Rc::new(AsyncMutex::new(rx)),
         });
         results.get().set_stream(client);
+        self.state.refresh_native_task_delivery();
         Promise::ok(())
     }
 
@@ -8813,6 +9495,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             .map_err(|error| capnp::Error::failed(format!("invalid task update: {error}")))?;
             state
                 .record_task_run_update(peer_id, &agent_id, request.get_run_id(), &lease, update)
+                .await
                 .map_err(capnp::Error::failed)
         })
     }
@@ -8836,6 +9519,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         let state = self.state.clone();
         let peer_id = self.peer_id;
+        let caller = durable_local_invocation::LocalCaller::capture(&self).ok();
         Promise::from_future(async move {
             let request = params.get()?;
             // Interactive confirmations have no safe unattended equivalent.
@@ -8866,18 +9550,56 @@ impl channel_handle::Server for CapnpChannelHandle {
                     "durable task steps are not served by this host".into(),
                 ));
             }
-            let job = state
-                .start_task_action(peer_id, &agent_id, request.get_run_id(), &lease, target)
-                .map_err(capnp::Error::failed)?;
-            let update = state.invocation_status(job.id).ok_or_else(|| {
-                capnp::Error::failed("accepted task action has no broker state".into())
-            })?;
-            results.get().set_id(job.id);
+            let invocation = request.get_invocation()?.to_str()?;
+            let provenance = if runtime_collab::native_task_revision(&lease).is_some() {
+                let id = uuid::Uuid::parse_str(invocation).map_err(|_| {
+                    capnp::Error::failed("native task child requires stable invocation UUID".into())
+                })?;
+                if id.is_nil() {
+                    return Err(capnp::Error::failed("nil task invocation".into()));
+                }
+                Some((
+                    caller.ok_or_else(|| {
+                        capnp::Error::failed("native task channel custody unavailable".into())
+                    })?,
+                    tilo_actions::InvocationId(id),
+                ))
+            } else {
+                None
+            };
+            let observed = if let Some((caller, invocation)) = &provenance {
+                let run = state
+                    .task_run_for(peer_id, &agent_id, request.get_run_id(), &lease)
+                    .map_err(capnp::Error::failed)?;
+                state
+                    .native_task_observation(&run, *invocation, target, caller)
+                    .map_err(capnp::Error::failed)?
+            } else {
+                None
+            };
+            let (id, update) = if let Some(observed) = observed {
+                observed
+            } else {
+                let job = state
+                    .start_task_action(
+                        peer_id,
+                        &agent_id,
+                        request.get_run_id(),
+                        &lease,
+                        target,
+                        provenance.as_ref(),
+                    )
+                    .map_err(capnp::Error::failed)?;
+                let update = state.invocation_status(job.id).ok_or_else(|| {
+                    capnp::Error::failed("accepted task action has no broker state".into())
+                })?;
+                (job.id, update)
+            };
+            results.get().set_id(id);
             results.get().set_update_json(
                 &serde_json::to_string(&update)
                     .map_err(|error| capnp::Error::failed(error.to_string()))?,
             );
-            drop(job.completion);
             Ok(())
         })
     }
@@ -8908,6 +9630,20 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .task_run_cancelled(peer_id, &agent_id, request.get_run_id(), &lease)
                 .map_err(capnp::Error::failed)?;
             results.get().set_cancelled(cancelled);
+            let run = state
+                .task_run_for(peer_id, &agent_id, request.get_run_id(), &lease)
+                .map_err(capnp::Error::failed)?;
+            if run.native.is_some() {
+                let status = state
+                    .native_task_status(&run, &lease)
+                    .map_err(capnp::Error::failed)?;
+                if let Some(control) = status.control {
+                    results.get().set_control_json(
+                        &serde_json::to_string(&control)
+                            .map_err(|error| capnp::Error::failed(error.to_string()))?,
+                    );
+                }
+            }
             Ok(())
         })
     }
@@ -9023,9 +9759,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .remove(&id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
             drop(registry);
-            state
-                .execution_activity
-                .publish(pending.activity.as_ref(), &update);
+            state.publish_activity(pending.activity.as_ref(), &update);
             state.record_completion(id, pending.completion_owner(), update.clone());
             if let Ok(mut requests) = state.cancellation_requests.lock() {
                 requests.remove(&id);
@@ -9499,10 +10233,12 @@ impl channel_handle::Server for CapnpChannelHandle {
         let workspace = match membership
             .decide_in_room(&self.route().cluster_id, |workspace| {
                 let workspace = workspace.ok_or("the application workspace is no longer hosted")?;
-                let caller = actor.policy_in(workspace, now);
-                if workspace.decide_at(&caller, &ResourceRef::App(app_id.clone()), Verb::Write, now)
-                    != CapDecision::Allow
-                {
+                if !actor.may_in(
+                    workspace,
+                    &app_node(workspace, &app_id),
+                    ActionKind::Undoable,
+                    now,
+                ) {
                     return Err("the caller is not allowed to launch that application");
                 }
                 Ok(workspace.clone())
@@ -9721,27 +10457,34 @@ fn permits_directory_row(
     Ok(state
         .permits_directory_actions(cluster_id, actor, app_id, &[question])?
         .first()
-        .copied()
-        .unwrap_or(false))
+        .is_some_and(|answer| *answer != Answer::Deny))
 }
 
 /// What current authority must decide for one directory row: the action
-/// whose contract governs the row and the verb that contract requires
-/// (`None`: the contract requires none).
+/// whose contract governs the row, where it sits and what kind it is.
 struct DirectoryQuestion<'a> {
+    resource_kind: &'a str,
     resource: &'a str,
     action: &'a str,
-    verb: Option<Verb>,
+    field: Option<&'a str>,
+    kind: ActionKind,
 }
 
 impl<'a> DirectoryQuestion<'a> {
     /// The question the row's decoded contract asks. Resource-only rows
     /// carry the visibility contract.
-    fn of(resource: &'a str, action: &'a str, contract: &tilo_actions::ActionContract) -> Self {
+    fn of(
+        resource_kind: &'a str,
+        resource: &'a str,
+        action: &'a str,
+        contract: &'a tilo_actions::ActionContract,
+    ) -> Self {
         Self {
+            resource_kind,
             resource,
             action,
-            verb: permission_verb(contract.permission),
+            field: contract.field.as_deref(),
+            kind: contract.kind,
         }
     }
 }
@@ -9837,6 +10580,7 @@ fn directory_row_question(
             let published = published_directory_action(row)?;
             validate_resource_view_descriptors(std::slice::from_ref(&published))?;
             Ok(DirectoryQuestion::of(
+                &row.resource_kind,
                 &row.resource,
                 action,
                 &descriptor.contract,
@@ -9855,6 +10599,7 @@ fn directory_row_question(
                 true,
             )?;
             Ok(DirectoryQuestion::of(
+                &row.resource_kind,
                 &row.resource,
                 &visibility.action,
                 &visibility.contract,
@@ -9891,13 +10636,27 @@ fn filter_directory_page(
         .iter()
         .map(directory_row_question)
         .collect::<Result<Vec<_>, _>>()?;
-    let allowed = state.permits_directory_actions(cluster_id, actor, app_id, &questions)?;
+    let answers = state.permits_directory_actions(cluster_id, actor, app_id, &questions)?;
     drop(questions);
+    // Listed when the actor may take it, or would be asked first; an action
+    // asking first asks for the confirmation the person gives on their
+    // own device.
     page.rows = page
         .rows
         .into_iter()
-        .zip(allowed)
-        .filter_map(|(row, allowed)| allowed.then_some(row))
+        .zip(answers)
+        .filter_map(|(mut row, answer)| match answer {
+            Answer::Deny => None,
+            Answer::Allow => Some(row),
+            Answer::Ask => {
+                if let Some(descriptor) = row.descriptor.as_mut()
+                    && descriptor.contract.confirmation == tilo_actions::ConfirmationPolicy::None
+                {
+                    descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+                }
+                Some(row)
+            }
+        })
         .collect();
     Ok(page)
 }
@@ -9979,6 +10738,48 @@ fn policy_system_time(state: &CapnpBrokerState) -> Option<std::time::SystemTime>
     std::time::UNIX_EPOCH.checked_add(Duration::from_nanos(now))
 }
 
+/// `envelope` validated against its author's current authority in the room
+/// and the channel's state, or `None` when either is unavailable.
+fn validate_signed_op(
+    state: &Arc<CapnpBrokerState>,
+    route: &CrdtRoute,
+    verified_identity: &AdmittedJoinIdentity,
+    artifact: ArtifactId,
+    envelope: &SignedOp,
+) -> Option<Result<(), ValidationError>> {
+    let now = policy_system_time(state)?;
+    let validation = verified_identity.with_current_authority(
+        state.membership.as_ref(),
+        &route.cluster_id,
+        |author| {
+            let Ok(mut ch) = state.broker_channels.lock() else {
+                return None;
+            };
+            let ch_state = ch.state_for(artifact);
+            ch_state.room.clone_from(&route.cluster_id);
+            ch_state.artifacts.insert(artifact, ArtifactKind::Note);
+            ch_state
+                .artifact_apps
+                .insert(artifact, route.app_id.clone());
+            ch_state
+                .artifact_records
+                .insert(artifact, route.record_id.clone());
+            Some(validate_admitted_inbound_op(
+                envelope,
+                author,
+                ch_state,
+                now,
+                Duration::from_secs(300),
+            ))
+        },
+    );
+    match validation {
+        Ok(Some(validation)) => Some(validation),
+        Ok(None) => None,
+        Err(error) => Some(Err(ValidationError::NotGranted(error))),
+    }
+}
+
 fn handle_signed_op_send_for_artifact(
     state: &Arc<CapnpBrokerState>,
     peer_id: u64,
@@ -9987,25 +10788,9 @@ fn handle_signed_op_send_for_artifact(
     artifact: ArtifactId,
     envelope: SignedOp,
 ) {
-    let Some(now) = policy_system_time(state) else {
+    let Some(validation) = validate_signed_op(state, route, verified_identity, artifact, &envelope)
+    else {
         return;
-    };
-    let validation = {
-        let Ok(mut ch) = state.broker_channels.lock() else {
-            return;
-        };
-        let ch_state = ch.state_for(artifact);
-        ch_state.artifacts.insert(artifact, ArtifactKind::Note);
-        ch_state
-            .artifact_apps
-            .insert(artifact, route.app_id.clone());
-        validate_admitted_inbound_op(
-            &envelope,
-            verified_identity.role,
-            ch_state,
-            now,
-            Duration::from_secs(300),
-        )
     };
     match validation {
         Ok(()) => {
@@ -10013,13 +10798,13 @@ fn handle_signed_op_send_for_artifact(
                 ch.record_history(&route.cluster_id, &envelope);
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
-                if envelope.op_class == collab_types::OpClass::Compaction
+                if envelope.kind == collab_types::OpKind::Compaction
                     && let Ok(cp) = collab_types::parse_compaction_payload(&envelope)
                 {
                     let _ = ch_state.apply_compaction(&cp);
                 }
             }
-            if envelope.op_class == collab_types::OpClass::Redact {
+            if envelope.kind == collab_types::OpKind::Redaction {
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
             }
             // Republishing is not vouching.
@@ -10374,14 +11159,14 @@ impl presence_handle::Server for CapnpPresenceHandle {
             let mut update: tilo_actions::SemanticInteraction = serde_json::from_str(json)
                 .map_err(|error| capnp::Error::failed(format!("invalid interaction: {error}")))?;
             let actor = self.verified_identity.broker_actor();
-            let normalized_actor = tilo_actions::InteractionActor {
-                id: CapnpBrokerState::participant_id(&self.verified_identity),
-                kind: if actor.is_agent {
-                    tilo_actions::InteractionActorKind::Agent
+            let normalized_actor = tilo_actions::InteractionActor::new(
+                CapnpBrokerState::participant_id(&self.verified_identity),
+                if actor.is_agent {
+                    tilo_actions::ActorKind::Agent
                 } else {
-                    tilo_actions::InteractionActorKind::Person
+                    tilo_actions::ActorKind::Person
                 },
-            };
+            );
             let sequence = {
                 let mut sequences = self.interaction_sequences.lock().map_err(|_| {
                     capnp::Error::failed("interaction sequence registry unavailable".into())
@@ -11507,6 +12292,23 @@ impl CapnpBrokerState {
     }
 }
 
+/// When the broker's turn must wake with nothing arriving: the earlier of
+/// its next policy re-check and its next invocation expiry, and never while
+/// neither is due.
+fn broker_turn_deadline(
+    recheck: Option<std::time::Instant>,
+    invocation: Option<std::time::Instant>,
+) -> Option<std::time::Instant> {
+    recheck.into_iter().chain(invocation).min()
+}
+
+/// Sleep until `deadline`; only polled while there is one.
+async fn sleep_until(deadline: Option<std::time::Instant>) {
+    if let Some(deadline) = deadline {
+        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+    }
+}
+
 /// One run of the broker thread: start the broker's own services, then
 /// accept and drive connections until asked to quit.
 #[expect(
@@ -11557,18 +12359,27 @@ async fn serve_broker_thread(
             return;
         }
     };
-    let mut next_membership_refresh = std::time::Instant::now();
+    // Membership surfaces and native context subscribers are re-checked when
+    // an input announces a change or a registered expiry comes due, not on a
+    // clock (TIL-707). The watch wakes this turn for the first announcement
+    // after it is armed; the schedule coalesces the rest.
+    let policy_turn = Arc::new(tokio::sync::Notify::new());
+    let policy_watch = {
+        let turn = Arc::clone(&policy_turn);
+        tilo_identity_host::policy_change::Watch::new(move || turn.notify_one())
+    };
+    let mut policy = crate::policy_schedule::PolicySchedule::default();
+    let mut next_native_task_refresh = std::time::Instant::now();
     loop {
-        if std::time::Instant::now() >= next_membership_refresh {
-            if let Err(error) = state.refresh_workspace_membership_services() {
-                tracing::debug!(%error, "native membership surface could not be refreshed");
-            }
-            if let Err(error) = state.refresh_workspace_context_services() {
-                tracing::debug!(%error, "native membership context could not be refreshed");
-            }
-            next_membership_refresh = std::time::Instant::now()
-                .checked_add(Duration::from_secs(1))
-                .unwrap_or_else(std::time::Instant::now);
+        let now = std::time::Instant::now();
+        let epoch = tilo_identity_host::policy_change::epoch();
+        if policy.due(now, epoch).is_some_and(|due| due <= now) {
+            let clocked = state.refresh_policy_surfaces();
+            policy.checked(now, epoch, clocked);
+        }
+        if state.has_native_task_subscribers() && now >= next_native_task_refresh {
+            state.refresh_native_task_delivery();
+            next_native_task_refresh = now.checked_add(Duration::from_secs(1)).unwrap_or(now);
         }
         #[cfg(test)]
         {
@@ -11618,19 +12429,30 @@ async fn serve_broker_thread(
         if quit.load(Ordering::Relaxed) {
             break;
         }
-        let deadline = state.next_invocation_deadline();
-        // The loop is also the broker's turn: in-process door
-        // calls and connected apps progress on it. Cap it at the
-        // old cadence, and sooner when an invocation is about to
-        // expire. `local_turn` wakes it immediately for queued work.
-        let tick = deadline
-            .map_or(Duration::from_millis(100), |deadline| {
-                deadline.saturating_duration_since(std::time::Instant::now())
-            })
-            .min(Duration::from_millis(100));
+        // Sleep until something here is due: the next policy re-check, or an
+        // invocation about to expire. Everything else the turn handles wakes
+        // it at once: queued directory work, in-process door calls and quit
+        // through `local_turn`, admitted workers through `worker_admitted`,
+        // policy announcements through `policy_turn`; connected apps run as
+        // tasks of this LocalSet.
+        let now = std::time::Instant::now();
+        let mut recheck = policy.due(now, tilo_identity_host::policy_change::epoch());
+        if recheck.is_none() && policy_watch.arm() != policy.epoch() {
+            // Announced between the check above and arming: nothing will
+            // wake the turn for it.
+            recheck = Some(now);
+        }
+        let deadline = broker_turn_deadline(recheck, state.next_invocation_deadline())
+            .into_iter()
+            .chain(
+                state
+                    .has_native_task_subscribers()
+                    .then_some(next_native_task_refresh),
+            )
+            .min();
         let stream = tokio::select! {
             biased;
-            () = tokio::time::sleep(tick) => {
+            () = sleep_until(deadline), if deadline.is_some() => {
                 // Expiration must not depend on a caller polling
                 // status: completion waiters deserve a terminal
                 // answer even after an app goes silent.
@@ -11640,6 +12462,7 @@ async fn serve_broker_thread(
             conn = listener.accept() => conn,
             () = state.local_turn.notified() => continue,
             () = state.worker_admitted.notified() => continue,
+            () = policy_turn.notified() => continue,
         };
         let (stream, _) = match stream {
             Ok(s) => s,
@@ -12016,16 +12839,9 @@ async fn read_launcher_handoff(
     reason = "Cap'n Proto RPC is Rc-backed and runs only on the broker LocalSet"
 )]
 async fn answer_refused_launch(stream: tokio::net::UnixStream, error: capnp::Error) {
-    let (reader, writer) = stream.into_split();
-    let network = Box::new(twoparty::VatNetwork::new(
-        futures::io::BufReader::new(reader.compat()),
-        futures::io::BufWriter::new(writer.compat_write()),
-        rpc_twoparty_capnp::Side::Server,
-        capnp::message::ReaderOptions::default(),
-    ));
     let refused: collab_service::Client =
         capnp_rpc::new_future_client(std::future::ready(Err(error)));
-    let rpc = RpcSystem::new(network, Some(refused.client));
+    let rpc = runtime_portal::serve_connected_io(stream, refused.client);
     let _ = tokio::time::timeout(REFUSED_LAUNCH_ANSWER_WINDOW, rpc).await;
 }
 
@@ -12071,15 +12887,6 @@ async fn drive_connection(
         None
     };
     let _media_monitor = native_media::ProcessMonitor::start(local_media.clone(), &state, peer_id);
-    let (reader, writer) = stream.into_split();
-    let reader = reader.compat();
-    let writer = writer.compat_write();
-    let network = Box::new(twoparty::VatNetwork::new(
-        futures::io::BufReader::new(reader),
-        futures::io::BufWriter::new(writer),
-        rpc_twoparty_capnp::Side::Server,
-        capnp::message::ReaderOptions::default(),
-    ));
     let client: collab_service::Client = capnp_rpc::new_client(CapnpCollabService {
         worker,
         lease: Rc::new(ConnectionLease {
@@ -12092,7 +12899,7 @@ async fn drive_connection(
         directories,
         peer_id,
     });
-    let rpc = RpcSystem::new(network, Some(client.client));
+    let rpc = runtime_portal::serve_connected_io(stream, client.client);
     let _disconnect = DisconnectOnDrop(Some(rpc.get_disconnector()));
     rpc.await
 }
@@ -12145,7 +12952,9 @@ pub mod tests {
     #[cfg(test)]
     use crate::collab_outbound::recording::{RecordingSink, Sent};
     #[cfg(test)]
-    use collab_types::{CapOverride, Ed25519PublicKey, Role, Subject, sign_op};
+    use crate::test_support::Grants as _;
+    #[cfg(test)]
+    use collab_types::{Ed25519PublicKey, Role, sign_op};
     #[cfg(test)]
     use ed25519_dalek::Signer as _;
     #[cfg(test)]
@@ -12440,7 +13249,13 @@ pub mod tests {
             fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
                 Vec::new()
             }
-            fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+            fn launch(
+                &self,
+                _: &str,
+                _: &tilo_desktop_model::Workspace,
+                _: Option<&str>,
+                _: &crate::services::LaunchPlace,
+            ) -> Result<(), String> {
                 Err("this broker launches nothing".into())
             }
             fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
@@ -12493,20 +13308,13 @@ pub mod tests {
             .expect("runtime");
         let error = tokio::task::LocalSet::new().block_on(&runtime, async move {
             let stream = tokio::net::UnixStream::from_std(stream).expect("tokio stream");
-            let (reader, writer) = stream.into_split();
-            let network = Box::new(twoparty::VatNetwork::new(
-                futures::io::BufReader::new(reader.compat()),
-                futures::io::BufWriter::new(writer.compat_write()),
-                rpc_twoparty_capnp::Side::Client,
-                capnp::message::ReaderOptions::default(),
-            ));
-            let mut rpc = RpcSystem::new(network, None);
             let client = runtime_collab::CollabClient::from_raw(
-                rpc.bootstrap(rpc_twoparty_capnp::Side::Server),
+                runtime_portal::CapnpClient::from_connected_io(
+                    stream,
+                    rpc_twoparty_capnp::Side::Client,
+                )
+                .bootstrap(),
             );
-            tokio::task::spawn_local(async move {
-                let _ = rpc.await;
-            });
             match client
                 .join_channel(
                     "5ba25f73-87c5-447f-a5a6-880dc4249a81#app:so.tilo.calculator",
@@ -12554,7 +13362,13 @@ pub mod tests {
         fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
             Vec::new()
         }
-        fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+        fn launch(
+            &self,
+            _: &str,
+            _: &tilo_desktop_model::Workspace,
+            _: Option<&str>,
+            _: &crate::services::LaunchPlace,
+        ) -> Result<(), String> {
             Err("this broker launches nothing".into())
         }
         fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
@@ -13412,6 +14226,7 @@ pub mod tests {
                     display_handle: None,
                     role: CapRole::Editor,
                     agent_id: None,
+                    session_delegated: false,
                 },
                 record_kind: None,
                 lease: None,
@@ -13450,6 +14265,20 @@ pub mod tests {
                 .try_recv()
                 .ok()
                 .map(|invocation| invocation.actor)
+        }
+
+        /// The next delivered invocation's actor and the invoker the host
+        /// recorded for it.
+        pub fn take_invocation_invoker(
+            &mut self,
+        ) -> Option<(String, Option<tilo_actions::ActionInvoker>)> {
+            self.invocation_rx.try_recv().ok().map(|invocation| {
+                let invoker = invocation
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.invoker.clone());
+                (invocation.actor, invoker)
+            })
         }
 
         pub fn take_invocation_argument(&mut self) -> Option<Option<String>> {
@@ -13556,7 +14385,7 @@ pub mod tests {
             crate::test_support::WorkspaceId(71),
             "Directory test room",
         );
-        workspace.owner = Some("fixture-owner".to_string());
+        workspace.set_owner("fixture-owner".to_string());
         tree.workspaces.push(workspace);
         tree.set_active(crate::test_support::WorkspaceId(71));
         local_directory_fixture_with_membership(tree.shared())
@@ -13860,7 +14689,7 @@ pub mod tests {
             out.get_rows()
                 .unwrap()
                 .get(1)
-                .set_visibility_contract_json(r#"{"permission":"everyone"}"#);
+                .set_visibility_contract_json(r#"{"kind":"everyone"}"#);
             Promise::ok(())
         }
     }
@@ -14074,8 +14903,8 @@ pub mod tests {
             .read()
             .active_workspace()
             .unwrap()
-            .owner
-            .clone()
+            .owner()
+            .cloned()
             .unwrap();
         let job = fixture
             .state
@@ -14220,14 +15049,10 @@ pub mod tests {
                 crate::test_support::WorkspaceId(101),
                 "Exact Agent identity",
             );
-            workspace.owner = Some(principal.clone());
+            workspace.set_owner(principal.clone());
             let route = CrdtRoute::cluster(workspace.room.to_string());
             for agent in agents {
-                workspace.grant_capability(CapOverride::membership(
-                    Subject::agent(agent),
-                    route.cluster_id.clone(),
-                    Verb::Comment,
-                ));
+                workspace.admit_agent(agent, crate::test_support::KindSet::READ);
             }
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
@@ -14468,7 +15293,6 @@ pub mod tests {
         assert!(workspace_control_role_allowed(Role::Editor));
         assert!(!workspace_control_role_allowed(Role::Commenter));
         assert!(!workspace_control_role_allowed(Role::Viewer));
-        assert!(!workspace_control_role_allowed(Role::Denied));
     }
 
     #[cfg(test)]
@@ -14484,13 +15308,9 @@ pub mod tests {
     fn downgrade_member_to_viewer(membership: &WorkspaceTreeHandle, principal: &str, room: &str) {
         let mut tree = membership.write();
         let workspace = &mut tree.workspaces[0];
-        workspace.owner = None;
-        workspace.capabilities.clear();
-        workspace.capabilities.push(CapOverride::membership(
-            Subject::person(principal),
-            room,
-            collab_types::Verb::Read,
-        ));
+        let _ = room;
+        workspace.policy.owner = None;
+        workspace.admit(principal, Role::Viewer);
         drop(tree);
     }
 
@@ -14501,11 +15321,7 @@ pub mod tests {
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(1), "Member room");
         let route = CrdtRoute::cluster(workspace.room.to_string());
-        workspace.grant_capability(crate::test_support::CapOverride::membership(
-            crate::test_support::Subject::person(&principal),
-            workspace.room.to_string(),
-            crate::test_support::Verb::Write,
-        ));
+        workspace.admit(principal.clone(), crate::test_support::Role::Editor);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
 
@@ -14541,11 +15357,11 @@ pub mod tests {
 
     #[test]
     fn a_foreign_device_is_refused_actions_above_the_workspace_cap() {
-        use tilo_actions::PermissionRequirement::{Admin, Invite, Write};
+        use tilo_actions::ActionKind::{Outside, Undoable};
         let root = SigningKey::from_bytes(&[24; 32]);
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(4), "Actions");
-        workspace.owner = Some(principal_id_for_root(root.verifying_key().to_bytes()));
+        workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
         let room = workspace.room.to_string();
         let route = CrdtRoute::cluster(room.clone());
         let mut tree = WorkspaceTree::default();
@@ -14563,24 +15379,29 @@ pub mod tests {
             Some(tree.shared()),
             None,
         );
-        let authorize = |admitted: &AdmittedJoinIdentity, permission| {
+        let authorize = |admitted: &AdmittedJoinIdentity, kind| {
             state.authorize_invocation_permission(
                 &room,
-                "so.tilo.settings",
-                "settings.workspace",
-                "workspace.rename",
-                permission,
+                (
+                    "so.tilo.settings",
+                    "settings.workspace",
+                    "settings.workspace",
+                    "workspace.rename",
+                ),
+                &tilo_actions::ActionNeed::of(kind),
                 &admitted.broker_actor(),
                 0,
             )
         };
 
-        for permission in [Admin, Invite, Write] {
-            authorize(&native, permission).unwrap();
+        for kind in [Outside, Undoable] {
+            authorize(&native, kind).unwrap();
         }
-        assert!(authorize(&foreign, Admin).is_err());
-        assert!(authorize(&foreign, Invite).is_err());
-        authorize(&foreign, Write).unwrap();
+        assert!(
+            authorize(&foreign, Outside).is_err(),
+            "reaching outside asks first on a device not theirs, and nobody answered"
+        );
+        authorize(&foreign, Undoable).unwrap();
     }
 
     /// Governs every room for one device; admits every certificate.
@@ -14606,7 +15427,7 @@ pub mod tests {
         let root = SigningKey::from_bytes(&[25; 32]);
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(5), "Own");
-        workspace.owner = Some(principal_id_for_root(root.verifying_key().to_bytes()));
+        workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
         let room = workspace.room.to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -14640,10 +15461,13 @@ pub mod tests {
             let actor = state.certified_person(&room, cert);
             let admin = state.authorize_invocation_permission(
                 &room,
-                "so.tilo.settings",
-                "settings.workspace",
-                "workspace.rename",
-                tilo_actions::PermissionRequirement::Admin,
+                (
+                    "so.tilo.settings",
+                    "settings.workspace",
+                    "settings.workspace",
+                    "workspace.rename",
+                ),
+                &tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Outside),
                 &actor,
                 0,
             );
@@ -14651,7 +15475,7 @@ pub mod tests {
         };
 
         assert_eq!(admin(&foreign_cert(governor)), (CapRole::Owner, true));
-        assert_eq!(admin(&foreign_cert([8; 32])), (CapRole::Editor, false));
+        assert_eq!(admin(&foreign_cert([8; 32])), (CapRole::Owner, false));
     }
 
     #[test]
@@ -14659,12 +15483,8 @@ pub mod tests {
         let root = SigningKey::from_bytes(&[23; 32]);
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(3), "Foreign");
-        workspace.owner = Some(principal_id_for_root(root.verifying_key().to_bytes()));
-        workspace.grant_capability(CapOverride::membership(
-            Subject::agent("scribe"),
-            workspace.room.to_string(),
-            Verb::Comment,
-        ));
+        workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
+        workspace.admit_agent("scribe", crate::test_support::KindSet::READ);
         let route = CrdtRoute::cluster(workspace.room.to_string());
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -14678,14 +15498,33 @@ pub mod tests {
         admit_agent_delegation(&tree, &route, &mut admitted, "scribe").unwrap();
 
         let mut admitted = admit_verified_join(&tree, &route, foreign.clone()).unwrap();
-        assert_eq!(admitted.role, CapRole::Editor);
         assert!(admit_agent_delegation(&tree, &route, &mut admitted, "scribe").is_err());
+        let changes = |admitted: &AdmittedJoinIdentity, tree: &WorkspaceTree| {
+            admitted
+                .with_authority(Some(&tree.desktop), &route.cluster_id, |authority| {
+                    authority
+                        .decide(
+                            &tree.workspaces[0].node().app("so.tilo.notes"),
+                            ActionKind::Undoable,
+                            &tilo_desktop_model::context_at(0),
+                        )
+                        .answer
+                })
+                .unwrap()
+        };
+        assert_eq!(changes(&admitted, &tree), Answer::Allow);
 
-        tree.workspaces[0].grant_capability(collab_types::foreign_device::foreign_device_cap(
-            Verb::Comment,
-        ));
+        tree.workspaces[0].deny(
+            crate::test_support::Subject::ForeignDevice,
+            &crate::test_support::TreePath::root(),
+            crate::test_support::KindSet::UNDOABLE,
+        );
         let admitted = admit_verified_join(&tree, &route, foreign).unwrap();
-        assert_eq!(admitted.role, CapRole::Commenter);
+        assert_eq!(
+            changes(&admitted, &tree),
+            Answer::Deny,
+            "the room bounds devices that are not their owner's further"
+        );
     }
 
     #[test]
@@ -14694,13 +15533,9 @@ pub mod tests {
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(44), "Agent room");
-        workspace.owner = Some(principal);
+        workspace.set_owner(principal);
         let route = CrdtRoute::cluster(workspace.room.to_string());
-        let agent_membership = workspace.grant_capability(CapOverride::membership(
-            Subject::agent("scribe"),
-            workspace.room.to_string(),
-            Verb::Comment,
-        ));
+        let agent_membership = workspace.admit_agent("scribe", crate::test_support::KindSet::READ);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
 
@@ -14710,16 +15545,28 @@ pub mod tests {
             .expect("the owner may operate an admitted agent");
         assert_eq!(admitted.broker_actor().id, "agent:scribe");
         assert!(admitted.broker_actor().is_agent);
-        assert_eq!(admitted.role, CapRole::Commenter);
-        assert!(
+        let answer = |kind| {
             admitted
-                .policy_actor(&tree.workspaces[0], 0)
-                .principals
-                .contains(&Principal::Agent("scribe".into()))
+                .with_authority(Some(&tree.desktop), &route.cluster_id, |authority| {
+                    authority
+                        .decide(
+                            &tree.workspaces[0].node().app("so.tilo.notes"),
+                            kind,
+                            &tilo_desktop_model::context_at(0),
+                        )
+                        .answer
+                })
+                .unwrap()
+        };
+        assert_eq!(answer(ActionKind::Read), Answer::Allow, "the agent reads");
+        assert_eq!(
+            answer(ActionKind::Undoable),
+            Answer::Deny,
+            "and does only what its own grant allows, whoever launched it"
         );
 
         let membership = tree.shared();
-        assert!(membership.write().workspaces[0].revoke_capability(&agent_membership));
+        assert!(membership.write().workspaces[0].revoke_grant(&agent_membership));
         let fanout = Arc::new(FanoutState::new());
         let (state, _bridge_rx) = CapnpBrokerState::new(
             &fanout,
@@ -14732,6 +15579,126 @@ pub mod tests {
             state.revalidate_admission(&route, &admitted).is_err(),
             "revoking agent membership invalidates an already-open agent channel"
         );
+    }
+
+    /// In a room this desktop hosts itself, a delegated agent takes part
+    /// with exactly its preset, capped by its person's role, and revoking
+    /// either the person or the agent cuts an open session off.
+    #[test]
+    fn a_hosted_agent_takes_its_preset_capped_by_its_person_and_ends_with_either() {
+        use tilo_action_policy::roles::{AgentPreset, governance};
+        let owner_root = SigningKey::from_bytes(&[45; 32]);
+        let owner = principal_id_for_root(owner_root.verifying_key().to_bytes());
+        let bob_root = SigningKey::from_bytes(&[46; 32]);
+        let bob = principal_id_for_root(bob_root.verifying_key().to_bytes());
+        let mut workspace =
+            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(45), "Hosted");
+        workspace.set_owner(owner.clone());
+        let room = workspace.policy.room.clone();
+        // Bob comments, and may launch the room's agents.
+        workspace.admit(bob.clone(), Role::Commenter);
+        workspace.grant(tilo_action_policy::Grant::new(
+            "fixture:bob-launches-agents",
+            crate::test_support::Subject::Person(bob.clone()),
+            roles::governance_action(&room, governance::GRANT),
+            crate::test_support::KindSet::OUTSIDE,
+            Answer::Allow,
+            crate::test_support::Subject::Person(owner.clone()),
+        ));
+        let granted_by = crate::test_support::Subject::Person(owner);
+        let operator = workspace.admit_agent_preset("scribe", AgentPreset::Operator, &granted_by);
+        workspace.admit_agent_preset("reader", AgentPreset::Observer, &granted_by);
+        let route = CrdtRoute::cluster(workspace.room.to_string());
+        let notes = workspace.node().app("so.tilo.notes");
+        let set_role = roles::governance_action(&room, governance::SET_ROLE);
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+
+        let delegate = |root: &SigningKey, agent: &str, tree: &WorkspaceTree| {
+            let mut admitted = admit_verified_join(tree, &route, verified_device(root)).unwrap();
+            admit_agent_delegation(tree, &route, &mut admitted, agent).map(|()| admitted)
+        };
+        let answer = |admitted: &AdmittedJoinIdentity,
+                      tree: &WorkspaceTree,
+                      node: &TreePath,
+                      kind: ActionKind| {
+            admitted
+                .with_authority(Some(&tree.desktop), &route.cluster_id, |authority| {
+                    authority
+                        .decide(node, kind, &tilo_desktop_model::context_at(0))
+                        .answer
+                })
+                .unwrap()
+        };
+
+        // The owner's Operator agent edits as an Editor and never governs.
+        let scribe = delegate(&owner_root, "scribe", &tree).unwrap();
+        assert_eq!(scribe.role, Role::Editor, "Operator, below its owner");
+        assert!(workspace_control_role_allowed(scribe.role));
+        assert_eq!(
+            answer(&scribe, &tree, &notes, ActionKind::Undoable),
+            Answer::Allow
+        );
+        assert_eq!(
+            answer(&scribe, &tree, &set_role, roles::GOVERNANCE_KIND),
+            Answer::Deny,
+            "the owner's agent does not govern the room"
+        );
+        // The owner's Observer agent reads, and is no Editor anywhere.
+        let reader = delegate(&owner_root, "reader", &tree).unwrap();
+        assert_eq!(reader.role, Role::Viewer, "exactly its preset");
+        assert!(!workspace_control_role_allowed(reader.role));
+        assert_eq!(
+            answer(&reader, &tree, &notes, ActionKind::Read),
+            Answer::Allow
+        );
+        assert_eq!(
+            answer(&reader, &tree, &notes, ActionKind::Undoable),
+            Answer::Deny
+        );
+        // Bob's session with the same Operator agent holds Bob's role.
+        let bobs = delegate(&bob_root, "scribe", &tree).unwrap();
+        assert_eq!(bobs.role, Role::Commenter, "capped by its person's role");
+        assert!(!workspace_control_role_allowed(bobs.role));
+        assert_eq!(
+            answer(&bobs, &tree, &notes, ActionKind::Undoable),
+            Answer::Deny,
+            "the agent changes nothing its person may not"
+        );
+
+        let membership = tree.shared();
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(membership.clone()),
+            None,
+        );
+        assert_eq!(
+            state.revalidate_admission(&route, &bobs).unwrap().role,
+            Role::Commenter,
+            "revalidation resolves the same role"
+        );
+        assert!(state.revalidate_admission(&route, &scribe).is_ok());
+
+        // Removing the person ends their agent's session at once.
+        assert!(membership.write().workspaces[0].dismiss(&bob));
+        assert!(
+            state.revalidate_admission(&route, &bobs).is_err(),
+            "revoking the person cuts their agent off"
+        );
+        assert!(state.revalidate_admission(&route, &scribe).is_ok());
+
+        // Revoking the agent's admission ends every session it runs.
+        for id in &operator {
+            assert!(membership.write().workspaces[0].revoke_grant(id));
+        }
+        assert!(
+            state.revalidate_admission(&route, &scribe).is_err(),
+            "revoking the agent cuts it off"
+        );
+        assert!(state.revalidate_admission(&route, &reader).is_ok());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -14750,6 +15717,7 @@ pub mod tests {
                 Ok(tilo_peer_state::workspace_task::WorkspaceTaskSnapshot {
                     tasks: Vec::new(),
                     controls: std::collections::BTreeMap::default(),
+                    grants: Vec::new(),
                 })
             }
 
@@ -14767,34 +15735,22 @@ pub mod tests {
         let reed = "reed";
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(46), "Roster");
-        workspace.owner = Some(person.clone());
+        workspace.set_owner(person.clone());
         let room = workspace.room.to_string();
         let other_person = "other-person";
-        let person_membership = workspace.grant_capability(CapOverride::membership(
-            Subject::person(other_person),
-            room.clone(),
-            Verb::Read,
-        ));
-        workspace.grant_capability(CapOverride::membership(
-            Subject::person("person-in-other-room"),
-            uuid::Uuid::new_v4().to_string(),
-            Verb::Read,
-        ));
-        let collision = workspace.grant_capability(CapOverride::membership(
-            Subject::agent(&person),
-            room.clone(),
-            Verb::Read,
-        ));
-        workspace.grant_capability(CapOverride::membership(
-            Subject::agent(tide),
-            room.clone(),
-            Verb::Read,
-        ));
-        workspace.grant_capability(CapOverride::membership(
-            Subject::agent("wrong-room"),
-            uuid::Uuid::new_v4().to_string(),
-            Verb::Read,
-        ));
+        workspace.admit(other_person, crate::test_support::Role::Viewer);
+        workspace.allow_in_room(
+            crate::test_support::Subject::person("person-in-other-room"),
+            &uuid::Uuid::new_v4().to_string(),
+            crate::test_support::KindSet::READ,
+        );
+        let collision = workspace.admit_agent(&person, crate::test_support::KindSet::READ);
+        workspace.admit_agent(tide, crate::test_support::KindSet::READ);
+        workspace.allow_in_room(
+            crate::test_support::Subject::agent("wrong-room"),
+            &uuid::Uuid::new_v4().to_string(),
+            crate::test_support::KindSet::READ,
+        );
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let route = CrdtRoute::record("so.tilo.chat", &room, "main");
@@ -14905,8 +15861,8 @@ pub mod tests {
         assert_eq!(collaborators[0].name, forged.name);
         assert!(collaborators[0].is_agent);
         assert!(!collaborators[0].is_self);
-        assert!(membership.write().workspaces[0].revoke_capability(&collision));
-        assert!(membership.write().workspaces[0].revoke_capability(&person_membership));
+        assert!(membership.write().workspaces[0].revoke_grant(&collision));
+        assert!(membership.write().workspaces[0].dismiss(other_person));
         state.refresh_workspace_context_services().unwrap();
         let ContextEnvelope::Snapshot { collaborators, .. } = stream.try_recv().unwrap() else {
             panic!("membership refresh must be a complete snapshot");
@@ -14930,11 +15886,7 @@ pub mod tests {
                 .iter()
                 .all(|row| row.id != format!("agent:{person}"))
         );
-        membership.write().workspaces[0].grant_capability(CapOverride::membership(
-            Subject::agent(reed),
-            room,
-            Verb::Read,
-        ));
+        membership.write().workspaces[0].admit_agent(reed, crate::test_support::KindSet::READ);
         state.refresh_workspace_context_services().unwrap();
         let ContextEnvelope::Snapshot { collaborators, .. } = stream.try_recv().unwrap() else {
             panic!("membership addition must be a complete snapshot");
@@ -14975,7 +15927,7 @@ pub mod tests {
                 .is_err(),
             "the actual stream read must be waiting before revocation"
         );
-        membership.write().workspaces[0].owner = None;
+        membership.write().workspaces[0].policy.owner = None;
         state.refresh_workspace_context_services().unwrap();
         let Err(error) = pending.await else {
             panic!("revocation must terminate an already waiting native read");
@@ -14992,16 +15944,8 @@ pub mod tests {
             "Delegation room",
         );
         let route = CrdtRoute::cluster(workspace.room.to_string());
-        workspace.grant_capability(CapOverride::membership(
-            Subject::person(&member_id),
-            workspace.room.to_string(),
-            Verb::Write,
-        ));
-        workspace.grant_capability(CapOverride::membership(
-            Subject::agent("operator"),
-            workspace.room.to_string(),
-            Verb::Write,
-        ));
+        workspace.admit(member_id, crate::test_support::Role::Editor);
+        workspace.admit_agent("operator", crate::test_support::KindSet::READ);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&member))
@@ -15019,11 +15963,7 @@ pub mod tests {
             "Revocation room",
         );
         let route = CrdtRoute::cluster(workspace.room.to_string());
-        let membership = workspace.grant_capability(crate::test_support::CapOverride::membership(
-            crate::test_support::Subject::person(&member_id),
-            workspace.room.to_string(),
-            crate::test_support::Verb::Read,
-        ));
+        workspace.admit(member_id.clone(), crate::test_support::Role::Viewer);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
 
@@ -15039,7 +15979,7 @@ pub mod tests {
             Some(membership_tree.clone()),
             None,
         );
-        assert!(membership_tree.write().workspaces[0].revoke_capability(&membership));
+        assert!(membership_tree.write().workspaces[0].dismiss(&member_id));
         assert!(
             state.revalidate_admission(&route, &admitted).is_err(),
             "removing membership rejects the certified session's next operation"
@@ -15191,7 +16131,7 @@ pub mod tests {
             artifact,
             Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             SystemTime::now(),
             1,
         );
@@ -15226,7 +16166,7 @@ pub mod tests {
             artifact,
             Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             SystemTime::now(),
             2,
             collab_types::EncryptionMetadata::mls_application(7, expected_channel),
@@ -15320,10 +16260,21 @@ pub mod tests {
             },
         )
         .expect("the root's foreign device joins its person room");
+        let governs = foreign
+            .with_authority(None, &route.cluster_id, |authority| {
+                authority
+                    .decide(
+                        &roles::governance_action(&route.cluster_id, roles::governance::INVITE),
+                        roles::GOVERNANCE_KIND,
+                        &tilo_desktop_model::context_at(0),
+                    )
+                    .answer
+            })
+            .unwrap();
         assert_eq!(
-            foreign.role,
-            CapRole::Editor,
-            "a foreign device keeps the foreign-device cap in the person room too"
+            governs,
+            Answer::Deny,
+            "a foreign device keeps the foreign-device bound in the person room too"
         );
         let strangers_room = CrdtRoute::record(
             "so.tilo.tube",
@@ -15362,7 +16313,7 @@ pub mod tests {
             document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
             Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             SystemTime::now(),
             1,
         );
@@ -15449,7 +16400,7 @@ pub mod tests {
             document_artifact_id(&target.app_id, &target.cluster_id, &target.record_id),
             author,
             document_attestation_id(&target.app_id, &target.cluster_id, &target.record_id),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             SystemTime::now(),
             1,
         );
@@ -15526,7 +16477,7 @@ pub mod tests {
                 operation_kind: tilo_actions::OperationKind::View,
                 params: Vec::new(),
                 contract: tilo_actions::ActionContract {
-                    permission: tilo_actions::PermissionRequirement::Write,
+                    kind: tilo_actions::ActionKind::Undoable,
                     ..Default::default()
                 },
                 view: None,
@@ -15709,7 +16660,11 @@ pub mod tests {
                 .contains("files.entry:owner")
         );
 
-        tree.lock().unwrap().workspaces[0].set_owner("replacement");
+        {
+            let mut tree = tree.lock().unwrap();
+            tree.workspaces[0].set_owner("replacement");
+            tree.workspaces[0].dismiss("owner");
+        }
         state.publish_action_catalogue();
         assert!(
             !current_catalogue(&mut rx)
@@ -15816,8 +16771,7 @@ pub mod tests {
     fn exact_published_action_uses_current_live_routes_before_archived_descriptors() {
         let broker = CapnpBrokerState::test_broker_with_idle_directory_queue();
         let state = broker.state();
-        let mut retained = catalogue_surface(7, "room", "notebook");
-        retained.actions[0].contract.discovery = tilo_actions::DiscoveryScope::Launchable;
+        let retained = catalogue_surface(7, "room", "notebook");
         state.launchable.retain(&retained);
         let route = retained.route.clone();
         let (archived, descriptor) = state.published_action(&route, "notebook", "open").unwrap();
@@ -15884,7 +16838,13 @@ pub mod tests {
                     unconfined: false,
                 }]
             }
-            fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+            fn launch(
+                &self,
+                _: &str,
+                _: &tilo_desktop_model::Workspace,
+                _: Option<&str>,
+                _: &crate::services::LaunchPlace,
+            ) -> Result<(), String> {
                 unreachable!("catalogue projection never launches")
             }
             fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
@@ -15916,7 +16876,7 @@ pub mod tests {
                 operation_kind: tilo_actions::OperationKind::Effect,
                 params: Vec::new(),
                 contract: tilo_actions::ActionContract {
-                    permission: tilo_actions::PermissionRequirement::Write,
+                    kind: tilo_actions::ActionKind::Undoable,
                     ..Default::default()
                 },
                 view: None,
@@ -16321,10 +17281,7 @@ pub mod tests {
                 description: None,
                 operation_kind: tilo_actions::OperationKind::View,
                 params: Vec::new(),
-                contract: tilo_actions::ActionContract {
-                    discovery: tilo_actions::DiscoveryScope::Launchable,
-                    ..tilo_actions::ActionContract::view()
-                },
+                contract: tilo_actions::ActionContract::view(),
                 view: None,
                 input: PublishedInput::None,
             }],
@@ -16513,7 +17470,6 @@ pub mod tests {
             operation_kind: tilo_actions::OperationKind::Effect,
             cluster_id,
             context: tilo_actions::ActionContext::for_resource(
-                "Publish",
                 "document:brief",
                 "document",
                 "Release brief",
@@ -17250,7 +18206,13 @@ pub mod tests {
                 fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
                     Vec::new()
                 }
-                fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+                fn launch(
+                    &self,
+                    _: &str,
+                    _: &tilo_desktop_model::Workspace,
+                    _: Option<&str>,
+                    _: &crate::services::LaunchPlace,
+                ) -> Result<(), String> {
                     Err("this host launches nothing".into())
                 }
                 fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
@@ -17736,8 +18698,7 @@ impl CapnpBrokerState {
                 ExecutionStatus::CancellationRequested,
             );
         } else {
-            self.execution_activity
-                .publish(pending.activity.as_ref(), update);
+            self.publish_activity(pending.activity.as_ref(), update);
         }
     }
 
@@ -17900,6 +18861,7 @@ mod host_worker_capacity_tests {
             display_handle: None,
             role: CapRole::Owner,
             agent_id: None,
+            session_delegated: false,
         }
     }
     fn retained(state: &CapnpBrokerState) -> usize {
@@ -18048,5 +19010,67 @@ mod resource_view_tests {
 
         let reader = test_published_view("read", "reader", true);
         assert!(validate_resource_view_descriptors(&[editor, reader]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod person_record_join_tests {
+    use super::*;
+
+    fn route(app: &str, record: &str) -> CrdtRoute {
+        CrdtRoute {
+            app_id: app.into(),
+            cluster_id: collab_types::person_room(&[7; 32]).to_string(),
+            record_id: record.into(),
+        }
+    }
+
+    /// An app joins the person's room for the records of theirs its surface
+    /// declares, its own or another app's it reads, and for nothing else.
+    #[test]
+    fn an_app_joins_the_persons_room_only_for_the_records_it_declares() {
+        static TERMINAL: &[u8] = b"[[resources]]\nkind = \"test-person.session\"\nlabel = \"Session\"\nversion = 1\n\n[[resources]]\nkind = \"test-person.history\"\nlabel = \"History\"\nperson = true\nversion = 1\n\n[[resources]]\nkind = \"test-person.accounts\"\nlabel = \"Accounts\"\nperson = true\nversion = 1\n";
+        ui::app_surface::register_package("test.person-terminal", TERMINAL);
+        let history = collab_types::person_record_id("test-person.history");
+        let accounts = collab_types::person_record_id("test-person.accounts");
+        assert_eq!(
+            person_record_join(
+                "test.person-terminal",
+                &route("test.person-terminal", &history)
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            person_record_join(
+                "test.person-terminal",
+                &route("test.person-settings", &accounts)
+            ),
+            Ok(()),
+            "another app's record of the person's it declares, to read"
+        );
+        let undeclared = collab_types::person_record_id("test-person.bookmarks");
+        assert!(
+            person_record_join(
+                "test.person-terminal",
+                &route("test.person-terminal", &undeclared)
+            )
+            .is_err()
+        );
+        assert!(
+            person_record_join(
+                "test.person-terminal",
+                &route("test.person-terminal", "tab:01")
+            )
+            .is_err(),
+            "nothing but the person's records"
+        );
+        assert!(
+            person_record_join(
+                "test.person-notes",
+                &route("test.person-terminal", &history)
+            )
+            .is_err(),
+            "an app that declares none of them is refused"
+        );
     }
 }

@@ -1189,11 +1189,6 @@ impl DesktopSurface {
         }
     }
 
-    /// The workspace shown, for hosts that label their chrome.
-    pub fn shown_workspace(&self) -> Option<WorkspaceId> {
-        Some(self.shared.borrow().tree.active_workspace()?.id)
-    }
-
     /// Whether the strip takes this wheel event. A trackpad's sideways swipe
     /// (pixel deltas) pans the strip under the fingers, 1:1 and through its
     /// momentum, when the strip can move that way; else it is the content's.
@@ -1689,25 +1684,7 @@ impl Widget for DesktopSurface {
         presence: &ui::presence::PresenceCtx,
     ) {
         if let Some(row) = self.shown_row() {
-            row.draw(scene, transform, text, theme, presence);
-        }
-        self.draw_overlays(scene, transform, text, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.rect) {
-            return;
-        }
-        if let Some(row) = self.shown_row() {
-            row.draw_with_presence(scene, transform, text, theme, presence, permissions);
+            ui::widget::draw_child(row, scene, transform, text, theme, presence);
         }
         self.draw_overlays(scene, transform, text, theme, presence);
     }

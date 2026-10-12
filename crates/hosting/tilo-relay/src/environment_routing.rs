@@ -74,20 +74,6 @@ impl WorkspaceEnvironments {
         self.sessions.len()
     }
 
-    /// Whether `session` is routed, and to which worker for whom.
-    #[must_use]
-    pub fn session_route(&self, session: &SessionId) -> Option<(DeviceKey, MemberIdentity)> {
-        self.sessions
-            .get(session)
-            .map(|route| (route.worker, route.owner))
-    }
-
-    /// Legacy launches running in this workspace.
-    #[must_use]
-    pub fn launch_count(&self) -> usize {
-        self.launches.len()
-    }
-
     fn add_viewer(&mut self, user: [u8; 32], frames: mpsc::Sender<WindowFrame>) -> u64 {
         let id = self.next_viewer;
         self.next_viewer = id.wrapping_add(1);

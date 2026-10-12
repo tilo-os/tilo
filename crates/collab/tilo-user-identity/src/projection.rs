@@ -52,6 +52,10 @@ pub enum TrustedIdentityProjectionError {
     /// One device key appears under more than one row/root.
     #[error("trusted identity projection contains a duplicate device key")]
     DuplicateDeviceKey,
+    /// An agent row names no agent, is unpresentable, or marks a device
+    /// whose certificate holds a capability an agent never has.
+    #[error("trusted identity projection contains an invalid agent")]
+    InvalidAgent,
 }
 
 /// A bounded, versioned snapshot written by the session and read by an app.
@@ -177,6 +181,9 @@ impl TrustedIdentityProjectionV2 {
                 if !devices.insert(device.certificate.device_public_key) {
                     return Err(TrustedIdentityProjectionError::DuplicateDeviceKey);
                 }
+                if let Some(agent) = &device.agent {
+                    agent.validate(&device.certificate)?;
+                }
             }
         }
         Ok(())
@@ -201,6 +208,42 @@ pub struct GovernedHumanIdentityV2 {
 pub struct GovernedDeviceIdentityV2 {
     /// Root-signed device certificate, including label, capabilities and expiry.
     pub certificate: DeviceCert,
+    /// Set when governance knows the device as a delegated agent of the
+    /// enclosing human: whatever it signs is the agent's, on behalf of that
+    /// human. The producer verified the human's root-signed delegation.
+    /// Presentation only, never authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<GovernedAgentIdentityV2>,
+}
+
+/// How a delegated agent device is shown, from its person's delegation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GovernedAgentIdentityV2 {
+    /// The delegation's stable agent id.
+    pub agent_id: String,
+    /// The agent's display name.
+    pub label: String,
+    /// Its cursor colour, sRGB: history paints it as presence does.
+    pub color: [u8; 3],
+}
+
+impl GovernedAgentIdentityV2 {
+    fn validate(&self, certificate: &DeviceCert) -> Result<(), TrustedIdentityProjectionError> {
+        let capabilities = &certificate.capabilities;
+        let holds_power = capabilities.can_own_workspaces
+            || capabilities.can_admit_devices
+            || capabilities.can_act_as_host
+            || capabilities.can_read_all_workspaces
+            || capabilities.can_administer_devices;
+        if holds_power
+            || validate_name(&self.agent_id).is_err()
+            || validate_name(&self.label).is_err()
+        {
+            return Err(TrustedIdentityProjectionError::InvalidAgent);
+        }
+        Ok(())
+    }
 }
 
 fn validate_name(name: &str) -> Result<(), TrustedIdentityProjectionError> {
@@ -286,7 +329,10 @@ mod tests {
                 humans: vec![GovernedHumanIdentityV2 {
                     root_public_key: root.verifying_key().to_bytes(),
                     display_name: "Ada Lovelace".into(),
-                    devices: vec![GovernedDeviceIdentityV2 { certificate }],
+                    devices: vec![GovernedDeviceIdentityV2 {
+                        certificate,
+                        agent: None,
+                    }],
                 }],
             };
             projection.validate().unwrap();
@@ -306,5 +352,77 @@ mod tests {
                 Err(TrustedIdentityProjectionError::InvalidDeviceCertificate)
             );
         }
+    }
+
+    /// A device governance knows as a delegated agent carries how the agent
+    /// is shown; only a device whose certificate holds no capability may,
+    /// and a row without the marker reads as before.
+    #[test]
+    fn agent_devices_are_marked_only_on_powerless_certificates() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
+        let mut agent_certificate = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: ed25519_dalek::SigningKey::from_bytes(&[32; 32])
+                .verifying_key()
+                .to_bytes(),
+            device_label: "Agent: Scribe".into(),
+            capabilities: crate::CertificationPolicy::agent().ceiling,
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        crate::sign_device_cert(&mut agent_certificate, &root).unwrap();
+        let agent = GovernedAgentIdentityV2 {
+            agent_id: "scribe".into(),
+            label: "Scribe".into(),
+            color: [10, 20, 30],
+        };
+        let projection =
+            |certificate: DeviceCert, agent: GovernedAgentIdentityV2| TrustedIdentityProjectionV2 {
+                schema_version: TRUSTED_IDENTITY_PROJECTION_VERSION,
+                humans: vec![GovernedHumanIdentityV2 {
+                    root_public_key: root.verifying_key().to_bytes(),
+                    display_name: "Ada Lovelace".into(),
+                    devices: vec![GovernedDeviceIdentityV2 {
+                        certificate,
+                        agent: Some(agent),
+                    }],
+                }],
+            };
+        let marked = projection(agent_certificate.clone(), agent.clone());
+        marked.validate().unwrap();
+        let bytes = serde_json::to_vec(&marked).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<TrustedIdentityProjectionV2>(&bytes).unwrap(),
+            marked
+        );
+
+        assert_eq!(
+            projection(certificate(&root, 33), agent.clone()).validate(),
+            Err(TrustedIdentityProjectionError::InvalidAgent),
+            "a member's device is never shown as an agent"
+        );
+        let unnamed = GovernedAgentIdentityV2 {
+            label: " ".into(),
+            ..agent
+        };
+        assert_eq!(
+            projection(agent_certificate.clone(), unnamed).validate(),
+            Err(TrustedIdentityProjectionError::InvalidAgent)
+        );
+
+        let unmarked = TrustedIdentityProjectionV2 {
+            schema_version: TRUSTED_IDENTITY_PROJECTION_VERSION,
+            humans: vec![GovernedHumanIdentityV2 {
+                root_public_key: root.verifying_key().to_bytes(),
+                display_name: "Ada Lovelace".into(),
+                devices: vec![GovernedDeviceIdentityV2 {
+                    certificate: agent_certificate,
+                    agent: None,
+                }],
+            }],
+        };
+        let text = serde_json::to_string(&unmarked).unwrap();
+        assert!(!text.contains("agent\":"), "{text}");
     }
 }

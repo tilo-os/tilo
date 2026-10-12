@@ -122,7 +122,6 @@ impl Snapshot {
             }
             Edit::Remove(old) => next.words.retain(|word| !word.same_key(old)),
             Edit::Reset => next.words.clear(),
-            Edit::ImportWriter { .. } => {}
         }
         next.revision = next
             .revision
@@ -178,28 +177,17 @@ pub trait Vocabulary: Send + Sync {
 #[derive(Clone, Serialize, Deserialize)]
 pub enum Edit {
     Add(Word),
-    Replace {
-        old: Word,
-        new: Word,
-    },
+    Replace { old: Word, new: Word },
     Remove(Word),
     Reset,
-    /// One-time migration of Writer's explicit additions, never learned text.
-    ImportWriter {
-        words: Vec<String>,
-    },
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Document {
     version: u32,
     owner: [u8; 32],
     revision: u64,
     words: Vec<Word>,
-    legacy_imported: bool,
-    #[serde(default)]
-    writer_imported: bool,
 }
 
 impl Document {
@@ -209,8 +197,6 @@ impl Document {
             owner,
             revision: 0,
             words: Vec::new(),
-            legacy_imported: false,
-            writer_imported: false,
         }
     }
 
@@ -384,52 +370,6 @@ impl Service {
                 }
                 Edit::Remove(old) => doc.words.retain(|w| !w.same_key(&old)),
                 Edit::Reset => doc.words.clear(),
-                Edit::ImportWriter { words } => {
-                    if !doc.writer_imported && self.claim_legacy(doc.owner, "writer")? {
-                        if words.len() > MAX_WORDS {
-                            return Err(invalid("legacy dictionary is too large"));
-                        }
-                        for word in words {
-                            insert(&mut doc.words, Word::new(&word, None)?)?;
-                        }
-                        doc.writer_imported = true;
-                    }
-                }
-            }
-            Ok(())
-        });
-        if result.is_ok() {
-            self.0.changes.ring();
-        }
-        result
-    }
-
-    /// Import explicit legacy spellcheck additions once. The host must verify
-    /// ownership before supplying `owner` and text; never import learned OSK
-    /// transitions, another room's file, or anonymous/demo data. The old file
-    /// remains intact. Reset/removal never resurrect imported words.
-    ///
-    /// # Errors
-    /// Ownership mismatch, stale revision, invalid words or persistence failure.
-    pub fn import_legacy(
-        &self,
-        reader: &Reader,
-        revision: u64,
-        owner: [u8; 32],
-        text: &str,
-    ) -> io::Result<Snapshot> {
-        let result = self.change(reader, revision, |doc| {
-            if owner != doc.owner {
-                return Err(denied());
-            }
-            if !doc.legacy_imported && self.claim_legacy(doc.owner, "file")? {
-                if text.len() > MAX_FILE_BYTES {
-                    return Err(invalid("legacy dictionary is too large"));
-                }
-                for line in text.lines().filter(|line| !line.trim().is_empty()) {
-                    insert(&mut doc.words, Word::new(line, None)?)?;
-                }
-                doc.legacy_imported = true;
             }
             Ok(())
         });
@@ -483,37 +423,11 @@ impl Service {
         drop(binding);
         Ok(snapshot)
     }
-
-    fn claim_legacy(&self, owner: [u8; 32], source: &str) -> io::Result<bool> {
-        // Unscoped old stores can migrate to one verified profile only. A
-        // later account using this OS login must not adopt the first person's
-        // old Writer/file words. Reserve before import; failure is retryable
-        // only by the same person and cannot leak to another account.
-        let path = self.0.root.join(format!("legacy-{source}-owner.json"));
-        let _lock = advisory_lock::FileLock::open(
-            &path.with_extension("lock"),
-            advisory_lock::LockMode::Exclusive,
-        )?;
-        if let Some(bytes) = tilo_files::native::bounded::read(&path, 512)? {
-            Ok(serde_json::from_slice::<[u8; 32]>(&bytes).map_err(io::Error::other)? == owner)
-        } else {
-            tilo_files::native::atomic::write_private(
-                &path,
-                &serde_json::to_vec(&owner).map_err(io::Error::other)?,
-            )?;
-            Ok(true)
-        }
-    }
 }
 
 impl Inner {
     fn path(&self, owner: [u8; 32]) -> PathBuf {
-        use std::fmt::Write as _;
-        let mut name = String::with_capacity(64);
-        for byte in owner {
-            let _ = write!(name, "{byte:02x}");
-        }
-        self.root.join(format!("{name}.json"))
+        self.root.join(format!("{}.json", hex::encode(owner)))
     }
 }
 

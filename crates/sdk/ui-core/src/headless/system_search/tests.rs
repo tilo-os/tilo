@@ -546,11 +546,8 @@ fn mounted_provider_uses_exact_admitted_instance_and_current_permissions() {
     sources.tabs[0].instance_id = 11;
     f.replace_global_search_data(sources);
     assert!(!f.system_search.rows.is_empty());
-    *permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
-        crate::permissions::Actor::person(None, "outsider"),
-        vec![],
-    )
-    .at_unix_time(100);
+    *permissions.borrow_mut() =
+        crate::permissions::PermissionContext::stranger("outsider").at_unix_time(100);
     // The painted hit is revalidated against current component authority at activation.
     enter(&mut f);
     assert!(f.take_global_search_intent().is_none());
@@ -596,11 +593,8 @@ fn layout_refreshes_content_without_retargeting_or_losing_keyboard_selection() {
     );
     f.open_global_search_all("body-only-query").unwrap();
     let old = f.a11y_node_named("Probe").unwrap();
-    *permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
-        crate::permissions::Actor::person(None, "outsider"),
-        vec![],
-    )
-    .at_unix_time(100);
+    *permissions.borrow_mut() =
+        crate::permissions::PermissionContext::stranger("outsider").at_unix_time(100);
     f.relayout();
     assert!(
         f.a11y_node_named("Probe").is_none(),

@@ -143,6 +143,9 @@ fn path_tail_is_rect(path_data: &[u32], rect: Rect) -> bool {
 /// it can — the buffer, its format, the plane — is the presenter's question.
 #[derive(Clone, Debug)]
 pub struct ScanoutCandidate {
+    /// The surface whose frame it is: the fullscreen surface the frame
+    /// builder drew.
+    pub surface: u64,
     /// The client frame's image (`gpu_frames::client_frame` resolves it).
     pub image: ImageData,
     /// The image's top-left corner in the scene.
@@ -154,12 +157,13 @@ pub struct ScanoutCandidate {
 }
 
 impl ScanoutCandidate {
-    /// `drawn` as a candidate in `scene`, the finished scene of the frame,
-    /// when it lands on whole scene pixels at unit scale.
-    pub(crate) fn new(drawn: DrawnOnTop, scene: &Scene) -> Option<Self> {
+    /// `drawn`, `surface`'s frame, as a candidate in `scene`, the finished
+    /// scene of the frame, when it lands on whole scene pixels at unit scale.
+    pub(crate) fn new(surface: u64, drawn: DrawnOnTop, scene: &Scene) -> Option<Self> {
         let size = (drawn.image.width, drawn.image.height);
         let origin = pixel_exact_origin(drawn.transform, size)?;
         Some(Self {
+            surface,
             image: drawn.image,
             origin,
             size,
@@ -294,7 +298,7 @@ mod tests {
         assert_eq!(drawn.image.data.id(), image.data.id());
         assert_eq!(drawn.bounds(), Rect::new(16.0, 8.0, 80.0, 40.0));
         assert!(drawn.still_last_in(&scene));
-        let candidate = ScanoutCandidate::new(drawn, &scene).expect("pixel exact");
+        let candidate = ScanoutCandidate::new(7, drawn, &scene).expect("pixel exact");
         assert_eq!(candidate.origin, (16, 8));
         assert_eq!(candidate.size, (64, 32));
         assert!(candidate.covers((16, 8), (64, 32)));
@@ -347,7 +351,7 @@ mod tests {
         let mut scene = Scene::new();
         fill_image(&mut scene, &image, Affine::IDENTITY);
         let drawn = DrawnOnTop::last_in(&scene, 0).expect("on top");
-        let candidate = ScanoutCandidate::new(drawn.clone(), &scene).expect("pixel exact");
+        let candidate = ScanoutCandidate::new(7, drawn.clone(), &scene).expect("pixel exact");
         let mut overlaid = scene.clone();
         below(&mut overlaid);
         assert!(!drawn.still_last_in(&overlaid));

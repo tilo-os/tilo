@@ -146,17 +146,6 @@ A Tilo OS package declares the one architecture it carries: the level
 `[package.isa]` names for it, else `v3` on x86_64 and `aarch64` (ARMv8-A) on
 ARM, the floor the scaffolded `.cargo/config.toml` builds at.
 
-A web package, `dist/<package>-web-wasm32.tapp`, carries the app as a
-WebAssembly side module of the browser's toolkit core
-([The web](app-development.md#the-web)). Its signed `[target]` names the
-`web` platform, `wasm32`, the WebAssembly features the module uses and the
-core's runtime ABI id (`tilo-runtime/2026.07+wasm.<id>`). The registry lists
-it beside the app's other builds, and a page installs it only into a core with
-that id, so a module built against another core is refused before it links.
-The core itself is Tilo's to publish (`so.tilo.runtime.web`); an app never
-ships one. That core exports what Tilo's own web apps import, so a module
-that needs more of a shared crate than they do does not link in it yet.
-
 An Android package, `dist/<package>-android-<arch>.tapp`, carries the
 release-signed APK as `bin/<package>.apk`; the `.apk` and the `.aab` beside it
 are for sideloading and for Google Play. Its signed `[target]` names the

@@ -181,7 +181,7 @@ impl Sessions {
         let (pending, ack) = self
             .web
             .relay
-            .server_auth()
+            .identity
             .begin(EndpointTrust::Live(&self.web.relay.trust_policy), hello)
             .map_err(|error| {
                 self.web.relay.metrics.inc_auth_rejected();

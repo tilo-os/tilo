@@ -37,7 +37,6 @@
 
 pub mod actions;
 pub mod app;
-pub mod doc;
 pub mod engine;
 mod i18n;
 pub mod model;

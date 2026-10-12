@@ -28,9 +28,41 @@ pub const ALPN_SIGNED_ACTIONS_V1: &[u8] = b"tilo-relay/4";
 /// never written to a session on an older protocol, whose decoder lacks it.
 pub const ALPN_COMPACT_STATE_V1: &[u8] = b"tilo-relay/5";
 
+/// [`ALPN_COMPACT_STATE_V1`] whose presence arrives batched (TIL-710): the
+/// relay writes the presence it forwards as [`EnvelopeV2::PresenceBatch`]
+/// frames whose items are coded against what the session last received in
+/// the same slot. The session reader expands a batch back into one
+/// `State(Envelope::Presence)` per item, so nothing past the session boundary
+/// sees one, and it is never written to a session on an older protocol.
+pub const ALPN_PRESENCE_BATCH_V1: &[u8] = b"tilo-relay/6";
+
+/// [`ALPN_PRESENCE_BATCH_V1`] whose live deltas arrive coded (TIL-755): the
+/// relay writes a zero-signature delta as [`EnvelopeV2::CodedDelta`], ranges
+/// of the last delta frame the session received from the same author in the
+/// same room and the bytes in between. The session reader rebuilds the
+/// [`EnvelopeV2::UnsignedDelta`] byte for byte and returns it as
+/// `State(Envelope::Delta)`, so nothing past the session boundary sees one,
+/// and it is never written to a session on an older protocol.
+pub const ALPN_CODED_DELTA_V1: &[u8] = b"tilo-relay/7";
+
 /// Discriminant of [`EnvelopeV2::UnsignedDelta`]: a state frame, so it takes
 /// the state lane's size bound rather than the private one.
 const UNSIGNED_DELTA_KIND: u8 = 11;
+/// Discriminant of [`EnvelopeV2::PresenceBatch`], a state frame.
+const PRESENCE_BATCH_KIND: u8 = 12;
+/// Discriminant of [`EnvelopeV2::CodedDelta`], a state frame.
+const CODED_DELTA_KIND: u8 = 13;
+
+mod delta;
+mod presence;
+pub use delta::{
+    DELTA_ROUTE_BYTES, DeltaEncoder, DeltaSegment, DeltaSlotKey, MAX_CODED_DELTA_BYTES,
+    MAX_DELTA_SLOTS, encode_coded_delta,
+};
+pub use presence::{
+    MAX_PRESENCE_SLOTS, MAX_SLOTTED_PRESENCE_BYTES, PresenceEncoder, PresenceItem, PresenceSlotKey,
+    encode_presence_batch,
+};
 
 /// How a session frames its state lane, fixed by the protocol it negotiated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,12 +75,42 @@ pub enum StateFraming {
     /// [`ALPN_COMPACT_STATE_V1`]: [`Self::V2`], except that a delta with an
     /// all-zero signature is [`EnvelopeV2::UnsignedDelta`].
     Compact,
+    /// [`ALPN_PRESENCE_BATCH_V1`]: [`Self::Compact`], plus
+    /// [`EnvelopeV2::PresenceBatch`].
+    Presence,
+    /// [`ALPN_CODED_DELTA_V1`]: [`Self::Presence`], plus
+    /// [`EnvelopeV2::CodedDelta`].
+    CodedDelta,
 }
 
 impl StateFraming {
     /// Whether frames carry an [`EnvelopeV2`] discriminant.
     pub const fn is_v2(self) -> bool {
         !matches!(self, Self::V1)
+    }
+
+    /// Whether a zero-signature delta travels as [`EnvelopeV2::UnsignedDelta`].
+    pub const fn is_compact(self) -> bool {
+        matches!(self, Self::Compact | Self::Presence | Self::CodedDelta)
+    }
+
+    /// Whether presence may arrive as [`EnvelopeV2::PresenceBatch`].
+    pub const fn batches_presence(self) -> bool {
+        matches!(self, Self::Presence | Self::CodedDelta)
+    }
+
+    /// Whether a delta may arrive as [`EnvelopeV2::CodedDelta`].
+    pub const fn codes_deltas(self) -> bool {
+        matches!(self, Self::CodedDelta)
+    }
+
+    /// Whether `kind` names a state-lane frame on this framing, which takes
+    /// the state lane's size bound rather than the private one.
+    const fn state_kind(self, kind: u8) -> bool {
+        kind == 0
+            || (self.is_compact() && kind == UNSIGNED_DELTA_KIND)
+            || (self.batches_presence() && kind == PRESENCE_BATCH_KIND)
+            || (self.codes_deltas() && kind == CODED_DELTA_KIND)
     }
 }
 
@@ -126,6 +188,22 @@ pub enum EnvelopeV2 {
         #[serde(with = "serde_bytes")]
         delta: Vec<u8>,
     },
+    /// Presence payloads for one room, each coded against the session's
+    /// presence slots ([`PresenceItem`]). Written only to
+    /// [`ALPN_PRESENCE_BATCH_V1`] sessions, whose [`SessionReader`] returns
+    /// one `State(Envelope::Presence)` per item, in order.
+    PresenceBatch {
+        workspace_id: u64,
+        items: Vec<PresenceItem>,
+    },
+    /// An [`Self::UnsignedDelta`] payload coded against the session's delta
+    /// slot `slot` ([`DeltaSegment`]). Written only to
+    /// [`ALPN_CODED_DELTA_V1`] sessions, whose [`SessionReader`] rebuilds it
+    /// and returns it as `State(Envelope::Delta)`.
+    CodedDelta {
+        slot: u16,
+        segments: Vec<DeltaSegment>,
+    },
 }
 
 impl EnvelopeV2 {
@@ -147,7 +225,10 @@ pub fn encode(envelope: &EnvelopeV2) -> Result<Vec<u8>, postcard::Error> {
     let payload = postcard::to_allocvec(envelope)?;
     let limit = if matches!(
         envelope,
-        EnvelopeV2::State(_) | EnvelopeV2::UnsignedDelta { .. }
+        EnvelopeV2::State(_)
+            | EnvelopeV2::UnsignedDelta { .. }
+            | EnvelopeV2::PresenceBatch { .. }
+            | EnvelopeV2::CodedDelta { .. }
     ) {
         MAX_FRAME_BYTES + 1
     } else {
@@ -193,21 +274,31 @@ pub fn decode(payload: &[u8]) -> Result<EnvelopeV2, postcard::Error> {
 
 /// Whether a v2 discriminant names a state-lane frame.
 const fn is_state_kind(kind: u8) -> bool {
-    kind == 0 || kind == UNSIGNED_DELTA_KIND
+    kind == 0
+        || kind == UNSIGNED_DELTA_KIND
+        || kind == PRESENCE_BATCH_KIND
+        || kind == CODED_DELTA_KIND
 }
 
 /// Stateful framing survives cancellation by a concurrent writer/access audit.
 /// Read the discriminant before allocating so private frames have a small cap.
 pub struct SessionReader<R> {
     inner: R,
-    v2: bool,
-    /// The session is on [`ALPN_COMPACT_STATE_V1`]: it may receive
-    /// [`EnvelopeV2::UnsignedDelta`].
-    compact: bool,
+    framing: StateFraming,
     prefix: [u8; 4],
     prefix_read: usize,
     payload: Vec<u8>,
     payload_read: usize,
+    /// What this session last received in each presence slot
+    /// ([`StateFraming::Presence`] only).
+    presence: presence::PresenceSlots,
+    /// The last delta frame this session received in each delta slot
+    /// ([`StateFraming::CodedDelta`] only).
+    deltas: delta::DeltaSlots,
+    /// The rest of the last [`EnvelopeV2::PresenceBatch`], returned before
+    /// anything is read again. Taken without awaiting, so a cancelled read
+    /// loses none of it.
+    expanded: std::collections::VecDeque<EnvelopeV2>,
 }
 impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
     pub fn new(inner: R, v2: bool) -> Self {
@@ -217,23 +308,19 @@ impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
     pub fn framed(inner: R, framing: StateFraming) -> Self {
         Self {
             inner,
-            v2: framing.is_v2(),
-            compact: framing == StateFraming::Compact,
+            framing,
             prefix: [0; 4],
             prefix_read: 0,
             payload: Vec::new(),
             payload_read: 0,
+            presence: presence::PresenceSlots::default(),
+            deltas: delta::DeltaSlots::default(),
+            expanded: std::collections::VecDeque::new(),
         }
     }
     /// The framing this reader was built for.
     pub const fn framing(&self) -> StateFraming {
-        if self.compact {
-            StateFraming::Compact
-        } else if self.v2 {
-            StateFraming::V2
-        } else {
-            StateFraming::V1
-        }
+        self.framing
     }
     /// The next complete envelope, or `None` at a clean end of stream.
     ///
@@ -242,7 +329,36 @@ impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
     /// Returns `FrameError` when the stream fails or a frame is oversized or
     /// does not decode.
     pub async fn read_next(&mut self) -> Result<Option<EnvelopeV2>, FrameError> {
+        loop {
+            if let Some(next) = self.expanded.pop_front() {
+                return Ok(Some(next));
+            }
+            let Some(value) = self.read_frame().await? else {
+                return Ok(None);
+            };
+            match value {
+                EnvelopeV2::PresenceBatch {
+                    workspace_id,
+                    items,
+                } => {
+                    for item in items {
+                        let payload = self.presence.expand(item)?;
+                        self.expanded
+                            .push_back(EnvelopeV2::State(Envelope::Presence {
+                                workspace_id,
+                                payload,
+                            }));
+                    }
+                }
+                value => return Ok(Some(value)),
+            }
+        }
+    }
+    /// The next frame as it was written: a [`EnvelopeV2::PresenceBatch`] is
+    /// still whole.
+    async fn read_frame(&mut self) -> Result<Option<EnvelopeV2>, FrameError> {
         use tokio::io::AsyncReadExt;
+        let v2 = self.framing.is_v2();
         while self.prefix_read < 4 {
             let n = self
                 .inner
@@ -260,7 +376,7 @@ impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
         if len == 0 {
             return Err(FrameError::EmptyFrame);
         }
-        if len > MAX_FRAME_BYTES.saturating_add(usize::from(self.v2)) {
+        if len > MAX_FRAME_BYTES.saturating_add(usize::from(v2)) {
             return Err(FrameError::TooLarge(len));
         }
         if self.payload.is_empty() {
@@ -277,12 +393,12 @@ impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
             }
             self.payload_read = 1;
         }
-        let compact = self.compact;
-        if self.v2
+        let framing = self.framing;
+        if v2
             && self
                 .payload
                 .first()
-                .is_some_and(|kind| *kind != 0 && !(compact && *kind == UNSIGNED_DELTA_KIND))
+                .is_some_and(|kind| !framing.state_kind(*kind))
             && len > MAX_PRIVATE_BYTES
         {
             return Err(FrameError::TooLarge(len));
@@ -302,27 +418,33 @@ impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
             }
             self.payload_read = self.payload_read.saturating_add(n);
         }
-        let value = if self.v2 {
+        let value = if v2 {
             decode(&self.payload)
         } else {
             tilo_relay_client::frame::decode(&self.payload).map(EnvelopeV2::State)
         }
         .map_err(FrameError::Decode)?;
         let value = match value {
+            EnvelopeV2::CodedDelta { slot, segments } if framing.codes_deltas() => {
+                coded_delta(&self.deltas.expand(slot, &segments)?)?
+            }
             EnvelopeV2::UnsignedDelta {
                 workspace_id,
                 author_device_public_key,
                 authored_at_ns,
                 delta,
-            } if self.compact => EnvelopeV2::State(Envelope::Delta {
+            } if framing.is_compact() => EnvelopeV2::State(Envelope::Delta {
                 workspace_id,
                 author_device_public_key,
                 authored_at_ns,
                 delta,
                 signature: [0; 64],
             }),
+            value @ EnvelopeV2::PresenceBatch { .. } if framing.batches_presence() => value,
             // An older protocol has no such frame.
-            EnvelopeV2::UnsignedDelta { .. } => {
+            EnvelopeV2::UnsignedDelta { .. }
+            | EnvelopeV2::PresenceBatch { .. }
+            | EnvelopeV2::CodedDelta { .. } => {
                 return Err(FrameError::Decode(postcard::Error::DeserializeBadEncoding));
             }
             value => value,
@@ -362,14 +484,12 @@ pub fn encode_state_framed(
                 authored_at_ns,
                 delta,
                 signature,
-            } if framing == StateFraming::Compact && *signature == [0; 64] => {
-                unsigned_delta_payload(
-                    *workspace_id,
-                    author_device_public_key,
-                    *authored_at_ns,
-                    delta,
-                )?
-            }
+            } if framing.is_compact() && *signature == [0; 64] => unsigned_delta_payload(
+                *workspace_id,
+                author_device_public_key,
+                *authored_at_ns,
+                delta,
+            )?,
             _ => state_payload(env)?,
         };
         if payload.len() > MAX_FRAME_BYTES + 1 {
@@ -426,6 +546,26 @@ fn unsigned_delta_payload(
         },
         out,
     )
+}
+
+/// The state value of a rebuilt [`EnvelopeV2::CodedDelta`] payload, which
+/// must be a whole [`EnvelopeV2::UnsignedDelta`].
+fn coded_delta(payload: &[u8]) -> Result<EnvelopeV2, FrameError> {
+    match decode(payload).map_err(FrameError::Decode)? {
+        EnvelopeV2::UnsignedDelta {
+            workspace_id,
+            author_device_public_key,
+            authored_at_ns,
+            delta,
+        } => Ok(EnvelopeV2::State(Envelope::Delta {
+            workspace_id,
+            author_device_public_key,
+            authored_at_ns,
+            delta,
+            signature: [0; 64],
+        })),
+        _ => Err(FrameError::Decode(postcard::Error::DeserializeBadEncoding)),
+    }
 }
 
 #[cfg(test)]
@@ -524,6 +664,179 @@ mod tests {
         assert!(matches!(
             reader.read_next().await,
             Err(FrameError::TooLarge(_))
+        ));
+    }
+
+    fn presence_key(slot: u64) -> PresenceSlotKey {
+        PresenceSlotKey {
+            workspace_id: 300,
+            author: [5; 32],
+            slot,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_presence_batch_reads_as_one_presence_per_item_in_order() {
+        let pointer = |x: u8| -> std::sync::Arc<[u8]> {
+            std::sync::Arc::from([&[5; 32][..], b"user key ", &[x, x], b" teal"].concat())
+        };
+        let event: std::sync::Arc<[u8]> = std::sync::Arc::from(b"heartbeat".to_vec());
+        let mut encoder = PresenceEncoder::default();
+        let first = vec![
+            encoder.item(Some(presence_key(1)), &pointer(1)),
+            encoder.item(None, &event),
+        ];
+        let second = vec![encoder.item(Some(presence_key(1)), &pointer(2))];
+        assert!(second[0].middle.len() <= 2, "only the coordinates travel");
+        let wire = [
+            encode_presence_batch(300, &first).unwrap(),
+            encode_state_framed(&Envelope::Ping, StateFraming::Presence).unwrap(),
+            encode_presence_batch(300, &second).unwrap(),
+        ]
+        .concat();
+        let mut reader = SessionReader::framed(std::io::Cursor::new(wire), StateFraming::Presence);
+        let presence = |payload: &std::sync::Arc<[u8]>| {
+            Some(EnvelopeV2::State(Envelope::Presence {
+                workspace_id: 300,
+                payload: payload.to_vec(),
+            }))
+        };
+        assert_eq!(reader.read_next().await.unwrap(), presence(&pointer(1)));
+        assert_eq!(reader.read_next().await.unwrap(), presence(&event));
+        assert_eq!(
+            reader.read_next().await.unwrap(),
+            Some(EnvelopeV2::State(Envelope::Ping))
+        );
+        assert_eq!(reader.read_next().await.unwrap(), presence(&pointer(2)));
+        assert_eq!(reader.read_next().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn presence_batches_exist_only_on_the_presence_protocol() {
+        let item = PresenceItem {
+            slot: None,
+            keep_prefix: 0,
+            keep_suffix: 0,
+            middle: b"pointer".to_vec(),
+        };
+        let batch = encode_presence_batch(1, &[item]).unwrap();
+        for framing in [StateFraming::V2, StateFraming::Compact] {
+            let mut reader = SessionReader::framed(std::io::Cursor::new(batch.clone()), framing);
+            assert!(
+                matches!(reader.read_next().await, Err(FrameError::Decode(_))),
+                "{framing:?} must refuse a presence batch"
+            );
+        }
+        let mut reader = SessionReader::framed(std::io::Cursor::new(batch), StateFraming::Presence);
+        assert_eq!(
+            reader.read_next().await.unwrap(),
+            Some(EnvelopeV2::State(Envelope::Presence {
+                workspace_id: 1,
+                payload: b"pointer".to_vec(),
+            }))
+        );
+        // The presence protocol is compact too.
+        let unsigned = keystroke([0; 64]);
+        assert_eq!(
+            encode_state_framed(&unsigned, StateFraming::Presence).unwrap(),
+            encode_state_framed(&unsigned, StateFraming::Compact).unwrap(),
+        );
+    }
+
+    #[tokio::test]
+    async fn coded_deltas_read_as_the_compact_delta_and_only_on_their_protocol() {
+        let mut encoder = DeltaEncoder::default();
+        let keystrokes: Vec<Envelope> = (0..5u8)
+            .map(|n| Envelope::Delta {
+                workspace_id: 300,
+                author_device_public_key: [5; 32],
+                authored_at_ns: 1_800_000_000_000_000_000 + u64::from(n),
+                delta: [vec![0xab; 300], vec![n; 4], vec![0xcd; 100]].concat(),
+                signature: [0; 64],
+            })
+            .collect();
+        let mut wire = Vec::new();
+        for (n, keystroke) in keystrokes.iter().enumerate() {
+            let coded = encoder.encode(keystroke).unwrap().unwrap();
+            assert_eq!(coded[4], CODED_DELTA_KIND);
+            if n > 0 {
+                let plain = encode_state_framed(keystroke, StateFraming::Compact).unwrap();
+                assert!(
+                    coded.len() * 4 < plain.len(),
+                    "{} vs {}",
+                    coded.len(),
+                    plain.len()
+                );
+            }
+            wire.extend(coded);
+            wire.extend(encode_state_framed(&Envelope::Ping, StateFraming::CodedDelta).unwrap());
+        }
+        let mut reader =
+            SessionReader::framed(std::io::Cursor::new(wire.clone()), StateFraming::CodedDelta);
+        for keystroke in &keystrokes {
+            assert_eq!(
+                reader.read_next().await.unwrap(),
+                Some(EnvelopeV2::State(keystroke.clone()))
+            );
+            assert_eq!(
+                reader.read_next().await.unwrap(),
+                Some(EnvelopeV2::State(Envelope::Ping))
+            );
+        }
+        assert_eq!(reader.read_next().await.unwrap(), None);
+        for framing in [
+            StateFraming::V2,
+            StateFraming::Compact,
+            StateFraming::Presence,
+        ] {
+            let mut reader = SessionReader::framed(std::io::Cursor::new(wire.clone()), framing);
+            assert!(
+                matches!(reader.read_next().await, Err(FrameError::Decode(_))),
+                "{framing:?} must refuse a coded delta"
+            );
+        }
+        // The coded-delta protocol batches presence and drops zero
+        // signatures like the one before it.
+        assert!(StateFraming::CodedDelta.batches_presence());
+        assert!(StateFraming::CodedDelta.is_compact());
+        assert_eq!(
+            encode_state_framed(&keystrokes[0], StateFraming::CodedDelta).unwrap(),
+            encode_state_framed(&keystrokes[0], StateFraming::Compact).unwrap(),
+        );
+    }
+
+    #[tokio::test]
+    async fn a_coded_delta_that_rebuilds_anything_but_an_unsigned_delta_fails_the_session() {
+        let presence = state_payload(&Envelope::Ping).unwrap();
+        for segments in [
+            vec![DeltaSegment::Literal(presence)],
+            vec![DeltaSegment::Copy { offset: 0, len: 4 }],
+            // An unsigned-delta kind byte with nothing that decodes after it.
+            vec![DeltaSegment::Literal(vec![UNSIGNED_DELTA_KIND, 0xff])],
+        ] {
+            let wire = encode_coded_delta(0, &segments).unwrap();
+            let mut reader =
+                SessionReader::framed(std::io::Cursor::new(wire), StateFraming::CodedDelta);
+            assert!(matches!(
+                reader.read_next().await,
+                Err(FrameError::Decode(_))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_presence_batch_that_does_not_fit_its_slots_fails_the_session() {
+        let bad = PresenceItem {
+            slot: Some(0),
+            keep_prefix: 4,
+            keep_suffix: 0,
+            middle: Vec::new(),
+        };
+        let wire = encode_presence_batch(1, &[bad]).unwrap();
+        let mut reader = SessionReader::framed(std::io::Cursor::new(wire), StateFraming::Presence);
+        assert!(matches!(
+            reader.read_next().await,
+            Err(FrameError::Decode(_))
         ));
     }
 

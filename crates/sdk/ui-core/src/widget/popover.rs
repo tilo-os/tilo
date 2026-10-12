@@ -60,21 +60,8 @@ impl Widget for NoContent {
     ) -> NodeId {
         taffy.leaf_node(Style::default())
     }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "NoContent"
-    }
-    fn get_rect(&self) -> Rect {
-        Rect::ZERO
     }
 }
 
@@ -416,31 +403,13 @@ impl<C: Widget> Popover<C> {
         event: &WindowEvent,
         ctx: &mut crate::widget::EventCtx<'_>,
     ) -> bool {
-        let before = std::mem::replace(ctx.handled, false);
-        if let Some(node) = self.host_content {
-            self.content
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-        } else if let Some(content) = &self.detached {
-            let mut detached_focus = None;
-            self.content.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.path,
-                    handled: ctx.handled,
-                    // A node of the popover's own tree means nothing to the
-                    // window; the content keeps its own focus.
-                    focus_target: &mut detached_focus,
-                    node_id: content.node,
-                    taffy: &content.taffy,
-                },
-            );
-        }
-        let consumed = *ctx.handled;
-        *ctx.handled = before || consumed;
-        consumed
+        floating_surface::DetachedContent::forward(
+            &mut self.content,
+            self.host_content,
+            self.detached.as_ref(),
+            event,
+            ctx,
+        )
     }
 
     #[allow(
@@ -859,15 +828,6 @@ impl Popover {
         };
     }
 
-    pub fn highlight_first(&mut self) {
-        self.options_mut().highlighted = 0;
-    }
-
-    pub fn highlight_last(&mut self) {
-        let options = self.options_mut();
-        options.highlighted = options.items.len().saturating_sub(1);
-    }
-
     /// Record `idx` as selected and pending, and close. Out-of-range
     /// indices are ignored.
     pub fn select(&mut self, idx: usize) {
@@ -999,17 +959,6 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         }
     }
 
-    /// Nothing: a popover is presented in the window's top layer.
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
-
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -1052,7 +1001,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         }
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
@@ -1308,10 +1257,6 @@ impl<C: Widget + 'static> PopoverButton<C> {
         &self.popover
     }
 
-    pub fn popover_mut(&mut self) -> &mut Popover<C> {
-        &mut self.popover
-    }
-
     pub fn button_mut(&mut self) -> &mut crate::widget::Button {
         &mut self.button
     }
@@ -1375,11 +1320,7 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        let at = Point::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-        );
+        let at = crate::widget::layout_rect(taffy, node, origin).origin();
         let Some((button, popover)) = Self::nodes(taffy, node) else {
             return;
         };

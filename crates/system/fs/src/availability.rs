@@ -10,7 +10,14 @@ use std::fs;
 use std::path::PathBuf;
 
 use collab_types::{Ed25519PublicKey, Signature, verify_event};
-use fs_protocol::{ContentHash, FileActor, FileRecordId, FileVersionId};
+use fs_protocol::projection::{
+    AVAILABILITY_PROJECTION_VERSION, MAX_PROJECTED_ERROR_BYTES, ProjectedFreshness,
+    ProjectedReplicaEvidence,
+};
+use fs_protocol::{
+    AvailabilityPolicy, AvailabilityProjectionV1, ContentHash, FileActor, FileRecordId,
+    FileVersionId, ProjectedTransfer, Residency, TransferPhase, TransferProgress,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -90,43 +97,6 @@ pub enum RecordKind {
     Directory,
 }
 
-/// How much of the current payload is resident on this device.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "state")]
-pub enum Residency {
-    /// Metadata is present, but no payload bytes are promised locally.
-    NotResident,
-    /// Some, but not all, payload bytes are present.
-    Partial { resident_bytes: u64 },
-    /// The complete current payload has been verified locally.
-    Resident { bytes: u64 },
-}
-
-/// Current transfer lifecycle, independent of local residency.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TransferPhase {
-    #[default]
-    Idle,
-    Queued,
-    Downloading,
-    Uploading,
-    Verifying,
-}
-
-impl TransferPhase {
-    pub fn is_active(self) -> bool {
-        self != Self::Idle
-    }
-}
-
-/// Byte progress for the current transfer, if its size is known.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransferProgress {
-    pub completed_bytes: u64,
-    pub total_bytes: Option<u64>,
-}
-
 /// Last transfer failure. It is retained separately from the current phase so
 /// a retry can show both live progress and the previous diagnostic.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,15 +120,6 @@ pub struct TransferState {
     /// explicit user retry clears this field.
     #[serde(default)]
     pub retry_at_ms: Option<u64>,
-}
-
-/// Explicit local retention policy. Directory policy applies transitively.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AvailabilityPolicy {
-    #[default]
-    Automatic,
-    Pinned,
 }
 
 /// Replica evidence for exactly one immutable version of this record.
@@ -222,6 +183,85 @@ impl RecordAvailability {
             retained_versions: Vec::new(),
         }
     }
+}
+
+impl RecordAvailability {
+    /// The record's [`AvailabilityProjectionV1`] under its direct policy.
+    /// Use [`Self::projection_with_policy`] when directory-pin inheritance has
+    /// already been resolved by the registry.
+    pub fn projection(&self) -> AvailabilityProjectionV1 {
+        self.projection_with_policy(self.policy)
+    }
+
+    /// Pure in-memory conversion suitable for a FUSE `getxattr` callback.
+    pub fn projection_with_policy(
+        &self,
+        effective_policy: AvailabilityPolicy,
+    ) -> AvailabilityProjectionV1 {
+        let (last_error, error_truncated, last_error_at_ms) = self
+            .transfer
+            .last_error
+            .as_ref()
+            .map_or((None, false, None), |error| {
+                let (message, truncated) = truncate_utf8(&error.message, MAX_PROJECTED_ERROR_BYTES);
+                (Some(message), truncated, Some(error.occurred_at_ms))
+            });
+
+        // Counts without an observation time, or for any version other than
+        // the current one, are not current evidence. Preserve the last replica
+        // observation timestamp separately, but report the counts as unknown.
+        let replica_evidence_is_current = self.current_version.is_some()
+            && self.replicas.acknowledged_version == self.current_version
+            && self.freshness.replicas_observed_at_ms.is_some();
+        let replicas = if replica_evidence_is_current {
+            ProjectedReplicaEvidence::Known {
+                reachable: self.replicas.reachable,
+                durable: self.replicas.durable,
+            }
+        } else {
+            ProjectedReplicaEvidence::Unknown
+        };
+
+        AvailabilityProjectionV1 {
+            schema_version: AVAILABILITY_PROJECTION_VERSION,
+            record_id: self.record_id,
+            current_version: self.current_version,
+            residency: self.residency,
+            transfer: ProjectedTransfer {
+                phase: self.transfer.phase,
+                progress: self.transfer.progress,
+                last_error,
+                last_error_at_ms,
+                error_truncated,
+            },
+            policy: if self.policy == AvailabilityPolicy::Pinned {
+                AvailabilityPolicy::Pinned
+            } else {
+                effective_policy
+            },
+            policy_inherited: self.policy != AvailabilityPolicy::Pinned
+                && effective_policy == AvailabilityPolicy::Pinned,
+            replicas,
+            freshness: ProjectedFreshness {
+                metadata_observed_at_ms: self.freshness.metadata_observed_at_ms,
+                local_verified_at_ms: self.freshness.local_verified_at_ms,
+                replicas_observed_at_ms: self.freshness.replicas_observed_at_ms,
+            },
+        }
+    }
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> (String, bool) {
+    if value.len() <= max_bytes {
+        return (value.to_owned(), false);
+    }
+    let end = value
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= max_bytes)
+        .last()
+        .unwrap_or(0);
+    (value.get(..end).unwrap_or_default().to_owned(), true)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -326,6 +366,9 @@ pub struct AvailabilityRegistry {
     /// Bumped by every commit that changes what pinned hydration acts on;
     /// see [`Self::hydration_generation`].
     hydration_generation: u64,
+    /// Announces each bump of `hydration_generation`, so the pinned
+    /// hydration worker waits for one instead of polling (TIL-750).
+    hydration_watch: tokio::sync::watch::Sender<u64>,
     #[cfg(test)]
     persists: std::sync::atomic::AtomicU64,
 }
@@ -367,6 +410,7 @@ impl AvailabilityRegistry {
                 records: BTreeMap::new(),
                 deferred: false,
                 hydration_generation: 0,
+                hydration_watch: tokio::sync::watch::Sender::new(0),
                 #[cfg(test)]
                 persists: std::sync::atomic::AtomicU64::new(0),
             });
@@ -391,6 +435,7 @@ impl AvailabilityRegistry {
             records,
             deferred: false,
             hydration_generation: 0,
+            hydration_watch: tokio::sync::watch::Sender::new(0),
             #[cfg(test)]
             persists: std::sync::atomic::AtomicU64::new(0),
         })
@@ -412,6 +457,19 @@ impl AvailabilityRegistry {
     #[must_use]
     pub fn hydration_generation(&self) -> u64 {
         self.hydration_generation
+    }
+
+    /// A receiver that sees every later change of
+    /// [`Self::hydration_generation`]: a pin, an unpin, a new version or a
+    /// residency change, from any writer of this registry.
+    #[must_use]
+    pub fn subscribe_hydration(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.hydration_watch.subscribe()
+    }
+
+    fn bump_hydration_generation(&mut self) {
+        self.hydration_generation = self.hydration_generation.wrapping_add(1);
+        self.hydration_watch.send_replace(self.hydration_generation);
     }
 
     /// Durable writes of the whole registry so far.
@@ -562,7 +620,7 @@ impl AvailabilityRegistry {
                     .is_none_or(|previous| hydration_view(previous) != hydration_view(record))
             });
         if hydration_changed {
-            self.hydration_generation = self.hydration_generation.wrapping_add(1);
+            self.bump_hydration_generation();
         }
         Ok(value)
     }
@@ -597,7 +655,7 @@ impl AvailabilityRegistry {
             return Err(error);
         }
         if previous.as_ref().map(hydration_view) != self.records.get(&id).map(hydration_view) {
-            self.hydration_generation = self.hydration_generation.wrapping_add(1);
+            self.bump_hydration_generation();
         }
         Ok(())
     }
@@ -763,6 +821,29 @@ impl AvailabilityRegistry {
     }
 }
 
+/// Whether `record_id` is pinned, itself or through a stable ancestor, in a
+/// captured snapshot of `records`. Missing or cyclic ancestry is invalid
+/// durable state and counts as pinned, so it can never become permission to
+/// release local data.
+pub(crate) fn pinned_in_snapshot(records: &[RecordAvailability], record_id: FileRecordId) -> bool {
+    let mut current = Some(record_id);
+    let mut remaining = records.len().saturating_add(1);
+    while let Some(record_id) = current {
+        if remaining == 0 {
+            return true;
+        }
+        remaining = remaining.saturating_sub(1);
+        let Some(record) = records.iter().find(|record| record.record_id == record_id) else {
+            return true;
+        };
+        if record.policy == AvailabilityPolicy::Pinned {
+            return true;
+        }
+        current = record.parent;
+    }
+    false
+}
+
 fn refresh_replica_projection(record: &mut RecordAvailability, now_ms: u64) {
     let Some(version) = record.current_version else {
         record.replicas = ReplicaEvidence::default();
@@ -848,6 +929,7 @@ fn validate_records(
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
+    use fs_protocol::projection::{MAX_AVAILABILITY_XATTR_BYTES, ProjectionError};
     use getrandom::{SysRng, rand_core::UnwrapErr};
     use tempfile::TempDir;
 
@@ -1186,6 +1268,161 @@ mod tests {
                 ),
                 EvictionDecision::AllowedDestructiveOverride
             );
+        }
+    }
+
+    #[test]
+    fn projection_round_trips_every_ui_dimension() {
+        // Phase `availability_projection_round_trips_every_ui_dimension`.
+        {
+            let record = rich_record();
+            let projection = record.projection_with_policy(AvailabilityPolicy::Pinned);
+            let bytes = projection.to_xattr_bytes().unwrap();
+
+            assert!(bytes.len() <= MAX_AVAILABILITY_XATTR_BYTES);
+            assert_eq!(
+                AvailabilityProjectionV1::parse_xattr(&bytes).unwrap(),
+                projection
+            );
+            assert_eq!(projection.schema_version, AVAILABILITY_PROJECTION_VERSION);
+            assert_eq!(projection.record_id, record.record_id);
+            assert_eq!(projection.residency, record.residency);
+            assert_eq!(projection.transfer.phase, TransferPhase::Downloading);
+            assert_eq!(projection.policy, AvailabilityPolicy::Pinned);
+            assert_eq!(
+                projection.replicas,
+                ProjectedReplicaEvidence::Known {
+                    reachable: 2,
+                    durable: 1
+                }
+            );
+            assert_eq!(projection.freshness.replicas_observed_at_ms, Some(7_900));
+        }
+        // Phase `replica_counts_are_unknown_without_current_version_evidence`.
+        {
+            let mut record = rich_record();
+            let old_version = FileVersionId::new();
+            record.replicas.acknowledged_version = Some(old_version);
+            let projection = record.projection();
+            assert_eq!(projection.replicas, ProjectedReplicaEvidence::Unknown);
+
+            record.replicas.acknowledged_version = record.current_version;
+            record.freshness.replicas_observed_at_ms = None;
+            let projection = record.projection();
+            assert_eq!(projection.replicas, ProjectedReplicaEvidence::Unknown);
+
+            // Unknown is distinct from a valid observation that found zero peers.
+            record.freshness.replicas_observed_at_ms = Some(9_000);
+            record.replicas.reachable = 0;
+            record.replicas.durable = 0;
+            let projection = record.projection();
+            assert_eq!(
+                projection.replicas,
+                ProjectedReplicaEvidence::Known {
+                    reachable: 0,
+                    durable: 0
+                }
+            );
+        }
+    }
+
+    fn rich_record() -> RecordAvailability {
+        let id = FileRecordId::new();
+        let version = FileVersionId::new();
+        RecordAvailability {
+            record_id: id,
+            kind: RecordKind::File,
+            parent: None,
+            current_version: Some(version),
+            residency: Residency::Partial {
+                resident_bytes: 128,
+            },
+            transfer: TransferState {
+                phase: TransferPhase::Downloading,
+                progress: Some(TransferProgress {
+                    completed_bytes: 128,
+                    total_bytes: Some(1_024),
+                }),
+                last_error: Some(TransferError {
+                    message: "peer became unavailable".into(),
+                    occurred_at_ms: 8_000,
+                }),
+                retry_count: 1,
+                retry_at_ms: Some(9_000),
+            },
+            policy: AvailabilityPolicy::Automatic,
+            replicas: ReplicaEvidence {
+                reachable: 2,
+                durable: 1,
+                acknowledged_version: Some(version),
+            },
+            replica_observations: Vec::new(),
+            freshness: Freshness {
+                metadata_observed_at_ms: Some(7_000),
+                local_verified_at_ms: Some(7_500),
+                replicas_observed_at_ms: Some(7_900),
+            },
+            retained_versions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn projection_bounds_errors_and_rejects_inconsistent_values() {
+        // Phase `long_utf8_errors_are_truncated_safely_and_marked`.
+        {
+            let mut record = rich_record();
+            record.transfer.last_error.as_mut().unwrap().message = "é".repeat(300);
+            let projection = record.projection();
+            let message = projection.transfer.last_error.as_deref().unwrap();
+            assert!(message.len() <= MAX_PROJECTED_ERROR_BYTES);
+            assert!(message.is_char_boundary(message.len()));
+            assert!(projection.transfer.error_truncated);
+            assert!(projection.to_xattr_bytes().unwrap().len() <= MAX_AVAILABILITY_XATTR_BYTES);
+        }
+        // Phase `parser_rejects_oversize_future_and_inconsistent_values`.
+        {
+            assert!(matches!(
+                AvailabilityProjectionV1::parse_xattr(&vec![
+                    b' ';
+                    MAX_AVAILABILITY_XATTR_BYTES + 1
+                ]),
+                Err(ProjectionError::TooLarge { .. })
+            ));
+
+            let mut projection = rich_record().projection();
+            projection.schema_version = AVAILABILITY_PROJECTION_VERSION + 1;
+            let bytes = serde_json::to_vec(&projection).unwrap();
+            assert!(matches!(
+                AvailabilityProjectionV1::parse_xattr(&bytes),
+                Err(ProjectionError::UnsupportedVersion(_))
+            ));
+
+            let mut projection = rich_record().projection();
+            projection.transfer.progress = Some(TransferProgress {
+                completed_bytes: 2,
+                total_bytes: Some(1),
+            });
+            let bytes = serde_json::to_vec(&projection).unwrap();
+            assert!(matches!(
+                AvailabilityProjectionV1::parse_xattr(&bytes),
+                Err(ProjectionError::InvalidProgress)
+            ));
+
+            let mut projection = rich_record().projection();
+            projection.transfer.last_error = None;
+            let bytes = serde_json::to_vec(&projection).unwrap();
+            assert!(matches!(
+                AvailabilityProjectionV1::parse_xattr(&bytes),
+                Err(ProjectionError::InvalidTransferError)
+            ));
+
+            let mut projection = rich_record().projection();
+            projection.current_version = None;
+            let bytes = serde_json::to_vec(&projection).unwrap();
+            assert!(matches!(
+                AvailabilityProjectionV1::parse_xattr(&bytes),
+                Err(ProjectionError::InvalidReplicaEvidence)
+            ));
         }
     }
 }

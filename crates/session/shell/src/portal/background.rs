@@ -73,13 +73,6 @@ pub trait BackgroundService: Send + Sync {
 }
 
 #[derive(Clone)]
-#[cfg_attr(
-    not(target_os = "linux"),
-    expect(
-        dead_code,
-        reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-    )
-)]
 pub struct BackgroundServiceHandle(Arc<dyn BackgroundService>);
 impl BackgroundServiceHandle {
     pub fn new(service: Arc<dyn BackgroundService>) -> Self {
@@ -282,21 +275,7 @@ pub struct BackgroundBackend {
     #[cfg(target_os = "linux")]
     ctx: PortalContext,
     apps: Arc<Mutex<HashMap<String, AppState>>>,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     service: BackgroundServiceHandle,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     lifecycle: PortalLifecycle,
 }
 
@@ -394,14 +373,6 @@ impl BackgroundBackend {
             .map(|(id, entry)| (id.clone(), entry.state))
             .collect();
         before != after
-    }
-
-    /// Remove state when the package is uninstalled. This also forgets portal
-    /// consent; package reinstall must ask again.
-    pub fn remove_app(&self, app_id: &str) -> bool {
-        self.apps
-            .lock()
-            .is_ok_and(|mut apps| apps.remove(app_id).is_some())
     }
 
     pub fn app_state(&self, app_id: &str) -> Option<u32> {

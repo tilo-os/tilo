@@ -1,8 +1,12 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "test assertions"
+)]
 
-//! A custom surface's typed edits are named in history after what they did:
-//! the declared action's label when the edit is one, else its variant in
-//! words — never after the generic `apply` they travel as.
+//! A custom surface's typed edits are recorded in history as what they did:
+//! the action the edit is, never the generic `apply` they travel as.
 
 use serde_json::json;
 use tilo_actions::{Action, ActionError, ActionParam, ParamType};
@@ -98,35 +102,50 @@ impl ResourceApp for SketchApp {
     }
 }
 
-fn last_label(app: &TestApp<SketchApp>) -> String {
+fn last_did(app: &TestApp<SketchApp>) -> tilo_actions::Did {
     app.versions()
         .last()
         .and_then(|version| version.context.as_ref())
-        .map(|context| context.action_label.clone())
-        .expect("the last version was made by an action")
+        .and_then(|context| context.what.clone())
+        .expect("the last version records what its action did")
+}
+
+fn verb_name(did: &tilo_actions::Did) -> &str {
+    match did {
+        tilo_actions::Did::Verb(verb) => &verb.action.action,
+        other => panic!("a verb: {other:?}"),
+    }
 }
 
 #[test]
-fn typed_edits_are_named_in_history_after_what_they_did() {
+fn typed_edits_are_recorded_in_history_as_what_they_did() {
     let mut app = TestApp::<SketchApp>::new().unwrap();
 
-    // A surface's dispatcher submits the edit as `apply`; history names the
-    // declared action it is.
+    // A surface's dispatcher submits the edit as `apply`; history records
+    // the declared action it is.
     app.harness().click_named("erase").unwrap();
     assert_eq!(app.state(), 1);
-    assert_eq!(last_label(&app), "Remove the marks");
+    assert_eq!(verb_name(&last_did(&app)), "remove-marks");
 
-    // An edit with no declaration is named after its variant.
+    // An edit with no declaration is recorded as its variant.
     app.invoke(Invoke::apply(&moved("a")).unwrap()).unwrap();
-    assert_eq!(last_label(&app), "Move marks");
+    assert_eq!(verb_name(&last_did(&app)), "move-marks");
 
-    // A group of one kind of edit is named after it; a mixed one is a group.
+    // A group of one kind of edit records it once; a mixed one each member.
     app.invoke(Invoke::group([
         Invoke::apply(&moved("a")).unwrap(),
         Invoke::apply(&moved("b")).unwrap(),
     ]))
     .unwrap();
-    assert_eq!(last_label(&app), "Move marks");
+    let tilo_actions::Did::Group(same) = last_did(&app) else {
+        panic!("a group");
+    };
+    assert_eq!(same.count, 2);
+    assert!(
+        same.members
+            .iter()
+            .all(|member| verb_name(member) == "move-marks")
+    );
     app.invoke_confirmed(Invoke::group([
         Invoke::apply(&moved("a")).unwrap(),
         Invoke::apply(&SketchAction::RemoveMarks {
@@ -135,21 +154,30 @@ fn typed_edits_are_named_in_history_after_what_they_did() {
         .unwrap(),
     ]))
     .unwrap();
-    assert_eq!(last_label(&app), "Apply several Sketch edits as one");
+    let tilo_actions::Did::Group(mixed) = last_did(&app) else {
+        panic!("a group");
+    };
+    assert!(mixed.shared().is_none());
+    assert_eq!(
+        mixed.members.iter().map(verb_name).collect::<Vec<_>>(),
+        ["move-marks", "remove-marks"]
+    );
 
-    // An agent's `history` lists the same names.
+    // An agent's `history` lists the same entries, with a sentence each that
+    // never names the generic `apply`.
     let listed = app.call("history", json!({})).unwrap().unwrap();
-    let actions: Vec<&str> = listed["versions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|version| version["action"].as_str())
-        .collect();
+    let versions = listed["versions"].as_array().unwrap();
     assert!(
-        !actions
+        versions
             .iter()
-            .any(|action| action.starts_with("Apply Sketch")),
+            .any(|version| version["what"]["action"]["action"] == "move-marks"),
         "{listed}"
     );
-    assert!(actions.contains(&"Move marks"), "{listed}");
+    assert!(
+        versions.iter().all(|version| !version["sentence"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("Apply")),
+        "{listed}"
+    );
 }

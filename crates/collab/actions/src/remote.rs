@@ -36,6 +36,7 @@ pub const APPLICATION_ACTIVATE_ACTION: &str = "activate-window";
 pub const APPLICATION_ACTIVATE_TYPE: &str = "tilo.app.activate-window";
 
 mod catalogue;
+pub mod feedback;
 mod pending;
 mod wait;
 
@@ -125,6 +126,10 @@ pub struct Caller {
     // Transport-issued execution scope, never accepted from request context.
     // It narrows invocation ownership without changing the policy principal.
     execution: Option<ExecutionLease>,
+    // The person a non-person principal acts for, as the host admitted it.
+    acting_for: Option<String>,
+    // The Shortcut whose run this person's invocation is a step of.
+    shortcut: Option<String>,
 }
 
 impl Caller {
@@ -133,12 +138,14 @@ impl Caller {
     #[must_use]
     pub fn authenticated(user_public_key: [u8; 32], device_public_key: [u8; 32]) -> Self {
         Self {
-            principal: CallerPrincipal::Person(hex(&user_public_key)),
+            principal: CallerPrincipal::Person(hex::encode(user_public_key)),
             user_public_key: Some(user_public_key),
             device_public_key: Some(device_public_key),
             room: None,
             foreign: false,
             execution: None,
+            acting_for: None,
+            shortcut: None,
         }
     }
 
@@ -153,6 +160,8 @@ impl Caller {
             room: None,
             foreign: false,
             execution: None,
+            acting_for: None,
+            shortcut: None,
         }
     }
 
@@ -166,6 +175,8 @@ impl Caller {
             room: None,
             foreign: false,
             execution: None,
+            acting_for: None,
+            shortcut: None,
         }
     }
 
@@ -181,6 +192,8 @@ impl Caller {
             room: None,
             foreign: false,
             execution: None,
+            acting_for: None,
+            shortcut: None,
         }
     }
 
@@ -201,6 +214,8 @@ impl Caller {
             room: None,
             foreign: false,
             execution: None,
+            acting_for: None,
+            shortcut: None,
         }
     }
 
@@ -248,6 +263,86 @@ impl Caller {
         self
     }
 
+    /// The caller acts for `person`, by that person's policy principal id:
+    /// an agent, a Shortcut or an app the person started. Set only by the
+    /// host that admitted the delegation, never from a payload. It names who
+    /// the actor works for in presence and history; it widens nothing.
+    #[must_use]
+    pub fn acting_for(mut self, person: impl Into<String>) -> Self {
+        self.acting_for = Some(person.into());
+        self
+    }
+
+    /// This person's own device hands the connection to agent `agent_id`,
+    /// acting for them: an MCP client, a local assistant. The agent is the
+    /// principal (its edits, presence and history are the agent's, for the
+    /// person) and it may do only what both the person and the delegation a
+    /// device gives its agents allow. A caller that is not a person is
+    /// returned as it is. Set only by the host that admitted the person.
+    #[must_use]
+    pub fn delegated_to(mut self, agent_id: impl Into<String>) -> Self {
+        let CallerPrincipal::Person(person) = &self.principal else {
+            return self;
+        };
+        self.acting_for = Some(person.clone());
+        self.principal = CallerPrincipal::Agent(agent_id.into());
+        self
+    }
+
+    /// The person this caller acts for, when it is not that person.
+    #[must_use]
+    pub fn acting_for_person(&self) -> Option<&str> {
+        self.acting_for.as_deref()
+    }
+
+    /// The caller's invocations are the steps of Shortcut `id`'s run: still
+    /// the person's authority (bounded by the Shortcut's own grants, which
+    /// the runner applies), but the Shortcut is who acts, for the person.
+    /// Set only by the host's Shortcut runner.
+    #[must_use]
+    pub fn running_shortcut(mut self, id: impl Into<String>) -> Self {
+        self.shortcut = Some(id.into());
+        self
+    }
+
+    /// The Shortcut whose run this invocation is a step of.
+    #[must_use]
+    pub fn shortcut(&self) -> Option<&str> {
+        self.shortcut.as_deref()
+    }
+
+    /// Who acts, as presence and history name them: the kind of actor, its
+    /// id, and the person it acts for when that is someone else.
+    #[must_use]
+    pub fn actor(&self) -> crate::InteractionActor {
+        match (&self.principal, &self.shortcut) {
+            (CallerPrincipal::Person(person), Some(shortcut)) => crate::InteractionActor::new(
+                format!("shortcut:{shortcut}"),
+                crate::ActorKind::Shortcut,
+            )
+            .acting_for(person.clone()),
+            (CallerPrincipal::Person(person), None) => {
+                crate::InteractionActor::new(person.clone(), crate::ActorKind::Person)
+            }
+            (CallerPrincipal::Agent(agent), _) => {
+                let actor =
+                    crate::InteractionActor::new(format!("agent:{agent}"), crate::ActorKind::Agent);
+                match &self.acting_for {
+                    Some(person) => actor.acting_for(person.clone()),
+                    None => actor,
+                }
+            }
+            (CallerPrincipal::App(app), _) => {
+                let actor =
+                    crate::InteractionActor::new(format!("app:{app}"), crate::ActorKind::App);
+                match &self.acting_for {
+                    Some(person) => actor.acting_for(person.clone()),
+                    None => actor,
+                }
+            }
+        }
+    }
+
     /// Confine the caller to one room: the connection was admitted to that
     /// room only, so nothing outside it is offered or reachable.
     #[must_use]
@@ -284,10 +379,6 @@ impl Caller {
     pub const fn device_public_key(&self) -> Option<&[u8; 32]> {
         self.device_public_key.as_ref()
     }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    hex::encode(bytes)
 }
 
 /// Which published action an invocation names on the host.
@@ -415,6 +506,11 @@ pub enum Confirmation {
     Confirmed,
     /// The caller typed the phrase the contract asks for.
     Phrase(String),
+    /// The person the caller acts for confirmed this very invocation on
+    /// their own device: the host hands the caller this token, which names
+    /// that answer. Only a person acting themselves confirms by their own
+    /// word; anyone acting for them carries the person's answer.
+    Witnessed(String),
 }
 
 /// Provider token naming the calling application's own connection, for an
@@ -809,6 +905,20 @@ pub trait ActionHost {
     /// Returns [`ActionHostError::UnknownInvocation`] for an id this caller
     /// does not own, or [`ActionHostError::NotCancellable`].
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError>;
+
+    /// Ask the person `caller` acts for to confirm `request` on their own
+    /// device, as the host shows it to them. The answer is a
+    /// [`Confirmation::Witnessed`] that `caller` invokes `request` again
+    /// with; a caller never confirms by its own word. A host with nobody to
+    /// ask answers [`ActionHostError::ConfirmationRequired`].
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<Confirmation, ActionHostError>> {
+        let _ = (caller, request);
+        Pending::ready(Err(ActionHostError::ConfirmationRequired))
+    }
 }
 
 /// A shared host is the host: what lets one be handed to [`serve`], which
@@ -845,6 +955,14 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
         (**self).cancel(caller, id)
     }
+
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<Confirmation, ActionHostError>> {
+        (**self).confirm(caller, request)
+    }
 }
 
 /// Everything that crosses the wire for remote action use.
@@ -854,6 +972,16 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
 )]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RemoteActionMessage {
+    /// Inspect existing feedback admission or read an existing canonical ack.
+    /// This never invokes a document mutation or grants room access.
+    FeedbackRequest {
+        correlation: u64,
+        query: feedback::FeedbackQuery,
+    },
+    FeedbackResponse {
+        correlation: u64,
+        result: Result<feedback::FeedbackAnswer, ActionHostError>,
+    },
     /// Ask for one page of the actions offered to the caller.
     CatalogueRequest {
         correlation: u64,
@@ -950,7 +1078,7 @@ impl RecordPiece {
         Self {
             total,
             offset,
-            bytes: hex(bytes),
+            bytes: hex::encode(bytes),
         }
     }
 
@@ -1009,6 +1137,7 @@ impl RemoteActionMessage {
                 | Self::Observe { .. }
                 | Self::Cancel { .. }
                 | Self::RecordRequest { .. }
+                | Self::FeedbackRequest { .. }
         )
     }
 }
@@ -1110,6 +1239,14 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         },
     )?;
     let answer = match message {
+        RemoteActionMessage::FeedbackRequest { correlation, .. } => {
+            Pending::ready(RemoteActionMessage::FeedbackResponse {
+                correlation,
+                result: Err(ActionHostError::Unavailable {
+                    reason: "canonical feedback service unavailable".into(),
+                }),
+            })
+        }
         RemoteActionMessage::CatalogueRequest { correlation, query } => host
             .query(caller, query)
             .map(move |result| RemoteActionMessage::CatalogueResponse {
@@ -1164,7 +1301,8 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
-        | RemoteActionMessage::RecordResponse { .. } => return None,
+        | RemoteActionMessage::RecordResponse { .. }
+        | RemoteActionMessage::FeedbackResponse { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
     let (completer, answered) = pending();
@@ -1181,6 +1319,12 @@ pub fn refuse(
     error: ActionHostError,
 ) -> Option<RemoteActionMessage> {
     Some(match message {
+        RemoteActionMessage::FeedbackRequest { correlation, .. } => {
+            RemoteActionMessage::FeedbackResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
         RemoteActionMessage::CatalogueRequest { correlation, .. } => {
             RemoteActionMessage::CatalogueResponse {
                 correlation: *correlation,
@@ -1209,7 +1353,8 @@ pub fn refuse(
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
-        | RemoteActionMessage::RecordResponse { .. } => return None,
+        | RemoteActionMessage::RecordResponse { .. }
+        | RemoteActionMessage::FeedbackResponse { .. } => return None,
     })
 }
 
@@ -1644,7 +1789,6 @@ mod tests {
                 on_behalf_of: None,
                 argument: InvokeArgument::Json(arguments),
                 context: Some(ActionContext::for_resource(
-                    "Archive",
                     "note:1",
                     "notes.note",
                     "Groceries",

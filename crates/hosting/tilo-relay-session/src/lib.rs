@@ -26,7 +26,7 @@
 pub mod antientropy;
 pub mod client;
 pub mod coedit;
-pub mod framing;
+pub mod pointer_pacing;
 pub mod position;
 pub mod rooms;
 mod session_carrier;

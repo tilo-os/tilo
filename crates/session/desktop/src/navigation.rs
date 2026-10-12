@@ -78,6 +78,16 @@ impl DesktopSurface {
             .retain(|strip, _| strips.contains(strip));
     }
 
+    /// Take over the pointer from `shown`, the surface this one replaces on
+    /// screen while `shown` is kept for a later return (a workspace switch):
+    /// where the pointer is carries over; a press that began over `shown`
+    /// does not, here or when `shown` comes back.
+    pub fn take_pointer_from(&mut self, shown: &mut Self) {
+        self.navigation.cursor = shown.navigation.cursor;
+        self.navigation.pressed_group = None;
+        shown.navigation.pressed_group = None;
+    }
+
     /// Hosts call this after applying local intents. The tree owns the local
     /// selection; this compositor-independent layer only presents it.
     pub fn sync_navigation(&mut self, tree: &DesktopTree) {
@@ -127,26 +137,6 @@ impl DesktopSurface {
         if let Some(key) = self.navigation_key(strip, group) {
             self.navigation.framed.insert(strip, key);
         }
-    }
-
-    /// Pan the actual retained row without reframing the selected window on
-    /// the following layout. A later explicit selection still reveals it.
-    pub fn pan_desktop(&mut self, strip: StripId, offset: f64) -> Option<bool> {
-        if self.navigation.active_strip != Some(strip) || !offset.is_finite() {
-            return None;
-        }
-        let row = self.row_mut(strip)?;
-        if row.groups.iter().any(|group| group.maximized) {
-            return Some(false);
-        }
-        let moved = row.pan_to(offset);
-        if let Some(group) = self.navigation.groups.get(&strip).copied()
-            && let Some(key) = self.navigation_key(strip, group)
-        {
-            self.navigation.framed.insert(strip, key);
-            self.navigation.manual_pan = Some((strip, group));
-        }
-        Some(moved)
     }
 
     /// An explicit app selection reveals even an already-selected app after

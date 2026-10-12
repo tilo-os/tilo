@@ -613,15 +613,6 @@ impl EmptyState {
         self
     }
 
-    /// An illustration the app paints into the slot above the title (twice
-    /// the icon's size), from theme values. It is the first thing shed when
-    /// the pane is short.
-    #[must_use]
-    pub fn with_illustration(mut self, paint: impl Fn(&mut PaintCtx<'_>, Rect) + 'static) -> Self {
-        self.illustration = Some(Box::new(paint));
-        self
-    }
-
     /// One sentence under the title, in secondary ink.
     #[must_use]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
@@ -730,7 +721,7 @@ impl EmptyState {
 
     fn fire_action(&mut self, state: &mut crate::widget::Edits<'_>, path: &ObjId) {
         if let Some(engine) = &mut self.engine {
-            let _ = engine.perform_action(&crate::a11y::Action::Activate, state, path);
+            let _ = engine.perform_action(&crate::a11y::Action::Activate, &[], state, path);
             return;
         }
         self.action_fired = true;
@@ -1040,6 +1031,7 @@ impl Widget for EmptyState {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
@@ -1064,7 +1056,7 @@ impl Widget for EmptyState {
     ) -> bool {
         self.action_label.is_some()
             && self.action_control_id() == target
-            && self.perform_action(action, state, path)
+            && self.perform_action(action, &[], state, path)
     }
 
     fn start_operation(
@@ -1541,6 +1533,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut es,
                 &crate::a11y::Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
@@ -1962,8 +1955,11 @@ mod tests {
             .with_action("Add a place")
             .with_action_id("weather.empty.add")
             .on_view(move || seen.set(seen.get() + 1));
-        let mut driver =
-            crate::headless::Driver::new(crate::state::State::new(), Box::new(root), (480, 360));
+        let mut driver = crate::headless::FrameHarness::new(
+            crate::state::State::new(),
+            Box::new(root),
+            (480, 360),
+        );
         let audit = driver.native_app_audit();
         assert!(audit.is_certified(), "{audit:#?}");
         driver

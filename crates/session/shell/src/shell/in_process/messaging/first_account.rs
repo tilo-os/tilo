@@ -22,6 +22,7 @@ use tilo_messaging::{
 use tokio::sync::oneshot;
 const ORIGIN: &str = "https://signal.org";
 const CAPACITY: usize = 8;
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(90);
 
 type Reply<T> = oneshot::Sender<Result<T, SendError>>;
 enum Request {
@@ -41,53 +42,20 @@ struct Port {
     statuses: Arc<Mutex<BTreeMap<ServiceAccount, Status>>>,
     wake: Wake,
 }
-async fn answer<T>(receiver: oneshot::Receiver<Result<T, SendError>>) -> Result<T, SendError> {
-    tokio::time::timeout(Duration::from_secs(90), receiver)
-        .await
-        .map_err(|_| SendError::Unavailable)?
-        .map_err(|_| SendError::Unavailable)?
-}
 impl EnrollmentHost for Port {
     fn begin(&self, service: String) -> PairingFuture {
-        let (reply, receiver) = oneshot::channel();
-        let submitted = self
-            .requests
-            .try_send(Request::Begin(service, reply))
-            .is_ok();
-        (self.wake)();
-        Box::pin(async move {
-            if !submitted {
-                return Err(SendError::Unavailable);
-            }
-            answer(receiver).await
+        super::ask_owner(&self.requests, &self.wake, ANSWER_TIMEOUT, |reply| {
+            Request::Begin(service, reply)
         })
     }
     fn finish(&self, account: ServiceAccount, attempt: String) -> EnrollmentReviewFuture {
-        let (reply, receiver) = oneshot::channel();
-        let submitted = self
-            .requests
-            .try_send(Request::Finish(account, attempt, reply))
-            .is_ok();
-        (self.wake)();
-        Box::pin(async move {
-            if !submitted {
-                return Err(SendError::Unavailable);
-            }
-            answer(receiver).await
+        super::ask_owner(&self.requests, &self.wake, ANSWER_TIMEOUT, |reply| {
+            Request::Finish(account, attempt, reply)
         })
     }
     fn review(&self, account: ServiceAccount, name: String) -> EnrollmentApprovalFuture {
-        let (reply, receiver) = oneshot::channel();
-        let submitted = self
-            .requests
-            .try_send(Request::Review(account, name, reply))
-            .is_ok();
-        (self.wake)();
-        Box::pin(async move {
-            if !submitted {
-                return Err(SendError::Unavailable);
-            }
-            answer(receiver).await
+        super::ask_owner(&self.requests, &self.wake, ANSWER_TIMEOUT, |reply| {
+            Request::Review(account, name, reply)
         })
     }
     fn phase(&self, account: &ServiceAccount) -> EnrollmentPhase {
@@ -124,8 +92,7 @@ struct Completed {
 }
 struct Permission {
     completed: Completed,
-    request: accounts::AccessRequest,
-    proposal: String,
+    asked: super::OwnerPermission,
     name: String,
 }
 struct PreparedAccount {
@@ -203,21 +170,24 @@ struct Actor {
 pub(in crate::shell::in_process) fn new(principal: String, wake: Wake) -> Rc<dyn FirstAccounts> {
     let signal = with_source(principal.clone(), wake.clone(), Arc::new(SignedSource));
     let sms = super::sms_first::new(principal.clone(), wake.clone());
+    let whatsapp = super::whatsapp_first::new(principal.clone(), wake.clone());
     let native = super::native_first::new(principal.clone(), wake);
-    combine_all(principal, signal, sms, Some(native))
+    combine_all(principal, signal, sms, whatsapp, Some(native))
 }
 #[cfg(test)]
 fn combine(
     principal: String,
     signal: Rc<dyn FirstAccounts>,
     sms: Rc<dyn FirstAccounts>,
+    whatsapp: Rc<dyn FirstAccounts>,
 ) -> Rc<dyn FirstAccounts> {
-    combine_all(principal, signal, sms, None)
+    combine_all(principal, signal, sms, whatsapp, None)
 }
 fn combine_all(
     principal: String,
     signal: Rc<dyn FirstAccounts>,
     sms: Rc<dyn FirstAccounts>,
+    whatsapp: Rc<dyn FirstAccounts>,
     native: Option<Rc<dyn FirstAccounts>>,
 ) -> Rc<dyn FirstAccounts> {
     Rc::new(Combined {
@@ -225,10 +195,12 @@ fn combine_all(
             principal,
             signal: signal.client(),
             sms: sms.client(),
+            whatsapp: whatsapp.client(),
             native: native.as_ref().map(|owner| owner.client()),
         }),
         signal,
         sms,
+        whatsapp,
         native,
     })
 }
@@ -251,6 +223,17 @@ impl FirstAccounts for Actor {
         EnrollmentClient::new(self.port.principal.clone(), self.port.clone())
     }
     fn pump(&self, apps: &mut super::super::InProcessApps) {
+        // A reset can cancel and then enqueue a fresh Begin before this pump.
+        // Retire the old owned attempt before admitting the explicit new one.
+        {
+            let mut slot = self.attempt.borrow_mut();
+            if let Some(attempt) = slot.as_mut()
+                && (attempt.identity.check().is_err() || attempt.cancellation.is_cancelled())
+            {
+                self.retire(apps, attempt);
+                slot.take();
+            }
+        }
         for request in self.requests.try_iter().take(CAPACITY) {
             self.request(apps, request);
         }
@@ -520,33 +503,25 @@ impl Actor {
             let _ = reply.send(Err(SendError::AlreadyReserved));
             return;
         };
-        let result = (|| {
-            let item_id = apps
-                .prepare_native_signal_profile_key(&completed.candidate, ORIGIN)
-                .map_err(|_| SendError::Revoked)?;
-            let request = accounts::AccessRequest {
-                app_id: "so.tilo.messages".into(),
-                item_id,
-                purpose: "Private Signal messaging".into(),
-                origin: Some(ORIGIN.into()),
-            };
-            let Ok(proposal) =
-                apps.propose_native_messaging_permission(&attempt.identity, request.clone())
-            else {
-                if let Some(owner) = &apps.credential_owner {
-                    let _ = owner.edit(|store| store.remove(&request.item_id));
-                }
-                return Err(SendError::Revoked);
-            };
-            Ok((request, proposal))
-        })();
+        let result = apps
+            .prepare_native_signal_profile_key(&completed.candidate, ORIGIN)
+            .map_err(|_| SendError::Revoked)
+            .and_then(|item_id| {
+                super::OwnerPermission::ask(
+                    apps,
+                    &attempt.identity,
+                    item_id,
+                    "Private Signal messaging".into(),
+                    ORIGIN,
+                )
+            });
         match result {
-            Ok((request, proposal)) => {
+            Ok(asked) => {
                 self.phase(account, EnrollmentPhase::AwaitingPermission);
+                let proposal = asked.proposal.clone();
                 attempt.permission = Some(Permission {
                     completed,
-                    request,
-                    proposal: proposal.clone(),
+                    asked,
                     name,
                 });
                 if reply.send(Ok(proposal)).is_err() {
@@ -565,36 +540,22 @@ impl Actor {
         attempt: &mut Attempt,
         permission: Permission,
     ) {
-        let credential =
-            apps.native_messaging_credential(&attempt.identity, permission.request.clone());
-        let approved = credential
-            .as_ref()
-            .is_ok_and(|credential| credential.check().is_ok());
-        if !approved {
-            let pending = apps
-                .credential_owner
-                .as_ref()
-                .and_then(|owner| owner.proposals().ok())
-                .is_some_and(|proposals| {
-                    proposals
-                        .iter()
-                        .any(|proposal| proposal.id == permission.proposal)
-                });
-            if pending {
+        let credential = match permission.asked.grant(apps, &attempt.identity) {
+            super::Grant::Approved(credential) => credential,
+            super::Grant::Pending => {
                 attempt.permission = Some(permission);
-            } else {
-                Self::remove_key(apps, &permission);
-                attempt.cancellation.cancel();
+                return;
             }
-            return;
-        }
-        let result = self.activate(
-            apps,
-            attempt,
-            permission,
-            credential.map_err(|_| SendError::Revoked),
-        );
-        if result.is_err() {
+            super::Grant::Refused => {
+                permission.asked.withdraw(apps);
+                attempt.cancellation.cancel();
+                return;
+            }
+        };
+        if self
+            .activate(apps, attempt, permission, credential)
+            .is_err()
+        {
             attempt.cancellation.cancel();
         }
     }
@@ -603,9 +564,8 @@ impl Actor {
         apps: &mut super::super::InProcessApps,
         attempt: &mut Attempt,
         permission: Permission,
-        credential: Result<NativeMessagingCredential, SendError>,
+        credential: NativeMessagingCredential,
     ) -> Result<(), SendError> {
-        let credential = credential?;
         let identity = attempt.identity.clone();
         let linked = apps
             .publish_native_signal_enrollment(permission.completed.candidate, permission.name)
@@ -641,7 +601,8 @@ impl Actor {
             .to_owned();
         let pending = start_blocking(executor.handle(), self.port.wake.clone(), move || {
             Ok((|| {
-                private_fs::directory(&private).map_err(|_| SendError::Unavailable)?;
+                tilo_files::native::private::directory(&private)
+                    .map_err(|_| SendError::Unavailable)?;
                 permission
                     .completed
                     .profile
@@ -715,14 +676,6 @@ impl Actor {
             attempt.cancellation.cancel();
         }
     }
-    fn remove_key(apps: &super::super::InProcessApps, permission: &Permission) {
-        if let Some(owner) = &apps.credential_owner {
-            let _ = owner.decide_proposal(&permission.proposal, accounts::AccessDecision::Deny);
-            // This attempt created this exact unused key; never remove or edit
-            // another account's item, nor one whose provider has been published.
-            let _ = owner.edit(|store| store.remove(&permission.request.item_id));
-        }
-    }
     fn retire(&self, apps: &super::super::InProcessApps, attempt: &mut Attempt) {
         attempt.cancellation.cancel();
         if let Some((enrollment, _, service)) = &attempt.begun {
@@ -730,7 +683,7 @@ impl Actor {
             service.cancel();
         }
         if let Some(permission) = attempt.permission.take() {
-            Self::remove_key(apps, &permission);
+            permission.asked.withdraw(apps);
         }
         self.phase(
             &service_account(&attempt.identity.owner),
@@ -774,24 +727,22 @@ struct Combined {
     port: Arc<CombinedPort>,
     signal: Rc<dyn FirstAccounts>,
     sms: Rc<dyn FirstAccounts>,
+    whatsapp: Rc<dyn FirstAccounts>,
 }
 struct CombinedPort {
     native: Option<EnrollmentClient>,
     principal: String,
     signal: EnrollmentClient,
     sms: EnrollmentClient,
+    whatsapp: EnrollmentClient,
 }
 impl CombinedPort {
     fn account(&self, account: &ServiceAccount) -> &EnrollmentClient {
-        if account.service == "tilo"
-            && let Some(native) = &self.native
-        {
-            return native;
-        }
-        if account.service == "sms" {
-            &self.sms
-        } else {
-            &self.signal
+        match account.service.as_str() {
+            "sms" => &self.sms,
+            "whatsapp" => &self.whatsapp,
+            "tilo" => self.native.as_ref().unwrap_or(&self.signal),
+            _ => &self.signal,
         }
     }
 }
@@ -802,6 +753,7 @@ impl FirstAccounts for Combined {
     fn pump(&self, apps: &mut super::super::InProcessApps) {
         self.signal.pump(apps);
         self.sms.pump(apps);
+        self.whatsapp.pump(apps);
         if let Some(native) = &self.native {
             native.pump(apps);
         }
@@ -809,16 +761,18 @@ impl FirstAccounts for Combined {
 }
 impl EnrollmentHost for CombinedPort {
     fn prepare(&self, service: String) -> EnrollmentReviewFuture {
+        let whatsapp = self.whatsapp.clone();
         let native = self.native.clone();
         Box::pin(async move {
-            if service != "tilo" {
-                return Err(SendError::Unavailable);
+            match service.as_str() {
+                "whatsapp" => whatsapp.prepare(service).await,
+                "tilo" => native.ok_or(SendError::Unavailable)?.prepare(service).await,
+                _ => Err(SendError::Unavailable),
             }
-            native.ok_or(SendError::Unavailable)?.prepare(service).await
         })
     }
     fn begin(&self, service: String) -> PairingFuture {
-        let client = self.signal.clone();
+        let client = self.account(&ServiceAccount::new(&service, "")).clone();
         Box::pin(async move { client.begin(service).await })
     }
     fn finish(&self, account: ServiceAccount, attempt: String) -> EnrollmentReviewFuture {
@@ -861,6 +815,19 @@ pub(super) fn fixture_sms(
     source: Arc<dyn super::sms_first::Source>,
 ) -> Rc<dyn FirstAccounts> {
     let signal = with_source(principal.clone(), wake.clone(), Arc::new(SignedSource));
-    let sms = super::sms_first::fixture(principal.clone(), wake, source);
-    combine(principal, signal, sms)
+    let sms = super::sms_first::fixture(principal.clone(), wake.clone(), source);
+    let whatsapp = super::whatsapp_first::new(principal.clone(), wake);
+    combine(principal, signal, sms, whatsapp)
+}
+
+#[cfg(test)]
+pub(super) fn fixture_whatsapp(
+    principal: String,
+    wake: Wake,
+    source: Arc<dyn super::whatsapp_first::Source>,
+) -> Rc<dyn FirstAccounts> {
+    let signal = with_source(principal.clone(), wake.clone(), Arc::new(SignedSource));
+    let sms = super::sms_first::new(principal.clone(), wake.clone());
+    let whatsapp = super::whatsapp_first::fixture(principal.clone(), wake, source);
+    combine(principal, signal, sms, whatsapp)
 }

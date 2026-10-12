@@ -64,10 +64,7 @@ struct PendingTabRecordCreation {
 }
 
 fn visual_notification_alerts_enabled() -> bool {
-    settings_store::load_section("accessibility")
-        .get("visual_alerts")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
+    tilo_accessibility_settings::AccessibilitySettings::load().visual_alerts
 }
 
 #[cfg(test)]
@@ -207,6 +204,19 @@ pub struct OverlayFlags {
     pub capture: bool,
     /// Compact, non-activating timer/stopwatch controller requested by Clocks.
     pub clock: bool,
+}
+
+/// Who the display sheet is open for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProjectionFollow {
+    /// The person opened it, or has used it since: it is a picker they
+    /// close themselves.
+    Person,
+    /// A `display.layout.*` action opened it while its layout is stored.
+    Staging,
+    /// A `display.layout.*` action opened it for this display change; it
+    /// closes once the change is kept, reverted, refused or replaced.
+    Transaction(u64),
 }
 
 /// The live activity Clocks shows outside its windows: the timer or
@@ -556,6 +566,9 @@ pub struct ChromeState {
     /// [`Self::tree`] / [`Self::tree_mut`].
     pub tree_handle: WorkspaceTreeHandle,
     pub overlays: OverlayFlags,
+    /// Who the open display sheet belongs to: the person, or the display
+    /// change an action opened it for. See [`ProjectionFollow`].
+    pub(crate) projection_follow: ProjectionFollow,
     pub quick_settings: QuickSettingsState,
     /// `Some` while the workspace lens's Name input is in
     /// text-entry mode — the edit buffer, which may diverge from the
@@ -713,8 +726,6 @@ pub struct ChromeState {
     /// "Send…" requests for the last screenshot from the action door,
     /// drained into the capture studio by the overlay host.
     screenshot_sends: Vec<ui::widget::ScreenshotSendTarget>,
-    /// Compatibility queue for callers of the original active-room API.
-    legacy_record_requests: Vec<(String, String)>,
     /// Tracked record actions retain the exact authorized destination until
     /// the overlay-owned room index consumes them on a later frame.
     tracked_record_requests: Vec<RecordRequest>,
@@ -736,6 +747,7 @@ pub struct ChromeState {
     /// and toggles the focused client's `xdg_toplevel` fullscreen state,
     /// which only it holds the protocol handles for.
     fullscreen_toggle_requested: bool,
+    topbar_editor_requested: bool,
     /// Compositor-only remaining paints after overview / workspace switch
     /// (W16). The host's crossfade demand still clears when the curve
     /// settles — this count is not `needs_animation_frame`.
@@ -837,6 +849,7 @@ impl ChromeState {
             native_app_opening: None,
             identity_source,
             overlays: OverlayFlags::default(),
+            projection_follow: ProjectionFollow::Person,
             quick_settings,
             editing_workspace_name: None,
             editing_workspace_name_selection: ui::text_selection::Selection::default(),
@@ -892,7 +905,6 @@ impl ChromeState {
             presence_requests: Vec::new(),
             screenshot_sends: Vec::new(),
             wheel_summon: None,
-            legacy_record_requests: Vec::new(),
             tracked_record_requests: Vec::new(),
             record_request_results: BTreeMap::new(),
             next_record_request_id: 1,
@@ -901,6 +913,7 @@ impl ChromeState {
             close_surface_requests: Vec::new(),
             window_transfers: super::window_transfer::WindowTransfers::default(),
             fullscreen_toggle_requested: false,
+            topbar_editor_requested: false,
             transition_paints_remaining: 0,
             shortcut_action_requests: Vec::new(),
             cancel_tab_drag_requested: false,
@@ -1017,13 +1030,6 @@ impl ChromeState {
         self.peer_sync_request_results.remove(&request_id)
     }
 
-    /// Same effect as activating that record's row in search — a
-    /// reference is added to this room's index, no bytes move.
-    #[deprecated(note = "use push_tracked_record_request to retain authorization context")]
-    pub fn push_record_request(&mut self, id: impl Into<String>, kind: impl Into<String>) {
-        self.legacy_record_requests.push((id.into(), kind.into()));
-    }
-
     /// Queue an authorized record import against its exact workspace target.
     pub fn push_tracked_record_request(
         &mut self,
@@ -1044,11 +1050,6 @@ impl ChromeState {
             actor,
         });
         request_id
-    }
-
-    #[deprecated(note = "use take_tracked_record_requests for authorization-aware requests")]
-    pub fn take_record_requests(&mut self) -> Vec<(String, String)> {
-        std::mem::take(&mut self.legacy_record_requests)
     }
 
     pub(crate) fn take_tracked_record_requests(&mut self) -> Vec<RecordRequest> {
@@ -1076,6 +1077,15 @@ impl ChromeState {
     pub fn request_fullscreen_toggle(&mut self) {
         self.fullscreen_toggle_requested = true;
         self.bump();
+    }
+
+    pub fn request_topbar_editor(&mut self) {
+        self.topbar_editor_requested = true;
+        self.bump();
+    }
+
+    pub fn take_topbar_editor_request(&mut self) -> bool {
+        std::mem::take(&mut self.topbar_editor_requested)
     }
 
     pub fn take_fullscreen_toggle_request(&mut self) -> bool {
@@ -1410,7 +1420,7 @@ impl ChromeState {
                 if let Some(active_room) = tree
                     .desktop
                     .active_workspace()
-                    .filter(|workspace| workspace.owner.is_none())
+                    .filter(|workspace| workspace.owner().is_none())
                     .map(|workspace| workspace.room)
                 {
                     tree.adopt_ownerless_workspaces_with(|room| {
@@ -1459,6 +1469,44 @@ impl ChromeState {
 
     pub fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Open the display sheet for the person: a sheet they asked for stays
+    /// until they close it, whatever happens to the layouts chosen in it.
+    pub(crate) fn open_projection(&mut self) {
+        self.overlays.projection = true;
+        self.projection_follow = ProjectionFollow::Person;
+    }
+
+    /// Close the display sheet and forget any change it followed.
+    pub(crate) fn close_projection(&mut self) {
+        self.overlays.projection = false;
+        self.projection_follow = ProjectionFollow::Person;
+    }
+
+    /// A `display.layout.*` action began staging a layout: show it in the
+    /// sheet, and follow it there unless the person has the sheet open.
+    pub(crate) fn open_projection_for_action(&mut self) {
+        if !self.overlays.projection || self.projection_follow != ProjectionFollow::Person {
+            self.overlays.projection = true;
+            self.projection_follow = ProjectionFollow::Staging;
+        }
+    }
+
+    /// The layout an action staged was stored as `transaction`: the sheet it
+    /// opened now follows that change.
+    pub(crate) fn projection_staged(&mut self, transaction: u64) {
+        if self.overlays.projection && self.projection_follow == ProjectionFollow::Staging {
+            self.projection_follow = ProjectionFollow::Transaction(transaction);
+        }
+    }
+
+    /// The layout an action was staging was refused before it took effect:
+    /// the sheet it opened for it closes, as there is nothing to answer.
+    pub(crate) fn projection_refused(&mut self) {
+        if self.projection_follow == ProjectionFollow::Staging {
+            self.close_projection();
+        }
     }
 
     /// This chrome's identity, unique in the process; see `instance`.
@@ -1588,11 +1636,32 @@ impl ChromeState {
             | tilo_desktop::activity::HISTORY_UNDO
             | tilo_desktop::activity::HISTORY_RESTORE
             | tilo_desktop::activity::ACTIVITY_ACKNOWLEDGE
-            | tilo_desktop::activity::ACTIVITY_TASKS => {}
+            | tilo_desktop::activity::ACTIVITY_TASKS
+            | tilo_desktop::activity::morning::MORNING_SOURCE => {}
+            _ if [
+                tilo_desktop::activity::morning::MORNING_OPEN,
+                tilo_desktop::activity::morning::MORNING_REMOVE,
+                tilo_desktop::activity::morning::MORNING_REFRESH,
+                tilo_desktop::activity::morning::MORNING_DRAFT,
+                tilo_desktop::activity::morning::MORNING_NEXT,
+            ]
+            .iter()
+            .any(|prefix| tilo_desktop::activity::morning::decode_action(id, prefix).is_some()) => {
+            }
             _ => return Err("Unknown history action".into()),
         }
+        let request = if id == tilo_desktop::activity::morning::MORNING_SOURCE {
+            let room = self
+                .tree()
+                .active_workspace()
+                .map(|workspace| workspace.room)
+                .ok_or_else(|| "Workspace unavailable".to_string())?;
+            format!("{id}.{room}")
+        } else {
+            id.to_string()
+        };
         self.open_room_activity(None);
-        self.history_action_request = Some(id.to_string());
+        self.history_action_request = Some(request);
         self.bump();
         Ok(())
     }
@@ -2640,11 +2709,6 @@ impl ChromeState {
         self.notification_log.history()
     }
 
-    /// Number of entries in the history log.
-    pub fn notification_history_count(&self) -> usize {
-        self.notification_log.history().len()
-    }
-
     pub fn notification_badge_total(&self) -> u32 {
         self.notification_badges
             .iter()
@@ -2954,7 +3018,7 @@ impl ChromeState {
             .focus
             .active_until(local_minute, weekday_from_monday)
             .map(|end| {
-                let time = format!("{:02}:{:02}", end / 60, end % 60);
+                let time = ui::clock::hour_minute((end / 60).into(), (end % 60).into());
                 t_args("quiet-status-focus-until", &[("time", time.into())])
             })
     }
@@ -4065,9 +4129,9 @@ mod provisioned_identity_tests {
             .iter()
             .find(|w| w.room == room)
             .expect("workspace");
-        assert_eq!(workspace.owner.as_deref(), Some(person.as_str()));
-        assert_eq!(workspace.role_of_at(&person, 0), Some(CapRole::Owner));
-        assert_eq!(workspace.role_of_at(&"tester".to_string(), 0), None);
+        assert_eq!(workspace.owner().map(String::as_str), Some(person.as_str()));
+        assert_eq!(workspace.role_of(&person), Some(CapRole::Owner));
+        assert_eq!(workspace.role_of("tester"), None);
         drop(tree);
         drop(state);
         assert_eq!(

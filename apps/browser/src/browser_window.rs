@@ -93,7 +93,7 @@ impl BrowserWindow {
     }
 
     /// Present the document's bookmarks, preferences and site exceptions.
-    pub(crate) fn present_state(&mut self, state: &crate::resource::BrowserState) {
+    pub(crate) fn present_state(&mut self, state: &crate::resource::Browser) {
         self.page.present_state(state);
     }
 
@@ -387,10 +387,7 @@ impl Widget for BrowserWindow {
         )
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let Ok(children) = taffy.children(node) else {
             return;
         };
@@ -850,12 +847,7 @@ mod tests {
     }
 
     fn key_event_with_state(key: Key, state: ElementState) -> WindowEvent {
-        let event = ui::synthetic_input::key_event(key, None, state);
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(key, None, state))
     }
 
     fn key_event(named: NamedKey) -> WindowEvent {
@@ -915,6 +907,7 @@ mod tests {
         assert!(unsafe {
             (&mut *button).perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut Edits::lend(doc),
                 &automerge::ROOT,
             )

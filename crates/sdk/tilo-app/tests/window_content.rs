@@ -62,13 +62,13 @@ fn two_windows_in_two_rooms_keep_their_content_apart() {
     // Interleaved, as the shell drives its tiles: each action applies with
     // its own window's store.
     first
-        .invoke(Album::ATTACH.with("a picture in the first room".into()))
+        .invoke(Album::ATTACH.with("a picture in the first room"))
         .unwrap();
     second
-        .invoke(Album::ATTACH.with("a picture in the second room".into()))
+        .invoke(Album::ATTACH.with("a picture in the second room"))
         .unwrap();
     first
-        .invoke(Album::ATTACH.with("another in the first".into()))
+        .invoke(Album::ATTACH.with("another in the first"))
         .unwrap();
 
     let firsts = first.state().pictures;

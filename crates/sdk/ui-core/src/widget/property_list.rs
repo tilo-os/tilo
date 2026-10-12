@@ -415,13 +415,6 @@ impl<'a> PropertyListFace<'a> {
         self
     }
 
-    /// The row and which of its actions the pointer is over.
-    #[must_use]
-    pub fn hovered_action_at(mut self, target: Option<(usize, usize)>) -> Self {
-        self.hovered_action = target;
-        self
-    }
-
     fn layout(
         &self,
         text: &mut TextRenderer,
@@ -748,7 +741,7 @@ pub struct PropertyList {
     layout: ListLayout,
     cursor: Point,
     hovered_action: Option<(usize, usize)>,
-    pressed_action: Option<(usize, usize)>,
+    pressed_action: crate::pointer_replay::HeldPress<(usize, usize)>,
     rect: Rect,
     dirty: bool,
 }
@@ -778,7 +771,7 @@ impl PropertyList {
             layout: ListLayout::empty(),
             cursor: Point::ZERO,
             hovered_action: None,
-            pressed_action: None,
+            pressed_action: crate::pointer_replay::HeldPress::default(),
             rect: Rect::ZERO,
             dirty: true,
         }
@@ -798,7 +791,8 @@ impl PropertyList {
         self
     }
 
-    /// A stable id for tests, inspection and the accessibility tree.
+    /// A stable id for semantic resources, inspection and accessibility.
+    /// Trailing property actions need this identity to be published as resources.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
@@ -828,6 +822,25 @@ impl PropertyList {
 
     fn properties(&self) -> impl Iterator<Item = &Property> {
         self.groups.iter().flat_map(|(_, rows)| rows.iter())
+    }
+
+    /// What names a row's action across a rebuild: the list, the row's
+    /// label and the action, not their indices, so a rebuilt list whose
+    /// rows shifted under the pointer completes no press.
+    fn press_key(&self, (row, action): (usize, usize)) -> String {
+        let Some(property) = self.properties().nth(row) else {
+            return String::new();
+        };
+        let action = match property.actions.get(action) {
+            Some(PropertyAction::Copy) => "copy",
+            Some(PropertyAction::Custom { label, .. }) => label.as_str(),
+            None => return String::new(),
+        };
+        format!(
+            "property-list:{}:{}:{action}",
+            self.id.as_deref().unwrap_or_default(),
+            property.label
+        )
     }
 
     /// Whether the last layout stacked labels above values.
@@ -969,22 +982,29 @@ impl Widget for PropertyList {
                 button: MouseButton::Left,
                 ..
             } => {
-                let over = target_at(&self.layout, self.cursor);
+                use crate::pointer_replay::{PressAt, Release};
+                let over = targets(&self.layout)
+                    .into_iter()
+                    .find(|(_, r)| r.contains(self.cursor));
+                let key = over.map(|(target, _)| self.press_key(target));
+                let at = over
+                    .zip(key.as_deref())
+                    .map(|((target, rect), key)| PressAt { target, key, rect });
                 match state {
-                    ElementState::Pressed if over.is_some() => {
-                        self.pressed_action = over;
-                        *ctx.handled = true;
-                    }
-                    ElementState::Released if self.pressed_action.is_some() => {
-                        let pressed = self.pressed_action.take();
-                        *ctx.handled = true;
-                        if over == pressed
-                            && let Some((row, action)) = pressed
-                        {
-                            self.run_action(row, action);
+                    ElementState::Pressed => {
+                        if let Some(at) = at {
+                            self.pressed_action.press(at);
+                            *ctx.handled = true;
                         }
                     }
-                    _ => {}
+                    ElementState::Released => match self.pressed_action.release(at) {
+                        Release::NotHeld => {}
+                        Release::Cancelled => *ctx.handled = true,
+                        Release::Click((row, action)) => {
+                            *ctx.handled = true;
+                            self.run_action(row, action);
+                        }
+                    },
                 }
             }
             _ => {}
@@ -1049,6 +1069,10 @@ impl Widget for PropertyList {
             .enumerate()
             .map(|(index, property)| {
                 let mut node = row_node(&property.row(), property.accessible_value.as_deref());
+                node.key = Some(index as u64);
+                for (action, child) in node.children.iter_mut().enumerate() {
+                    child.key = Some(action as u64);
+                }
                 if let Some(layout) = self.layout.rows.get(index) {
                     node = node.with_bounds(layout.rect);
                     for (action, rect) in node
@@ -1068,20 +1092,19 @@ impl Widget for PropertyList {
         if let Some(id) = &self.id {
             node = node.with_semantic_key(id);
         }
-        Some(node)
+        Some(node.with_keyed_action_routes(self.id.as_deref().unwrap_or("property-list")))
     }
 
     /// An action addressed to one of a row's action buttons: `[row,
     /// action]`.
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &crate::widget::ModelPath,
     ) -> bool {
         match key_path {
-            [] => self.perform_action(action, state, path),
             [row, index] if matches!(action, crate::a11y::Action::Activate) => {
                 match (usize::try_from(*row), usize::try_from(*index)) {
                     (Ok(row), Ok(index)) => self.run_action(row, index),
@@ -1123,6 +1146,7 @@ impl PropertyList {
 /// primary ink with its kind's text treatment and an optional trailing copy
 /// action. Unbreakable kinds are elided before the action.
 pub struct PropertyValue {
+    id: Option<String>,
     value: String,
     kind: TextKind,
     copyable: bool,
@@ -1130,13 +1154,14 @@ pub struct PropertyValue {
     rect: Rect,
     copy_rect: Option<Rect>,
     hovered: bool,
-    pressed: bool,
+    pressed: crate::pointer_replay::HeldPress,
     metrics: Option<ListMetrics>,
 }
 
 impl PropertyValue {
     pub fn new(value: impl Into<String>) -> Self {
         Self {
+            id: None,
             value: value.into(),
             kind: TextKind::Prose,
             copyable: false,
@@ -1144,9 +1169,16 @@ impl PropertyValue {
             rect: Rect::ZERO,
             copy_rect: None,
             hovered: false,
-            pressed: false,
+            pressed: crate::pointer_replay::HeldPress::default(),
             metrics: None,
         }
+    }
+
+    /// A stable identity for resource publication and accessibility actions.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
     }
 
     #[must_use]
@@ -1187,6 +1219,10 @@ impl PropertyValue {
 }
 
 impl Widget for PropertyValue {
+    fn test_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1320,20 +1356,31 @@ impl Widget for PropertyValue {
                 state,
                 button: MouseButton::Left,
                 ..
-            } => match state {
-                ElementState::Pressed if self.hovered => {
-                    self.pressed = true;
-                    *ctx.handled = true;
-                }
-                ElementState::Released if self.pressed => {
-                    self.pressed = false;
-                    *ctx.handled = true;
-                    if self.hovered {
-                        crate::text_selection::clipboard_copy(&self.value);
+            } => {
+                use crate::pointer_replay::{PressAt, Release};
+                // The field's name (or, unnamed, the value) names the copy
+                // action across a rebuild.
+                let key = format!(
+                    "property-value:{}",
+                    self.accessible_name.as_deref().unwrap_or(&self.value)
+                );
+                let at = self.hovered.then_some(PressAt::one(&key, target));
+                match state {
+                    ElementState::Pressed => {
+                        if let Some(at) = at {
+                            self.pressed.press(at);
+                            *ctx.handled = true;
+                        }
+                    }
+                    ElementState::Released => {
+                        let release = self.pressed.release(at);
+                        *ctx.handled |= release.ended();
+                        if release == Release::Click(()) {
+                            crate::text_selection::clipboard_copy(&self.value);
+                        }
                     }
                 }
-                _ => {}
-            },
+            }
             _ => {}
         }
     }
@@ -1367,14 +1414,18 @@ impl Widget for PropertyValue {
         if self.copyable {
             node = node.with_children(vec![
                 AccessNode::new(Role::Button)
+                    .with_key(0)
                     .with_name("Copy")
                     .with_state(AccessState::new().focusable(true)),
             ]);
         }
-        Some(node)
+        if let Some(id) = &self.id {
+            node = node.with_semantic_key(id);
+        }
+        Some(node.with_keyed_action_routes(self.id.as_deref().unwrap_or("property-value")))
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],

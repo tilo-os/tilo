@@ -43,7 +43,7 @@
 pub mod actions;
 pub mod app;
 pub mod assets;
-pub mod doc;
+pub mod deck;
 pub mod effects;
 mod help_overlay;
 pub mod model;
@@ -62,10 +62,10 @@ pub use app::{PresentSurface, SlidesApp};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<SlidesShell>()
+    ui::built_in_definition!(SlidesShell)
 }
 
-pub use actions::SlidesDeck;
+pub use deck::Deck;
 pub use resource::SlidesShell;
 
 #[cfg(test)]

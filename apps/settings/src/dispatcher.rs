@@ -55,10 +55,6 @@ pub mod testing {
                 .clone()
         }
 
-        pub fn set_fail_power_profile(&self, fail: bool) {
-            self.fail_power_profile.store(fail, Ordering::Relaxed);
-        }
-
         fn push(&self, s: String) {
             self.calls.lock().expect("recorder lock poisoned").push(s);
         }

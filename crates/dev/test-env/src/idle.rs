@@ -10,7 +10,8 @@
 //! Two scales:
 //!
 //! - one thread of the test process: [`spawned_thread`] finds the thread a
-//!   service starts, [`assert_stays_asleep`] fails if it is scheduled at all
+//!   service starts, [`named_thread`] one already running,
+//!   [`assert_stays_asleep`] fails if it is scheduled at all
 //!   while idle, and [`context_switches`] reads its count;
 //! - a whole process tree, such as a compositor the test spawned and every
 //!   app it started: [`idle_wakeups`] samples every thread of it over a
@@ -93,6 +94,25 @@ pub fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+/// The id of this process's one live thread named `comm` (the kernel's
+/// 15-byte truncation of the thread name).
+///
+/// # Panics
+/// `/proc/self/task` cannot be listed, or not exactly one thread has that
+/// name.
+pub fn named_thread(comm: &str) -> String {
+    let named: Vec<_> = own_thread_ids()
+        .into_iter()
+        .filter(|tid| {
+            std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
+                .is_ok_and(|name| name.trim() == comm)
+        })
+        .collect();
+    let [tid] = <[String; 1]>::try_from(named)
+        .unwrap_or_else(|named| panic!("{} live threads named {comm}, not one", named.len()));
+    tid
 }
 
 /// Fail if thread `tid` is scheduled at all during an idle 400 ms.
@@ -330,6 +350,24 @@ impl Wakeups {
     /// The whole tree's wakeups per second.
     pub fn per_second(&self) -> f64 {
         self.rate(self.total())
+    }
+
+    /// Voluntary switches of the whole tree in the window: how often its
+    /// threads blocked again, which is once per wakeup.
+    pub fn blocking(&self) -> u64 {
+        self.rows.iter().map(|row| row.voluntary).sum()
+    }
+
+    /// The whole tree's voluntary switches per second.
+    ///
+    /// Unlike [`Wakeups::per_second`] this leaves out preemptions. A thread
+    /// preempted while it handles one wakeup has still woken once, and how
+    /// often it is preempted depends on what else the machine runs, so a
+    /// gate on a shared runner that counts them measures the runner too. A
+    /// thread that spins without blocking barely shows here; pair this with
+    /// a bound on [`Wakeups::total_cpu_percent`].
+    pub fn blocking_per_second(&self) -> f64 {
+        self.rate(self.blocking())
     }
 
     /// Share of one core `ticks` of CPU time are over the window, in percent.
@@ -622,6 +660,12 @@ mod tests {
         assert!(!wakeups.rows.iter().any(|row| row.thread == "gone"));
         assert_eq!(wakeups.threads_started, 1);
         assert_eq!(wakeups.total(), 11);
+        // Without the new worker's one preemption: 4 + 6 over 2 s.
+        assert_eq!(wakeups.blocking(), 10);
+        assert!(
+            (wakeups.blocking_per_second() - 5.0).abs() < 1e-9,
+            "{wakeups}"
+        );
         assert_eq!(wakeups.processes, 1);
         // 4 + 6 ticks of 10 ms over 2 s.
         assert!(

@@ -136,7 +136,7 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
             assert_eq!(entered_rx.recv().await, Some("resolve"));
             let old_caps = if case == "lost membership" {
                 Some(std::mem::take(
-                    &mut membership.write().workspaces[0].capabilities,
+                    &mut membership.write().workspaces[0].policy.grants,
                 ))
             } else {
                 None
@@ -163,7 +163,7 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
                 "{case} allocated an invocation"
             );
             if let Some(caps) = old_caps {
-                membership.write().workspaces[0].capabilities = caps;
+                membership.write().workspaces[0].policy.grants = caps;
             }
             if case == "revoked certificate" {
                 *authority.certificate.lock().unwrap() = Some(cert.clone());
@@ -208,7 +208,7 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
         // The eager path on the second worker binds its lease to the exact
         // original request as well.
         let mut descriptor = directory_state.borrow().row().descriptor.unwrap();
-        descriptor.contract.permission = tilo_actions::PermissionRequirement::Write;
+        descriptor.contract.kind = tilo_actions::ActionKind::Undoable;
         second
             .handle
             .publish_actions(&route.app_id, &[descriptor])

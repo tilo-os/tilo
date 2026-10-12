@@ -124,8 +124,7 @@ impl Widget for WorkspaceView {
         taffy.widget_leaf(style, node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, n: NodeId, origin: Point) {
-        let l = taffy.layout(n).copied().unwrap_or_default();
-        self.rect = crate::widget::placed(&l, origin);
+        self.rect = crate::widget::layout_rect(taffy, n, origin);
     }
     fn draw(
         &mut self,

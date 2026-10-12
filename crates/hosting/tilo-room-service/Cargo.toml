@@ -23,6 +23,8 @@ serde_json.workspace = true
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 # The HTTPS identity loader and server config the relay's listener uses too.
 tilo-moq = { path = "../tilo-moq", features = ["tls"] }
+# The TLS client to a room's host trusts only its pinned certificate.
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net" }
 tokio = { workspace = true, features = ["full"] }
 tokio-rustls.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }

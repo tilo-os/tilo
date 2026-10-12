@@ -6,6 +6,7 @@
 //! panel. Every value comes from the *previewed* theme's tokens, never from
 //! the theme the studio itself is drawn in.
 
+use ui::advanced::{Affine, Scene};
 use ui::prelude::*;
 use ui::tokens::PresenceHue;
 use ui::vello::kurbo::{Circle, RoundedRect, Shape, Stroke};

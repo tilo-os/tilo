@@ -84,6 +84,46 @@ impl NativeVerifiedSignalEnrollment {
 }
 
 impl super::super::InProcessApps {
+    pub(super) fn publish_native_whatsapp_account(
+        &mut self,
+        identity: &NativeMessagingIdentity,
+        name: String,
+        jid: String,
+    ) -> Result<(), LaunchError> {
+        identity.check().map_err(|_| LaunchError::BindingMismatch)?;
+        let owner = &identity.owner;
+        if owner.principal != self.author.0
+            || owner.device != self.device_id
+            || owner.service != tilo_messaging_protocol::Service::Whatsapp
+        {
+            return Err(LaunchError::BindingMismatch);
+        }
+        let action = PersonAccounts::PUBLISH_WHATSAPP_ACCOUNT
+            .with((owner.account.clone(), name, jid, owner.linking_generation))
+            .build(tilo_resource::origin_now_ms())
+            .map_err(LaunchError::Operation)?;
+        let records = ui::record::person::PersonRecords::open(
+            &mut self.owners,
+            accounts::person::ACCOUNTS_OWNER,
+            self.author.clone(),
+        )
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        let record = records
+            .open_original_record(ui::record::RecordKind::new(PersonAccounts::KIND), |doc| {
+                PersonAccounts::initialize(doc).map_err(|error| error.to_string())
+            })
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        record
+            .edit(true, |doc| {
+                identity
+                    .check()
+                    .map_err(|_| "original native admission retired".to_owned())?;
+                action.apply(doc).map_err(|error| error.to_string())
+            })
+            .map_err(LaunchError::Operation)?;
+        records.flush().map_err(LaunchError::Operation)?;
+        identity.check().map_err(|_| LaunchError::BindingMismatch)
+    }
     /// Prepare private key custody only for the exact unpublished enrollment
     /// that passed provider self-identity verification. The protected Passwords
     /// decision remains separate; this door creates no grant or ready adapter.
@@ -159,64 +199,26 @@ impl super::super::InProcessApps {
             .map_err(|_| LaunchError::BindingMismatch)
     }
 
-    pub(super) fn publish_native_sms_account(
+    /// Publish the original native account `identity` owns through
+    /// `publish`, refusing an identity of any service but `service`.
+    pub(super) fn publish_native_account<
+        P: serde::Serialize + From<(String, String, String, u64)>,
+    >(
         &mut self,
         identity: &NativeMessagingIdentity,
+        service: tilo_messaging_protocol::Service,
+        publish: tilo_resource::ActionRef<PersonAccounts, P>,
         name: String,
         scope: &str,
     ) -> Result<(), LaunchError> {
         identity.check().map_err(|_| LaunchError::BindingMismatch)?;
-        if identity.owner.service != tilo_messaging_protocol::Service::Sms
+        if identity.owner.service != service
             || identity.owner.principal != self.author.0
             || identity.owner.device != self.device_id
         {
             return Err(LaunchError::BindingMismatch);
         }
-        let action = PersonAccounts::PUBLISH_SMS_ACCOUNT
-            .with((
-                identity.owner.account.clone(),
-                name,
-                scope.to_owned(),
-                identity.owner.linking_generation,
-            ))
-            .build(tilo_resource::origin_now_ms())
-            .map_err(LaunchError::Operation)?;
-        let records = ui::record::person::PersonRecords::open(
-            &mut self.owners,
-            accounts::person::ACCOUNTS_OWNER,
-            self.author.clone(),
-        )
-        .map_err(LaunchError::Record)?;
-        let record = records
-            .open_original_record(ui::record::RecordKind::new(PersonAccounts::KIND), |doc| {
-                PersonAccounts::initialize(doc).map_err(|error| error.to_string())
-            })
-            .map_err(LaunchError::Record)?;
-        record
-            .edit(true, |doc| {
-                identity
-                    .check()
-                    .map_err(|_| "original native admission retired".to_owned())?;
-                action.apply(doc).map_err(|error| error.to_string())
-            })
-            .map_err(LaunchError::Operation)?;
-        records.flush().map_err(LaunchError::Operation)?;
-        identity.check().map_err(|_| LaunchError::BindingMismatch)
-    }
-    pub(super) fn publish_native_tilo_account(
-        &mut self,
-        identity: &NativeMessagingIdentity,
-        name: String,
-        scope: &str,
-    ) -> Result<(), LaunchError> {
-        identity.check().map_err(|_| LaunchError::BindingMismatch)?;
-        if identity.owner.service != tilo_messaging_protocol::Service::Tilo
-            || identity.owner.principal != self.author.0
-            || identity.owner.device != self.device_id
-        {
-            return Err(LaunchError::BindingMismatch);
-        }
-        let action = PersonAccounts::PUBLISH_TILO_ACCOUNT
+        let action = publish
             .with((
                 identity.owner.account.clone(),
                 name,

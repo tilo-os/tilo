@@ -16,9 +16,9 @@
 //! projections and issues their typed control requests without duplicating a
 //! second durable record store.
 //!
-//! What the Files document holds is the person's bookmarked places, changed
-//! only through [`crate::resource::FilesDocAction`]; view preferences are the
-//! person's settings. Inline rename uses a process-local
+//! What the Files document holds is the person's bookmarked places and the
+//! filesystem changes queued from Files ([`crate::resource::FileExplorer`]);
+//! view preferences are the person's settings. Inline rename uses a process-local
 //! [`ui::widget::TextInput`]; it is a proposed external mutation until
 //! committed, not content that another peer should see or undo.
 

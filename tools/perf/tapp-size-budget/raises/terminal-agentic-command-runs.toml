@@ -1,0 +1,6 @@
+reason = "the terminal records each command as a structured run (command, exit status, timing, parsed output), parses common tool output into rows, reruns a recorded command, and searches command history across sessions; release run 99935 measured 1,381,376 B on aarch64 and 1,483,264 B on x86_64"
+run = 99935
+
+[apps."so.tilo.terminal"]
+x86_64 = 131072
+aarch64 = 131072

@@ -1093,7 +1093,7 @@ impl Widget for FindBar {
             };
             // The shared text core owns edits, selection and validation;
             // unsupported field operations remain explicitly unhandled.
-            return field.perform_action(action, state, path);
+            return field.perform_action(action, &[], state, path);
         }
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
@@ -1599,15 +1599,6 @@ mod tests {
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
-        }
         fn get_rect(&self) -> Rect {
             self.rect
         }
@@ -2076,19 +2067,6 @@ mod host_driven_tests {
                 node_map: &mut HashMap<NodeId, *mut dyn Widget>,
             ) -> NodeId {
                 taffy.widget_leaf(Style::default(), node_map, self)
-            }
-            fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-            fn draw(
-                &mut self,
-                _scene: &mut Scene,
-                _transform: Affine,
-                _text: &mut TextRenderer,
-                _theme: &Theme,
-                _presence: &PresenceCtx,
-            ) {
-            }
-            fn get_rect(&self) -> Rect {
-                Rect::ZERO
             }
             fn name(&self) -> &'static str {
                 "Page"

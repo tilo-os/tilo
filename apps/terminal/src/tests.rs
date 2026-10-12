@@ -1,41 +1,15 @@
 use crate::{Attr, GridPos, Selection, TerminalPerformer, TerminalWidget};
-use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
+use automerge::{AutoCommit, ROOT};
 use portable_pty::{MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use tilo_automerge::ApplyIncoming;
 use ui::State;
 use ui::framework::ResourceSurface;
 use ui::tilo_resource::Resource as _;
 use ui::widget::Widget as _;
 use vello::kurbo::Rect;
 use vte::Perform;
-
-/// What a collaborator shows of `host`'s session: its screen and title,
-/// recorded as the session's actions, read back from the record and
-/// presented to a terminal with no process of its own.
-pub(crate) fn replica_of(host: &TerminalWidget) -> TerminalWidget {
-    use ui::tilo_actions::Action as _;
-    let mut doc = AutoCommit::new();
-    crate::resource::TerminalAction::Output {
-        edits: crate::screen::edits(None, host.screen()),
-    }
-    .apply(&mut doc)
-    .expect("the screen records");
-    crate::resource::TerminalAction::SetTitle {
-        title: host.title().to_owned(),
-    }
-    .apply(&mut doc)
-    .expect("the title records");
-    let (mut replica, _) = build_test_widget();
-    let state = crate::resource::Terminal::read(&doc).expect("the session reads");
-    ResourceSurface::<crate::resource::Terminal, crate::resource::TerminalEffect>::present(
-        &mut replica,
-        &Rc::new(state),
-    );
-    replica
-}
 
 /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
 const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
@@ -253,6 +227,106 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         assert!(!lifetime_socket_open(&terminal_end));
     }
 
+    // Case `an_open_waits_for_a_supervisor_answer_slower_than_the_connect_bound`.
+    {
+        use std::io::BufRead as _;
+
+        // Open over a connection read-bounded by `bound`, against a supervisor
+        // that answers (refusing: no runtime) after `delay`; return the result
+        // and the connection's bound afterwards.
+        let open_with = |bound: Option<std::time::Duration>, delay: std::time::Duration| {
+            let (terminal_end, supervisor_end) =
+                std::os::unix::net::UnixStream::pair().expect("socket pair");
+            terminal_end.set_read_timeout(bound).unwrap();
+            let supervisor = std::thread::spawn(move || {
+                let mut request = String::new();
+                std::io::BufReader::new(&supervisor_end)
+                    .read_line(&mut request)
+                    .unwrap();
+                std::thread::sleep(delay);
+                (&supervisor_end)
+                    .write_all(b"{\"result\":\"no-runtime\",\"reason\":\"checked\"}\n")
+                    .unwrap();
+                request
+            });
+            let opened = crate::inner::ush_backend_on(
+                &terminal_end,
+                &[],
+                &crate::target::SessionTarget::default_environment(),
+                crate::Requester::Person,
+                None,
+            );
+            assert!(supervisor.join().unwrap().contains("open-session"));
+            (opened.err(), terminal_end.read_timeout().unwrap())
+        };
+        let answered = |error: &Option<crate::OpenError>| matches!(error, Some(crate::OpenError::NoRuntime(reason)) if reason == "checked");
+
+        // A hosted connection carries the 250 ms connect bound; a supervisor
+        // checking a first open's environment answers later than that.
+        let connect_bound = std::time::Duration::from_millis(250);
+        let (error, _) = open_with(Some(connect_bound), std::time::Duration::from_millis(700));
+        assert!(answered(&error), "the late answer was not read: {error:?}");
+
+        // A connection with no bound, or a longer one, keeps it.
+        let (error, after) = open_with(None, std::time::Duration::ZERO);
+        assert!(answered(&error), "{error:?}");
+        assert_eq!(after, None);
+        let long = std::time::Duration::from_secs(60);
+        let (error, after) = open_with(Some(long), std::time::Duration::ZERO);
+        assert!(answered(&error), "{error:?}");
+        assert_eq!(after, Some(long));
+    }
+
+    // Case `a_session_that_marks_its_runs_opens_and_keeps_the_key`.
+    {
+        use std::io::BufRead as _;
+        use std::os::fd::AsRawFd;
+
+        // The supervisor's reply byte for byte as `ServeResponse::Session`
+        // serialises it for a bash session whose request named a key (ush's
+        // `a_session_reply_keeps_its_wire_form` pins this form). Every Terminal
+        // open names a key, so this is the reply of every default-environment open.
+        const REPLY: &[u8] = b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"runs\":true}\n";
+        let (terminal_end, supervisor_end) =
+            std::os::unix::net::UnixStream::pair().expect("socket pair");
+        let supervisor = std::thread::spawn(move || {
+            let mut request = String::new();
+            std::io::BufReader::new(&supervisor_end)
+                .read_line(&mut request)
+                .unwrap();
+            let pair = portable_pty::native_pty_system()
+                .openpty(PtySize::default())
+                .unwrap();
+            runtime_portal::fd_transport::send_with_fd(
+                supervisor_end.as_raw_fd(),
+                REPLY,
+                pair.master.as_raw_fd().unwrap(),
+            )
+            .unwrap();
+            (request, supervisor_end, pair)
+        });
+        let opened = crate::inner::ush_backend_on(
+            &terminal_end,
+            &[],
+            &crate::target::SessionTarget::default_environment(),
+            crate::Requester::Person,
+            None,
+        );
+        let (request, _supervisor_end, _pair) = supervisor.join().unwrap();
+        let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+        let backend = match opened {
+            Ok(backend) => backend,
+            Err(error) => panic!("a session reply that marks runs must open: {error:?}"),
+        };
+        assert_eq!(backend.shell_name, "ush");
+        assert_eq!(
+            backend.runs.as_deref(),
+            request["runs"].as_str(),
+            "the session marks its runs with the key the request named"
+        );
+        assert!(backend.runs.is_some());
+    }
+
     // Case `service_fd_is_detected_only_when_the_descriptor_is_actually_open`.
     {
         // The service path is selected on a *live* descriptor, not on the mere
@@ -337,14 +411,17 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         let mut widget = crate::TerminalWidget::spawn_hosted(services)
             .expect("the discovered ush connection must use the supervisor protocol");
         // The session opens at the first sync, once the record says where.
-        let mut doc = automerge::AutoCommit::new();
-        doc.put(
-            automerge::ROOT,
-            crate::target::TARGET_KEY,
-            crate::target::SessionTarget::default_environment().encode(),
-        )
-        .unwrap();
+        let doc = session_record_at(&crate::target::SessionTarget::default_environment());
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while matches!(widget.session_state(), crate::sessions::OpenState::Opening) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "healthy open must finish"
+            );
+            ui::widget::Widget::update(&mut widget, &doc, &automerge::ROOT);
+            std::thread::yield_now();
+        }
         assert_eq!(widget.session_state(), &crate::sessions::OpenState::Open);
         drop(widget);
         server.join().unwrap();
@@ -383,14 +460,17 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         let mut widget =
             crate::TerminalWidget::spawn_hosted(crate::HostedProcessServices { ush: Some(client) })
                 .unwrap();
-        let mut doc = automerge::AutoCommit::new();
-        doc.put(
-            automerge::ROOT,
-            crate::target::TARGET_KEY,
-            crate::target::SessionTarget::default_environment().encode(),
-        )
-        .unwrap();
+        let doc = session_record_at(&crate::target::SessionTarget::default_environment());
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while matches!(widget.session_state(), crate::sessions::OpenState::Opening) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "open failure must finish"
+            );
+            ui::widget::Widget::update(&mut widget, &doc, &automerge::ROOT);
+            std::thread::yield_now();
+        }
         assert!(
             matches!(
                 widget.session_state(),
@@ -403,6 +483,16 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
 }
 
 /// Drain and concatenate everything the PTY-write channel has buffered.
+/// A session record whose session runs at `target`, as the record's own
+/// verb writes it.
+fn session_record_at(target: &crate::target::SessionTarget) -> AutoCommit {
+    let mut record = ui::tilo_resource::Replica::<crate::resource::Terminal>::new();
+    record
+        .apply(crate::resource::Terminal::RECORD_TARGET.with(target.encode()))
+        .expect("the target is recorded");
+    record.doc().clone()
+}
+
 pub(crate) fn drain_writes(rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
     let mut out = Vec::new();
     while let Ok(b) = rx.try_recv() {
@@ -598,6 +688,57 @@ fn typed_text_reaches_the_pty_without_keyevent_text() {
         b"e  \r",
         "letters, both Space spellings, and Enter reach the PTY",
     );
+}
+
+/// Physical and named Space must preserve Readline's mark command.
+#[test]
+fn control_space_reaches_the_native_editor_as_nul() {
+    use winit::event::{ElementState, WindowEvent};
+    use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey, SmolStr};
+
+    let (mut widget, writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+    for alt in [false, true] {
+        let modifiers = if alt {
+            ModifiersState::CONTROL | ModifiersState::ALT
+        } else {
+            ModifiersState::CONTROL
+        };
+        for key in [
+            Key::Named(NamedKey::Space),
+            Key::Character(SmolStr::new_static(" ")),
+            Key::Unidentified(winit::keyboard::NativeKey::Unidentified),
+        ] {
+            let mut event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
+            event.physical_key = PhysicalKey::Code(KeyCode::Space);
+            assert!(
+                ui::testing::Dispatch::new()
+                    .modifiers(modifiers)
+                    .doc(&mut doc)
+                    .send(
+                        &mut widget,
+                        &WindowEvent::KeyboardInput {
+                            device_id: winit::event::DeviceId::dummy(),
+                            event,
+                            is_synthetic: false,
+                        },
+                    )
+                    .handled,
+                "the terminal must consume modified Space"
+            );
+            assert_eq!(
+                drain_writes(&writes),
+                if alt {
+                    b"\x1b\0".as_slice()
+                } else {
+                    b"\0".as_slice()
+                },
+                "all native key spellings must reach Readline's mark command"
+            );
+        }
+    }
 }
 
 /// Grid initialisation, printing through the performer, and the crate's widget surface.
@@ -1728,7 +1869,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             .iter()
             .find(|child| child.role == Role::Menu)
             .expect("discoverable menu");
-        let find_label = ui::i18n::I18nManager::lookup("terminal-find-scrollback", None);
+        let find_label = crate::i18n::t("terminal-find-scrollback");
         assert_ne!(
             find_label, "terminal-find-scrollback",
             "toolkit supplies the visible label"
@@ -1859,7 +2000,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         // Assistive activation resolves the exported controls to their real
         // FindBar owner rather than sending child targets to TerminalView.
         let control = |harness: &ui::headless::FrameHarness, key: &str| {
-            let label = ui::i18n::I18nManager::lookup_plain(key);
+            let label = crate::i18n::t(key);
             harness
                 .a11y_nodes()
                 .into_iter()
@@ -2129,12 +2270,8 @@ fn menu_rows_drive_the_process_and_follow_its_lifecycle() {
 // these assert the production decision rather than a stand-in.
 // ---------------------------------------------------------------
 
-/// The grid's CRDT mirror: bulk output, incremental sync/trim, external edits and commit reporting.
+/// The grid's mirror: bulk output, incremental sync/trim and commit reporting.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "cases merged from separate tests; each case stays self-contained"
-)]
 fn grid_mirror_stays_linear_aligned_and_reports_changes() {
     // Case `bulk_styled_output_stays_linear_and_correct`.
     // Bulk output must stay linear. `print` batches a run of cells into one
@@ -2233,59 +2370,6 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
             "a surviving scrollback line stays intact: {:?}",
             text.lines().rev().take(5).collect::<Vec<_>>()
         );
-    }
-
-    // Case `a_collaborators_edit_to_old_scrollback_reaches_a_viewer`.
-    {
-        use ui::tilo_actions::Action as _;
-        use vello::kurbo::Rect;
-        // A collaborator's change to an *old* scrollback line arrives as a
-        // change to the session record; a terminal showing that record reads
-        // only what changed and shows it.
-        let (mut host, _rx, _out) = build_test_widget_io();
-        host.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
-        let mut payload = Vec::new();
-        for i in 0..40 {
-            payload.extend_from_slice(format!("BASE{i:03}\r\n").as_bytes());
-        }
-        host.feed(&payload);
-
-        let mut doc = AutoCommit::new();
-        crate::resource::TerminalAction::Output {
-            edits: crate::screen::edits(None, host.screen()),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        let mut reader = ui::tilo_resource::Reader::<crate::resource::Terminal>::open(&mut doc)
-            .expect("the session reads");
-        let (mut viewer, _rx) = build_test_widget();
-        viewer.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
-        ResourceSurface::<crate::resource::Terminal, crate::resource::TerminalEffect>::present(
-            &mut viewer,
-            reader.state(),
-        );
-        assert!(viewer.grid_text().contains("BASE000"), "base content shown");
-
-        crate::resource::TerminalAction::Output {
-            edits: vec![crate::screen::ScreenEdit::Write {
-                alternate: false,
-                index: 0,
-                text: "REMOTE_EDIT".into(),
-                attrs: Vec::new(),
-            }],
-        }
-        .apply(&mut doc)
-        .unwrap();
-        assert!(reader.sync(&doc).expect("the change reads"));
-        ResourceSurface::<crate::resource::Terminal, crate::resource::TerminalEffect>::present(
-            &mut viewer,
-            reader.state(),
-        );
-        assert!(
-            viewer.grid_text().contains("REMOTE_EDIT"),
-            "a change to old scrollback reaches the viewer"
-        );
-        assert!(viewer.grid_text().contains("BASE039"));
     }
 
     // Case `commit_action_reports_whether_the_document_actually_changed`.
@@ -2635,7 +2719,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
     // Case `app_wrapper_routes_ime_commit_to_the_focused_terminal`.
     {
         let (widget, rx) = build_test_widget();
-        let mut app = ui::headless::Driver::new(State::new(), Box::new(widget), (800, 480));
+        let mut app = ui::headless::FrameHarness::new(State::new(), Box::new(widget), (800, 480));
         app.tab(false);
         app.send(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit(
             "Grüße".into(),
@@ -2691,6 +2775,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
         assert!(!Widget::perform_action(
             &mut w,
             &Action::SetValue("printf semantic".to_string()),
+            &[],
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
@@ -2715,6 +2800,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
                 anchor: 1,
                 focus: 3,
             },
+            &[],
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
@@ -2740,6 +2826,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
                 anchor: 1,
                 focus: 6,
             },
+            &[],
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
@@ -2770,41 +2857,23 @@ fn ime_and_accessibility_expose_terminal_semantics() {
 fn terminal_resource_identity_convergence_and_presence() {
     // Case `concurrent_pane_claims_converge_on_one_resource_identity`.
     // Two peers can both claim a pane on the same previously empty session.
-    // Automerge retains both concurrent scalar writes, so every replica must
-    // select the same pane id from that conflict set, or resource and
-    // presence addresses would split despite the document converging.
+    // Every replica must select the same pane id, or resource and presence
+    // addresses would split despite the document converging.
     {
-        use automerge::ActorId;
-        use ui::tilo_actions::Action as _;
+        use ui::tilo_resource::Replica;
 
-        let base = AutoCommit::new();
-        let mut left_doc = base.clone().with_actor(ActorId::random());
-        let mut right_doc = base.with_actor(ActorId::random());
-        for doc in [&mut left_doc, &mut right_doc] {
-            crate::resource::TerminalAction::ClaimPane {
-                pane_id: uuid::Uuid::new_v4().to_string(),
-            }
-            .apply(doc)
-            .unwrap();
-            doc.commit();
+        let mut left = Replica::<crate::resource::Terminal>::new();
+        let mut right = left.fork();
+        for replica in [&mut left, &mut right] {
+            replica
+                .apply(crate::resource::Terminal::CLAIM_PANE.with(uuid::Uuid::new_v4().to_string()))
+                .unwrap();
         }
-        left_doc
-            .merge_incoming(&mut right_doc)
+        left.sync_with(&mut right)
             .expect("merge concurrent pane claims");
-        right_doc
-            .merge_incoming(&mut left_doc)
-            .expect("return the merged session to the second peer");
-        assert_eq!(
-            left_doc
-                .get_all(&ROOT, "terminal_pane_id")
-                .expect("pane-id conflict values")
-                .len(),
-            2,
-            "the test must exercise Automerge's concurrent-value case"
-        );
-        let left = crate::resource::Terminal::read(&left_doc).unwrap();
-        let right = crate::resource::Terminal::read(&right_doc).unwrap();
-        assert_eq!(left.pane_id, right.pane_id, "pane identities converge");
+        let left = left.state().unwrap();
+        let right = right.state().unwrap();
+        assert_eq!(left.pane_id(), right.pane_id(), "pane identities converge");
         let (mut left_view, _) = build_test_widget();
         let (mut right_view, _) = build_test_widget();
         ResourceSurface::<crate::resource::Terminal, crate::resource::TerminalEffect>::present(
@@ -2831,13 +2900,7 @@ fn terminal_resource_identity_convergence_and_presence() {
         widget.feed(
             b"\x1b]2;build session\x07\x1b]8;;https://example.test/docs\x1b\\docs\x1b]8;;\x1b\\",
         );
-        let label = <crate::resource::TerminalShell as ui::framework::ResourceApp>::label(
-            &crate::resource::SessionState {
-                title: widget.title().to_owned(),
-                ..crate::resource::SessionState::default()
-            },
-        );
-        assert_eq!(label, "Terminal — build session");
+        assert_eq!(widget.title(), "build session");
         let rows: Vec<_> = widget
             .link_rows()
             .into_iter()
@@ -2876,11 +2939,11 @@ fn terminal_resource_identity_convergence_and_presence() {
         );
     }
 
-    // Case `a_collaborator_sees_the_running_sessions_screen_and_pane`.
+    // Case `a_collaborator_scopes_presence_to_the_running_sessions_pane`.
     {
         // Peer A runs a session hosted by the framework; peer B joins from
-        // A's record and shows it without a process of its own. Both show the
-        // same screen and scope presence under the same pane.
+        // A's record without a process of its own. A's output stays on A;
+        // both scope presence under the same pane.
         use ui::presence::PresenceKey;
         let mut a = ui::framework::testing::TestApp::<crate::resource::TerminalShell>::new()
             .expect("terminal");
@@ -2894,33 +2957,15 @@ fn terminal_resource_identity_convergence_and_presence() {
             &Rc::new(joined),
         );
         assert!(
-            b.grid_text().contains("peer-a-line-one"),
-            "B shows A's screen; B grid:\n{}",
+            !b.grid_text().contains("peer-a-line-one"),
+            "A's output is not in the record; B grid:\n{}",
             b.grid_text()
         );
-
-        a.with_surface(|terminal: &mut TerminalWidget| terminal.feed(b"peer-a-line-two\r\n"))
-            .expect("hosted terminal");
-        a.settle();
-        let later = crate::resource::Terminal::read(&a.peer_document()).unwrap();
-        ResourceSurface::<crate::resource::Terminal, crate::resource::TerminalEffect>::present(
-            &mut b,
-            &Rc::new(later),
-        );
-        let (a_grid, a_key) = a
+        let a_key = a
             .with_surface(|terminal: &mut TerminalWidget| {
-                (
-                    terminal.grid_text(),
-                    ui::presence::capability::presence_key(terminal),
-                )
+                ui::presence::capability::presence_key(terminal)
             })
             .expect("hosted terminal");
-        assert!(b.grid_text().contains("peer-a-line-two"));
-        assert_eq!(
-            a_grid.trim_end(),
-            b.grid_text().trim_end(),
-            "peers show the same terminal grid"
-        );
         let b_key = ui::presence::capability::presence_key(&b);
         assert_eq!(
             a_key, b_key,
@@ -3111,13 +3156,6 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
         assert_eq!(
             host.content_store().read(&placement.hash).as_deref(),
             Some(png.as_slice())
-        );
-
-        let peer = replica_of(&host);
-        assert_eq!(
-            peer.image_placements(),
-            host.image_placements(),
-            "placement metadata converges through the session record"
         );
     }
 }
@@ -3794,14 +3832,6 @@ fn osc_sequences_update_title_and_hyperlinks() {
         // OSC 0 (icon + title) also sets it; ST-terminated form.
         w.feed(b"\x1b]0;another\x1b\\");
         assert_eq!(w.title(), "another", "OSC 0 sets the window title too");
-
-        // The title rides the session record: a collaborator's view reads it.
-        let peer = replica_of(&w);
-        assert_eq!(
-            peer.title(),
-            "another",
-            "a collaborator sees the same title"
-        );
     }
 
     // Case `process_controlled_osc_metadata_is_bounded_and_single_line`.
@@ -3819,7 +3849,7 @@ fn osc_sequences_update_title_and_hyperlinks() {
     {
         // OSC 8 ; ; <uri> ST … OSC 8 ; ; ST wraps the cells in between with a
         // hyperlink that resolves back to the URL (rendered underlined and
-        // clickable). The link registry rides the CRDT so peers resolve it too.
+        // clickable).
         let (mut w, _) = build_test_widget();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
         // Home, open link, print "link", close link.
@@ -3840,14 +3870,6 @@ fn osc_sequences_update_title_and_hyperlinks() {
             w.hyperlink_at(0, 10),
             None,
             "cells outside the link have no URL"
-        );
-
-        // A collaborator's view of the session resolves the same hyperlink.
-        let peer = replica_of(&w);
-        assert_eq!(
-            peer.hyperlink_at(0, 1),
-            Some("https://example.test/docs"),
-            "a collaborator resolves the same OSC 8 hyperlink"
         );
     }
 }

@@ -64,10 +64,10 @@ pub use app::TubeApp;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<TubeShell>()
+    ui::built_in_definition!(TubeShell)
 }
 
-pub use resource::{Tube, TubeShared, TubeShell};
+pub use resource::{Library, TubeShell};
 
 #[cfg(test)]
 mod tests {

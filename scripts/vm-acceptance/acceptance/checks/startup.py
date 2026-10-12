@@ -21,10 +21,11 @@ import time
 import tomllib
 from pathlib import Path
 
-from .. import app_startup, core, gpu, records
+from .. import app_startup, core, gpu, records, session_unit
 from ..core import CheckFailed, Unobservable, check
-from ..vm import wait_until
+from ..vm import VmError, wait_until
 from .apps import _close, _lifecycle
+from .resources import shell_anon_mib, slope
 
 FILES = "so.tilo.file-explorer"
 FILES_PROGRAM = "file-explorer"
@@ -42,15 +43,21 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # host every call would cross ssh. Prints one JSON object: the bus it read, whether the
 # root was there, and the names in the folder listing (None: no listing found).
 ATSPI_PROBE = r'''
-import importlib.util, json, re, sys, time
-CLIENT = "/usr/libexec/tilo/atspi-external-client.py"
+import importlib.util, json, os, re, sys, time
+CLIENT = os.environ.get("TILO_ATSPI_CLIENT", "/usr/libexec/tilo/atspi-external-client.py")
 program, root_name, list_name, timeout = sys.argv[1], sys.argv[2], sys.argv[3], float(sys.argv[4])
 try:
     spec = importlib.util.spec_from_file_location("atspi_client", CLIENT)
     m = importlib.util.module_from_spec(spec)
+    # dataclasses resolves the client's string annotations through sys.modules.
+    sys.modules[spec.name] = m
     spec.loader.exec_module(m)
 except Exception as e:
-    print(json.dumps({"error": f"no AT-SPI client at {CLIENT}: {e}"}))
+    if isinstance(e, FileNotFoundError) and e.filename == CLIENT:
+        error = f"no AT-SPI client at {CLIENT}: {e}"
+    else:
+        error = f"the AT-SPI client at {CLIENT} failed to load: {type(e).__name__}: {e}"
+    print(json.dumps({"error": error}))
     sys.exit(0)
 
 # AtspiRole's list. AccessKit has no role-name method; roles are numbers.
@@ -146,7 +153,9 @@ LATENCY_FIELDS = ("request_to_spawn", "spawn_to_map", "map_to_first_present", "r
 
 def parse_launch_latencies(log: str, package: str) -> dict[str, float]:
     """{field: ms} from the compositor's `tilo::launch_latency` lines for `package`, the
-    first value of each field in `log`; a field no line carries is absent."""
+    first value of each field in `log`; a field no line carries is absent. The spawn
+    line's `dispatch_phases` (where `request_to_spawn` went: each phase's interval, ending
+    at it) become `dispatch_phase.<phase>`."""
     out: dict[str, float] = {}
     for line in ANSI.sub("", log).splitlines():
         if f"package_id={package} " not in line + " " and f'package_id="{package}"' not in line:
@@ -155,6 +164,12 @@ def parse_launch_latencies(log: str, package: str) -> dict[str, float]:
             found = re.search(rf"\b{field}_us=(\d+)", line)
             if found and field not in out:
                 out[field] = round(int(found.group(1)) / 1e3, 1)
+        phases = re.search(r"\bdispatch_phases=(\S+)", line)
+        if phases and not any(name.startswith("dispatch_phase.") for name in out):
+            for entry in phases.group(1).split(","):
+                phase, _, ms = entry.partition(":")
+                if re.fullmatch(r"[a-z-]+", phase) and re.fullmatch(r"\d+(\.\d+)?", ms):
+                    out[f"dispatch_phase.{phase}"] = float(ms)
     return out
 
 
@@ -168,28 +183,34 @@ def parse_launch_latency(log: str, package: str) -> float | None:
 def open_segments(t0_ms: int, marks: dict | None) -> dict | None:
     """Where one open requested at guest time `t0_ms` spent its time, in ms, as segments
     that add up to the open: `request_to_launcher` (tilo-control, the compositor's
-    dispatch and the launcher's exec), `launcher` (its checks and sandbox preparation, by
-    phase in `launcher_phases`, each the interval ending at that mark), `sandbox_to_main`
-    (bubblewrap, the Landlock shim, the dynamic loader) and `main_to_first_frame` (the
-    app's own start). `exec_to_main` is the end of `sandbox_to_main` from the process's
-    creation, at the kernel's 10 ms resolution. None when the marks hold no first frame or
-    no launcher phases."""
+    dispatch and the launcher's exec), `launcher` (its checks and sandbox preparation, to
+    its `sandbox-argv-ready` mark), `sandbox_to_main` (bubblewrap, the Landlock shim, the
+    dynamic loader) and `main_to_first_frame` (the app's own start). `launcher_phases`
+    holds each mark's interval, ending at that mark, the sandbox shim's
+    `sandbox-entered` (bubblewrap) and `sandbox-exec` (Landlock) among them;
+    `exec_to_main`, from `sandbox-exec` to `main`, is the loader. None when the marks hold
+    no first frame or no launcher phases."""
     if not marks or "first-frame-presented" not in marks["events"]:
         return None
     launcher = marks.get("launcher") or []
     if len(launcher) < 2 or launcher[0][0] != "launcher-start":
         return None
-    start_us, handoff_us = launcher[0][1], launcher[-1][1]
+    at = dict(launcher)
+    start_us = launcher[0][1]
+    handoff_us = at.get("sandbox-argv-ready", launcher[-1][1])
     phases, previous = {}, start_us
     for name, epoch_us in launcher[1:]:
         phases[name] = round((epoch_us - previous) / 1e3, 1)
         previous = epoch_us
+    origin_us = marks["origin_epoch_us"]
     out = {"request_to_launcher": round(start_us / 1e3 - t0_ms, 1),
            "launcher": round((handoff_us - start_us) / 1e3, 1),
-           "sandbox_to_main": round((marks["origin_epoch_us"] - handoff_us) / 1e3, 1),
+           "sandbox_to_main": round((origin_us - handoff_us) / 1e3, 1),
            "main_to_first_frame": round(marks["events"]["first-frame-presented"] * 1e3, 1),
            "launcher_phases": phases}
-    if marks.get("exec_to_main_us") is not None:
+    if "sandbox-exec" in at:
+        out["exec_to_main"] = round((origin_us - at["sandbox-exec"]) / 1e3, 1)
+    elif marks.get("exec_to_main_us") is not None:
         out["exec_to_main"] = round(marks["exec_to_main_us"] / 1e3, 1)
     return out
 
@@ -329,6 +350,9 @@ def gpu_adapters(ctx, res):
 
 WARM_APPS = ("so.tilo.file-explorer", "so.tilo.notes", "so.tilo.settings")
 WARM_LAUNCHES = 10
+# After the measured series: Files, the app whose loss of the session was worst (every
+# later open of it waited 30 s and spawned nothing), opened and closed this many times more.
+REPEATED_OPENS = ((FILES, 20),)
 OPEN_WAIT_S = 30
 EXIT_WAIT_S = 15
 _NUDGE = itertools.cycle((8, 12))
@@ -355,15 +379,23 @@ def median(values: list[float]) -> float:
     return sorted(values)[(len(values) - 1) // 2]
 
 
-def _app_gone(ctx, app: str) -> bool:
-    return wait_until(lambda: not [p for p in core.processes(ctx)["procs"].values() if p["app"] == app],
-                      EXIT_WAIT_S, 1.0) is not None
+def _app_gone(ctx, app: str) -> dict | None:
+    """The first process table without `app`'s processes, or None if they outlived the wait."""
+    def without_app():
+        table = core.processes(ctx)
+        return None if any(p["app"] == app for p in table["procs"].values()) else table
+
+    return wait_until(without_app, EXIT_WAIT_S, 1.0)
 
 
-def _timed_open(ctx, app: str) -> dict | None:
+def _timed_open(ctx, app: str, shell_anon: list[float] | None = None,
+                restarts: list[str] | None = None, label: str = "") -> dict | None:
     """Open `app` from the slot's session as a person's request does, wait for its first
     frame, close every window and wait until its processes are gone. Returns the open's
-    `open_times`, its `open_segments` and the compositor's `launch_latency` fields."""
+    `open_times`, its `open_segments` and the compositor's `launch_latency` fields; appends
+    the compositor's anonymous RSS once the app is gone to `shell_anon`, and to `restarts`
+    why the open fails if the session restarted on its own around it (`label` names the
+    open there)."""
     out = ctx.vm.exec(f'wc -l < "{SESSION_LOG}" 2>/dev/null || echo 0; date +%s%3N; '
                       f"tilo-control actions invoke applications {shlex.quote(app)} >/dev/null",
                       timeout=60)
@@ -376,16 +408,45 @@ def _timed_open(ctx, app: str) -> dict | None:
         if times is not None:
             log = ctx.vm.exec(f'tail -n +{(log_lines or 0) + 1} "{SESSION_LOG}" | grep -a "tilo::launch_latency"',
                               check=False)
+            # `marks` is every startup mark of the launch (ms since its `main`, first of each
+            # name), so a per-step table reads the launch itself rather than A16's summary
+            # line, which drops sub-millisecond intervals.
             result = {"open": times[0], "startup": times[1], "segments": open_segments(t0, marks),
-                      "compositor": parse_launch_latencies(log, app)}
+                      "compositor": parse_launch_latencies(log, app),
+                      "marks": {name: round(seconds * 1e3, 1)
+                                for name, seconds in sorted(marks["events"].items(), key=lambda item: item[1])}}
+        else:
+            # No first frame: keep what the session said about this app since the request
+            # (a launch refused or held, say waiting for its previous instance to retire).
+            said = ctx.vm.exec(f'tail -n +{(log_lines or 0) + 1} "{SESSION_LOG}" | sed "s/\\x1b\\[[0-9;]*m//g" '
+                               f'| grep -a -e {shlex.quote(app)} -e app-writer -e shell-launch '
+                               '| tail -n 80 | cut -c1-500; echo "--- the session\'s authority and state writes";'
+                               f' sed "s/\\x1b\\[[0-9;]*m//g" "{SESSION_LOG}" | grep -aiE '
+                               '"authority_rejection|launch refused|native state|state writer|state-file|fenced|persistence failed|publication did not|stale native" '
+                               '| grep -av "tilo-sandbox-exec" | tail -n 40 | cut -c1-500', check=False)
+            said = said or "the session log holds no line about this app since the request"
+            check_id = ctx.current.id if ctx.current is not None else "A15"
+            ctx.write(f"{check_id}-no-first-frame-{re.sub(r'[^A-Za-z0-9]+', '-', label or app).strip('-')}.log",
+                      said)
+            ctx.facts["last_no_first_frame"] = said
+    if restarts is not None:
+        # Read before the reset: the dump then holds the seconds around the open.
+        restarted = core.session_restart(ctx, label or app)
+        if restarted:
+            restarts.append(restarted)
     ctx.reset()
     # Opens through the control socket are no user activity: without a real input the
     # session locks itself on idle a few minutes into the series, as a person's would.
     # The pointer moves between launches, never inside a measured one.
     ctx.vm.input("move", str(next(_NUDGE)), "300")
-    if not _app_gone(ctx, app):
+    table = _app_gone(ctx, app)
+    if not table:
         raise CheckFailed(f"{app}'s processes were still running {EXIT_WAIT_S} s after its window closed, "
                           "so the next open would not start it afresh")
+    if shell_anon is not None:
+        anon = shell_anon_mib(table, ctx.vm.slot_uid())
+        if anon is not None:
+            shell_anon.append(anon)
     return result
 
 
@@ -428,19 +489,26 @@ def warm_opens(ctx, res):
     then ten times measured. The budget is the app's (acceptance/app_startup.py) on the
     session's renderer, held by the median; on a GPU the KPI document's p95 target holds as
     well. Every launch is recorded, split into segments that add up to the open (the
-    launcher's phases among them) and the compositor's own request/spawn/map times."""
+    launcher's phases among them) and the compositor's own request/spawn/map times. Then
+    Files opens `REPEATED_OPENS` times more, each to its first frame; a restart of the
+    session around any open fails the check by that open (`core.session_restart`)."""
     software = records.renderer(ctx.facts.get("renderer"), ctx.facts.get("display")) == "lavapipe"
     kind = "cpu" if software else "gpu"
     launches = WARM_LAUNCHES
     ctx.reset()
     ctx.vm.input("move", str(next(_NUDGE)), "300")
     problems, unobserved, summary = [], [], {}
+    # The compositor's anonymous RSS after each open has closed, in order: what an open
+    # and close leaves behind in it.
+    shell_anon: list[float] = []
+    restarts: list[str] = []
     for app in WARM_APPS:
-        _timed_open(ctx, app)
-        results = [result for result in (_timed_open(ctx, app) for _ in range(launches)) if result]
+        short = _short(app)
+        _timed_open(ctx, app, shell_anon, restarts, f"the {short} warm-up open")
+        results = [result for result in (_timed_open(ctx, app, shell_anon, restarts, f"{short} open #{k + 1}")
+                                         for k in range(launches)) if result]
         opens = [result["open"] for result in results]
         starts = [result["startup"] for result in results]
-        short = _short(app)
         ctx.record(f"app.open.warm_ms.{short}", "ms", opens, app=app,
                    what="open request to the app's first presented frame, launcher and sandbox included",
                    clock="guest wall clock; the request is stamped in the session before tilo-control")
@@ -451,7 +519,7 @@ def warm_opens(ctx, res):
             stem, _, mark = name.partition(".")
             ctx.record(f"app.open.{stem}_ms.{short}" + (f".{mark}" if mark else ""), "ms", values, app=app,
                        what="one segment of the warm open (acceptance/checks/startup.py open_segments)")
-        budget = app_startup.budget_ms(app, kind)
+        budget = app_startup.warm_open_budget_ms(app, kind)
         summary[app] = {"open_ms": opens, "startup_ms": starts, "budget_ms": budget,
                         "median_ms": {name: median(values) for name, values in series.items()},
                         "opens": results}
@@ -474,10 +542,30 @@ def warm_opens(ctx, res):
         if kind == "gpu" and opens and target is not None and p95(opens) > target:
             problems.append(f"{app} took {p95(opens)} ms (p95 of {len(opens)}) from the open request to its "
                             f"first frame on a GPU, over the KPI's {target:.0f} ms")
+    # Then one app over and over, unmeasured: the session must outlive it and the app open
+    # every time. Its RSS stays out of `shell_anon`, whose slope is a KPI over the series above.
+    repeated = {}
+    for app, count in REPEATED_OPENS:
+        short = _short(app)
+        missed = [k + 1 for k in range(count)
+                  if _timed_open(ctx, app, None, restarts, f"{short} repeated open #{k + 1}") is None]
+        repeated[app] = {"opens": count, "no_first_frame": missed}
+        if missed:
+            problems.append(f"{app}: {len(missed)} of {count} repeated opens (#{', #'.join(map(str, missed[:8]))}) "
+                            f"drew no first frame within {OPEN_WAIT_S} s")
+    problems[:0] = restarts
     res.metrics.update(warm_opens={app: {k: v for k, v in entry.items() if k != "opens"}
                                    for app, entry in summary.items()},
+                       repeated_opens=repeated, session_restarts=len(restarts),
                        renderer=ctx.facts.get("renderer"))
     ctx.write("A15-warm-opens.json", json.dumps(summary, indent=1))
+    growth = slope(shell_anon)
+    res.metrics.update(shell_anon_after_close_mib=shell_anon, shell_anon_mib_per_open_close=growth)
+    ctx.record("memory.shell_anon_mib.per_open_close", "MiB", [growth], opens=len(shell_anon),
+               what="least-squares slope of the compositor's anonymous RSS over warm open/close cycles")
+    if growth is None:
+        unobserved.append(f"the compositor's anonymous RSS was read after {len(shell_anon)} closes, "
+                          "too few for its growth per open")
     if problems:
         raise CheckFailed("; ".join(problems + unobserved))
     if unobserved:
@@ -503,3 +591,62 @@ def every_launch(ctx, res):
     if problems:
         raise CheckFailed("; ".join(problems))
     res.detail = f"{len(startups)} launches of {len(apps)} apps within budget"
+
+
+# The compositor under the slot's session wrapper: its child named `shell`.
+COMPOSITOR_PID = ("w=$(systemctl show -p MainPID --value {unit}); for d in /proc/[0-9]*; do "
+                  "[ \"$(awk '/^PPid:/ {{print $2}}' \"$d/status\" 2>/dev/null)\" = \"$w\" ] && "
+                  "[ \"$(cat \"$d/comm\" 2>/dev/null)\" = shell ] && echo \"${{d#/proc/}}\"; done; true")
+RECOVERY_WAIT_S = 60
+
+
+def first_line_mentioning(text: str, words: tuple[str, ...]) -> str:
+    """The first line of `text` holding any of `words`, else its first line."""
+    lines = [line for line in text.splitlines() if line.strip()]
+    return next((line for line in lines if any(word in line for word in words)), lines[0] if lines else "")
+
+
+@check("A17", "apps", "After the desktop session ends abruptly, Files opens on the first request")
+def files_after_session_crash(ctx, res):
+    """The slot's desktop runs as `tilo-vm-session@<slot>`; when its compositor dies,
+    `Restart=` brings up a fresh session. After such a restart in A15 every later Files open
+    was refused ("filesystem authority changed while the application launch was pending")
+    until the session ended again. That crash came while an app was opening: open and close
+    Files once, ask for it again and end the compositor the way a crash does (SIGSEGV, from
+    root) while that launch is under way, wait for the next session to answer and close what
+    it restored, then open Files twice: both must draw their first frame."""
+    ctx.reset()
+    if _timed_open(ctx, FILES, label="Files before the session ended") is None:
+        raise Unobservable("Files drew no first frame before the session was ended, so whether it "
+                           "reopens after the restart says nothing")
+    unit = session_unit.unit(ctx.vm.slot)
+    pids = ctx.vm.root_exec(COMPOSITOR_PID.format(unit=shlex.quote(unit))).split()
+    if len(pids) != 1 or not pids[0].isdigit():
+        raise Unobservable(f"no single compositor process under {unit} to end: {pids}")
+    ctx.vm.exec(f"tilo-control actions invoke applications {shlex.quote(FILES)} >/dev/null")
+    wrapper = (session_unit.show(ctx) or {}).get("MainPID", "")
+    # Rust's own SIGSEGV handler returns from a signal no fault raised, resetting the default
+    # action: the second one ends the compositor as a fault does.
+    ctx.vm.root_exec(f"kill -SEGV {pids[0]}; sleep 0.5; kill -SEGV {pids[0]} 2>/dev/null; true")
+
+    def answering():
+        try:
+            fields = session_unit.show(ctx)
+            moved = fields and fields.get("MainPID", "0") not in ("0", "", wrapper)
+            return ctx.vm.state() if moved else None
+        except VmError:
+            return None
+
+    if wait_until(answering, RECOVERY_WAIT_S, 2.0) is None:
+        raise CheckFailed(f"no new session answered within {RECOVERY_WAIT_S} s of the compositor's SIGSEGV "
+                          f"(session main process before: {wrapper or '?'})")
+    core.adopt_session(ctx)
+    res.metrics["ended_compositor_pid"] = int(pids[0])
+    ctx.reset()
+    missed = [k for k in (1, 2) if _timed_open(ctx, FILES, label=f"Files open #{k} after the restart") is None]
+    res.metrics["opens_without_first_frame"] = missed
+    if missed:
+        said = first_line_mentioning(ctx.facts.get("last_no_first_frame", ""), ("ERROR", "refused", "WARN"))
+        raise CheckFailed(f"after the session restarted, Files open #{', #'.join(map(str, missed))} of 2 drew no "
+                          f"first frame within {OPEN_WAIT_S} s; the session said: {said[:400]}")
+    res.detail = "Files opened twice after the session restarted"

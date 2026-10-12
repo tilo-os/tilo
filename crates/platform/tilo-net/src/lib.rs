@@ -21,8 +21,8 @@
 //! - [`p2p`]: peer-to-peer frame streams between endpoints that dial each
 //!   other by ticket. iroh QUIC on the desktop; [`Unsupported`] in a page.
 //!
-//! What a target cannot provide is an [`Unsupported`] error at run time and a
-//! row of [`CAPABILITIES`], never a missing item.
+//! What a target cannot provide is an [`Unsupported`] error at run time and an
+//! entry of its [`Feature`]'s targets, never a missing item.
 //!
 //! # TLS
 //!
@@ -60,7 +60,7 @@ compile_error!("tilo-net has backends for native targets and wasm32-unknown-unkn
 
 pub use ::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 pub use bytes::Bytes;
-pub use caps::{Availability, CAPABILITIES, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability};
 #[cfg(feature = "http")]
 pub use client::{Client, ClientBuilder, Redirects, Request, RequestBuilder, Response};
 pub use error::NetError;
@@ -68,7 +68,8 @@ pub use url::Url;
 
 #[cfg(not(target_family = "wasm"))]
 pub use native::tls::{
-    client_config, client_config_with_roots, crypto_provider, install_crypto_provider, system_roots,
+    client_config, client_config_with_roots, crypto_provider, install_crypto_provider,
+    pinned_client_config, system_roots,
 };
 
 /// Every future of the public API is `Send` on every target, so apps can

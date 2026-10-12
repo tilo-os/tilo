@@ -33,10 +33,6 @@
 )]
 
 #[path = "../tests/support/https.rs"]
-#[allow(
-    dead_code,
-    reason = "the probe uses the tests' pinned HTTPS client alone"
-)]
 mod https;
 
 use std::sync::Arc;
