@@ -1655,11 +1655,12 @@ mod tests {
     async fn backend_eviction_releases_only_owned_tags_for_fresh_roots() {
         // Phase `queued_eviction_releases_only_owned_target_tags_and_gc_completion_is_observed`.
         {
-            use crate::availability::{RecordAvailability, RecordKind, Residency};
+            use crate::availability::{RecordAvailability, RecordKind};
             use crate::eviction::{
                 EvictionCatalog, EvictionMode, EvictionQueue, EvictionRequestState, VersionPayload,
                 plan_destructive_eviction,
             };
+            use fs_protocol::Residency;
 
             let temp = tempfile::TempDir::new().unwrap();
             let store = ContentStore::open_with_gc_interval(
@@ -1810,10 +1811,11 @@ mod tests {
         }
         // Phase `backend_handoff_refuses_stale_shared_root_without_releasing_tag`.
         {
-            use crate::availability::{RecordAvailability, RecordKind, Residency};
+            use crate::availability::{RecordAvailability, RecordKind};
             use crate::eviction::{
                 EvictionCatalog, EvictionQueue, VersionPayload, plan_destructive_eviction,
             };
+            use fs_protocol::Residency;
 
             let temp = tempfile::TempDir::new().unwrap();
             let store = ContentStore::memory_with_gc_interval(Duration::from_millis(10));
@@ -1899,11 +1901,12 @@ mod tests {
         }
         // Phase `eviction_never_releases_foreign_tags_or_claims_their_blob_was_deleted`.
         {
-            use crate::availability::{RecordAvailability, RecordKind, Residency};
+            use crate::availability::{RecordAvailability, RecordKind};
             use crate::eviction::{
                 EvictionCatalog, EvictionQueue, EvictionRequestState, VersionPayload,
                 plan_destructive_eviction,
             };
+            use fs_protocol::Residency;
 
             let temp = tempfile::TempDir::new().unwrap();
             let store = ContentStore::memory_with_gc_interval(Duration::from_millis(10));

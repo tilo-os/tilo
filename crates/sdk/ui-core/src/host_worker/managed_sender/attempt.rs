@@ -19,6 +19,7 @@ pub(super) enum Operation {
     not(feature = "broker-transport"),
     expect(dead_code, reason = "only the broker transport delivers an attempt")
 )]
+/// Fixed transport outcomes. Neither variant proves that execution did not occur.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AttemptFailure {
     Deadline,

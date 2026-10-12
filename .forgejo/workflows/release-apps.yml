@@ -639,7 +639,7 @@ jobs:
       - name: An app package is byte-identical when built twice
         run: tools/apps/check-reproducible-tapp.sh calculator
       # The signed bytes a person downloads, each app against its own budget
-      # (tools/perf/tapp-size-budget/; DEVELOPMENT.md, "App package size").
+      # (tools/perf/tapp-size-budget/; docs/measurements/app-package-size.md).
       # It measures only what this job built, so it adds no build.
       - name: Shipped tapps within their size budget
         run: >-
@@ -647,7 +647,7 @@ jobs:
           --arch "${{ matrix.arch }}" --summary "$GITHUB_STEP_SUMMARY"
       # The shared runtime every app maps (libruntime_dylib.so): its bytes,
       # relocation tables, relocation-dirtied pages and symbol lookups against
-      # tools/perf/runtime-size-budget/ (DEVELOPMENT.md, "Runtime size"), and
+      # tools/perf/runtime-size-budget/ (docs/measurements/runtime-size.md), and
       # what it and each built app of apps_without_media load at exec: never
       # GLib or GStreamer, which the runtime loads on first use (TIL-713).
       # package-apps.sh built it above for the whole default collection. The

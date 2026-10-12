@@ -2586,10 +2586,7 @@ pub fn launch_workspace_agent(
         .sandbox
         .services
         .get(launcher::services::COLLAB_SERVICE)
-        .is_some_and(|requirement| {
-            launcher::manifest::ServiceReq::parse(requirement)
-                .is_ok_and(|requirement| requirement.is_required())
-        });
+        .is_some_and(launcher::manifest::ServiceReq::is_required);
     if manifest.kind != launcher::manifest::KIND_SERVICE
         || manifest.entrypoint.cli_bin().is_none()
         || !requires_collaboration

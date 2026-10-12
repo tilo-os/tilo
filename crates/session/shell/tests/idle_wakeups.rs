@@ -358,7 +358,7 @@ impl Desktop {
     }
 
     /// Whether the compositor has printed a line containing `needle`.
-    fn logged(&self, needle: &str) -> bool {
+    pub(crate) fn logged(&self, needle: &str) -> bool {
         self.log
             .lock()
             .is_ok_and(|log| log.iter().any(|(_, line)| line.contains(needle)))

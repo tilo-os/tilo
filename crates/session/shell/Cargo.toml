@@ -2,6 +2,7 @@
 # tests/*.rs are modules of tests/it.rs, not separate binaries
 autotests = false
 name = "shell"
+description = "Wayland compositor and session: strips, windows, app hosting, collab"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -233,6 +234,9 @@ resvg = { version = "0.47", default-features = false }
 # via `NeighbourMsg::AppCrdtIncrementalSigned`. The contract types and
 # the validator live in `tilo-collab-types`.
 collab-types = { path = "../../collab/collab-types" }
+# The collaborative filesystem's xattr names, read when opening a
+# workspace file by its stable record identity.
+fs-protocol = { path = "../../system/fs-protocol" }
 # The neighbour wire vocabulary (`NeighbourMsg`) and its retention rules,
 # shared with every other peer that speaks the collaboration protocol.
 neighbour-wire = { path = "../../collab/neighbour-wire" }

@@ -487,16 +487,7 @@ impl RecordReplica {
         authorizer: &A,
     ) -> Result<(), RecordReplicationError> {
         envelope.verify()?;
-        if envelope.record_id != self.record_id {
-            return Err(RecordReplicationError::WrongRecord);
-        }
-        if !authorizer.actor_is_certified(&envelope.actor) {
-            return Err(RecordReplicationError::UncertifiedActor);
-        }
-        if !authorizer.allows(&envelope.actor, self.record_id, RecordAction::Write) {
-            return Err(RecordReplicationError::WriteDenied);
-        }
-        self.apply_verified(envelope)
+        self.merge_authenticated(envelope, authorizer)
     }
 
     /// [`Self::merge`] for an envelope this process just signed with the

@@ -102,6 +102,7 @@ suites = [
   "os/tests/firstboot_autologin_cleanup.sh",
   "os/tests/firstboot_password_hash.sh",
   "os/tests/test_firstboot_credential_transport.py",
+  "os/tests/test_firstboot_transaction.py",
   "os/tests/boot_order_enlist_test.py",
   "os/tests/bootc_transient_state.sh",
   "os/tests/dnf_layer_repro.sh",

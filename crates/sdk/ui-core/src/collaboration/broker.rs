@@ -6594,43 +6594,11 @@ async fn dispatch_sdk_request(
         }
         #[cfg(unix)]
         CollabRequest::ManagedInvocationAttempt { attempt } => {
-            use crate::host_worker::managed_sender::{AttemptFailure, RequestView};
-            use managed_sender_transport::{Failure, Request};
             let result = match attempt.claim(&route.spec) {
                 None => return true, // A clone cannot dispatch the same local attempt twice.
                 Some(Err(error)) => Err(error),
-                Some(Ok(view)) => {
-                    let request = match view {
-                        RequestView::Invoke {
-                            invocation,
-                            binding,
-                            revision,
-                            resource,
-                            action,
-                            argument,
-                            confirmation_json,
-                        } => Request::Invoke {
-                            invocation,
-                            binding,
-                            revision,
-                            resource,
-                            action,
-                            argument,
-                            confirmation_json,
-                        },
-                        RequestView::Observe { host, invocation } => {
-                            Request::Observe { host, invocation }
-                        }
-                        RequestView::Cancel { host, invocation } => {
-                            Request::Cancel { host, invocation }
-                        }
-                    };
-                    managed_sender_transport::send(route, request, attempt.deadline())
-                        .await
-                        .map_err(|error| match error {
-                            Failure::Deadline => AttemptFailure::Deadline,
-                            Failure::Unavailable => AttemptFailure::Unavailable,
-                        })
+                Some(Ok(request)) => {
+                    managed_sender_transport::send(route, request, attempt.deadline()).await
                 }
             };
             if let Some(result) = attempt.finish(result) {

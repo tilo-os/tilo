@@ -164,7 +164,9 @@ containerfile="$repo/os/Containerfile"
 # payload and the x86 guest are no longer copied into /usr here.
 # The installer locale list is copied from the install-profile-model crate,
 # which compiles it in; the installed path is unchanged.
-expected_contract=342cf28f45fef67d1f14495fd12ca18c5e7b36cb9a79f33f6167b63d0634272a
+# The atomic firstboot file helper is one intentional payload addition in
+# the existing libexec COPY instruction; the layer budget is unchanged.
+expected_contract=e583dc97e73beb0da47eea575cb6151997bc1a9d1b38ac15ab3a78591dc713d4
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
