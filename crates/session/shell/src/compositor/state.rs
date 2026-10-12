@@ -276,26 +276,26 @@ mod commit_damage_tests {
         src: Option<Rectangle<f64, Logical>>,
         dst: Option<(i32, i32)>,
         buffer: (i32, i32),
-    ) -> Option<super::ViewportMap> {
-        Some(super::ViewportMap {
+    ) -> super::ViewportMap {
+        super::ViewportMap {
             src,
             dst: dst.map(Into::into),
             buffer,
-        })
+        }
     }
 
     #[test]
     fn surface_damage_under_a_viewport_maps_to_buffer_pixels_rounding_outwards() {
         // A fractional-scale client: a 1472x920 logical surface drawn from a 2944x1840 buffer
         // (scale 1 in the protocol sense, destination set by wp_viewport).
-        let full = viewport(None, Some((1472, 920)), (2944, 1840));
+        let full = Some(viewport(None, Some((1472, 920)), (2944, 1840)));
         let attrs = commit(vec![surface(10, 20, 30, 4)], 1);
         assert_eq!(
             pending_buffer_rects(&attrs, full),
             Some(vec![buffer(20, 40, 60, 8)])
         );
         // 1.5x: 1962x1226 buffer for a 1308x817 surface. 10.3..40.3 -> floor/ceil.
-        let fractional = viewport(None, Some((1308, 817)), (1962, 1226));
+        let fractional = Some(viewport(None, Some((1308, 817)), (1962, 1226)));
         let attrs = commit(vec![surface(7, 3, 21, 9)], 1);
         let [rect] = pending_buffer_rects(&attrs, fractional)
             .expect("converted")
@@ -305,11 +305,11 @@ mod commit_damage_tests {
         assert!(rect.loc.x + rect.size.w >= 42 && rect.loc.y + rect.size.h >= 18);
         assert!(rect.size.w <= 33 && rect.size.h <= 16, "{rect:?} is tight");
         // A source crop offsets the damage into the buffer.
-        let crop = viewport(
+        let crop = Some(viewport(
             Some(Rectangle::new((100.0, 50.0).into(), (200.0, 100.0).into())),
             Some((200, 100)),
             (1000, 1000),
-        );
+        ));
         let attrs = commit(vec![surface(10, 10, 20, 20)], 1);
         assert_eq!(
             pending_buffer_rects(&attrs, crop),
@@ -324,7 +324,7 @@ mod commit_damage_tests {
         // A degenerate viewport or damage off the buffer damages the whole buffer.
         let attrs = commit(vec![surface(10, 20, 30, 4)], 1);
         assert_eq!(
-            pending_buffer_rects(&attrs, viewport(None, Some((0, 0)), (100, 100))),
+            pending_buffer_rects(&attrs, Some(viewport(None, Some((0, 0)), (100, 100)))),
             None
         );
         let attrs = commit(vec![surface(5000, 5000, 4, 4)], 1);
@@ -4916,6 +4916,32 @@ const SYSTEM_PROMPT_APP_IDS: &[&str] = &[
     "org.freedesktop.impl.portal.desktop.gtk",
 ];
 
+/// What a toplevel's client authenticates as: its app id and attributed room.
+type ToplevelIdentity = Result<(Option<String>, Option<crate::shell::state::RoomId>), &'static str>;
+
+/// The authenticated identity and launched package a new toplevel's client
+/// stands for, resolved from the app id it announced so far.
+fn toplevel_identity_and_package(surface: &ToplevelSurface) -> (ToplevelIdentity, Option<String>) {
+    let announced_app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
+        states
+            .data_map
+            .get::<XdgToplevelSurfaceData>()
+            .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
+    });
+    if let Some(client) = surface.wl_surface().client() {
+        let client_state = client.get_data::<ClientState>();
+        (
+            authenticated_toplevel_identity(client_state, announced_app_id),
+            launched_package(client_state),
+        )
+    } else {
+        (
+            authenticated_toplevel_identity(None, announced_app_id),
+            None,
+        )
+    }
+}
+
 fn authenticated_toplevel_identity(
     client: Option<&ClientState>,
     announced_app_id: Option<String>,
@@ -6054,15 +6080,19 @@ impl State {
             let mut cached = states
                 .cached_state
                 .get::<smithay::wayland::shell::xdg::SurfaceCachedState>();
-            let current = cached.current();
-            (current.min_size, current.max_size)
+            let limits = {
+                let current = cached.current();
+                (current.min_size, current.max_size)
+            };
+            drop(cached);
+            limits
         });
         let (out_w, out_h) = self.output_size;
         min == max
             && min.w > 0
             && min.h > 0
-            && i64::from(min.w) * 3 <= i64::from(out_w) * 2
-            && i64::from(min.h) * 3 <= i64::from(out_h) * 2
+            && i64::from(min.w).saturating_mul(3) <= i64::from(out_w).saturating_mul(2)
+            && i64::from(min.h).saturating_mul(3) <= i64::from(out_h).saturating_mul(2)
     }
 
     /// Whether a system-modal prompt is up.
@@ -6300,24 +6330,7 @@ impl XdgShellHandler for State {
         if let Some(launch_key) = authenticated_launch_key.as_deref() {
             crate::shell::launcher::attribute_surface_launch(surface_id, launch_key);
         }
-        let announced_app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
-            states
-                .data_map
-                .get::<XdgToplevelSurfaceData>()
-                .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
-        });
-        let (identity, package) = if let Some(client) = surface.wl_surface().client() {
-            let client_state = client.get_data::<ClientState>();
-            (
-                authenticated_toplevel_identity(client_state, announced_app_id),
-                launched_package(client_state),
-            )
-        } else {
-            (
-                authenticated_toplevel_identity(None, announced_app_id),
-                None,
-            )
-        };
+        let (identity, package) = toplevel_identity_and_package(&surface);
         let Ok((app_id, attributed_room)) = identity else {
             tracing::warn!(
                 surface_id,

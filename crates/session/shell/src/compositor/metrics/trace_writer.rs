@@ -127,9 +127,8 @@ mod tests {
         let seen = Arc::clone(&written);
         let mut trace = TraceWriter::with_sink(move |job| {
             let _ = gate.recv();
-            if let Job::Append(bytes) | Job::Replace(bytes) = job {
-                seen.lock().expect("sink").extend_from_slice(&bytes);
-            }
+            let (Job::Append(bytes) | Job::Replace(bytes)) = job;
+            seen.lock().expect("sink").extend_from_slice(&bytes);
             Ok(())
         });
         // A second of ticks, many times over, with the loop flushing as it does.

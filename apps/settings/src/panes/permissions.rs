@@ -878,6 +878,28 @@ mod tests {
         format!(r#"{{"workspaces":[{{"name":"Studio","sandbox":{caps}}}]}}"#)
     }
 
+    fn button_labels(w: &dyn Widget, labels: &mut Vec<String>) {
+        if w.name() == "Button"
+            && let Some(label) = w.accessibility().and_then(|node| node.name)
+        {
+            labels.push(label);
+        }
+        for c in w.children() {
+            button_labels(c, labels);
+        }
+    }
+
+    fn text_labels(w: &dyn Widget, labels: &mut Vec<String>) {
+        if w.name() == "Text"
+            && let Some(label) = w.accessibility().and_then(|node| node.name)
+        {
+            labels.push(label);
+        }
+        for c in w.children() {
+            text_labels(c, labels);
+        }
+    }
+
     fn build_layout_of(pane: &mut Box<dyn Widget>) {
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();

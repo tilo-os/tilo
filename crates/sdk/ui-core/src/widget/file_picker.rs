@@ -511,7 +511,7 @@ impl FilePicker {
                 .with_kind(crate::widget::TextInputKind::Name)
                 .with_plain_chrome()
                 .with_accessible_name(tr("widget-filepicker-name-accessible"))
-                .with_placeholder(&tr("widget-filepicker-name-placeholder")),
+                .with_placeholder(tr("widget-filepicker-name-placeholder")),
             first_visible: 0,
             pending_outcome: None,
             replace_prompt: None,

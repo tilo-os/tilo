@@ -202,7 +202,7 @@ mod tests {
             hdr_unavailable_reason: None,
             sink_vrr: false,
             vrr_unavailable_reason: None,
-            color_profile_labels: Default::default(),
+            color_profile_labels: std::collections::BTreeMap::default(),
         }
     }
 
@@ -225,10 +225,10 @@ mod tests {
 
         // The built-in panel is the default target.
         let planned = plan_scale(&outputs, &base, None, 2.0).unwrap();
-        assert_eq!(planned.outputs["eDP-1"].scale, 2.0);
+        assert!((planned.outputs["eDP-1"].scale - 2.0).abs() < f64::EPSILON);
         assert!(!planned.outputs.contains_key("HDMI-A-1"));
         let named = plan_scale(&outputs, &base, Some("HDMI-A-1"), 1.25).unwrap();
-        assert_eq!(named.outputs["HDMI-A-1"].scale, 1.25);
+        assert!((named.outputs["HDMI-A-1"].scale - 1.25).abs() < f64::EPSILON);
         assert!(plan_scale(&outputs, &base, None, 1.3).is_err());
         assert!(plan_scale(&outputs, &base, Some("DP-9"), 1.5).is_err());
 

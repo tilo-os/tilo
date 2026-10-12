@@ -24,6 +24,60 @@ use crate::notebook::{self, Notebook, NotebookAction, Page, Tag, page_id};
 /// authored.
 pub type Action = <Notebook as Resource>::Action;
 
+/// The notes of `pages` whose title holds `title`, ignoring case, titles that
+/// are exactly it first: `{pages: [{page, title, resource}]}`.
+pub(crate) fn find_pages(pages: &[PageMeta], title: &str) -> serde_json::Value {
+    let needle = title.trim().to_lowercase();
+    let mut found: Vec<&PageMeta> = pages
+        .iter()
+        .filter(|page| !needle.is_empty() && page.title.to_lowercase().contains(&needle))
+        .collect();
+    found.sort_by_key(|page| page.title.trim().to_lowercase() != needle);
+    serde_json::json!({
+        "pages": found
+            .iter()
+            .map(|page| serde_json::json!({
+                "page": page.id.to_string(),
+                "title": page.title,
+                "resource": page_resource_id(page.id),
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// The blocks whose text holds `text`, ignoring case, in `page` or every
+/// note: `{matches: [{page, title, block, text}]}`, with each block's id as
+/// the note's read shows it.
+pub(crate) fn find_text(
+    doc: &automerge::AutoCommit,
+    text: &str,
+    page: Option<PageId>,
+) -> Result<serde_json::Value, String> {
+    let pages = crate::read::list_pages(doc);
+    let mut matches = Vec::new();
+    for meta in pages
+        .iter()
+        .filter(|meta| page.is_none_or(|page| page == meta.id))
+    {
+        let body = crate::notebook::body_object(doc, meta.id)
+            .ok_or_else(|| "the note has no body".to_owned())?;
+        let found = tilo_document::block_actions::find_under(doc, &body, text, false)?;
+        let hits = found.get("matches").and_then(serde_json::Value::as_array);
+        for hit in hits.into_iter().flatten() {
+            matches.push(serde_json::json!({
+                "page": meta.id.to_string(),
+                "title": meta.title,
+                "block": hit.get("block"),
+                "text": hit.get("text"),
+            }));
+        }
+    }
+    if matches.is_empty() && page.is_some_and(|page| !pages.iter().any(|meta| meta.id == page)) {
+        return Err("no such note".into());
+    }
+    Ok(serde_json::json!({ "matches": matches }))
+}
+
 /// The resource a note is published as: its item of the notebook.
 #[must_use]
 pub fn page_resource_id(page: PageId) -> String {

@@ -27,7 +27,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use shell::shell::state::{DesktopTree, Tab, WindowGroup, WindowWidth, WorkspaceTree};
 
-use crate::support::desktop::{Desktop, Pressure, UNLOCK_PASSWORD};
+use crate::support::desktop::{Client, Desktop, Pressure, UNLOCK_PASSWORD};
 
 const SCREEN: (i32, i32) = (1280, 800);
 
@@ -146,6 +146,64 @@ fn window_count(desktop: &Desktop) -> usize {
     desktop.windows().len()
 }
 
+/// Click `client`'s window at `rect`, wait for the seat to hand it the
+/// keyboard, type into it and wait for its keys to arrive.
+fn type_into_client(desktop: &Desktop, client: &Client, rect: [f64; 4]) {
+    let (cx, cy) = centre(rect);
+    desktop.click_at(cx, cy);
+    // Keys go to whoever holds keyboard focus when they arrive: wait for
+    // the compositor's seat to say the click gave it to this client. The
+    // client's own enter/leave events trail the seat and can still show
+    // the focus it held before another window took it.
+    let surface = desktop
+        .foreign_frames()
+        .iter()
+        .find(|frame| rect_of(frame) == Some(rect))
+        .and_then(|frame| frame.get("surface_id").and_then(Value::as_u64))
+        .expect("the clicked rectangle is a tracked client surface");
+    desktop.wait_for_with(
+        "the click to give the client keyboard focus",
+        || {
+            format!(
+                "{}\nseat focus: {:?}\nthe client reported:\n{}",
+                client.fate(),
+                desktop.chrome().get("seat_focus"),
+                client.output()
+            )
+        },
+        || {
+            desktop
+                .chrome()
+                .get("seat_focus")
+                .and_then(|seat| seat.get("keyboard"))
+                .and_then(|keyboard| keyboard.get("surface"))
+                .and_then(Value::as_u64)
+                == Some(surface)
+        },
+    );
+    desktop.wait_for("the client to hold keyboard focus", || {
+        client.count("EVENT:KEYBOARD ENTER") > client.count("EVENT:KEYBOARD LEAVE")
+    });
+    let before = client.count("EVENT:KEY PRESS");
+    desktop.type_text("smoke");
+    let wanted = before.saturating_add(5);
+    desktop.wait_for_with(
+        "the client to receive its keys",
+        || {
+            // Who holds the keyboard when the keys fail to arrive: the
+            // client may have lost it to another surface after the click.
+            let seat = desktop.chrome().get("seat_focus").cloned();
+            format!(
+                "{}\nseat focus: {seat:?}\nforeign frames: {:?}\nthe client reported:\n{}",
+                client.fate(),
+                desktop.foreign_frames(),
+                client.output()
+            )
+        },
+        || client.count("EVENT:KEY PRESS") >= wanted,
+    );
+}
+
 fn scenario(desktop: &Desktop, max_idle_cpu: f64) {
     // Restored: the tree the compositor was started on is what it shows.
     let restored = desktop.windows();
@@ -194,59 +252,7 @@ fn scenario(desktop: &Desktop, max_idle_cpu: f64) {
 
     // Typing into each window: the Wayland clients see their keys.
     for (client, rect) in clients.iter().zip(&rects) {
-        let (cx, cy) = centre(*rect);
-        desktop.click_at(cx, cy);
-        // Keys go to whoever holds keyboard focus when they arrive: wait for
-        // the compositor's seat to say the click gave it to this client. The
-        // client's own enter/leave events trail the seat and can still show
-        // the focus it held before another window took it.
-        let surface = desktop
-            .foreign_frames()
-            .iter()
-            .find(|frame| rect_of(frame) == Some(*rect))
-            .and_then(|frame| frame.get("surface_id").and_then(Value::as_u64))
-            .expect("the clicked rectangle is a tracked client surface");
-        desktop.wait_for_with(
-            "the click to give the client keyboard focus",
-            || {
-                format!(
-                    "{}\nseat focus: {:?}\nthe client reported:\n{}",
-                    client.fate(),
-                    desktop.chrome().get("seat_focus"),
-                    client.output()
-                )
-            },
-            || {
-                desktop
-                    .chrome()
-                    .get("seat_focus")
-                    .and_then(|seat| seat.get("keyboard"))
-                    .and_then(|keyboard| keyboard.get("surface"))
-                    .and_then(Value::as_u64)
-                    == Some(surface)
-            },
-        );
-        desktop.wait_for("the client to hold keyboard focus", || {
-            client.count("EVENT:KEYBOARD ENTER") > client.count("EVENT:KEYBOARD LEAVE")
-        });
-        let before = client.count("EVENT:KEY PRESS");
-        desktop.type_text("smoke");
-        let wanted = before.saturating_add(5);
-        desktop.wait_for_with(
-            "the client to receive its keys",
-            || {
-                // Who holds the keyboard when the keys fail to arrive: the
-                // client may have lost it to another surface after the click.
-                let seat = desktop.chrome().get("seat_focus").cloned();
-                format!(
-                    "{}\nseat focus: {seat:?}\nforeign frames: {:?}\nthe client reported:\n{}",
-                    client.fate(),
-                    desktop.foreign_frames(),
-                    client.output()
-                )
-            },
-            || client.count("EVENT:KEY PRESS") >= wanted,
-        );
+        type_into_client(desktop, client, *rect);
     }
     // ... and the in-process apps take theirs.
     let (w, h) = (f64::from(SCREEN.0), f64::from(SCREEN.1));

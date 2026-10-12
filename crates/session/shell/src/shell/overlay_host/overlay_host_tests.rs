@@ -3859,7 +3859,7 @@ fn a_slow_host_update_names_the_step_that_took_the_time() {
     steps.steps[1].1 = Duration::from_millis(900);
     assert!(
         steps
-            .report(SLOW_HOST_UPDATE - Duration::from_millis(1))
+            .report(SLOW_HOST_UPDATE.saturating_sub(Duration::from_millis(1)))
             .is_none(),
         "an update inside the budget is not reported"
     );

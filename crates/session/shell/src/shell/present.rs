@@ -420,6 +420,8 @@ struct RetireBoard {
     queue_depth: Arc<AtomicUsize>,
     overlapping: Arc<AtomicBool>,
     unretired: Arc<AtomicUsize>,
+    /// Frames handed over and not yet rendered: idle work waits for none.
+    inflight: Arc<AtomicUsize>,
 }
 
 impl RetireBoard {
@@ -780,6 +782,7 @@ impl PresentPipe {
             queue_depth: queue_depth.clone(),
             overlapping: overlapping.clone(),
             unretired: unretired.clone(),
+            inflight: inflight.clone(),
         };
         let finished = Arc::new(AtomicBool::new(false));
         let thread_finished = finished.clone();
@@ -1879,7 +1882,7 @@ mod tests {
                 );
                 self.owing = false;
             }
-            self.serial += 1;
+            self.serial = self.serial.saturating_add(1);
             let step = self.plan.pop_front().unwrap_or(Flip::Later);
             self.owes = step != Flip::None;
             match step {
@@ -2040,8 +2043,6 @@ mod tests {
 
     #[test]
     fn a_dead_render_thread_owes_no_flips() {
-        let rendered = Arc::new(AtomicU64::new(0));
-        let (_flip, flips) = channel();
         // The second frame panics once the first, which owes a flip, has been rendered.
         struct DiesAfterOne(Scripted);
         impl Presenter for DiesAfterOne {
@@ -2062,6 +2063,8 @@ mod tests {
                 Vec::new()
             }
         }
+        let rendered = Arc::new(AtomicU64::new(0));
+        let (_flip, flips) = channel();
         let mut pipe = spawn_with_retire(Box::new(DiesAfterOne(Scripted {
             plan: VecDeque::from([Flip::Later]),
             rendered: rendered.clone(),

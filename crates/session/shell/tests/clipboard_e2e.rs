@@ -2039,7 +2039,7 @@ fn x11_connect(compositor: &Compositor) -> x11rb::rust_connection::RustConnectio
     let (display, authority) = private_xwayland_connection(compositor).expect("private display");
     let number = display.trim_start_matches(':').to_string();
     let cookie_file = std::fs::read(&authority).expect("read Xauthority");
-    let cookie = cookie_file[cookie_file.len() - 16..].to_vec();
+    let cookie = cookie_file[cookie_file.len().saturating_sub(16)..].to_vec();
     let stream = UnixStream::connect(format!("/tmp/.X11-unix/X{number}")).expect("X socket");
     let (stream, _) = x11rb::rust_connection::DefaultStream::from_unix_stream(stream).unwrap();
     x11rb::rust_connection::RustConnection::connect_to_stream_with_auth_info(
@@ -2083,7 +2083,9 @@ fn x11_paste(compositor: &Compositor) -> String {
     conn.convert_selection(window, clipboard, utf8, prop, x11rb::CURRENT_TIME)
         .unwrap();
     conn.flush().unwrap();
-    let end = Instant::now() + deadline();
+    let end = Instant::now()
+        .checked_add(deadline())
+        .expect("a representable deadline");
     loop {
         assert!(
             Instant::now() < end,
@@ -2352,7 +2354,9 @@ fn x11_clipboard_pastes_into_x11_and_wayland_into_x11() {
     );
     // A newer Wayland copy replaces it for X11 programs.
     native.set_clipboard("wayland to x11");
-    let end = Instant::now() + deadline();
+    let end = Instant::now()
+        .checked_add(deadline())
+        .expect("a representable deadline");
     loop {
         native.pump();
         if x11_paste(&compositor) == "wayland to x11" {

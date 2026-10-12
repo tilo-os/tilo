@@ -65,8 +65,8 @@ pub struct WindowRow {
     pub kind: WindowRowKind,
     pub id: String,
     pub title: String,
-    /// Absent when the title already says everything a person needs.
-    pub subtitle: Option<String>,
+    pub subtitle: String,
+    pub badge: String,
     /// What a person calls this row: its visible names and verb, never an
     /// internal id. A host ranks these as titles.
     pub names: Vec<String>,
@@ -279,7 +279,8 @@ fn move_rows(
                 id,
                 names: vec![label.clone()],
                 title: label,
-                subtitle: Some(detail()),
+                subtitle: detail(),
+                badge: t("search-badge-tab"),
                 hint: app_hint(&tab.tile),
                 action: WindowAction::MoveTab {
                     group,
@@ -302,7 +303,8 @@ fn move_rows(
                 id,
                 names: vec![label.clone()],
                 title: label,
-                subtitle: Some(detail()),
+                subtitle: detail(),
+                badge: t("search-badge-tab"),
                 hint: app_hint(&tab.tile),
                 action: WindowAction::CopyTab {
                     group,
@@ -345,14 +347,15 @@ fn close_rows(
             id,
             names: vec![label.clone()],
             title: label,
-            subtitle: Some(t_args(
+            subtitle: t_args(
                 "search-window-close-group-detail",
                 &[
                     ("workspace", workspace.name.as_str().into()),
                     ("strip", strip.name.as_str().into()),
                     ("count", group.tabs.len().into()),
                 ],
-            )),
+            ),
+            badge: t("search-badge-window-group"),
             hint: None,
             action: WindowAction::CloseGroup { group: group_id },
         });
@@ -369,13 +372,14 @@ fn close_rows(
                 id,
                 names: vec![label.clone()],
                 title: label,
-                subtitle: Some(t_args(
+                subtitle: t_args(
                     "search-window-close-tab-detail",
                     &[
                         ("workspace", workspace.name.as_str().into()),
                         ("strip", strip.name.as_str().into()),
                     ],
-                )),
+                ),
+                badge: t("search-badge-tab"),
                 hint: app_hint(&tab.tile),
                 action: WindowAction::CloseTab {
                     group: group_id,
@@ -416,6 +420,7 @@ pub fn window_rows(tree: &DesktopTree, needle: &str) -> Vec<WindowRow> {
                         id,
                         title: tab.title.clone(),
                         subtitle: focus_detail(strip, group.tabs.len(), multi_strip),
+                        badge: t("search-badge-tab"),
                         names: vec![tab.title.clone()],
                         hint: app_hint(&tab.tile),
                         action: WindowAction::FocusTab {
@@ -459,28 +464,21 @@ pub fn window_rows(tree: &DesktopTree, needle: &str) -> Vec<WindowRow> {
 }
 
 /// Where a window is, in the words a person uses for it: the strip only
-/// once there is more than one, the tab count only once it is shared. A lone
-/// window in the only strip is simply "here" and gets no second line.
-fn focus_detail(strip: &Strip, tabs: usize, multi_strip: bool) -> Option<String> {
-    let place = multi_strip.then(|| {
+/// once there is more than one, the tab count only once it is shared.
+fn focus_detail(strip: &Strip, tabs: usize, multi_strip: bool) -> String {
+    let place = if multi_strip {
         t_args(
             "search-window-focus-place-strip",
             &[("strip", strip.name.as_str().into())],
         )
-    });
+    } else {
+        t("search-window-focus-place")
+    };
     if tabs > 1 {
-        Some(t_args(
+        t_args(
             "search-window-focus-detail-shared",
-            &[
-                (
-                    "place",
-                    place
-                        .unwrap_or_else(|| t("search-window-focus-place"))
-                        .into(),
-                ),
-                ("count", tabs.into()),
-            ],
-        ))
+            &[("place", place.into()), ("count", tabs.into())],
+        )
     } else {
         place
     }

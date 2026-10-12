@@ -409,6 +409,7 @@ fn await_published(room: RoomId, revision: u64) -> std::io::Result<()> {
             seen = now;
         }
     }
+    drop(published);
     Ok(())
 }
 
@@ -823,9 +824,9 @@ mod tests {
 
     fn grant(app: &str, path: &str) -> CapOverride {
         CapOverride::grant(
-            Subject::app(app),
-            Scope::FsPath(path.into()),
-            collab_types::caps::Verb::Write,
+            collab_types::Subject::Principal(collab_types::Principal::App(app.into())),
+            collab_types::Scope::FsPath(path.into()),
+            collab_types::Access::Write,
         )
         .with_id(app)
     }
@@ -867,18 +868,18 @@ mod tests {
         tree.policy_revision = crate::shell::state::next_policy_revision();
         Export::of(&tree).publish();
         let granted = grant("so.tilo.unsaved", "/disposable/unsaved");
-        tree.desktop.workspaces[0]
-            .capabilities
-            .push(granted.clone());
+        tree.desktop.workspaces[0].sandbox.push(granted.clone());
         tree.policy_revision = crate::shell::state::next_policy_revision();
         let revision = tree.policy_revision;
         let export = Export::of(&tree);
         let saver = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(400));
-            crate::shell::durable_writer::global()
-                .submit(std::path::PathBuf::from("late-save"), move || {
-                    export.publish()
-                });
+            crate::shell::durable_writer::global().submit(
+                std::path::PathBuf::from("late-save"),
+                move || {
+                    export.publish();
+                },
+            );
         });
         let registered = register(room, "so.tilo.unsaved", &granted, revision);
         saver.join().unwrap();
@@ -896,13 +897,11 @@ mod tests {
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
         let room = tree.desktop.workspaces[0].room;
         let granted = grant("so.tilo.withdrawn", "/disposable/withdrawn");
-        tree.desktop.workspaces[0]
-            .capabilities
-            .push(granted.clone());
+        tree.desktop.workspaces[0].sandbox.push(granted.clone());
         tree.policy_revision = crate::shell::state::next_policy_revision();
         let captured = tree.policy_revision;
         // Before anything is published, the grant is withdrawn again.
-        tree.desktop.workspaces[0].capabilities.clear();
+        tree.desktop.workspaces[0].sandbox.clear();
         tree.policy_revision = crate::shell::state::next_policy_revision();
         let export = Export::of(&tree);
         let saver = std::thread::spawn(move || {
@@ -932,7 +931,7 @@ mod tests {
         let room = tree.read().desktop.workspaces[0].room;
         let granted = grant("so.tilo.unprompted", "/disposable/unprompted");
         tree.write().desktop.workspaces[0]
-            .capabilities
+            .sandbox
             .push(granted.clone());
         let revision = tree.policy_revision();
         let registered = register(room, "so.tilo.unprompted", &granted, revision);
@@ -956,7 +955,7 @@ mod tests {
         let room = tree.read().desktop.workspaces[0].room;
         let granted = grant("so.tilo.failed-save", "/disposable/failed-save");
         tree.write().desktop.workspaces[0]
-            .capabilities
+            .sandbox
             .push(granted.clone());
         let revision = tree.policy_revision();
         let started = std::time::Instant::now();

@@ -56,10 +56,10 @@ mod read_content;
 mod responsive_drawer;
 #[path = "room_notebook.rs"]
 mod room_notebook;
-#[path = "scroll_stability.rs"]
-mod scroll_stability;
 #[path = "scroll_damage.rs"]
 mod scroll_damage;
+#[path = "scroll_stability.rs"]
+mod scroll_stability;
 #[path = "sidebar_collab_growth.rs"]
 mod sidebar_collab_growth;
 #[path = "sidebar_dnd.rs"]

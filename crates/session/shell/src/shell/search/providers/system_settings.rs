@@ -22,10 +22,7 @@ use serde_json::{Value, json};
 use settings_store::display_tuning;
 use settings_store::hardware::{DisplayHardwareSnapshot, RichInputConfig};
 use settings_store::{ChangeOrigin, SectionWrite, keyboard_sources, power};
-use tilo_actions::{
-    ActionContract, ConfirmationPolicy, OperationKind, PermissionRequirement, RetryPolicy,
-    RiskLevel,
-};
+use tilo_actions::{ActionContract, ConfirmationPolicy, OperationKind, RetryPolicy, RiskLevel};
 use ui::search::FieldWeight;
 
 use crate::shell::chrome_state::Chrome;
@@ -151,7 +148,7 @@ pub(crate) fn contract_for(id: &str) -> Option<ActionContract> {
             ..ActionContract::view()
         },
         Verb::Set | Verb::Toggle => ActionContract {
-            permission: PermissionRequirement::Write,
+            kind: tilo_actions::contract::ActionKind::Undoable,
             risk: RiskLevel::Low,
             confirmation: ConfirmationPolicy::None,
             retry: if verb == Verb::Toggle {
@@ -451,8 +448,11 @@ fn minutes_arg(args: &ActionArgs) -> Result<u32, ActionError> {
         .ok_or_else(|| refuse("minutes must be a whole number of minutes"))
 }
 
+/// What runs a setting action once it is invoked.
+type Runner = Rc<dyn Fn(&Chrome, &ActionArgs) -> Result<Value, ActionError>>;
+
 /// What a store write answers: the setting, what it is now and what it was.
-fn changed(spec: &Spec, previous: &Reading, value: Value) -> Value {
+fn changed(spec: &Spec, previous: &Reading, value: &Value) -> Value {
     json!({"setting": spec.id, "value": value, "previous": previous.value})
 }
 
@@ -537,7 +537,7 @@ fn apply(
             return Err(refuse("display changes require lifecycle dispatch"));
         }
     };
-    Ok(changed(spec, &previous, value))
+    Ok(changed(spec, &previous, &value))
 }
 
 /// Stage a display change; it is in effect, and waiting to be kept or
@@ -549,8 +549,8 @@ fn stage_display(
 ) -> Result<InvocationDisposition, ActionError> {
     let previous = read(spec.kind).ok_or_else(|| refuse("no display has been published"))?;
     let connector = args.text("display").map(str::to_owned);
-    let (value, pending) = match spec.kind {
-        Kind::DisplayScale => {
+    let (value, pending) = if matches!(spec.kind, Kind::DisplayScale) {
+        {
             let percent = args
                 .integer("percent")
                 .ok_or_else(|| refuse("percent must be a whole number"))?;
@@ -565,7 +565,8 @@ fn stage_display(
             });
             (json!(percent), pending)
         }
-        _ => {
+    } else {
+        {
             let text = args.text("hertz").unwrap_or_default();
             let hertz: f64 = text
                 .parse()
@@ -578,10 +579,12 @@ fn stage_display(
         }
     };
     let pending = pending.map_err(refuse)?;
-    let mut answer = changed(spec, &previous, value);
-    answer["awaiting_confirmation"] = json!(true);
-    answer["keep"] = json!("actions:display.change.keep");
-    answer["revert"] = json!("actions:display.change.revert");
+    let mut answer = changed(spec, &previous, &value);
+    if let Some(object) = answer.as_object_mut() {
+        object.insert("awaiting_confirmation".into(), json!(true));
+        object.insert("keep".into(), json!("actions:display.change.keep"));
+        object.insert("revert".into(), json!("actions:display.change.revert"));
+    }
     let chrome = chrome.clone();
     Ok(InvocationDisposition::Pending(Rc::new(move || {
         pending
@@ -705,7 +708,7 @@ fn row_for(spec: &'static Spec, verb: Verb, name: &str, reading: &Reading) -> Se
     };
     let display =
         matches!(spec.kind, Kind::DisplayScale | Kind::DisplayRefreshRate) && verb == Verb::Set;
-    let run: Rc<dyn Fn(&Chrome, &ActionArgs) -> Result<Value, ActionError>> = match verb {
+    let run: Runner = match verb {
         Verb::Get => Rc::new(move |_chrome: &Chrome, _args: &ActionArgs| {
             read(spec.kind)
                 .map(|reading| answer_of(&reading, spec))
@@ -795,16 +798,19 @@ mod tests {
         let row = rows(chrome, "")
             .into_iter()
             .find(|row| row.id == id)
-            .unwrap_or_else(|| panic!("{id} is not offered"));
+            .ok_or_else(|| refuse(format!("{id} is not offered")))?;
         let args = ActionArgs::bind(&row.params, args).map_err(ActionError::Arguments)?;
         let mut doc = AutoCommit::new();
         let mut edits = ui::widget::Edits::lend(&mut doc);
-        let invoke = row.on_invoke.as_ref().expect("a typed receipt");
+        let invoke = row
+            .on_invoke
+            .as_ref()
+            .ok_or_else(|| refuse("the row has no typed receipt"))?;
         match invoke(&mut edits, &ROOT, chrome, &args)?.update {
-            tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
-                Ok(output.value.expect("the receipt carries the answer"))
-            }
-            other => panic!("unexpected update {other:?}"),
+            tilo_actions::InvocationUpdate::Succeeded { output, .. } => output
+                .value
+                .ok_or_else(|| refuse("the receipt carries no answer")),
+            other => Err(refuse(format!("unexpected update {other:?}"))),
         }
     }
 
@@ -854,7 +860,7 @@ mod tests {
                 lock.params[0]
                     .choices
                     .iter()
-                    .map(|c| c.as_ref())
+                    .map(std::convert::AsRef::as_ref)
                     .collect::<Vec<_>>(),
                 ["0", "1", "5", "10", "15", "30"]
             );
@@ -1007,11 +1013,11 @@ mod tests {
             let read = crate::shell::search::providers::actions::shell_action_contract(
                 "power.lock-after.get",
             );
-            assert_eq!(read.permission, PermissionRequirement::Read);
+            assert_eq!(read.kind, tilo_actions::contract::ActionKind::Read);
             let write = crate::shell::search::providers::actions::shell_action_contract(
                 "power.lock-after.set",
             );
-            assert_eq!(write.permission, PermissionRequirement::Write);
+            assert_eq!(write.kind, tilo_actions::contract::ActionKind::Undoable);
         }
         settings_store::install_source(None);
     }

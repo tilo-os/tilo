@@ -1073,12 +1073,12 @@ fn persist_personal_continuity(path: &Path, value: &PersistedPersonalContinuity)
     let Ok(bytes) = postcard::to_allocvec(value) else {
         return false;
     };
-    write_personal_continuity(path, bytes)
+    write_personal_continuity(path, &bytes)
 }
 
 /// Write the encoded continuity to `path`, with its backup. Waits for the
 /// disk: callers on the compositor thread hand it to the state writer.
-fn write_personal_continuity(path: &Path, bytes: Vec<u8>) -> bool {
+fn write_personal_continuity(path: &Path, bytes: &[u8]) -> bool {
     if let Some(parent) = path.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
     {
@@ -1089,7 +1089,7 @@ fn write_personal_continuity(path: &Path, bytes: Vec<u8>) -> bool {
     // A quiet tree asks to persist the same state on every sync round. The
     // primary already holds it, and rewriting it costs four fsyncs (file and
     // directory, for backup and primary) on the compositor thread.
-    if current.as_deref() == Some(bytes.as_slice()) {
+    if current.as_deref() == Some(bytes) {
         return true;
     }
     // Establish the recovery point before replacing the primary. Refusing to
@@ -1098,7 +1098,7 @@ fn write_personal_continuity(path: &Path, bytes: Vec<u8>) -> bool {
     // recovery rule above sound even across repeated failures.
     let prior = current
         .filter(|prior| decode_persisted_personal_continuity(prior).is_some())
-        .unwrap_or_else(|| bytes.clone());
+        .unwrap_or_else(|| bytes.to_vec());
     if let Err(error) = tilo_files::native::atomic::write_with_mode(
         &personal_continuity_backup_path(path),
         &prior,
@@ -1107,7 +1107,7 @@ fn write_personal_continuity(path: &Path, bytes: Vec<u8>) -> bool {
         tracing::warn!(%error, path = %path.display(), "personal continuity backup failed");
         return false;
     }
-    if tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600).is_err() {
+    if tilo_files::native::atomic::write_with_mode(path, bytes, 0o600).is_err() {
         tracing::warn!(path = %path.display(), "personal continuity persistence failed");
         return false;
     }
@@ -4692,7 +4692,7 @@ impl ShellNetwork {
             };
             let target = path.to_path_buf();
             crate::shell::durable_writer::global().submit(path.to_path_buf(), move || {
-                write_personal_continuity(&target, bytes);
+                write_personal_continuity(&target, &bytes);
             });
             true
         };
