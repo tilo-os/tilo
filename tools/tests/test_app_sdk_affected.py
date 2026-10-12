@@ -1,10 +1,13 @@
+import contextlib
 import importlib.util
+import io
 import hashlib
 from pathlib import Path
 import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -59,6 +62,37 @@ class AppSdkAffectedTests(unittest.TestCase):
 
     def check(self, *paths: str) -> bool:
         return selector.affected(self.root, list(paths), self.metadata, 'base', 'head')[0]
+
+    def run_selection(self, paths, lane="both"):
+        output = self.root / 'github-output'
+        with (mock.patch.object(sys, 'argv', ['app_sdk_affected.py', '--lane', lane,
+                                             '--github-output', str(output)]),
+              mock.patch.object(selector.Path, 'cwd', return_value=self.root),
+              mock.patch.object(selector, 'comparison_merge_base', return_value='base'),
+              mock.patch.object(selector, 'changed_files', return_value=list(paths)) as changed,
+              mock.patch.object(selector, 'cargo_metadata', return_value=self.metadata) as metadata,
+              contextlib.redirect_stdout(io.StringIO())):
+            self.assertEqual(selector.main(), 0)
+        changed.assert_called_once()
+        metadata.assert_called_once_with(self.root)
+        return output.read_text().splitlines()
+
+    def test_combined_selection_preserves_distinct_native_and_web_decisions(self):
+        self.other_app()
+        self.assertEqual(self.run_selection(['apps/other/src/main.rs']),
+                         ['affected=true', 'linux_affected=false'])
+
+    def test_combined_selection_keeps_both_lanes_for_shared_source(self):
+        self.assertEqual(self.run_selection(['crates/ui/src/lib.rs']),
+                         ['affected=true', 'linux_affected=true'])
+
+    def test_combined_selection_omits_both_for_unrelated_source(self):
+        self.assertEqual(self.run_selection(['docs/example.md']),
+                         ['affected=false', 'linux_affected=false'])
+
+    def test_existing_single_lane_output_stays_compatible(self):
+        self.assertEqual(self.run_selection(['crates/ui/src/lib.rs'], 'linux'),
+                         ['linux_affected=true'])
 
     def test_a_crate_an_app_depends_on_runs_the_lanes(self):
         self.assertTrue(self.check('crates/ui/src/lib.rs'))

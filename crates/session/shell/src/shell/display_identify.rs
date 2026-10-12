@@ -3,8 +3,8 @@
 //! which?" while arranging them in Settings.
 //!
 //! Settings asks through [`IdentifyRequest`]; the numbers come from
-//! [`display_numbers`], the same numbering the Settings arrangement canvas
-//! shows.
+//! [`display_numbers`] for a local setup, or from the current shared display
+//! order when a native monitor matches its observed stable identity.
 
 use std::time::{Duration, Instant};
 
@@ -58,6 +58,25 @@ impl DisplayIdentify {
             now,
         );
         true
+    }
+
+    /// Number this device's displays by their place in the person's shared
+    /// display order, which spans all of their devices.
+    pub(crate) fn number_by_shared_order(
+        &mut self,
+        outputs: &[OutputGeometry],
+        layout: &settings_store::person_displays::Layout,
+    ) {
+        let shown = outputs
+            .iter()
+            .filter(|output| output.width > 0.0 && output.height > 0.0);
+        for (label, output) in self.labels.iter_mut().zip(shown) {
+            if let Some(shared) = layout.displays.iter().find(|display| {
+                !output.monitor.is_empty() && display.local && display.output == output.monitor
+            }) {
+                label.number = shared.order.saturating_add(1);
+            }
+        }
     }
 
     /// Label every output for `duration`. Outputs the compositor's snapshot
@@ -270,5 +289,83 @@ mod tests {
         assert_eq!(labels[0].number, 2);
         assert_eq!(labels[1].number, 1, "the built-in panel below is display 1");
         assert_eq!(labels[1].output, Rect::new(0.0, 1080.0, 1920.0, 2160.0));
+    }
+
+    #[test]
+    fn numbers_follow_the_persons_shared_display_order() {
+        use settings_store::person_displays::{
+            ArrangedDisplay, Arrangement, DeviceOutput, Layout, PersonDevice,
+        };
+        let output = |id: &str, x: i32| DeviceOutput {
+            id: id.into(),
+            name: id.into(),
+            builtin: false,
+            x,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            mode_width: 1920,
+            mode_height: 1080,
+            refresh_mhz: 60_000,
+            scale_milli: 1000,
+            connected: true,
+            enabled: true,
+        };
+        let device = |id: &str, local, outputs| PersonDevice {
+            device: id.into(),
+            label: id.into(),
+            local,
+            online: true,
+            outputs,
+        };
+        // The Pi's screen comes first in the person's order.
+        let layout = Layout::resolve(
+            &[
+                device(
+                    "laptop",
+                    true,
+                    vec![output("left", 0), output("right", 1920)],
+                ),
+                device("pi", false, vec![output("hdmi", 0)]),
+            ],
+            &Arrangement {
+                displays: vec![ArrangedDisplay {
+                    device: "pi".into(),
+                    output: "hdmi".into(),
+                    enabled: true,
+                    order: 0,
+                    placed: true,
+                    x: -1920,
+                    y: 0,
+                    rev: 1,
+                }],
+            },
+        );
+        let mut outputs = [
+            OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0),
+            OutputGeometry::unscaled(1920.0, 0.0, 1920.0, 1080.0),
+        ];
+        outputs[0].monitor = "left".into();
+        outputs[1].monitor = "right".into();
+        let mut identify = DisplayIdentify::default();
+        let now = Instant::now();
+        identify.start(&outputs, None, Duration::from_secs(3), now);
+        identify.number_by_shared_order(&outputs, &layout);
+        let numbers: Vec<_> = identify
+            .labels(now)
+            .iter()
+            .map(|label| label.number)
+            .collect();
+        assert_eq!(numbers, [2, 3]);
+        assert_eq!(identify.labels(now)[0].output, outputs[0].rect());
+        outputs[0].monitor = "unobserved-monitor".into();
+        identify.start(&outputs, None, Duration::from_secs(3), now);
+        identify.number_by_shared_order(&outputs, &layout);
+        assert_eq!(
+            identify.labels(now)[0].number,
+            1,
+            "geometry cannot substitute for a stable monitor identity"
+        );
+        assert_eq!(identify.labels(now)[1].number, 3);
     }
 }
