@@ -2073,6 +2073,13 @@ impl NotesApp {
         })
     }
 
+    /// Test hook: pictures still fetching or decoding in the notebook's image
+    /// store.
+    #[doc(hidden)]
+    pub fn images_pending_for_test(&self) -> usize {
+        self.main.image_store().map_or(0, ui::ImageStore::pending)
+    }
+
     /// Test hook: whether the editor's `/` block menu is visible.
     #[doc(hidden)]
     pub fn editor_slash_menu_visible_for_test(&self) -> bool {
