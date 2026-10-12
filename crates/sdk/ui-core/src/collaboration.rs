@@ -644,6 +644,14 @@ pub enum CollabEvent {
         collaborators: Vec<Collaborator>,
         permissions: Vec<String>,
     },
+    /// The delegated agents on `cluster_id`'s roster whose person's root
+    /// signed the delegation for exactly that device, as the session
+    /// verified them: who the app's history names for changes their own
+    /// device keys signed. Session-local and presentation only.
+    HistoryAgents {
+        cluster_id: String,
+        agents: Vec<crate::history_source::RosterAgent>,
+    },
     /// Session chrome asked this app to bind its viewport/view mode to a
     /// participant, or release that binding. This is local session control:
     /// it is never published to collaboration peers.

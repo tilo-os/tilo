@@ -859,6 +859,31 @@ struct ChannelContext {
   # JSON vocabulary is `ui::collaboration::handoff`. Empty on every other
   # frame; never relayed to peers.
   handoff @5 :Data;
+  # Session-local control frame: the delegated agents on this room's roster
+  # whose person's root signed the delegation for exactly that device, as
+  # the session verified them. `historyAgentsChanged == true` means clients
+  # leave the roster snapshot untouched and replace the room's agents with
+  # `historyAgents` (empty: none). History names who wrote from it; it is
+  # presentation only and grants nothing. Additive: a client that predates
+  # it reads an empty roster frame, and roster rows are upserts.
+  historyAgents @6 :List(HistoryAgent);
+  historyAgentsChanged @7 :Bool;
+}
+
+# One verified delegated agent in a `ChannelContext.historyAgents` frame.
+struct HistoryAgent {
+  # The agent's own 32-byte device key: the actor its signed changes carry.
+  device     @0 :Data;
+  # The 32-byte root key of the person it acts for.
+  person     @1 :Data;
+  # That person's name as the room's governance records it.
+  personName @2 :Text;
+  # The delegation's stable agent id.
+  agentId    @3 :Text;
+  # The agent's display name.
+  label      @4 :Text;
+  # Its cursor colour, packed 0x00RRGGBB like `Collaborator.color`.
+  color      @5 :UInt32;
 }
 
 # A single collaborator in a `ChannelContext`. `color` is packed as

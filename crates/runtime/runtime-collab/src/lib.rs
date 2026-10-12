@@ -2909,6 +2909,27 @@ pub struct ChannelContext {
     /// instance; the bytes are `ui::collaboration::handoff` JSON. Not a
     /// roster update either.
     pub handoff: Option<Vec<u8>>,
+    /// `Some` only on a session-local frame naming the room's verified
+    /// delegated agents (possibly none). Not a roster update either.
+    pub history_agents: Option<Vec<HistoryAgent>>,
+}
+
+/// One delegated agent the session verified for a room: its person's root
+/// signed the delegation for exactly this device. Presentation only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryAgent {
+    /// The agent's own device key.
+    pub device: [u8; 32],
+    /// The root key of the person it acts for.
+    pub person: [u8; 32],
+    /// That person's name as the room's governance records it.
+    pub person_name: String,
+    /// The delegation's stable agent id.
+    pub agent_id: String,
+    /// The agent's display name.
+    pub label: String,
+    /// Packed `0x00RRGGBB`, like [`Collaborator::color`].
+    pub color: u32,
 }
 
 /// Client-pulled channel-context stream.
@@ -2977,14 +2998,49 @@ impl ContextStream {
             .ok()
             .filter(|bytes| !bytes.is_empty())
             .map(<[u8]>::to_vec);
+        let history_agents = if ctx.get_history_agents_changed() {
+            Some(read_history_agents(ctx.get_history_agents()?)?)
+        } else {
+            None
+        };
         Ok(ChannelContext {
             collaborators,
             permissions,
             follow_changed,
             snapshot_requested: ctx.get_snapshot_requested(),
             handoff,
+            history_agents,
         })
     }
+}
+
+/// Decode a `historyAgents` list. A row whose keys are not 32 bytes, or
+/// whose text is not UTF-8, refuses the frame: the session never sends one.
+#[cfg(feature = "client")]
+fn read_history_agents(
+    rows: capnp::struct_list::Reader<'_, collab_capnp::history_agent::Owned>,
+) -> Result<Vec<HistoryAgent>, capnp::Error> {
+    let key = |bytes: &[u8], what: &str| {
+        <[u8; 32]>::try_from(bytes)
+            .map_err(|_| capnp::Error::failed(format!("history agent {what} is not 32 bytes")))
+    };
+    let text = |text: capnp::text::Reader<'_>, what: &str| {
+        text.to_str()
+            .map(str::to_owned)
+            .map_err(|e| capnp::Error::failed(format!("invalid utf8 history agent {what}: {e}")))
+    };
+    rows.iter()
+        .map(|row| {
+            Ok(HistoryAgent {
+                device: key(row.get_device()?, "device")?,
+                person: key(row.get_person()?, "person")?,
+                person_name: text(row.get_person_name()?, "person name")?,
+                agent_id: text(row.get_agent_id()?, "id")?,
+                label: text(row.get_label()?, "label")?,
+                color: row.get_color(),
+            })
+        })
+        .collect()
 }
 
 /// A page of previously-validated signed ops returned by

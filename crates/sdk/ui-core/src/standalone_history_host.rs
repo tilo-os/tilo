@@ -384,7 +384,7 @@ impl StandaloneHistoryHost {
         StandaloneHistory::open(
             self.content_target.clone().ok()?,
             context,
-            AuthorDirectory::new(),
+            AuthorDirectory::with_room_agents(),
         )
         .ok()?;
         Some(focus)
@@ -521,7 +521,8 @@ impl StandaloneHistoryHost {
                 return Ok(());
             }
             let target = self.content_target.clone()?;
-            let session = StandaloneHistory::open(target, context, AuthorDirectory::new())?;
+            let session =
+                StandaloneHistory::open(target, context, AuthorDirectory::with_room_agents())?;
             self.pane.clear();
             self.pane.set_entries(session.rows());
             self.session = Some(session);
