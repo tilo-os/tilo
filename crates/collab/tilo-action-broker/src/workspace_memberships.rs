@@ -156,6 +156,7 @@ impl CapnpBrokerState {
             resource,
             action,
             super::InvocationInputs {
+                original_request: None,
                 requested: None,
                 caller: None,
                 execution: None,
@@ -202,6 +203,7 @@ impl CapnpBrokerState {
             if !service.requires_room(&room) {
                 continue;
             }
+            actions.extend(super::workspace_checkpoints::actions());
             actions.extend(super::workspace_tasks::actions(
                 &service.task_snapshot(&room)?,
                 &name,
@@ -284,6 +286,45 @@ impl CapnpBrokerState {
         Ok(())
     }
 
+    async fn execute_workspace_checkpoint(
+        &self,
+        room: &str,
+        envelope: &InvocationEnvelope,
+        command: tilo_peer_state::workspace_checkpoint::CheckpointCommand,
+        pending: &super::PendingInvocation,
+        service: &dyn crate::services::WorkspaceMemberships,
+    ) -> Result<serde_json::Value, String> {
+        if !service.requires_room(room) {
+            return Err("checkpoint room changed".into());
+        }
+        if command.mutates() {
+            let key = pending
+                .journal_key
+                .as_ref()
+                .ok_or("checkpoint has no durable admission")?;
+            if key.room != room
+                || key.invocation != envelope.invocation
+                || key.owner != pending.owner
+            {
+                return Err("checkpoint invocation binding changed".into());
+            }
+        }
+        let original = pending
+            .original
+            .as_ref()
+            .ok_or("checkpoint original custody unavailable")?;
+        let caller = original.owner_person_certificate(self, room, envelope)?;
+        service.health()?;
+        service
+            .checkpoint(tilo_peer_state::workspace_checkpoint::CheckpointRequest {
+                room: room.into(),
+                invocation: envelope.invocation.0,
+                caller,
+                command,
+            })
+            .await
+    }
+
     async fn execute_workspace_membership(
         &self,
         peer: u64,
@@ -331,6 +372,11 @@ impl CapnpBrokerState {
                 }
             }
             return super::workspace_tasks::inspect(&snapshot, envelope);
+        }
+        if let Some(command) = super::workspace_checkpoints::command(envelope)? {
+            return self
+                .execute_workspace_checkpoint(room, envelope, command, &pending, service)
+                .await;
         }
         let key = pending
             .journal_key
@@ -690,7 +736,7 @@ mod tests {
                 assert_eq!(state.published_surfaces_generation(), 0);
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 1);
-                assert_eq!(membership_surface_counts(&state, &room), (1, 8));
+                assert_eq!(membership_surface_counts(&state, &room), (1, 12));
                 let mut expected = vec![
                     (WORKSPACE, "add-agent"),
                     (WORKSPACE, "grant-app-authorship"),
@@ -700,6 +746,10 @@ mod tests {
                     (WORKSPACE, "queue-agent-task"),
                     ("desktop:tasks", "queue"),
                     ("desktop:tasks", "read-current-tasks"),
+                    ("desktop:checkpoints", "capture"),
+                    ("desktop:checkpoints", "inspect"),
+                    ("desktop:checkpoints", "name-bind"),
+                    ("desktop:checkpoints", "find"),
                 ];
                 assert_membership_action_set(&state, &room, &expected);
                 state.refresh_workspace_membership_services().unwrap();
@@ -719,7 +769,7 @@ mod tests {
                 }
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 2);
-                assert_eq!(membership_surface_counts(&state, &room), (1, 9));
+                assert_eq!(membership_surface_counts(&state, &room), (1, 13));
                 expected.push(("desktop:agent:scribe", "remove"));
                 assert_membership_action_set(&state, &room, &expected);
                 state.refresh_workspace_membership_services().unwrap();

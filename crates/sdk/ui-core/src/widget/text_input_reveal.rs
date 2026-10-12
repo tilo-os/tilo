@@ -338,11 +338,11 @@ impl Widget for RevealToggle {
         Some(
             AccessNode::new(Role::Button)
                 .with_name(crate::i18n!(self.label()))
-                .with_state(AccessState {
-                    focused: self.focused,
-                    disabled: !self.enabled,
-                    ..Default::default()
-                }),
+                .with_state(
+                    AccessState::new()
+                        .focused(self.focused)
+                        .disabled(!self.enabled),
+                ),
         )
     }
 

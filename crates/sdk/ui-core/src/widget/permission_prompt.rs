@@ -707,12 +707,14 @@ impl Widget for PermissionPrompt {
                 AccessNode::new(Role::Button)
                     .with_name(self.button_label(*choice))
                     .with_key(Self::key_for_choice(*choice))
-                    .with_state(AccessState {
-                        focusable: self.choice_enabled(*choice),
-                        focused: self.has_keyboard_focus && self.focused_choice == Some(*choice),
-                        disabled: !self.choice_enabled(*choice),
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .focusable(self.choice_enabled(*choice))
+                            .focused(
+                                self.has_keyboard_focus && self.focused_choice == Some(*choice),
+                            )
+                            .disabled(!self.choice_enabled(*choice)),
+                    )
             })
             .collect();
         Some(
@@ -722,12 +724,12 @@ impl Widget for PermissionPrompt {
                     "capability" => self.capability_label.as_str(),
                     "app" => self.app_id.as_str()
                 ))
-                .with_state(AccessState {
-                    modal: self.local_input.as_ref().is_none_or(|local| local.modal),
-                    focusable: true,
-                    focused: self.has_keyboard_focus,
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .modal(self.local_input.as_ref().is_none_or(|local| local.modal))
+                        .focusable(true)
+                        .focused(self.has_keyboard_focus),
+                )
                 .with_children(children),
         )
     }

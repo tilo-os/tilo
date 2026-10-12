@@ -306,6 +306,7 @@ impl CapnpBrokerState {
             target.peer_id,
             offered,
             InvocationInputs {
+                original_request: None,
                 requested: Some(invocation),
                 caller: None,
                 execution: None,

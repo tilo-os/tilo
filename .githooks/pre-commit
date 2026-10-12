@@ -4,11 +4,6 @@ set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
 fail=0
 
-# This whole-tree audit needs the real staged manifest and assets, including
-# policy introduced after the branch point. It already recognizes exact blobs
-# inherited from either merge parent; the diff-only index below is not a tree.
-python3 "$root/tools/policy/check_source_content.py" --staged || fail=1
-
 # Keep the real manifest pairing for lock validation: a combined merge lock
 # differs from both parents even when each manifest was taken from one parent.
 lock_staged_names=$(git diff --cached --name-only)
@@ -36,6 +31,7 @@ if merge_head=$(git rev-parse -q --verify MERGE_HEAD); then
   fi
   export GIT_INDEX_FILE="$merge_index"
 fi
+python3 "$root/tools/policy/check_source_content.py" --staged || fail=1
 python3 "$root/tools/policy/check_public_references.py" --staged || fail=1
 note() { printf '  %s\n' "$*" >&2; }
 

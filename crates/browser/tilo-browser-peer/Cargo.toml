@@ -29,8 +29,6 @@ web-time = "1"
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tokio = { workspace = true, features = ["sync", "macros"] }
 serde.workspace = true
-serde_json.workspace = true
-tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 postcard = { workspace = true, features = ["use-std"] }
 hex.workspace = true
 thiserror.workspace = true
@@ -74,7 +72,10 @@ tokio = { workspace = true, features = ["full"] }
 tempfile.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
+serde_json.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
+# The node apps probe speaks remote-action frames.
+tilo-actions = { path = "../../collab/actions" }
 # A call's voice channel is a real Chat channel, written by Chat's own model.
 chat = { path = "../../../apps/chat", default-features = false }
 

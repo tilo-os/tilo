@@ -1292,12 +1292,12 @@ impl<C: Widget + 'static> Widget for Popover<C> {
                 AccessNode::new(Role::MenuItem)
                     .with_name(label.clone())
                     .with_position(i.saturating_add(1), n)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.open && i == options.highlighted,
-                        selected: options.selected == Some(i),
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.open && i == options.highlighted)
+                            .selected(options.selected == Some(i)),
+                    )
             })
             .collect();
         Some(

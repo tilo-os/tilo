@@ -500,13 +500,7 @@ impl PeerView {
                 }
             };
             let blob = vello::peniko::Blob::new(std::sync::Arc::new(rgba));
-            self.cached_image = Some(vello::peniko::ImageData {
-                data: blob,
-                format: vello::peniko::ImageFormat::Rgba8,
-                alpha_type: vello::peniko::ImageAlphaType::Alpha,
-                width: frame.width,
-                height: frame.height,
-            });
+            self.cached_image = Some(ui::raster::rgba8(blob, frame.width, frame.height));
         }
         self.cached_image.as_ref()
     }

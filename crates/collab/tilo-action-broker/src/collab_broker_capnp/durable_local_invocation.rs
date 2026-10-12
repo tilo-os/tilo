@@ -434,6 +434,11 @@ impl CapnpBrokerState {
                 &current.broker_actor(),
                 now,
             )?;
+            self.authorize_checkpoint_result(
+                &caller.route.cluster_id,
+                current.certificate.as_ref(),
+                record,
+            )?;
         }
         caller.current(self)?;
         Ok(record)
@@ -739,6 +744,7 @@ pub(super) fn invoke(
                 request.binding.peer_id,
                 offered,
                 InvocationInputs {
+                    original_request: None,
                     requested: None,
                     caller: None,
                     execution: None,

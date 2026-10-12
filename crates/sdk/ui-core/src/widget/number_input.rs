@@ -1108,12 +1108,12 @@ impl Widget for NumberInput {
             .with_semantic_key(self.test_id().unwrap_or("number_input"))
             .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
             .with_value(self.format_value())
-            .with_state(AccessState {
-                focusable: self.is_focusable(),
-                focused: self.is_focused(),
-                disabled: !self.effectively_enabled(),
-                ..Default::default()
-            });
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused())
+                    .disabled(!self.effectively_enabled()),
+            );
         if self.action.is_none() {
             node = node.with_action_target(self.test_id().unwrap_or("number_input"));
         }
