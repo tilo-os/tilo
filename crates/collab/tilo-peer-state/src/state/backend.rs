@@ -37,6 +37,10 @@ pub(super) trait Storage: sealed::Sealed {
         key: &[u8; 32],
     ) -> Option<&'a VerifiedCertificate>;
     fn revokes(revocations: &Self::RevocationUnion, certificate: &DeviceCert) -> bool;
+    fn exact_admission<'a>(
+        exact: &'a Self::ExactEvidence,
+        key: &crate::admission::AdmissionKey,
+    ) -> Option<&'a [u8; 32]>;
 }
 pub(super) struct LegacyNative;
 pub(super) struct BoundedNative;
@@ -59,6 +63,12 @@ impl Storage for LegacyNative {
     fn revokes(revocations: &Self::RevocationUnion, certificate: &DeviceCert) -> bool {
         revocations.revokes(certificate)
     }
+    fn exact_admission<'a>(
+        exact: &'a Self::ExactEvidence,
+        key: &crate::admission::AdmissionKey,
+    ) -> Option<&'a [u8; 32]> {
+        exact.get(key)
+    }
 }
 impl Storage for BoundedNative {
     type Room = NativeDocument;
@@ -77,18 +87,17 @@ impl Storage for BoundedNative {
     fn revokes(revocations: &Self::RevocationUnion, certificate: &DeviceCert) -> bool {
         revocations.revokes(certificate)
     }
+    fn exact_admission<'a>(
+        exact: &'a Self::ExactEvidence,
+        key: &crate::admission::AdmissionKey,
+    ) -> Option<&'a [u8; 32]> {
+        exact.as_ref()?.get(key)
+    }
 }
 
 // Historical restore keeps checkpoint bytes lazy. No eager load rejects
 // previously accepted opaque checkpoint bytes.
 pub(super) struct NativeCheckpoint {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "kept for a later decode; only tests read it today"
-        )
-    )]
     pub(super) original: Vec<u8>,
 }
 
@@ -100,7 +109,7 @@ pub(super) struct PeerDocument<S: Storage> {
     pub(super) covered_snapshot: Option<S::Checkpoint>,
     /// Sealed writes this replica admitted but holds no key to open, in
     /// admission order: the durable record of an encrypted document here.
-    /// Bounded reads refuse encrypted documents and leave it empty.
+    /// Both restore paths validate every retained envelope before replay.
     pub(super) sealed: Vec<collab_types::SignedOp>,
 }
 impl Clone for PeerDocument<LegacyNative> {
