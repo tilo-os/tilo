@@ -1020,6 +1020,52 @@ impl DesktopSurface {
         inherited.retain(|wake| std::sync::Arc::strong_count(wake) > 1);
         self.retained_wakes = inherited;
     }
+    /// The backdrop and the window content: everything [`Self::draw_bar`]
+    /// paints over. A host drawing the desktop in one scene draws what sits
+    /// between the windows and the top bar (the docked wheel, notices,
+    /// floating surfaces) after this and before [`Self::draw_bar`], the
+    /// order [`Self::draw_sections`] composes the same layers in.
+    pub fn draw_below_bar(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.external_navigation {
+            self.root.draw(scene, transform, text, theme, presence);
+            return;
+        }
+        for path in [&[0, 0][..], &[0, 1, 1]] {
+            if let Some(layer) = child_mut(self.root.as_mut(), path) {
+                layer.draw(scene, transform, text, theme, presence);
+            }
+        }
+    }
+
+    /// The top bar and the other displays' compact bars, over everything
+    /// [`Self::draw_below_bar`] drew: anchored chrome may extend below the
+    /// bar's band and must stay on top of window content. With external
+    /// navigation the root drew everything already.
+    pub fn draw_bar(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.external_navigation {
+            return;
+        }
+        for path in [&[0, 1, 0][..], &[0, 2]] {
+            if let Some(layer) = child_mut(self.root.as_mut(), path) {
+                layer.draw(scene, transform, text, theme, presence);
+            }
+        }
+    }
+
     /// Separate recordings preserve native retained scene and capture layering.
     pub fn draw_sections(
         &mut self,
@@ -1092,18 +1138,8 @@ impl Widget for DesktopSurface {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if self.external_navigation {
-            self.root.draw(scene, transform, text, theme, presence);
-            return;
-        }
-        // Window content paints under the top bar: anchored chrome may extend
-        // below the bar's band and must stay on top of it.
-        let layers: [&[usize]; 4] = [&[0, 0], &[0, 1, 1], &[0, 1, 0], &[0, 2]];
-        for path in layers {
-            if let Some(layer) = child_mut(self.root.as_mut(), path) {
-                layer.draw(scene, transform, text, theme, presence);
-            }
-        }
+        self.draw_below_bar(scene, transform, text, theme, presence);
+        self.draw_bar(scene, transform, text, theme, presence);
     }
     fn handle_event(
         &mut self,
