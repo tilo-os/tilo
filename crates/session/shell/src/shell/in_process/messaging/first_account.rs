@@ -92,8 +92,7 @@ struct Completed {
 }
 struct Permission {
     completed: Completed,
-    request: accounts::AccessRequest,
-    proposal: String,
+    asked: super::OwnerPermission,
     name: String,
 }
 struct PreparedAccount {
@@ -504,33 +503,25 @@ impl Actor {
             let _ = reply.send(Err(SendError::AlreadyReserved));
             return;
         };
-        let result = (|| {
-            let item_id = apps
-                .prepare_native_signal_profile_key(&completed.candidate, ORIGIN)
-                .map_err(|_| SendError::Revoked)?;
-            let request = accounts::AccessRequest {
-                app_id: "so.tilo.messages".into(),
-                item_id,
-                purpose: "Private Signal messaging".into(),
-                origin: Some(ORIGIN.into()),
-            };
-            let Ok(proposal) =
-                apps.propose_native_messaging_permission(&attempt.identity, request.clone())
-            else {
-                if let Some(owner) = &apps.credential_owner {
-                    let _ = owner.edit(|store| store.remove(&request.item_id));
-                }
-                return Err(SendError::Revoked);
-            };
-            Ok((request, proposal))
-        })();
+        let result = apps
+            .prepare_native_signal_profile_key(&completed.candidate, ORIGIN)
+            .map_err(|_| SendError::Revoked)
+            .and_then(|item_id| {
+                super::OwnerPermission::ask(
+                    apps,
+                    &attempt.identity,
+                    item_id,
+                    "Private Signal messaging".into(),
+                    ORIGIN,
+                )
+            });
         match result {
-            Ok((request, proposal)) => {
+            Ok(asked) => {
                 self.phase(account, EnrollmentPhase::AwaitingPermission);
+                let proposal = asked.proposal.clone();
                 attempt.permission = Some(Permission {
                     completed,
-                    request,
-                    proposal: proposal.clone(),
+                    asked,
                     name,
                 });
                 if reply.send(Ok(proposal)).is_err() {
@@ -549,36 +540,22 @@ impl Actor {
         attempt: &mut Attempt,
         permission: Permission,
     ) {
-        let credential =
-            apps.native_messaging_credential(&attempt.identity, permission.request.clone());
-        let approved = credential
-            .as_ref()
-            .is_ok_and(|credential| credential.check().is_ok());
-        if !approved {
-            let pending = apps
-                .credential_owner
-                .as_ref()
-                .and_then(|owner| owner.proposals().ok())
-                .is_some_and(|proposals| {
-                    proposals
-                        .iter()
-                        .any(|proposal| proposal.id == permission.proposal)
-                });
-            if pending {
+        let credential = match permission.asked.grant(apps, &attempt.identity) {
+            super::Grant::Approved(credential) => credential,
+            super::Grant::Pending => {
                 attempt.permission = Some(permission);
-            } else {
-                Self::remove_key(apps, &permission);
-                attempt.cancellation.cancel();
+                return;
             }
-            return;
-        }
-        let result = self.activate(
-            apps,
-            attempt,
-            permission,
-            credential.map_err(|_| SendError::Revoked),
-        );
-        if result.is_err() {
+            super::Grant::Refused => {
+                permission.asked.withdraw(apps);
+                attempt.cancellation.cancel();
+                return;
+            }
+        };
+        if self
+            .activate(apps, attempt, permission, credential)
+            .is_err()
+        {
             attempt.cancellation.cancel();
         }
     }
@@ -587,9 +564,8 @@ impl Actor {
         apps: &mut super::super::InProcessApps,
         attempt: &mut Attempt,
         permission: Permission,
-        credential: Result<NativeMessagingCredential, SendError>,
+        credential: NativeMessagingCredential,
     ) -> Result<(), SendError> {
-        let credential = credential?;
         let identity = attempt.identity.clone();
         let linked = apps
             .publish_native_signal_enrollment(permission.completed.candidate, permission.name)
@@ -700,14 +676,6 @@ impl Actor {
             attempt.cancellation.cancel();
         }
     }
-    fn remove_key(apps: &super::super::InProcessApps, permission: &Permission) {
-        if let Some(owner) = &apps.credential_owner {
-            let _ = owner.decide_proposal(&permission.proposal, accounts::AccessDecision::Deny);
-            // This attempt created this exact unused key; never remove or edit
-            // another account's item, nor one whose provider has been published.
-            let _ = owner.edit(|store| store.remove(&permission.request.item_id));
-        }
-    }
     fn retire(&self, apps: &super::super::InProcessApps, attempt: &mut Attempt) {
         attempt.cancellation.cancel();
         if let Some((enrollment, _, service)) = &attempt.begun {
@@ -715,7 +683,7 @@ impl Actor {
             service.cancel();
         }
         if let Some(permission) = attempt.permission.take() {
-            Self::remove_key(apps, &permission);
+            permission.asked.withdraw(apps);
         }
         self.phase(
             &service_account(&attempt.identity.owner),
