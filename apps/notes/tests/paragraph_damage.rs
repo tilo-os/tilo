@@ -42,11 +42,18 @@ fn canonical_notes_default_motion_and_word_boundary_preserve_sparse_gpu_pixels()
 
 #[test]
 fn canonical_notes_timestamp_boundary_preserves_sparse_gpu_pixels() {
-    pin_edit_clock(1_790_000_000);
     paragraph_input(false, "y", "xy", true);
 }
 
 fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timestamp: bool) {
+    // The wall clock is pinned for the whole process, and the timestamp case
+    // moves it a minute on: another case still typing would see its
+    // edited-at caption change under it, which is not what typing damages.
+    static CLOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _clock = CLOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    pin_edit_clock(1_790_000_000);
     let f = NotebookFixture::rich();
     let body = (0..18)
         .map(|index| format!("Paragraph {index}: an ordinary document line."))
@@ -181,17 +188,47 @@ fn assert_sparse_pixels(before: &Scene, after: &Scene, damage: &[Rect], backgrou
     // a stale or missing region.
     let retained_pixels = retained.readback_current();
     assert_eq!(retained_pixels.len(), expected.len());
-    let differing: Vec<u8> = retained_pixels
-        .iter()
-        .zip(&expected)
-        .filter(|(a, b)| a != b)
-        .map(|(a, b)| a.abs_diff(*b))
-        .collect();
+    // Outside the damage the retained target must keep exactly the pixels it
+    // had: a sparse render that touches them, or a stale frame landing there,
+    // changes them. Inside it, and against the dense oracle, two dense
+    // recordings of one unchanged scene already differ by one unit at a few
+    // edge pixels (rendering `before` twice does), so a one-unit difference is
+    // raster noise and anything more is a stale or missing region.
+    let inside = |pixel: usize| {
+        let (x, y) = ((pixel % 1200) as f64, (pixel / 1200) as f64);
+        damage
+            .iter()
+            .any(|rect| x >= rect.x0 && x < rect.x1 && y >= rect.y0 && y < rect.y1)
+    };
+    let mut noise = 0;
+    for pixel in 0..expected.len() / 4 {
+        let at = pixel * 4..pixel * 4 + 4;
+        if !inside(pixel) {
+            assert_eq!(
+                retained_pixels[at.clone()],
+                old_pixels[at.clone()],
+                "the sparse render left pixel ({}, {}) outside the damage as it was",
+                pixel % 1200,
+                pixel / 1200
+            );
+        }
+        let delta = retained_pixels[at.clone()]
+            .iter()
+            .zip(&expected[at])
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        assert!(
+            delta <= 1,
+            "retained pixel ({}, {}) differs from the full GPU oracle by {delta}",
+            pixel % 1200,
+            pixel / 1200
+        );
+        noise += usize::from(delta != 0);
+    }
     assert!(
-        differing.len() <= 16 && differing.iter().all(|delta| *delta <= 1),
-        "retained app pixels match the full GPU oracle: {} bytes differ, max delta {:?}",
-        differing.len(),
-        differing.iter().max()
+        noise <= 16,
+        "{noise} pixels differ from the full GPU oracle"
     );
 }
 
