@@ -353,6 +353,7 @@ fn runtime(root: &std::path::Path) -> ManagedRuntime {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn managed_runtime_resolves_the_declared_bundle_only_with_host_policy() {
     let (root, package, trust) = installed();
