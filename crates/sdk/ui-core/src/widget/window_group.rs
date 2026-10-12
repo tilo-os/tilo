@@ -3883,8 +3883,25 @@ mod tests {
         assert_eq!(chip.y0, g.restore_rect.y0, "one row with Restore");
         assert!(chip.x1 <= g.restore_rect.x0, "left of Restore");
         assert!(!g.take_pending_fullscreen_request());
+        // Maximized controls act on a completed click: press, then release
+        // on the same control.
+        let over_chip = WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(chip.center().x, chip.center().y),
+        };
+        let release = WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        };
         g.last_cursor = chip.center();
+        let _ = dispatch_at(&mut g, &taffy, group_node, &over_chip);
         assert!(dispatch_at(&mut g, &taffy, group_node, &press));
+        assert!(
+            !g.take_pending_fullscreen_request(),
+            "a press awaits its release"
+        );
+        let _ = dispatch_at(&mut g, &taffy, group_node, &release);
         assert!(g.take_pending_fullscreen_request());
         assert!(!g.take_pending_fullscreen_request(), "drained once");
     }
