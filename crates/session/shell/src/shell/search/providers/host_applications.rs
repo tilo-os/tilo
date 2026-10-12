@@ -403,54 +403,26 @@ impl SearchProvider for HostApplicationsProvider {
         let Some(snapshot) = self.snapshot() else {
             return SearchPage::exhausted(revision, Vec::new());
         };
-        let offset = match cursor {
-            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
-            Some(cursor) => match cursor.token.strip_prefix("host:").and_then(|token| {
-                token
-                    .split_once('\u{1f}')
-                    .filter(|(_, query)| *query == ctx.needle)
-                    .and_then(|(offset, _)| offset.parse::<usize>().ok())
-            }) {
-                Some(offset) => offset,
-                None => return SearchPage::stale(revision),
-            },
-            None => 0,
-        };
-        let found = snapshot.index.search(
-            ctx.needle,
-            Page {
-                offset,
-                limit: budget.max_work.min(budget.max_results),
-            },
-        );
-        let mut shown = 0usize;
-        let mut bytes = 0usize;
-        let mut results = Vec::new();
-        for hit in &found.hits {
-            let Some(app) = usize::try_from(hit.key)
-                .ok()
-                .and_then(|at| snapshot.apps.get(at))
-            else {
-                continue;
-            };
-            let row = self.row(app, score_for(ctx.needle, hit.rank));
-            let row_bytes = row
-                .title
-                .len()
-                .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
-            if bytes.saturating_add(row_bytes) > budget.max_bytes {
-                break;
-            }
-            bytes = bytes.saturating_add(row_bytes);
-            shown = shown.saturating_add(1);
-            results.push(row);
-        }
-        let exhausted = !found.more && shown == found.hits.len();
-        let next = offset.saturating_add(shown);
-        SearchPage::continuing(
+        super::page_hits(
             revision,
-            results,
-            (!exhausted).then(|| format!("host:{next}\u{1f}{}", ctx.needle)),
+            ctx.needle,
+            cursor,
+            budget,
+            |offset| {
+                snapshot.index.search(
+                    ctx.needle,
+                    Page {
+                        offset,
+                        limit: budget.max_work.min(budget.max_results),
+                    },
+                )
+            },
+            |hit| {
+                let app = usize::try_from(hit.key)
+                    .ok()
+                    .and_then(|at| snapshot.apps.get(at))?;
+                Some(self.row(app, score_for(ctx.needle, hit.rank)))
+            },
         )
     }
 }

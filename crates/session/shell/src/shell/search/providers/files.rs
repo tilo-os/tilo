@@ -566,66 +566,27 @@ impl FilesProvider {
         };
         let revision = index.generation.to_string();
         let needle = ctx.needle.to_lowercase();
-        let offset = match cursor {
-            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
-            Some(cursor) => match cursor.token.split_once('\u{1f}') {
-                Some((cursor_needle, offset)) if cursor_needle == needle => match offset.parse() {
-                    Ok(offset) => offset,
-                    Err(_) => return SearchPage::stale(revision),
-                },
-                _ => return SearchPage::stale(revision),
-            },
-            None => 0,
-        };
         let needle_len = needle.len();
-        let found = index.index.search_scored(
-            &needle,
-            Page {
-                offset,
-                limit: budget.max_work,
-            },
-            move |signals| name_score(needle_len, signals),
-        );
-        let mut bytes = 0usize;
-        let mut results = Vec::new();
-        let mut consumed = 0usize;
-        let mut stopped_for_budget = false;
-        for hit in &found.hits {
-            let Some(entry) = index.entry(hit.key) else {
-                consumed = consumed.saturating_add(1);
-                continue;
-            };
-            if (entry.is_dir && !want_folder) || (!entry.is_dir && !want_file) {
-                consumed = consumed.saturating_add(1);
-                continue;
-            }
-            // Budget what the palette receives, including both labels and
-            // the opaque path id, before cloning any row into the UI.
-            let row_bytes = entry
-                .path
-                .display()
-                .to_string()
-                .len()
-                .saturating_add(entry.display.len())
-                .saturating_add(file_title(&entry.path).len())
-                .saturating_add(96);
-            if results.len() >= budget.max_results
-                || bytes.saturating_add(row_bytes) > budget.max_bytes
-            {
-                stopped_for_budget = true;
-                break;
-            }
-            bytes = bytes.saturating_add(row_bytes);
-            consumed = consumed.saturating_add(1);
-            results.push(make_result(entry, hit.score, None));
-        }
-        drop(index);
-        let exhausted = !stopped_for_budget && !found.more;
-        let next = offset.saturating_add(consumed);
-        SearchPage::continuing(
+        super::page_hits(
             revision,
-            results,
-            (!exhausted).then(|| format!("{needle}\u{1f}{next}")),
+            &needle,
+            cursor,
+            budget,
+            |offset| {
+                index.index.search_scored(
+                    &needle,
+                    Page {
+                        offset,
+                        limit: budget.max_work,
+                    },
+                    move |signals| name_score(needle_len, signals),
+                )
+            },
+            |hit| {
+                let entry = index.entry(hit.key)?;
+                let wanted = if entry.is_dir { want_folder } else { want_file };
+                wanted.then(|| make_result(entry, hit.score, None))
+            },
         )
     }
 }

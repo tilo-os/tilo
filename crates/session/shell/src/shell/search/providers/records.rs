@@ -214,19 +214,6 @@ impl SearchProvider for RecordsProvider {
         };
         let needle = ctx.needle.trim().to_lowercase();
         let revision = self.index.borrow().search_generation();
-        let offset = match cursor {
-            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
-            Some(cursor) => match cursor
-                .token
-                .split_once('\u{1f}')
-                .filter(|(cursor_needle, _)| *cursor_needle == needle)
-                .and_then(|(_, offset)| offset.parse::<usize>().ok())
-            {
-                Some(offset) => offset,
-                None => return SearchPage::stale(revision),
-            },
-            None => 0,
-        };
         let mut slot = self.snapshot.borrow_mut();
         if slot
             .as_ref()
@@ -238,51 +225,31 @@ impl SearchProvider for RecordsProvider {
         let Some(snapshot) = slot.as_ref() else {
             return SearchPage::exhausted(revision, Vec::new());
         };
-        let found = snapshot.index.search(
-            &needle,
-            Page {
-                offset,
-                limit: budget.max_work.min(budget.max_results),
-            },
-        );
-        let mut used = 0usize;
-        let mut results = Vec::new();
-        let mut shown = 0usize;
-        for hit in &found.hits {
-            let Some(record) = usize::try_from(hit.key)
-                .ok()
-                .and_then(|at| snapshot.records.get(at))
-            else {
-                shown = shown.saturating_add(1);
-                continue;
-            };
-            let title = record.title();
-            let subtitle = provenance(record, here, &rooms);
-            let bytes = record
-                .id
-                .as_str()
-                .len()
-                .saturating_add(title.len())
-                .saturating_add(subtitle.len())
-                .saturating_add(96);
-            if used.saturating_add(bytes) > budget.max_bytes {
-                break;
-            }
-            used = used.saturating_add(bytes);
-            shown = shown.saturating_add(1);
-            results.push(self.row(
-                record,
-                title,
-                subtitle,
-                crate::shell::search::provider_score(hit.rank.unwrap_or(0)),
-            ));
-        }
-        let exhausted = !found.more && shown == found.hits.len();
-        let next = offset.saturating_add(shown);
-        SearchPage::continuing(
+        super::page_hits(
             revision,
-            results,
-            (!exhausted).then(|| format!("{needle}\u{1f}{next}")),
+            &needle,
+            cursor,
+            budget,
+            |offset| {
+                snapshot.index.search(
+                    &needle,
+                    Page {
+                        offset,
+                        limit: budget.max_work.min(budget.max_results),
+                    },
+                )
+            },
+            |hit| {
+                let record = usize::try_from(hit.key)
+                    .ok()
+                    .and_then(|at| snapshot.records.get(at))?;
+                Some(self.row(
+                    record,
+                    record.title(),
+                    provenance(record, here, &rooms),
+                    crate::shell::search::provider_score(hit.rank.unwrap_or(0)),
+                ))
+            },
         )
     }
 }
