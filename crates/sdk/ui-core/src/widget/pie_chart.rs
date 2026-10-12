@@ -352,10 +352,6 @@ impl PieChart {
         self.style = style;
         self
     }
-    #[must_use]
-    pub fn styled(self, style: PieStyle) -> Self {
-        self.with_style(style)
-    }
     pub fn style(&self) -> &PieStyle {
         &self.style
     }

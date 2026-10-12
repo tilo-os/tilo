@@ -195,13 +195,9 @@ impl DistributionChart {
         }
     }
     #[must_use]
-    pub fn styled(mut self, style: DistributionStyle) -> Self {
+    pub fn with_style(mut self, style: DistributionStyle) -> Self {
         self.style = style;
         self
-    }
-    #[must_use]
-    pub fn with_style(self, style: DistributionStyle) -> Self {
-        self.styled(style)
     }
     pub fn style(&self) -> &DistributionStyle {
         &self.style
