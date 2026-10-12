@@ -12,7 +12,7 @@ use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use std::collections::BTreeMap;
 use tilo_content::{ContentInputs, ContentSource};
 use tilo_doc::document::{MarkSpan, MarkValue};
-use tilo_doc::export::InlinePlan;
+use tilo_doc::export::{CellGrid, ExportBlock, InlinePlan};
 use tilo_doc::model::{DocMut, DocRef};
 use tilo_doc::schema::{
     MARK_NOTE_REF, PROP_AUTHOR, PROP_KEYWORDS, PROP_MODIFIED, PROP_SUBJECT, PROP_TITLE,
@@ -688,26 +688,14 @@ fn export_md(
 
         match b.kind.as_str() {
             "cell" => {
-                let tid = cell_table(b);
-                let start = i;
-                while blocks
-                    .get(i)
-                    .is_some_and(|blk| blk.kind == "cell" && cell_table(blk) == tid)
-                {
-                    i = i.saturating_add(1);
-                }
-                if let Some(run) = blocks.get(start..i) {
-                    out.push_str(&render_table(run));
-                }
+                let grid = CellGrid::run(blocks, i);
+                i = i.saturating_add(grid.cells().len().max(1));
+                out.push_str(&render_table(&grid));
                 prev_kind = Some("cell");
                 continue;
             }
             "heading" => {
-                let level = match b.attrs.get("level") {
-                    Some(AttrVal::Int(n)) => (*n).clamp(1, 6),
-                    _ => 1,
-                };
-                out.push_str(&"#".repeat(usize::try_from(level).unwrap_or(1)));
+                out.push_str(&"#".repeat(usize::from(ExportBlock::new(b).heading_level())));
                 out.push(' ');
                 out.push_str(&render_inline_notes(
                     &b.text,
@@ -716,13 +704,9 @@ fn export_md(
                 ));
             }
             "list_item" => {
-                let level = match b.attrs.get("level") {
-                    Some(AttrVal::Int(n)) => usize::try_from((*n).max(0)).unwrap_or(0),
-                    _ => 0,
-                };
-                out.push_str(&"  ".repeat(level));
-                let ordered = matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true)));
-                out.push_str(if ordered { "1. " } else { "- " });
+                let item = ExportBlock::new(b);
+                out.push_str(&"  ".repeat(usize::try_from(item.list_level()).unwrap_or(0)));
+                out.push_str(if item.ordered() { "1. " } else { "- " });
                 if let Some(AttrVal::Bool(checked)) = b.attrs.get("checked") {
                     out.push_str(if *checked { "[x] " } else { "[ ] " });
                 }
@@ -776,48 +760,20 @@ fn export_md(
     out
 }
 
-/// The `table` id a `cell` block belongs to (empty if untagged).
-fn cell_table(b: &BlockView) -> String {
-    match b.attrs.get("table") {
-        Some(AttrVal::Str(s)) => s.clone(),
-        _ => String::new(),
-    }
-}
-
-fn cell_rc(b: &BlockView) -> (usize, usize) {
-    let g = |k: &str| match b.attrs.get(k) {
-        Some(AttrVal::Int(n)) => usize::try_from((*n).max(0)).unwrap_or(0),
-        _ => 0,
-    };
-    (g("row"), g("col"))
-}
-
 /// Escapes a cell so it survives one table row; re-import unescapes `\|` back to `|`.
 fn escape_cell(s: &str) -> String {
     s.replace('|', "\\|").replace('\n', " ")
 }
 
 /// Renders a run of `cell` blocks (one table) as a GitHub pipe table (row 0 = header, then a delimiter row).
-fn render_table(cells: &[BlockView]) -> String {
-    let nrows = cells
-        .iter()
-        .map(|c| cell_rc(c).0)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1);
-    let ncols = cells
-        .iter()
-        .map(|c| cell_rc(c).1)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1);
+fn render_table(grid: &CellGrid<'_>) -> String {
+    let (nrows, ncols) = (grid.rows(), grid.cols());
     let mut out = String::new();
     for r in 0..nrows {
         out.push('|');
         for c in 0..ncols {
-            let txt = cells
-                .iter()
-                .find(|cl| cell_rc(cl) == (r, c))
+            let txt = grid
+                .origin(r, c)
                 .map(|cl| escape_cell(&render_inline(&cl.text, &cl.marks)))
                 .unwrap_or_default();
             out.push(' ');
