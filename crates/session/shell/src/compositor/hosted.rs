@@ -390,11 +390,6 @@ fn attach_peer_sync_bridge(
         crate::shell::overlay_host::PeerSyncRequest::PrepareInvitation => {
             Ok(net.prepare_invitation())
         }
-        crate::shell::overlay_host::PeerSyncRequest::IssueInvite => {
-            let active = tree_for_bridge.read().desktop.active;
-            net.issue_invite(active, INVITE_EXPIRY_SECONDS)
-                .map(crate::shell::overlay_host::PeerSyncResponse::Message)
-        }
         crate::shell::overlay_host::PeerSyncRequest::ExportIdentity => {
             let active = tree_for_bridge.read().desktop.active;
             net.person_identity_card(active)

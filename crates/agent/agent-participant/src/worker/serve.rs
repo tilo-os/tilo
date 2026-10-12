@@ -20,7 +20,6 @@ use ui::permissions::{PermissionContext, UserId};
 use ui::portable_storage::{PortableStorage, StorageKey};
 use ui::record::{RecordCheckout, RecordId, RecordOwners};
 
-use super::effects::{EffectSession, Held};
 use super::proto::{
     CONTENT_BATCH_BYTES, FRAMING, MAX_CONTENT_ITEM_BYTES, Mode, PROTOCOL_VERSION, ProbeReport,
     Reply, Request, WireDoorError,
@@ -35,6 +34,19 @@ pub(super) fn serve(mode: Mode) -> i32 {
     // as stdin; it is taken over here and nothing else in the worker reads
     // stdin.
     let socket = UnixStream::from(unsafe { OwnedFd::from_raw_fd(0) });
+    // Close inherited authority before creating any private runtime handles.
+    // Confinement must not close the driver's descriptors again.
+    if let Err(error) = tilo_sandbox::confine::detach() {
+        let _ = FRAMING.write_value(&mut &socket, &Reply::Unconfined(error.to_string()));
+        return 1;
+    }
+    // Tokio's I/O and signal drivers create sockets. Prepare them before
+    // denying socket creation; seccomp then confines every existing thread
+    // (including this driver) and every thread it subsequently starts.
+    if let Err(error) = ui::rt::try_app() {
+        let _ = FRAMING.write_value(&mut &socket, &Reply::Unconfined(error.to_string()));
+        return 1;
+    }
     let mut worker = Worker::new(mode);
     // The app's code finds the worker's content store wherever it runs: every
     // request is served inside this one scope.
@@ -44,6 +56,10 @@ pub(super) fn serve(mode: Mode) -> i32 {
     // The confinement denies the driver its IOKit and Mach services, so no
     // GPU starts here: an app's pictures are drawn on the CPU instead.
     ui::offscreen::disable_gpu();
+    // The app's view lays out text once the filesystem is gone.
+    if !ui::text_render::hold_catalog_fonts_in_memory() {
+        tracing::warn!("app worker: no font catalog; views will lay out no text");
+    }
     if let Err(reason) = super::confine::confine() {
         let _ = FRAMING.write_value(&mut &socket, &Reply::Unconfined(reason));
         return 1;
@@ -77,15 +93,9 @@ struct Worker {
     mode: Mode,
     catalogue: AppCatalogue,
     replica: Option<Replica>,
-    /// The held record's room, and whether an agent holds it.
-    room: String,
+    /// Whether an agent holds the record and may invoke its reads and effects.
     agent: bool,
-    /// The held record's component, mounted for an agent's effects.
-    effects: Option<EffectSession>,
     views: Option<(String, automerge::AutoCommit)>,
-    /// Loaded before the confinement, for the components the worker mounts:
-    /// a reader's one, or a held record's for an agent's effects.
-    fonts: Option<ResidentFonts>,
     read: Option<ReadSession>,
     content: WorkerContent,
 }
@@ -148,11 +158,8 @@ impl Worker {
             mode,
             catalogue: AppCatalogue::native(),
             replica: None,
-            room: String::new(),
             agent: false,
-            effects: None,
             views: None,
-            fonts: matches!(mode, Mode::Read | Mode::Replica).then(ResidentFonts::load),
             read: None,
             content: WorkerContent::new(),
         }
@@ -160,7 +167,7 @@ impl Worker {
 
     fn handle(&mut self, request: Request) -> Reply {
         match request {
-            Request::Probe { path } => Reply::Probe(probe(&path)),
+            Request::Probe { path } => probe_threads(path),
             Request::PutContent(bytes) => self.content.put(&bytes),
             Request::TakeContent => self.content.take(),
             Request::Open {
@@ -228,16 +235,26 @@ impl Worker {
         };
         match request {
             Request::Survey { effects } => {
-                let mut offered = replica.survey();
-                if effects && self.agent {
-                    match self.effect_session() {
-                        Ok(session) => offered.extend(session.offered()),
-                        Err(reason) => {
-                            tracing::warn!(%reason, "app worker: no effects to offer");
-                        }
+                let mut offered = if effects && self.agent {
+                    replica.survey_with_effects()
+                } else {
+                    replica.survey()
+                };
+                for descriptor in &mut offered {
+                    if descriptor.kind != OperationKind::Document {
+                        descriptor.params.retain(|param| param.name != "path");
                     }
                 }
                 descriptors(&offered)
+            }
+            Request::Permissions { standing } => {
+                match decode::<ui::permissions::policy::Standing>(&standing) {
+                    Ok(standing) => {
+                        replica.set_permissions(standing);
+                        Reply::Done
+                    }
+                    Err(reason) => Reply::Failed(reason),
+                }
             }
             Request::TakeMutation => {
                 Reply::Mutation(replica.take_mutation().map(|mutation| match mutation {
@@ -283,11 +300,18 @@ impl Worker {
                 None => return Reply::Failed("invalid record id".into()),
             },
         };
-        match Replica::open(&self.catalogue, app_id, room, participant, agent, seed) {
+        match Replica::open_lending(
+            &self.catalogue,
+            app_id,
+            room,
+            participant,
+            agent,
+            seed,
+            Some(self.content.store.clone()),
+        ) {
             Ok(replica) => {
                 let record = replica.record_id().as_str().to_owned();
                 self.replica = Some(replica);
-                room.clone_into(&mut self.room);
                 self.agent = agent;
                 Reply::Opened { record }
             }
@@ -295,9 +319,9 @@ impl Worker {
         }
     }
 
-    /// Perform one operation of the held record: a document operation on
-    /// the replica, or, for an agent, an effect or view in the record's
-    /// mounted component.
+    /// Run every operation in the record's one live attached view. The
+    /// worker restricts device access; the view's door enforces the current
+    /// action kind, grants, confirmation and strict argument binding.
     fn invoke(
         &mut self,
         address: &ActionAddress,
@@ -307,45 +331,15 @@ impl Worker {
         let Some(replica) = self.replica.as_mut() else {
             return Err(DoorError::Unknown(address.clone()));
         };
-        // The record's tree carries its effects and views too (a row's
-        // export, a document's read, a look at an artwork): only what it
-        // names as a document operation runs on the replica, everything else
-        // in the mounted component.
-        let document = door::resolve(&replica.resources(), address)
-            .is_some_and(|spec| spec.kind == OperationKind::Document);
-        if !self.agent || document {
-            return replica.invoke(address, arguments, confirm);
+        let resources = replica.resources();
+        let spec = door::resolve(&resources, address)
+            .ok_or_else(|| DoorError::Unknown(address.clone()))?;
+        if self.agent {
+            admit_agent(spec, arguments)?;
+        } else if spec.kind != OperationKind::Document {
+            return Err(DoorError::Unknown(address.clone()));
         }
-        self.effect_session()
-            .map_err(unmounted)?
-            .invoke(address, arguments, confirm)
-    }
-
-    /// The held record's component, mounted for an agent's effects: the
-    /// one mounted last while the replica has not moved on since, else
-    /// mounted again from the replica as it stands.
-    fn effect_session(&mut self) -> Result<&mut EffectSession, String> {
-        let Some(replica) = self.replica.as_mut() else {
-            return Err("no record is held".into());
-        };
-        let heads = replica.heads();
-        if let Some(session) = self.effects.take().filter(|session| session.shows(&heads)) {
-            return Ok(self.effects.insert(session));
-        }
-        let Some(fonts) = self.fonts.as_ref() else {
-            return Err("this worker mounts no component".into());
-        };
-        let session = EffectSession::mount(
-            &self.catalogue,
-            Held {
-                app_id: replica.app_id(),
-                room: &self.room,
-                replica,
-            },
-            self.content.store.clone(),
-            fonts.renderer(),
-        )?;
-        Ok(self.effects.insert(session))
+        replica.invoke(address, arguments, confirm)
     }
 
     fn load_views(&mut self, app_id: String, bytes: &[u8]) -> Reply {
@@ -397,10 +391,9 @@ impl Worker {
         source: Vec<u8>,
         policy: &str,
     ) -> Reply {
-        let fonts = match self.fonts.as_ref() {
-            Some(fonts) if self.mode == Mode::Read && self.read.is_none() => fonts,
-            _ => return Reply::Failed("this worker mounts one component".into()),
-        };
+        if self.mode != Mode::Read || self.read.is_some() {
+            return Reply::Failed("this worker mounts one component".into());
+        }
         let (Some(record), Ok(policy)) = (parse_record(record), decode(policy)) else {
             return Reply::Failed("invalid read request".into());
         };
@@ -410,7 +403,7 @@ impl Worker {
             record,
             bytes: source,
         };
-        match ReadSession::prepare(&self.catalogue, source, &policy, fonts.renderer()) {
+        match ReadSession::prepare(&self.catalogue, source, &policy, self.content.store.clone()) {
             Ok(read) => {
                 self.read = Some(read);
                 Reply::Done
@@ -420,51 +413,35 @@ impl Worker {
     }
 }
 
-/// Why an effect's component could not be mounted.
-fn unmounted(reason: String) -> DoorError {
-    DoorError::Unavailable {
-        code: "app_worker".into(),
-        reason,
+/// Host confinement is stricter than action grants: even a confirmed
+/// Outside action cannot reach a person's device or choose a file path.
+fn admit_agent(
+    spec: &tilo_actions::ActionSpec,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), DoorError> {
+    if spec
+        .contract
+        .tags
+        .iter()
+        .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY)
+    {
+        return Err(DoorError::Unavailable {
+            code: "local_device_only".into(),
+            reason: format!(
+                "{} uses the files or hardware of a person's device; an agent does not run it",
+                spec.label
+            ),
+        });
     }
-}
-
-/// The toolkit's fonts with every face's data mapped now.
-///
-/// Font databases name system faces by path and open the file the first time
-/// a face is used; once confined, the worker can open no file, and a
-/// component would find no font to lay its text out in. So every face is
-/// mapped before the confinement, and shaping reads the mappings. The mapped
-/// database is the process's own from then on: every text renderer made in
-/// the worker — the one a component is mounted with, and those an app makes
-/// for itself — is built over it.
-struct ResidentFonts;
-
-impl ResidentFonts {
-    fn load() -> Self {
-        let mut fonts = ui::configured_font_system();
-        let database = fonts.db_mut();
-        let faces: Vec<_> = database.faces().map(|face| face.id).collect();
-        for face in faces {
-            // SAFETY: maps an installed font file read-only. fontdb's caveat
-            // is that a file truncated while mapped faults on access; font
-            // files of the image are not rewritten under a running worker,
-            // and a fault costs only this worker.
-            let _ = unsafe { database.make_shared_face_data(face) };
-        }
-        // Shares the database as the one this process's host built, which
-        // every later font system is made over.
-        drop(ui::TextRenderer::with_browser_font_system(fonts));
-        Self
+    if spec.kind != OperationKind::Document && arguments.contains_key("path") {
+        return Err(DoorError::Unavailable {
+            code: "effect_path".into(),
+            reason: "an agent's effect writes to no path; leave `path` out and what it makes is \
+                     kept as content"
+                .into(),
+        });
     }
-
-    /// A text renderer over the mapped faces.
-    #[expect(
-        clippy::unused_self,
-        reason = "a renderer is made only where the fonts were mapped"
-    )]
-    fn renderer(&self) -> ui::TextRenderer {
-        ui::TextRenderer::new()
-    }
+    Ok(())
 }
 
 /// A record id as [`RecordId::as_str`] spells it.
@@ -497,6 +474,31 @@ fn output(result: Result<tilo_actions::ActionOutput, DoorError>, at: &ActionAddr
             )))),
         },
         Err(error) => Reply::Refused(WireDoorError::from_door(&error)),
+    }
+}
+
+/// Probe both the pre-existing runtime driver and a thread it creates after
+/// confinement, not just the thread that installed the policy.
+fn probe_threads(path: String) -> Reply {
+    let mut report = probe(&path);
+    let runtime = ui::rt::app();
+    let on_driver = path.clone();
+    let result = runtime.block_on(async {
+        let driver = runtime.spawn(async move { probe(&on_driver) }).await?;
+        let blocking = runtime.spawn_blocking(move || probe(&path)).await?;
+        Ok::<_, tokio::task::JoinError>([driver, blocking])
+    });
+    match result {
+        Ok(Ok(threads)) => {
+            for thread in threads {
+                report.opened_file |= thread.opened_file;
+                report.created_file |= thread.created_file;
+                report.inet_socket |= thread.inet_socket;
+                report.exec |= thread.exec;
+            }
+            Reply::Probe(report)
+        }
+        other => Reply::Failed(format!("the runtime confinement probe failed: {other:?}")),
     }
 }
 
@@ -622,6 +624,7 @@ pub(super) fn mount_component(
 /// One record's component, mounted headless over its retained source, for
 /// its registered reads.
 struct ReadSession {
+    app_id: &'static str,
     frame: FrameHarness,
     permissions: Rc<RefCell<PermissionContext>>,
 }
@@ -631,8 +634,12 @@ impl ReadSession {
         catalogue: &AppCatalogue,
         source: Source<'_>,
         policy: &ViewReadPolicy,
-        text_renderer: ui::TextRenderer,
+        content: ContentStore,
     ) -> Result<Self, String> {
+        let app_id = catalogue
+            .get(source.app_id)
+            .ok_or("unknown source app")?
+            .app_id;
         let permissions = Rc::new(RefCell::new(policy.permissions()));
         let frame = mount_component(
             catalogue,
@@ -640,12 +647,16 @@ impl ReadSession {
                 source,
                 device: "canonical-reader",
                 permissions: permissions.clone(),
-                author: UserId(policy.person.clone()),
-                content: None,
+                author: UserId(policy.standing.person.clone()),
+                content: Some(content),
             },
-            text_renderer,
+            ui::TextRenderer::new(),
         )?;
-        Ok(Self { frame, permissions })
+        Ok(Self {
+            app_id,
+            frame,
+            permissions,
+        })
     }
 
     fn set_policy(&self, policy: &ViewReadPolicy) {
@@ -653,10 +664,14 @@ impl ReadSession {
     }
 
     fn operations(&self) -> Vec<ActionDescriptor> {
-        ui::semantic_document_read::registered_operations(
-            self.frame.root_widget(),
-            &self.frame.resources(),
-        )
+        let permissions = self.permissions.borrow();
+        let resources: Vec<_> = self
+            .frame
+            .resources()
+            .into_iter()
+            .filter_map(|resource| permissions.permitted_resource(self.app_id, resource))
+            .collect();
+        ui::semantic_document_read::registered_operations(self.frame.root_widget(), &resources)
     }
 
     fn invoke(

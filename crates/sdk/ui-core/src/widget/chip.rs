@@ -410,19 +410,46 @@ pub(crate) fn paint_pill_body(
     selected: bool,
     theme: &Theme,
 ) {
+    let colors = style.colors(theme, theme.tokens.colors.surfaces.content, selected, false);
+    paint_pill_surface(scene, transform, rect, theme, (colors.fill, colors.edge));
+}
+
+/// Quiet chrome actions use the retained Button's hover/press palette,
+/// while keeping the compact pill geometry and measured caption content.
+pub(crate) fn paint_pill_action_body(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    interaction: crate::widget::activation::Interaction,
+    theme: &Theme,
+) -> Color {
+    let (fill, edge, ink) = crate::widget::ButtonFace::new(rect, "")
+        .hovered(interaction.hovered)
+        .pressed(interaction.pressed)
+        .colors(theme);
+    paint_pill_surface(scene, transform, rect, theme, (fill, edge));
+    ink
+}
+
+fn paint_pill_surface(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    theme: &Theme,
+    colors: (Color, Option<Color>),
+) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let colors = style.colors(theme, theme.tokens.colors.surfaces.content, selected, false);
     let radius = f64::from(theme.tokens.radii.full).min(rect.height() / 2.0);
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.fill,
+        colors.0,
         None,
         &RoundedRect::from_rect(rect, radius),
     );
-    if let Some(edge) = colors.edge {
+    if let Some(edge) = colors.1 {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -625,7 +652,7 @@ pub struct Chip {
     tooltip: Option<String>,
     accessible_name: Option<String>,
     /// The geometry resolved at `build_layout`, for `measure` and
-    /// `adjust_layout_with_measure`, which have no theme of their own.
+    /// `adjust_layout_style`, which have no theme of their own.
     metrics: PillMetrics,
     /// `metrics.min_pointer_target`: the hit rect grows to this even though
     /// the painted pill stays at the 28 px selector height.
@@ -873,10 +900,10 @@ impl Widget for Chip {
         self.min_target = f64::from(theme.tokens.metrics.min_pointer_target);
         // Both axes are pinned as `length`, so taffy never asks `measure`
         // for this leaf; the settled footprint seeds the pass and
-        // `adjust_layout_with_measure` corrects it from the real label.
+        // `adjust_layout_style` corrects it from the real label.
         // Until the label is measured the width is `auto`, so a host that
         // solves with a measure function asks `measure` for it; the shared
-        // solver pins the measured pill in `adjust_layout_with_measure`.
+        // solver pins the measured pill in `adjust_layout_style`.
         let width = self
             .footprint
             .map_or_else(taffy::Dimension::auto, |size| length(size.width));
@@ -898,7 +925,7 @@ impl Widget for Chip {
     }
 
     /// Replace the seed with the measured pill.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
@@ -1022,18 +1049,20 @@ impl Widget for Chip {
                         *ctx.handled = true;
                     }
                     ElementState::Pressed if self.activation.is_enabled() && over_body => {
-                        self.activation.state.pressed = true;
+                        self.activation.press(self.hit_rect());
                         *ctx.focus_target = Some(ctx.node_id);
                         *ctx.handled = true;
                     }
-                    ElementState::Released if self.activation.state.pressed => {
-                        self.activation.state.pressed = false;
-                        *ctx.handled = true;
-                        if over_body && !over_x {
+                    ElementState::Released => {
+                        let release = self
+                            .activation
+                            .release(self.hit_rect(), over_body && !over_x);
+                        *ctx.handled |= release.ended();
+                        if release == crate::pointer_replay::Release::Click(()) {
                             self.activation.activate();
                         }
                     }
-                    _ => {}
+                    ElementState::Pressed => {}
                 }
             }
             _ => {}
@@ -1065,6 +1094,7 @@ impl Widget for Chip {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &crate::widget::ModelPath,
     ) -> bool {
@@ -1434,7 +1464,7 @@ mod tests {
     }
 
     /// Lay a chip out through the shared solver (the `App` / `FrameHarness`
-    /// path), which runs `adjust_layout_with_measure`; the raw
+    /// path), which runs `adjust_layout_style`; the raw
     /// `compute_layout_with_measure` in `lay_out` above never does.
     fn settled_chip_rect(chip: Chip, text_scale: f32) -> Rect {
         let harness = crate::headless::FrameHarness::new_with_theme(
@@ -1470,6 +1500,7 @@ mod activation_tests {
         assert!(Widget::perform_action(
             &mut chip,
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));

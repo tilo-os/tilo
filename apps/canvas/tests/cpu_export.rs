@@ -88,6 +88,18 @@ fn gpu_reference(app: &TestApp<App>) -> Option<Vec<u8>> {
 fn an_export_without_a_gpu_is_drawn_on_the_cpu() {
     let app = artwork();
     let reference = gpu_reference(&app);
+    // Exercise the real export path before confinement too: when a GPU is
+    // present this leaves a same-sized renderer in its process-wide cache.
+    let mut warm = Renderer::default();
+    warm.pictures.read_from(app.content());
+    let (picture, _) = view_ops::export(
+        &mut warm,
+        &mut ui::TextRenderer::new(),
+        &app.state(),
+        &Export::default(),
+    )
+    .unwrap();
+    assert!(picture.bytes.starts_with(b"\x89PNG"));
 
     ui::offscreen::disable_gpu();
     assert!(

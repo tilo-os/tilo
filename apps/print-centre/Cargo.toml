@@ -17,7 +17,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-private-fs = { path = "../../crates/system/private-fs" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
 hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -33,6 +33,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 
 [lints]
 workspace = true

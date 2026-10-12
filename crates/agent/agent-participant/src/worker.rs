@@ -8,8 +8,8 @@
 //! its own worker process ([`ConfinedReplica`]); the registered reads of a
 //! record's component ([`ConfinedRead`]) and the views of an existing
 //! resource ([`ConfinedViews`]) each run in one too. An agent's effects
-//! run in its record's worker, in the record's component mounted there
-//! (`worker/effects.rs`).
+//! run in its record's worker through the same attached view as its
+//! document operations, lent the worker's content store.
 //!
 //! A worker is the host's own executable started again in worker mode. It
 //! prepares what it cannot load later (the app catalogue; a reader's
@@ -34,7 +34,6 @@
 //! opening a record fails, naming the missing line.
 
 mod confine;
-mod effects;
 mod process;
 pub(crate) mod proto;
 mod read;

@@ -46,6 +46,15 @@ pub(super) struct LayoutRuntime {
     /// How many times the taffy tree was rebuilt: a host comparing two
     /// frames' widgets needs to know they are still the same ones.
     pub(super) rebuilds: u64,
+    /// Whether every rebuild requested since the last one was a change the
+    /// widgets describe ([`crate::widget::StructureChange::Described`]).
+    /// Anything else that asks for a rebuild goes through
+    /// [`Self::request_rebuild`], which clears it.
+    pub(super) rebuild_described: bool,
+    /// Whether every rebuild since a host armed it (a frame that compares
+    /// itself with the last one) was described: that host keeps the frame's
+    /// damage instead of repainting whole.
+    pub(super) frame_rebuilds_described: bool,
 }
 
 impl LayoutRuntime {
@@ -61,7 +70,16 @@ impl LayoutRuntime {
             safe_area: crate::scale::SafeArea::default(),
             content_origin: vello::kurbo::Point::ORIGIN,
             rebuilds: 0,
+            rebuild_described: true,
+            frame_rebuilds_described: false,
         }
+    }
+
+    /// Rebuild the tree before the next layout, for a reason no widget
+    /// describes: the frame that does it repaints whole.
+    pub(super) fn request_rebuild(&mut self) {
+        self.structure_dirty = true;
+        self.rebuild_described = false;
     }
 }
 
@@ -122,6 +140,9 @@ pub(super) struct ActionRuntime {
     pub(super) action_palette: Option<crate::action_palette::ActionPalette>,
     /// Stable opener identity, never a node or pointer from the modal's old tree.
     pub(super) ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
+    /// The control an accessibility action focused while the same action
+    /// replaced widgets: focused again once the next layout admits them.
+    pub(super) focus_after_rebuild: Option<crate::widget::layout::CompositionFocus>,
     pub(super) action_registry: tilo_actions::ActionRegistry,
     // Independent from scheduling invalidation: mutable unbound decoder access.
     pub(super) action_registry_generation: u64,
@@ -205,6 +226,7 @@ impl ActionRuntime {
             published_invocations: Default::default(),
             action_palette: None,
             ordinary_palette_return_focus: None,
+            focus_after_rebuild: None,
             action_registry: tilo_actions::ActionRegistry::new(),
             action_registry_generation: 0,
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
@@ -358,6 +380,7 @@ impl CollaborationRuntime {
         manager: CollaborationManager,
         local_author: crate::permissions::UserId,
     ) -> Self {
+        crate::history_source::authors::read_as(&local_author.0);
         Self {
             manager,
             room_manager: None,

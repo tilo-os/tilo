@@ -70,6 +70,9 @@ pub struct EmbeddedApp {
     /// generations it went from and to, and where it changed in the app's
     /// own coordinates, `None` when it cannot say.
     painted_damage: PaintedDamage,
+    /// The host presents each frame over the pixels it last presented and
+    /// can move them ([`Self::set_accepts_scroll_copies`]).
+    accepts_copies: bool,
 }
 
 /// How an embedded app's painted scene differs from the one before it.
@@ -78,6 +81,24 @@ struct PaintedDamage {
     from: u64,
     to: u64,
     rects: Option<Vec<KurboRect>>,
+    /// What moved instead, in the host's device pixels at `copy_scale` per
+    /// unit of the app's own coordinates: where a scroll's content took its
+    /// pixels from and how far it moved them.
+    copies: Vec<crate::scroll_copy::DeviceCopy>,
+    copy_scale: f64,
+}
+
+/// How many pixels of the target of the host drawing now
+/// ([`crate::scroll_copy::host_device_scale`]) one unit of an app placed
+/// with `placement` is; 1 when the placement scales the axes apart, rotates
+/// or skews (the host then makes no copy of it anyway).
+fn copy_scale(placement: Affine) -> f64 {
+    let [a, b, c, d, _, _] = crate::scroll_copy::on_screen(placement).as_coeffs();
+    if b == 0.0 && c == 0.0 && a > 0.0 && a.to_bits() == d.to_bits() {
+        crate::scroll_copy::host_device_scale() * a
+    } else {
+        1.0
+    }
 }
 
 /// Hands out each embedded app's [`crate::scene_parts::DamageHint::source`].
@@ -122,7 +143,25 @@ impl EmbeddedApp {
             source: NEXT_SOURCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             damage: super::SurfaceDamage::default(),
             painted_damage: PaintedDamage::default(),
+            accepts_copies: false,
         })
+    }
+
+    /// Whether the host keeps the pixels it presented and can move them
+    /// within its target before it repaints the damage: a scroll in the app
+    /// then hands it what moved ([`crate::scene_parts::DamageHint::copies`])
+    /// instead of damaging the viewport. The app then stands on an opaque
+    /// ground of the theme's content colour, as a window of its own stands on
+    /// its target's, so what is under its content is uniform; a theme whose
+    /// content colour is not opaque gets no copies.
+    pub fn set_accepts_scroll_copies(&mut self, accepts: bool) {
+        self.accepts_copies = accepts;
+    }
+
+    /// The ground the app stands on while it hands out copies, if it does.
+    fn copy_ground(&self) -> Option<vello::peniko::Color> {
+        let ground = self.app.theme.tokens.colors.surfaces.content;
+        (self.accepts_copies && ground.components[3] >= 1.0).then_some(ground)
     }
 
     /// The app shown.
@@ -136,14 +175,24 @@ impl EmbeddedApp {
     #[cfg(any(test, feature = "test-support"))]
     pub fn damage_report_for_test(&self) -> String {
         format!(
-            "{}->{} damage={:?} repainted={:?} tooltip={:?} tooltip_pending={}",
+            "{}->{} damage={:?} copies={:?} repainted={:?} tooltip={:?} tooltip_pending={}",
             self.painted_damage.from,
             self.painted_damage.to,
             self.painted_damage.rects,
+            self.painted_damage.copies,
             self.damage.repainted(),
             self.app.input.tooltip_host.visible(),
             self.app.input.tooltip_host.needs_frame(),
         )
+    }
+
+    /// `event`, in the region's own logical pixels, as the host hands it
+    /// input, and a frame for it: what a benchmark or test drives the app
+    /// with without a host's layout and focus.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn input_for_test(&mut self, event: WindowEvent) {
+        self.app.surface_input(&self.region, event, false);
+        self.wants_frame.set(true);
     }
 
     /// The app shown, to drive it.
@@ -271,6 +320,28 @@ impl Widget for EmbeddedApp {
             .next_wake_deadline()
             .is_some_and(|deadline| deadline <= crate::time::now());
         let woken = self.woken.swap(false, std::sync::atomic::Ordering::AcqRel);
+        // Drawn for a host that copies, the app hands out copies from now
+        // on (a capture drawing it later repaints where they land).
+        if crate::scroll_copy::host_copies() {
+            self.accepts_copies = true;
+        }
+        // Starting or stopping copies changes the ground under the app and
+        // what its damage describes: the next frame is repainted whole.
+        let ground = self.copy_ground();
+        if ground.is_some() != self.damage.is_copying() {
+            self.damage = if ground.is_some() {
+                super::SurfaceDamage::copying()
+            } else {
+                super::SurfaceDamage::default()
+            };
+            self.wants_frame.set(true);
+        }
+        let placement = transform * Affine::translate((self.rect.x0, self.rect.y0));
+        if ground.is_some() {
+            // Copies are planned in the host's device pixels: at 200 % a
+            // step of half a logical pixel is a whole one and copies.
+            self.damage.set_copy_scale(copy_scale(placement));
+        }
         if self.wants_frame.get() || woken || due {
             // A frame whose sync or layout leaves more to settle runs again
             // at once, so what the host paints is the app at rest.
@@ -279,8 +350,23 @@ impl Widget for EmbeddedApp {
             for _ in 0..SETTLE_FRAMES {
                 // The app's own damage parts travel with its scene, so a
                 // host that tracks parts repaints a caret, not the tile.
+                let region = KurboRect::new(
+                    0.0,
+                    0.0,
+                    f64::from(self.region.size.width),
+                    f64::from(self.region.size.height),
+                );
                 let (settling, parts) = crate::scene_parts::record(&mut painted, |painted| {
                     painted.reset();
+                    if let Some(ground) = ground {
+                        painted.fill(
+                            vello::peniko::Fill::NonZero,
+                            Affine::IDENTITY,
+                            ground,
+                            None,
+                            &region,
+                        );
+                    }
                     self.app
                         .surface_frame_with_damage(&self.region, painted, &mut self.damage)
                 });
@@ -292,35 +378,54 @@ impl Widget for EmbeddedApp {
             }
             // The frames just run changed only where their damage says,
             // from what was painted before them.
+            let taken = self.damage.take_copying();
             self.painted_damage = PaintedDamage {
                 from,
                 to: from.wrapping_add(1),
-                rects: self.damage.take(),
+                copies: taken
+                    .as_ref()
+                    .map(|(copies, _)| copies.clone())
+                    .unwrap_or_default(),
+                copy_scale: self.damage.copy_scale(),
+                rects: taken.map(|(_, rects)| rects),
             };
             // What the host's accessibility walk reads of the app.
             let _ = self.app.refresh_semantic_tree();
             self.wants_frame
                 .set(again || self.region.redraw.replace(false));
         }
-        let placement = transform * Affine::translate((self.rect.x0, self.rect.y0));
         // A host comparing this frame with one that painted the generation
         // before repaints only the app's damage; any other change to the
         // app (it moved, it repainted whole, frames were skipped) repaints
         // the part around it.
-        let hint = self
-            .painted_damage
-            .rects
-            .as_ref()
-            .map(|rects| crate::scene_parts::DamageHint {
+        let hint = self.painted_damage.rects.as_ref().map(|rects| {
+            let mut rects: Vec<KurboRect> = rects
+                .iter()
+                .map(|rect| placement.transform_rect_bbox(*rect).inflate(1.0, 1.0))
+                .collect();
+            // The app plans copies in the host's device pixels.
+            let mut copies = Vec::with_capacity(self.painted_damage.copies.len());
+            for copy in &self.painted_damage.copies {
+                let moved =
+                    crate::scroll_copy::MovedRegion::of(copy, self.painted_damage.copy_scale);
+                match moved.transformed(placement) {
+                    Some(moved) => copies.push(moved),
+                    None => rects.push(
+                        placement
+                            .transform_rect_bbox(moved.destination())
+                            .inflate(1.0, 1.0),
+                    ),
+                }
+            }
+            crate::scene_parts::DamageHint {
                 source: self.source,
                 from: self.painted_damage.from,
                 to: self.painted_damage.to,
                 placement,
-                rects: rects
-                    .iter()
-                    .map(|rect| placement.transform_rect_bbox(*rect).inflate(1.0, 1.0))
-                    .collect(),
-            });
+                rects,
+                copies,
+            }
+        });
         let key = crate::scene_parts::PartKey::new("ui.embedded-app", ());
         crate::scene_parts::hinted(scene, key, hint, |scene| {
             crate::scene_parts::append(scene, &painted, painted_parts.as_ref(), Some(placement));
@@ -351,7 +456,7 @@ impl Widget for EmbeddedApp {
         // A durability that changed in this pass left the layout dirty
         // (`App::sync_model`), so the next frame shows it; a structure change
         // the pass made is rebuilt by that frame.
-        self.app.layout.structure_dirty |= self.app.root_widget.take_structure_dirty();
+        self.app.layout.structure_dirty |= self.app.take_root_structure_dirty();
         let visible = self.app.unsettled() || self.app.root_widget.needs_animation_frame();
         if visible {
             self.wants_frame.set(true);
@@ -565,7 +670,7 @@ impl Widget for EmbeddedApp {
         Some(node)
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
@@ -1081,3 +1186,7 @@ mod saving_record_wake_tests {
         tile.app.close_components();
     }
 }
+
+#[cfg(test)]
+#[path = "embedded_copy_tests.rs"]
+mod copy_tests;

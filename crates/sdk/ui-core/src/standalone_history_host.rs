@@ -104,6 +104,63 @@ pub(crate) struct HostHistoryLayout {
     content: NodeId,
 }
 
+impl HostHistoryLayout {
+    /// Whether `node` is History chrome: a button, the pane or the preview.
+    pub(crate) fn contains(&self, taffy: &TaffyTree<()>, node: NodeId) -> bool {
+        let mut pending: Vec<_> = self.toolbar.into_iter().collect();
+        pending.extend(self.search);
+        pending.extend(self.pane);
+        pending.extend(self.preview);
+        while let Some(next) = pending.pop() {
+            if next == node {
+                return true;
+            }
+            if let Ok(children) = taffy.children(next) {
+                pending.extend(children);
+            }
+        }
+        false
+    }
+}
+
+/// The document History browses: the preferred (focused or root) binding,
+/// else the one binding laid out, else the active record. Two bindings laid
+/// out at once are ambiguous, as is an open record set with none active.
+pub(crate) fn capture_history_target(
+    preferred: Option<crate::bound_dispatch::CallbackBinding>,
+    bindings: &crate::bound_dispatch::BoundNodeMap,
+    laid_out: impl IntoIterator<Item = NodeId>,
+    records: Option<&crate::record::RecordSet>,
+    document_identity: uuid::Uuid,
+) -> Result<HistoryTarget, HistoryError> {
+    let mut binding = preferred;
+    if binding.is_none() {
+        for node in laid_out {
+            let Some(candidate) = bindings.binding_for(node) else {
+                continue;
+            };
+            if binding
+                .as_ref()
+                .is_some_and(|current| current.lifetime_id != candidate.lifetime_id)
+            {
+                return Err(HistoryError::Unavailable);
+            }
+            binding = Some(candidate);
+        }
+    }
+    if binding.is_none() && records.is_some_and(|records| records.active().is_none()) {
+        return Err(HistoryError::Unavailable);
+    }
+    Ok(binding.map_or_else(
+        || HistoryTarget::Legacy {
+            app_id: crate::collaboration::local_app_id(),
+            record: records.and_then(|records| records.active()).cloned(),
+            document_identity,
+        },
+        |binding| HistoryTarget::Bound(Box::new(binding)),
+    ))
+}
+
 pub(crate) struct StandaloneHistoryHost {
     session: Option<StandaloneHistory>,
     session_id: Option<uuid::Uuid>,
@@ -334,9 +391,46 @@ impl StandaloneHistoryHost {
         self.structure_dirty |= had_toolbar || had_search;
     }
 
-    /// The in-window buttons, for draining and refreshing their invocations.
-    pub(crate) fn in_window_controls_mut(&mut self) -> impl Iterator<Item = &mut Button> {
-        self.toolbar.iter_mut().chain(self.search.iter_mut())
+    /// The in-window buttons and the open pane: every control History owns.
+    pub(crate) fn controls_mut(&mut self) -> impl Iterator<Item = &mut dyn Widget> {
+        let pane = self.session.is_some().then_some(&mut self.pane);
+        self.toolbar
+            .iter_mut()
+            .chain(self.search.iter_mut())
+            .map(|button| button as &mut dyn Widget)
+            .chain(pane.map(|pane| pane as &mut dyn Widget))
+    }
+
+    /// Drain the invocations History's controls queued.
+    pub(crate) fn take_control_invocations(&mut self) -> Vec<tilo_actions::ControlInvocation> {
+        let mut pending = Vec::new();
+        for control in self.controls_mut() {
+            while let Some(intent) = crate::widget::controls::take_control_invocation(control) {
+                pending.push(intent);
+            }
+        }
+        pending
+    }
+
+    /// Tell History's controls how an invocation they queued finished.
+    pub(crate) fn report_control_result(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &crate::widget::controls::ControlResult,
+    ) {
+        for control in self.controls_mut() {
+            crate::widget::controls::on_control_invocation_result(control, address, result);
+        }
+    }
+
+    /// Enable History's controls whose actions the door currently offers.
+    pub(crate) fn refresh_control_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        for control in self.controls_mut() {
+            crate::widget::controls::refresh_control_action_availability(control, allowed);
+        }
     }
 
     /// Presence is a host capability, not an OS check. Hosts without the
@@ -652,12 +746,7 @@ impl StandaloneHistoryHost {
         }
         let now = crate::time::wall();
         for entry in selected {
-            let action = entry
-                .context
-                .as_ref()
-                .map(|context| context.action_label.as_str())
-                .filter(|label| !label.trim().is_empty())
-                .unwrap_or(&entry.summary);
+            let action = &entry.summary;
             lines.push(format!("{}: {action}", entry.author.name));
             lines.push(crate::widget::history::format_relative_time(
                 entry.timestamp,
@@ -1023,11 +1112,8 @@ impl StandaloneHistoryHost {
     }
 
     pub(crate) fn sync(&mut self, doc: &AutoCommit, path: &ObjId) {
-        for button in self.in_window_controls_mut() {
-            button.sync(doc, path);
-        }
-        if self.is_open() {
-            self.pane.sync(doc, path);
+        for control in self.controls_mut() {
+            control.sync(doc, path);
         }
     }
 
@@ -1099,16 +1185,6 @@ impl Widget for PresentationRoots<'_> {
         _nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_root
-    }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
     fn children(&self) -> Vec<&dyn Widget> {
         self.children.clone()
@@ -1344,7 +1420,7 @@ fn review_restore_operation(session: uuid::Uuid) -> ActionSpec {
             .expect("validated history review serializes")
         },
     )
-    .requiring(tilo_actions::PermissionRequirement::Write)
+    .of_kind(tilo_actions::ActionKind::Undoable)
 }
 
 #[expect(
@@ -1360,7 +1436,7 @@ fn restore_operation(session: uuid::Uuid) -> ActionSpec {
         &HistoryCommand::Restore { session },
     )
     .expect("history restore serializes")
-    .requiring(tilo_actions::PermissionRequirement::Write)
+    .of_kind(tilo_actions::ActionKind::Undoable)
     .destructive()
     .reversible()
 }
@@ -1972,10 +2048,7 @@ mod tests {
             .find(|action| action.id == "review_restore")
             .unwrap();
         assert_eq!(review.kind, OperationKind::View);
-        assert_eq!(
-            review.contract.permission,
-            tilo_actions::PermissionRequirement::Write
-        );
+        assert_eq!(review.contract.kind, tilo_actions::ActionKind::Undoable);
         assert!(review.contract.availability.is_available());
         let restore = session
             .actions
@@ -1983,10 +2056,7 @@ mod tests {
             .find(|action| action.id == "restore")
             .unwrap();
         assert_eq!(restore.kind, OperationKind::Effect);
-        assert_eq!(
-            restore.contract.permission,
-            tilo_actions::PermissionRequirement::Write
-        );
+        assert_eq!(restore.contract.kind, tilo_actions::ActionKind::Undoable);
         assert_eq!(
             restore.contract.confirmation,
             tilo_actions::ConfirmationPolicy::Confirm
@@ -2006,13 +2076,13 @@ mod tests {
         doc.put(ROOT, "value", "before").unwrap();
         doc.commit();
         doc.put(ROOT, "value", "after").unwrap();
-        let context = tilo_actions::ActionContext::for_resource(
-            "Move meeting",
-            "event:one",
-            "calendar.event",
-            "Planning",
-        )
-        .with_app("calendar", "Calendar");
+        let context =
+            tilo_actions::ActionContext::for_resource("event:one", "calendar.event", "Planning")
+                .with_app("calendar", "Calendar")
+                .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                    tilo_actions::ActionKey::new("calendar", "calendar.event", "move-meeting"),
+                    [],
+                )));
         let hash = doc
             .commit_with(
                 automerge::transaction::CommitOptions::default()

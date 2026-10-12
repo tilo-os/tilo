@@ -54,7 +54,6 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use tilo_ui::TextRole;
 use tilo_ui::i18n::I18nManager;
 use tilo_ui::offscreen::{OffscreenRenderTiming, OffscreenRenderer};
-use tilo_ui::permissions::PermissionContext;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -866,7 +865,6 @@ struct BenchState<'a> {
     root_node: NodeId,
     text_renderer: &'a mut TextRenderer,
     presence: &'a PresenceCtx,
-    perms: &'a PermissionContext,
     theme: &'a Theme,
     scene: &'a mut Scene,
     renderer: &'a mut OffscreenRenderer,
@@ -1008,7 +1006,7 @@ fn full_draw(
     let t_draw = tilo_ui::time::now();
     state.scene.reset();
     // Wire the spatial-culling viewport just like the live App
-    // does. Without this the bench's `draw_with_presence` walks
+    // does. Without this the bench's `draw` walks
     // see `viewport == None` and skip the culling short-circuit,
     // masking the Item 1 win in the benchmark output.
     let vp = vello::kurbo::Rect::new(
@@ -1018,13 +1016,12 @@ fn full_draw(
         f64::from(state.canvas_h),
     );
     let prev_vp = state.presence.push_viewport(vp);
-    state.root.draw_with_presence(
+    state.root.draw(
         state.scene,
         Affine::IDENTITY,
         state.text_renderer,
         state.theme,
         state.presence,
-        state.perms,
     );
     state.presence.pop_viewport(prev_vp);
     let peer_damage = state
@@ -2878,7 +2875,6 @@ pub fn run(_args: &[String]) {
     let theme = Theme::dark();
     let mut text_renderer = TextRenderer::new();
     let presence = PresenceCtx::default();
-    let perms = PermissionContext::permissive();
     let mut doc = AutoCommit::new();
 
     let mut root = build_tree(include_animated);
@@ -2909,7 +2905,6 @@ pub fn run(_args: &[String]) {
         root_node,
         text_renderer: &mut text_renderer,
         presence: &presence,
-        perms: &perms,
         theme: &theme,
         scene: &mut scene,
         renderer: &mut renderer,

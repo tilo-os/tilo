@@ -129,8 +129,8 @@ time, so they are not compile blockers; they are listed under run-time gaps.
 | 3 | tokio `net` | `runtime-portal` | Moved to `[target.'cfg(unix)']`; only the Unix socket path used it, non-Unix already returned `NotAvailable` | fixed |
 | 4 | tokio `rt-multi-thread` | `tilo-rt` | `daemon()` runtimes are not built on wasm; `app()`, `cpu()` and `io` remain. Positioned I/O gains an `Unsupported` arm | fixed |
 | 5 | OpenMLS refuses wasm without `js` | `channel-crypto` | wasm target dep `openmls/js`; required `getrandom` 0.4.1 → 0.4.3 in `Cargo.lock` | fixed |
-| 6 | `ring`/`rustls` (pairing TLS in `tilo-identity-ceremony`) | `tilo-ui` | As in PR 541: `rustls` and `private-fs` are native-only dependencies; `remote_call` answers `None` in the browser. The bundle no longer contains `ring` or C code | fixed |
-| 7 | No private-file platform | `private-fs` | Third `platform` arm refusing with `Unsupported` | fixed |
+| 6 | `ring`/`rustls` (pairing TLS in `tilo-identity-ceremony`) | `tilo-ui` | As in PR 541: `rustls` and `tilo_files::native::private` are native-only dependencies; `remote_call` answers `None` in the browser. The bundle no longer contains `ring` or C code | fixed |
+| 7 | No private-file platform | `tilo_files::native::private` | Third `platform` arm refusing with `Unsupported` | fixed |
 | 8 | `libc::clock_gettime`; `Url::from_file_path` | `media` | Non-Unix `monotonic_now_ns` reports unreadable (0), as a failed `clock_gettime` did; `path_to_file_uri` returns `Unsupported` | fixed |
 | 9 | `Url::to_file_path` | `tilo-host::portal::to_local_path` | Non-Unix/Windows hosts have no local paths: `None` | fixed |
 | 10 | `web_time::SystemTime` ≠ `std::time::SystemTime` on wasm | `tilo-ui` (settings stamps, signed ops, identity flow) | `ui::time::{to_std, from_std}` — identity on native, epoch arithmetic on the web — at the six crossings | fixed |
@@ -795,6 +795,18 @@ than proposed (`AgentProposal::admits`), so an agent never exists without its
 delegation and the host never holds the root. `tilo-relay dev`'s approver
 approves proposals as they come; a production approver shows them.
 
+An agent never confirms an action by its own word. When its grants leave an
+action to the person, the host puts that one invocation to the same approvers
+as a question (`ApproverRequest::Confirmations` lists `PendingConfirmation`s,
+`ApproverRequest::Answer` gives `AllowOnce` or `Deny`); the approver shows it
+as the host's confirmation sheet ("<agent> wants to …, for you"). The agent
+shows it is waiting meanwhile, runs the step only on the witnessed answer, and
+takes no answer within two minutes as a refusal. `tilo-relay dev`'s approver
+allows each once. A Tilo shell that holds the person's root keeps an approver
+session with each host it connects to and shows every question on its own
+confirmation sheet, the one an agent acting for the person on that machine is
+confirmed on.
+
 `Relay::register_agent` verifies the delegation against the host's user:
 
 - The device is refused outside its rooms, at subscribe and on every
@@ -816,9 +828,9 @@ is the same one a page runs.
 - **Joining.** It joins the room's durable and live planes. The host's
   `Ready` follows its replay, so a task never starts on a half-seen room.
 - **Opening an app.** `open(app, record)` holds the record, from the
-  durable changes the host replayed, as a `ui::framework::Participant` of
-  the app's resource kind (`Replica`), as an agent principal holding the
-  editor role. Without a record it creates one (the resource's genesis)
+  durable changes the host replayed, in the app's own view mounted over it
+  and never drawn (`ui::framework::AttachedView`, the participant's
+  `Replica`), as an agent principal holding the editor role. Without a record it creates one (the resource's genesis)
   and publishes it.
 - **Which apps.** `component_apps()` is the browser desktop's registry:
   `tools/web/generate_web_desktop.py` writes the same manifest-derived app
@@ -998,14 +1010,14 @@ user may steer; an agent caller is refused.
 |---|---|---|
 | capabilities, list | `agents#status` | `AgentsStatus {agents: AgentInfo[], grants: AgentGrant[]}` |
 | `spawnAgent({name, task, grantSetId})` | `agents#spawn` `{grant, task}` | `{agentId, taskId}` |
-| grant picker | `agents#request-grant` `{label, rooms, apps, expiresInSecs, color?, mayConfirm?}` | `{grant, pairingCode}` |
+| grant picker | `agents#request-grant` `{label, rooms, apps, expiresInSecs, color?}` | `{grant, pairingCode}` |
 | revoke | `agent:<id>#revoke` | `{}` |
 | `sendMessage(agentId, text)` | `agent:<id>#message` (text) | `{taskId}` |
 | `stopTask` | `agent:<id>#stop` | `{}` |
 | (new) pause, resume | `agent:<id>#pause`, `#resume` | `{}` |
 
 `AgentGrant` carries `state` (`pending|approved|denied|expired|revoked`),
-`color`, `expiresAtMs`, `mayConfirm`, and the `pairingCode` while pending.
+`color`, `expiresAtMs`, and the `pairingCode` while pending.
 `AgentInfo` carries `status` (`starting|running|waiting|paused|stopped|failed`), `room`,
 `tasks[]` (`queued|running|completed|failed|cancelled`, each with the app
 actions it performed), the conversation, the activity line, the device
@@ -1019,7 +1031,7 @@ key (the live publisher of its cursor) and the delegation.
 interface Agents {                       // certifiedPeer.agents (web/agents.mjs)
   status(): Promise<AgentsStatus>;
   requestGrant(input: {label: string; rooms: string[]; apps: string[]; expiresInSecs: number;
-    color?: string; mayConfirm?: boolean}): Promise<{grant: string; pairingCode: string}>;
+    color?: string}): Promise<{grant: string; pairingCode: string}>;
   spawn(input: {grant: string; task: string; room?: string}): Promise<{agentId: string; taskId: string}>;
   message(agentId: string, text: string): Promise<{taskId: string}>;
   pause(agentId: string): Promise<void>;
@@ -1121,7 +1133,7 @@ browser runtime. Parts that work on `main`'s APIs were ported, renamed
 | `scripts/build.sh` | `scripts/build.sh` | MoQ bundle dropped; optional `--wasm-opt`; fonts from the manifest's `browser_startup` flags |
 | `tilo-ui` `ime.rs`, `headless.rs` frame API, `image_store.rs` host factory | same files | Ported onto `main`'s `FrameHarness`; 541-only system-search and caller-palette branches left out |
 | `tilo-ui` browser fonts (`font_catalog.rs`, `text_render.rs`, `query_text.rs`, `name_field.rs`, `rich_text_editor.rs`, manifest, `tilo-font-catalog`) | same files | Patch applied; `richtext.rs` browser-emoji entry points hand-ported without 541's paragraph chunking and layout reuse |
-| `tilo-ui` rustls/`private-fs` exclusion, `tilo-user-identity` `persist` exclusion, `channel-crypto` `openmls/js`, wasm entropy deps | same | Ported; `tilo-ui` gating otherwise stays feature-based (`native`/`broker-transport` add `tokio/full`) |
+| `tilo-ui` rustls/`tilo_files::native::private` exclusion, `tilo-user-identity` `persist` exclusion, `channel-crypto` `openmls/js`, wasm entropy deps | same | Ported; `tilo-ui` gating otherwise stays feature-based (`native`/`broker-transport` add `tokio/full`) |
 
 ## Deliberately not taken
 

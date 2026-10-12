@@ -843,10 +843,11 @@ impl Widget for SearchField {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        Widget::perform_action(&mut self.input, action, state, path)
+        Widget::perform_action(&mut self.input, action, &[], state, path)
     }
 }
 
@@ -1320,7 +1321,7 @@ mod tests {
 
     impl Widget for Rows {
         crate::provides!(dyn Filterable);
-        crate::testing::inert_widget_methods!(leaf_layout, apply_layout, draw, get_rect);
+        crate::testing::inert_widget_methods!(leaf_layout);
         fn name(&self) -> &'static str {
             "rows"
         }

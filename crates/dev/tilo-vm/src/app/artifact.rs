@@ -7,6 +7,7 @@ use tilo_vm_protocol::{ApplyResult, LayerImport, LayerSource, LayerVerify, SlotS
 use super::{App, Outcome, describe_apply, wait_for_session};
 use crate::artifact::{PreparedLayer, prepare};
 use crate::cli::ArtifactSwap;
+use crate::context::Worktree;
 use crate::error::CliError;
 use crate::remote::Remote;
 
@@ -65,17 +66,33 @@ fn activate(
     Ok(result)
 }
 
+/// A cohort installs only from a checkout at exactly its producing commit: the
+/// manifest, scopes and slot come from this checkout. The refusal names the
+/// checkout it read and what it saw there, so a check that could not observe
+/// its subject says why instead of reporting a mismatch.
+fn consumer_checkout(worktree: &Worktree, source: &str) -> Result<(), CliError> {
+    match worktree.checkout_commit() {
+        Ok(head) if head == source => Ok(()),
+        Ok(head) => Err(CliError::InvalidInput(format!(
+            "artifact consumer checkout differs from requested exact source: {} is at {head}, the cohort was produced from {source}",
+            worktree.root.display()
+        ))),
+        Err(said) => Err(CliError::InvalidInput(format!(
+            "artifact consumer checkout {} has no readable HEAD to compare with the requested exact source {source}: {said}",
+            worktree.root.display()
+        ))),
+    }
+}
+
 impl App {
     pub(super) fn swap_artifact(&mut self, request: &ArtifactSwap) -> Result<Outcome, CliError> {
         // Complete local verification precedes even the first daemon connection.
         // No fallback to a builder, Cargo metadata, a CI image or an old layer.
+        consumer_checkout(
+            self.worktree.as_ref().ok_or(CliError::NotInWorktree)?,
+            &request.source,
+        )?;
         let mut prepared = self.receipt.phase("artifact-verify", || prepare(request))?;
-        let worktree = self.worktree.as_ref().ok_or(CliError::NotInWorktree)?;
-        if worktree.rev_parse("HEAD").as_deref() != Some(request.source.as_str()) {
-            return Err(CliError::InvalidInput(
-                "artifact consumer checkout differs from requested exact source".into(),
-            ));
-        }
         let manifest = self.manifest()?.ok_or_else(|| CliError::NoManifest {
             path: self
                 .base_dir()

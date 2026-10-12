@@ -18,7 +18,7 @@ use vello::peniko::Fill;
 
 use crate::date;
 use crate::input_context::InputContext;
-use crate::model::{Id, ListSel, Model, Priority, Task};
+use crate::model::{Calendar, Id, ListSel, Priority, Task};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{ControlSize, Interaction, ListRowFace, RowLeading, Tone};
@@ -37,7 +37,7 @@ pub(crate) enum TasksAction {
 
 /// The list the Tasks screen shows.
 pub(crate) struct TasksSource<'a> {
-    pub(crate) model: &'a Model,
+    pub(crate) model: &'a Calendar,
     pub(crate) list: &'a ListSel,
     pub(crate) today: NaiveDate,
 }
@@ -70,13 +70,13 @@ impl<'a> TasksSource<'a> {
 
     pub(crate) fn title(&self) -> String {
         let key = match self.list {
-            ListSel::Inbox => "calendar-list-inbox",
-            ListSel::Today => "calendar-list-today",
-            ListSel::Upcoming => "calendar-list-upcoming",
-            ListSel::Completed => "calendar-list-completed",
+            ListSel::Inbox => "calendar-tasks-inbox",
+            ListSel::Today => "calendar-tasks-today",
+            ListSel::Upcoming => "calendar-tasks-upcoming",
+            ListSel::Completed => "calendar-tasks-completed",
             ListSel::Project(_) => return self.model.list_title(self.list),
         };
-        crate::tasks_i18n::t(key)
+        crate::resource::t(key)
     }
 
     /// Whether a task can be added to this list: a new task is open, so it
@@ -99,18 +99,18 @@ impl<'a> TasksSource<'a> {
     /// The empty state's title and explanation.
     pub(crate) fn empty_copy(&self) -> (String, String) {
         let key = match self.list {
-            ListSel::Inbox => "calendar-empty-inbox",
-            ListSel::Today => "calendar-empty-today",
-            ListSel::Upcoming => "calendar-empty-upcoming",
-            ListSel::Completed => "calendar-empty-completed",
-            ListSel::Project(_) => "calendar-empty-project",
+            ListSel::Inbox => "calendar-tasks-empty-inbox",
+            ListSel::Today => "calendar-tasks-empty-today",
+            ListSel::Upcoming => "calendar-tasks-empty-upcoming",
+            ListSel::Completed => "calendar-tasks-empty-completed",
+            ListSel::Project(_) => "calendar-tasks-empty-project",
         };
         let title =
-            crate::tasks_i18n::t_args(key, &[("list", ui::i18n::ArgValue::from(self.title()))]);
-        let message = crate::tasks_i18n::t(if matches!(self.list, ListSel::Completed) {
-            "calendar-empty-completed-hint"
+            crate::resource::t_args(key, &[("list", ui::i18n::ArgValue::from(self.title()))]);
+        let message = crate::resource::t(if matches!(self.list, ListSel::Completed) {
+            "calendar-tasks-empty-completed-hint"
         } else {
-            "calendar-empty-task-hint"
+            "calendar-tasks-empty-hint"
         });
         (title, message)
     }
@@ -187,9 +187,9 @@ impl TasksView {
         Self {
             scroll: Scrollable::new_vertical().always_visible(),
             entry: TextInput::local()
-                .with_placeholder(&crate::tasks_i18n::t("calendar-task-entry"))
+                .with_placeholder(crate::resource::t("calendar-tasks-entry"))
                 .with_text_role(TextRole::Body)
-                .with_accessible_name(crate::tasks_i18n::t("calendar-task-title"))
+                .with_accessible_name(crate::resource::t("calendar-tasks-entry-name"))
                 .with_enter_submits(true)
                 .with_id("task_entry"),
             regions: Regions::default(),
@@ -296,7 +296,7 @@ impl TasksView {
         self.draw_heading(ctx, source);
         if let Some(entry) = self.regions.entry {
             self.entry
-                .set_placeholder(&crate::tasks_i18n::t("calendar-task-entry"));
+                .set_placeholder(&crate::resource::t("calendar-tasks-entry"));
             self.entry
                 .draw(ctx.scene, ctx.transform, ctx.text, theme, presence);
             hits.push((entry, TasksAction::FocusEntry));
@@ -333,11 +333,11 @@ impl TasksView {
                 .due
                 .map(|d| date::relative_label(d, source.today))
                 .unwrap_or_default();
-            let priority = crate::tasks_i18n::t(match task.priority {
-                Priority::None => "calendar-priority-none",
-                Priority::Low => "calendar-priority-low",
-                Priority::Medium => "calendar-priority-medium",
-                Priority::High => "calendar-priority-high",
+            let priority = crate::resource::t(match task.priority {
+                Priority::None => "calendar-tasks-priority-none",
+                Priority::Low => "calendar-tasks-priority-low",
+                Priority::Medium => "calendar-tasks-priority-medium",
+                Priority::High => "calendar-tasks-priority-high",
             });
             let tone = match task.priority {
                 Priority::High => Tone::Danger,
@@ -445,9 +445,9 @@ mod tests {
         let child = task("Book flights", Some(parent.id), Some(project));
         let grandchild = task("Compare prices", Some(child.id), Some(project));
         let other = task("Groceries", None, None);
-        let model = Model {
-            tasks: vec![other, grandchild, child, parent],
-            ..Model::default()
+        let model = Calendar {
+            tasks: [other, grandchild, child, parent].into_iter().collect(),
+            ..Calendar::default()
         };
         let list = ListSel::Project(project);
         let source = TasksSource {
@@ -486,7 +486,7 @@ mod tests {
     fn regions_stack_heading_entry_and_rows_and_drop_the_entry_for_completed() {
         let theme = Theme::default();
         let area = Rect::new(0.0, 60.0, 800.0, 700.0);
-        let model = Model::default();
+        let model = Calendar::default();
         let mut view = TasksView::new();
         view.layout(
             area,

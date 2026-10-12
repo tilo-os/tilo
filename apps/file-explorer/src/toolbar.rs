@@ -499,22 +499,6 @@ impl Widget for FileToolbar {
         self.path_bar.draw(scene, transform, tr, theme, presence);
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        for c in &mut self.left {
-            c.draw_with_presence(scene, transform, tr, theme, presence, permissions);
-        }
-        self.path_bar
-            .draw_with_presence(scene, transform, tr, theme, presence, permissions);
-    }
-
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -654,20 +638,6 @@ impl Widget for ToolbarActions {
     ) {
         for c in &mut self.right {
             c.draw(scene, transform, tr, theme, presence);
-        }
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        for c in &mut self.right {
-            c.draw_with_presence(scene, transform, tr, theme, presence, permissions);
         }
     }
 

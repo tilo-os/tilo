@@ -1,5 +1,0 @@
-reason = "The launcher now pins a GPU-less session's apps to lavapipe: it finds lavapipe's and Mesa's loader manifests, reads the compositor's pin back from its environment and binds it into the sandbox. Windows links the launcher's sandbox pipeline, and that code put it 3,072 bytes over its aarch64 budget (CI / affected packages run 96130)"
-run = 96130
-
-[apps."so.tilo.windows"]
-aarch64 = 65536

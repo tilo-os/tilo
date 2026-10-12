@@ -5,7 +5,7 @@
 //! and a pretty or raw body with syntax-highlighted, collapsible JSON.
 //! Saved requests live in collections; `{{variable}}` placeholders resolve
 //! against the active environment. Collections, environments, the active
-//! request, and history are the [`ApiTester`] resource, so a workspace can be
+//! request, and history are the [`Workspace`] record, so a workspace can be
 //! edited collaboratively; credentials stay on the device. [`ApiTesterShell`]
 //! runs it.
 
@@ -34,12 +34,12 @@ mod app;
 mod code_view;
 mod commands;
 mod dialog;
-mod doc;
 mod http;
 mod kv;
-mod locales;
+pub mod locales;
 mod model;
 mod palette;
+mod record;
 mod request;
 pub mod resource;
 mod response;
@@ -49,9 +49,9 @@ mod swap;
 mod vars;
 
 pub use app::ApiTesterApp;
-pub use resource::{ApiTester, ApiTesterShell};
+pub use resource::{ApiTesterShell, LOCALES, Workspace};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<ApiTesterShell>()
+    ui::built_in_definition!(ApiTesterShell)
 }

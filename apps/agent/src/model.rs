@@ -1346,7 +1346,7 @@ mod tests {
             held: vec!["calculator"],
         };
         let mut revealed = Revealed::new();
-        let encoded = serde_json::to_string(&tools::definitions(4)).unwrap();
+        let encoded = serde_json::to_string(&tools::definitions(Some(4))).unwrap();
         assert!(encoded.contains(tools::LIST_OPERATIONS));
         assert!(!encoded.contains("turn the bullets into a table"));
 
@@ -1386,7 +1386,7 @@ mod tests {
         let ActionTurn::Plan { input, .. } = parse_action_turn(&final_turn).unwrap() else {
             panic!("the second turn must be the final plan");
         };
-        let answer = tools::read_plan(&input, &revealed, 4).unwrap();
+        let answer = tools::read_plan(&input, &revealed, Some(4)).unwrap();
         let instruction = Instruction::from_answer(
             &answer.actions[0],
             "sample twelve values",
@@ -1469,7 +1469,7 @@ mod tests {
         assert_eq!(dialect, Dialect::OpenAi);
         let mut messages =
             dialect.first_messages(&FirstTurn::from("turn the bullets into a table"));
-        let body = dialect.body(&selection, &messages, 4);
+        let body = dialect.body(&selection, &messages, Some(4));
 
         // The request is Chat Completions shaped: no Anthropic keys at all.
         assert_eq!(body["model"], "gpt-5.4-nano");
@@ -1481,7 +1481,7 @@ mod tests {
         assert_eq!(body["messages"][0]["content"], ACTION_SYSTEM);
         assert_eq!(body["messages"][1]["role"], "user");
         let tools = body["tools"].as_array().unwrap();
-        let definitions = tools::definitions(4);
+        let definitions = tools::definitions(Some(4));
         assert_eq!(tools.len(), definitions.as_array().unwrap().len());
         for (tool, definition) in tools.iter().zip(definitions.as_array().unwrap()) {
             assert_eq!(tool["type"], "function");
@@ -1558,7 +1558,7 @@ mod tests {
             &Catalogue::default(),
             &mut Revealed::new(),
         ));
-        let body = Dialect::OpenAi.body(&selection, &messages, 8);
+        let body = Dialect::OpenAi.body(&selection, &messages, Some(8));
         std::fs::write(path, serde_json::to_vec_pretty(&body).unwrap()).unwrap();
     }
 
@@ -1609,7 +1609,7 @@ mod tests {
         );
         let dialect = Dialect::of(selection.protocol);
         let mut messages = dialect.first_messages(&FirstTurn::from("do it"));
-        let body = dialect.body(&selection, &messages, 4);
+        let body = dialect.body(&selection, &messages, Some(4));
         assert_eq!(body["system"], ACTION_SYSTEM);
         assert_eq!(body["max_tokens"], 4096);
         assert_eq!(body["messages"].as_array().unwrap().len(), 1);

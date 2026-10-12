@@ -51,8 +51,47 @@ pub fn person_room_of(person: &str) -> Option<uuid::Uuid> {
     Some(person_room(&key))
 }
 
+/// What every person record's id derives from: the record an app opens in
+/// a room when nothing names another (`derived:default@tab:0`).
+const PERSON_RECORD_BASE: &str = "derived:default@tab:0000000000000000";
+
+/// The id of the person's record of `kind`: one per kind, the same on
+/// every device (`ui::record::person::record_id`).
+#[must_use]
+pub fn person_record_id(kind: &str) -> String {
+    format!("derived:{kind}@{PERSON_RECORD_BASE}")
+}
+
+/// The kind a person record's id names; `None` for any other record.
+#[must_use]
+pub fn person_record_kind(record: &str) -> Option<&str> {
+    record
+        .strip_prefix("derived:")?
+        .strip_suffix(PERSON_RECORD_BASE)?
+        .strip_suffix('@')
+        .filter(|kind| !kind.is_empty() && !kind.contains('@'))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_person_record_names_its_kind() {
+        let record = super::person_record_id("terminal.history");
+        assert_eq!(
+            record,
+            "derived:terminal.history@derived:default@tab:0000000000000000"
+        );
+        assert_eq!(super::person_record_kind(&record), Some("terminal.history"));
+        for other in [
+            "tab:000000000000005c",
+            "derived:default@tab:0000000000000000",
+            "derived:a@b@derived:default@tab:0000000000000000",
+            "derived:notes@tab:000000000000005c",
+        ] {
+            assert_eq!(super::person_record_kind(other), None, "{other}");
+        }
+    }
+
     use super::*;
 
     #[test]

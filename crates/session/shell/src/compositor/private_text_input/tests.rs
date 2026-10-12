@@ -271,6 +271,28 @@ fn changed_snapshot_retires_start_and_reports_unknown_after_final_admission() {
 }
 
 #[test]
+fn canceled_final_sends_its_own_serial_before_retiring_the_start_grant() {
+    let mut h = Harness::new();
+    let (prepare, warming) = h.request(Kind::Prepare);
+    h.acknowledge(prepare, tilo_text_input_v1::Outcome::Accepted);
+    let (start, starting) = h.request(Kind::Start);
+    h.acknowledge(start, tilo_text_input_v1::Outcome::Accepted);
+    let (final_serial, final_receipt) = h.request(Kind::Final);
+    h.peer.operations.clear();
+    final_receipt.cancel();
+    h.state.private_text_input.service();
+    h.pump();
+    assert_eq!(
+        h.peer.operations,
+        vec![(final_serial, Kind::Cancel as u32, vec![3; 32])]
+    );
+    assert!(!starting.was_canceled());
+    assert!(!warming.was_canceled());
+    h.acknowledge(final_serial, tilo_text_input_v1::Outcome::Accepted);
+    assert!(!starting.was_canceled(), "late final ACK cannot settle it");
+}
+
+#[test]
 fn destroyed_field_settles_pending_receipt_without_retaining_authority() {
     let mut h = Harness::new();
     let (_, pending) = h.request(Kind::Prepare);

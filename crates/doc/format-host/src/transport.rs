@@ -27,17 +27,12 @@ pub fn default_socket_path() -> Option<PathBuf> {
 /// Returns an error if creating the socket directory, binding to the socket,
 /// or setting socket permissions fails.
 pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
-    use std::os::unix::fs::PermissionsExt;
-
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    // Remove a stale socket from a previous run — Unix bind() fails if the
-    // path already exists.
-    let _ = std::fs::remove_file(socket);
-    let listener = UnixListener::bind(socket)?;
-    let _ = std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600));
-    Ok(listener)
+    let listener = tilo_files::native::private::bind_socket(socket)?;
+    listener.set_nonblocking(true)?;
+    Ok(UnixListener::from_std(listener)?)
 }
 
 /// Run an accept loop forever. Each accepted stream gets its own capnp-rpc

@@ -39,8 +39,7 @@ use std::time::{Duration, Instant};
 
 use common::{Driveable, KeywordModel, catalogue, find_edit};
 use tilo_actions::InvocationId;
-use tilo_actions::door::ActionAddress;
-use tilo_actions::door::ActionDescriptor;
+use tilo_actions::door::{ActionAddress, ActionDescriptor};
 use tilo_actions::remote::{
     ActionHostError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionFrame, RemoteActionMessage, RemoteActionTarget, application_open_target,
@@ -208,7 +207,6 @@ async fn every_web_app_over_the_session() {
         AgentScope {
             rooms: vec![ROOM.into()],
             apps: catalogue.iter().map(|d| d.app_id.to_owned()).collect(),
-            may_confirm: false,
         },
         now,
         now + 3_600_000_000_000,
@@ -400,15 +398,20 @@ async fn every_web_app_over_the_session() {
     }
     eprintln!("{table}");
 
-    // A task in plain words, planned by the model planner.
-    let scratchpad = agent
-        .known_records()
-        .into_iter()
-        .chain(received.keys().cloned())
-        .find(|route| route.app_id == "so.tilo.scratchpad")
-        .unwrap();
+    // A task in plain words, planned by the model planner: a verb with a
+    // text parameter the planner fills from the words.
+    let record_of = |app: &str| {
+        agent
+            .known_records()
+            .into_iter()
+            .chain(received.keys().cloned())
+            .find(|route| route.app_id == app)
+            .unwrap()
+    };
+    let scratchpad = record_of("so.tilo.scratchpad");
+    let notes = record_of("so.tilo.notes");
     control
-        .message(r#"In the scratchpad, edit the note to say "Said in plain words""#)
+        .message(r#"In the notes, add a new note titled "Said in plain words""#)
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
@@ -435,7 +438,9 @@ async fn every_web_app_over_the_session() {
             task.state != TaskState::Running && task.state != TaskState::Queued
         });
         if done
-            && page(&catalogue, &scratchpad, &received[&scratchpad]).contains("said in plain words")
+            && received.get(&notes).is_some_and(|changes| {
+                page(&catalogue, &notes, changes).contains("said in plain words")
+            })
         {
             break;
         }
@@ -443,7 +448,7 @@ async fn every_web_app_over_the_session() {
     }
     let task = control.info().tasks.last().cloned().unwrap();
     assert_eq!(task.state, TaskState::Completed);
-    assert_eq!(task.steps[0].action, "edit");
+    assert_eq!(task.steps[0].action, "new-note");
 
     // actionsV1 for apps: the browser drives the agent's open records with
     // the remote-action frames it uses for everything else.
@@ -474,15 +479,14 @@ async fn every_web_app_over_the_session() {
         .rows
         .iter()
         .filter_map(tilo_actions::remote::CatalogueRow::target)
-        .find(|target| target.address == ActionAddress::new("scratchpad.note", "edit"))
+        .find(|target| target.address == common::scratchpad_body("").0)
         .expect("the record's declared action is offered");
     assert_eq!(
         offered.rows.len(),
         agent.survey(&scratchpad).len(),
         "the catalogue is the record's whole door, declared and projected"
     );
-    let mut text = serde_json::Map::new();
-    text.insert("text".into(), "Invoked over actionsV1".into());
+    let text = common::scratchpad_body("Invoked over actionsV1").1;
     let request = InvokeRequest {
         on_behalf_of: None,
         invocation: InvocationId::new(),
@@ -666,6 +670,45 @@ const CANVAS: &str = "so.tilo.canvas";
 const WRITER: &str = "so.tilo.word-processor";
 const SHEETS: &str = "so.tilo.sheets";
 
+/// The host grants this Outside action to both the person and the agent.
+/// A witness alone never widens the Operator preset's Ask.
+fn grant_export(agent: &AgentParticipant, route: &DocumentRoute, action: &ActionDescriptor) {
+    use ui::permissions::{PermissionContext, Role, policy};
+    let person = policy::Subject::person("Ada");
+    let subject = policy::Subject::agent("carrier");
+    let permissions = PermissionContext::member_of(ROOM, "Ada", Role::Editor).acting_as(
+        subject.clone(),
+        policy::roles::AgentPreset::Operator.grants(ROOM, "carrier", &person),
+    );
+    let mut standing = permissions.standing().clone();
+    let node = tilo_actions::action_node(
+        &policy::TreePath::room(ROOM),
+        &route.app_id,
+        &action.resource_kind,
+        &action.address.resource,
+        action.contract.field.as_deref(),
+        &action.address.action,
+    );
+    for (id, subject) in [
+        ("Ada's export approval", person.clone()),
+        ("carrier's export grant", subject),
+    ] {
+        standing.policy.grants.push(policy::Grant::new(
+            id,
+            subject,
+            node.clone(),
+            policy::KindSet::OUTSIDE,
+            policy::Answer::Allow,
+            person.clone(),
+        ));
+    }
+    agent
+        .app(route)
+        .unwrap()
+        .set_permissions(&standing)
+        .unwrap();
+}
+
 /// Content a step produces is reported with the step and in the task's
 /// reply, and is what a later step that carries content is given: Canvas
 /// opens a picture the room holds by the address the task names, exports
@@ -700,7 +743,6 @@ async fn a_task_reports_the_content_its_steps_produced() {
         AgentScope {
             rooms: vec![ROOM.into()],
             apps: vec![CANVAS.into(), WRITER.into()],
-            may_confirm: false,
         },
         now,
         now + 3_600_000_000_000,
@@ -758,8 +800,32 @@ async fn a_task_reports_the_content_its_steps_produced() {
             .address
             .clone()
     };
-    let open = named("open", Some("Open picture"));
+    let open = named("open-picture", Some("Open picture"));
     let export = named("export", None);
+    let refused_export = agent
+        .invoke(&canvas, &export, &serde_json::Map::new())
+        .unwrap_err();
+    assert!(
+        refused_export.contains("confirmation_required")
+            || refused_export.contains("permission_denied"),
+        "the Operator preset alone cannot export: {refused_export}"
+    );
+    let descriptor = canvas_operations
+        .iter()
+        .find(|descriptor| descriptor.address == export)
+        .unwrap();
+    grant_export(&agent, &canvas, descriptor);
+    let writer_operations = agent.app(&writer).unwrap().survey_with_effects();
+    let writer_action = |action: &str| {
+        writer_operations
+            .iter()
+            .find(|descriptor| descriptor.address.action == action)
+            .unwrap_or_else(|| panic!("the document publishes {action}"))
+            .address
+            .clone()
+    };
+    let place_image = writer_action("place-image");
+    let insert_image = writer_action("insert-image");
     let step = |route: &DocumentRoute, address: &ActionAddress, arguments: serde_json::Value| {
         serde_json::json!({
             "app": route.app_id,
@@ -807,11 +873,7 @@ async fn a_task_reports_the_content_its_steps_produced() {
 
     // A step that takes content, on another record, in a task whose steps
     // before it produced none: refused before it runs, naming why.
-    let mut place = step(
-        &writer,
-        &ActionAddress::new("tilo.rich-text", "place-image"),
-        serde_json::json!({}),
-    );
+    let mut place = step(&writer, &place_image, serde_json::json!({}));
     place["carries"] = true.into();
     let refused = control
         .message(
@@ -835,13 +897,9 @@ async fn a_task_reports_the_content_its_steps_produced() {
     );
 
     // What the export produced, carried to the Writer record (another
-    // worker) by the record's own document operation: no view, no caret,
+    // worker) by its insert-image effect: no view, no caret,
     // and the record then shows the very picture the export kept.
-    let mut insert = step(
-        &writer,
-        &ActionAddress::new("tilo.rich-text", "insert-image"),
-        serde_json::json!({}),
-    );
+    let mut insert = step(&writer, &insert_image, serde_json::json!({}));
     insert["carries"] = true.into();
     let inserting = control
         .message(
@@ -869,8 +927,10 @@ async fn a_task_reports_the_content_its_steps_produced() {
         .app(&writer)
         .unwrap()
         .read(|doc| {
-            let state =
-                <tilo_document::RichText as ui::tilo_resource::Resource>::read(doc).unwrap();
+            let document =
+                <word_processor::model::Document as ui::tilo_resource::Resource>::read(doc)
+                    .unwrap();
+            let state = document.text().expect("the Writer document has a body");
             (
                 state.featured("image").len(),
                 state.content().contains(hash),
@@ -887,10 +947,11 @@ async fn a_task_reports_the_content_its_steps_produced() {
 /// The rest of [`a_task_is_planned_again_with_what_a_view_answered`]'s task.
 const BAND: &str = "add a filled rectangle over the right 38% of the picture";
 
-/// Runs the written-out steps, then plans [`BAND`] again from what the
-/// steps answered: the artwork's size, as its view found it.
+/// Plans the opening and inspection, then plans [`BAND`] again from what
+/// the steps answered: the artwork's size, as its view found it.
 struct Measuring {
     seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    picture: String,
 }
 
 impl tilo_agent_participant::Planner for Measuring {
@@ -901,10 +962,36 @@ impl tilo_agent_participant::Planner for Measuring {
     ) -> Result<Vec<tilo_agent_participant::Step>, String> {
         use tilo_agent_participant::Step;
         if task != BAND {
-            let mut steps = DirectPlanner.plan(task, context)?;
+            if task != "In Canvas, open the picture, measure it, then draw a band" {
+                return Err(format!("unexpected task: {task:?}"));
+            }
+            let (route, descriptors) = context
+                .open
+                .iter()
+                .find(|(route, _)| route.app_id == CANVAS)
+                .ok_or("the artwork is not open")?;
+            let mut steps = Vec::new();
+            for (action, arguments) in [
+                ("open-picture", serde_json::json!({"path": self.picture})),
+                ("inspect", serde_json::json!({})),
+            ] {
+                let descriptor = descriptors
+                    .iter()
+                    .find(|descriptor| descriptor.address.action == action)
+                    .ok_or_else(|| format!("the artwork publishes no {action}"))?;
+                steps.push(Step {
+                    app: CANVAS.into(),
+                    record: Some(route.record.clone()),
+                    action: StepAction::Invoke {
+                        address: descriptor.address.clone(),
+                        arguments: arguments.as_object().unwrap().clone(),
+                    },
+                    carries: false,
+                });
+            }
             steps.push(Step {
                 app: CANVAS.into(),
-                record: None,
+                record: Some(route.record.clone()),
                 action: StepAction::Continue(BAND.into()),
                 carries: false,
             });
@@ -989,7 +1076,6 @@ async fn a_task_is_planned_again_with_what_a_view_answered() {
         AgentScope {
             rooms: vec![ROOM.into()],
             apps: vec![CANVAS.into()],
-            may_confirm: false,
         },
         now,
         now + 3_600_000_000_000,
@@ -1018,6 +1104,7 @@ async fn a_task_is_planned_again_with_what_a_view_answered() {
         catalogue(),
         Box::new(Measuring {
             seen: std::sync::Arc::clone(&seen),
+            picture: address,
         }),
     )
     .unwrap();
@@ -1040,26 +1127,14 @@ async fn a_task_is_planned_again_with_what_a_view_answered() {
             .unwrap_or_else(|| panic!("the artwork offers {action}"))
             .clone()
     };
-    let open = named("open", Some("Open picture")).address;
+    let open = named("open-picture", Some("Open picture")).address;
     let inspect = named("inspect", None);
     assert_eq!(inspect.kind, tilo_actions::OperationKind::View);
-    let step = |address: &ActionAddress, arguments: serde_json::Value| {
-        serde_json::json!({
-            "app": canvas.app_id,
-            "record": canvas.record,
-            "resource": address.resource,
-            "action": address.action,
-            "arguments": arguments,
-        })
-    };
+    assert_eq!(open.resource, "canvas.artwork");
+    // Written JSON bypasses the planner; a natural-language request must
+    // enter it so its explicit Continue actually replans after the read.
     let task = control
-        .message(
-            &serde_json::json!([
-                step(&open, serde_json::json!({"path": address})),
-                step(&inspect.address, serde_json::json!({})),
-            ])
-            .to_string(),
-        )
+        .message("In Canvas, open the picture, measure it, then draw a band")
         .unwrap();
     let ended = || {
         control
@@ -1219,7 +1294,6 @@ async fn an_agent_opens_another_agents_document_by_its_title() {
             AgentScope {
                 rooms: vec![ROOM.into()],
                 apps: vec![WRITER.into()],
-                may_confirm: false,
             },
             now,
             now + 3_600_000_000_000,
@@ -1266,12 +1340,12 @@ async fn an_agent_opens_another_agents_document_by_its_title() {
 
     // Agent A's document, headed "Launch page".
     let page = author.open(WRITER, None).unwrap();
-    let rich_text = |action: &str| ActionAddress::new("tilo.rich-text", action);
+    let document = |action: &str| ActionAddress::new("word-processor.document", action);
     let arguments = |value: serde_json::Value| value.as_object().unwrap().clone();
     author
         .invoke(
             &page,
-            &rich_text("append-paragraph"),
+            &document("append-paragraph"),
             &arguments(serde_json::json!({"text": LAUNCH_PAGE})),
         )
         .unwrap();
@@ -1281,19 +1355,37 @@ async fn an_agent_opens_another_agents_document_by_its_title() {
         .app(&page)
         .unwrap()
         .read(|doc| {
-            let text = tilo_document::RichText::plain_text_under(doc, &automerge::ROOT).unwrap();
+            let body = word_processor::model::body(doc).expect("the Writer document has a body");
+            let text = tilo_document::RichText::plain_text_under(doc, &body).unwrap();
             assert!(text.contains(LAUNCH_PAGE), "{text}");
-            let state =
-                <tilo_document::RichText as ui::tilo_resource::Resource>::read(doc).unwrap();
-            state.body().all().last().map(str::to_owned)
+            let document =
+                <word_processor::model::Document as ui::tilo_resource::Resource>::read(doc)
+                    .unwrap();
+            document
+                .text()
+                .unwrap()
+                .body()
+                .all()
+                .last()
+                .map(str::to_owned)
         })
         .unwrap()
         .expect("the paragraph was appended");
     author
         .invoke(
             &page,
-            &rich_text("set-style"),
-            &arguments(serde_json::json!({"block": block, "kind": "heading", "level": 1})),
+            &document(ui::tilo_resource::FIELD_EDIT),
+            &arguments(serde_json::json!({
+                "edit": word_processor::model::edit(
+                    &tilo_document::RichTextAction::SetParagraphStyle {
+                        region: tilo_document::action::RegionKind::Body,
+                        blocks: vec![block],
+                        kind: "heading".into(),
+                        level: Some(1),
+                        ordered: None,
+                    }
+                ),
+            })),
         )
         .unwrap();
 
@@ -1330,7 +1422,7 @@ async fn an_agent_opens_another_agents_document_by_its_title() {
         .collect();
     assert_eq!(
         actions,
-        [("tilo.rich-text", "append-paragraph")],
+        [("word-processor.document", "append-paragraph")],
         "the record named by its title was open before the plan: {actions:?}"
     );
     assert!(editor.app(&page).is_some(), "the editor holds A's record");
@@ -1344,7 +1436,8 @@ async fn an_agent_opens_another_agents_document_by_its_title() {
     // The paragraph lands in Agent A's own document.
     let landed = |author: &AgentParticipant| {
         author.app(&page).unwrap().read(|doc| {
-            tilo_document::RichText::plain_text_under(doc, &automerge::ROOT)
+            let body = word_processor::model::body(doc).expect("the Writer document has a body");
+            tilo_document::RichText::plain_text_under(doc, &body)
                 .is_ok_and(|text| text.contains(LAUNCH_PAGE) && text.contains(DOORS))
         }) == Some(true)
     };
@@ -1423,7 +1516,6 @@ async fn model_agent(
         AgentScope {
             rooms: vec![ROOM.into()],
             apps: apps.iter().map(|app| (*app).to_owned()).collect(),
-            may_confirm: false,
         },
         now,
         now + 3_600_000_000_000,
@@ -1488,8 +1580,8 @@ fn run_task(
 /// The offline measure of model calls per task: a one-app task over an app
 /// with nothing open is planned in ONE model request — the first turn
 /// shows what a new record of the app publishes, with its parameters in
-/// full, and the step naming one opens that record itself — where it took
-/// an open, a re-plan and a describe before.
+/// full. The participant opens it before planning to request its keys while
+/// the model works — no model-driven open, re-plan or describe turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_one_app_task_is_planned_in_one_model_request() {
     let (root, _) = UserIdentity::generate("Ada", 1);
@@ -1503,7 +1595,12 @@ async fn a_one_app_task_is_planned_in_one_model_request() {
     )
     .await;
     let _steward = steward::Steward::start(&host.relay, &root).await;
-    let set_cells = "sheets.sheet:00000000-0000-4000-8000-000000000001#set-cells";
+    let sheet = ui::tilo_resource::items::item_resource_id_in(
+        <sheets::Workbook as ui::tilo_resource::Resource>::KIND,
+        "sheets",
+        &ui::tilo_resource::Id::from_raw(sheets::workbook::FIRST_SHEET_ID),
+    );
+    let set_cells = format!("{sheet}#set-cells");
     let (url, sent) = model_endpoint(vec![tool_call(
         "p1",
         "plan",
@@ -1521,6 +1618,13 @@ async fn a_one_app_task_is_planned_in_one_model_request() {
     )
     .await;
 
+    assert!(
+        agent
+            .open_records()
+            .iter()
+            .all(|route| route.app_id != SHEETS),
+        "the task starts without a workbook"
+    );
     let info = run_task(
         &mut agent,
         &control,
@@ -1534,12 +1638,54 @@ async fn a_one_app_task_is_planned_in_one_model_request() {
     let first: serde_json::Value = serde_json::from_str(&requests[0]).unwrap();
     let turn = first["messages"][1]["content"].as_str().unwrap();
     assert!(
-        turn.contains(set_cells)
-            && turn.contains("rows: array (required)")
-            && turn.contains("not open yet: planning any of its operations"),
+        turn.contains(&set_cells)
+            && turn.contains("rows: array —")
+            && turn.contains(&format!("— resource {sheet}")),
         "{turn}"
     );
     assert!(!turn.contains("app.so.tilo.sheets#open"), "{turn}");
+    let workbooks: Vec<_> = agent
+        .open_records()
+        .into_iter()
+        .filter(|route| route.app_id == SHEETS)
+        .collect();
+    let [route] = workbooks.as_slice() else {
+        panic!("the task made exactly one workbook: {workbooks:?}");
+    };
+    let operations = agent.app(route).unwrap().survey();
+    let operation = operations
+        .iter()
+        .find(|descriptor| descriptor.address == ActionAddress::new(&sheet, "set-cells"))
+        .expect("the planned item operation is published");
+    assert!(
+        operation
+            .params
+            .iter()
+            .any(|param| param.name == "rows" && param.required),
+        "rows remain required by the typed contract"
+    );
+    let cells = agent
+        .app(route)
+        .unwrap()
+        .read(|doc| {
+            let workbook = <sheets::Workbook as ui::tilo_resource::Resource>::read(doc).unwrap();
+            let sheet = workbook
+                .sheet(&ui::tilo_resource::Id::from_raw(
+                    sheets::workbook::FIRST_SHEET_ID,
+                ))
+                .unwrap();
+            let layout = sheet.layout();
+            [(0, 0), (1, 0), (0, 1), (1, 1)].map(|addr| {
+                sheet
+                    .cell_at(&layout, addr)
+                    .expect("the planned cell was written")
+                    .raw
+                    .0
+                    .clone()
+            })
+        })
+        .unwrap();
+    assert_eq!(cells, ["Visits", "Signups", "240", "18"]);
 
     agent.close();
     host.relay.shutdown().await;
@@ -1592,7 +1738,7 @@ async fn a_view_is_read_in_the_planning_conversation() {
         .survey_with_effects()
         .into_iter()
         .find(|descriptor| {
-            descriptor.address.action == "open" && descriptor.action_label == "Open picture"
+            descriptor.address.action == "open-picture" && descriptor.action_label == "Open picture"
         })
         .unwrap()
         .address;
@@ -1624,7 +1770,7 @@ async fn a_view_is_read_in_the_planning_conversation() {
     assert_eq!(requests.len(), 2, "a read and a plan, no re-plan");
     let turn = requests[0]["messages"][1]["content"].as_str().unwrap();
     assert!(
-        turn.contains("marks: array (required)")
+        turn.contains("marks: array —")
             && turn.contains(&format!("(document {})", canvas.record))
             && turn.contains("canvas.artwork#inspect answered"),
         "the first turn shows draw in full and what the artwork holds: {turn}"
@@ -1637,10 +1783,18 @@ async fn a_view_is_read_in_the_planning_conversation() {
         "the read answered in the conversation: {read}"
     );
 
-    let inspect = agent
-        .app(&canvas)
-        .unwrap()
-        .survey_with_effects()
+    let operations = agent.app(&canvas).unwrap().survey_with_effects();
+    let draw = operations
+        .iter()
+        .find(|descriptor| descriptor.address.action == "draw")
+        .unwrap();
+    assert!(
+        draw.params
+            .iter()
+            .any(|param| param.name == "marks" && param.required),
+        "marks remain required by the typed contract"
+    );
+    let inspect = operations
         .into_iter()
         .find(|descriptor| descriptor.address.action == "inspect")
         .unwrap()

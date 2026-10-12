@@ -162,9 +162,12 @@ fn city_time(zone: &str, now: chrono::DateTime<Utc>) -> String {
     zone.parse::<chrono_tz::Tz>().map_or_else(
         |_| "Time unavailable".into(),
         |z| {
-            now.with_timezone(&z)
-                .format("%H:%M on %a %-d %b (%Z, UTC%:z)")
-                .to_string()
+            let there = now.with_timezone(&z);
+            format!(
+                "{} on {}",
+                ui::clock::time_of_day(&there),
+                there.format("%a %-d %b (%Z, UTC%:z)")
+            )
         },
     )
 }
@@ -255,7 +258,7 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
                 &format!("clocks.world.add.{id}"),
                 &label,
                 move || {
-                    add.invoke(Clocks::ADD_WORLD_CLOCK.with((city.clone(), zone.clone())));
+                    add.submit(Clocks::ADD_WORLD_CLOCK.with((city.clone(), zone.clone())));
                     clear.set(String::new());
                 },
             ));
@@ -286,7 +289,7 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
                                     .with_intrinsic_height()
                                     .with_rhythm(ui::tokens::Rhythm::Tight)
                                     .push(Box::new(
-                                        Text::new(&here.format("%H:%M").to_string())
+                                        Text::new(&ui::clock::time_of_day(&here))
                                             .with_role(ui::TextRole::Display),
                                     ))
                                     .push(Box::new(
@@ -348,7 +351,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
             let repeat = repeat_summary(&alarm.weekdays());
             let row = Row::new()
                 .push(Box::new(
-                    Text::new(&alarm.local_time().format("%H:%M").to_string())
+                    Text::new(&ui::clock::time_of_day(&alarm.local_time()))
                         .with_role(ui::TextRole::LargeTitle),
                 ))
                 .push(Box::new(
@@ -459,7 +462,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                         )))
                         .push(primary_button("clocks.alarm.add", "Add alarm", move || {
                             let time = add_draft.get();
-                            add.invoke(Clocks::ADD_ALARM.with((
+                            add.submit(Clocks::ADD_ALARM.with((
                                 bounded_label(&add_label.get(), "Alarm"),
                                 time.hours,
                                 time.minutes,
@@ -741,7 +744,7 @@ fn timers_screen(
                                 return;
                             };
                             if secs > 0 {
-                                add.invoke(
+                                add.submit(
                                     Clocks::ADD_TIMER
                                         .with((bounded_label(&add_label.get(), "Timer"), secs)),
                                 );
@@ -1246,7 +1249,7 @@ impl ClocksApp {
         }
         for alarm in tick.finished_alarms {
             self.dispatcher
-                .invoke(Clocks::SET_ALARM_ENABLED.with((alarm, false)));
+                .submit(Clocks::SET_ALARM_ENABLED.with((alarm, false)));
         }
         for event in tick.due {
             self.remember_due(event);
@@ -1272,9 +1275,9 @@ impl ClocksApp {
                 } else {
                     Clocks::START_STOPWATCH.invoke()
                 };
-                self.dispatcher.invoke(invoke);
+                self.dispatcher.submit(invoke);
             }
-            ("lap-stopwatch", _) => self.dispatcher.invoke(Clocks::LAP.invoke()),
+            ("lap-stopwatch", _) => self.dispatcher.submit(Clocks::LAP.invoke()),
             ("close-stopwatch", _) => self.update_device(|device| {
                 device.floating_stopwatch = false;
             }),
@@ -1284,9 +1287,9 @@ impl ClocksApp {
                 } else {
                     Clocks::RESUME_TIMER.with(id)
                 };
-                self.dispatcher.invoke(invoke);
+                self.dispatcher.submit(invoke);
             }
-            ("add-minute", Some(id)) => self.dispatcher.invoke(Clocks::ADD_MINUTE.with(id)),
+            ("add-minute", Some(id)) => self.dispatcher.submit(Clocks::ADD_MINUTE.with(id)),
             ("close", Some(id)) => self.update_device(|device| {
                 device.floating_timers.remove(id.as_str());
             }),

@@ -43,9 +43,10 @@ pub struct Step {
     pub record: Option<String>,
     /// What to do there.
     pub action: StepAction,
-    /// The operation takes what the step before it produced: its content
-    /// input is bound to that step's one content result when it runs, never
-    /// to a value the plan wrote ([`tilo_agent::plan::carried_arguments`]).
+    /// The operation takes what the step before it produced when its
+    /// content argument is omitted. When true, its declared content
+    /// parameter is bound to that step's one content result, not a value
+    /// the plan wrote ([`tilo_agent::plan::carried_arguments`]).
     pub carries: bool,
 }
 
@@ -114,17 +115,31 @@ impl PlanContext {
     /// record that is not open.
     #[must_use]
     pub fn wants_content(&self, app: &str, record: Option<&str>, address: &ActionAddress) -> bool {
+        self.content_parameter(app, record, address).is_some()
+    }
+
+    /// The typed content input of an open or previewed operation; legacy
+    /// prompted inputs are used only when no typed parameter declares it.
+    pub(crate) fn content_parameter(
+        &self,
+        app: &str,
+        record: Option<&str>,
+        address: &ActionAddress,
+    ) -> Option<String> {
         self.open
             .iter()
-            .find(|(route, _)| {
+            .filter(|(route, _)| {
                 route.app_id == app && record.is_none_or(|record| route.record == record)
             })
-            .and_then(|(_, descriptors)| {
-                descriptors
+            .flat_map(|(_, descriptors)| descriptors)
+            .chain(
+                self.previews
                     .iter()
-                    .find(|descriptor| descriptor.address == *address)
-            })
-            .is_some_and(|descriptor| descriptor.input.wants_content())
+                    .filter(|(previewed, _)| record.is_none() && previewed == app)
+                    .flat_map(|(_, descriptors)| descriptors),
+            )
+            .find(|descriptor| descriptor.address == *address)
+            .and_then(content_parameter)
     }
 
     /// Whether the operation at `address` that a new record of `app`
@@ -137,7 +152,7 @@ impl PlanContext {
             .filter(|(previewed, _)| previewed == app)
             .flat_map(|(_, descriptors)| descriptors)
             .find(|descriptor| descriptor.address == *address)
-            .is_some_and(|descriptor| descriptor.input.wants_content())
+            .is_some_and(|descriptor| content_parameter(descriptor).is_some())
     }
 }
 
@@ -147,7 +162,7 @@ impl PlanContext {
 /// planned: it changes nothing and makes no content of its own.
 #[must_use]
 pub fn readable(descriptor: &ActionDescriptor) -> bool {
-    use tilo_actions::{OperationKind, PermissionRequirement, ResultSpec, RiskLevel};
+    use tilo_actions::{ActionKind, OperationKind, ResultSpec};
     let contract = &descriptor.contract;
     let answers = match &contract.result {
         ResultSpec::Json { .. } => true,
@@ -158,14 +173,30 @@ pub fn readable(descriptor: &ActionDescriptor) -> bool {
     };
     let reads = match descriptor.kind {
         OperationKind::View => true,
-        OperationKind::Effect => contract.risk == RiskLevel::None,
+        OperationKind::Effect => contract.kind == ActionKind::Read,
         OperationKind::Document => false,
     };
     reads
         && answers
-        && PermissionRequirement::Read.covers(contract.permission)
+        && contract.kind == ActionKind::Read
         && contract.confirmation == tilo_actions::ConfirmationPolicy::None
-        && !descriptor.input.wants_content()
+        && content_parameter(descriptor).is_none()
+}
+
+/// The content parameter declared by the published schema, falling back
+/// to the legacy prompted input only when no typed parameter declares it.
+pub(crate) fn content_parameter(descriptor: &ActionDescriptor) -> Option<String> {
+    descriptor
+        .params
+        .iter()
+        .find(|param| param.is_content())
+        .map(|param| param.name.to_string())
+        .or_else(|| {
+            descriptor
+                .input
+                .wants_content()
+                .then(|| tilo_actions::PROMPTED_PARAM.to_owned())
+        })
 }
 
 /// Runs reads while a task is planned: what a [`Planner`] uses to look at
@@ -391,10 +422,9 @@ fn step(item: &serde_json::Value, context: &PlanContext) -> Result<Step, String>
     };
     let address = ActionAddress::new(resource, action);
     let carries = match item.get("carries") {
-        None => {
-            !arguments.contains_key(tilo_actions::PROMPTED_PARAM)
-                && context.wants_content(&app, record.as_deref(), &address)
-        }
+        None => context
+            .content_parameter(&app, record.as_deref(), &address)
+            .is_some_and(|param| !arguments.contains_key(&param)),
         Some(serde_json::Value::Bool(carries)) => *carries,
         Some(_) => return Err("carries is true or false".into()),
     };
@@ -510,6 +540,74 @@ mod tests {
     }
 
     #[test]
+    fn planning_reads_follow_action_kinds_and_confirmation_not_the_old_permission_ladder() {
+        let (_, mut descriptor) = place_image("so.tilo.word-processor");
+        descriptor.input = tilo_actions::InputSpec::None;
+        descriptor.kind = tilo_actions::OperationKind::View;
+        descriptor.contract = tilo_actions::ActionContract::view();
+        descriptor.contract.result = tilo_actions::ResultSpec::Json {
+            schema: serde_json::json!({"type": "object"}),
+        };
+        assert!(readable(&descriptor));
+        descriptor.kind = tilo_actions::OperationKind::Effect;
+        assert!(readable(&descriptor));
+        descriptor.contract.kind = tilo_actions::ActionKind::Undoable;
+        assert!(!readable(&descriptor));
+        descriptor.contract.kind = tilo_actions::ActionKind::Outside;
+        assert!(!readable(&descriptor));
+        descriptor.contract.kind = tilo_actions::ActionKind::Read;
+        descriptor.contract.result = tilo_actions::ResultSpec::Resource {
+            resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.into(),
+        };
+        assert!(
+            !readable(&descriptor),
+            "produced content is not a planning read"
+        );
+        descriptor.contract.result = tilo_actions::ResultSpec::Json {
+            schema: serde_json::json!({"type": "object"}),
+        };
+        descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+        assert!(!readable(&descriptor));
+        descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::None;
+        descriptor.params.push(
+            tilo_actions::ActionParam::required("image", tilo_actions::ParamType::Text, "Image")
+                .as_content(),
+        );
+        assert!(!readable(&descriptor));
+    }
+
+    #[test]
+    fn typed_content_is_bound_by_its_declared_name_in_open_records_and_previews() {
+        let app = "so.tilo.word-processor";
+        let (route, mut descriptor) = place_image(app);
+        descriptor.input = tilo_actions::InputSpec::None;
+        descriptor.params.push(
+            tilo_actions::ActionParam::required("image", tilo_actions::ParamType::Text, "Image")
+                .as_content(),
+        );
+        let mut context = context();
+        context.apps.push(app.into());
+        context
+            .previews
+            .push((app.into(), vec![descriptor.clone()]));
+        let place =
+            serde_json::json!({"app": app, "resource": "document", "action": "place-image"});
+        assert!(steps_from_json(&place, &context).unwrap()[0].carries);
+        assert_eq!(
+            context
+                .content_parameter(app, None, &descriptor.address)
+                .as_deref(),
+            Some("image")
+        );
+        context.previews.clear();
+        context.open.push((route, vec![descriptor]));
+        assert!(steps_from_json(&place, &context).unwrap()[0].carries);
+        let mut explicit = place;
+        explicit["arguments"] = serde_json::json!({"image": "tilo.content:abc"});
+        assert!(!steps_from_json(&explicit, &context).unwrap()[0].carries);
+    }
+
+    #[test]
     fn a_step_carries_content_where_its_operation_declares_it() {
         let app = "so.tilo.word-processor";
         let (route, descriptor) = place_image(app);
@@ -559,28 +657,41 @@ mod tests {
             resources: vec![tilo_actions::content_resource("abc123").unwrap()],
         };
         assert_eq!(
-            carried_arguments(&planned, false, Some(&produced)).unwrap(),
+            carried_arguments(&planned, None, Some(&produced)).unwrap(),
             planned,
             "a step that does not carry runs as planned"
         );
-        let bound = carried_arguments(&planned, true, Some(&produced)).unwrap();
+        let bound = carried_arguments(
+            &planned,
+            Some(tilo_actions::PROMPTED_PARAM),
+            Some(&produced),
+        )
+        .unwrap();
         assert_eq!(bound[tilo_actions::PROMPTED_PARAM], "abc123");
         assert_eq!(bound["caption"], "kept");
 
-        let refused = carried_arguments(&planned, true, None).unwrap_err();
+        let refused =
+            carried_arguments(&planned, Some(tilo_actions::PROMPTED_PARAM), None).unwrap_err();
         assert!(refused.contains("no preceding action"), "{refused}");
         let nothing = tilo_actions::ActionOutput::default();
-        assert!(carried_arguments(&planned, true, Some(&nothing)).is_err());
+        assert!(
+            carried_arguments(&planned, Some(tilo_actions::PROMPTED_PARAM), Some(&nothing))
+                .is_err()
+        );
         let two = tilo_actions::ActionOutput {
             value: None,
             resources: vec!["tilo.content:a".into(), "tilo.content:b".into()],
         };
-        assert!(carried_arguments(&planned, true, Some(&two)).is_err());
+        assert!(
+            carried_arguments(&planned, Some(tilo_actions::PROMPTED_PARAM), Some(&two)).is_err()
+        );
         let file = tilo_actions::ActionOutput {
             value: None,
             resources: vec!["files.entry:/tmp/a.png".into()],
         };
-        assert!(carried_arguments(&planned, true, Some(&file)).is_err());
+        assert!(
+            carried_arguments(&planned, Some(tilo_actions::PROMPTED_PARAM), Some(&file)).is_err()
+        );
     }
 
     #[test]

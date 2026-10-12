@@ -42,7 +42,7 @@ fn resources() -> Vec<Resource> {
         },
     );
     spec.contract.confirmation = ConfirmationPolicy::Confirm;
-    spec.contract.permission = tilo_actions::PermissionRequirement::Admin;
+    spec.contract.kind = tilo_actions::ActionKind::Outside;
     resource.actions.push(spec);
     vec![resource]
 }
@@ -140,8 +140,8 @@ mod tests {
                 .first()
                 .unwrap()
                 .contract
-                .permission,
-            tilo_actions::PermissionRequirement::Admin
+                .kind,
+            tilo_actions::ActionKind::Outside
         );
         let catalogue = catalog::enumerate(PROVIDER, &resources, "disk unlock");
         assert_eq!(catalogue["count"], 1);

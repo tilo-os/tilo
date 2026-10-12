@@ -89,7 +89,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent};
 
 use crate::actions::SetPreference;
-use crate::learned::{LearnedTyping, Lesson};
+use crate::learned::{Learned, Lesson};
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -352,7 +352,7 @@ pub struct OskWidget {
     /// Whether what was learned is to be forgotten, saved copies included.
     forget_learned: bool,
     /// What the keyboard learned from this person, as last presented.
-    learned: std::rc::Rc<LearnedTyping>,
+    learned: std::rc::Rc<Learned>,
 
     /// Whether the keyboard is on screen. This is not the keyboard's own
     /// choice — visibility belongs to the compositor, which shows the keyboard
@@ -1013,7 +1013,7 @@ impl OskWidget {
 
     /// Take `learned`, what the keyboard learned from this person on any of
     /// their devices, as what it knows about their typing.
-    pub fn present_learned(&mut self, learned: std::rc::Rc<LearnedTyping>) {
+    pub fn present_learned(&mut self, learned: std::rc::Rc<Learned>) {
         self.learned = learned;
         if self.personalization_enabled {
             self.adopt_learned();
@@ -1043,9 +1043,9 @@ impl OskWidget {
         if let Some(transitions) = learned.transitions.get(self.language.code()) {
             self.predictor.adopt_learned(transitions);
         }
-        self.touch_model.adopt(&learned.touch);
+        self.touch_model.adopt(&learned.touch_offsets());
         if let Some(ac) = &mut self.autocorrect {
-            ac.adopt_kept(&learned.kept);
+            ac.adopt_kept(learned.kept.iter());
         }
     }
 
@@ -1525,7 +1525,7 @@ impl OskWidget {
         let learned = &self.learned;
         let ac = self.autocorrect.get_or_insert_with(|| {
             let mut ac = Autocorrector::new(dict, KeyAdjacency::default());
-            ac.adopt_kept(&learned.kept);
+            ac.adopt_kept(learned.kept.iter());
             ac
         });
         ac.set_adjacency(adjacency);
@@ -3933,7 +3933,6 @@ mod tests {
             // A non-letter layout must lay out and draw without panicking even
             // though it has no Shift / symbols affordances.
             use ui::offscreen::OffscreenRenderer;
-            use ui::permissions::PermissionContext;
             use vello::peniko::Color;
 
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()))
@@ -3943,17 +3942,9 @@ mod tests {
 
             let theme = Theme::dark();
             let presence = PresenceCtx::empty();
-            let permission = PermissionContext::permissive();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            osk.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &permission,
-            );
+            osk.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
             let dir = tempfile::tempdir().unwrap();
             let out = dir.path().join("osk_dialpad.png");
@@ -3968,7 +3959,6 @@ mod tests {
             // A full offscreen frame with a populated suggestion bar must produce
             // non-empty pixels (the bar + chips draw).
             use ui::offscreen::OffscreenRenderer;
-            use ui::permissions::PermissionContext;
             use vello::peniko::Color;
 
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
@@ -3981,17 +3971,9 @@ mod tests {
 
             let theme = Theme::dark();
             let presence = PresenceCtx::empty();
-            let permission = PermissionContext::permissive();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            osk.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &permission,
-            );
+            osk.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
             let dir = tempfile::tempdir().unwrap();
             let out = dir.path().join("osk_suggestion_bar.png");

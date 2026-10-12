@@ -352,13 +352,15 @@ COPY vendor /build/vendor
 COPY dist /build/dist
 COPY docs/developers/tasks /build/docs/developers/tasks
 COPY tools/ci/rustc-thin-app-wrapper.sh tools/ci/runtime-dylib-lazy-link.py /build/tools/ci/
+# build-thin-apps.sh routes a cached build through this dispatcher
+# (RUSTC_WRAPPER), which finds the size wrapper beside it in tools/ci/.
+COPY tools/ci/thin-app/sccache /build/tools/ci/thin-app/sccache
 COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
 COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
 COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py
 COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs
 COPY tools/test-assets.py /build/tools/test-assets.py
 COPY tools/font-catalog.py /build/tools/font-catalog.py
-COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
 COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env
 COPY scripts/browser/build-host.py scripts/browser/cef-lock.json /build/scripts/browser/
 COPY \
@@ -694,7 +696,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     # (default collection), the Browser included; its engine is the separate
     # runtime built at the end of this step.
     && if [ "${TILO_WITH_BROWSER}" = "0" ]; then THIN_EXCLUDES="browser"; else THIN_EXCLUDES=""; fi \
-    && APP_FEATURES="music/audio,music/live,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,mail/live,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine" \
+    && APP_FEATURES="music/audio,music/live,music/runtime-engine,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,mail/live,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
@@ -1137,8 +1139,8 @@ RUN --network=none \
         "/image/usr/share/tilo/font-catalogs/$catalog" --scope product \
     && python3 /tilo-src/tools/font-catalog.py link "$fonts" /image/usr/share/fonts/tilo \
         --scope os --extra /tilo-os-fonts \
-    # The runtimes also name some files twice (libgcc_s in lib/ and lib/lib64/,
-    # the native and browser runtimes' shared glibc): one inode each (TIL-736).
+    # The runtimes also share files (the browser runtime's loader set is the
+    # same glibc the native runtime signs at lib/): one inode each.
     && python3 /tilo-src/hardlink-identical.py /image/usr \
     && test "$(stat -c %i "$fonts/NotoSansCJK-VF.ttc")" = "$(stat -c %i /image/usr/share/fonts/tilo/NotoSansCJK-VF.ttc)" \
     && test "$(stat -c %i "$fonts/NotoSansCJK-VF.ttc")" = "$(stat -c %i "/image/usr/share/tilo/font-catalogs/$catalog/NotoSansCJK-VF.ttc")"
@@ -1657,7 +1659,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # glibc language pack so each accepted profile remains functional after first
     # boot; advertising languages backed by only glibc-langpack-en would silently
     # apply an unusable LANG value and fall back to English. Keep this curated set
-    # in lock-step with os/usr/share/tilo/installer-locales.txt rather than pulling
+    # in lock-step with crates/session/install-profile-model/locales.txt rather than pulling
     # the much larger all-locales archive into every download. libevdev is the
     # runtime library of joycond (see joycond-builder).
     && dnf install -y --setopt=reposdir=/repo \
@@ -2223,6 +2225,7 @@ COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/
 COPY --chmod=0755 \
     os/usr/libexec/tilo-security-audit \
     os/usr/libexec/tilo-firstboot-user \
+    os/usr/libexec/tilo-firstboot-files.py \
     os/usr/libexec/tilo-firstboot-autologin-cleanup \
     os/usr/libexec/tilo-session-recovery \
     os/usr/libexec/tilo-cage-session \
@@ -2331,7 +2334,7 @@ COPY os/usr/share/xdg-desktop-portal/tilo-portals.conf /usr/share/xdg-desktop-po
 COPY os/etc/systemd/ /etc/systemd/
 COPY os/etc/locale.conf /etc/locale.conf
 COPY os/etc/chrony.conf /etc/chrony.conf
-COPY os/usr/share/tilo/installer-locales.txt /usr/share/tilo/installer-locales.txt
+COPY crates/session/install-profile-model/locales.txt /usr/share/tilo/installer-locales.txt
 
 # Bundled documentation (the README in the OS submodule, plus the
 # peer-sync transport and diagnostics doc).

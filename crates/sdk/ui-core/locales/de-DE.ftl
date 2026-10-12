@@ -229,7 +229,6 @@ history-files-error-unavailable = Der Dateiverlauf ist vorübergehend nicht verf
 history-files-error-too-large = Die frühere Vorschau überschreitet die unterstützte Größe
 history-files-error-no-content = Diese Version hat keinen gespeicherten Inhaltsverweis
 history-files-outcome-applied = Version { $revision } wiederhergestellt (Vorgang { $intent }). Der aktuelle zusammengeführte Dateiinhalt wird getrennt angezeigt. Vorheriger Verweis: beobachtete Version.
-history-files-outcome-applied-legacy = Version { $revision } wiederhergestellt (Vorgang { $intent }). Der aktuelle zusammengeführte Dateiinhalt wird getrennt angezeigt. Vorheriger Verweis: älterer Inhaltsvertreter; frühere Urheberschaft unbekannt.
 history-files-outcome-unchanged = Der ausgewählte Inhalt stimmt bereits überein; keine neue Version und kein Rückgängig-Eintrag
 history-files-outcome-pending = Die Wiederherstellung steht aus. Prüfe das Ergebnis oder versuche denselben Vorgang erneut
 history-files-outcome-review = Die aktuelle Datei hat sich geändert. Aktualisiere die Prüfung; die ausgewählte alte Version bleibt angeheftet
@@ -349,7 +348,12 @@ relative-ago-years = { $count ->
     }
 
 # Ein Software-Teilnehmer in Verlauf, Präsenz und Aktivität.
+history-run-step-separator = {", "}
 participant-agent = { $name } · Agent
+participant-shortcut = { $name } · Kurzbefehl
+participant-app = { $name } · App
+# Ein Agent, ein Kurzbefehl oder eine App, die für eine Person handelt.
+participant-acting-for = { $name }, für { $person }
 interaction-agent = Agent
 interaction-collaborator = Mitwirkende Person
 interaction-action-status = { $action } ({ $phase }) - { $name }
@@ -471,8 +475,19 @@ device-display-session-disconnected = Die Verbindung zur Tilo-Sitzung wurde getr
 app-activate-window = Dieses Fenster anzeigen
 app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.
 
+# Shown instead of an app's view while its record does not read as the app expects.
+framework-unreadable = Dies kann nicht geöffnet werden
 display-arrangement-offline = Offline
 display-arrangement-excluded = Nicht im Layout
 display-arrangement-offline-excluded = Offline · Nicht im Layout
 display-arrangement-item-status = { $position }; { $status }
 display-arrangement-caption-status = { $status } · { $name }
+
+# Suche: Einstiegsgruppen in der leeren Anwendungsliste
+search-apps-group-start-here = Zum Einstieg
+search-apps-group-everyday = Alltag
+search-apps-group-work = Arbeit
+search-apps-group-media = Medien
+search-apps-group-system-tools = Systemwerkzeuge
+search-apps-group-more-apps = Weitere Apps
+search-apps-group-developer-tools = Entwicklerwerkzeuge

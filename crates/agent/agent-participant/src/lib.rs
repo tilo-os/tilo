@@ -39,6 +39,7 @@
 pub mod anthropic;
 pub mod apps;
 pub mod control;
+mod desk;
 pub mod host;
 pub mod model;
 pub mod participant;
@@ -51,7 +52,7 @@ pub mod worker;
 pub use apps::{AppCatalogue, AppError, Replica, Seed, component_apps};
 pub use control::{
     AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, ApprovalDone, GrantRecord,
-    Spawner, SupervisorHost, SupervisorSnapshot,
+    Spawner, SupervisorHost, SupervisorSnapshot, Witness,
 };
 pub use host::{AgentHost, CatalogueFactory, HostEndpoint};
 pub use model::{

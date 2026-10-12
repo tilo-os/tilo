@@ -187,18 +187,6 @@ impl Widget for Page {
     fn wants_pointer_capture(&self) -> bool {
         self.root.wants_pointer_capture()
     }
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: ui::kurbo::Affine,
-        text: &mut ui::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.root
-            .draw_with_presence(scene, transform, text, theme, presence, permissions);
-    }
     fn build_layout(
         &mut self,
         tree: &mut ui::taffy::TaffyTree<()>,

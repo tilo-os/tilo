@@ -13,7 +13,8 @@ extends = ["default"]
 include = ["file-explorer", "settings", "terminal"]
 
 [features]
-music = ["audio", "live"]
+# Spotify playback from its engine library beside the runtime.
+music = ["audio", "live", "runtime-engine"]
 video-player = ["decode"]
 camera = ["live-capture"]
 tube = ["live", "media", "grayjay-sync"]

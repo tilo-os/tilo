@@ -1623,6 +1623,29 @@ struct Trailing {
     wrapped: bool,
 }
 
+/// One of a row's own pressable controls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowPart {
+    /// The hover action at this index.
+    Action(usize),
+    /// The leading checkbox.
+    Check,
+}
+
+impl RowPart {
+    /// What names the control across a rebuild: the row's id and which
+    /// control of the row it is.
+    fn key(self, row: &str) -> String {
+        if row.is_empty() {
+            return String::new();
+        }
+        match self {
+            Self::Action(index) => format!("{row}/action/{index}"),
+            Self::Check => format!("{row}/check"),
+        }
+    }
+}
+
 /// A retained list row. Construct with a stable id and a title; press
 /// activates it (pointer, Enter/Space, or assistive technology).
 pub struct ListRow {
@@ -1643,8 +1666,12 @@ pub struct ListRow {
     count: Option<usize>,
     leading: Option<Leading>,
     leading_column: Option<f64>,
+    /// Every badge of the row's list, measured into `leading_column` at
+    /// layout.
+    column_badges: Option<std::rc::Rc<[String]>>,
     pub(crate) shared_leading: Option<f64>,
     leading_tooltip: Option<String>,
+    tooltip: Option<String>,
     status: Option<(StatusKind, String)>,
     disclosure: bool,
     checked: Option<bool>,
@@ -1656,8 +1683,9 @@ pub struct ListRow {
     actions: Vec<OwnedAction>,
     hovered_action: Option<usize>,
     armed_action: Option<usize>,
-    pressed_action: Option<usize>,
-    pressed_leading: bool,
+    /// A press on one of the row's own controls (a hover action, the
+    /// leading checkbox); a press on the row itself is the activation's.
+    pressed_part: crate::pointer_replay::HeldPress<RowPart>,
     swipe: Option<OwnedSwipe>,
     swipe_origin: Option<(u64, f64)>,
     swipe_offset: f64,
@@ -1697,8 +1725,10 @@ impl ListRow {
             count: None,
             leading: None,
             leading_column: None,
+            column_badges: None,
             shared_leading: None,
             leading_tooltip: None,
+            tooltip: None,
             status: None,
             disclosure: false,
             checked: None,
@@ -1710,8 +1740,7 @@ impl ListRow {
             actions: Vec::new(),
             hovered_action: None,
             armed_action: None,
-            pressed_action: None,
-            pressed_leading: false,
+            pressed_part: crate::pointer_replay::HeldPress::default(),
             swipe: None,
             swipe_origin: None,
             swipe_offset: 0.0,
@@ -1923,6 +1952,24 @@ impl ListRow {
     #[must_use]
     pub fn leading_column(mut self, width: f64) -> Self {
         self.leading_column = Some(width);
+        self
+    }
+
+    /// The leading column fits every badge in `badges`, measured when the
+    /// row is laid out: the rows of a
+    /// [`VirtualList`](crate::widget::virtual_list::VirtualList), which
+    /// mounts only those on screen, keep one title edge with the rest.
+    #[must_use]
+    pub fn badge_column(mut self, badges: std::rc::Rc<[String]>) -> Self {
+        self.column_badges = Some(badges);
+        self
+    }
+
+    /// What the pointer resting on the row shows, where no part of it (the
+    /// leading badge, an action, a title cut short) says more.
+    #[must_use]
+    pub fn tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.tooltip = Some(tooltip.into());
         self
     }
 
@@ -2547,6 +2594,16 @@ impl Widget for ListRow {
         // Geometry outside a draw (hit-testing actions, measuring) reads the
         // theme the row was last laid out in.
         self.theme = Some(theme.clone());
+        if let Some(badges) = &self.column_badges {
+            let badges: Vec<&str> = badges.iter().map(String::as_str).collect();
+            let width = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+                badge_column_width(text, theme, &badges)
+            });
+            if self.leading_column != Some(width) {
+                self.leading_column = Some(width);
+                self.dirty = true;
+            }
+        }
         let row_style = Style {
             size: taffy::Size {
                 width: percent(1.0_f32),
@@ -2606,7 +2663,7 @@ impl Widget for ListRow {
         taffy.widget_node(style, &[band, child], node_map, self)
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         _node: NodeId,
@@ -2770,41 +2827,54 @@ impl Widget for ListRow {
             ..
         } = event
         {
+            use crate::pointer_replay::{PressAt, Release};
             let cursor = self.activation.cursor();
-            let over = self.action_rects().iter().position(|r| r.contains(cursor));
-            let on_box = matches!(self.leading, Some(Leading::Checkbox { .. }))
-                && leading.is_some_and(|r| r.contains(cursor));
-            match (state, over, self.pressed_action) {
-                (ElementState::Pressed, Some(index), _) => {
-                    self.pressed_action = Some(index);
-                    *ctx.handled = true;
-                    return;
-                }
-                (ElementState::Released, _, Some(pressed)) => {
-                    self.pressed_action = None;
-                    *ctx.handled = true;
-                    if over == Some(pressed) {
-                        self.run_action(pressed);
-                    }
-                    return;
-                }
-                _ => {}
-            }
+            let rects = self.action_rects();
+            // The row's own control under the pointer, named across a
+            // rebuild by the row's id.
+            let over = rects
+                .iter()
+                .position(|r| r.contains(cursor))
+                .map(|index| (RowPart::Action(index), rects[index]))
+                .or_else(|| {
+                    (matches!(self.leading, Some(Leading::Checkbox { .. }))
+                        && !self.activation.state.disabled)
+                        .then_some(leading)
+                        .flatten()
+                        .filter(|r| r.contains(cursor))
+                        .map(|r| (RowPart::Check, r))
+                });
+            let key = over.map(|(part, _)| part.key(self.activation.id()));
+            let at = over
+                .zip(key.as_deref())
+                .map(|((target, rect), key)| PressAt { target, key, rect });
             match state {
-                ElementState::Pressed if on_box && !self.activation.state.disabled => {
-                    self.pressed_leading = true;
-                    *ctx.handled = true;
-                    return;
-                }
-                ElementState::Released if self.pressed_leading => {
-                    self.pressed_leading = false;
-                    *ctx.handled = true;
-                    if on_box {
-                        self.toggle_checkbox();
+                ElementState::Pressed => {
+                    if let Some(at) = at {
+                        self.pressed_part.press(at);
+                        *ctx.handled = true;
+                        return;
                     }
-                    return;
                 }
-                _ => {}
+                ElementState::Released => match self.pressed_part.release(at) {
+                    Release::NotHeld => {}
+                    Release::Cancelled => {
+                        *ctx.handled = true;
+                        return;
+                    }
+                    Release::Click(part) => {
+                        *ctx.handled = true;
+                        match part {
+                            RowPart::Action(index) => {
+                                self.run_action(index);
+                            }
+                            RowPart::Check => {
+                                self.toggle_checkbox();
+                            }
+                        }
+                        return;
+                    }
+                },
             }
         }
         if self.activation.handle_pointer(event, ctx, outer, &exclude) {
@@ -2835,10 +2905,18 @@ impl Widget for ListRow {
             .find(|(r, _)| r.contains(point))
             .and_then(|(r, index)| self.actions.get(index).map(|a| (r, a.label.clone())));
         // A title cut short reads in full where it is pointed at.
-        action.or_else(|| {
-            let band = self.text_band();
-            (self.title_elided && band.contains(point)).then(|| (band, self.title.clone()))
-        })
+        action
+            .or_else(|| {
+                let band = self.text_band();
+                (self.title_elided && band.contains(point)).then(|| (band, self.title.clone()))
+            })
+            .or_else(|| {
+                let outer = self.outer();
+                outer
+                    .contains(point)
+                    .then(|| self.tooltip.clone().map(|tooltip| (outer, tooltip)))
+                    .flatten()
+            })
     }
 
     fn is_focusable(&self) -> bool {
@@ -2866,39 +2944,32 @@ impl Widget for ListRow {
         !self.activation.state.disabled
     }
 
+    /// An action on the row itself, or on one of its action buttons (its
+    /// children in the accessibility tree, by position).
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
-        _root: &crate::widget::ModelPath,
-    ) -> bool {
-        use crate::a11y::Action;
-        match action {
-            Action::Activate => {
-                if let Some(armed) = self.armed_action {
-                    return self.run_action(armed);
-                }
-                if self.activation.activate() {
-                    return true;
-                }
-                self.toggle_checkbox()
-            }
-            Action::ToggleCheck => self.toggle_checkbox(),
-            _ => false,
-        }
-    }
-
-    /// An action addressed to one of the row's action buttons (its children
-    /// in the accessibility tree, by position).
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &crate::widget::ModelPath,
     ) -> bool {
         match key_path {
-            [] => self.perform_action(action, state, path),
+            [] => {
+                use crate::a11y::Action;
+                match action {
+                    Action::Activate => {
+                        if let Some(armed) = self.armed_action {
+                            return self.run_action(armed);
+                        }
+                        if self.activation.activate() {
+                            return true;
+                        }
+                        self.toggle_checkbox()
+                    }
+                    Action::ToggleCheck => self.toggle_checkbox(),
+                    _ => false,
+                }
+            }
             [index] if matches!(action, crate::a11y::Action::Activate) => {
                 usize::try_from(*index).is_ok_and(|index| self.run_action(index))
             }
@@ -3018,7 +3089,7 @@ impl Widget for ListRow {
     ) -> bool {
         let id = self.activation.id().to_owned();
         if target == id {
-            return self.perform_action(action, state, path);
+            return self.perform_action(action, &[], state, path);
         }
         let Some(index) = target
             .strip_prefix(id.as_str())
@@ -3292,29 +3363,6 @@ impl crate::widget::Decorator for ControlRow {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(Widget::get_rect(&self.content)) {
-            return;
-        }
-        self.paint_lift(scene, transform, theme);
-        self.content.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-    }
-
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
@@ -3366,6 +3414,7 @@ impl crate::widget::Decorator for ControlRow {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
@@ -3373,7 +3422,7 @@ impl crate::widget::Decorator for ControlRow {
             crate::a11y::Action::Activate | crate::a11y::Action::SetSelection { .. } => {
                 self.choose()
             }
-            _ => self.content.perform_action(action, state, path),
+            _ => self.content.perform_action(action, &[], state, path),
         }
     }
 }
@@ -3402,6 +3451,7 @@ mod control_row_tests {
         assert!(Widget::perform_action(
             &mut oil,
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &root
         ));
@@ -3417,6 +3467,7 @@ mod control_row_tests {
         Widget::perform_action(
             &mut oil,
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &root,
         );

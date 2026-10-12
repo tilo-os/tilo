@@ -149,7 +149,7 @@ const DEVICE_REVOKE_PARAMS: &[ActionParam] = &[
 
 fn alarm_action_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
-        permission: tilo_actions::PermissionRequirement::Write,
+        kind: tilo_actions::ActionKind::Undoable,
         retry: tilo_actions::RetryPolicy::Idempotent,
         tags: vec!["desktop".into(), "notification".into(), "alarm".into()],
         ..tilo_actions::ActionContract::default()
@@ -181,7 +181,10 @@ const VIEW_ACTION_IDS: &[&str] = &[
     "quick-settings.open",
     "quick-settings.clipboard",
     "quick-settings.devices",
+    "quick-settings.network",
+    "quick-settings.bluetooth",
     "projection.open",
+    "projection.close",
     "capture.open",
     "collaborators.open",
     "room.activity.open",
@@ -196,12 +199,11 @@ const VIEW_ACTION_IDS: &[&str] = &[
     "history.undo",
     "history.restore",
     shared_display_actions::INSPECT_ID,
+    DISPLAY_OUTPUTS_INSPECT_ID,
 ];
 
 pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
-    use tilo_actions::{
-        ActionContract, ConfirmationPolicy, PermissionRequirement, RetryPolicy, RiskLevel,
-    };
+    use tilo_actions::{ActionContract, ActionKind, ConfirmationPolicy, RetryPolicy, RiskLevel};
 
     if let Some(contract) = dedicated_contract(id) {
         return contract;
@@ -215,19 +217,20 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         }
         id if VIEW_ACTION_IDS.contains(&id) => contract = ActionContract::view(),
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
-            contract.permission = PermissionRequirement::Admin;
+            contract.kind = ActionKind::Outside;
             contract.risk = RiskLevel::Privileged;
             contract.confirmation = ConfirmationPolicy::Confirm;
         }
-        "identity.devices.copy" | "identity.device.enroll" | "identity.home-peer.enroll" => {
-            contract.permission = PermissionRequirement::Admin;
-        }
-        "peer.invite.named" | "agent.invite" => {
-            contract.permission = PermissionRequirement::Invite;
+        "identity.devices.copy"
+        | "identity.device.enroll"
+        | "identity.home-peer.enroll"
+        | "peer.invite.named"
+        | "agent.invite" => {
+            contract.kind = ActionKind::Outside;
         }
         "peer.invite" | "peer.connect" => {
             contract = ActionContract::view();
-            contract.permission = PermissionRequirement::Invite;
+            contract.kind = ActionKind::Outside;
         }
         // Moving a tab between groups is layout, undone by moving it back;
         // a close is undone by `tab.reopen`, which puts it back in place.
@@ -240,7 +243,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "tab.move-to-new-group"
         | "tab.close"
         | "tab.reopen" => {
-            contract.permission = PermissionRequirement::Write;
+            contract.kind = ActionKind::Undoable;
             contract.reversible = true;
         }
         "notifications.dnd.toggle"
@@ -248,7 +251,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "appearance.theme.light"
         | "appearance.high-contrast"
         | "appearance.language" => {
-            contract.permission = PermissionRequirement::Write;
+            contract.kind = ActionKind::Undoable;
             contract.retry = RetryPolicy::AtMostOnce;
             contract.reversible = true;
         }
@@ -264,7 +267,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | DISPLAY_REVERT_ID
         | shared_display_actions::INCLUDE_ID => contract = display_layout_contract(),
         BLUETOOTH_PAIRING_DECLINE_ID => {
-            contract.permission = PermissionRequirement::Write;
+            contract.kind = ActionKind::Undoable;
             contract.retry = RetryPolicy::AtMostOnce;
         }
         // Navigation and focus each advance one step when repeated.
@@ -275,7 +278,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         }
         // Layout, undone by the opposite move.
         id if WINDOW_LAYOUT_ACTION_IDS.contains(&id) => {
-            contract.permission = PermissionRequirement::Write;
+            contract.kind = ActionKind::Undoable;
             contract.retry = RetryPolicy::AtMostOnce;
             contract.reversible = true;
         }
@@ -319,12 +322,11 @@ pub(crate) fn shell_action_authorized_for(
 ) -> bool {
     let resource = crate::shell::search::action_api::ResourceRef::new("actions", id);
     let kind = ResourceKind::Action;
-    let Some((target, verb)) =
-        crate::shell::search::visibility::required_capability(&resource, &kind)
+    let Some((node, kind)) = crate::shell::search::visibility::required_action(&resource, &kind)
     else {
         return true;
     };
-    workspace.allows(actor, &target, verb)
+    crate::shell::search::visibility::permits(workspace, actor, &node, kind)
 }
 
 fn active_workspace_id(
@@ -363,7 +365,11 @@ fn active_identity(
         (
             workspace.room,
             actor.clone(),
-            workspace.may_administer(&actor),
+            workspace.may_govern_at(
+                &actor,
+                tilo_action_policy::roles::governance::GRANT,
+                tilo_clock::unix_now(),
+            ),
         )
     };
     if !may_administer {
@@ -406,143 +412,38 @@ fn apply_ownership_action(
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one dispatcher over every workspace governance action; each arm validates and applies a single operation"
-)]
-fn apply_permission_profile_action(
+/// Apply one of the room's governance actions, as the person at this
+/// device, from the arguments `spec` takes.
+fn apply_governance_action(
     state: &ChromeState,
-    action_id: &str,
+    spec: &tilo_actions::ActionSpec,
     arguments: &ActionArgs,
 ) -> Result<(), ActionError> {
     let actor = state.active_local_user();
-    let mut tree = state.tree_mut();
-    let (workspace_id, room) = tree
-        .desktop
-        .active_workspace()
-        .map(|workspace| (workspace.id, workspace.room))
-        .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
-    if !tree.governs_room(room) {
+    let encoded = spec
+        .build_json(&arguments.to_json())
+        .map_err(|error| ActionError::Refused(format!("invalid arguments: {error}")))?;
+    if encoded.type_id != tilo_desktop::workspace_settings::GOVERNANCE_ACTION_TYPE {
         return Err(ActionError::Refused(
-            "this device is not the workspace governance authority".into(),
+            "the governance action encoded no operation".into(),
         ));
     }
-    match action_id {
-        "profile.save" => {
-            let rules = serde_json::from_value::<Vec<collab_types::PermissionProfileRule>>(
-                serde_json::Value::Array(arguments.array("rules").unwrap_or_default().to_vec()),
-            )
-            .map_err(|error| ActionError::Refused(format!("invalid permission rules: {error}")))?;
-            let profile = collab_types::PermissionProfile {
-                name: arguments.text("name").unwrap_or_default().to_string(),
-                description: arguments
-                    .text("description")
-                    .unwrap_or_default()
-                    .to_string(),
-                rules,
-            };
-            tree.desktop
-                .active_workspace_mut()
-                .ok_or_else(|| ActionError::Refused("no active workspace".into()))?
-                .save_permission_profile_as(&actor, profile.clone())
-                .map_err(|error| ActionError::Refused(error.to_string()))?;
-            tree.doc_upsert_permission_profile(workspace_id, &profile);
-        }
-        "profile.assign" => {
-            let profile = arguments
-                .text("profile")
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .ok_or_else(|| ActionError::Refused("permission role is missing".into()))?;
-            let subject_id = arguments.text("subject").unwrap_or_default().trim();
-            if subject_id.is_empty() {
-                return Err(ActionError::Refused(
-                    "choose a collaborator, app, or agent identity".into(),
-                ));
-            }
-            let subject = match arguments
-                .text("subject_kind")
-                .unwrap_or_default()
-                .trim()
-                .to_ascii_lowercase()
-                .as_str()
-            {
-                "person" => collab_types::Subject::person(subject_id),
-                "app" => collab_types::Subject::app(subject_id),
-                "agent" => collab_types::Subject::agent(subject_id),
-                _ => {
-                    return Err(ActionError::Refused(
-                        "subject_kind must be person, app, or agent".into(),
-                    ));
-                }
-            };
-            let expiry = arguments
-                .integer("expires_unix")
-                .and_then(|value| u64::try_from(value).ok())
-                .filter(|value| *value > 0)
-                .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
-            let ids = tree
-                .desktop
-                .active_workspace_mut()
-                .ok_or_else(|| ActionError::Refused("no active workspace".into()))?
-                .assign_permission_profile_as(&actor, profile, &subject, expiry)
-                .map_err(|error| ActionError::Refused(error.to_string()))?;
-            let written = tree
-                .desktop
-                .active_workspace()
-                .map(|workspace| {
-                    workspace
-                        .capabilities
-                        .iter()
-                        .filter(|capability| ids.contains(&capability.id))
-                        .cloned()
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            for capability in written {
-                tree.doc_insert_capability(workspace_id, &capability);
-            }
-        }
-        tilo_desktop::workspace_settings::APP_ACTION_GRANT_ACTION_ID
-        | tilo_desktop::workspace_settings::APP_ACTION_REVOKE_ACTION_ID => {
-            use tilo_desktop::workspace_settings::PermissionProfileOperation;
-            let text = |name: &str| arguments.text(name).unwrap_or_default().to_string();
-            let operation =
-                if action_id == tilo_desktop::workspace_settings::APP_ACTION_GRANT_ACTION_ID {
-                    PermissionProfileOperation::GrantAppAction {
-                        app: text("app"),
-                        target_app: text("target_app"),
-                        resource: text("resource"),
-                        action: text("action"),
-                        lifetime: text("lifetime"),
-                    }
-                } else {
-                    PermissionProfileOperation::RevokeAppAction {
-                        app: text("app"),
-                        target_app: text("target_app"),
-                        resource: text("resource"),
-                        action: text("action"),
-                    }
-                };
-            let person = tree
-                .desktop
-                .active_workspace()
-                .ok_or_else(|| ActionError::Refused("no active workspace".into()))?
-                .actor_for_person(&actor);
-            crate::shell::workspace_governance::apply_app_action_operation(
-                &mut tree,
-                workspace_id,
-                &person,
-                &operation,
-            )
-            .map_err(ActionError::Refused)?;
-        }
-        _ => {
-            return Err(ActionError::Refused(
-                "unknown permission role action".into(),
-            ));
-        }
-    }
+    let operation: tilo_desktop::workspace_settings::GovernanceOperation =
+        serde_json::from_slice(&encoded.payload)
+            .map_err(|error| ActionError::Refused(format!("invalid operation: {error}")))?;
+    let mut tree = state.tree_mut();
+    let workspace_id = tree
+        .desktop
+        .active_workspace()
+        .map(|workspace| workspace.id)
+        .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
+    crate::shell::workspace_governance::apply_governance_operation(
+        &mut tree,
+        workspace_id,
+        &actor,
+        operation,
+    )
+    .map_err(ActionError::Refused)?;
     tree.queue_save();
     drop(tree);
     Ok(())
@@ -577,7 +478,7 @@ fn apply_ownership_proposal(
         .tree()
         .desktop
         .active_workspace()
-        .and_then(|workspace| workspace.owner.as_deref())
+        .and_then(|workspace| workspace.owner().map(String::as_str))
         .and_then(|owner| hex::decode(owner).ok())
         .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
         .map(collab_types::Ed25519PublicKey::from_bytes)
@@ -691,6 +592,43 @@ fn apply_ownership_cancellation(state: &ChromeState) -> Result<(), ActionError> 
               there is nothing after it to hoist the drop past without cloning the \
               workspace out for no real gain"
 )]
+/// Let the identity `principal` govern `workspace_id` as fully as `actor`:
+/// a member of the room, granted everything in it.
+fn delegate_room_to_identity(
+    tree: &mut crate::shell::state::WorkspaceTree,
+    workspace_id: crate::shell::state::WorkspaceId,
+    actor: &String,
+    principal: &str,
+) -> Option<()> {
+    use tilo_action_policy::{Answer, Change, Grant, KindSet, Role, Subject};
+    let workspace = tree
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == workspace_id)?;
+    if workspace.is_owner(principal) {
+        return Some(());
+    }
+    let mut changes = Vec::new();
+    if workspace.role_of(principal).is_none() {
+        changes.push(Change::AddMember {
+            person: principal.to_owned(),
+            role: Role::Viewer,
+        });
+    }
+    changes.push(Change::Grant(Grant::new(
+        format!("identity:{principal}"),
+        Subject::person(principal),
+        workspace.node(),
+        KindSet::ALL,
+        Answer::Allow,
+        Subject::person(actor.clone()),
+    )));
+    tree.govern_in_workspace(workspace_id, actor, changes)
+        .ok()
+        .map(drop)
+}
+
 fn active_admin_workspace(
     state: &ChromeState,
 ) -> Result<
@@ -701,19 +639,18 @@ fn active_admin_workspace(
     ),
     ActionError,
 > {
-    let (workspace_id, room, actor, may_administer) = {
-        let tree = state.tree();
-        let Some(workspace) = tree.desktop.active_workspace() else {
-            return Err(ActionError::Refused("no active workspace".into()));
-        };
-        let actor = state.local_user_for_room(&workspace.room);
-        (
-            workspace.id,
-            workspace.room,
-            actor.clone(),
-            workspace.may_administer(&actor),
-        )
+    let tree = state.tree();
+    let Some(workspace) = tree.desktop.active_workspace() else {
+        return Err(ActionError::Refused("no active workspace".into()));
     };
+    let actor = state.local_user_for_room(&workspace.room);
+    let may_administer = workspace.may_govern_at(
+        &actor,
+        tilo_action_policy::roles::governance::GRANT,
+        tilo_clock::unix_now(),
+    );
+    let (workspace_id, room) = (workspace.id, workspace.room);
+    drop(tree);
     if !may_administer {
         return Err(ActionError::Refused(format!(
             "{actor} may not change this workspace's identity"
@@ -1354,16 +1291,12 @@ impl Action {
                     Some(())
                 } else {
                     let mut tree = st.tree_mut();
-                    tree.grant_in_workspace(
+                    delegate_room_to_identity(
+                        &mut tree,
                         workspace_id,
                         &actor,
-                        crate::shell::state::CapOverride::grant(
-                            crate::shell::state::Subject::person(profile.principal_id()),
-                            crate::shell::state::Scope::Workspace,
-                            crate::shell::state::Verb::Admin,
-                        ),
+                        &profile.principal_id(),
                     )
-                    .map(|_| ())
                 };
                 if delegated.is_none() {
                     return Err(ActionError::Refused(
@@ -1399,17 +1332,13 @@ impl Action {
                 })?;
                 if !st.tree().requires_native_owner(room) {
                     let mut tree = st.tree_mut();
-                    if tree
-                        .grant_in_workspace(
-                            workspace_id,
-                            &actor,
-                            crate::shell::state::CapOverride::grant(
-                                crate::shell::state::Subject::person(profile.principal_id()),
-                                crate::shell::state::Scope::Workspace,
-                                crate::shell::state::Verb::Admin,
-                            ),
-                        )
-                        .is_none()
+                    if delegate_room_to_identity(
+                        &mut tree,
+                        workspace_id,
+                        &actor,
+                        &profile.principal_id(),
+                    )
+                    .is_none()
                     {
                         return Err(ActionError::Refused(
                             "could not delegate workspace administration to that identity".into(),
@@ -1578,6 +1507,24 @@ impl Action {
             },
         ),
         chrome(
+            "quick-settings.network",
+            "qs-network-details",
+            "search-action-quick-settings-network-subtitle",
+            |st, _| {
+                st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Wifi);
+                Ok(())
+            },
+        ),
+        chrome(
+            "quick-settings.bluetooth",
+            "qs-bluetooth-details",
+            "search-action-quick-settings-bluetooth-subtitle",
+            |st, _| {
+                st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Bluetooth);
+                Ok(())
+            },
+        ),
+        chrome(
             "quick-settings.devices",
             "search-action-quick-settings-devices",
             "search-action-quick-settings-devices-subtitle",
@@ -1591,7 +1538,16 @@ impl Action {
             "search-action-projection-open",
             "search-action-projection-open-subtitle",
             |st, _| {
-                st.overlays.projection = true;
+                st.open_projection();
+                Ok(())
+            },
+        ),
+        chrome(
+            "projection.close",
+            "search-action-projection-close",
+            "search-action-projection-close-subtitle",
+            |st, _| {
+                st.close_projection();
                 Ok(())
             },
         ),
@@ -1643,6 +1599,12 @@ impl Action {
             "search-action-display-layout-external-only",
             "search-action-display-layout-external-only-subtitle",
             |st, _| stage_display_layout(st, DisplayLayoutMode::ExternalOnly),
+        ),
+        chrome(
+            DISPLAY_OUTPUTS_INSPECT_ID,
+            "search-action-display-outputs-inspect",
+            "search-action-display-outputs-inspect-subtitle",
+            |_, _| Ok(()),
         ),
         chrome(
             DISPLAY_KEEP_ID,
@@ -1898,8 +1860,7 @@ impl Action {
             subtitle: "search-action-agent-invite-subtitle",
             params: AGENT_INVITE_PARAMS,
             apply: |st, args| {
-                use crate::shell::state::{CapOverride, Subject};
-                use tilo_desktop::workspace_settings::AgentAuthorityPreset;
+                use tilo_action_policy::roles::AgentPreset;
                 let name = args.text("name").unwrap_or(DEFAULT_AGENT_NAME).trim();
                 let name = if name.is_empty() {
                     DEFAULT_AGENT_NAME
@@ -1910,37 +1871,34 @@ impl Action {
                 // different subjects, half-admitting the agent.
                 let agent = name.to_lowercase();
                 let preset = match args.text("preset") {
-                    Some(value) => AgentAuthorityPreset::parse(value).ok_or_else(|| {
+                    Some(value) => AgentPreset::parse(value).ok_or_else(|| {
                         ActionError::Refused(
                             "choose Observer, Contributor, Operator, or Custom".into(),
                         )
                     })?,
-                    None => AgentAuthorityPreset::Observer,
+                    None => AgentPreset::Observer,
                 };
                 let user = st.active_local_user();
                 let granted = {
                     let mut tree = st.tree_mut();
-                    let Some((ws_id, room)) = tree
+                    let Some((ws_id, room, held)) = tree
                         .desktop
                         .active_workspace()
-                        .map(|w| (w.id, w.room.to_string()))
+                        .map(|w| (w.id, w.room.to_string(), w.policy.grants.clone()))
                     else {
                         return Err(ActionError::Refused(
                             "there is no workspace here to add an agent to".into(),
                         ));
                     };
-                    // An ordinary grant on the room, through the tree so it
-                    // reaches the room document (and other members) and disk.
-                    // The profile is only an admission marker. The agent's
-                    // actor has no room role, so it receives no implicit
-                    // authority until the owner reviews a concrete surface.
-                    let cap = CapOverride::membership(
-                        Subject::agent(agent.clone()),
-                        room,
-                        preset.admission_verb(),
-                    )
-                    .with_id(format!("agent-member:{agent}:{}", preset.id()));
-                    tree.grant_in_workspace(ws_id, &user, cap)
+                    // Ordinary grants on the room, through the tree so they
+                    // reach the room document (and other members) and disk.
+                    let changes = preset.admission(
+                        &room,
+                        &agent,
+                        &tilo_action_policy::Subject::person(user.clone()),
+                        &held,
+                    );
+                    tree.govern_in_workspace(ws_id, &user, changes).ok()
                 };
                 if granted.is_none() {
                     return Err(ActionError::Refused(format!(
@@ -2751,6 +2709,7 @@ pub(crate) const DISPLAY_BUILTIN_ONLY_ID: &str = "display.layout.builtin-only";
 pub(crate) const DISPLAY_EXTERNAL_ONLY_ID: &str = "display.layout.external-only";
 pub(crate) const DISPLAY_KEEP_ID: &str = "display.change.keep";
 pub(crate) const DISPLAY_REVERT_ID: &str = "display.change.revert";
+pub(crate) const DISPLAY_OUTPUTS_INSPECT_ID: &str = "display.outputs.inspect";
 pub(crate) const BLUETOOTH_PAIRING_DECLINE_ID: &str = "bluetooth.pairing.decline";
 
 /// Decline the Bluetooth pairing question on screen, or stop the pairing
@@ -2782,6 +2741,78 @@ fn stage_display_layout(
     ))
 }
 
+/// The attached displays as the compositor drives them, for an agent or a
+/// screen reader to read before choosing a layout: each one's scale, mode,
+/// place on the desktop and whether it is primary, the layout they form, and
+/// the change waiting for Keep or Revert, if one is. Displays come from what
+/// the compositor published in memory; the layout from settings.
+fn inspect_display_outputs() -> Result<serde_json::Value, ActionError> {
+    use settings_store::hardware::{
+        DisplayConfig, DisplayHardwareSnapshot, DisplayTransaction, DisplayTransactionState,
+    };
+    let snapshot = DisplayHardwareSnapshot::published()
+        .ok_or_else(|| ActionError::Refused("the compositor has not published displays".into()))?;
+    let set = settings_store::display_mode::attached_set(&snapshot.outputs);
+    let committed = DisplayConfig::load_for(&set);
+    let waiting = DisplayTransaction::load().filter(|transaction| {
+        transaction.set.key == set.key
+            && matches!(
+                transaction.state,
+                DisplayTransactionState::Requested
+                    | DisplayTransactionState::AwaitingConfirmation
+                    | DisplayTransactionState::ConfirmRequested
+            )
+    });
+    let effective = waiting
+        .as_ref()
+        .map_or(&committed, |transaction| &transaction.candidate);
+    let outputs = snapshot
+        .outputs
+        .iter()
+        .map(|output| {
+            let connector = &output.descriptor.connector;
+            let config = effective
+                .output_for(connector)
+                .cloned()
+                .unwrap_or_else(|| output.unconfigured());
+            let placement = snapshot
+                .layout
+                .iter()
+                .find(|placement| &placement.connector == connector);
+            serde_json::json!({
+                "output": connector,
+                "label": output.descriptor.connector_label,
+                "builtin": output.builtin,
+                "enabled": config.enabled,
+                "primary": config.primary,
+                "scale": output.scale,
+                "mode": output.current_mode,
+                "modes": output.descriptor.modes,
+                "mirror_of": config.mirror_of,
+                "rect": placement.map(|placement| serde_json::json!({
+                    "x": placement.x,
+                    "y": placement.y,
+                    "width": placement.width,
+                    "height": placement.height,
+                })),
+            })
+        })
+        .collect::<Vec<_>>();
+    let layout = settings_store::display_mode::active_layout(&snapshot.outputs, effective)
+        .map(|mode| format!("display.layout.{}", mode.id()));
+    Ok(serde_json::json!({
+        "outputs": outputs,
+        "layout": layout,
+        "waiting": waiting.map(|transaction| serde_json::json!({
+            "transaction": transaction.id,
+            "state": transaction.state,
+            "deadline_unix_ms": transaction.deadline_unix_ms,
+            "keep": DISPLAY_KEEP_ID,
+            "revert": DISPLAY_REVERT_ID,
+        })),
+    }))
+}
+
 /// Keep or revert the display change that is waiting for confirmation.
 fn settle_display_change(keep: bool) -> Result<(), ActionError> {
     use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
@@ -2811,7 +2842,7 @@ fn settle_display_change(keep: bool) -> Result<(), ActionError> {
 
 fn display_layout_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
-        permission: tilo_actions::PermissionRequirement::Write,
+        kind: tilo_actions::ActionKind::Undoable,
         retry: tilo_actions::RetryPolicy::Idempotent,
         // An unconfirmed layout restores itself; Revert undoes it at once.
         reversible: true,
@@ -2821,7 +2852,7 @@ fn display_layout_contract() -> tilo_actions::ActionContract {
 
 fn quick_settings_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
-        permission: tilo_actions::PermissionRequirement::Write,
+        kind: tilo_actions::ActionKind::Undoable,
         retry: tilo_actions::RetryPolicy::Idempotent,
         reversible: false,
         ..tilo_actions::ActionContract::default()
@@ -2978,9 +3009,12 @@ impl Default for ActionsProvider {
     }
 }
 
+/// The provider id the shell's own actions are addressed by.
+pub(crate) const PROVIDER_ID: &str = "actions";
+
 impl SearchProvider for ActionsProvider {
     fn id(&self) -> &'static str {
-        "actions"
+        PROVIDER_ID
     }
     fn name(&self) -> &'static str {
         "Actions"
@@ -3412,21 +3446,31 @@ impl ActionsProvider {
                                 .map_err(|error| ActionError::Refused(error.to_string()))?;
                             {
                                 let mut state = chrome.borrow_mut();
-                                state.overlays.projection = true;
+                                state.open_projection_for_action();
                                 state.bump();
                             }
                             let chrome = chrome.clone();
+                            // The sheet this opened follows the stored change
+                            // and closes once it settles; a refused layout
+                            // leaves nothing to answer, so it closes at once.
                             let ticket: crate::shell::search::PendingInvocation =
-                                Rc::new(move || {
-                                    pending
-                                        .poll()
-                                        .map(|done| {
-                                            done.map(|_| {
-                                                chrome.borrow_mut().bump();
-                                                crate::shell::search::ActionReceipt::completed()
-                                            })
-                                        })
-                                        .map_err(|error| ActionError::Refused(error.to_string()))
+                                Rc::new(move || match pending.poll() {
+                                    Ok(done) => Ok(done.map(|transaction| {
+                                        let mut state = chrome.borrow_mut();
+                                        state.projection_staged(transaction.id);
+                                        state.bump();
+                                        // The change to answer with Keep or
+                                        // Revert, for the caller to follow.
+                                        crate::shell::search::ActionReceipt::completed_with(
+                                            serde_json::json!({ "transaction": transaction.id }),
+                                        )
+                                    })),
+                                    Err(error) => {
+                                        let mut state = chrome.borrow_mut();
+                                        state.projection_refused();
+                                        state.bump();
+                                        Err(ActionError::Refused(error.to_string()))
+                                    }
                                 });
                             Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
                         },
@@ -3511,8 +3555,8 @@ impl ActionsProvider {
                     params: action.params.to_vec(),
                     contract: Some(shell_action_contract(action.id)),
                     on_open,
-                    on_invoke: (action.id == shared_display_actions::INSPECT_ID).then(|| {
-                        Rc::new(
+                    on_invoke: match action.id {
+                        shared_display_actions::INSPECT_ID => Some(Rc::new(
                             |_: &mut ui::widget::Edits<'_>,
                              _: &automerge::ObjId,
                              _: &Chrome,
@@ -3520,8 +3564,20 @@ impl ActionsProvider {
                                 shared_display_actions::inspect()
                                     .map(crate::shell::search::ActionReceipt::completed_with)
                             },
-                        ) as Rc<crate::shell::search::InvokeFn>
-                    }),
+                        )
+                            as Rc<crate::shell::search::InvokeFn>),
+                        DISPLAY_OUTPUTS_INSPECT_ID => Some(Rc::new(
+                            |_: &mut ui::widget::Edits<'_>,
+                             _: &automerge::ObjId,
+                             _: &Chrome,
+                             _: &ActionArgs| {
+                                inspect_display_outputs()
+                                    .map(crate::shell::search::ActionReceipt::completed_with)
+                            },
+                        )
+                            as Rc<crate::shell::search::InvokeFn>),
+                        _ => None,
+                    },
                     on_begin_invoke,
                 });
             }
@@ -3580,7 +3636,7 @@ impl ActionsProvider {
                 };
                 let contract = if command {
                     tilo_actions::ActionContract {
-                        permission: tilo_actions::PermissionRequirement::Read,
+                        kind: tilo_actions::ActionKind::Read,
                         ..Default::default()
                     }
                 } else {
@@ -3873,7 +3929,7 @@ impl ActionsProvider {
         let profile_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
-                tilo_desktop::workspace_settings::permission_profile_resource(workspace, &actor)
+                tilo_desktop::workspace_settings::governance_resource(workspace, &actor)
             })
         };
         if let Some(resource) = profile_resource {
@@ -3896,7 +3952,7 @@ impl ActionsProvider {
                         &action.id,
                     );
                     let score = 0;
-                    let action_id = action.id.clone();
+                    let spec = action.clone();
                     let params = action.params().to_vec();
                     out.push(SearchResult {
                         kind: ResourceKind::Action,
@@ -3911,7 +3967,7 @@ impl ActionsProvider {
                         contract: Some(action.contract),
                         on_open: Rc::new(move |_doc, _root, chrome: &Chrome, arguments| {
                             let mut state = chrome.borrow_mut();
-                            apply_permission_profile_action(&state, &action_id, arguments)?;
+                            apply_governance_action(&state, &spec, arguments)?;
                             state.bump();
                             Ok(())
                         }),
@@ -4155,6 +4211,103 @@ mod tests {
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
     use std::sync::Arc;
+
+    #[test]
+    fn display_outputs_inspection_reads_the_published_displays_and_the_waiting_change() {
+        use settings_store::hardware::{
+            DisplayHardwareSnapshot, DisplayOutputSnapshot, DisplayTransaction,
+            DisplayTransactionState, LiveOutputPlacement, OutputDescriptor, OutputMode,
+        };
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let chrome = chrome_with_room();
+        assert!(
+            invoke_shell_action(&chrome, DISPLAY_OUTPUTS_INSPECT_ID, &serde_json::json!({}))
+                .is_err(),
+            "with nothing published there is nothing to inspect"
+        );
+        let mode = OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        };
+        let output = |connector: &str, builtin: bool| DisplayOutputSnapshot {
+            descriptor: OutputDescriptor {
+                connector: connector.into(),
+                connector_label: connector.into(),
+                modes: vec![mode],
+                hdr: false,
+                vrr: false,
+                color_profiles: Vec::new(),
+                monitor: None,
+            },
+            current_mode: mode,
+            scale: if builtin { 2.0 } else { 1.0 },
+            builtin,
+            sink_hdr: false,
+            hdr_unavailable_reason: None,
+            sink_vrr: false,
+            vrr_unavailable_reason: None,
+            color_profile_labels: std::collections::BTreeMap::new(),
+        };
+        let (publisher_pid, publisher_start_ticks) =
+            settings_store::hardware::publisher_identity().unwrap();
+        let outputs = vec![output("eDP-1", true), output("HDMI-A-1", false)];
+        DisplayHardwareSnapshot {
+            publisher_pid,
+            publisher_start_ticks,
+            outputs: outputs.clone(),
+            layout: vec![LiveOutputPlacement {
+                connector: "HDMI-A-1".into(),
+                x: 960,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }],
+            ..DisplayHardwareSnapshot::default()
+        }
+        .save()
+        .unwrap();
+        let inspect = |chrome: &Chrome| {
+            let Ok(crate::shell::search::InvocationDisposition::Accepted(receipt)) =
+                invoke_shell_action(chrome, DISPLAY_OUTPUTS_INSPECT_ID, &serde_json::json!({}))
+            else {
+                panic!("inspection completes immediately")
+            };
+            let tilo_actions::InvocationUpdate::Succeeded { output, .. } = receipt.update else {
+                panic!("inspection returns the displays")
+            };
+            output.value.unwrap()
+        };
+        let value = inspect(&chrome);
+        let listed = value["outputs"].as_array().unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0]["output"], "eDP-1");
+        assert_eq!(listed[0]["builtin"], true);
+        assert_eq!(listed[0]["scale"], 2.0);
+        assert_eq!(listed[1]["rect"]["x"], 960);
+        assert_eq!(listed[1]["mode"]["width"], 1920);
+        assert!(value["waiting"].is_null());
+
+        let set = settings_store::display_mode::attached_set(&outputs);
+        let candidate = settings_store::display_mode::plan_layout(
+            DisplayLayoutMode::Mirror,
+            &outputs,
+            &settings_store::hardware::DisplayConfig::default(),
+        )
+        .unwrap();
+        let mut staged = DisplayTransaction::request(set, candidate).unwrap();
+        staged.state = DisplayTransactionState::AwaitingConfirmation;
+        staged.save().unwrap();
+        let value = inspect(&chrome);
+        assert_eq!(value["waiting"]["transaction"], staged.id);
+        assert_eq!(value["waiting"]["keep"], DISPLAY_KEEP_ID);
+        assert_eq!(value["layout"], DISPLAY_MIRROR_ID);
+        assert_eq!(value["outputs"][1]["mirror_of"], "eDP-1");
+        assert_eq!(
+            shell_action_kind(DISPLAY_OUTPUTS_INSPECT_ID),
+            tilo_actions::OperationKind::View
+        );
+    }
 
     #[test]
     fn shared_display_public_actions_inspect_and_edit_only_the_current_certified_pair() {
@@ -6290,7 +6443,7 @@ mod tests {
                 after,
                 vec![(
                     DEFAULT_AGENT_NAME.to_lowercase(),
-                    crate::shell::state::CapRole::Viewer
+                    tilo_action_policy::KindSet::READ
                 )],
                 "the shipped agent is admitted under its own name, case-folded",
             );
@@ -6422,22 +6575,37 @@ mod tests {
             let tree = state.tree();
             let ws = tree.desktop.active_workspace().expect("fixture has room");
             assert_eq!(
-                ws.role_of_agent("operator"),
-                Some(crate::shell::state::CapRole::Editor),
-                "the durable admission marker carries the selected setup intent"
+                ws.agent_members()
+                    .into_iter()
+                    .find(|(agent, _)| agent == "operator")
+                    .map(|(_, kinds)| kinds),
+                Some(tilo_action_policy::KindSet::ALL),
+                "the durable admission carries the selected preset"
             );
             assert!(
-                ws.capabilities
+                ws.policy
+                    .grants
                     .iter()
-                    .any(|cap| { cap.id == "agent-member:operator:operator" })
+                    .any(|grant| grant.id.as_str() == "agent-member:operator:operator")
             );
-            assert!(
-                !ws.allows(
-                    &ws.actor_for_agent("operator"),
-                    &crate::shell::state::ResourceRef::App("so.tilo.notes".into()),
-                    crate::shell::state::Verb::Write,
-                ),
-                "even the Operator profile requires an explicit scoped grant"
+            let answer = |kind| {
+                ws.subject_authority(tilo_action_policy::Subject::agent("operator"))
+                    .decide(
+                        &ws.node().app("so.tilo.notes"),
+                        kind,
+                        &tilo_desktop_model::context_at(tilo_clock::unix_now()),
+                    )
+                    .answer
+            };
+            assert_eq!(
+                answer(tilo_action_policy::ActionKind::Undoable),
+                tilo_action_policy::Answer::Allow,
+                "an Operator makes undoable changes"
+            );
+            assert_eq!(
+                answer(tilo_action_policy::ActionKind::Outside),
+                tilo_action_policy::Answer::Ask,
+                "and asks first before reaching outside the room"
             );
         }
 
@@ -6477,10 +6645,7 @@ mod tests {
                 ["recipient", "expires_unix"]
             );
             let contract = proposal.contract.as_ref().expect("ownership contract");
-            assert_eq!(
-                contract.permission,
-                tilo_actions::PermissionRequirement::Admin
-            );
+            assert_eq!(contract.kind, tilo_actions::ActionKind::Outside);
             assert_eq!(
                 contract.confirmation,
                 tilo_actions::ConfirmationPolicy::Confirm
@@ -6518,8 +6683,8 @@ mod tests {
                 let state = chrome.borrow_mut();
                 let mut tree = state.tree_mut();
                 let workspace = tree.desktop.active_workspace_mut().expect("workspace");
-                workspace.owner = None;
-                workspace.capabilities.clear();
+                workspace.policy.owner = None;
+                workspace.policy.members.clear();
                 drop(tree);
             }
             let error = (result.on_open)(
@@ -6540,10 +6705,7 @@ mod tests {
                 .find(|action| action.id == "identity.device.revoke")
                 .expect("device revocation is registered");
             let contract = shell_action_contract(action.id);
-            assert_eq!(
-                contract.permission,
-                tilo_actions::PermissionRequirement::Admin
-            );
+            assert_eq!(contract.kind, tilo_actions::ActionKind::Outside);
             assert_eq!(
                 contract.confirmation,
                 tilo_actions::ConfirmationPolicy::Confirm
@@ -6585,8 +6747,8 @@ mod tests {
                 assert_eq!(shell_action_kind(id), tilo_actions::OperationKind::View);
                 let contract = shell_action_contract(id);
                 assert_eq!(
-                    contract.permission,
-                    tilo_actions::PermissionRequirement::Read,
+                    contract.kind,
+                    tilo_actions::ActionKind::Read,
                     "{id} only moves focus"
                 );
                 assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
@@ -6595,8 +6757,8 @@ mod tests {
                 assert_eq!(shell_action_kind(id), tilo_actions::OperationKind::Effect);
                 let contract = shell_action_contract(id);
                 assert_eq!(
-                    contract.permission,
-                    tilo_actions::PermissionRequirement::Write,
+                    contract.kind,
+                    tilo_actions::ActionKind::Undoable,
                     "{id} rearranges the shared desk"
                 );
                 assert!(contract.reversible);
@@ -7083,19 +7245,24 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_can_create_a_role_then_assign_it_through_the_headless_actions() {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "save then assign through the same headless door, with the decision checked"
+    )]
+    fn an_agent_can_create_a_grant_set_then_assign_it_through_the_headless_actions() {
         use crate::shell::search::action_api::ArgValue;
 
         let chrome = chrome_with_room();
         let mut doc = AutoCommit::new();
         let provider = ActionsProvider::new();
-        let rules = serde_json::to_string(&vec![collab_types::PermissionProfileRule::grant(
-            collab_types::Scope::Action {
-                app: "so.tilo.notes".into(),
-                resource: "notes.page:1".into(),
-                action: "note.open".into(),
-            },
-            collab_types::Verb::Read,
+        let open_note = tilo_action_policy::TreePath::root()
+            .app("so.tilo.notes")
+            .resource("notes.page:1")
+            .action("note.open");
+        let rules = serde_json::to_string(&vec![tilo_action_policy::Rule::new(
+            open_note.clone(),
+            tilo_action_policy::KindSet::READ,
+            tilo_action_policy::Answer::Allow,
         )])
         .unwrap();
 
@@ -7105,14 +7272,14 @@ mod tests {
                 .query(SearchContext {
                     query_scope: None,
                     include_programmatic: false,
-                    needle: "profile.save",
+                    needle: "preset.save",
                     wanted: &[ResourceKind::Action],
                     chrome: &state,
                     doc: &doc,
                     doc_root: &automerge::ROOT,
                 })
                 .into_iter()
-                .find(|result| result.id.ends_with("#profile.save"))
+                .find(|result| result.id.ends_with("#preset.save"))
                 .expect("the role creation action is headlessly discoverable")
         };
         let save_args = ActionArgs::bind(
@@ -7151,15 +7318,19 @@ mod tests {
                     doc_root: &automerge::ROOT,
                 })
                 .into_iter()
-                .find(|result| result.id.ends_with("#profile.assign"))
-                .expect("the new role immediately becomes assignable")
+                .find(|result| result.id.ends_with("#preset.assign"))
+                .expect("the new grant set immediately becomes assignable")
+        };
+        let serde_json::Value::Object(researcher) =
+            serde_json::to_value(tilo_action_policy::Subject::agent("researcher")).unwrap()
+        else {
+            panic!("a subject is an object");
         };
         let assign_args = ActionArgs::bind(
             &assign.params,
             [
-                ("profile".into(), ArgValue::Text("Notes reader".into())),
-                ("subject".into(), ArgValue::Text("researcher".into())),
-                ("subject_kind".into(), ArgValue::Text("agent".into())),
+                ("preset".into(), ArgValue::Text("Notes reader".into())),
+                ("subject".into(), ArgValue::Object(researcher)),
             ],
         )
         .unwrap();
@@ -7174,15 +7345,17 @@ mod tests {
         let state = chrome.borrow();
         let tree = state.tree();
         let workspace = tree.desktop.active_workspace().unwrap();
-        assert!(workspace.allows(
-            &workspace.actor_for_agent("researcher"),
-            &crate::shell::state::ResourceRef::Action {
-                app: "so.tilo.notes".into(),
-                resource: "notes.page:1".into(),
-                action: "note.open".into(),
-            },
-            crate::shell::state::Verb::Read,
-        ));
+        assert_eq!(
+            workspace
+                .subject_authority(tilo_action_policy::Subject::agent("researcher"))
+                .decide(
+                    &workspace.node().join(&open_note),
+                    tilo_action_policy::ActionKind::Read,
+                    &tilo_desktop_model::context_at(tilo_clock::unix_now()),
+                )
+                .answer,
+            tilo_action_policy::Answer::Allow
+        );
         drop(tree);
     }
 
@@ -7398,16 +7571,18 @@ mod tests {
     /// [`chrome_with_room`] with `member` admitted as an Editor through the
     /// production granting path, and the room document seeded from it.
     fn chrome_with_member(member: &str) -> Chrome {
-        use crate::shell::state::{CapOverride, Subject, Verb, WorkspaceAuthority as _};
         let chrome = chrome_with_room();
         {
             let state = chrome.borrow();
             let mut tree = state.tree_mut();
             let ws = tree.desktop.active_workspace_mut().unwrap();
-            let room = ws.room.to_string();
-            ws.grant_as(
-                &FIXTURE_USER.to_string(),
-                CapOverride::membership(Subject::person(member), room, Verb::Write),
+            ws.govern_as_at(
+                FIXTURE_USER,
+                tilo_action_policy::Change::AddMember {
+                    person: member.to_owned(),
+                    role: tilo_action_policy::Role::Editor,
+                },
+                tilo_clock::unix_now(),
             )
             .expect("the owner may admit a member");
             tree.seed_doc_from_cache();
@@ -7451,20 +7626,18 @@ mod tests {
     }
 
     fn role_of(chrome: &Chrome, member: &str) -> Option<crate::shell::state::CapRole> {
-        use crate::shell::state::WorkspaceAuthority as _;
         let state = chrome.borrow();
         let tree = state.tree();
         let role = tree
             .desktop
             .active_workspace()
-            .and_then(|ws| ws.role_of(&member.to_string()));
+            .and_then(|ws| ws.role_of(member));
         drop(tree);
         role
     }
 
     /// The member's role as the replicated room document records it.
     fn replicated_role_of(chrome: &Chrome, member: &str) -> Option<crate::shell::state::CapRole> {
-        use crate::shell::state::WorkspaceAuthority as _;
         let state = chrome.borrow();
         let tree = state.tree();
         let mut from_doc = tilo_desktop_model::DesktopTree::default();
@@ -7475,17 +7648,22 @@ mod tests {
             .workspaces
             .iter()
             .find(|ws| ws.id == active)
-            .and_then(|ws| ws.role_of(&member.to_string()))
+            .and_then(|ws| ws.role_of(member))
     }
 
-    fn capabilities(chrome: &Chrome) -> Vec<crate::shell::state::CapOverride> {
+    /// The active room's whole authority: its policy and its sandbox.
+    fn capabilities(
+        chrome: &Chrome,
+    ) -> Option<(
+        tilo_action_policy::RoomPolicy,
+        Vec<crate::shell::state::CapOverride>,
+    )> {
         let state = chrome.borrow();
         let tree = state.tree();
         let caps = tree
             .desktop
             .active_workspace()
-            .map(|ws| ws.capabilities.clone())
-            .unwrap_or_default();
+            .map(|ws| (ws.policy.clone(), ws.sandbox.clone()));
         drop(tree);
         caps
     }
@@ -7551,17 +7729,37 @@ mod tests {
 
         // Phase `a_delegated_administrator_passes_the_same_capability_check`.
         {
-            use crate::shell::state::{CapOverride, Subject, Verb, WorkspaceAuthority as _};
             let chrome = chrome_with_member("bob");
             {
                 let state = chrome.borrow();
                 let mut tree = state.tree_mut();
                 let ws = tree.desktop.active_workspace_mut().unwrap();
                 ws.set_owner("foreign-owner");
-                let room = ws.room.to_string();
-                ws.grant_as(
-                    &"foreign-owner".to_string(),
-                    CapOverride::membership(Subject::person(FIXTURE_USER), room, Verb::Admin),
+                let now = tilo_clock::unix_now();
+                ws.govern_as_at(
+                    "foreign-owner",
+                    tilo_action_policy::Change::AddMember {
+                        person: FIXTURE_USER.to_owned(),
+                        role: tilo_action_policy::Role::Editor,
+                    },
+                    now,
+                )
+                .expect("the owner admits the delegate");
+                let set_role = tilo_action_policy::roles::governance_action(
+                    &ws.room.to_string(),
+                    tilo_action_policy::roles::governance::SET_ROLE,
+                );
+                ws.govern_as_at(
+                    "foreign-owner",
+                    tilo_action_policy::Change::Grant(tilo_action_policy::Grant::new(
+                        "delegate-set-role",
+                        tilo_action_policy::Subject::person(FIXTURE_USER),
+                        set_role,
+                        tilo_action_policy::KindSet::ALL,
+                        tilo_action_policy::Answer::Allow,
+                        tilo_action_policy::Subject::person("foreign-owner"),
+                    )),
+                    now,
                 )
                 .expect("the owner delegates administration");
                 drop(tree);
@@ -7684,8 +7882,8 @@ mod tests {
             );
             let contract = shell_action_contract(id);
             assert_eq!(
-                contract.permission,
-                tilo_actions::PermissionRequirement::Admin,
+                contract.kind,
+                tilo_actions::ActionKind::Outside,
                 "{id} is administration"
             );
             if id != INVITATION_RESEND_ID {
@@ -7802,5 +8000,44 @@ mod tests {
             bind(INVITATION_LIST_ID, serde_json::json!({"confirm": true})).unwrap(),
             PeerSyncRequest::ListPendingInvitations
         );
+    }
+    #[test]
+    fn radio_details_navigation_actions_are_views_and_do_not_toggle_radios() {
+        for (id, level) in [
+            (
+                "quick-settings.network",
+                crate::shell::quick_settings::QsLevel::Wifi,
+            ),
+            (
+                "quick-settings.bluetooth",
+                crate::shell::quick_settings::QsLevel::Bluetooth,
+            ),
+        ] {
+            let provider = ActionsProvider::new();
+            let chrome = chrome_with_room();
+            let before = (
+                chrome.borrow().quick_settings.wifi,
+                chrome.borrow().quick_settings.bluetooth,
+            );
+            let results = action_results(&provider, &chrome);
+            let result = results
+                .iter()
+                .find(|result| result.id == id)
+                .expect("published view action");
+            assert_eq!(result.operation_kind, tilo_actions::OperationKind::View);
+            for _ in 0..2 {
+                invoke_action(&results, id, &chrome);
+                let state = chrome.borrow();
+                assert!(state.overlays.quick_settings);
+                assert_eq!(
+                    state.quick_settings.nav_stack,
+                    [crate::shell::quick_settings::QsLevel::Root, level.clone()]
+                );
+                assert_eq!(
+                    (state.quick_settings.wifi, state.quick_settings.bluetooth),
+                    before
+                );
+            }
+        }
     }
 }

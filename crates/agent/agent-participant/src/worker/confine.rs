@@ -1,17 +1,18 @@
 //! How an app worker confines itself before it reads a request.
 //!
 //! An app worker runs an app's own code over a room's records: everything
-//! it needs is CPU, memory and the socket it was started with. So once it
-//! has prepared what it cannot load later, it:
+//! it needs is CPU, memory and the socket it was started with. It:
 //!
 //! 1. closes every inherited descriptor but stdio and arranges to die with
-//!    its supervisor (`tilo-sandbox`'s `detach`), and caps its descriptors
-//!    and core dumps;
+//!    its supervisor (`tilo-sandbox`'s `detach`), before preparing the private
+//!    runtime drivers and in-memory fonts in `serve`; then caps descriptors
+//!    and core dumps without closing those private driver handles;
 //! 2. on Linux:
 //!    - restricts itself with a Landlock ruleset that handles every
 //!      filesystem right and TCP bind and connect and grants none, where the
 //!      kernel supports it;
-//!    - installs the shared seccomp parser policy (`sandbox-core`: the
+//!    - installs, on every existing thread and its descendants, the shared
+//!      seccomp parser policy (`sandbox-core`: the
 //!      application baseline with write-xor-execute, and no socket of any
 //!      family, `connect`, `bind` or `exec`), after the `clone3`
 //!      compatibility filter that keeps thread creation inspectable;
@@ -33,8 +34,9 @@
 ///
 /// Why a step failed; the worker then serves nothing.
 pub(super) fn confine() -> Result<(), String> {
-    tilo_sandbox::confine::detach().map_err(|error| error.to_string())?;
-    // The socket, stdio, and nothing else.
+    // Inherited descriptors were closed before preparing the runtime. Its
+    // private driver descriptors must survive; no path or socket can be
+    // opened once the process-wide filters below are installed.
     tilo_sandbox::confine::limit_resources(16).map_err(|error| error.to_string())?;
     sys::confine()
 }

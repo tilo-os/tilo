@@ -26,6 +26,8 @@ mod framework_body;
 mod framework_new_note;
 #[path = "framework_save_status.rs"]
 mod framework_save_status;
+#[path = "history_and_agents.rs"]
+mod history_and_agents;
 #[path = "interaction_event_path.rs"]
 mod interaction_event_path;
 #[path = "launch_cli.rs"]
@@ -50,6 +52,8 @@ mod paste_image;
 mod read_content;
 #[path = "responsive_drawer.rs"]
 mod responsive_drawer;
+#[path = "scroll_damage.rs"]
+mod scroll_damage;
 #[path = "sidebar_collab_growth.rs"]
 mod sidebar_collab_growth;
 #[path = "sidebar_dnd.rs"]
@@ -117,9 +121,6 @@ mod capture_runtime;
 
 #[path = "scenarios.rs"]
 mod scenarios;
-
-#[path = "continuation_discovery.rs"]
-mod continuation_discovery;
 
 #[path = "block_commands.rs"]
 mod block_commands;

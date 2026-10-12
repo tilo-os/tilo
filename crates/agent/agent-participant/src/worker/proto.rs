@@ -33,16 +33,16 @@ pub(crate) const CONTENT_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 4;
+pub(crate) const PROTOCOL_VERSION: u32 = 5;
 
 /// What a worker is started to do. It decides what the worker prepares
-/// before it confines itself: a worker that mounts a component (a reader's,
-/// or a held record's for an agent's effects) loads the fonts the component
+/// before it confines itself: a worker that mounts a component (a reader's
+/// or a replica's one attached view) loads the fonts the component
 /// lays its text out in, which it can no longer open afterwards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Mode {
-    /// Hold one record as a replica of its resource ([`crate::Replica`]),
-    /// and mount its component for an agent's effects.
+    /// Hold one record in its real attached view ([`crate::Replica`]),
+    /// which also runs an agent's reads and effects.
     Replica,
     /// Discover the views one existing resource offers.
     Views,
@@ -95,6 +95,9 @@ pub(crate) enum Request {
         arguments: String,
         confirm: bool,
     },
+    /// Replace the held view's action policy with the supervisor's current
+    /// standing. This is host-owned authority, never an invocation argument.
+    Permissions { standing: String },
     /// The holder's own changes since the last call.
     TakeMutation,
     /// Merge another participant's durable change.

@@ -1239,11 +1239,12 @@ impl Widget for RichTextLine {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, path) = crate::doc::document(state, path);
-        let handled = Widget::perform_action(&mut self.inner, action, state, path);
+        let handled = Widget::perform_action(&mut self.inner, action, &[], state, path);
         if handled && matches!(action, crate::a11y::Action::SetValue(_)) {
             self.marks.clear();
             self.pending_marks.clear();
@@ -1782,6 +1783,7 @@ mod tests {
                     anchor: 0,
                     focus: 4
                 },
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
@@ -1797,6 +1799,7 @@ mod tests {
                     anchor: 4,
                     focus: 4
                 },
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));

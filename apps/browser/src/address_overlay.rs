@@ -342,19 +342,6 @@ impl Widget for AddressSuggestions {
         self.relayout(taffy_origin);
     }
 
-    /// The panel is a floating overlay — nothing paints in the normal
-    /// pass; the real drawing happens in [`Widget::draw_overlay`] so it
-    /// composites above the page surface.
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
-
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,

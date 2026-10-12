@@ -48,9 +48,10 @@ pub struct Briefing {
     /// model is offered `describe_operation` for them.
     pub left_out: bool,
     /// The operations the reference describes in full, by app, resource
-    /// kind and operation name: the list of what is published names them
-    /// without repeating their parameters.
-    pub described: std::collections::BTreeSet<(String, String, String)>,
+    /// kind, operation name and parameter schema. Only matching schemas
+    /// can omit their parameters from the list published now: item field
+    /// edits can have different editable paths under the same kind.
+    pub described: Vec<(String, String, String, Vec<tilo_actions::ActionParam>)>,
     /// The prompt-cache routing key every planning request in the room
     /// shares, so its agents' requests reach the cache their common prefix
     /// is in.
@@ -63,6 +64,15 @@ impl Briefing {
     #[must_use]
     pub fn describes(&self) -> bool {
         self.left_out || self.reference.is_empty()
+    }
+
+    fn describes_offer(&self, offer: &Offer) -> bool {
+        self.described.contains(&(
+            offer.app.clone(),
+            offer.descriptor.resource_kind.clone(),
+            offer.descriptor.address.action.clone(),
+            offer.descriptor.params.clone(),
+        ))
     }
 
     /// The reference, then the state: the briefing as one text.
@@ -414,7 +424,7 @@ fn planned(descriptor: &ActionDescriptor, all: &[ActionDescriptor]) -> bool {
     let generic = [APPLY_ACTION, GROUP_ACTION].contains(&descriptor.address.action.as_str());
     !generic
         || !all.iter().any(|other| {
-            other.resource_kind == descriptor.resource_kind
+            other.address.resource == descriptor.address.resource
                 && other.kind == tilo_actions::OperationKind::Document
                 && ![APPLY_ACTION, GROUP_ACTION].contains(&other.address.action.as_str())
         })
@@ -478,7 +488,7 @@ fn briefing(context: &PlanContext, catalogue: &Catalogue) -> Briefing {
     let mut reference = String::new();
     let mut shown = Vec::new();
     let mut any_left_out = false;
-    let mut described = std::collections::BTreeSet::new();
+    let mut described = Vec::new();
     for (app, descriptors) in &context.reference {
         let mut ordered: Vec<&ActionDescriptor> = descriptors
             .iter()
@@ -499,22 +509,16 @@ fn briefing(context: &PlanContext, catalogue: &Catalogue) -> Briefing {
                 let _ = write!(detail, ". {description}");
             }
             detail.push('\n');
-            if offer.wants_content() {
-                detail.push_str("    takes what the previous step produced (it is given it)\n");
-            }
-            // The framework's `group` takes a list of what `apply` takes:
-            // its schema is `apply`'s again, so it is said in a line.
-            let grouped = offer.descriptor.address.action == GROUP_ACTION
-                && descriptors.iter().any(|other| {
-                    other.address.action == APPLY_ACTION
-                        && other.resource_kind == descriptor.resource_kind
-                });
-            if grouped {
+            if let Some(param) = offer.content_param() {
                 let _ = writeln!(
                     detail,
-                    "    actions: array (required) — the edits, each {{\"action\": \"apply\", \"args\": \
-                     <the argument object apply takes>}}"
+                    "    when {param} is omitted, takes what the previous step produced"
                 );
+            }
+            // Field-edit schemas describe the editable paths and examples
+            // at their root. Compact types alone omit that vocabulary.
+            if offer.descriptor.address.action == "field-edit" {
+                detail.push_str(&tilo_agent::tools::argument_lines(&offer, "    "));
             } else {
                 detail.push_str(&tilo_agent::tools::argument_lines_compact(&offer, "    "));
             }
@@ -526,15 +530,17 @@ fn briefing(context: &PlanContext, catalogue: &Catalogue) -> Briefing {
                 continue;
             }
             section.push_str(&detail);
-            described.insert((
+            described.push((
                 app.clone(),
                 offer.descriptor.resource_kind.clone(),
                 offer.descriptor.address.action.clone(),
+                offer.descriptor.params.clone(),
             ));
             if offered.contains(&id) {
                 shown.push(id);
             }
         }
+        any_left_out |= left_out > 0;
         if section.is_empty() {
             continue;
         }
@@ -545,7 +551,6 @@ fn briefing(context: &PlanContext, catalogue: &Catalogue) -> Briefing {
         let _ = writeln!(reference, "## {app}");
         reference.push_str(&section);
         if left_out > 0 {
-            any_left_out = true;
             let _ = writeln!(
                 reference,
                 "({left_out} more operations of {app}: their signatures are listed with the \
@@ -565,14 +570,19 @@ fn briefing(context: &PlanContext, catalogue: &Catalogue) -> Briefing {
                 .unwrap_or_default()
         )
     };
-    Briefing {
+    let mut briefing = Briefing {
         reference,
         state,
         shown,
         left_out: any_left_out,
         described,
         cache_key: Some(format!("tilo-agent-plan{room}")),
-    }
+    };
+    let unreferenced = catalogue.offers.iter().any(|offer| {
+        tilo_agent::tools::opened_app(offer).is_none() && !briefing.describes_offer(offer)
+    });
+    briefing.left_out |= unreferenced;
+    briefing
 }
 
 /// What changes from plan to plan: which apps a step opens first, and
@@ -763,13 +773,17 @@ impl Planner for ModelPlanner {
                 Some(Target::Record(route)) => steps.push(Step {
                     app: route.app_id.clone(),
                     record: Some(route.record.clone()),
-                    carries: context.wants_content(&route.app_id, Some(&route.record), &address),
+                    carries: context
+                        .content_parameter(&route.app_id, Some(&route.record), &address)
+                        .is_some_and(|param| !arguments.contains_key(&param)),
                     action: StepAction::Invoke { address, arguments },
                 }),
                 Some(Target::New(app)) => steps.push(Step {
                     app: app.clone(),
                     record: None,
-                    carries: context.preview_wants_content(app, &address),
+                    carries: context
+                        .content_parameter(app, None, &address)
+                        .is_some_and(|param| !arguments.contains_key(&param)),
                     action: StepAction::Invoke { address, arguments },
                 }),
                 Some(Target::Open(app)) => steps.push(Step {
@@ -1266,8 +1280,9 @@ pub(crate) const PLANNER_INSTRUCTIONS: &str = "You drive Tilo apps only through 
     needs a value a document holds that is not shown (a size, an id, its text), call \
     `read_view` on that document's view or read and plan with its answer; ask for several reads \
     together in one turn. Prefer the specific operations (append a paragraph, set cells, draw) \
-    over an app's generic `apply` where one does the edit. Finish by calling `plan` exactly once. \
-    Preserve every argument's declared JSON type. Never invent an operation id or parameter. \
+    over an app's generic `apply` where one does the edit. For `field-edit`, use the published \
+    editable paths and their operations, with item ids from the document's typed `read`. \
+    Finish by calling `plan` exactly once. Preserve every argument's declared JSON type. Never invent an operation id or parameter. \
     Only when an app you need is neither open nor listed with its operations, plan its open \
     operation and put the rest of the request in `then`.";
 
@@ -1399,13 +1414,7 @@ pub(crate) fn first_turn_parts(
     catalogue: &Catalogue,
     revealed: &mut tilo_agent::tools::Revealed,
 ) -> (String, String) {
-    let described = |offer: &Offer| {
-        briefing.described.contains(&(
-            offer.app.clone(),
-            offer.descriptor.resource_kind.clone(),
-            offer.descriptor.address.action.clone(),
-        ))
-    };
+    let described = |offer: &Offer| briefing.describes_offer(offer);
     let turn = tilo_agent::model::action_user_turn_listing(
         task,
         &[],
@@ -1468,7 +1477,10 @@ pub(crate) fn carried_gap(
             || answer
                 .arguments
                 .get(at)
-                .and_then(tilo_agent::plan::named_content)
+                .and_then(|arguments| {
+                    let param = offer(id)?.content_param()?;
+                    tilo_agent::plan::named_content(arguments, &param)
+                })
                 .is_some()
         {
             continue;
@@ -1484,8 +1496,8 @@ pub(crate) fn carried_gap(
         };
         if !fed {
             return Some(format!(
-                "`{id}` takes what the step right before it produces (it is given that content; \
-                 a content address written in the plan is not used). Put the operation that \
+                "`{id}` has no content argument, so it takes what the step right before it \
+                 produces. Supply its declared content parameter or put the operation that \
                  produces it, such as an export, immediately before `{id}`."
             ));
         }
@@ -2765,6 +2777,63 @@ mod tests {
     }
 
     #[test]
+    fn a_typed_content_argument_is_kept_in_open_records_and_previews() {
+        use tilo_actions::{ActionParam, OperationKind, ParamType};
+        let app = "so.tilo.notes";
+        let place = operation(
+            "notes.page",
+            "place-image",
+            OperationKind::Document,
+            vec![ActionParam::required("image", ParamType::Text, "Image").as_content()],
+        );
+        let address = format!("tilo.content:{}", "a".repeat(64));
+        let arguments = serde_json::Map::from_iter([("image".into(), address.into())]);
+        for preview in [false, true] {
+            let mut context = PlanContext {
+                apps: vec![app.into()],
+                ..PlanContext::default()
+            };
+            if preview {
+                context.previews.push((app.into(), vec![place.clone()]));
+            } else {
+                context.open.push((route(app, "n1"), vec![place.clone()]));
+            }
+            let (offered, _) = catalogue(&context);
+            let answer = Answer {
+                actions: vec![offered.offers[0].id()],
+                arguments: vec![arguments.clone()],
+                ..Answer::default()
+            };
+            assert_eq!(carried_gap(&answer, &offered), None);
+            let placeholder = Answer {
+                arguments: vec![serde_json::Map::from_iter([(
+                    "image".into(),
+                    "tilo.content:abc".into(),
+                )])],
+                ..answer.clone()
+            };
+            assert!(carried_gap(&placeholder, &offered).is_some());
+            let mut planner = ModelPlanner::new(Box::new(Canned(answer)));
+            let steps = planner.plan("place the picture", &context).unwrap();
+            assert!(
+                !steps[0].carries,
+                "explicit typed content is not rebound: {steps:?}"
+            );
+            assert!(
+                matches!(&steps[0].action, StepAction::Invoke { arguments: kept, .. } if kept == &arguments)
+            );
+            let missing = Answer {
+                actions: vec![offered.offers[0].id()],
+                arguments: vec![serde_json::Map::new()],
+                ..Answer::default()
+            };
+            assert!(carried_gap(&missing, &offered).is_some());
+            let mut planner = ModelPlanner::new(Box::new(Canned(missing)));
+            assert!(planner.plan("place the picture", &context).unwrap()[0].carries);
+        }
+    }
+
+    #[test]
     fn a_plan_after_a_view_is_made_with_what_it_answered() {
         let mut context = context();
         let (_, descriptors) = &mut context.open[0];
@@ -3167,6 +3236,142 @@ mod tests {
         });
         let empty = briefing(&PlanContext::default(), &offered);
         assert!(empty.text().is_empty() && empty.shown.is_empty());
+    }
+
+    #[test]
+    fn field_edit_reference_keeps_paths_and_describes_different_live_schemas() {
+        use tilo_actions::{ActionParam, OperationKind, ParamType};
+        let field_edit =
+            |description: &str, field: &str| {
+                operation(
+                    "notes.library",
+                    "field-edit",
+                    OperationKind::Document,
+                    vec![ActionParam::required("edit", ParamType::Object, "The edit").with_schema(
+                    serde_json::json!({
+                        "type": "object",
+                        "description": description,
+                        "properties": {"path": {"type": "array"}, "op": {"type": "string"}},
+                        "required": ["path", "op"],
+                        "examples": [{"path": [{"field": field}], "op": "set", "value": true}]
+                    }),
+                )],
+                )
+            };
+        let description = format!(
+            "A field edit: {} Editable paths: notes.*.favorite: set — Favorite (boolean)",
+            "The record's published paths. ".repeat(12)
+        );
+        let reference = field_edit(&description, "notes");
+        let live = field_edit(
+            "Editable paths: archived: set — Archived (boolean)",
+            "archived",
+        );
+        let context = PlanContext {
+            open: vec![(route("so.tilo.notes", "n1"), vec![live])],
+            apps: vec!["so.tilo.notes".into()],
+            reference: vec![("so.tilo.notes".into(), vec![reference])],
+            ..PlanContext::default()
+        };
+        let (offered, _) = catalogue(&context);
+        let briefed = briefing(&context, &offered);
+        assert!(
+            briefed.reference.contains("notes.*.favorite: set"),
+            "{}",
+            briefed.reference
+        );
+        assert!(
+            briefed.reference.contains(r#""field":"notes""#),
+            "{}",
+            briefed.reference
+        );
+        assert!(!briefed.describes_offer(&offered.offers[0]));
+        assert!(
+            briefed.describes(),
+            "the live schema needs describe_operation"
+        );
+        assert!(
+            planning_tools(None, briefed.describes())
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| { tool["name"] == tilo_agent::tools::DESCRIBE_OPERATION })
+        );
+    }
+
+    #[test]
+    fn an_app_whose_entire_reference_exceeds_the_budget_still_offers_describe() {
+        use tilo_actions::{ActionParam, OperationKind, ParamType};
+        let small = operation("small", "edit", OperationKind::Document, vec![]);
+        let large = operation(
+            "large",
+            "field-edit",
+            OperationKind::Document,
+            vec![ActionParam::required("edit", ParamType::Object, "Edit").with_schema(
+                serde_json::json!({"type": "object", "description": "x".repeat(MOST_OPERATION_CHARS)}),
+            )],
+        );
+        let context = PlanContext {
+            open: vec![(route("so.tilo.large", "l1"), vec![large.clone()])],
+            reference: vec![
+                ("so.tilo.small".into(), vec![small]),
+                ("so.tilo.large".into(), vec![large]),
+            ],
+            ..PlanContext::default()
+        };
+        let briefed = briefing(&context, &catalogue(&context).0);
+        assert!(!briefed.reference.is_empty());
+        assert!(!briefed.reference.contains("## so.tilo.large"));
+        assert!(
+            briefed.describes(),
+            "an empty section must not hide omitted schemas"
+        );
+    }
+
+    #[test]
+    fn generic_operations_are_not_hidden_by_another_resource_of_the_same_kind() {
+        use tilo_actions::{ActionParam, OperationKind, ParamType};
+        let mut group = operation(
+            "notes.library:second",
+            GROUP_ACTION,
+            OperationKind::Document,
+            vec![
+                ActionParam::required("actions", ParamType::Array, "Grouped actions").with_schema(
+                    serde_json::json!({"type": "array", "items": {"type": "object", "properties": {
+                    "action": {"enum": ["field-edit"]}, "args": {"type": "object"}
+                }, "required": ["action", "args"]}}),
+                ),
+            ],
+        );
+        group.resource_kind = "notes.library".into();
+        let edit = operation(
+            "notes.library",
+            "field-edit",
+            OperationKind::Document,
+            vec![],
+        );
+        let context = PlanContext {
+            open: vec![(
+                route("so.tilo.notes", "n1"),
+                vec![edit.clone(), group.clone()],
+            )],
+            reference: vec![("so.tilo.notes".into(), vec![edit, group])],
+            ..PlanContext::default()
+        };
+        let (offered, _) = catalogue(&context);
+        assert!(
+            offered
+                .offers
+                .iter()
+                .any(|offer| offer.address().action == GROUP_ACTION)
+        );
+        let briefed = briefing(&context, &offered);
+        assert!(
+            briefed.reference.contains(r#"action: "field-edit""#),
+            "{}",
+            briefed.reference
+        );
+        assert!(!briefed.reference.contains(r#""action": "apply""#));
     }
 
     /// The reference is the same bytes whatever the task, the records open
@@ -3573,7 +3778,7 @@ mod tests {
                     "x".repeat(3_000)
                 ),
                 format!(
-                    "(document w1) {writer} tilo.rich-text#read-text answered {}",
+                    "(document w1) {writer} word-processor.document#read-text answered {}",
                     "y".repeat(3_000)
                 ),
             ],
@@ -3597,7 +3802,7 @@ mod tests {
         // little, and the model plans without asking for them.
         assert!(tokens(&after) < 40_000, "{}", tokens(&after));
         assert!(tokens(&briefed.reference) > tokens(&briefed.state));
-        assert!(revealed.contains("tilo.rich-text#insert-image"));
+        assert!(revealed.contains("word-processor.document#insert-image"));
         assert!(revealed.contains("canvas.artwork#export"));
         // The same reference for another task of the same agent.
         let again = first_turn("Draw a teal band", &briefed, &offered, &mut revealed);

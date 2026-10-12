@@ -296,6 +296,7 @@ impl Widget for DiskRow {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         _state: &mut ui::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
@@ -420,6 +421,7 @@ mod tests {
 
             assert!(row.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT
             ));
@@ -491,6 +493,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             assert!(!row.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT
             ));

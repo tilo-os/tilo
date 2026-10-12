@@ -14,12 +14,13 @@
 //! follows the pointer and a control that moved out from under it is no
 //! longer hovered.
 //!
-//! The release half needs the press too. A [`crate::widget::Button`] records
-//! what it was when it took a press ([`record_press`]); a fresh button with
-//! the same id at the same place accepts the release that ends that press
-//! ([`press_continues`]). The host forgets the press before every press
-//! and after every release ([`PointerReplay::end_press`]), whichever widget
-//! it reached.
+//! The release half needs the press too. Every shared control that runs on
+//! a completed click (a button, a row, a disclosure, a copy action) keeps
+//! its press in a [`HeldPress`], which records what the control was when it
+//! took the press: a key naming it and where it was. A fresh control with
+//! the same key at the same place accepts the release that ends that press.
+//! The host forgets the press before every press and after every release
+//! ([`PointerReplay::end_press`]), whichever widget it reached.
 
 use std::cell::RefCell;
 
@@ -36,6 +37,13 @@ pub struct PointerReplay {
 }
 
 impl PointerReplay {
+    /// Whether a pointer rests over the surface with nothing changed under
+    /// it since it moved: only then can a relayout that moves a control
+    /// under it go unnoticed, so only then is the geometry worth comparing.
+    pub fn is_resting(&self) -> bool {
+        self.last.is_some() && !self.unsettled
+    }
+
     /// The widgets were rebuilt or moved: a control under the still pointer
     /// may not know it is there.
     pub fn mark_unsettled(&mut self) {
@@ -96,6 +104,124 @@ impl PointerReplay {
     }
 }
 
+/// Every widget's layout box in tree order. Two snapshots of one unchanged
+/// tree are equal exactly when no widget moved or resized.
+pub(crate) fn widget_geometry(root: &dyn crate::widget::Widget) -> Vec<Rect> {
+    fn walk(widget: &dyn crate::widget::Widget, out: &mut Vec<Rect>) {
+        out.push(widget.get_rect());
+        widget.for_each_child(&mut |child| walk(child, out));
+    }
+    let mut out = Vec::new();
+    walk(root, &mut out);
+    out
+}
+
+/// One target a control can press: `target` tells the control's own
+/// targets apart (`()` for a control that is one target), `key` names it
+/// across a rebuild and `rect` is where it is now.
+///
+/// The key, with the place, is what a rebuilt control must match to
+/// complete a press its predecessor took: an id the app gave the control,
+/// or the content that tells it apart (a row's label). An empty key never
+/// carries a press across a rebuild.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PressAt<'a, T = ()> {
+    pub(crate) target: T,
+    pub(crate) key: &'a str,
+    pub(crate) rect: Rect,
+}
+
+impl<'a> PressAt<'a> {
+    /// A control that is one target.
+    pub(crate) fn one(key: &'a str, rect: Rect) -> Self {
+        Self {
+            target: (),
+            key,
+            rect,
+        }
+    }
+}
+
+/// What a release did to a control's press.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Release<T = ()> {
+    /// The control holds no press: the release is not its.
+    NotHeld,
+    /// The pointer left the pressed target first: the release ends the
+    /// press and runs nothing.
+    Cancelled,
+    /// A completed click on this target.
+    Click(T),
+}
+
+impl<T> Release<T> {
+    /// Whether the release ended a press this control held, so it is
+    /// consumed.
+    pub(crate) fn ended(&self) -> bool {
+        !matches!(self, Self::NotHeld)
+    }
+}
+
+/// The press a control took and has not seen released, carried across a
+/// rebuild.
+///
+/// A control keeps one, calls [`Self::press`] when a press lands on one of
+/// its targets and [`Self::release`] on every left-button release. A fresh
+/// control that replaced the one that took the press (a worker result or a
+/// model refresh rebuilt it while the button was held) completes that press
+/// when it has the same key and stands at the same place; one that moved,
+/// or another control, does not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HeldPress<T = ()> {
+    held: Option<T>,
+}
+
+impl<T> Default for HeldPress<T> {
+    fn default() -> Self {
+        Self { held: None }
+    }
+}
+
+impl<T: Copy + PartialEq> HeldPress<T> {
+    /// A press landed on `at`.
+    pub(crate) fn press(&mut self, at: PressAt<'_, T>) {
+        record_press(at.key, at.rect);
+        self.held = Some(at.target);
+    }
+
+    pub(crate) fn is_held(&self) -> bool {
+        self.held.is_some()
+    }
+
+    /// A left-button release with the pointer over `over` (`None` when it
+    /// is over none of this control's targets). The press this control
+    /// took, or the one its predecessor took on `over`, ends: a click when
+    /// the pointer is still over the pressed target.
+    pub(crate) fn release(&mut self, over: Option<PressAt<'_, T>>) -> Release<T> {
+        let carried = || {
+            over.filter(|at| press_continues(at.key, at.rect))
+                .map(|at| at.target)
+        };
+        let Some(held) = self.held.take().or_else(carried) else {
+            return Release::NotHeld;
+        };
+        end_press();
+        match over {
+            Some(at) if at.target == held => Release::Click(held),
+            _ => Release::Cancelled,
+        }
+    }
+
+    /// The gesture ended without a release this control saw (the pointer
+    /// left the window, the control was disabled): forget the press, here
+    /// and for a control rebuilt in its place.
+    pub(crate) fn cancel(&mut self) {
+        if self.held.take().is_some() {
+            end_press();
+        }
+    }
+}
+
 /// The control holding the current press: its id and where it was.
 struct Press {
     id: String,
@@ -108,10 +234,11 @@ thread_local! {
     static PRESS: RefCell<Option<Press>> = const { RefCell::new(None) };
 }
 
-/// The control `id`, placed at `rect`, took a press.
-pub(crate) fn record_press(id: &str, rect: Rect) {
+/// The control `id`, placed at `rect`, took a press. A control with no id
+/// cannot be recognised after a rebuild, so its press is not recorded.
+fn record_press(id: &str, rect: Rect) {
     PRESS.with(|press| {
-        *press.borrow_mut() = Some(Press {
+        *press.borrow_mut() = (!id.is_empty()).then(|| Press {
             id: id.to_owned(),
             rect,
         });
@@ -120,7 +247,7 @@ pub(crate) fn record_press(id: &str, rect: Rect) {
 
 /// Whether a control `id` placed at `rect` is the one that took the current
 /// press, rebuilt since: the same id at the same place.
-pub(crate) fn press_continues(id: &str, rect: Rect) -> bool {
+fn press_continues(id: &str, rect: Rect) -> bool {
     PRESS.with(|press| {
         press
             .borrow()
@@ -130,9 +257,13 @@ pub(crate) fn press_continues(id: &str, rect: Rect) -> bool {
 }
 
 /// The current press ended where a control took it.
-pub(crate) fn end_press() {
+fn end_press() {
     PRESS.with(|press| press.borrow_mut().take());
 }
+
+#[cfg(test)]
+#[path = "pointer_replay_carry_tests.rs"]
+mod carry_tests;
 
 #[cfg(test)]
 mod tests {

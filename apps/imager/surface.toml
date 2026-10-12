@@ -1,0 +1,57 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "imager.sources"
+label = "Image sources"
+version = 1
+fields = [
+  { path = "source", type = "Option<Source>", readonly = true, stored = "record" },
+  { path = "source.kind", type = "SourceKind" },
+  { path = "source.path", type = "String" },
+  { path = "source.name", type = "String", label = true },
+  { path = "source.size", type = "u64" },
+  { path = "source.label", type = "String" },
+  { path = "source.installable", type = "bool" },
+  { path = "source.identity", type = "Option<SourceIdentity>", stored = "record" },
+  { path = "source.identity.volume", type = "u64" },
+  { path = "source.identity.file", type = "u64" },
+  { path = "source.expected_sha256", type = "Option<String>" },
+  { path = "recent", type = "Keyed<RecentSource>", readonly = true, stored = "keyed" },
+  { path = "recent.*.id", type = "Id" },
+  { path = "recent.*.rank", type = "i64" },
+  { path = "recent.*.source", type = "Source", stored = "record" },
+  { path = "recent.*.source.kind", type = "SourceKind" },
+  { path = "recent.*.source.path", type = "String" },
+  { path = "recent.*.source.name", type = "String", label = true },
+  { path = "recent.*.source.size", type = "u64" },
+  { path = "recent.*.source.label", type = "String" },
+  { path = "recent.*.source.installable", type = "bool" },
+  { path = "recent.*.source.identity", type = "Option<SourceIdentity>", stored = "record" },
+  { path = "recent.*.source.identity.volume", type = "u64" },
+  { path = "recent.*.source.identity.file", type = "u64" },
+  { path = "recent.*.source.expected_sha256", type = "Option<String>" },
+  { path = "profile", type = "InstallProfile", stored = "record" },
+  { path = "profile.hostname", type = "String" },
+  { path = "profile.user", type = "UserAccount", stored = "record" },
+  { path = "profile.user.full_name", type = "String" },
+  { path = "profile.user.username", type = "String" },
+  { path = "profile.locale", type = "String" },
+  { path = "profile.keyboard", type = "String" },
+  { path = "profile.timezone", type = "String" },
+  { path = "profile.filesystem", type = "Filesystem" },
+  { path = "profile.wifi_ssid", type = "String" },
+  { path = "profile.device_label", type = "String" },
+  { path = "profile.enroll_local_identity", type = "bool" },
+]
+
+[[resources.verbs]]
+id = "select-source"
+kind = "undoable"
+params = [
+  { name = "source", required = true, schema = { type = "object", additionalProperties = false, properties = { path = { type = "string" }, name = { type = "string" }, expected_sha256 = { type = ["string", "null"] }, identity = { type = ["object", "null"], additionalProperties = false, properties = { file = { type = "integer", minimum = 0 }, volume = { type = "integer", minimum = 0 } }, required = ["volume", "file"] }, installable = { type = "boolean" }, kind = { oneOf = [{ type = "string", const = "IsoFile" }, { type = "string", const = "TiloImage" }] }, label = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["kind", "path", "name", "size", "label", "installable"] } },
+]
+
+[[resources.verbs]]
+id = "clear-source"
+kind = "undoable"
+

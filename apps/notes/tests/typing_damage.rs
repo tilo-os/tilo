@@ -23,10 +23,6 @@ use vello::kurbo::{Affine, Point, Rect};
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 900;
-/// Every pixel of the app.
-const PIXELS: u64 = WIDTH as u64 * HEIGHT as u64;
-/// One row of the app's RGBA pixels.
-const ROW_BYTES: usize = WIDTH as usize * 4;
 
 /// A theme to check in, by name.
 type ThemeCase = (&'static str, fn() -> Theme);
@@ -60,9 +56,12 @@ type Presented = (Scene, Result<Vec<Rect>, String>);
 
 /// The host's side of the app, as `EmbeddedApp` and the shell run it: the
 /// app paints into a scene of its own with its damage parts, the host
-/// appends that as a part hinted with the app's damage, and compares each
-/// host frame with the one before it.
+/// appends that as a part hinted with the app's damage, magnified by the
+/// display's scale, and compares each host frame with the one before it.
 struct Host {
+    /// The display's scale: the host's scene pixels per app pixel, as the
+    /// shell magnifies a tile on a dense display.
+    scale: f64,
     damage: SurfaceDamage,
     painted: Scene,
     painted_parts: Option<ui::scene_parts::SectionParts>,
@@ -75,7 +74,12 @@ struct Host {
 
 impl Host {
     fn new() -> Self {
+        Self::at_scale(1.0)
+    }
+
+    fn at_scale(scale: f64) -> Self {
         Self {
+            scale,
             damage: SurfaceDamage::default(),
             painted: Scene::new(),
             painted_parts: None,
@@ -103,12 +107,19 @@ impl Host {
         }
         let from = self.generation;
         self.generation = from.wrapping_add(1);
+        // Where the app sits in the host's scene, and its damage there, as
+        // `EmbeddedApp::draw` places them.
+        let placement = Affine::scale(self.scale);
         let hint = self.damage.take().map(|rects| ui::scene_parts::DamageHint {
             source: 1,
             from,
             to: self.generation,
-            placement: Affine::IDENTITY,
-            rects: rects.iter().map(|rect| rect.inflate(1.0, 1.0)).collect(),
+            placement,
+            rects: rects
+                .iter()
+                .map(|rect| placement.transform_rect_bbox(*rect).inflate(1.0, 1.0))
+                .collect(),
+            copies: Vec::new(),
         });
         let mut scene = Scene::new();
         let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
@@ -118,7 +129,7 @@ impl Host {
                     scene,
                     &self.painted,
                     self.painted_parts.as_ref(),
-                    Some(Affine::IDENTITY),
+                    Some(placement),
                 );
             });
         });
@@ -185,19 +196,40 @@ fn shows_saved(app: &App) -> bool {
     })
 }
 
-/// The pixels of the app `rects` cover, each counted once: what a host
-/// repaints for them.
+/// The app's size in the host's scene pixels at `scale`.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the test's scales (1 and 2) keep the 1280x900 app a few megapixels"
+)]
+fn scene_size(scale: f64) -> (u32, u32) {
+    (
+        (f64::from(WIDTH) * scale).round() as u32,
+        (f64::from(HEIGHT) * scale).round() as u32,
+    )
+}
+
+/// The pixels of the host's scene at `scale` that `rects` (in scene
+/// pixels) cover within the app, each counted once: what a host repaints
+/// for them.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_precision_loss,
-    reason = "rects are clamped to the 1280x900 app before becoming pixel indices"
+    reason = "rects are clamped to the app's scene pixels before becoming pixel indices"
 )]
-fn area(rects: &[Rect]) -> f64 {
-    let app = Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT));
-    let mut covered = vec![vec![false; WIDTH as usize]; HEIGHT as usize];
+fn area(rects: &[Rect], scale: f64) -> f64 {
+    let (width, height) = scene_size(scale);
+    let app = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+    let mut covered = vec![vec![false; width as usize]; height as usize];
     for rect in rects {
-        let rect = rect.intersect(app).expand();
+        let rect = rect.intersect(app);
+        // A rect wholly outside the app (or the region a test watches)
+        // intersects to nothing, which covers no pixel.
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            continue;
+        }
+        let rect = rect.expand();
         for row in &mut covered[rect.y0 as usize..rect.y1 as usize] {
             row[rect.x0 as usize..rect.x1 as usize].fill(true);
         }
@@ -205,8 +237,15 @@ fn area(rects: &[Rect]) -> f64 {
     covered.iter().flatten().filter(|cell| **cell).count() as f64
 }
 
+/// Every pixel of the app at scale 1.
 fn app_area() -> f64 {
-    f64::from(WIDTH) * f64::from(HEIGHT)
+    app_area_at(1.0)
+}
+
+/// Every pixel of the app in the host's scene at `scale`.
+fn app_area_at(scale: f64) -> f64 {
+    let (width, height) = scene_size(scale);
+    f64::from(width) * f64::from(height)
 }
 
 /// What a change cost the host: the pixels its frames repainted, summed,
@@ -215,36 +254,64 @@ fn app_area() -> f64 {
 struct Repainted {
     total: f64,
     largest: f64,
+    /// A frame could not say where it changed and repainted the app whole.
+    whole: bool,
+    /// The largest frame's pixels within the region a test watches
+    /// ([`measure_within`]).
+    largest_within: f64,
 }
 
-/// Present `frames` over `before` as the host does, each only where its
-/// damage says, and require the pixels of a full render of the last one.
+/// Present `frames` over `before` as the host does at `scale`, each only
+/// where its damage says, and require the pixels of a full render of the
+/// last one. Pixels are the host's scene pixels; `within` is in the app's.
 fn present_and_compare(
     before: &Scene,
     frames: &[Presented],
-    theme: &Theme,
+    (theme, scale): (&Theme, f64),
     label: &str,
+    within: Option<Rect>,
 ) -> Repainted {
     let background = theme.tokens.colors.surfaces.content;
-    let mut retained = ui::offscreen::OffscreenRenderer::new(WIDTH, HEIGHT);
-    let mut full = ui::offscreen::OffscreenRenderer::new(WIDTH, HEIGHT);
+    let (width, height) = scene_size(scale);
+    let pixels_in_app = u64::from(width).saturating_mul(u64::from(height));
+    let within = within.map(|region| Affine::scale(scale).transform_rect_bbox(region));
+    let app_area = app_area_at(scale);
+    let mut retained = ui::offscreen::OffscreenRenderer::new(width, height);
+    let mut full = ui::offscreen::OffscreenRenderer::new(width, height);
     let _ = retained.render(before, background);
     let mut repainted = Repainted::default();
     for (scene, damage) in frames {
-        let damage = damage
-            .as_ref()
-            .unwrap_or_else(|why| panic!("{label}: a frame repainted the app whole: {why}"));
+        let damage = match damage {
+            Ok(damage) => damage,
+            // Counted as the whole app, which every budget refuses; drawn
+            // whole, so the frames after it are still compared.
+            Err(why) => {
+                eprintln!("{label}: a frame repainted the app whole: {why}");
+                let _ = retained.render(scene, background);
+                repainted.total += app_area;
+                repainted.largest = app_area;
+                repainted.largest_within = within.map_or(app_area, |region| region.area());
+                repainted.whole = true;
+                continue;
+            }
+        };
         if damage.is_empty() {
             continue;
         }
         let rasterized = retained.render_damage_regions_gpu_wait(scene, background, damage);
+        let pixels = area(damage, scale);
+        // Damage over half the app renders whole, as a host does (a header
+        // that grew moves the page under it); less must render sparsely.
         assert!(
-            rasterized < PIXELS,
+            rasterized < pixels_in_app || pixels >= app_area / 2.0,
             "{label}: the damage must exercise a sparse render: {damage:?}"
         );
-        let pixels = area(damage);
         repainted.total += pixels;
         repainted.largest = repainted.largest.max(pixels);
+        if let Some(region) = within {
+            let inside: Vec<_> = damage.iter().map(|rect| rect.intersect(region)).collect();
+            repainted.largest_within = repainted.largest_within.max(area(&inside, scale));
+        }
     }
     let Some((last, _)) = frames.last() else {
         return repainted;
@@ -253,7 +320,7 @@ fn present_and_compare(
     let actual = retained.readback_current();
     let mut differing = 0_usize;
     let mut spread: Option<Rect> = None;
-    let stride = ROW_BYTES;
+    let stride = (width as usize).saturating_mul(4);
     for (y, (actual, expected)) in actual
         .chunks_exact(stride)
         .zip(expected.chunks_exact(stride))
@@ -298,7 +365,40 @@ fn measure(
     change(app, host);
     let elapsed = started.elapsed();
     let frames = std::mem::take(&mut host.presented);
-    (present_and_compare(&before, &frames, theme, label), elapsed)
+    (
+        present_and_compare(&before, &frames, (theme, host.scale), label, None),
+        elapsed,
+    )
+}
+
+/// [`measure`], also counting what the change repainted within `region`.
+fn measure_within(
+    app: &mut App,
+    host: &mut Host,
+    (theme, label): (&Theme, &str),
+    region: Rect,
+    change: impl FnOnce(&mut App, &mut Host),
+) -> (Repainted, std::time::Duration) {
+    let before = host.scene.clone();
+    host.presented.clear();
+    let started = std::time::Instant::now();
+    change(app, host);
+    let elapsed = started.elapsed();
+    let frames = std::mem::take(&mut host.presented);
+    let repainted = present_and_compare(&before, &frames, (theme, host.scale), label, Some(region));
+    (repainted, elapsed)
+}
+
+/// Begin a test: these share the toolkit's frozen wall clock (one test's
+/// minute turning over would change another's "Edited" line), so they run
+/// one at a time.
+fn start() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ui::i18n::I18nManager::init("en-US");
+    serial
 }
 
 /// Pin the wall clock `seconds` after the epoch, so when a note says it was
@@ -329,13 +429,17 @@ fn open_a_new_note(app: &mut App, host: &mut Host, theme: Theme) {
     host.frames(app, 5);
     let first = bounds_of(app, "New note");
     host.click(app, first.center());
+    // The pointer rests in the empty page below the note, so no button's
+    // tooltip comes and goes while a test measures the note.
+    host.input(app, cursor_moved(640.0, 700.0));
     host.frames(app, 5);
 }
 
 /// Let the note's record finish saving and show it, with no input, as it
 /// does between a person's keystrokes.
 fn let_the_save_land(app: &mut App, host: &mut Host) {
-    for _ in 0..80 {
+    let deadline = tilo_test_env::hang_deadline();
+    while std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(25));
         host.frame(app);
         if shows_saved(app) {
@@ -345,13 +449,161 @@ fn let_the_save_land(app: &mut App, host: &mut Host) {
     panic!("the note's record never finished saving");
 }
 
+/// Let the window come to rest with no input: the save bubble shown for the
+/// last save fades away, so what a test measures next is its own change.
+fn let_it_rest(app: &mut App, host: &mut Host) {
+    let mut quiet = 0_u32;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        host.presented.clear();
+        host.frame(app);
+        let still = host
+            .presented
+            .iter()
+            .all(|(_, damage)| damage.as_ref().is_ok_and(Vec::is_empty));
+        quiet = if still { quiet.saturating_add(1) } else { 0 };
+        if quiet >= 8 {
+            host.presented.clear();
+            return;
+        }
+    }
+    panic!("the window never came to rest");
+}
+
 fn character(text: &str) -> Key {
     Key::Character(text.into())
 }
 
+/// Type `text` key by key, measuring nothing.
+fn type_text(app: &mut App, host: &mut Host, text: &str) {
+    for letter in text.chars() {
+        host.key(app, &character(&letter.to_string()));
+    }
+}
+
+/// Type each of `letters` after the previous key's save landed, as a person
+/// types: each key and each landing measured, checked against a full render
+/// and logged as `case`. Returns the largest frame and the median
+/// keystroke→frame time.
+fn measure_typing(
+    app: &mut App,
+    host: &mut Host,
+    theme: &Theme,
+    case: &str,
+    letters: &[&str],
+) -> (f64, std::time::Duration) {
+    let mut worst: f64 = 0.0;
+    let mut times = Vec::new();
+    for letter in letters {
+        let label = format!("{case}: the save landing before {letter:?}");
+        let (landed, _) = measure(app, host, theme, &label, let_the_save_land);
+        let label = format!("{case}: typing {letter:?}");
+        let (typed, elapsed) = measure(app, host, theme, &label, |app, host| {
+            host.key(app, &character(letter));
+        });
+        eprintln!(
+            "notes-damage {case} key={letter:?} frame_px={:.0} save_landing_px={:.0} of {:.0} keystroke_to_frame={elapsed:?}",
+            typed.largest,
+            landed.largest,
+            app_area(),
+        );
+        assert!(typed.total > 0.0, "{label}: the key changed the note");
+        worst = worst.max(typed.largest).max(landed.largest);
+        times.push(elapsed);
+    }
+    times.sort();
+    let median = times[times.len() / 2];
+    eprintln!(
+        "notes-damage {case} worst_frame_px={worst:.0} ({:.2} % of the app) p50_keystroke_to_frame={median:?}",
+        worst / app_area() * 100.0
+    );
+    (worst, median)
+}
+
+/// The bounds of the published node whose value is `value`.
+fn bounds_of_value(app: &App, value: &str) -> Rect {
+    app.semantic_tree()
+        .iter()
+        .find(|node| node.value.as_deref() == Some(value))
+        .and_then(|node| node.bounds)
+        .unwrap_or_else(|| panic!("no node showing {value:?} on screen"))
+}
+
+/// Whether a published node's value is `value`.
+fn shows_value(app: &App, value: &str) -> bool {
+    app.semantic_tree()
+        .iter()
+        .any(|node| node.value.as_deref() == Some(value))
+}
+
+/// Whether a published node is named `name`.
+fn shows_name(app: &App, name: &str) -> bool {
+    app.semantic_tree()
+        .iter()
+        .any(|node| node.name.as_deref() == Some(name))
+}
+
+/// Whether a published node's name or value mentions `text`.
+fn mentions(app: &App, text: &str) -> bool {
+    app.semantic_tree().iter().any(|node| {
+        [&node.name, &node.value]
+            .into_iter()
+            .flatten()
+            .any(|said| said.contains(text))
+    })
+}
+
+/// The bounds of the first published node whose action target ends with
+/// `suffix` and starts with `prefix`.
+fn bounds_of_target(app: &App, prefix: &str, suffix: &str) -> Rect {
+    app.semantic_tree()
+        .iter()
+        .find(|node| {
+            node.semantic_target
+                .as_deref()
+                .is_some_and(|target| target.starts_with(prefix) && target.ends_with(suffix))
+        })
+        .and_then(|node| node.bounds)
+        .unwrap_or_else(|| panic!("no {prefix}…{suffix} on screen"))
+}
+
+/// The id of the one item of the notebook's `collection` published under
+/// `name`.
+fn item_id(app: &App, collection: &str, name: &str) -> String {
+    let marker = format!(":notes.notebook/{collection}/");
+    let ids: Vec<String> = app
+        .semantic_tree()
+        .iter()
+        .filter(|node| node.name.as_deref() == Some(name))
+        .filter_map(|node| {
+            let (_, rest) = node.id.0.split_once(&marker)?;
+            Some(rest.to_owned())
+        })
+        .collect();
+    assert_eq!(
+        ids.len(),
+        1,
+        "one {collection} item named {name:?}: {ids:?}"
+    );
+    ids[0].clone()
+}
+
+/// Invoke `action` on `resource` with `arguments`, as the app's person does
+/// from the palette.
+fn invoke_with(app: &mut App, resource: &str, action: &str, arguments: serde_json::Value) {
+    let serde_json::Value::Object(arguments) = arguments else {
+        panic!("{resource} {action}: arguments are an object");
+    };
+    app.invoke_local_resource_action(
+        &tilo_actions::ActionAddress::new(resource, action),
+        &arguments,
+    )
+    .unwrap_or_else(|error| panic!("{resource} {action}: {error:?}"));
+}
+
 #[test]
 fn a_keystroke_in_a_note_damages_its_line_not_the_app() {
-    ui::i18n::I18nManager::init("en-US");
+    let _serial = start();
     for (name, theme) in THEMES {
         let theme = theme();
         drive_live_window::<NotesShell, _>(|app| {
@@ -422,7 +674,7 @@ fn a_keystroke_in_a_note_damages_its_line_not_the_app() {
 
 #[test]
 fn naming_a_note_damages_its_title_not_the_page() {
-    ui::i18n::I18nManager::init("en-US");
+    let _serial = start();
     for (name, theme) in THEMES {
         let theme = theme();
         drive_live_window::<NotesShell, _>(|app| {
@@ -465,7 +717,7 @@ fn naming_a_note_damages_its_title_not_the_page() {
 
 #[test]
 fn resting_on_a_toolbar_button_damages_the_button_not_the_app() {
-    ui::i18n::I18nManager::init("en-US");
+    let _serial = start();
     let theme = Theme::dark();
     drive_live_window::<NotesShell, _>(|app| {
         let mut host = Host::new();
@@ -488,4 +740,514 @@ fn resting_on_a_toolbar_button_damages_the_button_not_the_app() {
         );
     })
     .unwrap();
+}
+
+#[test]
+fn a_keystroke_in_a_code_block_damages_its_run_not_the_editor() {
+    let _serial = start();
+    for (name, theme) in THEMES {
+        let theme = theme();
+        drive_live_window::<NotesShell, _>(|app| {
+            let mut host = Host::new();
+            open_a_new_note(app, &mut host, theme.clone());
+            // A few lines of prose, so the editor is more than its code.
+            for line in ["Intro", "Some prose", "More prose", "Then code"] {
+                type_text(app, &mut host, line);
+                host.key(app, &Key::Named(NamedKey::Enter));
+            }
+            // Three backticks open a code block; Enter ends its language.
+            type_text(app, &mut host, "```rust");
+            host.key(app, &Key::Named(NamedKey::Enter));
+            host.frames(app, 3);
+            // The first line of a run also paints the run's ground.
+            let case = format!("{name} code-block-first-line");
+            let (first, _) = measure_typing(app, &mut host, &theme, &case, &["l", "e", "t"]);
+            host.key(app, &Key::Named(NamedKey::Enter));
+            host.frames(app, 3);
+            let case = format!("{name} code-block-later-line");
+            let (later, _) = measure_typing(app, &mut host, &theme, &case, &["x", "+", "1"]);
+            assert!(
+                mentions(app, "let") && mentions(app, "x+1"),
+                "{name}: the keys reached the code block"
+            );
+            // A note that holds a code block types its prose as any note.
+            host.click(app, bounds_of_value(app, "Intro").center());
+            host.frames(app, 3);
+            let case = format!("{name} paragraph-beside-code");
+            let (prose, _) = measure_typing(app, &mut host, &theme, &case, &["!"]);
+            for (case, worst) in [
+                ("the run's first line", first),
+                ("a later line", later),
+                ("a paragraph beside the code", prose),
+            ] {
+                // The line or the run's rows, the caret and the save bubble:
+                // not the editor.
+                assert!(
+                    worst < app_area() * 0.06,
+                    "{name}: typing in {case} repainted {worst:.0} px, over 6 % of the app"
+                );
+            }
+        })
+        .unwrap();
+    }
+}
+
+#[test]
+fn a_keystroke_in_a_table_cell_damages_its_cell_not_the_editor() {
+    let _serial = start();
+    for (name, theme) in THEMES {
+        let theme = theme();
+        drive_live_window::<NotesShell, _>(|app| {
+            let mut host = Host::new();
+            open_a_new_note(app, &mut host, theme.clone());
+            type_text(app, &mut host, "/table");
+            host.key(app, &Key::Named(NamedKey::Enter));
+            host.frames(app, 5);
+            // Into the table's first body cell.
+            host.click(
+                app,
+                bounds_of_target(app, "notes.table-cell:", ":1:0").center(),
+            );
+            host.frames(app, 3);
+            let case = format!("{name} table-cell");
+            let (cell, _) =
+                measure_typing(app, &mut host, &theme, &case, &["4", "2", " ", "k", "g"]);
+            assert!(
+                shows_value(app, "42 kg"),
+                "{name}: the keys reached the cell"
+            );
+            // The cell, its editor and the save bubble: not the editor.
+            assert!(
+                cell < app_area() * 0.06,
+                "{name}: typing in a table cell repainted {cell:.0} px, over 6 % of the app"
+            );
+        })
+        .unwrap();
+    }
+}
+
+#[test]
+fn tagging_a_note_damages_its_header_not_the_app() {
+    let _serial = start();
+    for (name, theme) in THEMES {
+        let theme = theme();
+        drive_live_window::<NotesShell, _>(|app| {
+            let mut host = Host::new();
+            open_a_new_note(app, &mut host, theme.clone());
+            type_text(app, &mut host, "Plan");
+            let_the_save_land(app, &mut host);
+            host.frames(app, 3);
+            let page = item_id(app, "pages", "Untitled");
+            let tag = |name: &str| {
+                let page = page.clone();
+                let name = name.to_owned();
+                move |app: &mut App, host: &mut Host| {
+                    invoke_with(
+                        app,
+                        &format!("notes.notebook/pages/{page}"),
+                        "tag",
+                        serde_json::json!({ "name": name }),
+                    );
+                    host.frames(app, 6);
+                }
+            };
+            // The first tag adds the header's row of tags: the note's body
+            // moves down under it.
+            let label = format!("{name}: the first tag");
+            let (first, _) = measure(app, &mut host, &theme, &label, tag("work"));
+            assert!(shows_name(app, "Tag: work"), "{label}: the chip shows");
+            let_the_save_land(app, &mut host);
+            // A second tag joins the row: the header keeps its height.
+            let label = format!("{name}: a second tag");
+            let (second, _) = measure(app, &mut host, &theme, &label, tag("home"));
+            assert!(shows_name(app, "Tag: home"), "{label}: the chip shows");
+            let_the_save_land(app, &mut host);
+            let work = item_id(app, "tags", "work");
+            let label = format!("{name}: removing a tag");
+            let (removed, _) = measure(app, &mut host, &theme, &label, |app, host| {
+                // Taking a tag off a note is an edit of the note's tags.
+                let untag = ui::tilo_resource::Invoke::from(
+                    notes::notebook::Notebook::paths()
+                        .pages
+                        .item(&ui::tilo_resource::Id::from(page.as_str()))
+                        .tags
+                        .remove(&ui::tilo_resource::Id::from(work.as_str())),
+                );
+                invoke_with(
+                    app,
+                    "notes.notebook",
+                    untag.id,
+                    serde_json::Value::Object(untag.arguments),
+                );
+                host.frames(app, 6);
+            });
+            assert!(!shows_name(app, "Tag: work"), "{label}: the chip went");
+            for (case, repainted) in [
+                ("the first tag", first),
+                ("a second tag", second),
+                ("removing a tag", removed),
+            ] {
+                eprintln!(
+                    "notes-damage {name} tag case={case:?} frame_px={:.0} total_px={:.0} of {:.0}",
+                    repainted.largest,
+                    repainted.total,
+                    app_area()
+                );
+                // The header rebuilt its widgets; the app's tree with them,
+                // but the frame still says what changed.
+                assert!(!repainted.whole, "{name}: {case} repainted the app whole");
+            }
+            // The row of tags and the bubble, not the page.
+            assert!(
+                second.largest < app_area() * 0.1,
+                "{name}: a second tag repainted {:.0} px, over 10 % of the app",
+                second.largest
+            );
+        })
+        .unwrap();
+    }
+}
+
+/// Write `lines` as the note's paragraphs, the caret ending in the last.
+fn write_paragraphs(app: &mut App, host: &mut Host, lines: &[&str]) {
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            host.key(app, &Key::Named(NamedKey::Enter));
+        }
+        type_text(app, host, line);
+    }
+    host.frames(app, 3);
+}
+
+/// Put the caret in the paragraph showing `text`, `back` characters before
+/// its end.
+fn caret_in(app: &mut App, host: &mut Host, text: &str, back: usize) {
+    host.click(app, bounds_of_value(app, text).center());
+    // The pointer leaves the text, so no hover comes and goes meanwhile.
+    host.input(app, cursor_moved(640.0, 860.0));
+    host.key(app, &Key::Named(NamedKey::End));
+    for _ in 0..back {
+        host.key(app, &Key::Named(NamedKey::ArrowLeft));
+    }
+    host.frames(app, 3);
+}
+
+/// Press `key` after the previous edit's save landed, as a person does
+/// between edits: what the key repainted, checked against a full render and
+/// logged as `case`, and its keystroke→frame time.
+fn measure_key(
+    app: &mut App,
+    host: &mut Host,
+    (theme, case): (&Theme, &str),
+    key: &Key,
+) -> (Repainted, std::time::Duration) {
+    let_the_save_land(app, host);
+    let_it_rest(app, host);
+    let (pressed, elapsed) = measure(app, host, theme, case, |app, host| host.key(app, key));
+    eprintln!(
+        "notes-damage {case} frame_px={:.0} total_px={:.0} whole={} of {:.0} keystroke_to_frame={elapsed:?}",
+        pressed.largest,
+        pressed.total,
+        pressed.whole,
+        app_area(),
+    );
+    (pressed, elapsed)
+}
+
+/// A key that adds or removes a block: the block, the rows of the blocks
+/// below it that moved (where they were and are), the caret's drag handle and
+/// the save bubble; never the window, nor the page.
+fn assert_block_change(name: &str, case: &str, repainted: Repainted) {
+    assert!(!repainted.whole, "{name}: {case} repainted the app whole");
+    assert!(
+        repainted.largest < app_area() * 0.25,
+        "{name}: {case} repainted {:.0} px, over 25 % of the app",
+        repainted.largest
+    );
+}
+
+#[test]
+fn enter_that_adds_a_block_damages_the_blocks_below_not_the_window() {
+    let _serial = start();
+    for (name, theme) in THEMES {
+        let theme = theme();
+        drive_live_window::<NotesShell, _>(|app| {
+            let mut host = Host::new();
+            open_a_new_note(app, &mut host, theme.clone());
+            write_paragraphs(
+                app,
+                &mut host,
+                &["Alpha line", "Bravo line", "Charlie line", "Delta line"],
+            );
+            // Splitting a paragraph: "Bravo " stays, "line" moves down.
+            caret_in(app, &mut host, "Bravo line", "line".len());
+            let label = format!("{name} enter-split-paragraph");
+            let (split, _) = measure_key(
+                app,
+                &mut host,
+                (&theme, &label),
+                &Key::Named(NamedKey::Enter),
+            );
+            // The caret went with "line" to the start of its new paragraph.
+            type_text(app, &mut host, "a ");
+            host.frames(app, 3);
+            assert!(
+                values_of(app, "Block text").contains(&"a line".to_owned()),
+                "{label}: the paragraph split, the caret at the new one's start: {:?}",
+                values_of(app, "Block text")
+            );
+            // A new empty paragraph after one, as a person ends a line.
+            caret_in(app, &mut host, "Charlie line", 0);
+            let label = format!("{name} enter-new-paragraph");
+            let (new, _) = measure_key(
+                app,
+                &mut host,
+                (&theme, &label),
+                &Key::Named(NamedKey::Enter),
+            );
+            // A list item after one: "- " starts a list.
+            caret_in(app, &mut host, "Alpha line", 0);
+            host.key(app, &Key::Named(NamedKey::Enter));
+            type_text(app, &mut host, "- milk");
+            host.frames(app, 3);
+            let label = format!("{name} enter-list-item");
+            let (item, _) = measure_key(
+                app,
+                &mut host,
+                (&theme, &label),
+                &Key::Named(NamedKey::Enter),
+            );
+            type_text(app, &mut host, "eggs");
+            host.frames(app, 3);
+            assert!(
+                mentions(app, "milk") && mentions(app, "eggs"),
+                "{label}: the list has both items"
+            );
+            for (case, repainted) in [
+                ("splitting a paragraph", split),
+                ("ending a paragraph", new),
+                ("adding a list item", item),
+            ] {
+                assert_block_change(name, case, repainted);
+            }
+        })
+        .unwrap();
+    }
+}
+
+#[test]
+fn backspace_that_removes_a_block_damages_the_blocks_below_not_the_window() {
+    let _serial = start();
+    for (name, theme) in THEMES {
+        let theme = theme();
+        drive_live_window::<NotesShell, _>(|app| {
+            let mut host = Host::new();
+            open_a_new_note(app, &mut host, theme.clone());
+            write_paragraphs(
+                app,
+                &mut host,
+                &["Alpha line", "Bravo line", "Charlie line", "Delta line"],
+            );
+            // Joining two paragraphs: the caret at the start of "Charlie".
+            caret_in(app, &mut host, "Charlie line", "Charlie line".len());
+            let label = format!("{name} backspace-join-paragraphs");
+            let (joined, _) = measure_key(
+                app,
+                &mut host,
+                (&theme, &label),
+                &Key::Named(NamedKey::Backspace),
+            );
+            assert!(
+                values_of(app, "Block text").contains(&"Bravo lineCharlie line".to_owned()),
+                "{label}: the paragraphs joined: {:?}",
+                values_of(app, "Block text")
+            );
+            // Removing an empty paragraph between two.
+            caret_in(app, &mut host, "Alpha line", 0);
+            host.key(app, &Key::Named(NamedKey::Enter));
+            host.frames(app, 3);
+            let label = format!("{name} backspace-remove-empty");
+            let (removed, _) = measure_key(
+                app,
+                &mut host,
+                (&theme, &label),
+                &Key::Named(NamedKey::Backspace),
+            );
+            assert_eq!(
+                values_of(app, "Block text"),
+                ["Alpha line", "Bravo lineCharlie line", "Delta line"],
+                "{label}: the empty paragraph went"
+            );
+            for (case, repainted) in [
+                ("joining two paragraphs", joined),
+                ("removing an empty paragraph", removed),
+            ] {
+                assert_block_change(name, case, repainted);
+            }
+        })
+        .unwrap();
+    }
+}
+
+/// The bounds of the note's block showing `value`.
+fn bounds_of_block(app: &App, value: &str) -> Rect {
+    app.semantic_tree()
+        .iter()
+        .find(|node| {
+            node.name.as_deref() == Some("Block text") && node.value.as_deref() == Some(value)
+        })
+        .and_then(|node| node.bounds)
+        .unwrap_or_else(|| panic!("no block showing {value:?} on screen"))
+}
+
+/// The caret is a part of its own: a caret entering an empty paragraph
+/// repaints the caret where it was and is (and the drag handle that follows
+/// it), not the paragraph's line across the editor. Checked against a full
+/// render in every theme, at 100 % and at 200 %, where the host magnifies
+/// the app as the shell does on a dense display.
+#[test]
+fn the_caret_entering_an_empty_paragraph_damages_the_caret_not_the_line() {
+    let _serial = start();
+    for scale in [1.0, 2.0] {
+        for (name, theme) in THEMES {
+            let theme = theme();
+            drive_live_window::<NotesShell, _>(|app| {
+                let mut host = Host::at_scale(scale);
+                open_a_new_note(app, &mut host, theme.clone());
+                write_paragraphs(app, &mut host, &["Alpha line", "", "Charlie line"]);
+                caret_in(app, &mut host, "Alpha line", 0);
+                let empty = bounds_of_block(app, "");
+                let line = empty.area() * scale * scale;
+                let_the_save_land(app, &mut host);
+                let_it_rest(app, &mut host);
+                let label = format!("{name} at {scale}x: the caret entering an empty paragraph");
+                let (entered, elapsed) =
+                    measure_within(app, &mut host, (&theme, &label), empty, |app, host| {
+                        host.key(app, &Key::Named(NamedKey::ArrowDown));
+                    });
+                eprintln!(
+                    "notes-damage {name} scale={scale} caret-into-empty frame_px={:.0} line_px={:.0} of line {line:.0} and app {:.0} whole={} keystroke_to_frame={elapsed:?}",
+                    entered.largest,
+                    entered.largest_within,
+                    app_area_at(scale),
+                    entered.whole,
+                );
+                // The caret landed in the empty paragraph.
+                type_text(app, &mut host, "b");
+                host.frames(app, 3);
+                assert_eq!(
+                    values_of(app, "Block text"),
+                    ["Alpha line", "b", "Charlie line"],
+                    "{label}: the caret went into the empty paragraph"
+                );
+                assert!(!entered.whole, "{label}: repainted the app whole");
+                // The caret's few pixels, not the 942 px line.
+                assert!(
+                    entered.largest_within < line * 0.05,
+                    "{label}: repainted {:.0} px of the empty paragraph's {line:.0} px line",
+                    entered.largest_within
+                );
+                assert!(
+                    entered.largest < line,
+                    "{label}: repainted {:.0} px in all, over the {line:.0} px of the line",
+                    entered.largest
+                );
+            })
+            .unwrap();
+        }
+    }
+}
+
+#[test]
+fn renaming_a_note_damages_its_row_not_the_page_tree() {
+    let _serial = start();
+    for (name, theme) in THEMES {
+        let theme = theme();
+        drive_live_window::<NotesShell, _>(|app| {
+            let mut host = Host::new();
+            open_a_new_note(app, &mut host, theme.clone());
+            let title = bounds_of(app, "Page title");
+            host.click(app, title.center());
+            host.frames(app, 3);
+            type_text(app, &mut host, "Plan");
+            // A person pauses before Enter: the title's save lands and the
+            // bubble says so, and Enter's own save then changes it. Waiting
+            // for that measures the change whole on any runner; without it,
+            // whether the bubble changes within Enter's frames depends on how
+            // fast the save lands.
+            let_the_save_land(app, &mut host);
+            // Naming the note in its title renames its row in the page tree.
+            let label = format!("{name}: naming the note in its title");
+            let (named, _) = measure(app, &mut host, &theme, &label, |app, host| {
+                host.key(app, &Key::Named(NamedKey::Enter));
+                host.frames(app, 4);
+            });
+            assert!(shows_name(app, "Plan"), "{label}: the row shows it");
+            let_the_save_land(app, &mut host);
+            // Renaming it from the page tree: F2 opens the row's field.
+            host.click(app, bounds_of(app, "Plan").center());
+            // The pointer leaves the row, so its buttons' tooltips stay away.
+            host.input(app, cursor_moved(640.0, 700.0));
+            host.frames(app, 3);
+            host.key(app, &Key::Named(NamedKey::F2));
+            host.frames(app, 3);
+            // A rename keystroke changes no record: nothing but the field
+            // should repaint, so the bubble the title's save showed goes
+            // first.
+            let_it_rest(app, &mut host);
+            let mut field: f64 = 0.0;
+            // What the page tree repaints, apart from the save bubble that
+            // may come and go meanwhile.
+            let tree = app
+                .semantic_tree()
+                .iter()
+                .find(|node| node.role == ui::a11y::Role::Tree)
+                .and_then(|node| node.bounds)
+                .expect("the page tree is on screen");
+            // The field opens with the caret after the name.
+            for letter in [" ", "v", "2"] {
+                let label = format!("{name}: renaming in the page tree, {letter:?}");
+                let (typed, elapsed) =
+                    measure_within(app, &mut host, (&theme, &label), tree, |app, host| {
+                        host.key(app, &character(letter));
+                    });
+                eprintln!(
+                    "notes-damage {name} rename-field key={letter:?} frame_px={:.0} tree_px={:.0} of {:.0} keystroke_to_frame={elapsed:?}",
+                    typed.largest,
+                    typed.largest_within,
+                    app_area()
+                );
+                field = field.max(typed.largest_within);
+            }
+            let label = format!("{name}: committing the rename");
+            let (renamed, _) = measure(app, &mut host, &theme, &label, |app, host| {
+                host.key(app, &Key::Named(NamedKey::Enter));
+                host.frames(app, 4);
+            });
+            assert!(shows_name(app, "Plan v2"), "{label}: the row shows it");
+            eprintln!(
+                "notes-damage {name} rename named_px={:.0} field_px={field:.0} committed_px={:.0} of {:.0}",
+                named.largest,
+                renamed.largest,
+                app_area()
+            );
+            // The field's row, not the tree's column.
+            assert!(
+                field < app_area() * 0.015,
+                "{name}: a key in the rename field repainted {field:.0} px of the page tree, over 1.5 % of the app"
+            );
+            // The title, the row, the caret going back to the body and the
+            // save bubble: not the page tree, nor the body's line (87,157 px
+            // where the line repainted 109,410).
+            for (case, repainted, percent) in [("naming", named, 8.0), ("renaming", renamed, 10.0)]
+            {
+                assert!(
+                    repainted.largest < app_area() * percent / 100.0,
+                    "{name}: {case} the note repainted {:.0} px, over {percent} % of the app",
+                    repainted.largest
+                );
+            }
+        })
+        .unwrap();
+    }
 }

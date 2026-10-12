@@ -16,6 +16,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use ui::num::f64_of_usize;
 
 use ui::floating_surface::{FloatingRole, FloatingSource, FloatingSurfaceRequest};
 use ui::offscreen::OffscreenRenderer;
@@ -1815,24 +1816,15 @@ fn compose_placed(
 
 // Widget counts are bounded by the visible capture selection, far below the
 // integer range where conversion to layout-space f64 can lose meaningful data.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "visible capture-region counts stay far below f64's exact-integer range"
-)]
-fn region_count_to_f64(count: usize) -> f64 {
-    count as f64
-}
 
 fn grid_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
     let count = regions.len();
-    let cols = region_count_to_f64(count).sqrt().ceil().max(1.0) as usize;
+    let cols = f64_of_usize(count).sqrt().ceil().max(1.0) as usize;
     let rows = count.div_ceil(cols);
     let cell_w = regions.iter().map(Rect::width).fold(1.0_f64, f64::max);
     let cell_h = regions.iter().map(Rect::height).fold(1.0_f64, f64::max);
-    let raw_w =
-        region_count_to_f64(cols) * cell_w + region_count_to_f64(cols.saturating_sub(1)) * GRID_GAP;
-    let raw_h =
-        region_count_to_f64(rows) * cell_h + region_count_to_f64(rows.saturating_sub(1)) * GRID_GAP;
+    let raw_w = f64_of_usize(cols) * cell_w + f64_of_usize(cols.saturating_sub(1)) * GRID_GAP;
+    let raw_h = f64_of_usize(rows) * cell_h + f64_of_usize(rows.saturating_sub(1)) * GRID_GAP;
     let placements = regions
         .iter()
         .enumerate()
@@ -1842,8 +1834,8 @@ fn grid_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
             let local_scale = (cell_w / region.width()).min(cell_h / region.height());
             let draw_w = region.width() * local_scale;
             let draw_h = region.height() * local_scale;
-            let x = region_count_to_f64(col) * (cell_w + GRID_GAP) + (cell_w - draw_w) / 2.0;
-            let y = region_count_to_f64(row) * (cell_h + GRID_GAP) + (cell_h - draw_h) / 2.0;
+            let x = f64_of_usize(col) * (cell_w + GRID_GAP) + (cell_w - draw_w) / 2.0;
+            let y = f64_of_usize(row) * (cell_h + GRID_GAP) + (cell_h - draw_h) / 2.0;
             Rect::new(x, y, x + draw_w, y + draw_h)
         })
         .collect();
@@ -1853,13 +1845,13 @@ fn grid_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
 fn stack_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
     let card_w = regions.iter().map(Rect::width).fold(1.0_f64, f64::max);
     let card_h = regions.iter().map(Rect::height).fold(1.0_f64, f64::max);
-    let depth = region_count_to_f64(regions.len().saturating_sub(1)) * STACK_OFFSET;
+    let depth = f64_of_usize(regions.len().saturating_sub(1)) * STACK_OFFSET;
     let placements = regions
         .iter()
         .enumerate()
         .map(|(index, region)| {
             let local_scale = (card_w / region.width()).min(card_h / region.height());
-            let offset = region_count_to_f64(index) * STACK_OFFSET;
+            let offset = f64_of_usize(index) * STACK_OFFSET;
             Rect::new(
                 offset,
                 offset,

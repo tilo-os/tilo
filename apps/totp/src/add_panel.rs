@@ -1229,14 +1229,8 @@ pub(crate) mod tests {
         let _host = ui::host::enter(&services);
         let mut app = Hosted::new().unwrap();
         for account in &accounts {
-            app.invoke_confirmed(
-                ui::tilo_resource::Invoke::apply(&crate::actions::add_account_action(
-                    account,
-                    account.order,
-                ))
-                .unwrap(),
-            )
-            .unwrap();
+            let add = app.state().add(account).unwrap();
+            app.invoke_confirmed(add).unwrap();
         }
         app.harness().resize(viewport).unwrap();
         settle(&mut app);
@@ -1548,17 +1542,17 @@ pub(crate) mod tests {
         assert!(panel(&mut app, |p| p.build_account().is_err()));
         panel(&mut app, |p| p.values.secret.set("JBSWY3DPEHPK3PXP".into()));
         assert!(panel(&mut app, |p| p.build_account().is_ok()));
-        let count = app.state().len();
+        let count = app.state().list().len();
         app.harness().key("Enter");
         settle(&mut app);
         assert!(!panel(&mut app, |p| p.is_open()));
         assert_eq!(
-            app.state().len(),
+            app.state().list().len(),
             count + 1,
             "typed add persists actual account metadata"
         );
         assert!(
-            app.state().iter().all(|a| a.secret.is_empty()),
+            app.state().list().iter().all(|a| a.secret.is_empty()),
             "seeds never reach shared document"
         );
     }
@@ -1591,10 +1585,10 @@ pub(crate) mod tests {
         let account = panel(&mut app, |p| p.build_account().unwrap());
         assert_eq!(account.algorithm, Algorithm::Sha512);
         assert_eq!(account.digits, 8);
-        let count = app.state().len();
+        let count = app.state().list().len();
         click(&mut app, "Cancel");
         assert!(!panel(&mut app, |p| p.is_open()));
-        assert_eq!(app.state().len(), count, "cancel creates no account");
+        assert_eq!(app.state().list().len(), count, "cancel creates no account");
         app.effect(&TotpEffect::AddAccount).unwrap();
         settle(&mut app);
         type_into(&mut app, "totp-issuer", "Acme");
@@ -1602,7 +1596,7 @@ pub(crate) mod tests {
         click(&mut app, "Add account");
         assert!(!panel(&mut app, |p| p.is_open()));
         assert_eq!(
-            app.state().len(),
+            app.state().list().len(),
             count + 1,
             "pointer Save reaches typed metadata action"
         );

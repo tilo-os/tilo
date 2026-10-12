@@ -1494,13 +1494,6 @@ pub(crate) fn take_navigation(widget: &mut dyn crate::widget::Widget) -> bool {
 impl crate::widget::Decorator for NavList {
     type Inner = TreeView<(), NavModel>;
 
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
-
     fn inner(&self) -> &Self::Inner {
         &self.tree
     }

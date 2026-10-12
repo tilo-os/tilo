@@ -142,7 +142,7 @@ fn guides_permissions_aliases_are_offline_and_explain_live_refusal() {
             "docs/developers/tasks/permissions.md"
         );
         let content = guide["result"]["content"].as_str().unwrap();
-        assert!(content.contains("PermissionRequirement::Admin"));
+        assert!(content.contains("ActionKind::Outside"));
         assert!(content.contains("set_role"));
         assert!(content.contains("invoke"));
         assert!(content.contains("outside the replicated resource"));

@@ -805,7 +805,7 @@ jobs:
           ./os/dev/verify-snapshot-pins.sh "${pins[@]}"
 
   # The tapps of the apps a pull request affects, against their size budgets
-  # (tools/perf/tapp-size-budget/; DEVELOPMENT.md, "App package size").
+  # (tools/perf/tapp-size-budget/; docs/measurements/app-package-size.md).
   # Release / apps holds every main commit to the same budgets, but only after
   # the merge, where an app over its budget stops every app from publishing
   # (TIL-765). The select job picks at most a few affected apps, those closest
@@ -885,6 +885,15 @@ jobs:
           bash tools/ci/measure.sh "package tapps ${{ matrix.arch }}" -- \
             bash scripts/ci-run.sh "package-apps.sh ($TILO_RELEASE_APPS)" -- \
             dist/apps/package-apps.sh
+
+      - name: Report package compiler cache
+        if: always()
+        run: |
+          if [[ -n ${RUSTC_WRAPPER:-} && -x $RUSTC_WRAPPER ]]; then
+            "$RUSTC_WRAPPER" --show-stats || echo 'compiler cache statistics unavailable'
+          else
+            echo 'compiler cache disabled; no hit rate established'
+          fi
 
       - name: Selected tapps within their size budget
         run: >-

@@ -65,6 +65,8 @@ struct Inner {
     mirror: AutoCommit,
     /// The record is new here: the whole document is still to be sent.
     fresh: bool,
+    /// The supervisor's current action policy, replayed on worker revival.
+    standing: Option<String>,
     /// An operation ran since the last take; the worker may hold changes.
     dirty: bool,
     /// Content the worker holds, put again into a worker that replaces it.
@@ -134,6 +136,7 @@ impl ConfinedReplica {
                 mirror,
                 fresh,
                 dirty: fresh,
+                standing: None,
                 held: BTreeSet::new(),
             }),
         };
@@ -188,6 +191,40 @@ impl ConfinedReplica {
         &self.record
     }
 
+    /// Install the host's current action standing. A confirmation flag is
+    /// not a grant: delegated Outside actions need an explicit Allow from
+    /// both the person and the delegation before this view may run them.
+    /// The worker's filesystem and device confinement is unchanged.
+    ///
+    /// # Errors
+    /// When the policy cannot be encoded or installed in the confined view.
+    pub fn set_permissions(
+        &self,
+        standing: &ui::permissions::policy::Standing,
+    ) -> Result<(), AppError> {
+        if standing.room() != self.room {
+            return Err(worker_error("the action policy belongs to another room"));
+        }
+        let standing =
+            serde_json::to_string(standing).map_err(|error| worker_error(error.to_string()))?;
+        let mut inner = self.lock();
+        // Retain the new policy before delivery, including a revocation. A
+        // worker that dies during delivery must never revive with old grants.
+        inner.standing = Some(standing.clone());
+        let result = match self.call(&mut inner, &Request::Permissions { standing })? {
+            Reply::Done => Ok(()),
+            reply => {
+                inner.process = None;
+                Err(worker_error(match reply {
+                    Reply::Failed(reason) => reason,
+                    _ => "the worker answered out of turn".into(),
+                }))
+            }
+        };
+        drop(inner);
+        result
+    }
+
     /// The worker's process id, while one runs.
     #[must_use]
     pub fn worker_id(&self) -> Option<u32> {
@@ -232,6 +269,18 @@ impl ConfinedReplica {
             .map_err(worker_error)?
         {
             Reply::Opened { record } if record == self.record.as_str() => {
+                if let Some(standing) = &inner.standing {
+                    match process
+                        .call(&Request::Permissions {
+                            standing: standing.clone(),
+                        })
+                        .map_err(worker_error)?
+                    {
+                        Reply::Done => {}
+                        Reply::Failed(reason) => return Err(worker_error(reason)),
+                        _ => return Err(worker_error("the worker answered out of turn")),
+                    }
+                }
                 // The content the last worker held went with it.
                 let held = std::mem::take(&mut inner.held);
                 if let Some(content) = &self.content {
@@ -309,7 +358,6 @@ impl ConfinedReplica {
             confirm,
         };
         let mut inner = self.lock();
-        inner.dirty = true;
         if let Some(content) = &self.content {
             let named = named_content(arguments);
             self.supply(&mut inner, content, &named)
@@ -343,6 +391,10 @@ impl ConfinedReplica {
                 }
             }
         }
+        // Supplying content or sending the request may have revived the
+        // worker, resetting its frontier. Mark it dirty after the invocation
+        // so the new worker's first edit is collected as well.
+        inner.dirty = true;
         drop(inner);
         match reply {
             Ok(Reply::Output(text)) => serde_json::from_str(&text)

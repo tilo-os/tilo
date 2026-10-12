@@ -3,7 +3,7 @@
 //!
 //! [`AgentParticipant`] holds a certified relay session under the agent's own
 //! device key and joins the room's durable and live planes. It holds the
-//! records it works in as replicas of their resources, each in its own
+//! records it works in through their apps' attached views, each in its own
 //! confined app worker ([`ConfinedReplica`]), acts
 //! only through the operations they publish, and commits each resulting
 //! change through the session, so the host orders it with everyone else's
@@ -88,9 +88,31 @@ struct Finishing {
     id: String,
     outcome: Result<String, String>,
     /// Completes once every change published before the task finished is
-    /// durable; `None` when the session is closed.
-    durable: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    /// durable, or records why the session could not establish a barrier.
+    durable: Result<std::sync::mpsc::Receiver<Result<(), String>>, String>,
     since: Instant,
+}
+
+impl Finishing {
+    /// The host's durable acknowledgement, never a successful timeout or
+    /// disconnected session. `None` means it is still waiting.
+    fn committed(&self) -> Option<Result<(), String>> {
+        match &self.durable {
+            Err(error) => Some(Err(error.clone())),
+            Ok(receiver) => match receiver.try_recv() {
+                Ok(outcome) => Some(outcome),
+                Err(std::sync::mpsc::TryRecvError::Empty) if self.since.elapsed() < COMMIT_WAIT => {
+                    None
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => Some(Err(
+                    "the host did not acknowledge the task's changes in time".into(),
+                )),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(
+                    "the session closed before the task's changes became durable".into(),
+                )),
+            },
+        }
+    }
 }
 
 /// How a plan says nothing offered does what it was asked.
@@ -101,7 +123,7 @@ const NOTHING_LEFT: &str = "nothing offered fits";
 const ROOM_SETTLE: Duration = Duration::from_millis(300);
 
 /// The longest a finished task waits for the host to acknowledge its
-/// changes before it is reported anyway. A record just made waits for its
+/// changes before it fails rather than reporting undurable work as done. A record just made waits for its
 /// channel's keys first, which can take several seconds while the room's
 /// steward admits everyone who asked; reported earlier, the next task
 /// would not find it.
@@ -142,6 +164,27 @@ pub struct ParticipantConfig {
     pub content: tilo_content::ContentStore,
 }
 
+/// What performing a step came to.
+enum Performed {
+    Done(Result<Option<ActionOutput>, String>),
+    /// The person is asked to confirm it.
+    Asking,
+}
+
+/// A step waiting for the person to confirm it on their own device.
+struct Asking {
+    step: Step,
+    route: DocumentRoute,
+    address: ActionAddress,
+    arguments: serde_json::Map<String, serde_json::Value>,
+    /// The person's answer once it arrives; a host that went away without
+    /// one answers that confirmation is still required.
+    answer: Arc<std::sync::Mutex<Option<WitnessAnswer>>>,
+}
+
+type WitnessAnswer =
+    Result<tilo_actions::remote::Confirmation, tilo_actions::remote::ActionHostError>;
+
 struct Running {
     id: String,
     /// The task as it was given, which a re-plan is shown beside the rest.
@@ -158,11 +201,9 @@ struct Running {
     /// What the task's steps answered, oldest first, at most
     /// [`MOST_OBSERVED`]: what the task is planned again with.
     observed: VecDeque<String>,
-    /// Whether a failed step was already planned around once: a task gets
-    /// one repair, so a model's slip (an argument out of range, a stale
-    /// target) is fixed rather than ending it, and a step that cannot work
-    /// still fails the task.
-    repaired: bool,
+    /// How many steps had run when the task used its one repair. The
+    /// repaired plan must make progress before "nothing left" means done.
+    repaired: Option<usize>,
 }
 
 impl Running {
@@ -194,7 +235,7 @@ impl Running {
             last: None,
             produced: Vec::new(),
             observed: VecDeque::new(),
-            repaired: false,
+            repaired: None,
         };
         for seen in read {
             running.observe(seen);
@@ -267,6 +308,8 @@ pub struct AgentParticipant {
     /// that is never published: the operations a plan may name before the
     /// app is open ([`PlanContext::previews`]).
     previews: BTreeMap<String, Vec<ActionDescriptor>>,
+    /// The current task's step the person is asked to confirm.
+    asking: Option<Asking>,
     /// The host admitted the room; everything it replayed has arrived.
     ready: bool,
     /// When the room last delivered a record the agent had not seen, since
@@ -351,6 +394,7 @@ impl AgentParticipant {
             presence_at_ms: 0,
             running: None,
             previews: BTreeMap::new(),
+            asking: None,
             ready: false,
             settling: None,
             finishing: None,
@@ -423,7 +467,12 @@ impl AgentParticipant {
             return Next::Within(Duration::from_millis(10));
         }
         let work = self.running.is_some() || self.control.has_queued();
-        if work && !self.planning.busy() && self.ready && self.control.may_act() {
+        if work
+            && self.asking.is_none()
+            && !self.planning.busy()
+            && self.ready
+            && self.control.may_act()
+        {
             if let Some(since) = self.settling {
                 return Next::Within(
                     ROOM_SETTLE
@@ -588,8 +637,35 @@ impl AgentParticipant {
         };
         if !self.control.is_running(&running.id) {
             self.running = None;
+            self.asking = None;
             return false;
         }
+        let id = running.id.clone();
+        if let Some(asking) = self.asking.take() {
+            let arrived = asking
+                .answer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            let Some(answer) = arrived else {
+                self.asking = Some(asking);
+                return false;
+            };
+            let outcome = match answer {
+                // The person's own device answered for this invocation.
+                Ok(tilo_actions::remote::Confirmation::Witnessed(_)) => self
+                    .invoke_as(&asking.route, &asking.address, &asking.arguments, true)
+                    .map_err(actions::Refusal::into_text),
+                Ok(_) | Err(_) => Err(format!(
+                    "{}: the person did not confirm",
+                    tilo_actions::door::DoorError::ConfirmationRequired.code()
+                )),
+            };
+            return self.conclude(&id, &asking.step, outcome);
+        }
+        let Some(running) = self.running.as_mut() else {
+            return false;
+        };
         let Some(step) = running.steps.pop_front() else {
             let (id, done) = (running.id.clone(), running.done());
             self.running = None;
@@ -597,7 +673,6 @@ impl AgentParticipant {
             self.publish_presence();
             return false;
         };
-        let id = running.id.clone();
         if let StepAction::Continue(rest) = &step.action {
             // The rest is planned with the request as it was given beside
             // it, so what the model left out of the rest is still asked.
@@ -609,7 +684,21 @@ impl AgentParticipant {
             tracing::debug!(after = ?ready_at.elapsed(), "agent: a plan's first step starts");
         }
         let previous = running.last.clone();
-        let outcome = self.perform(&step, previous.as_ref());
+        let outcome = match self.perform(&step, previous.as_ref()) {
+            Performed::Done(outcome) => outcome,
+            Performed::Asking => return false,
+        };
+        self.conclude(&id, &step, outcome)
+    }
+
+    /// Record how `step` of task `id` went and carry on: returns whether
+    /// another step that plans nothing is ready.
+    fn conclude(
+        &mut self,
+        id: &str,
+        step: &Step,
+        outcome: Result<Option<ActionOutput>, String>,
+    ) -> bool {
         let (resource, action) = step.log_names();
         let content = match &outcome {
             Ok(Some(output)) => produced(output),
@@ -627,7 +716,7 @@ impl AgentParticipant {
             error: outcome.as_ref().err().cloned(),
             content: content.clone(),
         };
-        self.control.record_step(&id, record);
+        self.control.record_step(id, record);
         match outcome {
             Ok(output) => {
                 let Some(running) = self.running.as_mut() else {
@@ -635,7 +724,7 @@ impl AgentParticipant {
                 };
                 running.performed = running.performed.saturating_add(1);
                 if let Some(output) = output {
-                    running.answered(&step, output);
+                    running.answered(step, output);
                 }
                 running.produced.extend(content);
                 // The next step plans nothing unless it is a `Continue`.
@@ -645,11 +734,11 @@ impl AgentParticipant {
                 )
             }
             Err(error) => {
-                if self.repair(&step, &error) {
+                if self.repair(step, &error) {
                     return false;
                 }
                 self.running = None;
-                self.finish_task(id, Err(error));
+                self.finish_task(id.to_owned(), Err(error));
                 false
             }
         }
@@ -759,7 +848,10 @@ impl AgentParticipant {
                     self.running
                         .take()
                         .filter(|running| {
-                            continues && running.performed > 0 && error.starts_with(NOTHING_LEFT)
+                            continues
+                                && running.repaired.is_none_or(|at| running.performed > at)
+                                && running.performed > 0
+                                && error.starts_with(NOTHING_LEFT)
                         })
                         .map(|running| running.done())
                 } else {
@@ -774,10 +866,27 @@ impl AgentParticipant {
     /// `error`, knowing what failed and why, beside the request and what ran
     /// so far — once per task. Returns whether it will.
     fn repair(&mut self, step: &Step, error: &str) -> bool {
-        let Some(running) = self.running.as_mut().filter(|running| !running.repaired) else {
+        // A refusal to confirm is not a planning slip. Replanning around
+        // the person\'s answer must never turn a refused task into success.
+        if error.starts_with(tilo_actions::door::DoorError::ConfirmationRequired.code()) {
+            return false;
+        }
+        let Some(running) = self
+            .running
+            .as_mut()
+            .filter(|running| running.repaired.is_none())
+        else {
             return false;
         };
-        running.repaired = true;
+        // Written steps are the caller's exact plan, not a model's guess.
+        // Keep their original refusal rather than asking a planner to repair
+        // them with prose (and hiding the error behind a planning failure).
+        if serde_json::from_str::<serde_json::Value>(&running.request)
+            .is_ok_and(|value| value.is_array() || value.is_object())
+        {
+            return false;
+        }
+        running.repaired = Some(running.performed);
         running.steps.clear();
         running.steps.push_back(Step {
             app: step.app.clone(),
@@ -800,7 +909,7 @@ impl AgentParticipant {
         self.publish_changes();
         // Frames of a record just made can wait for its keys before they
         // are even sent; the barrier completes once all of them are durable.
-        let durable = self.peer.barrier().ok();
+        let durable = self.peer.barrier();
         self.finishing = Some(Finishing {
             id,
             outcome,
@@ -810,23 +919,20 @@ impl AgentParticipant {
         self.finish_committed();
     }
 
-    /// Report the finishing task once its changes are acknowledged, or
-    /// after [`COMMIT_WAIT`]. Returns whether one is still waiting.
+    /// Report the finishing task once its changes are acknowledged; a
+    /// failed or timed-out barrier fails the task. Returns whether it waits.
     fn finish_committed(&mut self) -> bool {
         let Some(finishing) = &self.finishing else {
             return false;
         };
-        let waiting = finishing.durable.as_ref().is_some_and(|durable| {
-            matches!(
-                durable.try_recv(),
-                Err(std::sync::mpsc::TryRecvError::Empty)
-            )
-        });
-        if waiting && finishing.since.elapsed() < COMMIT_WAIT {
+        let Some(durable) = finishing.committed() else {
             return true;
-        }
+        };
         if let Some(finishing) = self.finishing.take() {
-            self.control.finish(&finishing.id, finishing.outcome);
+            let outcome = durable
+                .map_err(|error| format!("the task's changes are not durable: {error}"))
+                .and(finishing.outcome);
+            self.control.finish(&finishing.id, outcome);
         }
         false
     }
@@ -843,40 +949,168 @@ impl AgentParticipant {
         })
     }
 
-    /// Take `step`, after `previous`: what the last invoked step returned.
-    fn perform(
-        &mut self,
-        step: &Step,
-        previous: Option<&ActionOutput>,
-    ) -> Result<Option<ActionOutput>, String> {
-        // What a carried step consumes is settled before anything opens: a
-        // step with nothing to consume is refused, not half done.
+    /// Take `step`, after `previous`: what the last content-producing step returned.
+    fn perform(&mut self, step: &Step, previous: Option<&ActionOutput>) -> Performed {
+        // Bind carried content before opening anything. The same bound
+        // arguments go to the person's confirmation host and the app's door.
         let arguments = match &step.action {
-            StepAction::Invoke { address, arguments } => Some(
-                tilo_agent::plan::carried_arguments(arguments, step.carries, previous).map_err(
-                    |error| {
-                        format!(
+            StepAction::Invoke { address, arguments } => {
+                let param = if step.carries {
+                    if !self.identity.delegation.permits_app(&step.app) {
+                        return Performed::Done(Err(format!(
+                            "the agent is not delegated {}",
+                            step.app
+                        )));
+                    }
+                    let descriptors = self
+                        .apps
+                        .iter()
+                        .find(|(route, _)| {
+                            route.app_id == step.app
+                                && step.record.as_deref().is_none_or(|id| route.record == id)
+                        })
+                        .map(|(_, app)| app.survey_with_effects())
+                        .or_else(|| self.preview(&step.app))
+                        .unwrap_or_default();
+                    let param = descriptors
+                        .iter()
+                        .find(|descriptor| descriptor.address == *address)
+                        .and_then(crate::planner::content_parameter);
+                    let Some(param) = param else {
+                        return Performed::Done(Err(format!(
+                            "{} publishes no content input to carry",
+                            address.action
+                        )));
+                    };
+                    Some(param)
+                } else {
+                    None
+                };
+                match tilo_agent::plan::carried_arguments(arguments, param.as_deref(), previous) {
+                    Ok(arguments) => Some(arguments),
+                    Err(error) => {
+                        return Performed::Done(Err(format!(
                             "{} takes what the step before it produced: {error}",
                             address.action
-                        )
-                    },
-                )?,
-            ),
+                        )));
+                    }
+                }
+            }
             StepAction::Open | StepAction::Continue(_) => None,
         };
         let route = match &step.record {
-            Some(record) => self.open(&step.app, Some(record))?,
+            Some(record) => self.open(&step.app, Some(record)),
             None => match self.apps.keys().find(|route| route.app_id == step.app) {
-                Some(route) => route.clone(),
-                None => self.open(&step.app, None)?,
+                Some(route) => Ok(route.clone()),
+                None => self.open(&step.app, None),
             },
         };
-        match (&step.action, arguments) {
-            (StepAction::Invoke { address, .. }, Some(arguments)) => {
-                self.invoke(&route, address, &arguments)
+        let route = match route {
+            Ok(route) => route,
+            Err(error) => return Performed::Done(Err(error)),
+        };
+        let (StepAction::Invoke { address, .. }, Some(arguments)) = (&step.action, arguments)
+        else {
+            return Performed::Done(Ok(None));
+        };
+        match self.invoke_as(&route, address, &arguments, false) {
+            Err(actions::Refusal::Door(tilo_actions::door::DoorError::ConfirmationRequired)) => {
+                self.ask(step, route, address, &arguments)
             }
-            _ => Ok(None),
+            outcome => Performed::Done(outcome.map_err(actions::Refusal::into_text)),
         }
+    }
+
+    /// Put `step` to the person through their own host, and show the agent
+    /// waiting on the record for them. Nobody to ask refuses the step.
+    fn ask(
+        &mut self,
+        step: &Step,
+        route: DocumentRoute,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Performed {
+        let refused = || {
+            Performed::Done(Err(format!(
+                "{}: nobody is there to confirm it",
+                tilo_actions::door::DoorError::ConfirmationRequired.code()
+            )))
+        };
+        let Some(witness) = self.control.witness() else {
+            return refused();
+        };
+        let caller = tilo_actions::remote::Caller::delegated_agent(
+            self.identity.delegation.agent_id.clone(),
+            self.identity.cert.user_public_key,
+            self.identity.cert.device_public_key,
+        )
+        .in_room(self.room.clone());
+        // The action as the record offers it: what the person is asked.
+        let offered = self.apps.get(&route).and_then(|app| {
+            app.survey_with_effects()
+                .into_iter()
+                .find(|descriptor| descriptor.address == *address)
+        });
+        let context = offered.as_ref().map(|descriptor| {
+            tilo_actions::ActionContext::for_resource(
+                &address.resource,
+                &descriptor.resource_kind,
+                &descriptor.resource_label,
+            )
+            .with_app(&route.app_id, &route.app_id)
+            .with_purpose(&descriptor.action_label)
+            .with_facet(tilo_actions::ActionFacet::new(
+                tilo_actions::RISK_FACET,
+                descriptor.contract.risk.name(),
+            ))
+        });
+        let request = tilo_actions::remote::InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: actions::record_provider(&route),
+                address: address.clone(),
+            },
+            argument: tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
+            context,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+        };
+        let answer = Arc::new(std::sync::Mutex::new(None));
+        let (arrived, control) = (Arc::clone(&answer), Arc::clone(&self.control));
+        witness.confirm(&caller, &request).then(move |given| {
+            *arrived
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(given.unwrap_or(Err(
+                tilo_actions::remote::ActionHostError::ConfirmationRequired,
+            )));
+            control.wake();
+        });
+        let label = offered.map_or_else(
+            || address.action.clone(),
+            |descriptor| {
+                format!(
+                    "{} · {}",
+                    descriptor.action_label, descriptor.resource_label
+                )
+            },
+        );
+        self.focus = Some(LiveRecord {
+            app: route.app_id.clone(),
+            record: route.record.clone(),
+        });
+        self.control
+            .set_activity(Some(format!("Waiting for confirmation: {label}")));
+        self.publish_presence();
+        self.asking = Some(Asking {
+            step: step.clone(),
+            route,
+            address: address.clone(),
+            arguments: arguments.clone(),
+            answer,
+        });
+        Performed::Asking
     }
 
     /// Commit whatever the open records changed since the last commit.
@@ -1251,6 +1485,12 @@ impl AgentParticipant {
         self.unopened.routes()
     }
 
+    /// Records currently held open by the agent, including records it made.
+    #[must_use]
+    pub fn open_records(&self) -> Vec<DocumentRoute> {
+        self.apps.keys().cloned().collect()
+    }
+
     /// Open `app_id` on `record` (a record the room already has), or on a
     /// new record it publishes. Returns the record's route.
     ///
@@ -1277,8 +1517,12 @@ impl AgentParticipant {
                     .seed(&route)
                     .ok_or_else(|| format!("the room has no record {record} of {app_id} yet"))??;
                 let seed = Seed::Existing {
-                    record: ui::record::RecordId::parse(record)
-                        .ok_or_else(|| format!("{record} is not a record id"))?,
+                    record: if record.is_empty() {
+                        ui::record::RecordId::package_primary()
+                    } else {
+                        ui::record::RecordId::parse(record)
+                            .ok_or_else(|| format!("{record} is not a record id"))?
+                    },
                     changes: vec![saved],
                 };
                 (seed, Some(route))
@@ -1304,6 +1548,7 @@ impl AgentParticipant {
         }
         self.apps.insert(route.clone(), app);
         self.generation = self.generation.wrapping_add(1);
+        self.show_on_desk(&route);
         self.focus = Some(LiveRecord {
             app: route.app_id.clone(),
             record: route.record.clone(),
@@ -1335,17 +1580,15 @@ impl AgentParticipant {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Option<ActionOutput>, String> {
-        let may_confirm = self.identity.delegation.scope.may_confirm;
-        self.invoke_as(route, address, arguments, may_confirm)
-            .map_err(|refusal| match refusal {
-                actions::Refusal::Door(error) => format!("{}: {error}", error.code()),
-                actions::Refusal::Agent(reason) => reason,
-            })
+        // The agent never confirms by its own word: an action that asks
+        // first is refused here; a task's step puts it to the person.
+        self.invoke_as(route, address, arguments, false)
+            .map_err(actions::Refusal::into_text)
     }
 
     /// [`Self::invoke`], with `confirmed` standing for whoever confirmed:
-    /// the delegation for the agent's own steps, the caller's explicit
-    /// confirmation for a remote invocation.
+    /// the person, on their own device, for the agent's own steps; a person
+    /// invoking it directly for a remote invocation.
     fn invoke_as(
         &mut self,
         route: &DocumentRoute,
@@ -1367,8 +1610,8 @@ impl AgentParticipant {
             .apps
             .get_mut(route)
             .ok_or_else(|| Refusal::Agent("that record is not open".into()))?;
-        // A document operation is named without mounting the record's
-        // component; only an effect's name needs it.
+        // Every operation runs through the record's attached view; include
+        // its reads and effects when naming the agent's activity.
         let named = |descriptors: Vec<ActionDescriptor>| {
             descriptors
                 .into_iter()
@@ -1393,11 +1636,13 @@ impl AgentParticipant {
                 .publish(route.clone(), &mutation)
                 .map_err(Refusal::Agent)?;
         }
+        let place = app.presence();
+        self.show_on_desk(route);
         self.focus = Some(LiveRecord {
             app: route.app_id.clone(),
             record: route.record.clone(),
         });
-        self.place = app.presence();
+        self.place = place;
         self.control.set_activity(label);
         self.publish_presence();
         Ok(Some(output))
@@ -1433,6 +1678,62 @@ impl AgentParticipant {
         }
     }
 
+    /// Put the view of the record at `route` on the room's shared desktop
+    /// when no tab shows it, beside the view the agent worked in last, so
+    /// the people see where it acts ([`crate::desk`]).
+    fn show_on_desk(&mut self, route: &DocumentRoute) {
+        let desktop = desktop_route(&self.room);
+        let Some(record) = self.apps.get(route).map(|app| app.record().to_owned()) else {
+            return;
+        };
+        let beside = self
+            .focus
+            .as_ref()
+            .map(|focus| DocumentRoute {
+                app_id: focus.app.clone(),
+                cluster_id: self.room.clone(),
+                record: focus.record.clone(),
+            })
+            .filter(|last| last != route)
+            .and_then(|last| self.apps.get(&last).map(|app| app.record().to_owned()));
+        let title = self
+            .catalogue
+            .get(&route.app_id)
+            .map_or(route.app_id.as_str(), |definition| definition.title);
+        let view = crate::desk::View {
+            app_id: &route.app_id,
+            title,
+            record: &record,
+            beside: beside.as_deref(),
+        };
+        let author = format!("agent:{}", self.identity.delegation.agent_id);
+        let place = |doc: &automerge::AutoCommit| crate::desk::place_view(doc, &author, &view);
+        let change = match self.unopened.desktop() {
+            Some(doc) => place(doc),
+            None => self
+                .apps
+                .get(&desktop)
+                .and_then(|app| app.read(place))
+                .flatten(),
+        };
+        let Some(change) = change else {
+            return;
+        };
+        let mutation = collab_types::DocumentMutation::Incremental(change.clone());
+        if let Err(error) = self.peer.publish(desktop.clone(), &mutation) {
+            tracing::warn!(%error, "agent: its view did not reach the desk");
+            return;
+        }
+        match self.apps.get(&desktop) {
+            Some(app) => {
+                if let Err(error) = app.apply(&mutation) {
+                    tracing::warn!(%error, "agent: the desk it holds did not take its view");
+                }
+            }
+            None => self.unopened.receive(desktop, change),
+        }
+    }
+
     fn publish_presence(&mut self) {
         let now = tilo_clock::unix_now_ms();
         let participant = self.participant();
@@ -1453,9 +1754,13 @@ impl AgentParticipant {
 
     fn leave(&mut self) {
         if let Some(finishing) = self.finishing.take() {
-            self.control.finish(&finishing.id, finishing.outcome);
+            self.control.finish(
+                &finishing.id,
+                Err("the agent stopped before its changes became durable".into()),
+            );
         }
         self.running = None;
+        self.asking = None;
         self.focus = None;
         self.place = None;
         self.publish_presence();
@@ -1535,6 +1840,54 @@ fn picture_size(bytes: &[u8]) -> Option<(&'static str, u32, u32)> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_finished_task_waits_for_an_acknowledgement_and_never_succeeds_without_one() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let finishing = Finishing {
+            id: "task".into(),
+            outcome: Ok("Done".into()),
+            durable: Ok(receiver),
+            since: Instant::now(),
+        };
+        assert_eq!(finishing.committed(), None);
+        sender.send(Ok(())).unwrap();
+        assert_eq!(finishing.committed(), Some(Ok(())));
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let finishing = Finishing {
+            durable: Ok(receiver),
+            ..finishing
+        };
+        sender
+            .send(Err("the host refused the commit".into()))
+            .unwrap();
+        assert_eq!(
+            finishing.committed(),
+            Some(Err("the host refused the commit".into()))
+        );
+        drop(sender);
+        assert!(matches!(finishing.committed(), Some(Err(_))));
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let timed_out = Finishing {
+            durable: Ok(receiver),
+            since: Instant::now().checked_sub(COMMIT_WAIT).unwrap(),
+            ..finishing
+        };
+        assert!(matches!(timed_out.committed(), Some(Err(_))));
+        drop(sender);
+        let disconnected = Finishing {
+            since: Instant::now(),
+            ..timed_out
+        };
+        assert!(matches!(disconnected.committed(), Some(Err(_))));
+        let closed = Finishing {
+            durable: Err("session closed".into()),
+            ..disconnected
+        };
+        assert_eq!(closed.committed(), Some(Err("session closed".into())));
+    }
+
     fn invoke(app: &str, resource: &str, action: &str) -> Step {
         Step {
             app: app.into(),
@@ -1579,11 +1932,11 @@ mod tests {
         );
         let bound = tilo_agent::plan::carried_arguments(
             &serde_json::Map::new(),
-            true,
+            Some("content"),
             running.last.as_ref(),
         )
         .unwrap();
-        assert_eq!(bound[tilo_actions::PROMPTED_PARAM], "abc");
+        assert_eq!(bound["content"], "abc");
         assert!(
             running
                 .observed
@@ -1596,17 +1949,21 @@ mod tests {
         running.answered(&invoke(canvas, "canvas.artwork", "export"), exported("def"));
         let bound = tilo_agent::plan::carried_arguments(
             &serde_json::Map::new(),
-            true,
+            Some("content"),
             running.last.as_ref(),
         )
         .unwrap();
-        assert_eq!(bound[tilo_actions::PROMPTED_PARAM], "def");
+        assert_eq!(bound["content"], "def");
 
         // Nothing produced yet: still refused.
         let fresh = Running::new("t2".into(), String::new(), Vec::new(), Vec::new());
         assert!(
-            tilo_agent::plan::carried_arguments(&serde_json::Map::new(), true, fresh.last.as_ref())
-                .is_err()
+            tilo_agent::plan::carried_arguments(
+                &serde_json::Map::new(),
+                Some("content"),
+                fresh.last.as_ref(),
+            )
+            .is_err()
         );
     }
 }

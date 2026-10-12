@@ -69,7 +69,7 @@ the smaller `os/Containerfile.ci-fast`.
 | `ci-filesystem.yml` real-fuse | `bash scripts/ci-fuse-preflight.sh`, then `cargo test --locked -p tilo-fs --test integration_test -- --test-threads=1` and the job's other named tests |
 | `ci-filesystem.yml` native-tier1 | `tools/native-tier1.sh` on a host that meets `runner-native-storage` |
 | `ci-render-counters.yml` counters | `cargo build --release -p ui-examples --example ui-perf`, then `python3 scripts/perf/render_bench.py counters target/release/examples/ui-perf` (pixel parity, then allocation and raster-pixel budgets at 4K; see [docs/ui-performance-benchmark.md](../../docs/ui-performance-benchmark.md#where-this-runs)) |
-| `perf-scheduled.yml` (nightly, not per PR) | `python3 tools/perf/compare.py --results <records.jsonl> --store https://code.tilo.so --groups <group>` compares records with the published store without writing to it; see [Performance results](../../DEVELOPMENT.md#performance-results) |
+| `perf-scheduled.yml` (nightly, not per PR) | `python3 tools/perf/compare.py --results <records.jsonl> --store https://code.tilo.so --groups <group>` compares records with the published store without writing to it; see [Performance results](../../docs/measurements/performance.md) |
 
 `scripts/ci-run.sh` and `tools/ci/measure.sh`, which wrap most job commands,
 only label and time a command; leave them out locally.
@@ -143,6 +143,25 @@ refresh it after any source, manifest, lockfile or target-inventory change. The
 prescribed `AGENTS.md` invocation fails before starting Python when the validated
 export variable is unset or empty. Missing JSON fails rather than invoking Cargo.
 
+Use the stable runtime guard when invoking a selector from an older worktree.
+It validates the bundle before running that worktree's historical selector and
+allows only Git subprocesses during selection; Cargo, alternate executable
+launchers and shell fallbacks are rejected even if old selector code ignores
+the metadata argument. No source files in the caller worktree are changed.
+Set `TILO_CI_TOOLS` to `tools/ci` in a current trusted checkout, then run:
+
+```sh
+python3 "$TILO_CI_TOOLS/offline_affected_plan.py" --root "$PWD" \
+  --bundle "${TILO_CURRENT_WORKTREE_METADATA_BUNDLE:?source-bound CI export required}" \
+  --base origin/main --shards 2
+```
+
+This is the canonical agent caller in `AGENTS.md`. The direct selector's current
+version rejects its local default before Cargo starts. Old relative entrypoints
+do not inherit that change automatically: migrate their callers to this stable
+launcher, rather than relying on prose in an old branch. The normal CI selector
+retains its Cargo-backed default in the Forgejo job environment.
+
 For a clean committed worktree, the explicit CI export workflow provides this
 supported path without local Cargo:
 
@@ -158,6 +177,7 @@ python3 tools/ci/current_source_metadata.py validate --root . \
   --input /tmp/source-metadata-export/current-source-metadata.json \
   --output target/ci/current-source-metadata.json
 export TILO_CURRENT_WORKTREE_METADATA="$PWD/target/ci/current-source-metadata.json"
+export TILO_CURRENT_WORKTREE_METADATA_BUNDLE=/tmp/source-metadata-export/current-source-metadata.json
 ```
 
 The bundle records the producing commit, tree and hashes of all tracked Cargo

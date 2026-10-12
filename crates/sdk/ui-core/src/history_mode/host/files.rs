@@ -122,6 +122,7 @@ impl HistoryHost {
                     .or_else(|| self.files.as_ref().and_then(FileController::selected));
                 if let Some(fresh) = &self.files {
                     retained.target.label.clone_from(&fresh.target.label);
+                    retained.target.authors.clone_from(&fresh.target.authors);
                 }
                 self.close_files_presentation();
                 retained.activate();
@@ -400,23 +401,32 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
         .iter()
         .map(|version| {
             let person = version.actor.person.as_bytes();
-            let identity = hex::encode(person.get(..6).unwrap_or(person));
-            let author = if person.iter().all(|b| *b == 0) {
-                I18nManager::lookup_plain("history-files-unknown-author")
-            } else {
-                I18nManager::format(
-                    "history-files-author",
-                    &[("identity", identity.as_str().into())],
-                )
-            };
-            crate::HistoryEntry {
-                id: crate::HistoryEntryId(*version.id.0.as_bytes()),
-                author: crate::history_source::author_coloured(
-                    author,
+            // The device that signed the version names who wrote it: an
+            // agent's own device reads as the agent, on behalf of its person.
+            let known = files
+                .target
+                .authors
+                .resolve_file_actor(person, version.actor.device.as_bytes());
+            let author = known.unwrap_or_else(|| {
+                let identity = hex::encode(person.get(..6).unwrap_or(person));
+                let name = if person.iter().all(|b| *b == 0) {
+                    I18nManager::lookup_plain("history-files-unknown-author")
+                } else {
+                    I18nManager::format(
+                        "history-files-author",
+                        &[("identity", identity.as_str().into())],
+                    )
+                };
+                crate::history_source::author_coloured(
+                    name,
                     identity.clone(),
                     crate::presence::user_color(&identity),
-                ),
-                op_class: collab_types::OpClass::Compaction,
+                )
+            });
+            crate::HistoryEntry {
+                id: crate::HistoryEntryId(*version.id.0.as_bytes()),
+                author,
+                entry_kind: crate::widget::EntryKind::Compaction,
                 artifact_kind: collab_types::ArtifactKind::File,
                 timestamp: crate::time::UNIX_EPOCH
                     .checked_add(crate::time::Duration::from_millis(version.timestamp_ms))
@@ -482,7 +492,7 @@ mod tests {
                     .map(|id| crate::HistoryEntry {
                         id: crate::HistoryEntryId(*uuid::Uuid::from_u128(id).as_bytes()),
                         author: crate::HistoryAuthor::new("Unknown author", 0.0, "unknown"),
-                        op_class: collab_types::OpClass::Compaction,
+                        entry_kind: crate::widget::EntryKind::Compaction,
                         artifact_kind: collab_types::ArtifactKind::File,
                         timestamp: crate::time::UNIX_EPOCH,
                         summary: "File revision".into(),
@@ -537,6 +547,7 @@ mod tests {
                 record,
                 label: "file".into(),
                 transport: std::sync::Arc::new(Transport),
+                authors: crate::history_source::AuthorDirectory::new(),
             });
             files.suspend();
             files.review = Some((
@@ -611,6 +622,7 @@ mod tests {
                     record,
                     label: "A".into(),
                     transport: std::sync::Arc::new(Transport),
+                    authors: crate::history_source::AuthorDirectory::new(),
                 };
                 source.set_target(Some(target.clone()));
                 host.open = true;
@@ -746,6 +758,7 @@ mod tests {
             record: scope.record_id,
             label: "same display path".into(),
             transport: original_handle.clone(),
+            authors: crate::history_source::AuthorDirectory::new(),
         };
         let mut host = test_host();
         let HistorySourceRegistration::CheckedFiles { source, .. } = host.source() else {
@@ -806,6 +819,7 @@ mod tests {
             record: scope.record_id,
             label: "same display path".into(),
             transport: fresh.clone(),
+            authors: crate::history_source::AuthorDirectory::new(),
         }));
         host.refresh(&AutoCommit::new());
         settle(&mut host);
@@ -841,6 +855,7 @@ mod tests {
                 results: AtomicUsize::new(0),
                 reviews: AtomicUsize::new(0),
             }),
+            authors: crate::history_source::AuthorDirectory::new(),
         };
         source.set_target(Some(replacement.clone()));
         host.refresh(&AutoCommit::new());
@@ -856,5 +871,101 @@ mod tests {
                 .any(|old| old.restore.request == Some(request)
                     && Arc::ptr_eq(&old.target.transport, &original_handle))
         );
+    }
+
+    /// A file version an agent's own device signed reads as the agent's, on
+    /// behalf of its person, in the file history rows; its person's own
+    /// devices read as the person, and a stranger still reads by key.
+    #[test]
+    fn file_rows_attribute_an_agents_version_to_the_agent_for_its_person() {
+        use crate::history_mode::checked_files::{FileHistoryTarget, FileHistoryTransport};
+        use crate::history_source::{AuthorDirectory, HistoryAgent};
+        use crate::widget::history::{AuthorRelation, HistoryAttribution};
+        use fs_protocol::files::*;
+        struct Transport;
+        impl FileHistoryTransport for Transport {
+            fn read(
+                &self,
+                _: FileHistoryReadQueryV1,
+            ) -> Result<FileHistoryReadValueV1, FileHistoryReadErrorV1> {
+                Err(FileHistoryReadErrorV1::Unavailable)
+            }
+            fn preview(
+                &self,
+                _: FileHistoryReadScopeV1,
+                _: FileVersionId,
+            ) -> Result<Vec<u8>, FileHistoryReadErrorV1> {
+                Err(FileHistoryReadErrorV1::Unavailable)
+            }
+            fn review(&self) -> Result<FileRestoreReviewV1, CheckedHistoryOutcomeV1> {
+                Err(CheckedHistoryOutcomeV1::Unavailable)
+            }
+            fn submit(&self, _: CheckedHistoryRequestV1) -> CheckedHistoryOutcomeV1 {
+                CheckedHistoryOutcomeV1::Unavailable
+            }
+            fn result(&self, _: uuid::Uuid) -> CheckedHistoryOutcomeV1 {
+                CheckedHistoryOutcomeV1::Unavailable
+            }
+        }
+        let (ada, ada_laptop, scribe, stranger) = ([1; 32], [2; 32], [3; 32], [4; 32]);
+        let mut authors = AuthorDirectory::new();
+        authors.register_person(
+            &hex::encode(ada),
+            crate::HistoryAuthor::new("Ada", 0.0, "ada00000"),
+        );
+        authors.register_agent(
+            &hex::encode(scribe),
+            HistoryAgent {
+                principal: "agent:scribe".into(),
+                label: "Scribe".into(),
+                rgb: (10, 20, 30),
+                person: hex::encode(ada),
+            },
+        );
+        let record = fs_protocol::FileRecordId(uuid::Uuid::from_u128(3));
+        let mut files = FileController::new(FileHistoryTarget {
+            binding: uuid::Uuid::new_v4(),
+            record,
+            label: "Report.txt".into(),
+            transport: std::sync::Arc::new(Transport),
+            authors,
+        });
+        let version = |id: u128, person: [u8; 32], device: [u8; 32]| FileVersionV1 {
+            id: FileVersionId(uuid::Uuid::from_u128(id)),
+            record_id: record,
+            parents: vec![],
+            actor: fs_protocol::FileActor {
+                person: collab_types::Ed25519PublicKey::from_bytes(person),
+                device: collab_types::Ed25519PublicKey::from_bytes(device),
+            },
+            timestamp_ms: u64::try_from(id).unwrap(),
+            content_hash: None,
+            metadata_hash: fs_protocol::ContentHash([0; 32]),
+            provenance: fs_protocol::FileProvenance::Edit,
+        };
+        files.versions = vec![
+            version(1, ada, ada_laptop),
+            version(2, ada, scribe),
+            version(3, stranger, scribe),
+        ];
+        let rows = file_timeline_entries(&files);
+        assert_eq!(rows[0].author.name, "Ada");
+        assert_eq!(rows[0].author.attribution, None);
+        assert_eq!(rows[1].author.name, "Scribe · Agent, for Ada");
+        assert_eq!(rows[1].author.relation, AuthorRelation::Software);
+        assert_eq!(rows[1].author.rgb(), (10, 20, 30));
+        assert_eq!(
+            rows[1].author.attribution,
+            Some(HistoryAttribution {
+                actor: "agent:scribe".into(),
+                kind: tilo_actions::ActorKind::Agent,
+                actor_name: "Scribe".into(),
+                on_behalf_of: Some(hex::encode(ada)),
+                on_behalf_of_name: Some("Ada".into()),
+            })
+        );
+        // A device is an agent only of the person who delegated it.
+        assert_ne!(rows[2].author.name, rows[1].author.name);
+        assert_eq!(rows[2].author.attribution, None);
     }
 }

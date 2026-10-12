@@ -167,7 +167,7 @@ impl Widget for OverviewPane {
         Some(self.core.borrow().overview_accessibility(self.rect))
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &Action,
         key_path: &[u64],
@@ -267,7 +267,7 @@ impl Widget for DetailPane {
 
     /// The forecast's one accessible control: the out-of-date notice's
     /// Retry button.
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &Action,
         key_path: &[u64],

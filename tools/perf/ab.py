@@ -381,8 +381,10 @@ def call(command: list[str], log: Path, cwd: Path, env: dict[str, str] | None = 
 
 
 def run_hosting(ctx: RunContext) -> list[record.Record]:
+    # Both sides need a bench that knows --relay-cpus; an older one refuses it.
+    cpus = ["--relay-cpus", str(ctx.options.hosting_relay_cpus)] if ctx.options.hosting_relay_cpus else []
     call([ctx.bins["relay_load"], "--collaborators", "100", "--minutes", str(ctx.options.hosting_minutes),
-          "--out", ctx.dir], ctx.dir / "bench.log", ctx.repo)
+          *cpus, "--out", ctx.dir], ctx.dir / "bench.log", ctx.repo)
     report = json.loads((ctx.dir / "hosting-load.json").read_text(encoding="utf-8"))
     prices = tomllib.loads(adapters.PRICES.read_text(encoding="utf-8"))
     return adapters.hosting_load(report, prices, ctx.env, require_all=False)
@@ -437,6 +439,20 @@ def run_fs(ctx: RunContext) -> list[record.Record]:
     return adapters.fs_gate([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
 
 
+FILES_NAME_INDEX_TEST = "shell::search::providers::files::tests::a_watched_change_costs_one_record_not_a_rebuild"
+
+
+def run_search(ctx: RunContext) -> list[record.Record]:
+    log = ctx.dir / "files-name-index.log"
+    # The nightly job's index size: the walk's MAX_ENTRIES. A cost over the
+    # test's own bound fails it but still measured; the adapter fails only
+    # when the run printed no measurement.
+    call(["bash", ctx.repo / "tools/with-test-environment.sh", ctx.bins["shell-lib"], FILES_NAME_INDEX_TEST,
+          "--exact", "--nocapture", "--test-threads=1"], log, ctx.cwd["shell-lib"],
+         {"TILO_FILES_NAME_INDEX_NAMES": "50000"}, check=False)
+    return adapters.files_name_index([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
+
+
 RELEASE_SHELL = ("cargo", "build", "--locked", "--release", "-p", "shell", "--bin", "shell",
                  "--features", "dev-overrides")
 
@@ -471,6 +487,9 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
           {}, {"performance_gate": (("cargo", "test", "--locked", "-p", "tilo-fs", "--test", "performance_gate",
                                      "--no-run"), "performance_gate")},
           {}, run_fs),
+    Group("search", "dev", "none", (),
+          {}, {"shell-lib": (("cargo", "test", "--locked", "-p", "shell", "--lib", "--no-run"), "shell")},
+          {}, run_search),
 )}
 
 
@@ -620,6 +639,8 @@ def main(argv: list[str] | None = None) -> int:
     go.add_argument("--virtualization", default="none", choices=sorted(record.VIRTUALIZATIONS))
     go.add_argument("--runner", default="local", help="the runner class, as record.py env takes it")
     go.add_argument("--hosting-minutes", type=int, default=3, help="measured minutes per hosting run")
+    go.add_argument("--hosting-relay-cpus", type=int, default=0,
+                    help="confine the relay to this many CPUs, as on a VM with that many vCPUs (0: all)")
     go.add_argument("--wakeups-window", type=int, default=30, help="idle window per wakeups run, seconds")
     again = commands.add_parser("analyse", help="analyse the records of an earlier run again")
     again.add_argument("records", type=Path)

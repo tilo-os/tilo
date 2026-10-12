@@ -23,6 +23,9 @@ impl Decorator for Deferred {
     fn inner_mut(&mut self) -> &mut TextInput {
         &mut self.inner
     }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
     fn ime_requires_deferred_ack(&self) -> bool {
         true
     }
@@ -203,6 +206,105 @@ fn stale_start_does_not_acquire_successor_at_same_stamp_lifetime() {
     f.operation(2, PrivateImeKind::Start, stamp);
     assert!(f.calls.iter().all(|calls| calls.borrow().starts.is_empty()));
     assert_eq!(f.wire.acknowledgments.borrow().last(), Some(&(2, 1)));
+}
+
+#[test]
+fn canceled_marked_final_is_consumed_before_renderer_dispatch() {
+    let mut f = Fixture::new(false, false);
+    let stamp = f.start();
+    f.operation(3, PrivateImeKind::Final, stamp);
+    // The compositor can retire the pending final independently of its earlier
+    // start grant. Its cancellation names the final operation's serial.
+    f.operation(3, PrivateImeKind::Cancel, stamp);
+    assert!(f.bridge.event(
+        &mut f.app,
+        &f.wire,
+        &WindowEvent::Ime(Ime::Commit("retired 日本語".into()))
+    ));
+    assert!(f.calls.iter().all(|calls| calls.borrow().finals.is_empty()));
+    assert_eq!(f.wire.acknowledgments.borrow().last(), Some(&(3, 1)));
+    assert!(!f.bridge.admitted());
+    assert!(!f.bridge.busy());
+    f.operation(4, PrivateImeKind::Prepare, stamp);
+    assert!(f.bridge.admitted(), "a fresh session remains available");
+    f.operation(3, PrivateImeKind::Cancel, stamp);
+    assert!(f.bridge.admitted(), "retired cancellation cannot revoke it");
+}
+
+#[test]
+fn revoked_field_cannot_acknowledge_an_asynchronous_start() {
+    for change in ["secret", "disabled", "edit", "focus", "overlay"] {
+        for resolved in [true, false] {
+            let mut f = Fixture::new(false, false);
+            let stamp = f.bridge.advertised.expect("original field").stamp;
+            f.operation(1, PrivateImeKind::Prepare, stamp);
+            f.operation(2, PrivateImeKind::Start, stamp);
+            let (receipt, resolver) = f.calls[0].borrow_mut().starts.pop().unwrap();
+            if change == "focus" {
+                f.app.set_focused_node(Some(f.nodes[1]));
+            } else if change != "overlay" {
+                f.app
+                    .mutate_node(f.nodes[0], |widget| {
+                        let field = widget
+                            .as_any_mut()
+                            .unwrap()
+                            .downcast_mut::<Deferred>()
+                            .unwrap();
+                        match change {
+                            "disabled" => field.inner.set_disabled(true),
+                            "secret" => field.inner.set_secret(true),
+                            "edit" => field.inner.set_text("changed before start"),
+                            _ => unreachable!(),
+                        }
+                    })
+                    .unwrap();
+            }
+            if resolved {
+                resolver.complete(Ok(None));
+            }
+            f.bridge.service(&f.app, &f.wire, change != "overlay");
+            assert!(receipt.was_canceled(), "{change}, resolved={resolved}");
+            assert_eq!(
+                f.wire.acknowledgments.borrow().as_slice(),
+                &[(1, 0), (2, 1)],
+                "{change}, resolved={resolved}"
+            );
+            assert!(!f.bridge.admitted());
+            assert!(!f.bridge.pending());
+            assert!(f.calls.iter().all(|calls| calls.borrow().finals.is_empty()));
+        }
+    }
+}
+
+#[test]
+fn applied_final_keeps_its_receipt_across_the_resulting_edit_revision() {
+    let mut f = Fixture::new(false, false);
+    let stamp = f.start();
+    f.operation(3, PrivateImeKind::Final, stamp);
+    assert!(f.bridge.event(
+        &mut f.app,
+        &f.wire,
+        &WindowEvent::Ime(Ime::Commit("accepted 日本語".into()))
+    ));
+    let (_, receipt, resolver) = f.calls[0].borrow_mut().finals.pop().unwrap();
+    f.app
+        .mutate_node(f.nodes[0], |widget| {
+            widget
+                .as_any_mut()
+                .unwrap()
+                .downcast_mut::<Deferred>()
+                .unwrap()
+                .inner
+                .set_text("accepted 日本語");
+        })
+        .unwrap();
+    f.service();
+    assert!(!receipt.was_canceled());
+    assert!(f.bridge.pending());
+    resolver.complete(Ok(None));
+    f.service();
+    assert_eq!(f.wire.acknowledgments.borrow().last(), Some(&(3, 0)));
+    assert!(!f.bridge.busy());
 }
 
 #[test]

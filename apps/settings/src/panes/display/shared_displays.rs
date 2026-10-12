@@ -5,11 +5,14 @@ use super::{
     caption, card, effect, rows, setting_row, setting_row_described, t, t_args,
 };
 use settings_store::person_displays::{Arrangement, Layout, ResolvedDisplay};
-use ui::tilo_resource::Effect;
+use ui::tilo_resource::{self, Effect};
 
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, ui::tilo_resource::Model,
+)]
 #[serde(default)]
-pub(super) struct SharedDisplayPrefs {
+pub struct SharedDisplayPrefs {
+    #[model(readonly)]
     pub arrangement: Arrangement,
 }
 
@@ -17,15 +20,28 @@ impl ui::storage::SettingsSchema for SharedDisplayPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display");
 }
 
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[ui::tilo_resource::resource(kind = "settings.display-arrangement", label = "Display arrangement")]
+impl SharedDisplayPrefs {}
+
+#[derive(
+    Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, ui::tilo_resource::Model,
+)]
 #[serde(default)]
-pub(super) struct AutomaticDisplayPrefs {
+pub struct AutomaticDisplayPrefs {
+    /// A device administrator's choice: changed only through its effect.
+    #[model(readonly)]
     pub automatic_display_input: bool,
 }
 
 impl ui::storage::SettingsSchema for AutomaticDisplayPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("continuity");
 }
+
+#[ui::tilo_resource::resource(
+    kind = "settings.automatic-display",
+    label = "Automatic display input"
+)]
+impl AutomaticDisplayPrefs {}
 
 impl DisplayModel {
     pub(super) fn set_automatic_display_input(&mut self, on: bool) -> Result<String, String> {
@@ -294,16 +310,15 @@ impl DisplayModel {
             return None;
         }
         let mut content = vec![caption(&t("display-shared-description"))];
-        content.push(setting_row_described(
-            &t("display-shared-auto-input"),
-            &t("display-shared-auto-description"),
-            Box::new(self.cx.bind(
-                Toggle::from_state(&LocalState::new(
-                    self.automatic_display_prefs.get().automatic_display_input,
-                )),
-                effect(DisplayEffect::SET_AUTOMATIC_DISPLAY_INPUT),
-            )),
-        ));
+        content.push(
+            self.cx
+                .row(t("display-shared-auto-input"))
+                .described(t("display-shared-auto-description"))
+                .toggle_effect(
+                    &LocalState::new(self.automatic_display_prefs.get().automatic_display_input),
+                    effect(DisplayEffect::SET_AUTOMATIC_DISPLAY_INPUT),
+                ),
+        );
         for display in layout.displays.iter().chain(&layout.inactive) {
             let row = self.shared_row(display).into_resource();
             let device = display.device.clone();
@@ -658,9 +673,12 @@ mod tests {
     #[test]
     fn shared_display_operations_use_the_mounted_exact_resource_door() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
-        let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
-        app.call_on(&open.resource, &open.action, serde_json::json!({}))
-            .unwrap();
+        let open = crate::categories::Category::Displays;
+        app.effect_on(
+            &crate::effects::pane_row_id(open),
+            &crate::effects::open_pane(open),
+        )
+        .unwrap();
         app.surface::<SettingsApp, _>(|settings| {
             settings.displays().model().borrow_mut().person_devices = devices();
         });
@@ -790,9 +808,12 @@ mod tests {
         let mut app =
             ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(ui::Role::Viewer)
                 .unwrap();
-        let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
-        app.call_on(&open.resource, &open.action, serde_json::json!({}))
-            .unwrap();
+        let open = crate::categories::Category::Displays;
+        app.effect_on(
+            &crate::effects::pane_row_id(open),
+            &crate::effects::open_pane(open),
+        )
+        .unwrap();
         app.surface::<SettingsApp, _>(|settings| {
             settings.displays().model().borrow_mut().person_devices = devices();
         });

@@ -12,6 +12,7 @@
 pub use settings_store::display_placement as placement;
 
 use crate as ui;
+use crate::num::f32_of_f64;
 use crate::widget::TaffyTreeExt;
 
 use std::collections::HashMap;
@@ -29,30 +30,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use placement::Placement;
 
-use crate::i18n::{ArgValue, EmbeddedCatalog};
-
-static CATALOG: EmbeddedCatalog = catalogue();
-
-const fn catalogue() -> EmbeddedCatalog {
-    let catalog = EmbeddedCatalog::new(
-        "en-US",
-        &[
-            ("en-US", include_str!("../../locales/en-US.ftl")),
-            ("de-DE", include_str!("../../locales/de-DE.ftl")),
-        ],
-        "display-arrangement-name",
-    )
-    .with_system_locale();
-    #[cfg(test)]
-    let catalog = catalog.with_pinned_locale("en-US");
-    catalog
-}
+use crate::i18n::widget_format;
 
 fn t(key: &str) -> String {
-    CATALOG.t(key)
-}
-fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
-    CATALOG.t_args(key, args)
+    widget_format(key, &[])
 }
 
 /// One display as the canvas draws it.
@@ -189,11 +170,6 @@ fn round_to_i32(value: f64) -> i32 {
     value
         .round()
         .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
-}
-
-#[allow(clippy::cast_possible_truncation, reason = "canvas pixels fit f32")]
-fn px(value: f64) -> f32 {
-    value as f32
 }
 
 pub struct DisplayArrangement {
@@ -500,7 +476,7 @@ impl DisplayArrangement {
         let caption = display.status().map_or_else(
             || display.label.clone(),
             |status| {
-                t_args(
+                widget_format(
                     "display-arrangement-caption-status",
                     &[
                         ("status", status.into()),
@@ -511,7 +487,7 @@ impl DisplayArrangement {
         );
         let label = text_renderer.elide_to_width_style(
             &caption,
-            px(rect.width() - f64::from(theme.tokens.spacing.s3)),
+            f32_of_f64(rect.width() - f64::from(theme.tokens.spacing.s3)),
             &caption_style,
         );
         let (lw, _) = text_renderer.measure_style(&label, None, &caption_style);
@@ -682,7 +658,7 @@ impl Widget for DisplayArrangement {
                 "display-arrangement-item"
             };
             let node = AccessNode::new(Role::Image)
-                .with_name(t_args(
+                .with_name(widget_format(
                     key,
                     &[
                         (
@@ -692,7 +668,7 @@ impl Widget for DisplayArrangement {
                         ("name", ui::i18n::ArgValue::Text(display.label.clone())),
                     ],
                 ))
-                .with_description(t_args(
+                .with_description(widget_format(
                     "display-arrangement-item-position",
                     &[
                         (
@@ -716,7 +692,7 @@ impl Widget for DisplayArrangement {
                 .with_bounds(mapping.to_canvas(display.placement));
             let mut node = if let Some(status) = display.status() {
                 let position = node.description.clone().unwrap_or_default();
-                node.with_description(t_args(
+                node.with_description(widget_format(
                     "display-arrangement-item-status",
                     &[("position", position.into()), ("status", status.into())],
                 ))
@@ -816,7 +792,7 @@ mod tests {
                     ui::tilo_actions::Resource::new("settings.root", "settings.root", "Settings")
                         .with_action(spec.clone());
                 let connector = display.connector.clone();
-                let binding = ui::tilo_actions::ActionBinding::new(
+                let binding = ui::tilo_actions::ActionBinding::fallible(
                     &resource,
                     &spec,
                     move |(x, y): (i32, i32)| {

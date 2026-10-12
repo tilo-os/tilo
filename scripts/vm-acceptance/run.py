@@ -96,13 +96,13 @@ DE_PASS = ("U03", "U04", "S03")
 # timestamps, so it may run anywhere. A15 times apps R02 has already opened once. R08 signs
 # the dev account in at seat0's greeter, which starts a second compositor: it runs after
 # every check that measures or renders the slot's session.
-ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "R04",
+ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "A17", "R04",
          "W01", "W02", "W03", "W04", "W05", "W06", "W07", "W08", "W09", "W10", "W11", "W12",
          "W13", "W14", "W15", "W16", "W17", "W18", "W19", "W20", "W21",
          "A01", "A02", "A03", "A04", "A05", "A06", "A07",
          "A08", "A09", "A10", "A11", "A12", "A13",
          "S01", "S02", "S04", "S05", "S06", "S07", "S08", "S09",
-         "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06", "B07", "R07", "A16", "R05", "R08", "P03"]
+         "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06", "R07", "A16", "R05", "R08", "P03"]
 
 
 def git(*args: str, repo: Path = REPO) -> str:
@@ -285,15 +285,20 @@ def swap_components(vm: TiloVm, components: list[str], ref: str, source: Path,
             raise ValueError("artifact consumer source checkout does not match producer")
         components = verify_artifacts(artifact["receipt"], artifact["expected"],
                                       artifact["sha256"], components)
+    # The artifact consumer verifies the cohort; it may be a newer CLI than the ref's
+    # own (the workflow's checkout), so a branch older than a consumer fix stays testable.
+    consumer = (artifact or {}).get("consumer") or vm
     swapped, slots = [], set()
     for component in components:
         slot = "vm" if scopes.get(component) == "vm" else vm.slot
         entry = {"component": component, "slot": slot}
+        if artifact:
+            entry["consumer"] = consumer.binary
         started = time.monotonic()
         try:
             if artifact:
                 expected = artifact["expected"]
-                out = vm.run("--json", "swap-artifact", component, "--slot", slot,
+                out = consumer.run("--json", "swap-artifact", component, "--slot", slot,
                              "--receipt", str(artifact["receipt"]),
                              "--source", expected["source_commit"],
                              "--builder-image", expected["builder_image"],
@@ -366,6 +371,8 @@ def main() -> int:
     ap.add_argument("--artifact-run-id", type=int, help="producing workflow API run ID")
     ap.add_argument("--artifact-run-attempt", type=int)
     ap.add_argument("--artifact-receipt-sha256", help="receipt hash from authenticated producer output")
+    ap.add_argument("--artifact-tilo-vm", help="the tilo-vm that verifies and imports the artifacts "
+                    "(default: --tilo-vm); it still runs in, and checks, the --swap-from checkout")
     ap.add_argument("--owners", help="area=owner,... to name who each area routes to")
     ap.add_argument("--records", type=Path, help="write the run's performance records here "
                     "(JSON lines, tools/perf/record.py)")
@@ -382,6 +389,8 @@ def main() -> int:
     artifact = None
     handoff = (args.artifact_receipt, args.artifact_source, args.artifact_builder_image,
                args.artifact_run_id, args.artifact_run_attempt, args.artifact_receipt_sha256)
+    if args.artifact_tilo_vm and args.artifact_receipt is None:
+        ap.error("--artifact-tilo-vm needs artifact mode")
     if any(value is not None for value in handoff):
         if not swaps or any(value is None for value in handoff):
             ap.error("artifact mode requires swaps and all six --artifact-* identity arguments")
@@ -411,6 +420,11 @@ def main() -> int:
             sys.exit(f"VM {vm_name} is not in vms.toml")
         disk = Path(entry["image"]).expanduser() if entry.get("image") else None
     vm = TiloVm(binary, vm_name, args.slot, out / "tilo-vm.log")
+    if artifact and args.artifact_tilo_vm:
+        # Exactly the named consumer: no fallback to another tilo-vm on PATH.
+        if not os.access(args.artifact_tilo_vm, os.X_OK) or not Path(args.artifact_tilo_vm).is_file():
+            sys.exit(f"--artifact-tilo-vm {args.artifact_tilo_vm} is not an executable file")
+        artifact["consumer"] = TiloVm(args.artifact_tilo_vm, vm_name, args.slot, out / "tilo-vm.log")
 
     startup_vm = (TiloVm(find_tilo_vm(args.bootstrap_tilo_vm), vm_name, args.slot, out / "tilo-vm.log")
                   if args.bootstrap_tilo_vm else vm)
@@ -507,6 +521,9 @@ def main() -> int:
         if ctx is not None and ctx.facts.get("session_recovered_after"):
             # The checks after which the harness restarted a session left locked.
             meta["session_recovered_after"] = ctx.facts["session_recovered_after"]
+        if ctx is not None and ctx.facts.get("session_restarted_during"):
+            # Where the slot's session unit restarted on its own: each lost every window.
+            meta["session_restarted_during"] = ctx.facts["session_restarted_during"]
         if ctx is not None and ctx.facts.get("dialog_recovered_after"):
             # The checks that left a dialog open, what it was, and how the harness closed it.
             meta["dialog_recovered_after"] = ctx.facts["dialog_recovered_after"]

@@ -39,10 +39,13 @@ use thumbnail::{FileCategory, ThumbKey, ThumbState, ThumbnailService, category_f
 use super::file_list::{ListInputs, ListSlot, sort_column};
 use crate::command::{CommandSink, FileCommand, push};
 use crate::i18n::{arg, t, t_args};
-use crate::model::{
-    AvailabilityPolicy, AvailabilityProjection, Entry, ReplicaEvidence, Residency, SortBy,
-    SortOrder, SyncState, TransferPhase, ViewMode, human_size,
-};
+use crate::model::{Entry, SortBy, SortOrder, ViewMode, human_size};
+use fs_protocol::AvailabilityPolicy;
+use fs_protocol::AvailabilityProjectionV1;
+use fs_protocol::ProjectedReplicaEvidence;
+use fs_protocol::Residency;
+use fs_protocol::SyncState;
+use fs_protocol::TransferPhase;
 use ui::SelectionModel;
 use ui::chrome::{SelectionState, paint_row_selection};
 use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon, icon_for_path};
@@ -279,11 +282,6 @@ impl FileView {
     #[must_use]
     pub fn with_scale(mut self, scale: f64) -> Self {
         self.scale = scale.clamp(0.5, 3.0);
-        self
-    }
-    #[must_use]
-    pub fn with_text_scale(mut self, scale: f32) -> Self {
-        self.text_scale = f64::from(scale.clamp(0.5, 4.0));
         self
     }
     /// Read the view's metrics from `theme`'s tokens (also done at layout).
@@ -1301,7 +1299,10 @@ fn accessible_entry_description(entry: &Entry) -> String {
     }
 
     if let Some(availability) = &entry.availability {
-        use crate::model::{AvailabilityPolicy, ReplicaEvidence, Residency, TransferPhase};
+        use fs_protocol::AvailabilityPolicy;
+        use fs_protocol::ProjectedReplicaEvidence;
+        use fs_protocol::Residency;
+        use fs_protocol::TransferPhase;
         if availability.transfer.last_error.is_some() {
             facts.push(t("files-a11y-transfer-failed"));
         } else {
@@ -1325,11 +1326,13 @@ fn accessible_entry_description(entry: &Entry) -> String {
             });
         }
         match availability.replicas {
-            ReplicaEvidence::Unknown => facts.push(t("files-a11y-replica-unknown")),
-            ReplicaEvidence::Known { durable, .. } if durable > 0 => {
+            ProjectedReplicaEvidence::Unknown => facts.push(t("files-a11y-replica-unknown")),
+            ProjectedReplicaEvidence::Known { durable, .. } if durable > 0 => {
                 facts.push(t("files-a11y-durably-replicated"));
             }
-            ReplicaEvidence::Known { .. } => facts.push(t("files-a11y-not-durably-replicated")),
+            ProjectedReplicaEvidence::Known { .. } => {
+                facts.push(t("files-a11y-not-durably-replicated"));
+            }
         }
     } else if let Some(sync) = entry.sync_state {
         facts.push(match sync {
@@ -1367,7 +1370,7 @@ fn sync_badge(state: SyncState, theme: &Theme) -> (Icon, Color) {
     }
 }
 
-fn availability_badge(state: &AvailabilityProjection, theme: &Theme) -> (Icon, Color) {
+fn availability_badge(state: &AvailabilityProjectionV1, theme: &Theme) -> (Icon, Color) {
     let colors = &theme.tokens.colors;
     if state.transfer.last_error.is_some() {
         return (Icon::Ban, colors.semantic.danger);
@@ -1391,8 +1394,8 @@ fn availability_badge(state: &AvailabilityProjection, theme: &Theme) -> (Icon, C
         }
         Residency::Resident { .. } if state.safely_replicated() => (Icon::Shield, colors.text_dim),
         Residency::Resident { .. } => match state.replicas {
-            ReplicaEvidence::Unknown => (Icon::Info, colors.text_dim),
-            ReplicaEvidence::Known { .. } => (Icon::Info, colors.semantic.warning),
+            ProjectedReplicaEvidence::Unknown => (Icon::Info, colors.text_dim),
+            ProjectedReplicaEvidence::Known { .. } => (Icon::Info, colors.semantic.warning),
         },
     }
 }
@@ -1455,7 +1458,7 @@ fn draw_availability_badge(
     scene: &mut Scene,
     transform: Affine,
     icon_rect: Rect,
-    state: &AvailabilityProjection,
+    state: &AvailabilityProjectionV1,
     scale: f64,
     theme: &Theme,
 ) {
@@ -2084,7 +2087,7 @@ mod tests {
         image::DynamicImage::ImageRgba8(host)
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
-        xattr::set(&entry.path, crate::model::THUMB_XATTR, &png).unwrap();
+        xattr::set(&entry.path, fs_protocol::THUMB_XATTR, &png).unwrap();
 
         let (service, ctx) = thumb_ctx(&dir.path().join("cache"));
         let sink = new_sink();
@@ -2112,7 +2115,7 @@ mod tests {
         // picture of it.
         let dir = tempfile::tempdir().unwrap();
         let mut entry = photo_on_disk(dir.path(), "harbour.png", 80, 60);
-        entry.sync_state = Some(crate::model::SyncState::Projected);
+        entry.sync_state = Some(fs_protocol::SyncState::Projected);
         let (service, ctx) = thumb_ctx(&dir.path().join("cache"));
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2315,7 +2318,7 @@ mod tests {
         policy: &str,
         replicas: &serde_json::Value,
         error: bool,
-    ) -> AvailabilityProjection {
+    ) -> AvailabilityProjectionV1 {
         let value = serde_json::json!({
             "schema_version": 1,
             "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -2336,7 +2339,7 @@ mod tests {
                 "replicas_observed_at_ms": 3
             }
         });
-        AvailabilityProjection::parse(&serde_json::to_vec(&value).unwrap()).unwrap()
+        AvailabilityProjectionV1::parse_xattr(&serde_json::to_vec(&value).unwrap()).unwrap()
     }
 
     fn rich_availability_badges_are_honest_and_actionable() {
@@ -2583,7 +2586,7 @@ mod tests {
             &serde_json::json!({"state": "known", "reachable": 2, "durable": 1}),
             false,
         ));
-        entries[1].share = crate::model::ShareProjection::parse(
+        entries[1].share = fs_protocol::ShareProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": uuid::Uuid::nil().to_string(),
@@ -2603,7 +2606,8 @@ mod tests {
                 }]
             }))
             .unwrap(),
-        );
+        )
+        .ok();
 
         entries
     }

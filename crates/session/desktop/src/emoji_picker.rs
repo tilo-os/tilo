@@ -25,6 +25,7 @@
 //! The catalogue, search, skin tones and names come from the shared
 //! [`emoji`] crate in the desktop's language.
 
+use ui::num::{f32_of_f64, f64_of_usize, usize_of_f64};
 use ui::time::{Duration, Instant};
 
 use emoji::{Catalogue, Recents, SkinTone};
@@ -564,7 +565,7 @@ impl EmojiPicker {
         let group_count = self.catalogue.groups().len().max(1);
         let available_height = (viewport.height() - edge * 2.0).max(0.0);
         let initial_columns = self.group_column_count(width - pad * 2.0, group_count);
-        let initial_tabs = tabs_h * f64_from_usize(group_count.div_ceil(initial_columns));
+        let initial_tabs = tabs_h * f64_of_usize(group_count.div_ceil(initial_columns));
         let initial_fixed = pad * 2.0 + field_h + gap + initial_tabs + gap + gap + footer_h;
         let constrained = initial_fixed + cell > available_height;
         let gutter = if constrained {
@@ -576,9 +577,9 @@ impl EmojiPicker {
         let columns = (body_width / cell).floor().max(1.0);
         let grid_w = columns * cell;
         self.tab_columns = self.group_column_count(body_width, group_count);
-        let tabs_h = tabs_h * f64_from_usize(group_count.div_ceil(self.tab_columns));
+        let tabs_h = tabs_h * f64_of_usize(group_count.div_ceil(self.tab_columns));
         let fixed = pad * 2.0 + field_h + gap + tabs_h + gap + gap + footer_h;
-        let grid_h = (cell * f64_from_usize(GRID_ROWS)).min((available_height - fixed).max(cell));
+        let grid_h = (cell * f64_of_usize(GRID_ROWS)).min((available_height - fixed).max(cell));
         let height = (fixed + grid_h).min(available_height);
         let size = (width, height);
         let card = self.anchor.map_or_else(
@@ -596,13 +597,13 @@ impl EmojiPicker {
         let body_x1 = inner_x1 - gutter;
         let field = Rect::new(inner_x0, card.y0 + pad, inner_x1, card.y0 + pad + field_h);
         let tabs_y0 = field.y1 + gap;
-        let tab_w = (body_x1 - inner_x0) / f64_from_usize(self.tab_columns);
+        let tab_w = (body_x1 - inner_x0) / f64_of_usize(self.tab_columns);
         let tabs = (0..group_count)
             .map(|i| {
                 let column = i.checked_rem(self.tab_columns).unwrap_or(0);
                 let row = i.checked_div(self.tab_columns).unwrap_or(0);
-                let x = inner_x0 + tab_w * f64_from_usize(column);
-                let y = tabs_y0 + f64::from(self.metrics.bar_height) * f64_from_usize(row);
+                let x = inner_x0 + tab_w * f64_of_usize(column);
+                let y = tabs_y0 + f64::from(self.metrics.bar_height) * f64_of_usize(row);
                 Rect::new(x, y, x + tab_w, y + f64::from(self.metrics.bar_height))
             })
             .collect();
@@ -619,7 +620,7 @@ impl EmojiPicker {
         self.body_scroll
             .set_content_size(body.width() - gutter, footer.y1 - body.y0);
 
-        let (cells, headings, y) = self.layout_cells(usize_from_f64(columns).max(1), cell);
+        let (cells, headings, y) = self.layout_cells(usize_of_f64(columns).max(1), cell);
         self.geometry = Geometry {
             card,
             field,
@@ -649,8 +650,8 @@ impl EmojiPicker {
                 y += heading_h;
             }
             for (n, index) in (section.start..section.end).enumerate() {
-                let row = f64_from_usize(n.checked_div(per_row).unwrap_or(0));
-                let col = f64_from_usize(n.checked_rem(per_row).unwrap_or(0));
+                let row = f64_of_usize(n.checked_div(per_row).unwrap_or(0));
+                let col = f64_of_usize(n.checked_rem(per_row).unwrap_or(0));
                 if let Some(slot) = cells.get_mut(index) {
                     *slot = Rect::new(
                         col * cell,
@@ -661,13 +662,13 @@ impl EmojiPicker {
                 }
             }
             let rows = (section.end.saturating_sub(section.start)).div_ceil(per_row);
-            y += f64_from_usize(rows) * cell;
+            y += f64_of_usize(rows) * cell;
         }
         (cells, headings, y)
     }
 
     fn group_column_count(&self, room: f64, group_count: usize) -> usize {
-        let capacity = usize_from_f64((room / self.group_width.max(1.0)).floor())
+        let capacity = usize_of_f64((room / self.group_width.max(1.0)).floor())
             .max(1)
             .min(group_count);
         if room >= self.group_strip_width {
@@ -690,23 +691,23 @@ impl EmojiPicker {
         let Some(tones) = self.tones.as_mut() else {
             return;
         };
-        let mut columns = usize_from_f64(((card.width() - pad * 2.0) / cell).floor())
+        let mut columns = usize_of_f64(((card.width() - pad * 2.0) / cell).floor())
             .max(1)
             .min(tones.forms.len());
         let mut rows = tones.forms.len().div_ceil(columns);
-        let gutter = if cell * f64_from_usize(rows) + pad * 2.0 > card.height() {
+        let gutter = if cell * f64_of_usize(rows) + pad * 2.0 > card.height() {
             f64::from(self.metrics.scrollbar_gutter)
         } else {
             0.0
         };
         if gutter > 0.0 {
-            columns = usize_from_f64(((card.width() - pad * 2.0 - gutter) / cell).floor())
+            columns = usize_of_f64(((card.width() - pad * 2.0 - gutter) / cell).floor())
                 .max(1)
                 .min(tones.forms.len());
             rows = tones.forms.len().div_ceil(columns);
         }
-        let width = cell * f64_from_usize(columns) + pad * 2.0 + gutter;
-        let height = (cell * f64_from_usize(rows) + pad * 2.0).min(card.height());
+        let width = cell * f64_of_usize(columns) + pad * 2.0 + gutter;
+        let height = (cell * f64_of_usize(rows) + pad * 2.0).min(card.height());
         let x0 = (anchor_rect.center().x - width / 2.0)
             .min(card.x1 - width)
             .max(card.x0);
@@ -722,15 +723,15 @@ impl EmojiPicker {
             .map(|i| {
                 let column = i.checked_rem(columns).unwrap_or(0);
                 let row = i.checked_div(columns).unwrap_or(0);
-                let x = x0 + pad + cell * f64_from_usize(column);
-                let y = y0 + pad + cell * f64_from_usize(row);
+                let x = x0 + pad + cell * f64_of_usize(column);
+                let y = y0 + pad + cell * f64_of_usize(row);
                 Rect::new(x, y, x + cell, y + cell)
             })
             .collect();
         let inner = Rect::new(x0 + pad, y0 + pad, x0 + width - pad, y0 + height - pad);
         self.tone_scroll.set_viewport(inner, &self.scroll_theme);
         self.tone_scroll
-            .set_content_size(cell * f64_from_usize(columns), cell * f64_from_usize(rows));
+            .set_content_size(cell * f64_of_usize(columns), cell * f64_of_usize(rows));
         if let Some(rect) = tones.cells.get(tones.selected) {
             self.tone_scroll
                 .scroll_into_view(rect.with_origin((rect.x0 - inner.x0, rect.y0 - inner.y0)));
@@ -1315,19 +1316,19 @@ impl EmojiPicker {
         let stacked = name_width + gap + f64::from(hint_width) > width;
         let line_height = f64::from(style.line_height_px());
         let lines = if stacked {
-            text.clamp_to_lines_style(&hint, f64_to_f32(width), usize::MAX, &style)
+            text.clamp_to_lines_style(&hint, f32_of_f64(width), usize::MAX, &style)
         } else {
             vec![hint]
         };
         let height = if stacked {
             f64::from(self.metrics.bar_height).max(line_height)
                 + gap
-                + line_height * f64_from_usize(lines.len())
+                + line_height * f64_of_usize(lines.len())
         } else {
             f64::from(self.metrics.bar_height)
         };
         Some(FooterText {
-            name: text.elide_to_width_style(&name, f64_to_f32(width), &name_style),
+            name: text.elide_to_width_style(&name, f32_of_f64(width), &name_style),
             hint: lines,
             hint_width: f64::from(hint_width),
             hint_height: f64::from(hint_height),
@@ -1375,7 +1376,7 @@ impl EmojiPicker {
             &footer.name,
             ctx.theme.tokens.colors.text_primary,
             ctx.transform.pre_translate((x, name_y).into()),
-            Some(f64_to_f32(name_width.max(0.0))),
+            Some(f32_of_f64(name_width.max(0.0))),
             &name_style,
         );
         let hint_y = if footer.stacked {
@@ -1389,7 +1390,7 @@ impl EmojiPicker {
                 line,
                 ctx.theme.tokens.colors.text_dim,
                 ctx.transform.pre_translate(
-                    (hint_x, hint_y + footer.line_height * f64_from_usize(index)).into(),
+                    (hint_x, hint_y + footer.line_height * f64_of_usize(index)).into(),
                 ),
                 None,
                 &style,
@@ -1462,7 +1463,7 @@ impl EmojiPicker {
         .iter()
         .map(Rect::width)
         .fold(0.0_f64, f64::max)
-            * f64_from_usize(segments.len());
+            * f64_of_usize(segments.len());
         if self.group_width.to_bits() != group_width.to_bits()
             || self.group_strip_width.to_bits() != group_strip_width.to_bits()
         {
@@ -1542,7 +1543,7 @@ impl EmojiPicker {
                 colors.text_dim,
                 transform
                     .pre_translate((g.grid.x0 + 4.0, g.grid.y0 + y - self.scroll + 6.0).into()),
-                Some(f64_to_f32(g.grid.width())),
+                Some(f32_of_f64(g.grid.width())),
                 &type_scale
                     .style(TextRole::Caption)
                     .with_weight(TextWeight::Medium),
@@ -1682,7 +1683,7 @@ fn draw_emoji(
     rect: Rect,
     text: &str,
 ) {
-    let size = f64_to_f32((rect.height().min(rect.width()) * GLYPH_SCALE).clamp(12.0, 48.0));
+    let size = f32_of_f64((rect.height().min(rect.width()) * GLYPH_SCALE).clamp(12.0, 48.0));
     let (w, h) = text_renderer.measure(text, size, None);
     text_renderer.draw_text(
         scene,
@@ -1698,23 +1699,6 @@ fn draw_emoji(
         ),
         None,
     );
-}
-
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "grid counts are a few hundred at most"
-)]
-fn f64_from_usize(n: usize) -> f64 {
-    n as f64
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "a column count of a card-sized grid, already floored and at least one"
-)]
-fn usize_from_f64(v: f64) -> usize {
-    v.max(0.0) as usize
 }
 
 /// Where a card of `size` goes for a field whose caret is `caret`: its left
@@ -1743,14 +1727,6 @@ pub fn card_at_caret(
         top
     };
     Rect::from_origin_size((x0, y0), (width, height))
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "card-sized lengths and glyph sizes fit f32"
-)]
-fn f64_to_f32(v: f64) -> f32 {
-    v as f32
 }
 
 #[cfg(test)]

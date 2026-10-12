@@ -19,10 +19,10 @@ impl NotesApp {
             let document = cx.document().ok_or("the editor document is unavailable")?;
             return Ok(Effected::value(self.editor_observation(&document)));
         }
-        let state = cx.live().get();
+        let state = Workspace::of(cx.live().get(), &self.workspace);
         match effect {
             NotesEffect::InspectEditor => Err("the editor document is unavailable".into()),
-            NotesEffect::ImportMarkdown => Ok(Self::choose_markdown(cx)),
+            NotesEffect::ImportMarkdownFile => Ok(Self::choose_markdown(cx)),
             NotesEffect::ImportMarkdownContent { title, body } => {
                 let title = title.trim();
                 let title = if title.is_empty() {
@@ -50,7 +50,7 @@ impl NotesApp {
             }
             NotesEffect::Back => self.step(ui::NavAction::Back, "no previous note"),
             NotesEffect::Forward => self.step(ui::NavAction::Forward, "no next note"),
-            NotesEffect::Open { page, block } => self
+            NotesEffect::OpenNote { page, block } => self
                 .open_block(&state, page, block)
                 .map(|()| Effected::done()),
             NotesEffect::RevealBlockRange {
@@ -93,12 +93,13 @@ impl NotesApp {
             tracing::warn!(?effect, "notes: this notebook is open to view only");
             return;
         };
+        // What acts on one note is offered on that note.
         match effect {
-            NotesEffect::ExportMarkdown { page }
+            NotesEffect::CopyLink { page }
+            | NotesEffect::ExportMarkdown { page }
             | NotesEffect::ExportMarkdownContent { page }
-            | NotesEffect::InsertImage { page }
-            | NotesEffect::CopyLink { page } => {
-                dispatcher.effect_on(&actions::page_resource_id(*page), effect);
+            | NotesEffect::InsertImage { page } => {
+                dispatcher.effect_on(&crate::actions::page_resource_id(*page), effect);
             }
             _ => dispatcher.effect(effect),
         }
@@ -261,15 +262,20 @@ impl NotesApp {
 
     /// Add `markdown` to the notebook as a note titled `title`, and show it.
     fn import_note(&mut self, title: &str, markdown: &str, cx: &Cx) -> Result<PageId, String> {
-        if let Err(error) = actions::check_markdown_import(markdown) {
+        if let Err(error) = crate::notebook::check_markdown_import(markdown) {
             self.import_failed(&error);
             return Err(error);
         }
         let (markdown, assets) = super::adopt_inline_images(markdown);
         let page = PageId::new_v4();
-        cx.apply(&actions::import_markdown_action(
-            page, title, &markdown, assets,
-        ));
+        cx.submit(
+            Notebook::IMPORT_MARKDOWN.with(crate::notebook::notebook::ImportMarkdown {
+                title: title.to_owned(),
+                markdown,
+                images: assets.into_iter().map(|(_, bytes)| bytes).collect(),
+                note: Some(crate::notebook::page_id(page)),
+            }),
+        );
         self.open_when_present(page);
         self.transfer_toasts.push(
             format!("Imported {title}"),
@@ -314,10 +320,8 @@ impl NotesApp {
         ))
     }
 
-    /// Keep note `page` as Markdown in the window's content store rather than
-    /// a chosen file, and answer its content address: an export a caller with
-    /// no files of its own (an agent) reads back by address. With no file
-    /// name to carry it, the title leads as the note's first heading.
+    /// Keep a portable Markdown note in the content store, its title leading
+    /// because no file name carries it.
     fn export_markdown_content(&self, state: &Workspace, page: PageId) -> EffectAnswer {
         let title = state
             .get(page)
@@ -370,7 +374,7 @@ impl NotesApp {
                 .and_then(|stem| stem.to_str())
                 .unwrap_or("Image")
                 .replace([']', '[', '(', ')'], " ");
-            cx.apply(&app.image_insertion(page, alt.trim(), file.bytes));
+            cx.submit(app.image_insertion(page, alt.trim(), file.bytes));
             app.bound_page = None;
             app.self_dirty = true;
             app.transfer_toasts
@@ -379,14 +383,14 @@ impl NotesApp {
         })
     }
 
-    /// The action adding image `bytes` to `page`, after the block the
+    /// The change adding image `bytes` to `page`, after the block the
     /// caret is in when the note is the one shown, else at its end.
     pub(super) fn image_insertion(
         &self,
         page: PageId,
         alt: &str,
         bytes: Vec<u8>,
-    ) -> actions::NotesAction {
+    ) -> ui::tilo_resource::Invoke<crate::notebook::Notebook> {
         let digest = blake3::hash(&bytes).to_hex().to_string();
         let after = (self.main.page_id() == Some(page))
             .then(|| {
@@ -403,7 +407,7 @@ impl NotesApp {
             Some(after) => tilo_document::RichTextAction::InsertParagraph { after, text },
             None => tilo_document::RichTextAction::AppendParagraph { text },
         };
-        actions::add_image_asset_action(page, bytes, edit)
+        actions::show_image(page, bytes, edit)
     }
 }
 

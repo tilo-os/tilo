@@ -1,6 +1,7 @@
 [package]
 name = "remote"
 version = "0.1.0"
+description = "SSH terminals, VNC/RDP desktops and Tilo-to-Tilo relay sessions"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
@@ -29,8 +30,6 @@ tilo-callstream = { path = "../../crates/collab/tilo-callstream" }
 # Tilo-device connections store the target's endpoint id; only the key types
 # are needed, not the iroh transport.
 iroh-base = { workspace = true, features = ["key"] }
-automerge.workspace = true
-tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

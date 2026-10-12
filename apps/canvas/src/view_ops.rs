@@ -8,6 +8,7 @@
 
 use serde_json::{Value, json};
 use ui::TextRenderer;
+use ui::num::f64_of_usize;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Point, Rect};
 use ui::vello::peniko::Color;
@@ -185,6 +186,18 @@ pub fn pixels(
         let [r, g, b, a] = BACKDROP;
         Color::from_rgba8(r, g, b, a)
     };
+    // A renderer cached before confinement must not bypass the process's
+    // choice to draw without a GPU.
+    if ui::offscreen::gpu_disabled() {
+        return ui::offscreen::render_without_gpu(
+            &scene,
+            width,
+            height,
+            backdrop,
+            &ui::offscreen::OffscreenError::NoAdapter,
+        )
+        .map(|rgba| (rgba, width, height));
+    }
     // The renderers for the last sizes are kept: each has learned how much
     // memory a scene this busy needs, so the next look fits at once, and an
     // eyedropper's tiny picture does not cost the magic wand's its renderer.
@@ -369,7 +382,7 @@ fn flatten(reference: &[u8], width: u32, inside: Rect, ground: [u8; 3]) -> Vec<u
     for (index, pixel) in reference.chunks_exact(4).enumerate() {
         let x = index % width;
         let y = index / width;
-        let centre = ui::vello::kurbo::Point::new(count(x) + 0.5, count(y) + 0.5);
+        let centre = ui::vello::kurbo::Point::new(f64_of_usize(x) + 0.5, f64_of_usize(y) + 0.5);
         if !inside.contains(centre) {
             out.extend_from_slice(&[0, 0, 0, 0]);
             continue;
@@ -382,10 +395,6 @@ fn flatten(reference: &[u8], width: u32, inside: Rect, ground: [u8; 3]) -> Vec<u
         out.push(255);
     }
     out
-}
-
-fn count(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 /// The mean colour distance within the reference's frame, overall and per
@@ -618,7 +627,10 @@ pub fn measure(
             if alpha <= 0.0 {
                 continue;
             }
-            let (x, y) = (count(index % width) + 0.5, count(index / width) + 0.5);
+            let (x, y) = (
+                f64_of_usize(index % width) + 0.5,
+                f64_of_usize(index / width) + 0.5,
+            );
             mass += alpha;
             mx += alpha * x;
             my += alpha * y;

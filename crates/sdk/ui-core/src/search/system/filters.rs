@@ -1,5 +1,6 @@
 //! The native system-search filter strip: paint, hit targets and accessibility.
 use super::{ResourceKind, SearchScope};
+use crate::num::{f32_of_f64, f64_of_usize};
 use crate::paint::PaintCtx;
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
@@ -7,20 +8,6 @@ use crate::tokens::TextRole;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 const SEGMENT_INSET_PX: f64 = 2.0;
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "Item counts become approximate display geometry rather than durable numeric state."
-)]
-fn usize_to_f64_lossy(n: usize) -> f64 {
-    n as f64
-}
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "Painting uses f32 coordinates after layout computes f64 geometry."
-)]
-fn f64_to_f32_lossy(n: f64) -> f32 {
-    n as f32
-}
 /// Toggle `kind` in the chip selection. Content kinds combine; the empty
 /// selection means everything shows.
 ///
@@ -391,8 +378,8 @@ impl SearchFilters {
         }
         let count = self.search_scope_list().len().max(1);
         let track = self.search_scope_track_rect();
-        let seg_w = (track.width() - 2.0 * SEGMENT_INSET_PX) / usize_to_f64_lossy(count);
-        let x0 = track.x0 + SEGMENT_INSET_PX + usize_to_f64_lossy(idx) * seg_w;
+        let seg_w = (track.width() - 2.0 * SEGMENT_INSET_PX) / f64_of_usize(count);
+        let x0 = track.x0 + SEGMENT_INSET_PX + f64_of_usize(idx) * seg_w;
         Rect::new(
             x0,
             track.y0 + SEGMENT_INSET_PX,
@@ -452,7 +439,7 @@ impl SearchFilters {
 
     pub fn search_scope_measured_track_w(&self) -> f64 {
         let count = self.search_scope_list().len().max(1);
-        self.search_scope_segment_w * usize_to_f64_lossy(count) + 2.0 * SEGMENT_INSET_PX
+        self.search_scope_segment_w * f64_of_usize(count) + 2.0 * SEGMENT_INSET_PX
     }
 
     pub fn scope_switch_wants_own_row(&self) -> bool {
@@ -658,7 +645,7 @@ impl SearchFilters {
             if rect.area() > 0.0 {
                 let label = text_renderer.elide_to_width_style(
                     label,
-                    f64_to_f32_lossy((rect.width() - chip_pad).max(1.0)),
+                    f32_of_f64((rect.width() - chip_pad).max(1.0)),
                     &chip_text_style,
                 );
                 draw_filter_chip(
@@ -765,7 +752,7 @@ impl SearchFilters {
             // keeps `s2` of its padding before it elides.
             let text = text_renderer.elide_to_width_style(
                 &text,
-                f64_to_f32_lossy(seg.width() - f64::from(tokens.spacing.s2)),
+                f32_of_f64(seg.width() - f64::from(tokens.spacing.s2)),
                 chip_text_style,
             );
             let (tw, th) = text_renderer.measure_style(&text, None, chip_text_style);
@@ -847,8 +834,8 @@ pub fn lay_out_chip_row_with_more(
     let available = (x1 - band.x0).max(0.0);
     let more_w = more_w.max(CHIP_MIN_W_PX);
     let widths: Vec<f64> = natural.iter().map(|w| w.max(CHIP_MIN_W_PX)).collect();
-    let all_w = widths.iter().copied().sum::<f64>()
-        + gap * usize_to_f64_lossy(widths.len().saturating_sub(1));
+    let all_w =
+        widths.iter().copied().sum::<f64>() + gap * f64_of_usize(widths.len().saturating_sub(1));
     let cy = band.y0 + row_h / 2.0;
     let place = |x: f64, w: f64| Rect::new(x, cy - control_h / 2.0, x + w, cy + control_h / 2.0);
     if all_w <= available + 0.001 {
@@ -994,7 +981,7 @@ pub fn lay_out_chip_strip(
 
     let mut rects = vec![Rect::ZERO; natural.len()];
     let place = |row: usize, ids: &[usize], widths: &[f64], rects: &mut Vec<Rect>| {
-        let cy = band.y0 + usize_to_f64_lossy(row) * row_h + row_h / 2.0;
+        let cy = band.y0 + f64_of_usize(row) * row_h + row_h / 2.0;
         let mut x = band.x0;
         for (slot, &id) in ids.iter().enumerate() {
             // `widths` is built alongside `ids` by every caller below, so
@@ -1051,7 +1038,7 @@ pub fn share_row(natural: &[f64], available: f64, gap: f64) -> Vec<f64> {
     if natural.is_empty() {
         return Vec::new();
     }
-    let n = usize_to_f64_lossy(natural.len());
+    let n = f64_of_usize(natural.len());
     let gaps = gap * (n - 1.0);
     let total: f64 = natural.iter().sum();
     if total + gaps <= available {
@@ -1065,7 +1052,7 @@ pub fn share_row(natural: &[f64], available: f64, gap: f64) -> Vec<f64> {
         .sum();
     let over = natural.iter().filter(|w| **w >= base).count();
     let share_over = if over > 0 {
-        base + spare / usize_to_f64_lossy(over)
+        base + spare / f64_of_usize(over)
     } else {
         base
     };

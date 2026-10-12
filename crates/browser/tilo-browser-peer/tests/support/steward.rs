@@ -171,6 +171,20 @@ impl Steward {
         HeldAdmission(gate)
     }
 
+    /// Whether the device was actually admitted to this document channel.
+    pub fn is_member(&self, route: &tilo_browser_peer::DocumentRoute, device: [u8; 32]) -> bool {
+        self.channels
+            .lock()
+            .unwrap()
+            .steward(document_channel_id(
+                &route.app_id,
+                &route.cluster_id,
+                &route.record,
+            ))
+            .members()
+            .contains(&Ed25519PublicKey::from_bytes(device))
+    }
+
     /// The current content keys of `route`'s channel.
     pub fn content_keys(&self, route: &tilo_browser_peer::DocumentRoute) -> ChannelContentKeys {
         self.channels
@@ -301,6 +315,7 @@ async fn admit(
                 }
             }
         }
+        drop(channels);
     }
 }
 

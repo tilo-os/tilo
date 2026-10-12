@@ -1,4 +1,4 @@
-name: Dev / CI receipt checkout
+name: Dev / CI checkout
 
 # Explicit qualification only: compare the actual pinned checkout action at
 # one source SHA on one runner. No compilation, publication or protected
@@ -7,6 +7,11 @@ name: Dev / CI receipt checkout
 on:
   workflow_dispatch:
     inputs:
+      scope:
+        description: 'Receipt history or inline control-plane checkout.'
+        type: choice
+        default: receipt
+        options: [receipt, control]
       order:
         description: 'Checkout order; dispatch both orders when comparing.'
         type: choice
@@ -18,7 +23,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+      image: ${{ github.event.inputs.scope == 'control' && 'registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde' || 'registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c' }}
     steps:
       - name: Begin first checkout measurement
         run: |
@@ -27,7 +32,7 @@ jobs:
           printf 'FIRST_CPU=%s\n' "$(awk '$1 == "usage_usec" {print $2}' /sys/fs/cgroup/cpu.stat)" >> "$GITHUB_ENV"
 
       - name: Checkout baseline first
-        if: github.event.inputs.order == 'baseline-first'
+        if: github.event.inputs.order == 'baseline-first' && github.event.inputs.scope != 'control'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
@@ -36,8 +41,17 @@ jobs:
           filter: blob:none
           persist-credentials: false
 
+      - name: Checkout baseline first (control)
+        if: github.event.inputs.order == 'baseline-first' && github.event.inputs.scope == 'control'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: baseline
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Checkout sparse first
-        if: github.event.inputs.order == 'sparse-first'
+        if: github.event.inputs.order == 'sparse-first' && github.event.inputs.scope != 'control'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
@@ -45,6 +59,24 @@ jobs:
           fetch-depth: 1
           fetch-tags: false
           sparse-checkout: tools/ci/receipt.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Checkout sparse first (control)
+        if: github.event.inputs.order == 'sparse-first' && github.event.inputs.scope == 'control'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: sparse
+          fetch-depth: 1
+          filter: blob:none
+          fetch-tags: false
+          sparse-checkout: |
+            tools/ci/resolve_builder.py
+            tools/ci/images.toml
+            tools/ci/focused_test.py
+            tools/ci/mounted_reopen_probe.py
+            os/tests/named_public_trust_context.sh
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -57,7 +89,7 @@ jobs:
           printf 'SECOND_CPU=%s\n' "$(awk '$1 == "usage_usec" {print $2}' /sys/fs/cgroup/cpu.stat)" >> "$GITHUB_ENV"
 
       - name: Checkout sparse second
-        if: github.event.inputs.order == 'baseline-first'
+        if: github.event.inputs.order == 'baseline-first' && github.event.inputs.scope != 'control'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
@@ -68,8 +100,26 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
+      - name: Checkout sparse second (control)
+        if: github.event.inputs.order == 'baseline-first' && github.event.inputs.scope == 'control'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: sparse
+          fetch-depth: 1
+          filter: blob:none
+          fetch-tags: false
+          sparse-checkout: |
+            tools/ci/resolve_builder.py
+            tools/ci/images.toml
+            tools/ci/focused_test.py
+            tools/ci/mounted_reopen_probe.py
+            os/tests/named_public_trust_context.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Checkout baseline second
-        if: github.event.inputs.order == 'sparse-first'
+        if: github.event.inputs.order == 'sparse-first' && github.event.inputs.scope != 'control'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
@@ -78,9 +128,19 @@ jobs:
           filter: blob:none
           persist-credentials: false
 
+      - name: Checkout baseline second (control)
+        if: github.event.inputs.order == 'sparse-first' && github.event.inputs.scope == 'control'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: baseline
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Report comparison and verify exact receipt inputs
         env:
           ORDER: ${{ github.event.inputs.order }}
+          SCOPE: ${{ github.event.inputs.scope }}
         run: |
           export SECOND_STOPPED="$(date +%s.%N)"
           export SECOND_CPU_STOPPED="$(awk '$1 == "usage_usec" {print $2}' /sys/fs/cgroup/cpu.stat)"
@@ -102,8 +162,13 @@ jobs:
               assert sha == os.environ['GITHUB_SHA'], (directory, sha)
           assert subprocess.check_output(['git', '-C', 'sparse', 'rev-parse', '--is-shallow-repository'], text=True).strip() == 'true'
           assert subprocess.check_output(['git', '-C', 'sparse', 'rev-list', '--count', 'HEAD'], text=True).strip() == '1'
-          assert pathlib.Path('baseline/tools/ci/receipt.sh').read_bytes() == pathlib.Path('sparse/tools/ci/receipt.sh').read_bytes()
+          inputs = ['tools/ci/receipt.sh'] if os.environ['SCOPE'] != 'control' else [
+              'tools/ci/resolve_builder.py', 'tools/ci/images.toml', 'tools/ci/focused_test.py',
+              'tools/ci/mounted_reopen_probe.py', 'os/tests/named_public_trust_context.sh']
+          for path in inputs:
+              assert pathlib.Path('baseline', path).read_bytes() == pathlib.Path('sparse', path).read_bytes()
           evidence = {'source_sha': os.environ['GITHUB_SHA'], 'order': os.environ['ORDER'],
+                      'scope': os.environ['SCOPE'] or 'receipt',
                       'cpu_max': pathlib.Path('/sys/fs/cgroup/cpu.max').read_text().strip(),
                       'memory_max': pathlib.Path('/sys/fs/cgroup/memory.max').read_text().strip(),
                       'measurements': rows}
@@ -114,4 +179,9 @@ jobs:
           PY
           # Full existing assertions, including real shallow recording, racing
           # writers and transient push failure. All notes stay in a local fixture.
-          GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 bash baseline/tools/tests/test_ci_receipt.sh
+          if [[ $SCOPE == control ]]; then
+            python3 -m unittest discover -s baseline/tools/tests -p test_resolve_ci_builder.py
+            DOCKER_BUILDKIT=1 bash sparse/os/tests/named_public_trust_context.sh docker
+          else
+            GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 bash baseline/tools/tests/test_ci_receipt.sh
+          fi

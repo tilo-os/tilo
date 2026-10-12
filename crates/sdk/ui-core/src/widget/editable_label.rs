@@ -599,12 +599,14 @@ impl Widget for EditableLabel {
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        self.semantic_target.as_deref() == Some(target) && self.perform_action(action, state, path)
+        self.semantic_target.as_deref() == Some(target)
+            && self.perform_action(action, &[], state, path)
     }
 
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
@@ -623,7 +625,7 @@ impl Widget for EditableLabel {
                 _ => return false,
             }
         }
-        Widget::perform_action(&mut self.input, action, state, path)
+        Widget::perform_action(&mut self.input, action, &[], state, path)
     }
 }
 

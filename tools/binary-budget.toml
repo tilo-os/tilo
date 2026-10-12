@@ -5,7 +5,7 @@
 # file is NOT the app-size KPI. The ~2 MB figure in the README is the signed
 # thin tapp a person downloads, where the SDK is a shared library in the runtime
 # bundle. That figure is gated per app and per fleet by
-# tools/perf/tapp-size-budget/ (DEVELOPMENT.md, "App package size"). These
+# tools/perf/tapp-size-budget/ (docs/measurements/app-package-size.md). These
 # budgets only catch a binary that suddenly links far more than it used to.
 #
 # Budgets include headroom; raising one is an intentional reviewed change.

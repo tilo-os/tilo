@@ -26,6 +26,7 @@ use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
 use tilo_agent_participant::worker::{ProbeReport, probe_confinement};
 use tilo_agent_participant::{ConfinedReplica, Replica, Seed};
 use tilo_content::ContentStore;
+use ui::permissions::{PermissionContext, Role, policy};
 
 const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
@@ -47,16 +48,14 @@ fn the_app_worker_cannot_read_the_hosts_state_directory() {
 }
 
 fn edit(text: &str) -> serde_json::Map<String, serde_json::Value> {
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("text".into(), text.into());
-    arguments
+    common::scratchpad_body(text).1
 }
 
 #[test]
 fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
     let catalogue = catalogue();
     let app = "so.tilo.scratchpad";
-    let note = ActionAddress::new("scratchpad.note", "edit");
+    let note = common::scratchpad_body("").0;
     let mut page = Replica::open(&catalogue, app, ROOM, "ada", false, Seed::New).unwrap();
     let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
         panic!("a new record is published whole");
@@ -144,7 +143,7 @@ fn bytes_that_are_not_automerge_never_reach_the_worker() {
 #[test]
 fn a_dead_worker_is_replaced_from_what_the_host_holds() {
     let catalogue = catalogue();
-    let note = ActionAddress::new("scratchpad.note", "edit");
+    let note = common::scratchpad_body("").0;
     let agent = ConfinedReplica::open(
         &catalogue,
         "so.tilo.scratchpad",
@@ -184,7 +183,9 @@ fn open_picture(agent: &ConfinedReplica) -> ActionAddress {
     agent
         .survey()
         .into_iter()
-        .find(|action| action.address.action == "open" && action.action_label == "Open picture")
+        .find(|action| {
+            action.address.action == "open-picture" && action.action_label == "Open picture"
+        })
         .expect("an artwork opens a picture")
         .address
 }
@@ -280,7 +281,7 @@ fn device_only(descriptor: &ActionDescriptor) -> bool {
 }
 
 #[test]
-fn an_agent_sees_the_effects_that_only_read_its_record() {
+fn an_agent_sees_the_effects_its_grants_allow_or_ask_for() {
     let agent = new_artwork(None);
     let export = effect(&agent, "export").expect("an agent sees the canvas's export");
     assert_eq!(export.kind, OperationKind::Effect);
@@ -289,10 +290,8 @@ fn an_agent_sees_the_effects_that_only_read_its_record() {
         "an agent is offered no path to write to: {:?}",
         export.params
     );
-    assert!(
-        effect(&agent, "find-area").is_none(),
-        "an effect that writes the record is not offered"
-    );
+    let find = effect(&agent, "find-area").expect("undoable effects are granted too");
+    assert_eq!(find.contract.kind, tilo_actions::ActionKind::Undoable);
     let offered = agent.survey_with_effects();
     assert!(offered.iter().all(|descriptor| !device_only(descriptor)));
     assert!(
@@ -362,10 +361,12 @@ fn an_agent_exports_its_artwork_as_content_the_room_keeps() {
         .unwrap();
     agent.take_mutation().unwrap().unwrap();
 
-    let export = effect(&agent, "export").unwrap().address;
+    let export = effect(&agent, "export").unwrap();
+    allow_outside(&agent, CANVAS, "painter", &export);
+    let export = export.address;
     let output = agent
-        .invoke(&export, &serde_json::Map::new(), false)
-        .expect("the worker exports the artwork");
+        .invoke(&export, &serde_json::Map::new(), true)
+        .expect("the worker exports the artwork after the host confirms");
     let exported = output
         .resources
         .iter()
@@ -395,8 +396,8 @@ fn an_agent_exports_its_artwork_as_content_the_room_keeps() {
         .unwrap();
     agent.take_mutation().unwrap();
     let again = agent
-        .invoke(&export, &serde_json::Map::new(), false)
-        .expect("the component is mounted again");
+        .invoke(&export, &serde_json::Map::new(), true)
+        .expect("the attached component holds the record's current state");
     assert!(
         again
             .resources
@@ -406,29 +407,48 @@ fn an_agent_exports_its_artwork_as_content_the_room_keeps() {
 }
 
 #[test]
-fn an_agent_may_not_write_where_an_effect_would_or_run_one_that_edits() {
+fn an_agent_may_not_write_to_a_path_or_run_outside_effects_without_confirmation() {
     let state = tempfile::tempdir().unwrap();
     let target = state.path().join("export.png");
     let agent = new_artwork(Some(&ContentStore::memory()));
     let export = effect(&agent, "export").unwrap().address;
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("path".into(), target.to_string_lossy().into_owned().into());
-    match agent.invoke(&export, &arguments, false) {
+    let mut path_arguments = serde_json::Map::new();
+    path_arguments.insert("path".into(), target.to_string_lossy().into_owned().into());
+    match agent.invoke(&export, &path_arguments, false) {
         Err(DoorError::Unavailable { code, .. }) => assert_eq!(code, "effect_path"),
         other => panic!("an export to a path is refused: {other:?}"),
     }
     assert!(!target.exists());
-
-    let find = ActionAddress {
-        action: "find-area".into(),
-        ..export
-    };
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("subject".into(), true.into());
-    match agent.invoke(&find, &arguments, false) {
-        Err(DoorError::Unavailable { code, .. }) => assert_eq!(code, "effect_writes"),
-        other => panic!("an effect that edits is refused: {other:?}"),
+    // An explicit action grant changes no confinement rule, either.
+    let export_spec = effect(&agent, "export").unwrap();
+    allow_outside(&agent, CANVAS, "painter", &export_spec);
+    match agent.invoke(&export, &path_arguments, true) {
+        Err(DoorError::Unavailable { code, .. }) => assert_eq!(code, "effect_path"),
+        other => panic!("even an approved export cannot write a path: {other:?}"),
     }
+    assert!(!target.exists());
+    assert!(agent.take_mutation().unwrap().is_none());
+
+    let room = ContentStore::memory();
+    let notes = new_record(NOTES, &room);
+    let import = operation(&notes, "import-markdown-content");
+    assert_eq!(import.contract.kind, tilo_actions::ActionKind::Outside);
+    let arguments = arguments(serde_json::json!({"title": "Imported", "body": "A lamp"}));
+    assert!(matches!(
+        notes.invoke(&import.address, &arguments, false),
+        Err(DoorError::ConfirmationRequired)
+    ));
+    assert!(
+        notes.take_mutation().unwrap().is_none(),
+        "a refusal changes nothing"
+    );
+    assert_permission_denied(notes.invoke(&import.address, &arguments, true));
+    allow_outside(&notes, NOTES, "carrier", &import);
+    notes
+        .invoke(&import.address, &arguments, true)
+        .expect("an explicitly granted outside effect runs through the attached view");
+    assert!(notes.take_mutation().unwrap().is_some());
+    assert!(notes.body().contains("A lamp"), "{}", notes.body());
 }
 
 #[test]
@@ -440,7 +460,8 @@ fn an_agent_reads_its_artwork_through_the_canvass_views() {
     let inspect = effect(&agent, "inspect").expect("an agent's survey lists the canvas's inspect");
     assert_eq!(inspect.kind, OperationKind::View);
     let look = effect(&agent, "look").expect("and its look");
-    assert_eq!(look.kind, OperationKind::View);
+    assert_eq!(look.kind, OperationKind::Effect);
+    assert_eq!(look.contract.kind, tilo_actions::ActionKind::Read);
     assert!(
         agent
             .survey()
@@ -518,6 +539,53 @@ fn operation(agent: &ConfinedReplica, action: &str) -> ActionDescriptor {
         .unwrap_or_else(|| panic!("the record publishes {action}"))
 }
 
+/// The trusted host grants just this action, to both the person and the
+/// agent. The Operator preset's Ask cannot be bypassed by a confirm flag.
+fn outside_standing(app: &str, participant: &str, action: &ActionDescriptor) -> policy::Standing {
+    let person = policy::Subject::person(participant);
+    let subject = policy::Subject::agent(participant);
+    let permissions = PermissionContext::member_of(ROOM, participant, Role::Editor).acting_as(
+        subject.clone(),
+        policy::roles::AgentPreset::Operator.grants(ROOM, participant, &person),
+    );
+    let mut standing = permissions.standing().clone();
+    let node = tilo_actions::action_node(
+        &policy::TreePath::room(ROOM),
+        app,
+        &action.resource_kind,
+        &action.address.resource,
+        action.contract.field.as_deref(),
+        &action.address.action,
+    );
+    for (id, subject) in [
+        ("person-approval", person.clone()),
+        ("agent-approval", subject),
+    ] {
+        standing.policy.grants.push(policy::Grant::new(
+            id,
+            subject,
+            node.clone(),
+            policy::KindSet::OUTSIDE,
+            policy::Answer::Allow,
+            person.clone(),
+        ));
+    }
+    standing
+}
+
+fn allow_outside(agent: &ConfinedReplica, app: &str, participant: &str, action: &ActionDescriptor) {
+    agent
+        .set_permissions(&outside_standing(app, participant, action))
+        .unwrap();
+}
+
+fn assert_permission_denied(result: Result<tilo_actions::ActionOutput, DoorError>) {
+    match result {
+        Err(DoorError::Unavailable { code, .. }) => assert_eq!(code, "permission_denied"),
+        other => panic!("confirmation is no delegated authority: {other:?}"),
+    }
+}
+
 fn arguments(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
     match value {
         serde_json::Value::Object(map) => map,
@@ -541,12 +609,12 @@ fn effects_a_records_tree_carries_run_in_its_component_for_an_agent() {
 
     // A row's effect: the note's own export, offered on the note.
     let notes = new_record(NOTES, &room);
-    let new_page = operation(&notes, "new-page");
+    let new_page = operation(&notes, "new-note");
     assert_eq!(new_page.kind, OperationKind::Document);
     notes
         .invoke(
             &new_page.address,
-            &arguments(serde_json::json!({tilo_actions::PROMPTED_PARAM: "Lamp inventory"})),
+            &arguments(serde_json::json!({"title": "Lamp inventory"})),
             false,
         )
         .expect("a note is created on the replica");
@@ -557,9 +625,16 @@ fn effects_a_records_tree_carries_run_in_its_component_for_an_agent() {
         export.address.resource, new_page.address.resource,
         "the export is the note's, not the notebook's"
     );
+    assert_eq!(export.contract.kind, tilo_actions::ActionKind::Outside);
+    assert!(matches!(
+        notes.invoke(&export.address, &serde_json::Map::new(), false),
+        Err(DoorError::ConfirmationRequired)
+    ));
+    assert_permission_denied(notes.invoke(&export.address, &serde_json::Map::new(), true));
+    allow_outside(&notes, NOTES, "carrier", &export);
     let output = notes
-        .invoke(&export.address, &serde_json::Map::new(), false)
-        .expect("a row's effect runs in the mounted component");
+        .invoke(&export.address, &serde_json::Map::new(), true)
+        .expect("a confirmed row effect runs in the attached view");
     let markdown = String::from_utf8(produced(&room, &output)).unwrap();
     assert!(markdown.contains("Lamp inventory"), "{markdown}");
     assert!(
@@ -567,8 +642,27 @@ fn effects_a_records_tree_carries_run_in_its_component_for_an_agent() {
         "an export changes nothing"
     );
 
-    // A document's read, published on the document resource beside its
-    // document operations.
+    // The framework's typed read, published beside the notebook's document
+    // operations, answers through this same attached component.
+    let read = operation(&notes, "read");
+    assert_eq!(read.kind, OperationKind::View);
+    assert_eq!(read.contract.kind, tilo_actions::ActionKind::Read);
+    let output = notes
+        .invoke(&read.address, &serde_json::Map::new(), false)
+        .expect("the framework's typed read runs for the agent");
+    assert!(
+        output
+            .value
+            .as_ref()
+            .unwrap()
+            .to_string()
+            .contains("Lamp inventory"),
+        "{output:?}"
+    );
+    assert!(notes.take_mutation().unwrap().is_none());
+
+    // Writer publishes its whole-document content read as an export, with
+    // the text kept in the room's content store.
     let writer = new_record(WRITER, &room);
     let append = operation(&writer, "append-paragraph");
     writer
@@ -579,19 +673,21 @@ fn effects_a_records_tree_carries_run_in_its_component_for_an_agent() {
         )
         .unwrap();
     writer.take_mutation().unwrap().unwrap();
-    let read = operation(&writer, "read-text");
+    let read = operation(&writer, "export-content");
     assert_eq!(read.kind, OperationKind::Effect);
+    assert_eq!(read.contract.kind, tilo_actions::ActionKind::Read);
     let output = writer
-        .invoke(&read.address, &serde_json::Map::new(), false)
-        .expect("read-text runs for the agent");
-    let text = output
-        .value
-        .as_ref()
-        .map(ToString::to_string)
-        .unwrap_or_default();
+        .invoke(
+            &read.address,
+            &arguments(serde_json::json!({"format": "txt"})),
+            false,
+        )
+        .expect("the document's text read runs for the agent");
+    let text = String::from_utf8(produced(&room, &output)).unwrap();
     assert!(text.contains("The lamp is lit"), "{output:?}");
+    assert!(writer.take_mutation().unwrap().is_none());
 
-    // Document operations still run on the replica alone.
+    // Document operations use that same attached view.
     writer
         .invoke(
             &append.address,
@@ -600,6 +696,109 @@ fn effects_a_records_tree_carries_run_in_its_component_for_an_agent() {
         )
         .unwrap();
     assert!(writer.take_mutation().unwrap().is_some());
+}
+
+#[test]
+fn a_host_action_grant_is_scoped_revocable_and_survives_worker_revival() {
+    let room = ContentStore::memory();
+    let notes = new_record(NOTES, &room);
+    let import = operation(&notes, "import-markdown-content");
+    let args = arguments(serde_json::json!({"title": "Approved", "body": "A lamp"}));
+    let mut standing = outside_standing(NOTES, "carrier", &import);
+
+    // Neither the person's Allow alone nor the delegation's Allow alone is
+    // sufficient; and supplying confirmation never turns Ask into authority.
+    let both = standing.policy.grants.clone();
+    for removed in ["person-approval", "agent-approval"] {
+        standing.policy.grants = both
+            .iter()
+            .filter(|grant| grant.id.0 != removed)
+            .cloned()
+            .collect();
+        notes.set_permissions(&standing).unwrap();
+        assert_permission_denied(notes.invoke(&import.address, &args, true));
+        assert!(notes.take_mutation().unwrap().is_none());
+    }
+    standing.policy.grants = both;
+    notes.set_permissions(&standing).unwrap();
+    kill(notes.worker_id().unwrap());
+    assert!(
+        matches!(notes.invoke(&import.address, &args, true), Err(DoorError::Unavailable { code, .. }) if code == "app_worker")
+    );
+    notes
+        .invoke(&import.address, &args, true)
+        .expect("the replacement worker retains the exact grant");
+    assert!(notes.take_mutation().unwrap().is_some());
+
+    // Approval was scoped to import, not every Outside action in the app.
+    let export = operation(&notes, "export-markdown-content");
+    assert_permission_denied(notes.invoke(&export.address, &serde_json::Map::new(), true));
+    standing
+        .policy
+        .grants
+        .retain(|grant| grant.id.0 != "person-approval" && grant.id.0 != "agent-approval");
+    notes.set_permissions(&standing).unwrap();
+    kill(notes.worker_id().unwrap());
+    assert!(
+        matches!(notes.invoke(&import.address, &args, true), Err(DoorError::Unavailable { code, .. }) if code == "app_worker")
+    );
+    assert_permission_denied(notes.invoke(&import.address, &args, true));
+    assert!(notes.take_mutation().unwrap().is_none());
+}
+
+#[test]
+fn an_expiring_allow_is_rechecked_by_the_retained_confined_dispatcher() {
+    let room = ContentStore::memory();
+    let notes = new_record(NOTES, &room);
+    let worker = notes.worker_id().expect("the view is held in a worker");
+    assert_ne!(worker, std::process::id());
+    let import = operation(&notes, "import-markdown-content");
+    let args = arguments(serde_json::json!({"title": "Timed approval", "body": "A lamp"}));
+    let mut standing = outside_standing(NOTES, "carrier", &import);
+    let set_expiry = |standing: &mut policy::Standing, until| {
+        for grant in &mut standing.policy.grants {
+            if grant.id.0 == "person-approval" || grant.id.0 == "agent-approval" {
+                grant.lifetime = policy::Lifetime::Until(until);
+            }
+        }
+    };
+    // A known-expired Allow leaves only the Operator's Ask. Confirmation
+    // cannot supply delegated authority, even though the action is offered.
+    set_expiry(&mut standing, 1);
+    notes.set_permissions(&standing).unwrap();
+    assert_permission_denied(notes.invoke(&import.address, &args, true));
+    assert!(notes.take_mutation().unwrap().is_none());
+
+    // Use the running system clock, not the UI's capture clock. Permission
+    // samplers return whole seconds; Until uses exclusive Unix milliseconds.
+    let now = || {
+        tilo_clock::SystemTime::now()
+            .duration_since(tilo_clock::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    };
+    let expires = now() + 2;
+    set_expiry(&mut standing, expires * 1000);
+    notes.set_permissions(&standing).unwrap();
+    notes
+        .invoke(&import.address, &args, true)
+        .expect("the live Allow admits the typed action in the worker");
+    assert!(now() < expires, "the positive invocation precedes expiry");
+    assert!(notes.take_mutation().unwrap().is_some());
+    let before = notes.body();
+
+    // Cross only the next clock threshold, without a slow fixed sleep. Do
+    // not reinstall the policy or revive the worker: its dispatcher retains
+    // the context that admitted the successful invocation above.
+    let waiting = tilo_clock::now();
+    while now() < expires {
+        assert!(waiting.elapsed() < tilo_clock::Duration::from_secs(5));
+        std::thread::yield_now();
+    }
+    assert_permission_denied(notes.invoke(&import.address, &args, true));
+    assert!(notes.take_mutation().unwrap().is_none());
+    assert_eq!(notes.body(), before, "expiry refuses without an app edit");
+    assert_eq!(notes.worker_id(), Some(worker), "the same worker refused");
 }
 
 #[test]
@@ -623,7 +822,7 @@ fn an_effect_is_given_the_content_its_record_refers_to() {
         .invoke(
             &insert.address,
             &arguments(serde_json::json!({
-                tilo_actions::PROMPTED_PARAM: tilo_actions::content_resource(&hash).unwrap(),
+                "content": hash,
             })),
             false,
         )

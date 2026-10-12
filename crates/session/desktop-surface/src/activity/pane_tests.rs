@@ -22,9 +22,8 @@ mod tests {
     }
     use automerge::ActorId;
     use automerge::transaction::{CommitOptions, Transactable};
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+    use collab_types::caps::{Access, CapOverride, Scope, Subject};
     use tilo_automerge::ApplyIncoming as _;
-    use ui::widget::op_class_is_revertible;
 
     #[derive(Clone)]
     struct NativeTree(WorkspaceTree);
@@ -209,7 +208,7 @@ mod tests {
                 CapOverride::grant(
                     Subject::app("files"),
                     Scope::FsPath("/home/quinten/notes".to_string()),
-                    Verb::Read,
+                    Access::Read,
                 ),
             )
             .expect("the owner may grant in their own room");
@@ -219,7 +218,7 @@ mod tests {
             CapOverride::grant(
                 Subject::app("terminal"),
                 Scope::Device("camera".to_string()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .expect("the owner may grant in their own room");
@@ -320,12 +319,12 @@ mod tests {
                 invocation,
                 "ada",
                 tilo_actions::ActionContext::for_resource(
-                    "Export",
                     "document:brief",
                     "document",
                     "Release brief",
                 )
-                .with_app("org.tilo.Writer", "Writer"),
+                .with_app("org.tilo.Writer", "Writer")
+                .with_described(crate::activity::testing::verb("Export")),
                 tilo_actions::EffectReceiptStatus::Succeeded,
             )
         );
@@ -343,7 +342,7 @@ mod tests {
             .iter()
             .find(|entry| entry.id == HistoryEntryId::from_bytes(*invocation.0.as_bytes()))
             .expect("receipt is visible after restart");
-        assert_eq!(entry.summary, "Completed · Export · Release brief");
+        assert_eq!(entry.summary, "Export in Release brief");
         assert!(!entry.is_revertible());
     }
 
@@ -357,7 +356,6 @@ mod tests {
             invocation,
             local,
             tilo_actions::ActionContext::for_resource(
-                "Export",
                 "document:brief",
                 "document",
                 "Release brief",
@@ -421,12 +419,12 @@ mod tests {
             ] {
                 doc.put(automerge::ROOT, field, value).unwrap();
                 let context = ui::tilo_actions::ActionContext::for_resource(
-                    action,
                     record.as_str(),
                     "document",
                     "Campaign brief",
                 )
                 .with_app("org.tilo.Writer", "Writer")
+                .with_described(crate::activity::testing::verb(action))
                 .with_purpose("Make the opening concrete")
                 .with_group(
                     "agent-run:test",
@@ -451,7 +449,7 @@ mod tests {
                     app: "org.tilo.Writer".to_string(),
                     record: record.to_string(),
                     run: change,
-                    summary: "Rewrote the launch story".to_string(),
+                    what: vec![crate::activity::testing::verb("rewrite the launch story")],
                 }],
             )
             .expect("task receipt");
@@ -523,7 +521,6 @@ mod tests {
         doc.put(automerge::ROOT, "intro", "A concrete opening")
             .unwrap();
         let context = ui::tilo_actions::ActionContext::for_resource(
-            "Rewrite opening",
             record.as_str(),
             "document",
             "Campaign brief",
@@ -547,7 +544,7 @@ mod tests {
                 app: "org.tilo.Writer".to_string(),
                 record: record.to_string(),
                 run: change,
-                summary: "Rewrote the opening".to_string(),
+                what: vec![crate::activity::testing::verb("rewrite the opening")],
             }],
         )
         .expect("task receipt");
@@ -629,7 +626,7 @@ mod tests {
         );
         assert_eq!(pane.agent_name(task), "Quill");
         assert_eq!(pane.issuer_name(task), "Ada");
-        assert_eq!(task.steps[0].summary, "Rewrote the launch story");
+        assert_eq!(task.steps[0].sentence(), "Rewrite the launch story");
         assert!(
             pane.lens_candidates().iter().any(
                 |(lens, label)| *lens == LensSelection::AgentTasks && label == "Agent tasks  1"
@@ -647,7 +644,7 @@ mod tests {
         assert!(description.contains("Ada"));
         assert!(description.contains("Quill"));
         assert!(description.contains("pricing table"));
-        assert!(description.contains("Rewrote the launch story"));
+        assert!(description.contains("Rewrite the launch story"));
     }
 
     #[test]
@@ -711,7 +708,7 @@ mod tests {
             CapOverride::grant(
                 Subject::app("files"),
                 Scope::FsPath("/home/quinten/later".to_string()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .expect("the owner may grant in their own room");
@@ -819,7 +816,7 @@ mod tests {
             CapOverride::grant(
                 Subject::app("files"),
                 Scope::FsPath("/home/quinten/new-result".into()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .unwrap();
@@ -853,7 +850,6 @@ mod tests {
             doc.put(automerge::ROOT, "review", "Check the conclusion")
                 .unwrap();
             let context = ui::tilo_actions::ActionContext::for_resource(
-                "Revise conclusion",
                 record.as_str(),
                 "document",
                 "Campaign brief",
@@ -898,7 +894,6 @@ mod tests {
                 doc.put(automerge::ROOT, "body", format!("Result {n}"))
                     .unwrap();
                 let context = ui::tilo_actions::ActionContext::for_resource(
-                    "Write result",
                     id.as_str(),
                     "note",
                     format!("Result {n}"),
@@ -1092,7 +1087,7 @@ mod tests {
         let resource_entry = HistoryEntry {
             id: HistoryEntryId([71; 16]),
             author: ui::widget::HistoryAuthor::new("ada", 10.0, "Ada"),
-            op_class: OpClass::EditMeta,
+            entry_kind: EntryKind::Details,
             artifact_kind: ArtifactKind::File,
             timestamp: SystemTime::UNIX_EPOCH,
             summary: "Edited launch brief".into(),
@@ -1101,7 +1096,6 @@ mod tests {
             redaction: None,
             context: Some(
                 ui::tilo_actions::ActionContext::for_resource(
-                    "Edit",
                     "document:launch-brief",
                     "document",
                     "Launch brief",
@@ -1209,11 +1203,10 @@ mod tests {
             resource: None,
             created_at: 42,
             updated_at: 42,
-            audit: vec![tilo_desktop_model::WorkspaceTaskAuditEvent {
-                at: 42,
-                actor: "agent:scribe".into(),
-                summary: "Reviewed section 2".into(),
-            }],
+            audit: vec![
+                tilo_desktop_model::WorkspaceTaskAuditEvent::new(42, "agent:scribe", "report", [])
+                    .noting("Reviewed section 2"),
+            ],
         };
 
         let byline = task_assignee_label(&task, "ada");
@@ -1221,7 +1214,10 @@ mod tests {
         let accessible = task_accessibility_description(&task, event_time, "ada");
 
         assert_eq!(byline, "Agent · scribe");
-        assert!(audit.starts_with("scribe · Agent · Reviewed section 2"));
+        assert!(
+            audit.starts_with("scribe · Agent · Reported progress: Reviewed section 2"),
+            "{audit}"
+        );
         assert!(accessible.contains("Agent · scribe"));
         assert!(accessible.contains("scribe · Agent"));
         for rendered in [&byline, &audit, &accessible] {
@@ -1522,7 +1518,6 @@ mod tests {
         let id = HistoryEntryId::from_bytes([9; 16]);
         let resource = "signed-file-record".to_string();
         let context = ui::tilo_actions::ActionContext::for_resource(
-            "Edited",
             resource.clone(),
             "files.entry",
             "Launch brief.md",
@@ -1531,7 +1526,7 @@ mod tests {
         pane.open_external_entry(HistoryEntry {
             id,
             author: ui::widget::HistoryAuthor::new("Ada", 280.0, "01010101"),
-            op_class: collab_types::OpClass::Compaction,
+            entry_kind: EntryKind::Compaction,
             artifact_kind: ArtifactKind::File,
             timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(20),
             summary: "Edited · Launch brief.md".into(),
@@ -1572,7 +1567,7 @@ mod tests {
             CapOverride::grant(
                 Subject::app("browser"),
                 Scope::NetHost("research.example".to_string()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .expect("owner may grant in the second room too");
@@ -1728,7 +1723,7 @@ mod tests {
         let last_week = CapOverride::grant(
             Subject::app("files"),
             Scope::FsPath("/home/quinten/last-week".to_string()),
-            Verb::Read,
+            Access::Read,
         );
         let cap_id = {
             let workspace = tree
@@ -1737,9 +1732,12 @@ mod tests {
                 .iter_mut()
                 .find(|workspace| workspace.id == ws_id)
                 .expect("active workspace");
-            workspace
-                .grant_as_at(&user, last_week, tilo_clock::unix_now())
-                .expect("owner may grant")
+            assert!(workspace.may_govern_at(
+                &user,
+                tilo_action_policy::roles::governance::GRANT,
+                tilo_clock::unix_now()
+            ));
+            workspace.grant_sandbox(last_week)
         };
         let stored = tree
             .desktop
@@ -1747,12 +1745,12 @@ mod tests {
             .iter()
             .find(|workspace| workspace.id == ws_id)
             .expect("active workspace")
-            .capabilities
+            .sandbox
             .iter()
             .find(|capability| capability.id == cap_id)
             .cloned()
             .expect("stored grant");
-        assert!(tilo_desktop_model::desktop_doc::insert_capability(
+        assert!(tilo_desktop_model::desktop_doc::insert_sandbox(
             &mut tree.doc,
             ws_id,
             &stored
@@ -1766,7 +1764,7 @@ mod tests {
             CapOverride::grant(
                 Subject::app("files"),
                 Scope::FsPath("/home/quinten/today".to_string()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .expect("owner may grant");
@@ -1876,7 +1874,7 @@ mod tests {
     }
 
     #[test]
-    fn action_type_chips_narrow_by_op_class() {
+    fn action_type_chips_narrow_by_entry_kind() {
         use ui::widget::activity_timeline::ChipKind;
         let (mut tree, _, _) = busy_room();
         let mut pane = pane_over(&mut tree);
@@ -1891,8 +1889,8 @@ mod tests {
         assert!(gov < all, "governance is a subset: {gov} of {all}");
         for i in 0..pane.visible_len() {
             assert_eq!(
-                pane.visible_entry(i).unwrap().op_class,
-                OpClass::Govern,
+                pane.visible_entry(i).unwrap().entry_kind,
+                EntryKind::Access,
                 "the Governance chip must only show governance rows"
             );
         }
@@ -1971,7 +1969,7 @@ mod tests {
         for i in 0..pane.visible_len() {
             let e = pane.visible_entry(i).unwrap();
             assert!(
-                !op_class_is_revertible(e.op_class),
+                !e.entry_kind.is_revertible(),
                 "{:?} offered a revert chip",
                 e.summary
             );
@@ -1999,7 +1997,7 @@ mod tests {
             "the grant names verb, scope and subject: {:?}",
             grant.summary
         );
-        assert_eq!(grant.op_class, OpClass::Govern);
+        assert_eq!(grant.entry_kind, EntryKind::Access);
     }
 
     #[test]
@@ -2216,7 +2214,7 @@ mod tests {
                 CapOverride::grant(
                     Subject::app("files"),
                     Scope::FsPath(format!("/tmp/bound/{i}")),
-                    Verb::Read,
+                    Access::Read,
                 ),
             )
             .expect("owner may grant");
@@ -3447,12 +3445,12 @@ mod tests {
                     tilo_actions::InvocationId::new(),
                     "ada",
                     tilo_actions::ActionContext::for_resource(
-                        action,
                         format!("test:{group_id}"),
                         "document",
                         group_label,
                     )
                     .with_app("org.tilo.Writer", "Writer")
+                    .with_described(crate::activity::testing::verb(action))
                     .with_group(group_id, group_label, "work-session"),
                     tilo_actions::EffectReceiptStatus::Succeeded,
                 )
@@ -3547,13 +3545,9 @@ mod tests {
         let mut peer = tree.clone();
         peer.doc.set_actor(ActorId::from(b"bea-device".as_slice()));
         let receipt = || {
-            tilo_actions::ActionContext::for_resource(
-                "Export",
-                "document:brief",
-                "document",
-                "Release brief",
-            )
-            .with_app("org.tilo.Writer", "Writer")
+            tilo_actions::ActionContext::for_resource("document:brief", "document", "Release brief")
+                .with_app("org.tilo.Writer", "Writer")
+                .with_described(crate::activity::testing::verb("Export"))
         };
 
         // Every kind of row the steps make, once, before reads are counted:
@@ -3716,7 +3710,7 @@ mod resume_card_tests {
         HistoryEntry {
             id: HistoryEntryId([id; 16]),
             author: HistoryAuthor::new(author, 210.0, ui::history_source::short_id(author)),
-            op_class: OpClass::Splice,
+            entry_kind: EntryKind::Text,
             artifact_kind: ArtifactKind::File,
             timestamp,
             summary: "Edited assumptions".into(),
@@ -3724,7 +3718,7 @@ mod resume_card_tests {
             diff_payload: None,
             redaction: None,
             context: Some(
-                ActionContext::for_resource("Edit", "finance:q2", "sheet", "Q2 finance report")
+                ActionContext::for_resource("finance:q2", "sheet", "Q2 finance report")
                     .with_app("so.tilo.sheets", "Sheets"),
             ),
         }
@@ -4155,12 +4149,12 @@ mod morning_source_tests {
     fn fixture() -> (TestTree, RoomActivityPane) {
         let mut tree = TestTree::bootstrap_default();
         let context = tilo_actions::ActionContext::for_resource(
-            "Update selected forecast",
             "weather.location:fixture",
             "location",
             "Chosen location",
         )
-        .with_app("so.tilo.weather", "Weather");
+        .with_app("so.tilo.weather", "Weather")
+        .with_described(crate::activity::testing::verb("Update selected forecast"));
         tree.doc
             .put(automerge::ROOT, "name", "Morning review")
             .unwrap();
@@ -4310,12 +4304,12 @@ mod morning_source_tests {
                 .put(automerge::ROOT, "name", format!("Update {index}"))
                 .unwrap();
             let context = tilo_actions::ActionContext::for_resource(
-                "Update",
                 "weather.location:fixture",
                 "location",
                 "Chosen location",
             )
-            .with_app("so.tilo.weather", "Weather");
+            .with_app("so.tilo.weather", "Weather")
+            .with_described(crate::activity::testing::verb("Update"));
             tree.doc.commit_with(
                 CommitOptions::default()
                     .with_time(1_800_000_010 + i64::try_from(index).unwrap())
@@ -4359,9 +4353,9 @@ mod morning_source_tests {
         );
         for index in 1..=8 {
             let id = format!("weather.location:fixture-{index}");
-            let context =
-                tilo_actions::ActionContext::for_resource("Select location", &id, "location", &id)
-                    .with_app("so.tilo.weather", "Weather");
+            let context = tilo_actions::ActionContext::for_resource(&id, "location", &id)
+                .with_app("so.tilo.weather", "Weather")
+                .with_described(crate::activity::testing::verb("Select location"));
             tree.doc.put(automerge::ROOT, "name", &id).unwrap();
             tree.doc.commit_with(
                 CommitOptions::default()
@@ -4402,12 +4396,12 @@ mod morning_source_tests {
         let key = pane.chosen_morning_sources()[0].key();
         let title = "A very long authorized resource name ".repeat(100);
         let context = tilo_actions::ActionContext::for_resource(
-            "Update",
             "weather.location:fixture",
             "location",
             title,
         )
-        .with_app("so.tilo.weather", "Weather");
+        .with_app("so.tilo.weather", "Weather")
+        .with_described(crate::activity::testing::verb("Update"));
         tree.doc
             .put(automerge::ROOT, "name", "Long resource label")
             .unwrap();

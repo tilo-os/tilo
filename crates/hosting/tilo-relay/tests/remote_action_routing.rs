@@ -415,7 +415,6 @@ async fn expired_agent_delegation_cannot_invoke_host() {
         AgentScope {
             rooms: vec![room.into()],
             apps: Vec::new(),
-            may_confirm: false,
         },
         issued,
         expires,

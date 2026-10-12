@@ -7,17 +7,21 @@
 )]
 
 //! End-to-end action test without a driving window. A participant with no
-//! window — an agent, a script — holds a replica of the project, surveys what
-//! it may do, and edits it through the same door the editor's own window
-//! uses; the editor shows the result once the change reaches it.
+//! window — an agent, a script — holds the editor's view of the project,
+//! attached and never drawn, surveys what it may do, and edits it through the
+//! same door the editor's own window uses; the editor shows the result once
+//! the change reaches it.
 
 use tilo_actions::door::{ActionAddress, DoorError};
-use ui::framework::{Participant, resource_kind};
+use ui::collaboration::DocumentMutation;
+use ui::framework::{AttachedView, definition};
 use ui::permissions::PermissionContext;
 use ui::prelude::*;
-use video_editor::actions::load_project_action;
+use ui::record::RecordCheckout;
+use ui::tilo_resource::{FIELD_EDIT, Id, Resource};
+use video_editor::VideoEditor;
 use video_editor::model::{MediaItem, MediaKind, Project, Track, TrackKind};
-use video_editor::{VideoEditor, VideoProject};
+use video_editor::resource::load_project;
 
 /// A project holding one clip, opened in the editor as its owner would.
 fn editor_with_one_clip() -> (TestApp<VideoEditor>, uuid::Uuid) {
@@ -47,8 +51,8 @@ fn editor_with_one_clip() -> (TestApp<VideoEditor>, uuid::Uuid) {
     project.clip_mut(clip_id).expect("the clip").out_point = 20.0;
 
     let mut app = TestApp::<VideoEditor>::new().expect("the editor opens");
-    let load = Invoke::<VideoProject>::apply(&load_project_action(&project)).unwrap();
-    app.invoke_confirmed(load).expect("the project loads");
+    app.invoke_confirmed(Invoke::edit(&load_project(&project)).unwrap())
+        .expect("the project loads");
     (app, clip_id)
 }
 
@@ -58,15 +62,18 @@ fn editor_with_one_clip() -> (TestApp<VideoEditor>, uuid::Uuid) {
 fn an_action_invoked_with_no_window_reaches_the_app() {
     let (mut app, clip_id) = editor_with_one_clip();
 
-    // A replica of the record, as a participant joining it receives one.
-    let snapshot = app.peer_document().save();
-    let mut agent = Participant::from_snapshot(
-        resource_kind::<VideoEditor>(),
-        &snapshot,
+    // The editor's view of the record, as a host with no screen holds it.
+    let definition = definition::<VideoEditor>();
+    let mut agent = AttachedView::open(
+        definition,
+        "test-workspace",
+        RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+        app.read_document(|doc| doc.clone().save()),
         "headless-driver",
         PermissionContext::permissive(),
+        false,
     )
-    .expect("the replica holds the project");
+    .expect("the view holds the project");
 
     // Surveyed, not guessed. Asserting the address is offered *before*
     // invoking it is what keeps the next assertion honest: invoking
@@ -76,12 +83,10 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
     let address = operations
         .iter()
         .map(|operation| operation.address.clone())
-        .find(|address| {
-            address.resource == format!("video.clip:{clip_id}") && address.action == "set-fade-in"
-        })
+        .find(|address| address.resource == Project::KIND && address.action == FIELD_EDIT)
         .unwrap_or_else(|| {
             panic!(
-                "no `set-fade-in` offered on the clip; the tree offered: {:?}",
+                "no field edit offered on the project; the tree offered: {:?}",
                 operations
                     .iter()
                     .map(|operation| (&operation.address.resource, &operation.address.action))
@@ -89,11 +94,20 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
             )
         });
 
+    let fade = Project::paths()
+        .clips
+        .item(&Id::from_raw(clip_id.to_string()))
+        .fade_in
+        .set(1.5);
     let mut arguments = serde_json::Map::new();
-    arguments.insert("seconds".into(), serde_json::json!(1.5));
-    let changes = agent
-        .invoke(&address, &arguments)
+    arguments.insert(
+        ui::tilo_resource::EDIT_PARAM.into(),
+        serde_json::to_value(&fade).unwrap(),
+    );
+    agent
+        .invoke(&address, &arguments, false)
         .expect("the surveyed action applies");
+    let changes = agent.take_changes();
     assert!(
         changes.is_some(),
         "the action reported success without changing the document",
@@ -102,14 +116,20 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
     // A negative control in the same run: the door must refuse an address
     // the tree does not carry. Without this, the assertions above would pass
     // equally against a door that accepted anything.
-    let bogus = ActionAddress::new(format!("video.clip:{clip_id}"), "nonexistent-verb");
+    let bogus = ActionAddress::new(Project::KIND, "nonexistent-verb");
     assert!(
-        matches!(agent.invoke(&bogus, &arguments), Err(DoorError::Unknown(_))),
+        matches!(
+            agent.invoke(&bogus, &arguments, false),
+            Err(DoorError::Unknown(_))
+        ),
         "an address the tree never published must be refused, not attempted",
     );
 
     // The change reaches the editor as a collaborator's does.
-    let mut peer = ui::tilo_resource::Doc::load(&agent.save()).expect("the agent's replica");
+    let (DocumentMutation::Incremental(bytes) | DocumentMutation::Snapshot(bytes)) =
+        changes.expect("the agent's change");
+    let mut peer = app.peer_document();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut peer, &bytes).unwrap();
     app.merge_peer(&mut peer)
         .expect("the agent's change merges");
     let clip = app

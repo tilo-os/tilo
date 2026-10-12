@@ -13,8 +13,8 @@
 
 use std::collections::HashMap;
 
+use crate::widget::EntryKind;
 use automerge::{AutoCommit, ChangeHash};
-use collab_types::OpClass;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_doc::snapshot::DocSnapshot;
 
@@ -82,7 +82,7 @@ struct Logged {
 
 struct Reading {
     summary: String,
-    op_class: OpClass,
+    entry_kind: EntryKind,
     text_delta: Option<(usize, usize)>,
     /// The change only named a version or recorded a run: no row.
     marker: bool,
@@ -253,7 +253,7 @@ impl HistoryLog {
         let (hash, time_ms) = (meta.hash, meta.time_ms);
         self.push(meta, None);
         let after = self.heads.clone();
-        let (summary, op_class, text_delta) = match (&self.snapshot, &current, &patches) {
+        let (summary, entry_kind, text_delta) = match (&self.snapshot, &current, &patches) {
             (Some(prev), Some(cur), _) => structural_summary(prev, cur),
             (_, _, Some(patches)) => summarize_patches(&self.replica, patches, source.field_paths),
             _ => patch_summary(doc, &before, &after, source.field_paths),
@@ -271,7 +271,7 @@ impl HistoryLog {
         if let Some(logged) = self.changes.last_mut() {
             logged.reading = Some(Reading {
                 summary,
-                op_class,
+                entry_kind,
                 text_delta,
                 marker,
                 store_genesis,
@@ -335,19 +335,27 @@ impl HistoryLog {
             let context = if genesis {
                 Some(genesis_context())
             } else {
-                logged
-                    .message
-                    .as_deref()
-                    .and_then(tilo_actions::ActionContext::from_change_message)
+                match logged.message.as_deref() {
+                    Some(message) if message.starts_with(tilo_actions::CONTINUATION_PREFIX) => {
+                        tilo_actions::entry_of(doc.committed_document(), logged.hash)
+                    }
+                    message => message.and_then(tilo_actions::ActionContext::from_change_message),
+                }
             };
-            let summary = context
-                .as_ref()
-                .and_then(tilo_actions::ActionContext::summary)
-                .unwrap_or_else(|| reading.summary.clone());
+            let summary = if genesis {
+                crate::i18n::I18nManager::lookup_plain("history-genesis")
+            } else {
+                context
+                    .as_ref()
+                    .and_then(super::sentence::step_summary)
+                    .unwrap_or_else(|| reading.summary.clone())
+            };
             out.push(HistoryEntry {
                 id: logged.id,
-                author: source.authors.resolve(&logged.actor),
-                op_class: reading.op_class,
+                author: source
+                    .authors
+                    .resolve_entry(&logged.actor, context.as_ref()),
+                entry_kind: reading.entry_kind,
                 artifact_kind: source.artifact_kind,
                 timestamp: timestamp_from_ms(logged.time_ms),
                 summary,

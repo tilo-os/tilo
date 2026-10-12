@@ -55,18 +55,29 @@ fn draw_frame_content(
     // only when they change.
     let tracked = crate::scene_parts::is_tracked(scene);
     let window_bounds = vec![transform.transform_rect_bbox(window_rect)];
-    let before_history = scene.encoding().draw_tags.len();
     if tracked {
         crate::scene_parts::begin(scene, crate::scene_parts::PartKey::new("ui.history", ()));
     }
+    // Untracked, History's paint is compared with the last presented
+    // frame's: an unchanged toolbar under the live app is no layer.
+    let mut history_changed = false;
     if let Some(history) = &mut app.history {
-        history.draw(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
-        );
+        if tracked {
+            history.draw(
+                scene,
+                transform,
+                &mut app.text_renderer,
+                &app.theme,
+                &app.presence_ctx,
+            );
+        } else {
+            history_changed = history.draw_compared(
+                scene,
+                transform,
+                &mut app.text_renderer,
+                (&app.theme, &app.presence_ctx),
+            );
+        }
     }
     if tracked {
         crate::scene_parts::end(scene, window_bounds.clone());
@@ -79,18 +90,19 @@ fn draw_frame_content(
     // History mode that hides the live app is a layer over all of it; one
     // that shows it and paints nothing of its own (or paints in a part)
     // leaves the widgets' damage the whole change.
-    let history_shown = (!tracked && scene.encoding().draw_tags.len() != before_history)
-        || (app.history.is_some() && !app_live);
+    let history_shown = history_changed || (app.history.is_some() && !app_live);
     if app_live {
         crate::widget::native_view_frame_start(app.root_widget.as_mut());
-        app.root_widget.draw_with_presence(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
-            &app.permission_ctx,
-        );
+        app.presence_ctx
+            .with_permissions(app.permission_ctx.clone(), || {
+                app.root_widget.draw(
+                    scene,
+                    transform,
+                    &mut app.text_renderer,
+                    &app.theme,
+                    &app.presence_ctx,
+                )
+            });
     }
     // Everything from here on paints outside the widgets' layout boxes, where
     // their damage cannot describe it.
@@ -131,7 +143,7 @@ fn draw_frame_content(
             &app.presence_ctx,
         ) {
             tracing::debug!(?error, "history frame refused");
-            app.layout.structure_dirty = true;
+            app.layout.request_rebuild();
             app.layout.layout_dirty = true;
         }
     }
@@ -229,6 +241,7 @@ fn draw_frame_content(
         draw_us: t_draw_us,
         top_layer,
         tooltip,
+        painted_over: scene.encoding().draw_tags.len() != layer_start,
     }
 }
 
@@ -248,6 +261,10 @@ struct DrawnFrame {
     /// Every pixel the tooltip painted over everything else, shadow
     /// included, in scene (physical) coordinates.
     tooltip: Option<KurboRect>,
+    /// Whether anything at all was painted over the widgets (an overlay,
+    /// a history overlay, a dialog, the palette, the tooltip), tracked in a
+    /// damage part or not: a scroll copy would move it with the content.
+    painted_over: bool,
 }
 
 /// Paint the tooltip on screen, if any, and return every pixel it painted
@@ -385,6 +402,36 @@ fn draw_presence_layer(
     if widgets_changed { None } else { damage }
 }
 
+/// Where collaborators' marks painted over the widgets (`layer`, with this
+/// frame recorded) are on screen and this frame, in whole device pixels of
+/// the `physical_viewport`: what a scroll copy beneath them repaints
+/// ([`crate::scroll_copy::marks_over_copies`]). `None` when the marks
+/// cannot be bounded, and scrolls beneath them repaint instead of copying.
+#[cfg(feature = "native")]
+fn peer_marks(
+    layer: &crate::presence::PresenceLayer,
+    bounds: &mut crate::scene_parts::DrawBounds,
+    physical_viewport: KurboRect,
+) -> Option<crate::presence::LayerMarks> {
+    if !layer.paints() {
+        return Some(crate::presence::LayerMarks::default());
+    }
+    let marks = layer.marks(bounds)?;
+    // As the layer's damage is submitted: bounds already cover
+    // antialiasing; whole pixels plus one absorb rounding.
+    let device = |rects: Vec<KurboRect>| -> Vec<KurboRect> {
+        rects
+            .into_iter()
+            .map(|rect| rect.expand().inflate(1.0, 1.0).intersect(physical_viewport))
+            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+            .collect()
+    };
+    Some(crate::presence::LayerMarks {
+        shown: device(marks.shown),
+        painted: device(marks.painted),
+    })
+}
+
 /// Turn a frame's widget damage (`regions`, logical, as collected) into the
 /// regions it submits (physical), with the presence layer's damage
 /// (`presence`, physical, from [`draw_presence_layer`]) added. Returns
@@ -496,6 +543,9 @@ fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) -> V
 #[cfg(feature = "native")]
 fn complete_native_frame_content(app: &mut App, publish_accessibility: impl FnOnce(&mut App)) {
     app.root_widget.mark_drawn();
+    if let Some(history) = &mut app.history {
+        history.paint_presented();
+    }
     publish_accessibility(app);
     app.finish_history_return_frame();
 }
@@ -534,7 +584,7 @@ fn run_layout_pass(
     let viewport_changed = app.layout.last_layout_logical != Some(logical);
     if app.history_chrome_enabled {
         if (app.history_viewport_width >= 900.0) != (logical.0 >= 900.0) {
-            app.layout.structure_dirty = true;
+            app.layout.request_rebuild();
         }
         app.history_viewport_width = logical.0;
         let _ = app.history_local_resources();
@@ -551,7 +601,7 @@ fn run_layout_pass(
         && !app.layout.structure_dirty
         && app.history.is_none()
         && app.history_layout.is_none())
-    .then(|| widget_geometry(app.root_widget.as_ref()));
+    .then(|| crate::pointer_replay::widget_geometry(app.root_widget.as_ref()));
     let mut t_compute_us = 0u128;
     let mut t_apply_us = 0u128;
     let mut current_root = root_node;
@@ -560,7 +610,15 @@ fn run_layout_pass(
     // A pending structural rebuild means the old map may already contain
     // removed controls. Capture only from an admitted, unchanged topology.
     app.layout.structure_dirty |= app.take_composition_dirty();
-    let focus = if app.layout.structure_dirty {
+    let pending = app
+        .actions
+        .focus_after_rebuild
+        .take()
+        .filter(|_| app.layout.structure_dirty);
+    let refocus = pending.is_some();
+    let focus = if let Some(pending) = pending {
+        Some(pending)
+    } else if app.layout.structure_dirty {
         CompositionFocus::capture_live(app.root_widget.as_ref())
     } else {
         // SAFETY: the admitted maps belong to App's unchanged exclusive tree.
@@ -601,6 +659,12 @@ fn run_layout_pass(
                 };
                 if app.accessibility.focus_trap_active && app.focused_node.is_none() {
                     app.set_focused_node(app.focusable_order.first().copied());
+                }
+                if refocus {
+                    // An action focused this control while replacing
+                    // widgets: it takes focus now that it is laid out.
+                    let node = app.focused_node.take();
+                    app.set_focused_node(node);
                 }
             } else {
                 // Anonymous retained widgets keep their own state. Resolve a
@@ -658,7 +722,13 @@ fn run_layout_pass(
         app.layout.last_layout_logical = None;
         return None;
     }
+    if recomposed && viewport_changed {
+        // Composition settled against a new allocation: what moved is not
+        // a change any widget described.
+        app.layout.frame_rebuilds_described = false;
+    }
     if app.settle_history_presentation() {
+        app.layout.frame_rebuilds_described = false;
         let root = app.layout.root_node?;
         return run_layout_pass(app, root, width, height, scale_factor, true, native_host);
     }
@@ -710,21 +780,10 @@ fn run_layout_pass(
     app.publish_action_surface();
     let geometry_changed = recomposed
         || viewport_changed
-        || geometry_before.is_none_or(|before| before != widget_geometry(app.root_widget.as_ref()));
+        || geometry_before.is_none_or(|before| {
+            before != crate::pointer_replay::widget_geometry(app.root_widget.as_ref())
+        });
     Some((geometry_changed, t_compute_us, t_apply_us))
-}
-
-/// Every widget's layout box in tree order. Two snapshots of one unchanged
-/// tree are equal exactly when no widget moved or resized.
-#[cfg(feature = "native")]
-fn widget_geometry(root: &dyn crate::widget::Widget) -> Vec<KurboRect> {
-    fn walk(widget: &dyn crate::widget::Widget, out: &mut Vec<KurboRect>) {
-        out.push(widget.get_rect());
-        widget.for_each_child(&mut |child| walk(child, out));
-    }
-    let mut out = Vec::new();
-    walk(root, &mut out);
-    out
 }
 
 #[cfg(test)]

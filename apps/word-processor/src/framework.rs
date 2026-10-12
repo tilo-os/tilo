@@ -15,162 +15,17 @@
 
 use std::rc::Rc;
 
-use tilo_actions::{ActionParam, ParamType};
-use tilo_document::{RichText, RichTextAction, RichTextState};
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, LaunchInput, LiveRow, ResourceApp,
     ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
 use ui::record::RecordId;
-use ui::tilo_resource::{ActionDecl, Demand, Doc, Invoke, ModelError, Resource};
+use ui::tilo_resource::Invoke;
 use ui::widget::Element;
 
 use crate::WordProcessorWidget;
 use crate::effects::WordProcessorEffect;
-
-/// Rich text plus the images, tables and headings that document already holds.
-///
-/// The record kind stays `tilo.rich-text`. The editor's chrome (find, open,
-/// save) is the editor's [`crate::effects::WordProcessorEffect`]. Structural objects,
-/// notes, review, paragraph styles, and the page header and footer are
-/// [`Resource::children`], so a hosted palette does not rebuild them beside
-/// the document.
-pub struct Document;
-
-impl Resource for Document {
-    const KIND: &'static str = <RichText as Resource>::KIND;
-    const LABEL: &'static str = <RichText as Resource>::LABEL;
-    const ACTION_TYPE: &'static str = <RichText as Resource>::ACTION_TYPE;
-
-    type State = RichTextState;
-    type Action = RichTextAction;
-
-    /// A short document is read whole, so its document operations find a
-    /// paragraph by its text without a view (`insert-image` after one); a
-    /// view's own demand then keeps only what it shows.
-    fn read(doc: &Doc) -> Result<Self::State, ModelError> {
-        let mut state = <RichText as Resource>::read(doc)?;
-        let len = state.body().len();
-        if len <= crate::actions::MAX_FOUND_PARAGRAPHS {
-            <RichText as Resource>::load(&mut state, doc, &Demand::range(0..len))?;
-        }
-        Ok(state)
-    }
-
-    fn locate(state: &Self::State, obj: &automerge::ObjId) -> Option<ui::tilo_resource::Path> {
-        <RichText as Resource>::locate(state, obj)
-    }
-
-    fn lands(state: &Self::State, action: &Self::Action) -> Option<ui::tilo_resource::Place> {
-        <RichText as Resource>::lands(state, action)
-    }
-
-    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
-        <RichText as Resource>::initialize(doc)
-    }
-
-    fn refresh(
-        state: &mut Self::State,
-        doc: &Doc,
-        delta: &ui::tilo_resource::Delta,
-    ) -> Result<(), ModelError> {
-        <RichText as Resource>::refresh(state, doc, delta)
-    }
-
-    fn load(state: &mut Self::State, doc: &Doc, demand: &Demand) -> Result<(), ModelError> {
-        <RichText as Resource>::load(state, doc, demand)
-    }
-
-    fn coalesces(previous: &Self::Action, next: &Self::Action) -> bool {
-        <RichText as Resource>::coalesces(previous, next)
-    }
-
-    fn least_permission() -> ui::tilo_resource::PermissionRequirement {
-        <RichText as Resource>::least_permission()
-    }
-
-    fn permission(action: &Self::Action) -> ui::tilo_resource::PermissionRequirement {
-        <RichText as Resource>::permission(action)
-    }
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        <RichText as Resource>::register(registry);
-    }
-
-    fn action_schema() -> Option<serde_json::Value> {
-        <RichText as Resource>::action_schema()
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        let mut decls: Vec<ActionDecl<Self>> = <RichText as Resource>::declarations()
-            .into_iter()
-            .map(|decl| ActionDecl {
-                id: decl.id,
-                label: decl.label,
-                description: decl.description,
-                params: decl.params,
-                permission: decl.permission,
-                destructive: decl.destructive,
-                result: decl.result,
-                tags: decl.tags,
-                content: decl.content,
-                refines: decl.refines,
-                build: decl.build,
-            })
-            .collect();
-        decls.push(
-            ActionDecl::new(
-                "set-page-margins",
-                "Set page margins",
-                vec![
-                    ActionParam::required_owned("top", ParamType::Number, "Top margin in px"),
-                    ActionParam::required_owned("right", ParamType::Number, "Right margin in px"),
-                    ActionParam::required_owned("bottom", ParamType::Number, "Bottom margin in px"),
-                    ActionParam::required_owned("left", ParamType::Number, "Left margin in px"),
-                ],
-                |args, _| {
-                    let margin = |name: &str| {
-                        args.number(name)
-                            .ok_or_else(|| format!("missing {name} margin"))
-                    };
-                    Ok(RichTextAction::SetPageMargins {
-                        top: margin("top")?,
-                        right: margin("right")?,
-                        bottom: margin("bottom")?,
-                        left: margin("left")?,
-                    })
-                },
-            )
-            .describe("Set the four page margins, in pixels."),
-        );
-        decls
-    }
-
-    fn views(state: &Self::State) -> Vec<tilo_actions::ResourceViewSpec> {
-        <RichText as Resource>::views(state)
-    }
-
-    fn local_operations() -> Vec<tilo_actions::ActionSpec> {
-        let mut specs = <RichText as Resource>::local_operations();
-        specs.push(crate::semantic_read::action::spec());
-        specs
-    }
-
-    fn search(state: &Self::State) -> Vec<ui::tilo_resource::SearchEntry> {
-        <RichText as Resource>::search(state)
-    }
-
-    fn children(state: &Self::State) -> Vec<tilo_actions::Resource> {
-        crate::actions::structural_children(state)
-    }
-
-    fn bound_actions(state: &Self::State) -> Vec<tilo_actions::ActionSpec> {
-        crate::actions::toc_action(state)
-            .into_iter()
-            .chain([crate::actions::insert_image_spec(state)])
-            .collect()
-    }
-}
+pub use crate::model::Document;
 
 /// The import of the file `input` names, as one action.
 fn import(input: &LaunchInput<'_>) -> Vec<Invoke<Document>> {
@@ -183,7 +38,10 @@ fn import(input: &LaunchInput<'_>) -> Vec<Invoke<Document>> {
         .cloned()
         .unwrap_or_else(tilo_content::ContentStore::memory);
     match crate::import_action(file.bytes(), format, &content) {
-        Ok(action) => Invoke::apply(&action).into_iter().collect(),
+        // The file's text and the comments it brought, as one step.
+        Ok(action) => Invoke::edit(&crate::model::edit(&action))
+            .map(|import| vec![Invoke::group([import, Document::ADOPT_COMMENTS.invoke()])])
+            .unwrap_or_default(),
         Err(error) => {
             eprintln!("word-processor: could not open {}: {error}", file.name());
             Vec::new()
@@ -237,9 +95,11 @@ impl ResourceApp for WordProcessorApp {
     }
 
     /// The document's first heading, as the palette and history name it.
-    fn label(state: &RichTextState) -> String {
+    fn label(state: &Document) -> String {
         state
-            .headings()
+            .text()
+            .map(tilo_document::RichTextState::headings)
+            .unwrap_or_default()
             .into_iter()
             .map(|heading| heading.text.trim().to_owned())
             .find(|text| !text.is_empty())
@@ -262,13 +122,27 @@ impl ResourceApp for WordProcessorApp {
     /// writes it, unless the file changed since the record last read or
     /// wrote it: then it is read again, an edit Undo takes back.
     fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Document>> {
-        let (Some(file), Some(state)) = (input.file(), input.record::<RichTextState>()) else {
+        let (Some(file), Some(state)) = (input.file(), input.record::<Document>()) else {
             return Vec::new();
         };
-        if created || state.file_digest() == Some(tilo_content::hash_bytes(file.bytes()).as_str()) {
+        let digest = state
+            .text()
+            .and_then(tilo_document::RichTextState::file_digest);
+        if created || digest == Some(tilo_content::hash_bytes(file.bytes()).as_str()) {
             return Vec::new();
         }
         import(input)
+    }
+
+    /// The app's messages, history's sentences among them.
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::i18n::CATALOG)
+    }
+
+    /// The document's text a page at a time, for agents, scripts and
+    /// assistive tools.
+    fn local_operations() -> Vec<tilo_actions::ActionSpec> {
+        vec![crate::semantic_read::action::spec()]
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -290,12 +164,7 @@ impl ResourceApp for WordProcessorApp {
         };
         texts
             .iter()
-            .filter_map(|text| {
-                Invoke::apply(&RichTextAction::AppendParagraph {
-                    text: (*text).to_owned(),
-                })
-                .ok()
-            })
+            .map(|text| Document::APPEND_PARAGRAPH.with(*text))
             .collect()
     }
 }
@@ -303,12 +172,12 @@ impl ResourceApp for WordProcessorApp {
 impl ResourceSurface<Document, WordProcessorEffect> for WordProcessorWidget {
     /// The editor reads the live state where it needs it; a new state only
     /// asks for a redraw.
-    fn present(&mut self, state: &Rc<RichTextState>) {
+    fn present(&mut self, state: &Rc<Document>) {
         // An editor that has not drawn yet still has a caret, at the start
         // of the body, so edits bound to it (a table at the caret) can be
         // invoked before the first frame.
         if self.model().caret().block.is_empty()
-            && let Some(first) = state.body().id_at(0)
+            && let Some(first) = state.text().and_then(|text| text.body().id_at(0))
         {
             self.model_mut().set_caret(crate::word_processor::Caret {
                 block: first.to_owned(),
@@ -329,7 +198,7 @@ impl ResourceSurface<Document, WordProcessorEffect> for WordProcessorWidget {
         if let Some(path) = cx.launch_arguments().first() {
             self.show_record_of(std::path::PathBuf::from(path));
         }
-        self.follow_personal_dictionary(cx.settings());
+        self.follow_personal_dictionary();
         // A past version and a capture show the layout they are given.
         if cx.mode() == RunMode::Live {
             self.follow_preferences(cx.settings(), cx.settings());
@@ -339,11 +208,6 @@ impl ResourceSurface<Document, WordProcessorEffect> for WordProcessorWidget {
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
-    }
-
-    /// Edits bound to the caret and selection of whoever invokes them.
-    fn bound_declarations(&self) -> Vec<ActionDecl<Document>> {
-        self.bound_edits()
     }
 
     /// The Find results of whoever invokes them, beneath the document.
@@ -389,10 +253,21 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .filter(|row| row["resource"] == "tilo.rich-text")
+            .filter(|row| row["resource"] == "word-processor.document")
             .filter_map(|row| row["action"].as_str())
             .collect();
-        for id in ["find", "open", "save", "save-as", "zoom-in", "move-caret"] {
+        for id in [
+            "find",
+            "open-document",
+            "save",
+            "save-as",
+            "zoom-in",
+            "move-caret",
+            "type-text",
+            "read-text",
+            "append-paragraph",
+            "field-edit",
+        ] {
             assert!(ids.contains(&id), "{id}: {ids:?}");
         }
     }
@@ -424,7 +299,7 @@ mod tests {
 
     #[test]
     fn a_docx_exported_as_content_carries_its_text_and_placed_picture() {
-        use ui::tilo_resource::{Effect, Invoke, Resource};
+        use ui::tilo_resource::{Effect, Resource};
         let spec = super::WordProcessorEffect::specs()
             .into_iter()
             .find(|spec| spec.id == "export-content")
@@ -445,21 +320,25 @@ mod tests {
         );
 
         let mut app = ui::framework::testing::TestApp::<WordProcessorApp>::new().unwrap();
-        app.invoke(
-            Invoke::apply(&super::RichTextAction::AppendParagraph {
-                text: "Exported without a file".into(),
-            })
-            .unwrap(),
-        )
-        .unwrap();
+        app.invoke(super::Document::APPEND_PARAGRAPH.with("Exported without a file"))
+            .unwrap();
         app.settle();
         let png = ui::png::encode_rgba8(2, 1, &[255, 160, 40, 255, 30, 70, 180, 255]).unwrap();
         let hash = app.content().put(&png).unwrap();
         let resource = <super::Document as Resource>::KIND;
+        let not_picture = app.content().put(b"not a picture").unwrap();
+        let error = app
+            .call_on(
+                resource,
+                "place-image",
+                serde_json::json!({"content": not_picture}),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("not a picture"), "{error}");
         app.call_on(
             resource,
             "place-image",
-            serde_json::json!({tilo_actions::PROMPTED_PARAM: hash}),
+            serde_json::json!({"content": hash}),
         )
         .expect("the picture is placed from content");
         app.settle();
@@ -526,44 +405,39 @@ mod tests {
 
     #[test]
     fn page_margins_are_a_published_document_action() {
-        use ui::tilo_resource::Resource;
-        let decl = super::Document::declarations()
-            .into_iter()
-            .find(|decl| decl.id == "set-page-margins")
-            .expect("page margins are a document action");
-        let supplied = serde_json::json!({
-            "top": 72.0,
-            "right": 54.0,
-            "bottom": 72.0,
-            "left": 54.0
-        });
-        let supplied = supplied.as_object().expect("margin object");
-        let args = tilo_actions::ActionArgs::bind_json(decl.params.as_slice(), supplied)
-            .expect("margin arguments");
-        let action = (decl.build)(&args, 0).expect("the declaration builds an action");
-        let mut doc = automerge::AutoCommit::new();
-        <super::Document as Resource>::initialize(&mut doc).expect("document initializes");
-        ui::tilo_actions::Action::apply(&action, &mut doc).expect("margins apply");
-        let containers = tilo_doc::model::open(&doc, &automerge::ROOT).expect("document opens");
+        let mut replica = ui::tilo_resource::Replica::<super::Document>::new();
+        replica
+            .apply(
+                super::Document::SET_PAGE_MARGINS.with(crate::model::document::SetPageMargins {
+                    top: 72.0,
+                    right: 54.0,
+                    bottom: 72.0,
+                    left: 54.0,
+                }),
+            )
+            .expect("margins apply");
+        let containers = crate::model::open(replica.doc()).expect("document opens");
         assert_eq!(
-            tilo_doc::model::meta_str(&doc, &containers, "page_margin_top").as_deref(),
+            tilo_doc::model::meta_str(replica.doc(), &containers, "page_margin_top").as_deref(),
             Some("72")
         );
         assert_eq!(
-            tilo_doc::model::meta_str(&doc, &containers, "page_margin_right").as_deref(),
+            tilo_doc::model::meta_str(replica.doc(), &containers, "page_margin_right").as_deref(),
             Some("54")
         );
     }
 
     #[test]
     fn read_text_is_published_with_the_document() {
-        use ui::tilo_resource::Resource;
-        let mut doc = automerge::AutoCommit::new();
-        <super::Document as Resource>::initialize(&mut doc).expect("document initializes");
-        let state = <super::Document as Resource>::read(&doc).expect("document reads");
-        let published =
-            ui::tilo_resource::publish::<super::Document>("tilo.rich-text", "Document", &state);
-        let read = published
+        let mut app = ui::framework::testing::TestApp::<WordProcessorApp>::new().unwrap();
+        let resources = app.harness().resources();
+        let document = resources
+            .iter()
+            .find(|resource| {
+                resource.id.as_str() == <super::Document as ui::tilo_resource::Resource>::KIND
+            })
+            .expect("the host publishes the document");
+        let read = document
             .actions
             .iter()
             .find(|action| action.id == "read-text")
@@ -571,69 +445,52 @@ mod tests {
         assert_eq!(read.kind, tilo_actions::OperationKind::Effect);
     }
 
-    /// The running Writer with three paragraphs, a picture in its content
-    /// store, and an agent joined from its record with write access, as an
-    /// agent's worker holds it: no view and no caret.
-    fn joined() -> (
+    /// An agent invokes the same surface-backed edit as a person, with no
+    /// caret or selection supplied. The action finds its place from the body.
+    fn image_document() -> (
         ui::framework::testing::TestApp<WordProcessorApp>,
-        ui::framework::Participant,
         Vec<u8>,
         String,
     ) {
-        use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
-        use ui::tilo_resource::Invoke;
         let mut app = ui::framework::testing::TestApp::<WordProcessorApp>::new().unwrap();
         for text in ["Intro", "The lamp in use", "Closing"] {
-            app.invoke(
-                Invoke::apply(&super::RichTextAction::AppendParagraph { text: text.into() })
-                    .unwrap(),
-            )
-            .unwrap();
+            app.invoke(super::Document::APPEND_PARAGRAPH.with(text))
+                .unwrap();
         }
         app.settle();
         let png = ui::png::encode_rgba8(2, 1, &[255, 160, 40, 255, 30, 70, 180, 255]).unwrap();
         let hash = app.content().put(&png).unwrap();
-        let snapshot = app.read_document(|doc| doc.clone().save());
-        let agent = PermissionContext::from_capabilities(
-            Actor::agent("carrier"),
-            vec![CapOverride::grant(
-                Subject::agent("carrier"),
-                Scope::App(<WordProcessorApp as ui::framework::ResourceApp>::ID.to_owned()),
-                Verb::Write,
-            )],
-        );
-        let participant = ui::framework::Participant::from_snapshot(
-            ui::framework::resource_kind::<WordProcessorApp>(),
-            &snapshot,
-            "carrier",
-            agent,
-        )
-        .unwrap();
-        (app, participant, png, hash)
+        (app, png, hash)
+    }
+
+    /// The invoker the host delivers for an admitted remote execution, not
+    /// a participant id supplied in the action's arguments.
+    fn image_invoker() -> tilo_actions::ActionInvoker {
+        tilo_actions::ActionInvoker::actor("carrier")
+            .with_participant(tilo_actions::ParticipantId::new("carrier-execution").unwrap())
     }
 
     fn insert_image(
-        participant: &mut ui::framework::Participant,
+        app: &mut ui::framework::testing::TestApp<WordProcessorApp>,
         hash: &str,
         after: Option<&str>,
-    ) -> Result<Option<Vec<u8>>, tilo_actions::DoorError> {
-        let mut arguments = serde_json::Map::new();
-        arguments.insert(tilo_actions::PROMPTED_PARAM.into(), hash.into());
-        if let Some(after) = after {
-            arguments.insert("after".into(), after.into());
-        }
-        participant.invoke(
-            &tilo_actions::ActionAddress::new(
-                <super::Document as ui::tilo_resource::Resource>::KIND,
-                "insert-image",
-            ),
-            &arguments,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+        use ui::tilo_resource::{Effect, Resource};
+        let effect = super::WordProcessorEffect::InsertImage {
+            content: hash.into(),
+            after: after.map(str::to_owned),
+        };
+        app.call_by(
+            image_invoker(),
+            <super::Document as Resource>::KIND,
+            effect.id(),
+            serde_json::Value::Object(effect.arguments()),
         )
     }
 
     /// Each body block's kind, its text, and the picture it shows.
     fn body(doc: &automerge::AutoCommit) -> Vec<(String, String, Option<String>)> {
-        let containers = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        let containers = crate::model::open(doc).unwrap();
         tilo_doc::model::materialize(doc, &containers)
             .blocks
             .into_iter()
@@ -647,53 +504,52 @@ mod tests {
             .collect()
     }
 
-    /// An agent places the picture the step before it produced through the
-    /// record's own document operation: after the paragraph it names by its
-    /// text, or at the end; content it does not hold and text no paragraph
-    /// has are refused before anything is written.
     #[test]
     fn an_agent_inserts_produced_content_after_a_paragraph_or_at_the_end() {
-        let (app, mut participant, _png, hash) = joined();
-        let operation = participant
-            .operations()
+        use ui::tilo_resource::Effect;
+        let (mut app, _png, hash) = image_document();
+        let operation = super::WordProcessorEffect::specs()
             .into_iter()
-            .find(|operation| operation.address.action == "insert-image")
-            .expect("the record publishes insert-image as a document operation");
-        assert!(operation.input.wants_content(), "the image is carried");
+            .find(|operation| operation.id == "insert-image")
+            .expect("the surface publishes insert-image");
         assert!(
             operation
-                .params
+                .params()
+                .iter()
+                .any(|param| param.name == "content" && param.is_content()),
+            "the image is carried"
+        );
+        assert!(
+            operation
+                .params()
                 .iter()
                 .any(|param| param.name == "after" && !param.required)
         );
-        assert_eq!(
-            operation.contract.permission,
-            tilo_actions::PermissionRequirement::Write
-        );
-
-        let store = app.content();
-        let window = ui::WakeScope::new();
-        ui::tilo_resource::content::register(&window.handle(), store);
-        let _entered = window.enter();
+        assert_eq!(operation.contract.kind, tilo_actions::ActionKind::Undoable);
+        assert_eq!(operation.kind, tilo_actions::OperationKind::View);
+        assert!(operation.contract.is_participant_view());
 
         let unknown = tilo_content::hash_bytes(b"never produced");
-        let error = insert_image(&mut participant, &unknown, None).unwrap_err();
+        let error = insert_image(&mut app, &unknown, None).unwrap_err();
         assert!(error.to_string().contains("not available"), "{error}");
-        let error = insert_image(&mut participant, &hash, Some("no such words")).unwrap_err();
+        let error = insert_image(&mut app, &hash, Some("no such words")).unwrap_err();
         assert!(
             error.to_string().contains("no paragraph contains"),
             "{error}"
         );
+        let document = app.content().put(b"not a picture").unwrap();
+        let error = insert_image(&mut app, &document, None).unwrap_err();
+        assert!(error.to_string().contains("not a picture"), "{error}");
         assert!(
-            body(participant.doc())
+            app.read_document(body)
                 .iter()
                 .all(|(kind, ..)| kind != "image"),
             "a refusal writes nothing"
         );
 
-        insert_image(&mut participant, &hash, Some("lamp in"))
+        insert_image(&mut app, &hash, Some("lamp in"))
             .expect("the picture is placed after the paragraph");
-        let blocks = body(participant.doc());
+        let blocks = app.read_document(body);
         let named = blocks
             .iter()
             .position(|(_, text, _)| text == "The lamp in use")
@@ -709,9 +565,9 @@ mod tests {
             "the paragraph after it is untouched: {blocks:?}"
         );
 
-        insert_image(&mut participant, &format!("tilo.content:{hash}"), None)
+        insert_image(&mut app, &format!("tilo.content:{hash}"), None)
             .expect("without `after` the picture is appended");
-        let blocks = body(participant.doc());
+        let blocks = app.read_document(body);
         let closing = blocks
             .iter()
             .position(|(_, text, _)| text == "Closing")
@@ -727,21 +583,79 @@ mod tests {
         );
     }
 
-    /// The picture an agent inserted travels into the .docx the record is
-    /// exported as, byte for byte.
+    #[test]
+    fn image_insertion_keeps_permissions_and_private_view_confinement() {
+        use ui::tilo_resource::Resource;
+        let (mut app, _png, hash) = image_document();
+        let resource = <super::Document as Resource>::KIND;
+        let before = app.read_document(body);
+        let heads = app.read_document(|doc| doc.clone().get_heads());
+        let local_view = app
+            .with_widget(|editor: &mut super::WordProcessorWidget| editor.local_participant_view())
+            .expect("the editor is present");
+
+        let error = app
+            .effect_by(
+                "carrier",
+                &super::WordProcessorEffect::InsertImage {
+                    content: hash.clone(),
+                    after: None,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            tilo_actions::DoorError::Unavailable { code, .. } if code == "private_view"
+        ));
+        // An admitted execution has its own caret, not authority over the
+        // window's private viewport.
+        let error = app
+            .call_by(image_invoker(), resource, "zoom-in", serde_json::json!({}))
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            tilo_actions::DoorError::Unavailable { code, .. } if code == "private_view"
+        ));
+
+        app.set_role(ui::permissions::Role::Viewer);
+        // The viewer's resource tree does not offer document edits; the
+        // door resolves it again rather than trusting the owner's surface.
+        let error = insert_image(&mut app, &hash, Some("Intro")).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                tilo_actions::DoorError::Unknown(address)
+                    if address.resource.as_str() == resource && address.action == "insert-image"
+            ),
+            "{error:?}"
+        );
+        assert_eq!(app.read_document(body), before, "refusals write nothing");
+        assert_eq!(app.read_document(|doc| doc.clone().get_heads()), heads);
+
+        app.set_role(ui::permissions::Role::Owner);
+        insert_image(&mut app, &hash, Some("Intro"))
+            .expect("the admitted remote participant can insert a picture");
+        app.settle();
+        assert!(
+            app.read_document(body).iter().any(|(kind, _, blob)| {
+                kind == "image" && blob.as_deref() == Some(hash.as_str())
+            })
+        );
+        assert_eq!(
+            app.with_widget(
+                |editor: &mut super::WordProcessorWidget| editor.local_participant_view()
+            )
+            .expect("the editor is present"),
+            local_view,
+            "the remote edit never moves the window's private caret or selection"
+        );
+    }
+
     #[test]
     fn an_inserted_image_is_exported_in_the_docx() {
-        let (mut app, mut participant, png, hash) = joined();
-        {
-            let window = ui::WakeScope::new();
-            ui::tilo_resource::content::register(&window.handle(), app.content());
-            let _entered = window.enter();
-            insert_image(&mut participant, &hash, Some("Intro")).expect("the picture is placed");
-        }
-        let mut peer = participant.doc().clone();
-        app.merge_peer(&mut peer).unwrap();
+        let (mut app, png, hash) = image_document();
+        insert_image(&mut app, &hash, Some("Intro")).expect("the picture is placed");
         app.settle();
-
         let output = app
             .effect(&super::WordProcessorEffect::ExportContent {
                 format: "docx".into(),

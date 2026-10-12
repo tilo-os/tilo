@@ -34,7 +34,7 @@ use crate::model::{Article, Filter, Id, relative_time};
 pub(crate) const EMPTY_LIBRARY_TITLE: &str = "No feeds yet";
 
 /// One article row as last painted.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct RowHit {
     pub(crate) rect: Rect,
     pub(crate) id: Id,
@@ -57,6 +57,58 @@ pub(crate) struct ListState {
     pub(crate) content: f64,
     pub(crate) rows: Vec<RowHit>,
     progress: ProgressBar,
+    /// What the frame being drawn paints, and what the last frame the host
+    /// presented painted ([`Core::list_damage`]).
+    shown_drawing: Option<ListShown>,
+    shown_presented: Option<ListShown>,
+}
+
+/// What one frame of the list paints, to tell the frame on screen apart
+/// from the next: a scroll that changed nothing else is offered to the
+/// host as a copy of the rows that stay on screen.
+#[derive(Clone, Debug, PartialEq)]
+struct ListShown {
+    /// What the rows are laid out and painted with besides the articles and
+    /// the offset; `None` while the refresh progress paints above them,
+    /// which repaints the list.
+    frame: Option<ListFrame>,
+    /// The index of the first painted row, and what each painted row paints
+    /// from, its hover aside.
+    first: usize,
+    rows: Vec<u64>,
+    /// The hovered row (its index, whether its star is under the pointer)
+    /// and where it paints its lift and actions: they follow the pointer,
+    /// not the rows.
+    hovered: Option<(usize, bool, Rect)>,
+    offset: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ListFrame {
+    area: Rect,
+    viewport: Rect,
+    x0: f64,
+    x1: f64,
+    row_h: f64,
+    inset: f64,
+    count: usize,
+    theme: Theme,
+}
+
+impl ListShown {
+    /// Whether every row both frames paint paints the same, its hover
+    /// aside.
+    fn rows_agree(&self, other: &Self) -> bool {
+        let start = self.first.max(other.first);
+        let end = self
+            .first
+            .saturating_add(self.rows.len())
+            .min(other.first.saturating_add(other.rows.len()));
+        (start..end).all(|index| {
+            let mine = self.rows.get(index.saturating_sub(self.first));
+            mine.is_some() && mine == other.rows.get(index.saturating_sub(other.first))
+        })
+    }
 }
 
 impl Default for ListState {
@@ -70,6 +122,8 @@ impl Default for ListState {
             content: 0.0,
             rows: Vec::new(),
             progress: ProgressBar::new(0.0).with_label("Refreshing feeds"),
+            shown_drawing: None,
+            shown_presented: None,
         }
     }
 }
@@ -124,8 +178,8 @@ impl Core {
             Filter::Feed(_) => article.summary.as_str(),
             _ => self
                 .store
-                .feed(article.feed_id)
-                .map_or("", |f| f.title.as_str()),
+                .feed(&article.feed_id)
+                .map_or("", |f| f.item().title.as_str()),
         }
     }
 
@@ -133,7 +187,7 @@ impl Core {
     /// empty library offers its one action, an empty place says what would
     /// fill it.
     pub(crate) fn empty_list(&self) -> Option<EmptyList> {
-        if !self.store.articles_for(self.filter).is_empty() {
+        if !self.store.articles_for(&self.filter).is_empty() {
             return None;
         }
         let library_empty = self.store.feeds.is_empty();
@@ -164,12 +218,14 @@ impl Core {
         area: Rect,
     ) {
         self.list.rows.clear();
+        self.list.shown_drawing = None;
         let resized = self.list.rect.size() != area.size();
         self.list.rect = area;
         if area.width() <= 0.0 || area.height() <= 0.0 {
             return;
         }
         let inset = f64::from(theme.tokens.spacing.s2);
+        let settled = !self.refresh.visible();
         let top = if self.refresh.visible() {
             self.paint_refresh(scene, t, text, theme, presence, area)
         } else {
@@ -182,9 +238,9 @@ impl Core {
 
         let ids: Vec<Id> = self
             .store
-            .articles_for(self.filter)
+            .articles_for(&self.filter)
             .iter()
-            .map(|a| a.id)
+            .map(|a| a.id.clone())
             .collect();
         let row_h = ListRowFace::new("Ag")
             .two_line_title()
@@ -205,7 +261,8 @@ impl Core {
         if (std::mem::take(&mut self.list.reveal) || resized)
             && let Some(index) = self
                 .selected
-                .and_then(|sel| ids.iter().position(|id| *id == sel))
+                .as_ref()
+                .and_then(|sel| ids.iter().position(|id| id == sel))
         {
             // The row with the list's inset above and below it.
             let row_top = row_h * index as f64;
@@ -216,7 +273,6 @@ impl Core {
                 row_top + row_h + inset * 2.0,
             ));
         }
-        let scroll = self.list.scroll();
         // Row text starts on the column's content edge, the column title's,
         // and the lift bleeds past it; while the list overflows, the region
         // keeps the trailing lane free for the scroll bar.
@@ -228,31 +284,86 @@ impl Core {
             viewport.x1 - edge
         };
 
+        let frame = ListFrame {
+            area,
+            viewport,
+            x0,
+            x1,
+            row_h,
+            inset,
+            count: ids.len(),
+            theme: theme.clone(),
+        };
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &viewport);
-        let first = ((scroll - inset) / row_h).floor().max(0.0) as usize;
-        let mut y = viewport.y0 + inset - scroll + row_h * first as f64;
+        let shown = self.paint_rows(
+            &mut PaintCtx::new(scene, t, text, theme),
+            &ids,
+            frame,
+            settled,
+        );
+        scene.pop_layer();
+        self.list.shown_drawing = Some(shown);
+        // Rows fade into the column where more can scroll in, under the bar.
+        self.list.scroller.paint(scene, t, theme, |_, _| {});
+    }
+
+    /// The rows of `ids` in view, laid out by `frame`, and what they
+    /// painted ([`ListShown`]); `settled` while nothing else paints above
+    /// them.
+    fn paint_rows(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        ids: &[Id],
+        frame: ListFrame,
+        settled: bool,
+    ) -> ListShown {
+        let scroll = self.list.scroll();
+        let (viewport, row_h) = (frame.viewport, frame.row_h);
+        let first = ((scroll - frame.inset) / row_h).floor().max(0.0) as usize;
+        let mut y = viewport.y0 + frame.inset - scroll + row_h * first as f64;
+        let (x0, x1) = (frame.x0, frame.x1);
+        let mut shown = ListShown {
+            frame: settled.then_some(frame),
+            first,
+            rows: Vec::new(),
+            hovered: None,
+            offset: scroll,
+        };
         for (i, id) in ids.iter().enumerate().skip(first) {
             if y > viewport.y1 {
                 break;
             }
             let rect = Rect::new(x0, y, x1, y + row_h);
             y += row_h;
-            self.paint_row(
-                &mut PaintCtx::new(scene, t, text, theme),
-                rect,
-                *id,
-                ids.get(i + 1).copied(),
-            );
+            let (key, hovered, star_hot) = self.paint_row(ctx, rect, id, ids.get(i + 1));
+            shown.rows.push(key);
+            if hovered {
+                // The lift bleeds past the row's text edges.
+                shown.hovered = Some((
+                    i,
+                    star_hot,
+                    Rect::new(viewport.x0, rect.y0, viewport.x1, rect.y1)
+                        .inflate(4.0, 4.0)
+                        .intersect(viewport),
+                ));
+            }
         }
-        scene.pop_layer();
-        // Rows fade into the column where more can scroll in, under the bar.
-        self.list.scroller.paint(scene, t, theme, |_, _| {});
+        shown
     }
 
     /// One article's row at `rect`; `next` is the article below it.
-    fn paint_row(&mut self, ctx: &mut PaintCtx<'_>, rect: Rect, id: Id, next: Option<Id>) {
-        let Some(article) = self.store.article(id) else {
-            return;
+    /// Returns what the row paints from, its hover aside, whether it is
+    /// hovered and whether its star is under the pointer.
+    fn paint_row(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        rect: Rect,
+        id: &Id,
+        next: Option<&Id>,
+    ) -> (u64, bool, bool) {
+        use std::hash::{Hash, Hasher};
+        let Some(article) = self.store.article(id).map(|article| article.item()) else {
+            return (0, false, false);
         };
         let viewport = self.list.viewport;
         let time = relative_time(article.published, self.now);
@@ -269,29 +380,91 @@ impl Core {
             .secondary(self.row_secondary(article))
             .meta(&time)
             .emphasized(!article.read)
-            .selected(self.selected == Some(id))
+            .selected(self.selected.as_ref() == Some(id))
             .actions(&star)
             .interaction(Interaction {
                 hovered,
                 ..Interaction::default()
             });
         let star_rect = face.action_rects(rect, ctx.theme).first().copied();
-        let face = face.hovered_action(star_rect.filter(|r| r.contains(self.pointer)).map(|_| 0));
+        let star_hot = star_rect.is_some_and(|r| r.contains(self.pointer));
+        let face = face.hovered_action(star_hot.then_some(0));
         let face = if article.starred {
             face.mark(Icon::Star)
         } else {
             face
         };
-        let face = match next {
-            Some(next) => face.separator(self.selected == Some(next)),
+        let next_selected = next.map(|next| self.selected.as_ref() == Some(next));
+        let face = match next_selected {
+            Some(selected) => face.separator(selected),
             None => face,
         };
         face.paint(ctx, rect);
+        let mut key = std::collections::hash_map::DefaultHasher::new();
+        (
+            id,
+            &article.title,
+            self.row_secondary(article),
+            &time,
+            article.read,
+            article.starred,
+            self.selected.as_ref() == Some(id),
+            next_selected,
+        )
+            .hash(&mut key);
         self.list.rows.push(RowHit {
             rect: rect.intersect(viewport),
-            id,
+            id: id.clone(),
             star: star_rect,
         });
+        (key.finish(), hovered, hovered && star_hot)
+    }
+
+    /// The list's damage since the frame on screen, from what the frame
+    /// just drawn painted: a scroll that changed nothing else offers the
+    /// host a copy of the rows that stay on screen, repainting the hovered
+    /// row where it is and was; a frame that changed only the hover
+    /// repaints those rows; anything else repaints `rect`.
+    fn list_damage<T: ?Sized>(&self, owner: &T, rect: Rect, regions: &mut Vec<Rect>) {
+        let (Some(drawing), Some(presented)) = (
+            self.list.shown_drawing.as_ref(),
+            self.list.shown_presented.as_ref(),
+        ) else {
+            regions.push(rect);
+            return;
+        };
+        let same = drawing.frame.is_some()
+            && drawing.frame == presented.frame
+            && drawing.rows_agree(presented);
+        if !same {
+            regions.push(rect);
+            return;
+        }
+        let hover = |shown: &ListShown| shown.hovered.map(|(_, _, at)| at);
+        let hovers = hover(drawing).into_iter().chain(hover(presented));
+        // The same row hovered the same way: its lift moved with it.
+        let same_hover = drawing.hovered.map(|(row, star, _)| (row, star))
+            == presented.hovered.map(|(row, star, _)| (row, star));
+        if drawing.offset.to_bits() != presented.offset.to_bits() {
+            if self.list.scroller.offer_copy(owner, regions) {
+                if !same_hover {
+                    regions.extend(hovers);
+                }
+            } else {
+                regions.push(rect);
+            }
+            return;
+        }
+        if drawing.hovered != presented.hovered {
+            regions.extend(hovers);
+        }
+        self.list.scroller.damage_changed_bars(regions);
+    }
+
+    /// The frame just drawn is on screen.
+    fn list_presented(&mut self) {
+        self.list.shown_presented = self.list.shown_drawing.take();
+        self.list.scroller.mark_presented();
     }
 
     /// The refresh progress under the header: one sentence over the bar.
@@ -377,14 +550,14 @@ impl Core {
             // A row answers across the list's whole width, its side insets
             // included.
             .find(|row| (row.rect.y0..row.rect.y1).contains(&self.pointer.y))
-            .copied();
+            .cloned();
         let Some(row) = hit else {
             return false;
         };
         if row.star.is_some_and(|r| r.contains(self.pointer)) {
-            self.toggle_star(row.id, &mut ctx.state);
+            self.toggle_star(&row.id, &mut ctx.state);
         } else {
-            self.select_article(row.id, &mut ctx.state);
+            self.select_article(&row.id, &mut ctx.state);
         }
         true
     }
@@ -395,12 +568,12 @@ impl Core {
             .rows
             .iter()
             .filter_map(|row| {
-                let article = self.store.article(row.id)?;
+                let article = self.store.article(&row.id)?.item();
                 let time = relative_time(article.published, self.now);
                 let face = ListRowFace::new(&article.title)
                     .secondary(self.row_secondary(article))
                     .meta(&time)
-                    .selected(self.selected == Some(row.id));
+                    .selected(self.selected.as_ref() == Some(&row.id));
                 let node = face
                     .accessibility(row.rect, format!("feeds.article:{}", row.id))
                     .with_children(vec![
@@ -421,7 +594,7 @@ impl Core {
 
     fn list_tooltip(&self, point: Point) -> Option<(Rect, String)> {
         let row = self.list.rows.iter().find(|row| row.rect.contains(point))?;
-        let article = self.store.article(row.id)?;
+        let article = self.store.article(&row.id)?.item();
         if let Some(star) = row.star.filter(|r| r.contains(point)) {
             return Some((star, star_label(article).to_string()));
         }
@@ -611,9 +784,17 @@ impl Widget for ListPane {
             .and_then(|core| core.list.scroller.next_wake_deadline(&core.list.theme))
     }
 
-    // The rows are painted every frame, as a leaf's are.
+    // The rows are painted every frame, as a leaf's are; what changed is
+    // told after the draw, from what it painted (`collect_damage`).
     fn needs_redraw(&self) -> bool {
         true
+    }
+
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        match self.core.try_borrow() {
+            Ok(core) if self.empty.is_none() => core.list_damage(self, self.rect, regions),
+            _ => regions.push(self.rect),
+        }
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -625,6 +806,9 @@ impl Widget for ListPane {
     }
 
     fn mark_drawn(&mut self) {
+        if let Ok(mut core) = self.core.try_borrow_mut() {
+            core.list_presented();
+        }
         if let Some((_, empty)) = self.empty.as_mut() {
             empty.mark_drawn();
         }
@@ -638,3 +822,7 @@ impl Widget for ListPane {
         self.rect
     }
 }
+
+#[cfg(test)]
+#[path = "list_pane/copy_tests.rs"]
+mod copy_tests;

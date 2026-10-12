@@ -1998,7 +1998,7 @@ mod tests {
             crate::availability::RecordKind::File,
         );
         recipient_record.current_version = Some(revision.version_id);
-        recipient_record.residency = crate::availability::Residency::Resident {
+        recipient_record.residency = fs_protocol::Residency::Resident {
             bytes: revision.byte_len,
         };
         recipient_availability.put(recipient_record).unwrap();

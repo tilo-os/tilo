@@ -70,6 +70,10 @@ use ui::theme::Theme;
 use ui::tokens::typography::TextRole;
 use ui::widget::{Dropdown, Row, Scrollable, Spacer, Spinner, Text, TextInput, Widget};
 
+use install_profile_model::{
+    FILESYSTEMS, valid_full_name, valid_hostname, valid_locale, valid_timezone_name, valid_username,
+};
+
 use crate::action_button::ActionButton;
 use crate::backend::{InstallBackend, SystemBackend};
 use crate::control::{Control, Press, Presses};
@@ -127,7 +131,6 @@ const DEFAULT_TIMEZONE: &str = "UTC";
 const DEFAULT_KEYMAP_NAME: &str = layouts::DEFAULT_DISPLAY_NAME;
 
 /// Filesystem choices, in display order. Index 0 is the default.
-pub const FILESYSTEMS: [&str; 3] = ["btrfs", "ext4", "xfs"];
 const OMITTED_INITRAMFS_DRIVERS: &str = "/usr/lib/tilo/initramfs-omitted-drivers.txt";
 
 fn filesystem_support_from_manifest(manifest: &str) -> Result<[bool; FILESYSTEMS.len()], String> {
@@ -440,76 +443,6 @@ pub fn prev_step(step: Step) -> Option<Step> {
         // specially (only on failure) by the app — see `go_back`.
         Step::Keyboard | Step::Install => None,
     }
-}
-
-/// Whether `h` is a usable hostname (letters/digits/hyphens, no leading
-/// or trailing hyphen, ≤ 63 chars).
-pub fn valid_hostname(h: &str) -> bool {
-    let h = h.trim();
-    !h.is_empty()
-        && h.len() <= 63
-        && h.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-        && !h.starts_with('-')
-        && !h.ends_with('-')
-}
-
-/// Whether `username` is portable across the Linux `useradd`
-/// implementations supported by the Tilo installer.
-pub fn valid_username(username: &str) -> bool {
-    let bytes = username.as_bytes();
-    !bytes.is_empty()
-        && bytes.len() <= 32
-        && bytes
-            .first()
-            .is_some_and(|c| matches!(c, b'a'..=b'z' | b'_'))
-        && bytes
-            .iter()
-            .skip(1)
-            .all(|c| matches!(c, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
-        && !matches!(
-            username,
-            "root"
-                | "bin"
-                | "daemon"
-                | "adm"
-                | "lp"
-                | "sync"
-                | "shutdown"
-                | "halt"
-                | "mail"
-                | "operator"
-                | "games"
-                | "ftp"
-                | "nobody"
-                | "dbus"
-                | "polkitd"
-                | "sshd"
-                | "chrony"
-                | "tss"
-                | "greetd"
-                | "tilo"
-        )
-}
-
-pub fn valid_full_name(full_name: &str) -> bool {
-    full_name.chars().count() <= 100
-        && !full_name
-            .chars()
-            .any(|c| c.is_control() || matches!(c, ':' | '\n' | '\r'))
-}
-
-pub fn valid_locale(locale: &str) -> bool {
-    crate::locales::contains(locale)
-}
-
-pub fn valid_timezone_name(timezone: &str) -> bool {
-    !timezone.is_empty()
-        && timezone.len() <= 128
-        && !timezone.starts_with('/')
-        && !timezone.contains("..")
-        && timezone
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'/' | b'+' | b'-'))
 }
 
 /// Guard for advancing out of `step`. `Ok(())` means it's valid to move
@@ -2787,10 +2720,15 @@ impl InstallerApp {
                 Text::new("Language & locale").with_role(TextRole::Body),
             ));
             children.push(Box::new(
-                Dropdown::from_state(crate::locales::list(), &self.locale)
-                    .with_id("installer.locale")
-                    .with_accessible_name("Language & locale")
-                    .with_placeholder("Choose a language and locale"),
+                Dropdown::from_state(
+                    install_profile_model::locales()
+                        .map(str::to_owned)
+                        .collect(),
+                    &self.locale,
+                )
+                .with_id("installer.locale")
+                .with_accessible_name("Language & locale")
+                .with_placeholder("Choose a language and locale"),
             ));
             children.push(Box::new(
                 Text::new("This controls language, formatting, and regional conventions after installation.")
@@ -3932,6 +3870,7 @@ impl ui::resources::PublishesResources for InstallerApp {
 mod tests {
     use super::*;
     use automerge::ReadDoc;
+    use ui::widget::find_test_id;
 
     fn find_test_id_mut<'a>(widget: &'a mut dyn Widget, id: &str) -> Option<&'a mut dyn Widget> {
         if widget.test_id() == Some(id) {
@@ -3950,7 +3889,12 @@ mod tests {
         let composed = app.composed.element_mut().expect("composed step");
         let control = find_test_id_mut(composed, id).unwrap_or_else(|| panic!("no control {id}"));
         assert!(
-            control.perform_action(action, &mut ui::widget::Edits::lend(doc), &automerge::ROOT),
+            control.perform_action(
+                action,
+                &[],
+                &mut ui::widget::Edits::lend(doc),
+                &automerge::ROOT
+            ),
             "{id} refused {action:?}"
         );
         app.sync(doc, &automerge::ROOT);
@@ -4056,21 +4000,7 @@ mod tests {
     }
 
     fn has_test_id(widget: &dyn Widget, id: &str) -> bool {
-        widget.test_id() == Some(id)
-            || widget
-                .children()
-                .into_iter()
-                .any(|child| has_test_id(child, id))
-    }
-
-    fn find_test_id<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
-        if widget.test_id() == Some(id) {
-            return Some(widget);
-        }
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| find_test_id(child, id))
+        find_test_id(widget, id).is_some()
     }
 
     fn build(app: &mut InstallerApp) -> (TaffyTree<()>, NodeId) {

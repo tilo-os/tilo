@@ -324,15 +324,15 @@ impl Failure {
     #[must_use]
     pub fn from_http(status: u16, body: &str, retry_after: Option<&str>) -> Self {
         let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
-        // The parameter an endpoint refused names a request field, never a
-        // secret, so it is kept beside the code (`unsupported_parameter`
-        // alone does not say which).
+        // Keep a short request-field identifier in the explanation, without
+        // changing the endpoint's machine-readable code.
         let param = parsed
             .get("error")
             .and_then(|error| error.get("param"))
             .and_then(Value::as_str)
             .filter(|param| {
-                param.len() <= 64
+                !param.is_empty()
+                    && param.len() <= 64
                     && param
                         .chars()
                         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '[' | ']'))
@@ -390,10 +390,9 @@ impl Failure {
                 .into(),
             _ => message.unwrap_or_else(|| format!("the model endpoint answered HTTP {status}")),
         };
-        let code = match (code, param) {
-            (Some(code), Some(param)) => Some(format!("{code}: {param}")),
-            (None, Some(param)) => Some(format!("refused parameter {param}")),
-            (code, None) => code,
+        let detail = match param {
+            Some(param) => format!("{detail} (param={param})"),
+            None => detail,
         };
         Self {
             kind,
@@ -505,6 +504,33 @@ mod tests {
         );
         assert!(!quoted.to_string().contains("sk-abc"));
         assert_eq!(quoted.kind, Kind::Unauthorized);
+    }
+
+    #[test]
+    fn a_refused_parameter_does_not_change_the_failure_code() {
+        let failure = Failure::from_http(
+            400,
+            r#"{"error":{"code":"unsupported_parameter","param":"service_tier","message":"secret request content"}}"#,
+            None,
+        );
+        assert_eq!(failure.code.as_deref(), Some("unsupported_parameter"));
+        assert_eq!(failure.kind, Kind::Rejected);
+        assert!(failure.to_string().contains("param=service_tier"));
+        assert!(!failure.to_string().contains("secret request content"));
+
+        let failure = Failure::from_http(
+            409,
+            r#"{"error":{"code":"request_pending","param":"service_tier"}}"#,
+            None,
+        );
+        assert_eq!(failure.code.as_deref(), Some("request_pending"));
+        assert_eq!(failure.kind, Kind::Pending);
+        assert!(!failure.retryable());
+        for param in ["", "request content with spaces", "secret\nvalue"] {
+            let body = json!({"error": {"code": "unsupported_parameter", "param": param}});
+            let failure = Failure::from_http(400, &body.to_string(), None);
+            assert!(!failure.detail.contains("param="));
+        }
     }
 
     #[test]

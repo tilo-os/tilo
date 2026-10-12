@@ -37,6 +37,7 @@ class AppArtifactHandoffTests(unittest.TestCase):
             "tools/ci/__init__.py", "tools/ci/workspace_graph.py", "tools/ci/runner_labels.py",
             "tools/apps/assemble_app_collection.py",
             "apps/calculator/Cargo.toml", "apps/calculator/tilo-app.toml",
+            "apps/calculator/surface.toml",
             "crates/packaging/tilo-app-package/max-app-bytes",
             "tools/apps/dev_app_versions.py", "dist/apps/app-collections.toml", ".cargo/config.toml", "tools/apps/app_package_isa.py",
         ):
@@ -88,10 +89,13 @@ for object in sys.argv[1:]:
     print(f'libc.so.6 => {dependency} (0x1000)')
 """)
         self.write("bin/readelf", """#!/usr/bin/env python3
-import pathlib, sys
+import os, pathlib, sys
 object = pathlib.Path(sys.argv[-1])
 assert object.read_bytes().startswith(b'\\x7fELF')
-if object.name != 'libc.so.6':
+if sys.argv[1] == '-lW':
+    loader = 'lib64/ld-linux-x86-64.so.2' if os.environ['FIXTURE_ARCH'] == 'x86_64' else 'lib/ld-linux-aarch64.so.1'
+    print(f'      [Requesting program interpreter: /{loader}]')
+elif object.name != 'libc.so.6':
     print(' 0x0000000000000001 (NEEDED) Shared library: [libc.so.6]')
 """)
         self.write("os/scripts/build-thin-apps.sh", """#!/bin/bash
@@ -126,6 +130,13 @@ elif a[0] == 'build':
     arch = a[a.index('--arch')+1]
     (out/'bundle.toml').write_text(f'version = "{version}"\\narch = "{arch}"\\nroot_hash = "'+'cd'*32+'"\\n')
     (out/'lib').mkdir(); (out/'lib/runtime.so').write_bytes(b'runtime payload')
+    # The loader at its interpreter path, answering the closure check's --list.
+    loader = out/'lib'/('lib64/ld-linux-x86-64.so.2' if arch == 'x86_64' else 'lib/ld-linux-aarch64.so.1')
+    loader.parent.mkdir(parents=True)
+    loader.write_text('#!/usr/bin/env python3\\nimport sys\\na = sys.argv[1:]\\n'
+                      "assert a[:2] == ['--inhibit-cache', '--library-path'] and a[3] == '--list', a\\n"
+                      "print(f'\\\\tlibc.so.6 => {a[2]}/libc.so.6 (0x1000)')\\n")
+    loader.chmod(0o755)
     for index, argument in enumerate(a):
         if argument == '--include':
             source = pathlib.Path(a[index+1])
@@ -153,8 +164,15 @@ if a[0] == 'pack':
     else:
         assert manifest['package']['isa'] == {arch: 'v3' if arch == 'x86_64' else 'armv8-a'}
         assert manifest['package']['runtime'] == runtime, manifest
-        payload = pathlib.Path(a[a.index('--payload')+1])/'bin/calculator'
-        pathlib.Path(a[a.index('--output')+1]).write_bytes(payload.read_bytes())
+        payload = pathlib.Path(a[a.index('--payload')+1])
+        output = pathlib.Path(a[a.index('--output')+1])
+        output.write_bytes((payload/'bin/calculator').read_bytes())
+        # The surface the payload root carries, kept for the test to read.
+        surface = payload/'surface.toml'
+        if surface.is_file():
+            kept = pathlib.Path(os.environ['FIXTURE_SURFACES'])
+            kept.mkdir(exist_ok=True)
+            (kept/(output.name + '.surface')).write_bytes(surface.read_bytes())
 elif a[0] == 'split':
     tapp = pathlib.Path(a[1]); out = pathlib.Path(a[a.index('--out')+1])
     out.mkdir(parents=True, exist_ok=True)
@@ -162,12 +180,15 @@ elif a[0] == 'split':
     (out/('ef'*32 + '.blob')).write_bytes(b'runtime payload')
 elif a[0] == 'verify':
     assert len(pathlib.Path(a[-1]).read_bytes()) == 64
+elif a[0] == 'compress':
+    pathlib.Path(a[a.index('--output')+1]).write_bytes(b'z' * 24)
 else:
     raise SystemExit('unexpected tapp fixture invocation')
 """)
         self.env = dict(os.environ, PATH=str(self.root / "bin") + os.pathsep + os.environ["PATH"],
                         FIXTURE_CARGO_LOG=str(self.root / "cargo.log"),
                         FIXTURE_STDLIB=str(self.root / "stdlib"), TILO_RELEASE_APPS="calculator",
+                        FIXTURE_SURFACES=str(self.root / "packed-surfaces"),
                         SOURCE_DATE_EPOCH="123", GITHUB_SHA="1" * 40)
         for name in ("CARGO_TARGET_DIR", "TILO_APP_RELEASE_OUT", "TAPP_PUBLISHER_IDENTITY_FILE",
                      "RUNTIME_BUNDLE_IDENTITY_FILE", "TRUST_LIST", "MAX_TAPP_BYTES",
@@ -261,6 +282,14 @@ exit 99
                         self.assertNotEqual(result.returncode, 0)
                         self.assertIn("unaudited", result.stderr)
                         self.assertEqual(result.stdout, "")
+
+    def test_a_release_tapp_carries_the_apps_committed_surface(self):
+        self.env["FIXTURE_ARCH"] = "x86_64"
+        self.command("bash", "dist/apps/package-apps.sh")
+        packed = list((self.root / "packed-surfaces").glob("calculator-*-x86_64.tapp.surface"))
+        self.assertEqual(len(packed), 1, "the calculator tapp's payload has a surface.toml")
+        self.assertEqual(packed[0].read_bytes(),
+                         (ROOT / "apps/calculator/surface.toml").read_bytes())
 
     def test_native_outputs_keep_audited_flags_through_upload_and_assembly(self):
         with self.subTest(phase='encoded output retains every audited target flag'):

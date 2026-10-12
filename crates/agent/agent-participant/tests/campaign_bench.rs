@@ -394,8 +394,8 @@ impl Browser {
         }
     }
 
-    /// The document of every `app` record the browser received, as JSON,
-    /// merged from the changes `author` made.
+    /// Every `app` record the browser received, merged from `author`'s changes:
+    /// Writer and Notes bodies read through their typed models; other apps as JSON.
     fn bodies(&mut self, app: &str, author: [u8; 32]) -> Vec<String> {
         self.pump();
         let catalogue = common::catalogue();
@@ -423,8 +423,33 @@ impl Browser {
                     Ok(page) => page,
                     Err(error) => return format!("(does not open yet: {error})"),
                 };
-                page.read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
-                    .unwrap()
+                page.read(|doc| match app {
+                    WRITER => {
+                        let body = word_processor::model::body(doc)
+                            .expect("the Writer document has a typed body");
+                        tilo_document::RichText::plain_text_under(doc, &body).unwrap()
+                    }
+                    NOTES => {
+                        let notebook =
+                            <notes::Notebook as ui::tilo_resource::Resource>::read(doc).unwrap();
+                        notebook
+                            .pages
+                            .iter()
+                            .map(|(_, note)| {
+                                let text = note
+                                    .blocks()
+                                    .into_iter()
+                                    .map(|block| block.text)
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                format!("{}\n{text}", note.title)
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    }
+                    _ => serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap(),
+                })
+                .unwrap()
             })
             .collect()
     }
@@ -627,7 +652,8 @@ fn steps(photo: &str) -> Vec<Vec<(&'static str, String)>> {
         vec![(
             "Ren",
             "In Notes, create a note titled \"Launch headline\" whose text is the winning headline from the \
-             campaign spreadsheet: Small desk. Clear head."
+             campaign spreadsheet: Small desk. Clear head. Use the notebook's new-note operation \
+             with title and text."
                 .into(),
         )],
         vec![(
@@ -640,7 +666,9 @@ fn steps(photo: &str) -> Vec<Vec<(&'static str, String)>> {
                  paragraph for the chalk-white desk light, a \"Specifications\" section, an \"Availability\" \
                  section and an \"FAQ\" section with three questions and answers, using only these facts: \
                  {FACTS}. Check every product claim against those facts, keep the introduction tight, and \
-                 end with a paragraph starting \"Review:\" listing what you checked."
+                 end with a paragraph starting \"Review:\" listing what you checked. Use the document's \
+                 append-paragraph operation and body field edits, or its paste and set-paragraph-style \
+                 effects, to write and format the typed body."
             ),
         )],
         // The spreadsheet exists before anyone else adds a sheet to it; each
@@ -681,8 +709,10 @@ fn steps(photo: &str) -> Vec<Vec<(&'static str, String)>> {
             "Mina",
             "In Canvas, export the current artwork as a PNG at scale 1 kept as content, then in the Word \
              Processor document \"Small desk. Clear head.\" insert that exported image right under its first \
-             heading (others are editing the paragraphs; the caption already follows the heading). Then \
-             export that document as DOCX, kept as content."
+             heading (others are editing the paragraphs; the caption already follows the heading). Use \
+             insert-image on word-processor.effects, carrying the exported content and giving the first \
+             heading's text as after. Then use export-content with format docx on that document, \
+             kept as content."
                 .into(),
         )],
         vec![(
@@ -692,7 +722,9 @@ fn steps(photo: &str) -> Vec<Vec<(&'static str, String)>> {
         )],
         vec![(
             "Ren",
-            "Export the note \"Launch headline\" as Markdown, kept as content.".into(),
+            "Export the note \"Launch headline\" as Markdown, kept as content, through its \
+             export-markdown-content operation (not the file export)."
+                .into(),
         )],
     ]
 }
@@ -950,7 +982,7 @@ async fn campaign_bench() {
                     .as_str()
                     .map(str::to_owned)
             })
-            .last()
+            .next_back()
     };
     for (step, agent, file) in [
         (1, "Mina", "asset.png"),

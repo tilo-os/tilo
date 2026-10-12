@@ -157,11 +157,16 @@ fn theme_metrics_follow_the_hig_density_table_and_scale_only_with_ui_scale() {
     }
 }
 
-use tilo_ui::permissions::{PermissionScope, ResourceRef, Verb};
+use tilo_ui::permissions::{ActionKind, PermissionScope, TreePath};
 
 #[test]
 fn permission_scope_constructs() {
-    let s = PermissionScope::workspace(Verb::Write);
-    assert_eq!(s.op, Verb::Write);
-    assert_eq!(s.resource, ResourceRef::Workspace);
+    let s = PermissionScope::workspace(ActionKind::Undoable);
+    assert_eq!(
+        s,
+        PermissionScope::Action {
+            node: TreePath::root(),
+            kind: ActionKind::Undoable,
+        }
+    );
 }

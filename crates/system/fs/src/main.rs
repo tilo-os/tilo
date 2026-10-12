@@ -41,7 +41,6 @@ use fs::{
 };
 use fuser::{Config, MountOption, SessionACL};
 use std::io::Read;
-use std::os::fd::FromRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -871,7 +870,7 @@ async fn publish_authority(acl: PathBuf) -> Result<()> {
         }
         Err(error) => return Err(error).context("read workspace governor key"),
     };
-    let capabilities = serde_json::from_slice(
+    let capabilities: collab_types::FsAuthority = serde_json::from_slice(
         &std::fs::read(&acl).with_context(|| format!("read capability list {}", acl.display()))?,
     )?;
     let (workspace, socket) = fs::workspace_authority::find_local_authority().await?;
@@ -1150,6 +1149,13 @@ fn spawn_document_media(
     }
 }
 
+/// An owner-only socket at `path` for the tokio runtime, replacing a stale one.
+fn bind_private_socket(path: &Path) -> std::io::Result<tokio::net::UnixListener> {
+    let listener = tilo_files::native::private::bind_socket(path)?;
+    listener.set_nonblocking(true)?;
+    tokio::net::UnixListener::from_std(listener)
+}
+
 /// Bind and serve the document control socket (best-effort), using the same ACL/identity as the mount.
 fn spawn_control(
     sock: &Path,
@@ -1157,12 +1163,9 @@ fn spawn_control(
     sync: Arc<SyncHandle>,
     enforcement: fs::control::Enforcement,
 ) -> tokio::task::JoinHandle<()> {
-    let _ = std::fs::remove_file(sock); // clear a stale socket
-    match tokio::net::UnixListener::bind(sock) {
+    // The socket can read and edit every document — restrict to the owner.
+    match bind_private_socket(sock) {
         Ok(listener) => {
-            // The socket can read and edit every document — restrict to the owner.
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(sock, std::fs::Permissions::from_mode(0o600));
             println!("Document control socket at {}", sock.display());
             tokio::spawn(fs::control::serve(
                 listener,
@@ -1182,15 +1185,8 @@ fn spawn_share_control(
     socket: &Path,
     server: Arc<ShareControlServer>,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    use std::os::unix::fs::PermissionsExt;
-
-    if socket.exists() {
-        std::fs::remove_file(socket)
-            .with_context(|| format!("removing stale share socket {}", socket.display()))?;
-    }
-    let listener = tokio::net::UnixListener::bind(socket)
+    let listener = bind_private_socket(socket)
         .with_context(|| format!("binding share socket {}", socket.display()))?;
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
     println!("Files share control socket at {}", socket.display());
     Ok(tokio::spawn(async move {
         if let Err(error) = server.serve(listener).await {
@@ -1333,7 +1329,7 @@ fn export_home_peer(
         .with_context(|| format!("read capability list {}", acl.display()))?;
     let _: serde_json::Value =
         serde_json::from_str(&capability_json).context("capability list is not valid JSON")?;
-    let capabilities = serde_json::from_str(&capability_json)?;
+    let capabilities: collab_types::FsAuthority = serde_json::from_str(&capability_json)?;
     let paths = identity_paths();
     let governor = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
         .context("read workspace governor key")?;
@@ -1895,9 +1891,10 @@ async fn serve(
             .filter(|_| remote_ticket.is_none())
             .zip(share_issuer.as_ref())
             .map(|(path, signer)| -> Result<_> {
-                let capabilities = serde_json::from_slice(&std::fs::read(path)?)
-                    .context("parse workspace authority bootstrap capabilities")?;
-                Ok((capabilities, signer))
+                let authority: collab_types::FsAuthority =
+                    serde_json::from_slice(&std::fs::read(path)?)
+                        .context("parse workspace authority bootstrap capabilities")?;
+                Ok((authority.capabilities, signer))
             })
             .transpose()?;
         records.workspace_authority = workspace_startup::owner_authority(
@@ -2750,54 +2747,14 @@ async fn recipient_service(
     Ok(())
 }
 
-#[allow(
-    clippy::disallowed_methods,
-    reason = "systemd socket activation: LISTEN_* must not leak to supervised mount \
-              children; cleared right after fd 3 is taken, at the start of the \
-              recipient service before it spawns any task or child, while the \
-              runtime's worker threads are still idle and nothing else reads the \
-              environment"
-)]
 fn recipient_service_listener(socket: &Path) -> Result<tokio::net::UnixListener> {
-    const SYSTEMD_LISTEN_FD: libc::c_int = 3;
-    let pid_matches = std::env::var("LISTEN_PID")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-        == Some(std::process::id());
-    if !pid_matches {
+    // SAFETY: taken at the start of the recipient service, before it spawns
+    // any task or child, while the runtime's worker threads are still idle
+    // and nothing else reads the environment.
+    let Some(listener) = (unsafe { tilo_files::native::private::activated_socket(socket)? }) else {
         return bind_recipient_service_socket(socket);
-    }
-    anyhow::ensure!(
-        std::env::var("LISTEN_FDS").as_deref() == Ok("1"),
-        "systemd must pass exactly one recipient-service listener"
-    );
-    // SAFETY: fcntl only validates the scalar descriptor.
-    anyhow::ensure!(
-        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } != -1,
-        "systemd recipient-service listener fd is closed"
-    );
-    // SAFETY: validated activation metadata transfers ownership of fd 3 once.
-    let listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
-    // systemd may hand over an unnamed connected socket; a missing pathname
-    // is not a different listener. Refuse only an explicit other path.
-    if let Some(actual) = listener.local_addr()?.as_pathname() {
-        anyhow::ensure!(
-            actual == socket,
-            "systemd recipient-service listener has an unexpected path"
-        );
-    }
+    };
     listener.set_nonblocking(true)?;
-    // Do not leak the service control endpoint into supervised FUSE children.
-    anyhow::ensure!(
-        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } != -1,
-        "cannot mark recipient-service listener close-on-exec"
-    );
-    // SAFETY: recipient_service runs before spawning its worker tasks.
-    unsafe {
-        std::env::remove_var("LISTEN_PID");
-        std::env::remove_var("LISTEN_FDS");
-        std::env::remove_var("LISTEN_FDNAMES");
-    }
     tokio::net::UnixListener::from_std(listener).map_err(Into::into)
 }
 
@@ -4328,7 +4285,7 @@ mod tests {
             let err = resolve_acl(&args, NODE_KEY)
                 .expect_err("a malformed capability list must abort the mount");
             assert!(
-                format!("{err:#}").contains("JSON array of capabilities"),
+                format!("{err:#}").contains("not the governor's file authority"),
                 "expected a parse failure, got: {err:#}"
             );
         }
@@ -4351,7 +4308,9 @@ mod tests {
         }
         // Phase `the_capability_file_round_trips_and_is_enforced`.
         {
-            use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};
+            use collab_types::{
+                Access as CapAccess, CapOverride, Ed25519PublicKey, Effect, Scope, Subject,
+            };
             use fs::Access;
 
             let who = [0x0A; 32];
@@ -4359,11 +4318,15 @@ mod tests {
                 Subject::User(Ed25519PublicKey(who)),
                 Scope::FsPath("/w/docs".into()),
                 Effect::Grant,
-                Verb::Read,
+                CapAccess::Read,
             )];
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");
-            std::fs::write(&path, serde_json::to_vec(&caps).unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&collab_types::FsAuthority::from(caps)).unwrap(),
+            )
+            .unwrap();
 
             let args = acl_args_from(&[
                 "--acl",

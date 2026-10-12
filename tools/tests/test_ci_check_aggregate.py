@@ -57,6 +57,33 @@ class CheckAggregateTests(unittest.TestCase):
         self.assertIn('CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"', environment)
         self.assertIn('CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"', environment)
 
+    def test_package_cache_report_observes_the_job_wrapper_after_failure(self):
+        tapps = section(self.workflow, "tapps", 2)
+        report = tapps.split("      - name: Report package compiler cache\n", 1)[1].split("\n      - ", 1)[0]
+        self.assertIn("if: always()", report)
+        self.assertNotIn("continue-on-error:", report)
+        script = textwrap.dedent(report.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as directory:
+            wrapper = Path(directory) / "job-wrapper"
+            wrapper.write_text('#!/bin/sh\n[ "$1" = --show-stats ] || exit 91\nprintf "Cache hits 3\\nCache misses 0\\n"\n')
+            wrapper.chmod(0o755)
+            env = dict(os.environ, RUSTC_WRAPPER=str(wrapper))
+            seen = subprocess.run([self.bash, "-eu", "-c", script], env=env,
+                                  text=True, capture_output=True, check=False)
+            self.assertEqual(seen.returncode, 0, seen.stderr)
+            self.assertIn("Cache hits 3", seen.stdout)
+            self.assertIn("Cache misses 0", seen.stdout)
+            wrapper.write_text('#!/bin/sh\nexit 17\n')
+            unavailable = subprocess.run([self.bash, "-eu", "-c", script], env=env,
+                                         text=True, capture_output=True, check=False)
+            self.assertEqual(unavailable.returncode, 0, unavailable.stderr)
+            self.assertIn("statistics unavailable", unavailable.stdout)
+            disabled = subprocess.run([self.bash, "-eu", "-c", script],
+                                      env=dict(env, RUSTC_WRAPPER=""),
+                                      text=True, capture_output=True, check=False)
+            self.assertEqual(disabled.returncode, 0, disabled.stderr)
+            self.assertIn("no hit rate established", disabled.stdout)
+
     def test_package_timings_observe_the_existing_build_without_a_second_build(self):
         tapps = section(self.workflow, "tapps", 2)
         package = tapps.split("      - name: Package the selected tapps\n", 1)[1].split("\n      - ", 1)[0]

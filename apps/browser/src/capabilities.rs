@@ -480,7 +480,7 @@ mod tests {
     use super::*;
     use ui::framework::HostDelivery as _;
     fn contains(widget: &dyn Widget, id: &str) -> bool {
-        widget.test_id() == Some(id) || widget.children().iter().any(|child| contains(*child, id))
+        ui::widget::find_test_id(widget, id).is_some()
     }
     /// Download records, open and reveal.
     #[test]

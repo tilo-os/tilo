@@ -1,0 +1,26 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "store.catalog"
+label = "App Store"
+version = 1
+fields = [
+  { path = "reports", type = "BTreeMap<String, Report>" },
+]
+
+[[resources.verbs]]
+id = "draft-report"
+kind = "undoable"
+params = [
+  { name = "app_id", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "record-moderation-case"
+kind = "undoable"
+params = [
+  { name = "app_id", required = true, schema = { type = "string" } },
+  { name = "case_id", required = true, schema = { type = "string" } },
+  { name = "status", required = true, schema = { type = "string" } },
+]
+
