@@ -987,13 +987,7 @@ impl app_host::Server for AppHostServer {
         mut results: app_host::LaunchDesktopResults,
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
         async move {
-            let desktop_id = params
-                .get()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .get_desktop_id()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_string()
-                .map_err(|e| Error::failed(e.to_string()))?;
+            let desktop_id = params.get()?.get_desktop_id()?.to_string()?;
             let status = tokio::task::spawn_blocking(move || {
                 let mut command = std::process::Command::new(launcher_bin());
                 command.arg("run-host").arg("--desktop-id").arg(desktop_id);
@@ -1019,17 +1013,10 @@ impl app_host::Server for AppHostServer {
         mut results: app_host::FlatpakResults,
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
         async move {
-            let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
-            let action = p.get_action().map_err(|e| Error::failed(e.to_string()))?;
-            let app_id = p
-                .get_app_id()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_string()
-                .map_err(|e| Error::failed(e.to_string()))?;
-            let reference = p
-                .get_reference()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_vec();
+            let p = params.get()?;
+            let action = p.get_action()?;
+            let app_id = p.get_app_id()?.to_string()?;
+            let reference = p.get_reference()?.to_vec();
             if reference.len() > 64 * 1024 {
                 return Err(Error::failed("Flatpak reference exceeds 64 KiB".into()));
             }
@@ -1071,18 +1058,10 @@ impl app_host::Server for AppHostServer {
         mut results: app_host::RemoteResults,
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
         async move {
-            let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
-            let action = p.get_action().map_err(|e| Error::failed(e.to_string()))?;
-            let name = p
-                .get_name()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_string()
-                .map_err(|e| Error::failed(e.to_string()))?;
-            let url = p
-                .get_url()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_string()
-                .map_err(|e| Error::failed(e.to_string()))?;
+            let p = params.get()?;
+            let action = p.get_action()?;
+            let name = p.get_name()?.to_string()?;
+            let url = p.get_url()?.to_string()?;
             let status = tokio::task::spawn_blocking(move || {
                 let flatpak = std::path::Path::new("/usr/bin/flatpak");
                 match action {

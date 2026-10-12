@@ -127,10 +127,20 @@ pub const NATIVE_STATE_SCHEMA_VERSION: u32 = 3;
 /// # Errors
 /// The authority's layout is invalid, or the encoded file would leave no
 /// room for the recovery its enrolled rooms reserved.
-pub(crate) fn encode_tree(tree: &WorkspaceTree) -> std::io::Result<Vec<u8>> {
+pub(crate) fn encode_tree(tree: &WorkspaceTree) -> std::io::Result<EncodedTree> {
     // Refuse a malformed authority before copying anything.
     check_authority(&tree.native_authority)?;
     encode_durable(&DurableTree::of(tree))
+}
+
+/// A state file, encoded, and the digest of the owner record it holds.
+pub(crate) struct EncodedTree {
+    pub(crate) bytes: Vec<u8>,
+    /// What [`NativeStateRuntime::publish`] expects of the file once this is
+    /// in it: computed in the one pass that encoded the record.
+    ///
+    /// [`NativeStateRuntime::publish`]: super::native_workspace_owner::NativeStateRuntime
+    pub(crate) authority: [u8; 32],
 }
 
 fn check_authority(
@@ -149,7 +159,16 @@ fn check_authority(
 /// the history.
 #[derive(serde::Serialize)]
 pub(crate) struct DurableTree {
+    /// First, so the file can be written as this record, encoded once,
+    /// followed by [`DurableRest`].
     native_authority: super::native_workspace_owner::NativeAuthorityStorage,
+    #[serde(flatten)]
+    rest: DurableRest,
+}
+
+/// Every field of [`DurableTree`] after the owner record.
+#[derive(serde::Serialize)]
+pub(crate) struct DurableRest {
     #[serde(flatten)]
     desktop: crate::shell::state::DesktopTree,
     room_authority: std::collections::HashMap<RoomId, crate::shell::state::RoomAuthority>,
@@ -192,36 +211,71 @@ impl DurableTree {
         }
         Self {
             native_authority: tree.native_authority.clone(),
-            desktop,
-            room_authority: tree.room_authority.clone(),
-            room_peer_names: tree.room_peer_names.clone(),
-            room_peer_identities: tree.room_peer_identities.clone(),
-            room_share_floor: tree.room_share_floor.clone(),
-            continuation_tabs: tree.continuation_tabs.clone(),
-            continuation_rooms: tree.continuation_rooms.clone(),
-            continuation_owned_tabs: tree.continuation_owned_tabs.clone(),
-            continuation_closed_tabs: tree.continuation_closed_tabs.clone(),
-            continuation_file_references: tree.continuation_file_references.clone(),
-            native_document_tabs: tree.native_document_tabs.clone(),
-            local_app_records,
-            package_launches,
+            rest: DurableRest {
+                desktop,
+                room_authority: tree.room_authority.clone(),
+                room_peer_names: tree.room_peer_names.clone(),
+                room_peer_identities: tree.room_peer_identities.clone(),
+                room_share_floor: tree.room_share_floor.clone(),
+                continuation_tabs: tree.continuation_tabs.clone(),
+                continuation_rooms: tree.continuation_rooms.clone(),
+                continuation_owned_tabs: tree.continuation_owned_tabs.clone(),
+                continuation_closed_tabs: tree.continuation_closed_tabs.clone(),
+                continuation_file_references: tree.continuation_file_references.clone(),
+                native_document_tabs: tree.native_document_tabs.clone(),
+                local_app_records,
+                package_launches,
+            },
         }
     }
 }
 
 /// Encode `durable` once, refusing it when the authority is malformed or the
 /// file would leave no room for the recovery its enrolled rooms reserved.
-fn encode_durable(durable: &DurableTree) -> std::io::Result<Vec<u8>> {
+///
+/// The owner record, by far the file's largest part, is pretty-printed once:
+/// that one pass also refuses it as `preflight_storage` would and hashes it
+/// for the writer's digest. The bytes are exactly `durable` pretty-printed.
+fn encode_durable(durable: &DurableTree) -> std::io::Result<EncodedTree> {
     use super::native_workspace_owner::store::LimitedWriter;
+    /// How the file opens, up to the record: its first field.
+    const OPEN: &[u8] = b"{\n  \"native_authority\": ";
     check_authority(&durable.native_authority)?;
     let limit =
         super::native_workspace_owner::publication::state_file_limit(&durable.native_authority)
             .map_err(std::io::Error::other)?;
-    let mut output = LimitedWriter::new(Vec::new(), limit);
-    serde_json::to_writer_pretty(&mut output, durable).map_err(std::io::Error::other)?;
+    let mut embedded = Vec::new();
+    embedded.extend_from_slice(OPEN);
+    let authority = super::native_workspace_owner::store::encode_authority(
+        &durable.native_authority,
+        Some(&mut embedded),
+    )?;
+    if embedded.len() > limit {
+        return Err(std::io::Error::other(
+            "native encoded state refusal cap exceeded",
+        ));
+    }
+    // The other fields alone are an object, brace and all: with the record's
+    // comma in place of that brace, they continue the file. Never empty: the
+    // desktop has fields.
+    let mut fields = LimitedWriter::new(Vec::new(), limit.saturating_sub(embedded.len()));
+    serde_json::to_writer_pretty(&mut fields, &durable.rest).map_err(std::io::Error::other)?;
+    let mut fields = fields.into_inner();
+    if !fields.starts_with(b"{\n") {
+        return Err(std::io::Error::other(
+            "durable tree fields are not an object",
+        ));
+    }
+    if let Some(brace) = fields.first_mut() {
+        *brace = b',';
+    }
+    embedded.append(&mut fields);
     #[cfg(test)]
     ENCODES_ON_THIS_THREAD.with(|encodes| encodes.set(encodes.get().saturating_add(1)));
-    Ok(output.into_inner())
+    Ok(EncodedTree {
+        bytes: embedded,
+        authority,
+    })
 }
 
 /// What a save writes, taken from the tree while the caller holds it: a copy
@@ -257,11 +311,15 @@ impl TreeSnapshot {
         self,
         path: &Path,
     ) -> std::io::Result<super::native_workspace_owner::store::Publication> {
-        let bytes = encode_durable(&self.durable)?;
-        let authority = &self.durable.native_authority;
-        let published = self
-            .runtime
-            .publish(path, authority, authority, &bytes, self.sequence)?;
+        let encoded = encode_durable(&self.durable)?;
+        // A snapshot changes no record: it holds the one the file holds.
+        let published = self.runtime.publish(
+            path,
+            encoded.authority,
+            &self.durable.native_authority,
+            &encoded,
+            self.sequence,
+        )?;
         // Superseded or not, the changes cut for this snapshot are written:
         // the snapshot that superseded it may have been cut before them.
         write_document(&self.runtime, path);
@@ -1625,6 +1683,11 @@ mod tests {
             String::from_utf8_lossy(&now),
             String::from_utf8_lossy(&before),
             "state.json keeps its exact shape"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&encode_tree(&tree).expect("encode").bytes),
+            String::from_utf8_lossy(&now),
+            "the file written with its record encoded once is the same file"
         );
         let written: serde_json::Value = serde_json::from_slice(&now).expect("json");
         assert!(written["local_app_records"].get("93003").is_some());

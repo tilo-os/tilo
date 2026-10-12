@@ -53,16 +53,9 @@ Most user-facing design questions reduce to that one decision:
 
 ## Repository Layout
 
-Single Cargo workspace, no submodules. Prefer explicit paths over `git add -A`.
-
-- `crates/session/shell/` — Wayland compositor (`smithay` + `vello`/`wgpu` + Iroh): workspaces, strips,
-  sandboxing, collaboration. Also the `tilo-control` CLI and the `shots` renderer.
-- `crates/sdk/ui-core/` — the internal toolkit behind `tilo-app`: retained-mode, CRDT-native. `wgpu`+`vello` (render), `taffy` (layout),
-  `cosmic-text` (text), `automerge` (state), `winit` (windowing), `fluent` (i18n).
-- `crates/system/fs/` — FUSE3 + Iroh, mounted at `/var/workspace`, cache at `/var/cache/tilo-fs`.
-- `apps/` — ~40 app crates built on `ui`.
-- `crates/<domain>/` — collab, doc, runtime, packaging, session, system, text, format.
-- `os/` — Containerfile, systemd units, image build scripts.
+Single Cargo workspace, no submodules: apps in `apps/`, libraries in `crates/<domain>/`, the OS
+image in `os/`. For "where is X", start at `docs/codemap.md`: every crate and what it owns, one
+line each. Prefer explicit paths over `git add -A`.
 
 ## Build & Test
 
@@ -78,7 +71,7 @@ Functions take usually ≤5 params, never more than 8: clippy denies it and no `
 first is hashed into sccache's cache key, so it costs every hit even when set to the path
 cargo would have picked anyway; the second collides silently and hands you the other
 worktree's binary. Delete a landed worktree's `target/` — those bytes serve one worktree, the
-same bytes in the cache serve all of them. `DEVELOPMENT.md` carries the measurements.
+same bytes in the cache serve all of them. `docs/measurements/build-speed.md` carries the measurements.
 
 Scope tests to what you are proving — the compile dominates, and a whole-crate run is minutes:
 

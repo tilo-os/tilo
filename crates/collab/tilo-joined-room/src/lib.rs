@@ -40,7 +40,7 @@ pub use file_store::open_file;
 pub use history_content::HistoryContent;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
 pub use publication::{
-    NativeOutgoing, NativeOutgoingEntry, preflight_storage, reserved_file_bytes,
+    NativeOutgoing, NativeOutgoingEntry, authority_limit, preflight_storage, reserved_file_bytes,
     validate_file_layout,
 };
 pub use record::{

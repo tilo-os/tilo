@@ -1,6 +1,7 @@
 [package]
 name = "browser"
 version = "0.1.0"
+description = "Web browser: one page per instance, tabs are desktop tabs"
 edition = "2024"
 publish.workspace = true
 license.workspace = true

@@ -98,13 +98,22 @@ at_prompt_then_type() {
 }
 
 # --- 8. B's root on LUKS2 with the sibling slot ----------------------------------
-# The overlay was grown before boot (test-nearby-pairing.sh), so the root can
-# move onto a new partition of at least its own size. The GPT still describes
-# the disk's size before it grew: its backup header and last usable sector sit
-# at the old end until they are moved. Every step of that records the geometry
-# it saw and fails by name, so a disk without room says why.
-grown="$(qemu-img info -U --output=json "$run_b/disk.qcow2" | jq -r '."virtual-size"')"
-[[ $grown =~ ^[0-9]+$ ]] || die "B's overlay reports no size: $grown"
+# First boot grows the root partition over the whole disk it finds, so B's
+# disk grows only now, while B runs, by as much again as it holds: the root
+# then moves onto a new partition of at least its own size at the end. QEMU
+# grows the overlay in place (it stays sparse, so only the data actually
+# copied takes host space) and tells B's kernel the new capacity. The GPT
+# still ends at the old size until its backup header moves. Every step
+# records the geometry it saw and fails by name, so a disk without room says
+# why.
+size_before="$(qemu-img info -U --output=json "$run_b/disk.qcow2" | jq -r '."virtual-size"')"
+[[ $size_before =~ ^[0-9]+$ ]] || die "B's overlay reports no size: $size_before"
+grown=$((size_before * 2))
+vm_b cmd "block_resize tilo-disk $grown" > "$out/unlock-block-resize.txt" 2>&1 \
+  || die "QEMU could not grow B's disk: $(cat "$out/unlock-block-resize.txt")"
+if grep -qi error "$out/unlock-block-resize.txt"; then
+  die "QEMU could not grow B's disk: $(cat "$out/unlock-block-resize.txt")"
+fi
 sudo_b "set -eu
   tilo_root=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab
   linux=0FC63DAF-8483-4772-8E79-3D69D8477DE4
@@ -117,6 +126,11 @@ sudo_b "set -eu
     sfdisk --dump \"\$disk\"
     sfdisk --list-free \"\$disk\"
   }
+  # The kernel learns the new capacity from the device asynchronously.
+  for _ in \$(seq 1 30); do
+    [ \"\$(blockdev --getsize64 \"\$disk\")\" -ge $grown ] && break
+    sleep 1
+  done
   geometry 'before moving the backup GPT header'
   size=\$(blockdev --getsize64 \"\$disk\")
   [ \"\$size\" -ge $grown ] || {

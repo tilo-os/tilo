@@ -14,8 +14,13 @@
 //! acknowledged, that edit's whole recovery history, one dependency at a
 //! time: 5.7 s of broker CPU per edit at 48,000 characters (1.2 s at
 //! 10,000), which starved the reader's round trips past their deadlines
-//! into renewals, each a whole read. The budgets below hold the broker at a
-//! fraction of that.
+//! into renewals, each a whole read. Then the app sent every edit it read
+//! back to the owner, twice, as its own (once per route publishing the
+//! record), and every commit wrote the owner's whole record out as JSON
+//! about seven times, its outgoing bytes a line per byte: 725 ms of broker
+//! CPU per edit at 48,000 characters. The app now sends nothing it only
+//! read, so the broker's share is its reads, flat in the document's size;
+//! the edit's own commit, which persists the record, is the process's.
 use super::blocked_read::commit_edit;
 use super::*;
 use std::fmt::Write as _;
@@ -33,8 +38,9 @@ const EDITS: usize = 10;
 const READER_BYTES_PER_EDIT_BUDGET: u64 = 4096;
 
 /// A document of about 10,000 characters (200 lines, one text op each).
-/// Measured in this debug harness on the shared runner: 236–250 ms of
-/// broker CPU per edit, 1.2 s before.
+/// Measured in this debug harness on the shared runner, per edit: 18 ms of
+/// broker CPU (1.2 s, then 247 ms before), 382 ms of process CPU (1.0 s)
+/// and 241 ms to show (577 ms).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_large_shared_document_under_remote_editing_is_reread_by_the_edit() {
     trace_publication_hops();
@@ -46,9 +52,9 @@ async fn a_large_shared_document_under_remote_editing_is_reread_by_the_edit() {
     .await;
 }
 
-/// About 48,000 characters (1,000 lines). Measured: 641 ms of broker CPU per
-/// edit, 5.7 s before; nearly all of what is left persists the owner's
-/// record.
+/// About 48,000 characters (1,000 lines). Measured per edit: 20 ms of broker
+/// CPU (5.7 s, then 725 ms before), 574 ms of process CPU (2.3 s) and 344 ms
+/// to show (1.5 s).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_long_shared_document_under_remote_editing_keeps_its_broker_responsive() {
     trace_publication_hops();
@@ -60,10 +66,17 @@ async fn a_long_shared_document_under_remote_editing_keeps_its_broker_responsive
     .await;
 }
 
-/// Broker CPU a one-line edit may cost, by document size in lines.
-fn broker_ms_per_edit_budget(lines: usize) -> u128 {
-    if lines <= 200 { 600 } else { 1500 }
+/// Broker CPU a one-line edit may cost at either size: the broker only
+/// answers the app's reads, which hand it the edit.
+const BROKER_MS_PER_EDIT_BUDGET: u128 = 100;
+/// CPU the whole test process may spend per one-line edit, by document size
+/// in lines: both devices, the relay, the app showing the edit and the
+/// owner's commit of it, which persists the owner's record.
+fn process_ms_per_edit_budget(lines: usize) -> u128 {
+    if lines <= 200 { 800 } else { 1100 }
 }
+/// How long half the edits may take to show, at either size.
+const LATENCY_P50_MS_BUDGET: u128 = 1000;
 
 /// What the first mounted app's committed readers were handed by the owner.
 #[derive(Default)]
@@ -307,18 +320,20 @@ pub(super) async fn run(device: &Device, target: &mut Mounted, lines: usize) {
     let per_edit = |total: u128| total.checked_div(u128::from(edits)).unwrap_or(0);
     let bytes_per_edit = read.bytes.checked_div(edits).unwrap_or(0);
     let broker_ms_per_edit = per_edit(parts.first().map_or(0, std::time::Duration::as_millis));
+    let process_ms_per_edit = per_edit(cpu.as_millis());
+    let latency_ms_p50 = latencies
+        .get(EDITS / 2)
+        .map_or(0, std::time::Duration::as_millis);
     eprintln!(
         "ACTIVE-SHARED-DOCUMENT doc_chars={} edits={EDITS} full_captures={} changes={} reader_bytes_per_edit={bytes_per_edit} owner_read_us_per_edit={} process_cpu_ms_per_edit={} broker_cpu_ms_per_edit={} shovel_cpu_ms_per_edit={} latency_ms_p50={} latency_ms_max={}",
         body.len(),
         read.captures,
         read.changes,
         per_edit(u128::from(read.owner_ns)) / 1_000,
-        per_edit(cpu.as_millis()),
+        process_ms_per_edit,
         broker_ms_per_edit,
         per_edit(parts.get(1).map_or(0, std::time::Duration::as_millis)),
-        latencies
-            .get(EDITS / 2)
-            .map_or(0, std::time::Duration::as_millis),
+        latency_ms_p50,
         latencies.last().map_or(0, std::time::Duration::as_millis),
     );
     assert!(
@@ -334,10 +349,20 @@ pub(super) async fn run(device: &Device, target: &mut Mounted, lines: usize) {
         "each one-line edit handed the reader {bytes_per_edit} bytes (budget {READER_BYTES_PER_EDIT_BUDGET}); the document is {} characters",
         body.len()
     );
-    let budget = broker_ms_per_edit_budget(lines);
     assert!(
-        broker_ms_per_edit <= budget,
-        "each one-line edit cost the broker thread {broker_ms_per_edit} ms of CPU (budget {budget} ms); the document is {} characters",
+        broker_ms_per_edit <= BROKER_MS_PER_EDIT_BUDGET,
+        "each one-line edit cost the broker thread {broker_ms_per_edit} ms of CPU (budget {BROKER_MS_PER_EDIT_BUDGET} ms); the document is {} characters",
+        body.len()
+    );
+    let budget = process_ms_per_edit_budget(lines);
+    assert!(
+        process_ms_per_edit <= budget,
+        "each one-line edit cost the process {process_ms_per_edit} ms of CPU (budget {budget} ms); the document is {} characters",
+        body.len()
+    );
+    assert!(
+        latency_ms_p50 <= LATENCY_P50_MS_BUDGET,
+        "half the edits took over {latency_ms_p50} ms to show (budget {LATENCY_P50_MS_BUDGET} ms); the document is {} characters",
         body.len()
     );
 }
