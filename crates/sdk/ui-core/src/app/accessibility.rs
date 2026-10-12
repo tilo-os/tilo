@@ -283,6 +283,7 @@ impl App {
         }
     }
     fn update_focusable_order(&mut self) {
+        let _profile = tilo_resource::profiling::Phase::start("ui.focus_order");
         if self
             .actions
             .action_palette
