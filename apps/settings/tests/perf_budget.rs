@@ -329,4 +329,44 @@ mod hosted {
         }
         let p50 = summary("hosted settings keystroke", &mut keys).0;
     }
+
+    /// The action surface Settings publishes on a page, measured the way the
+    /// bridge sees it: the resource tree the host builds, surveyed into
+    /// actions, converted to the wire's exported form and serialised.
+    /// (The size is the serialised JSON length, the measure the Notes surface
+    /// volume test uses.) No budget: this reports what a publication costs.
+    #[test]
+    fn hosted_action_surface_cost() {
+        let mut app = hosted();
+        let rows = tree_item_centres(&mut app);
+        for (label, x, y) in rows.iter().skip(1).take(5).cloned() {
+            app.harness().click_at(x, y);
+            app.settle();
+            let (mut resources, mut survey, mut encode) = (Vec::new(), Vec::new(), Vec::new());
+            let (mut bytes, mut actions) = (0, 0);
+            for _ in 0..8 {
+                let t = Instant::now();
+                let tree = app.harness().resources();
+                resources.push(t.elapsed().as_micros() as u64);
+                let t = Instant::now();
+                let surveyed = ui::tilo_actions::door::survey(&tree);
+                let exported: Vec<ui::collaboration::ExportedAction> = surveyed
+                    .iter()
+                    .map(ui::collaboration::ExportedAction::from)
+                    .collect();
+                survey.push(t.elapsed().as_micros() as u64);
+                let t = Instant::now();
+                bytes = exported
+                    .iter()
+                    .map(|action| serde_json::to_vec(action).unwrap().len())
+                    .sum::<usize>();
+                encode.push(t.elapsed().as_micros() as u64);
+                actions = exported.len();
+            }
+            eprintln!("surface [{label}]: {actions} actions, {bytes} bytes per publish");
+            summary(&format!("surface resource tree [{label}]"), &mut resources);
+            summary(&format!("surface survey+export [{label}]"), &mut survey);
+            summary(&format!("surface encode [{label}]"), &mut encode);
+        }
+    }
 }
