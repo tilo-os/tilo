@@ -50,28 +50,20 @@ impl EnrollmentHost for Port {
         })
     }
     fn phase(&self, account: &ServiceAccount) -> EnrollmentPhase {
-        let status = self.projection.lock().ok().and_then(|states| {
-            states
-                .get(account)
-                .map(|s| (s.phase, s.cancelled, s.native.clone()))
-        });
-        let Some((phase, cancelled, native)) = status else {
+        let Ok(states) = self.projection.lock() else {
             return EnrollmentPhase::Empty;
         };
-        if cancelled {
-            return EnrollmentPhase::Interrupted;
-        }
-        if let Some(native) = native.and_then(|account| account.upgrade()) {
-            match native.state() {
-                tilo_messaging::AccountState::Ready => return EnrollmentPhase::Ready,
-                tilo_messaging::AccountState::Locked | tilo_messaging::AccountState::Failed => {
-                    return EnrollmentPhase::Interrupted;
-                }
-                _ if phase == EnrollmentPhase::Ready => return EnrollmentPhase::Interrupted,
-                _ => {}
-            }
-        }
-        phase
+        states.get(account).map_or(EnrollmentPhase::Empty, |state| {
+            super::projected_phase(
+                state.phase,
+                state.cancelled,
+                state
+                    .native
+                    .as_ref()
+                    .and_then(std::sync::Weak::upgrade)
+                    .map(|n| n.state()),
+            )
+        })
     }
     fn linked(&self, account: &ServiceAccount) -> Option<LinkedAccount> {
         self.projection.lock().ok()?.get(account)?.linked.clone()
@@ -265,8 +257,7 @@ async fn capture(connection: &zbus::Connection) -> Result<Vec<(SimBinding, Strin
     Ok(choices)
 }
 struct Permission {
-    request: accounts::AccessRequest,
-    proposal: String,
+    asked: super::OwnerPermission,
     name: String,
 }
 struct Attempt {
@@ -742,25 +733,15 @@ impl Actor {
             let item_id = apps
                 .prepare_native_messaging_profile_key(&attempt.identity, ORIGIN)
                 .map_err(|_| SendError::Revoked)?;
-            let request = accounts::AccessRequest {
-                app_id: "so.tilo.messages".into(),
+            let asked = super::OwnerPermission::ask(
+                apps,
+                &attempt.identity,
                 item_id,
-                purpose: "Private SMS messaging using the selected SIM".into(),
-                origin: Some(ORIGIN.into()),
-            };
-            let Ok(proposal) =
-                apps.propose_native_messaging_permission(&attempt.identity, request.clone())
-            else {
-                if let Some(vault) = &apps.credential_owner {
-                    let _ = vault.edit(|store| store.remove(&request.item_id));
-                }
-                return Err(SendError::Revoked);
-            };
-            attempt.permission = Some(Permission {
-                request,
-                proposal: proposal.clone(),
-                name,
-            });
+                "Private SMS messaging using the selected SIM".into(),
+                ORIGIN,
+            )?;
+            let proposal = asked.proposal.clone();
+            attempt.permission = Some(Permission { asked, name });
             (attempt, proposal)
         };
         self.attempt.replace(Some(attempt));
@@ -823,25 +804,22 @@ impl Actor {
         let Some(permission) = attempt.permission.take() else {
             return;
         };
-        let credential =
-            apps.native_messaging_credential(&attempt.identity, permission.request.clone());
-        if !credential.as_ref().is_ok_and(|c| c.check().is_ok()) {
-            let pending = apps
-                .credential_owner
-                .as_ref()
-                .and_then(|v| v.proposals().ok())
-                .is_some_and(|p| p.iter().any(|p| p.id == permission.proposal));
-            attempt.permission = Some(permission);
-            if !pending {
-                self.retire(apps, attempt);
-                slot.take();
+        let credential = match permission.asked.grant(apps, &attempt.identity) {
+            super::Grant::Approved(credential) => credential,
+            grant => {
+                let refused = matches!(grant, super::Grant::Refused);
+                attempt.permission = Some(permission);
+                if refused {
+                    self.retire(apps, attempt);
+                    slot.take();
+                }
+                return;
             }
-            return;
-        }
-        let result = credential
-            .map_err(|_| SendError::Revoked)
-            .and_then(|credential| self.activate(apps, attempt, permission, credential));
-        if result.is_err() {
+        };
+        if self
+            .activate(apps, attempt, permission, credential)
+            .is_err()
+        {
             self.phase(&attempt.review.account, EnrollmentPhase::Interrupted);
         }
     }
@@ -914,11 +892,8 @@ impl Actor {
         if let Some(account) = &attempt.account {
             account.retire();
         }
-        if let Some(permission) = attempt.permission.take()
-            && let Some(vault) = &apps.credential_owner
-        {
-            let _ = vault.decide_proposal(&permission.proposal, accounts::AccessDecision::Deny);
-            let _ = vault.edit(|store| store.remove(&permission.request.item_id));
+        if let Some(permission) = attempt.permission.take() {
+            permission.asked.withdraw(apps);
         }
         self.phase(&attempt.review.account, EnrollmentPhase::Interrupted);
     }

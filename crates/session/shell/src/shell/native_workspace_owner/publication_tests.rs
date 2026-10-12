@@ -905,9 +905,11 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
     // Incompressible text makes the actual native history large while staying
     // inside the original wire cap. The candidate itself fits; its mandatory
     // future recovery representation does not fit the authority envelope.
+    // Originals are base64 now, so the fixture needs more text than when
+    // their byte arrays consumed most of that envelope themselves.
     let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut random = 0x1234_5678_u32;
-    let text: String = (0..1024 * 1024)
+    let text: String = (0..2 * 1024 * 1024)
         .map(|_| {
             random ^= random << 13;
             random ^= random >> 17;
@@ -953,7 +955,11 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
     store::preflight(&prospective.native_authority, store::MAX_AUTHORITY_BYTES).unwrap();
     assert!(
         tilo_joined_room::preflight_storage(&prospective.native_authority).is_err(),
-        "the refusal must come from the required recovery reserve"
+        "the refusal must come from the required recovery reserve: encoded={}, allowed={:?}",
+        serde_json::to_vec_pretty(&prospective.native_authority)
+            .unwrap()
+            .len(),
+        tilo_joined_room::authority_limit(&prospective.native_authority),
     );
     let path = directory.path().join("state.json");
     let before = std::fs::read(&path).unwrap();
@@ -1009,7 +1015,7 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
     internals::bump_revision(&mut prospective.native_authority);
     // Use the actual sanitizer/serializer on the small tree to derive this
     // fixture. Adding ASCII title text changes only title and durable label.
-    let small = persist::encode_tree(&prospective).unwrap();
+    let small = persist::encode_tree(&prospective).unwrap().bytes;
     let sanitized: crate::shell::state::WorkspaceTree = serde_json::from_slice(&small).unwrap();
     let reserved = publication::required_tree_bytes(&sanitized).unwrap() - small.len();
     assert!(reserved > 2);

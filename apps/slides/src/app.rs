@@ -303,6 +303,22 @@ struct RoutedEvent<'a, 'doc> {
     taffy: &'a TaffyTree<()>,
 }
 
+impl RoutedEvent<'_, '_> {
+    /// The event context a routed child widget sees, reporting into `handled`.
+    fn event_ctx<'b>(&'b mut self, handled: &'b mut bool) -> ui::widget::EventCtx<'b> {
+        ui::widget::EventCtx {
+            scale_factor: self.scale_factor,
+            modifiers: &self.modifiers,
+            state: self.state.reborrow(),
+            path: self.path,
+            handled,
+            focus_target: self.focus_target,
+            node_id: self.node_id,
+            taffy: self.taffy,
+        }
+    }
+}
+
 /// The words of one text box being edited on the canvas: the SDK editor,
 /// embedded where the box is drawn and laid out at the slide's size, editing
 /// the element's rich-text body, each edit a field edit of the deck at the
@@ -1901,19 +1917,8 @@ impl SlidesApp {
             _ => {}
         }
         let mut h = false;
-        self.title_input.handle_event(
-            routed.event,
-            &mut ui::widget::EventCtx {
-                scale_factor: routed.scale_factor,
-                modifiers: &routed.modifiers,
-                state: routed.state.reborrow(),
-                path: routed.path,
-                handled: &mut h,
-                focus_target: routed.focus_target,
-                node_id: routed.node_id,
-                taffy: routed.taffy,
-            },
-        );
+        self.title_input
+            .handle_event(routed.event, &mut routed.event_ctx(&mut h));
         // The rename is one edit, submitted when it is committed.
         true
     }
@@ -1961,19 +1966,8 @@ impl SlidesApp {
             _ => {}
         }
         let mut input_handled = false;
-        self.notes.handle_event(
-            routed.event,
-            &mut ui::widget::EventCtx {
-                scale_factor: routed.scale_factor,
-                modifiers: &routed.modifiers,
-                state: routed.state.reborrow(),
-                path: routed.path,
-                handled: &mut input_handled,
-                focus_target: routed.focus_target,
-                node_id: routed.node_id,
-                taffy: routed.taffy,
-            },
-        );
+        self.notes
+            .handle_event(routed.event, &mut routed.event_ctx(&mut input_handled));
         input_handled
     }
 
@@ -3965,19 +3959,8 @@ impl SlidesApp {
             );
         }
         let mut menu_handled = false;
-        self.ctx_menu.handle_event(
-            routed.event,
-            &mut ui::widget::EventCtx {
-                scale_factor: routed.scale_factor,
-                modifiers: &routed.modifiers,
-                state: routed.state.reborrow(),
-                path: routed.path,
-                handled: &mut menu_handled,
-                focus_target: routed.focus_target,
-                node_id: routed.node_id,
-                taffy: routed.taffy,
-            },
-        );
+        self.ctx_menu
+            .handle_event(routed.event, &mut routed.event_ctx(&mut menu_handled));
         if let Some(idx) = self.ctx_menu.take_selection()
             && let Some(Some(hit)) = self.ctx_hits.get(idx).cloned()
         {
@@ -4038,19 +4021,8 @@ impl SlidesApp {
             }
         }
         let mut h = false;
-        self.fill_picker.handle_event(
-            routed.event,
-            &mut ui::widget::EventCtx {
-                scale_factor: routed.scale_factor,
-                modifiers: &routed.modifiers,
-                state: routed.state.reborrow(),
-                path: routed.path,
-                handled: &mut h,
-                focus_target: routed.focus_target,
-                node_id: routed.node_id,
-                taffy: routed.taffy,
-            },
-        );
+        self.fill_picker
+            .handle_event(routed.event, &mut routed.event_ctx(&mut h));
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -4078,19 +4050,8 @@ impl SlidesApp {
                     position.y / routed.scale_factor,
                 );
                 let mut h = false;
-                self.font_input.handle_event(
-                    routed.event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: routed.scale_factor,
-                        modifiers: &routed.modifiers,
-                        state: routed.state.reborrow(),
-                        path: routed.path,
-                        handled: &mut h,
-                        focus_target: routed.focus_target,
-                        node_id: routed.node_id,
-                        taffy: routed.taffy,
-                    },
-                );
+                self.font_input
+                    .handle_event(routed.event, &mut routed.event_ctx(&mut h));
                 if let Some(v) = self.font_input.take_changed() {
                     self.set_sel_f64("font_size", v);
                 }
@@ -4104,19 +4065,8 @@ impl SlidesApp {
             } => {
                 if self.font_input.get_rect().contains(self.last_mouse) {
                     let mut h = false;
-                    self.font_input.handle_event(
-                        routed.event,
-                        &mut ui::widget::EventCtx {
-                            scale_factor: routed.scale_factor,
-                            modifiers: &routed.modifiers,
-                            state: routed.state.reborrow(),
-                            path: routed.path,
-                            handled: &mut h,
-                            focus_target: routed.focus_target,
-                            node_id: routed.node_id,
-                            taffy: routed.taffy,
-                        },
-                    );
+                    self.font_input
+                        .handle_event(routed.event, &mut routed.event_ctx(&mut h));
                     Widget::set_focus(&mut self.font_input, true);
                     if let Some(v) = self.font_input.take_changed() {
                         self.set_sel_f64("font_size", v);
@@ -4161,19 +4111,8 @@ impl SlidesApp {
             return true;
         }
         let mut h = false;
-        self.font_input.handle_event(
-            routed.event,
-            &mut ui::widget::EventCtx {
-                scale_factor: routed.scale_factor,
-                modifiers: &routed.modifiers,
-                state: routed.state.reborrow(),
-                path: routed.path,
-                handled: &mut h,
-                focus_target: routed.focus_target,
-                node_id: routed.node_id,
-                taffy: routed.taffy,
-            },
-        );
+        self.font_input
+            .handle_event(routed.event, &mut routed.event_ctx(&mut h));
         if let Some(v) = self.font_input.take_changed() {
             self.set_sel_f64("font_size", v);
         }
@@ -4954,19 +4893,8 @@ impl SlidesApp {
         let before = self.layout_picker.selected().to_owned();
         let focus = *routed.focus_target;
         let mut handled = false;
-        self.layout_picker.handle_event(
-            routed.event,
-            &mut ui::widget::EventCtx {
-                scale_factor: routed.scale_factor,
-                modifiers: &routed.modifiers,
-                state: routed.state.reborrow(),
-                path: routed.path,
-                handled: &mut handled,
-                focus_target: routed.focus_target,
-                node_id: routed.node_id,
-                taffy: routed.taffy,
-            },
-        );
+        self.layout_picker
+            .handle_event(routed.event, &mut routed.event_ctx(&mut handled));
         // The picker is driven here, not through the window's focus chain.
         *routed.focus_target = focus;
         if !open {

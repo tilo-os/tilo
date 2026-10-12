@@ -55,10 +55,10 @@ pub fn app_log_dir() -> io::Result<PathBuf> {
 /// Returns the filesystem error, `PermissionDenied` for a foreign or linked
 /// directory, and `AlreadyExists` when anything already occupies the path.
 pub fn create_app_log(dir: &Path, tab_id: Uuid) -> io::Result<(PathBuf, File)> {
-    private_fs::directory(dir)?;
+    tilo_files::native::private::directory(dir)?;
     prune_app_logs(dir, MAX_APP_LOGS.saturating_sub(1));
     let path = dir.join(format!("{tab_id}{LOG_SUFFIX}"));
-    let file = private_fs::create_new(&path)?;
+    let file = tilo_files::native::private::create_new(&path)?;
     Ok((path, file))
 }
 

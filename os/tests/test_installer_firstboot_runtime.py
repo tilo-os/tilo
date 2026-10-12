@@ -33,6 +33,7 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             target = work / "target" / "etc"
             target.mkdir(parents=True)
             for relative in ("usr/libexec/tilo-firstboot-user",
+                             "usr/libexec/tilo-firstboot-files.py",
                              "usr/lib/systemd/system/tilo-firstboot-user.service",
                              "usr/libexec/tilo-firstboot-autologin-cleanup",
                              "usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service",
@@ -52,6 +53,8 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             self.assertEqual(result.returncode, 0, result.stderr)
             helper = target / "tilo/firstboot-user"
             self.assertEqual(helper.read_bytes(), (source / "usr/libexec/tilo-firstboot-user").read_bytes())
+            self.assertEqual((target / "tilo/tilo-firstboot-files.py").read_bytes(),
+                             (source / "usr/libexec/tilo-firstboot-files.py").read_bytes())
             self.assertEqual(helper.stat().st_mode & 0o777, 0o644)
             unit = target / "systemd/system/tilo-firstboot-user.service"
             self.assertIn("ExecStart=/usr/bin/bash /etc/tilo/firstboot-user\n", unit.read_text())
