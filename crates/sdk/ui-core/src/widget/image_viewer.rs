@@ -335,7 +335,7 @@ mod tests {
     use super::*;
     use crate::testing::dispatch;
     use std::sync::Arc;
-    use vello::peniko::{Blob, ImageAlphaType, ImageData as Image, ImageFormat as Format};
+    use vello::peniko::{Blob, ImageData as Image};
     use winit::dpi::PhysicalPosition;
     use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
@@ -343,13 +343,7 @@ mod tests {
     fn make_image() -> Image {
         let pixels = vec![255u8; 4 * 16 * 16];
         let blob = Blob::new(Arc::new(pixels));
-        Image {
-            data: blob,
-            format: Format::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: 16,
-            height: 16,
-        }
+        crate::raster::rgba8(blob, 16, 16)
     }
 
     #[test]

@@ -255,7 +255,7 @@ fn the_blur_pass_shows_the_tinted_average_of_the_backdrop() {
 
     let mut renderer = OffscreenRenderer::new(width, height);
     let opaque = renderer.render(&scene, Color::BLACK);
-    renderer.set_backdrop(Some(Arc::new(frame)));
+    renderer.set_backdrop(Some(std::sync::Arc::new(frame)));
     let blurred = renderer.render(&scene, Color::BLACK);
 
     let ground = crate::chrome::panel_ground(&theme).to_rgba8().to_u8_array();
