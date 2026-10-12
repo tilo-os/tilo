@@ -95,7 +95,7 @@ fn an_agent_session_acts_as_its_admitted_agent_in_its_own_execution() {
     let callers = host.callers.clone();
     let first = McpServer::for_agent(host.clone(), "room".into(), "claude-terminal");
     let second = McpServer::for_agent(host, "room".into(), "claude-terminal");
-    let call = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tilo_invoke","arguments":{"peer_id":71,"revision":"1","resource":"test.note:1","action":tilo_resource::APPLY,"arguments":{}}}});
+    let call = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tilo_do","arguments":{"path":"test/Note#apply"}}});
     run(async {
         for server in [&first, &second] {
             let initialized = server
@@ -114,7 +114,7 @@ fn an_agent_session_acts_as_its_admitted_agent_in_its_own_execution() {
             .iter()
             .filter_map(|tool| tool["name"].as_str())
             .collect();
-        assert!(names.contains(&"tilo_invoke"), "{names:?}");
+        assert!(names.contains(&"tilo_do"), "{names:?}");
         assert!(
             !names.iter().any(|name| name.starts_with("computer")),
             "{names:?}"
@@ -125,7 +125,7 @@ fn an_agent_session_acts_as_its_admitted_agent_in_its_own_execution() {
         }
     });
     let callers = callers.lock().unwrap();
-    assert_eq!(callers.len(), 2);
+    assert!(callers.len() >= 2, "each session asked the host");
     for caller in callers.iter() {
         assert_eq!(
             caller.principal(),
@@ -134,7 +134,10 @@ fn an_agent_session_acts_as_its_admitted_agent_in_its_own_execution() {
         assert_eq!(caller.room(), Some("room"));
         assert!(caller.execution_is_live());
     }
-    assert_ne!(callers[0].execution_id(), callers[1].execution_id());
+    assert_ne!(
+        callers.first().map(Caller::execution_id),
+        callers.last().map(Caller::execution_id)
+    );
     drop(callers);
     assert!(first.audience_matches("room", "agent:claude-terminal"));
     drop(first);

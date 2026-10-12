@@ -249,6 +249,8 @@ mod tests {
 
     #[test]
     fn oversized_negotiated_bundle_closes_every_received_descriptor() {
+        // See `rejected_message_closes_descriptors`.
+        let _quiet = crate::no_spawns();
         let (sender, receiver) = UnixDatagram::pair().unwrap();
         let (mut reader, writer) = UnixStream::pair().unwrap();
         reader.set_nonblocking(true).unwrap();
@@ -294,6 +296,9 @@ mod tests {
     }
 
     fn rejected_message_closes_descriptors(count: usize, bytes: usize) {
+        // No sibling test may have a child between its fork and its exec while
+        // this waits for the last copy of `writer` to close.
+        let _quiet = crate::no_spawns();
         let (a, b) = UnixDatagram::pair().unwrap();
         let (mut reader, writer) = UnixStream::pair().unwrap();
         reader.set_nonblocking(true).unwrap();

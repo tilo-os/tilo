@@ -4,9 +4,10 @@
 //! it is an agent member of the workspace and lists the session's live apps
 //! over the broker as that agent.
 //!
-//! `#[ignore]`d by default (spawns a real compositor child). Opt in with:
+//! Spawns a real headless compositor child, like the other headless shell
+//! tests, and runs in the normal `it` target:
 //! ```text
-//! cargo test -p shell --test it agent_door_e2e:: -- --ignored --test-threads 1
+//! cargo test -p shell --test it agent_door_e2e::
 //! ```
 
 use std::io::{BufRead, BufReader, Write};
@@ -15,66 +16,36 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// The restored Notes desktop (the one the idle-wakeup tests measure),
+/// serving the agent door where a client in the login looks for it.
 struct Session {
-    child: Child,
-    runtime_dir: PathBuf,
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.runtime_dir);
-    }
+    desktop: crate::idle_wakeups::Desktop,
 }
 
 impl Session {
     fn control(&self) -> PathBuf {
-        self.runtime_dir.join("ctl")
+        self.desktop.control_path().to_path_buf()
     }
     fn door(&self) -> PathBuf {
-        self.runtime_dir.join("agent.sock")
+        self.desktop.runtime_dir().join("tilo-session/agent.sock")
+    }
+    fn log(&self) -> crate::idle_wakeups::Log {
+        self.desktop.log_handle()
+    }
+    fn runtime_dir(&self) -> &Path {
+        self.desktop.runtime_dir()
     }
 }
 
 fn spawn() -> Session {
-    tilo_test_env::require_isolated_desktop();
-    // Short, so every socket path stays below SUN_LEN.
-    let runtime_dir = PathBuf::from(format!(
-        "/run/user/{}/tilo-door-{}",
-        // SAFETY: `getuid` has no failure mode.
-        unsafe { libc::getuid() },
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&runtime_dir);
-    std::fs::create_dir_all(&runtime_dir).unwrap();
-    let child = Command::new(env!("CARGO_BIN_EXE_shell"))
-        .args(["--mode", "native", "--backend", "headless"])
-        .env("TILO_TEST_CONTROL", runtime_dir.join("ctl"))
-        .env("TILO_AGENT_DOOR", runtime_dir.join("agent.sock"))
-        .env("TILO_HEADLESS_SIZE", "1280x800")
-        .env("XDG_RUNTIME_DIR", &runtime_dir)
-        .env("HOME", runtime_dir.join("home"))
-        .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
-        .env("XDG_DATA_HOME", runtime_dir.join("data"))
-        .env("XDG_STATE_HOME", runtime_dir.join("state"))
-        .env("XDG_CACHE_HOME", runtime_dir.join("cache"))
-        .env("TILO_IDENTITY_ROOT", runtime_dir.join("identity"))
-        .env("TILO_STATE_PATH", runtime_dir.join("state.json"))
-        .env("TILO_WORKSPACE_ROOTS", "")
-        .env_remove("WAYLAND_DISPLAY")
-        .env_remove("DISPLAY")
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("spawn compositor");
-    let mut session = Session { child, runtime_dir };
+    let desktop =
+        crate::idle_wakeups::Desktop::start_with_door(crate::idle_wakeups::notes_desktop(), true);
+    desktop.wait_for("the restored Notes notebook", |targets| {
+        targets.iter().any(|name| name == "notes.first_note")
+    });
+    let session = Session { desktop };
     let deadline = tilo_test_env::hang_deadline();
-    while UnixStream::connect(session.control()).is_err() || !session.door().exists() {
-        assert!(
-            session.child.try_wait().unwrap().is_none(),
-            "the compositor exited before serving its door"
-        );
+    while !session.door().exists() {
         assert!(Instant::now() < deadline, "the door was never served");
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -157,7 +128,6 @@ fn initialize() -> serde_json::Value {
 }
 
 #[test]
-#[ignore = "spawns a real headless compositor; opt in with --ignored"]
 fn a_terminal_agent_is_admitted_or_refused_by_the_person_and_lists_live_apps() {
     let session = spawn();
 
@@ -189,19 +159,21 @@ fn a_terminal_agent_is_admitted_or_refused_by_the_person_and_lists_live_apps() {
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
-    assert!(names.contains(&"tilo_list_apps"), "{names:?}");
+    assert!(names.contains(&"tilo_ls"), "{names:?}");
     assert!(
         !names.iter().any(|name| name.starts_with("computer")),
         "{names:?}"
     );
     agent.send(
         &serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
-        "params":{"name":"tilo_list_apps","arguments":{}}}),
+        "params":{"name":"tilo_ls","arguments":{}}}),
     );
     let listed = agent.reply().unwrap();
     assert_eq!(listed["result"]["isError"], false, "{listed}");
     assert!(
-        listed["result"]["structuredContent"]["apps"].is_array(),
+        listed["result"]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("apps")),
         "{listed}"
     );
 
@@ -211,4 +183,250 @@ fn a_terminal_agent_is_admitted_or_refused_by_the_person_and_lists_live_apps() {
         dump.to_string().contains("agent-member:claude-code"),
         "the agent is not a member: {dump}"
     );
+}
+
+/// The real `tilo-runtime-mcp --connect`, started the way Claude Code starts
+/// it inside tmux: in the person's login, but without `XDG_CURRENT_DESKTOP`.
+struct McpClient {
+    child: Child,
+    replies: BufReader<std::process::ChildStdout>,
+    next_id: u64,
+    /// The compositor's log, for what a failed wait says about it.
+    log: crate::idle_wakeups::Log,
+}
+
+impl McpClient {
+    fn start(session: &Session) -> Self {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_tilo-runtime-mcp"))
+            .arg("--connect")
+            .env("XDG_RUNTIME_DIR", session.runtime_dir())
+            // Every directory the client could write is the session's own:
+            // a run never touches the person's real profile.
+            .env("HOME", session.runtime_dir().join("home"))
+            .env("XDG_CONFIG_HOME", session.runtime_dir().join("config"))
+            .env("XDG_DATA_HOME", session.runtime_dir().join("data"))
+            .env("XDG_STATE_HOME", session.runtime_dir().join("state"))
+            .env("XDG_CACHE_HOME", session.runtime_dir().join("cache"))
+            .env_remove("XDG_CURRENT_DESKTOP")
+            .env_remove("TILO_RUNTIME_PROFILE")
+            .env_remove("TILO_RUNTIME_STANDALONE")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn tilo-runtime-mcp");
+        let replies = BufReader::new(child.stdout.take().unwrap());
+        Self {
+            child,
+            replies,
+            next_id: 1,
+            log: session.log(),
+        }
+    }
+
+    fn send(&mut self, request: &serde_json::Value) {
+        let stdin = self.child.stdin.as_mut().unwrap();
+        writeln!(stdin, "{request}").unwrap();
+        stdin.flush().unwrap();
+    }
+
+    fn reply(&mut self) -> serde_json::Value {
+        let mut line = String::new();
+        assert!(
+            self.replies.read_line(&mut line).unwrap() > 0,
+            "the client closed"
+        );
+        serde_json::from_str(&line).unwrap()
+    }
+
+    /// One tool call: the text the agent reads, and whether it is an error.
+    fn tool(&mut self, name: &str, arguments: serde_json::Value) -> (String, bool) {
+        self.next_id += 1;
+        let id = self.next_id;
+        self.send(
+            &serde_json::json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
+            "params":{"name":name,"arguments":arguments}}),
+        );
+        let reply = self.reply();
+        assert_eq!(reply["id"], id, "{reply}");
+        (
+            reply["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_else(|| panic!("no text in {reply}"))
+                .to_owned(),
+            reply["result"]["isError"] == true,
+        )
+    }
+
+    /// Call `name` until it succeeds and `ready` accepts its text: an app
+    /// publishes its directory a moment after it opens.
+    fn tool_until(
+        &mut self,
+        name: &str,
+        arguments: &serde_json::Value,
+        ready: impl Fn(&str) -> bool,
+    ) -> String {
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let (text, failed) = self.tool(name, arguments.clone());
+            if !failed && ready(&text) {
+                return text;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{name} {arguments} never became ready; last answer: {text}\ncompositor log:\n{}",
+                crate::idle_wakeups::matching(
+                    &self.log,
+                    &[
+                        "irectory",
+                        "agent door",
+                        "ERROR",
+                        "overload",
+                        "budget",
+                        "ollab"
+                    ],
+                    40
+                )
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+}
+
+impl Drop for McpClient {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// An agent in a terminal with no `XDG_CURRENT_DESKTOP` is served by the
+/// session's door, not a standalone runtime of its own, and reads and edits
+/// the note Notes restored by the names a person uses, with no id in sight:
+/// ls, a new page, a paragraph appended to its body, a read back.
+#[test]
+fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
+    let session = spawn();
+    let mut agent = McpClient::start(&session);
+    agent.send(&initialize());
+    let prompt = waiting_prompt(&session.control());
+    decide(&session.control(), "allow-once", &prompt);
+    let initialized = agent.reply();
+    assert!(
+        initialized["result"]["serverInfo"].is_object(),
+        "the door did not answer: {initialized}"
+    );
+    for profile in ["home/.local/state/tilo/runtime", "state/tilo/runtime"] {
+        assert!(
+            !session.runtime_dir().join(profile).exists(),
+            "the client started a standalone runtime inside the login ({profile})"
+        );
+    }
+    // The agent holds no role of its own: the person grants it Notes.
+    let granted = control(
+        &session.control(),
+        &serde_json::json!({"op":"grant","subject":"agent:claude-code",
+            "scope":"app:so.tilo.notes","verb":"write","id":"e2e-agent-notes"}),
+    );
+    assert!(granted.get("err").is_none(), "{granted}");
+
+    agent.send(&serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}));
+    let tools = agent.reply();
+    let names: Vec<_> = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "tilo_ls",
+            "tilo_read",
+            "tilo_do",
+            "tilo_find",
+            "tilo_status"
+        ]
+    );
+
+    // The restored notebook is an app of the session, by its short name.
+    let apps = agent.tool_until("tilo_ls", &serde_json::json!({}), |text| {
+        text.lines().any(|line| line.starts_with("notes  "))
+    });
+    assert!(apps.starts_with("apps\n"), "{apps}");
+    let notes = agent.tool_until("tilo_ls", &serde_json::json!({"path": "notes"}), |text| {
+        text.contains("#new-page")
+    });
+    assert!(
+        !notes.contains("tilo-ui-bound") && !notes.contains('\u{1f}'),
+        "an opaque id reached the agent: {notes}"
+    );
+
+    // A new note, then its body once the editor publishes it.
+    let params = agent
+        .tool("tilo_ls", serde_json::json!({"path": "notes#new-page"}))
+        .0;
+    // The action page lists its parameters, one per indented line, the name
+    // first: the title is the first required one.
+    let title_parameter = params
+        .lines()
+        .filter(|line| line.starts_with("  "))
+        .find_map(|line| line.split_whitespace().next())
+        .map(str::to_owned);
+    let mut arguments = serde_json::Map::new();
+    if let Some(name) = title_parameter {
+        arguments.insert(name, "Agent todo".into());
+    }
+    let (created, failed) = agent.tool(
+        "tilo_do",
+        serde_json::json!({"path": "notes#new-page", "args": arguments}),
+    );
+    assert!(!failed && created.starts_with("ok"), "{created}");
+    let listed = agent.tool_until("tilo_ls", &serde_json::json!({"path": "notes"}), |text| {
+        text.contains("notes.page")
+    });
+    let page = listed
+        .lines()
+        .find(|line| line.contains("  notes.page"))
+        .and_then(|line| line.split("  ").next())
+        .map(|name| name.trim_end_matches('/').to_owned())
+        .expect("the new page is listed");
+
+    let body = format!("notes/{page}/body");
+    let appended = agent.tool_until(
+        "tilo_do",
+        &serde_json::json!({"path": format!("{body}#append-paragraph"),
+            "args": {"text": "buy milk"}}),
+        |text| text.starts_with("ok"),
+    );
+    assert!(appended.starts_with("ok"), "{appended}");
+    let read = agent.tool_until(
+        "tilo_read",
+        &serde_json::json!({"path": format!("notes/{page}")}),
+        |text| text.contains("buy milk"),
+    );
+    assert!(read.contains("buy milk"), "{read}");
+
+    // Admission is not the grant: take the grant back and the same read, which
+    // needs no view of anyone's, is refused all the same.
+    let revoked = control(
+        &session.control(),
+        &serde_json::json!({"op":"revoke","id":"e2e-agent-notes"}),
+    );
+    assert!(revoked.get("err").is_none(), "{revoked}");
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let (text, failed) = agent.tool(
+            "tilo_read",
+            serde_json::json!({"path": format!("notes/{page}")}),
+        );
+        assert!(
+            !text.contains("buy milk") || Instant::now() < deadline,
+            "an agent without a grant on Notes still read a note: {text}"
+        );
+        if failed && !text.contains("buy milk") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }

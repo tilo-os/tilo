@@ -190,7 +190,30 @@ mod unix {
     /// to a second authority beside it; elsewhere the standalone host comes
     /// first.
     fn host_names() -> &'static [&'static str] {
+        if session_marker_present() {
+            return &["tilo-runtime-mcp"];
+        }
         host_names_for(env::var_os("XDG_CURRENT_DESKTOP").as_deref())
+    }
+
+    /// Whether this account's runtime directory holds a Tilo compositor's own
+    /// sockets (`tilo_runtime::session_door` is the client's copy of this
+    /// test). A terminal multiplexer, `ssh` or a service can start an app
+    /// without `XDG_CURRENT_DESKTOP`; the session's sockets still say which
+    /// login it is in.
+    fn session_marker_present() -> bool {
+        use std::os::unix::fs::FileTypeExt as _;
+        let runtime = env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|dir| dir.is_absolute())
+            .unwrap_or_else(|| {
+                // SAFETY: `geteuid` has no failure mode.
+                PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() }))
+            });
+        ["agent.sock", "admin-control.sock"].iter().any(|name| {
+            std::fs::symlink_metadata(runtime.join("tilo-session").join(name))
+                .is_ok_and(|metadata| metadata.file_type().is_socket())
+        })
     }
 
     /// [`host_names`] for one `XDG_CURRENT_DESKTOP` value. The value is a
