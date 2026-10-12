@@ -107,7 +107,7 @@ fn a_remote_edit_reaches_a_ready_reader_as_only_its_changes() {
             let collab_types::DocumentMutation::Incremental(bytes) = mutation else {
                 unreachable!()
             };
-            owner.load_incremental(bytes).unwrap();
+            tilo_automerge::ApplyIncoming::load_incoming(&mut owner, bytes).unwrap();
         })
         .unwrap();
         assert_eq!(owner.get_heads(), reader.graph.get_heads());

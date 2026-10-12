@@ -61,7 +61,7 @@ impl Gate {
                 let replica = replicas
                     .get_mut(record)
                     .expect("changes follow a whole read of the same record");
-                replica.load_incremental(body.bytes()).unwrap();
+                tilo_automerge::ApplyIncoming::load_incoming(replica, body.bytes()).unwrap();
                 &*replica
             }
             NativeDocumentRead::Unchanged(_) | NativeDocumentRead::Pending => return,

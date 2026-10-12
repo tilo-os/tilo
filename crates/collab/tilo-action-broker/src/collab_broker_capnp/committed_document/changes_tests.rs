@@ -184,7 +184,7 @@ impl Channel {
             budget: &self.budget,
             ids: &self.ids,
         };
-        open_read(&mut self.slot, reading, known, held).map(|(reply, _)| reply)
+        open_read(&mut self.slot, reading, known, held.as_ref()).map(|(reply, _)| reply)
     }
     /// Read every remaining piece after `first`, and the last token.
     fn read_rest(&mut self, first: &Reply) -> Result<(u64, Vec<u8>, [u8; 16]), String> {

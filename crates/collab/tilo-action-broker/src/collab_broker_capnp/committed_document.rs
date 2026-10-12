@@ -554,7 +554,7 @@ impl CapnpChannelHandle {
             }
             Request::OpenChanges { known_revision } => {
                 let held = slot.held(*known_revision);
-                self.open_committed_document(&mut slot, Some(*known_revision), held)
+                self.open_committed_document(&mut slot, Some(*known_revision), held.as_ref())
             }
             Request::Next {
                 capture,
@@ -570,7 +570,7 @@ impl CapnpChannelHandle {
         &self,
         slot: &mut Slot,
         known_revision: Option<[u8; 32]>,
-        held: Option<HeldRevision>,
+        held: Option<&HeldRevision>,
     ) -> Result<Reply, String> {
         if slot.active.is_some() {
             return Err("committed read requires previous response acknowledgement".into());
@@ -610,7 +610,7 @@ fn open_read(
     slot: &mut Slot,
     reading: Reading<'_>,
     known_revision: Option<[u8; 32]>,
-    held: Option<HeldRevision>,
+    held: Option<&HeldRevision>,
 ) -> Result<(Reply, Option<u64>), String> {
     let Reading {
         context,
@@ -624,7 +624,7 @@ fn open_read(
     let created = context.prepare_application(service.as_ref())?;
     service.authorize(&context)?;
     let reservation = budget.reserve()?;
-    let read = match &held {
+    let read = match held {
         Some(held) => service.capture_since(&context, held, MAX_DOCUMENT_BYTES)?,
         None => service.capture(&context, known_revision, MAX_DOCUMENT_BYTES)?,
     };
@@ -649,7 +649,7 @@ fn open_read(
             heads,
             base,
             body,
-        } if created.is_none() && held.as_ref().is_some_and(|held| held.heads == base) => {
+        } if created.is_none() && held.is_some_and(|held| held.heads == base) => {
             (revision, body, heads, Some(base))
         }
         NativeDocumentRead::Changes { .. } => {

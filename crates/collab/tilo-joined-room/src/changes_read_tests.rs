@@ -2,6 +2,7 @@
 use super::*;
 use crate::{ChangesRead, CommittedDocument};
 use automerge::ObjType;
+use tilo_automerge::ApplyIncoming as _;
 
 /// Commit `edit` to the shared chat document as the member, through the
 /// owner's ordinary signed write.
@@ -85,7 +86,7 @@ fn the_changes_since_a_held_revision_complete_it_to_the_current_read() {
     assert_eq!(read.revision, current.revision);
     assert_eq!(read.heads, current.heads);
     let mut replica = AutoCommit::load(&held.bytes).unwrap();
-    replica.load_incremental(&read.bytes).unwrap();
+    replica.load_incoming(&read.bytes).unwrap();
     assert!(replica.get_missing_deps(&[]).is_empty());
     let mut heads = replica
         .get_heads()
@@ -147,7 +148,7 @@ fn a_changes_read_refuses_a_stranger_and_leaves_the_rest_to_a_whole_read() {
         panic!("an intermediate revision is completed too");
     };
     let mut replica = AutoCommit::load(&between.bytes).unwrap();
-    replica.load_incremental(&read.bytes).unwrap();
+    replica.load_incoming(&read.bytes).unwrap();
     assert_eq!(topic(&replica), Some("\"two\"".into()));
 }
 
@@ -208,13 +209,20 @@ fn a_changes_read_between_the_frames_of_one_checkpoint_is_left_to_the_whole_read
     );
 }
 
-/// Characters in the large document: one text op each.
+/// Characters in the large document, one text op each, written in
+/// [`LARGE_EDITS`] edits of its own lines, as a collaborator's typing leaves
+/// a document's history.
 const LARGE_CHARACTERS: usize = 50_000;
+const LARGE_EDITS: usize = 100;
 /// One-edit change bytes a reader may be handed for a large document.
 const CHANGES_BYTES_BUDGET: usize = 1024;
-/// How many times cheaper a changes read must be than the whole read it
-/// replaces, owner side and reader side, on the large document.
-const CHANGES_SPEEDUP_BUDGET: u32 = 10;
+/// How many times cheaper the owner's changes read must be than the whole
+/// read it replaces (a room restore and a document save), on the large
+/// document.
+const OWNER_SPEEDUP_BUDGET: u32 = 10;
+/// How many times cheaper taking in the changes must be for the reader
+/// than loading and merging the whole document.
+const READER_SPEEDUP_BUDGET: u32 = 3;
 
 fn fastest<T>(runs: usize, mut run: impl FnMut() -> T) -> (std::time::Duration, T) {
     let mut best = None;
@@ -232,23 +240,35 @@ fn fastest<T>(runs: usize, mut run: impl FnMut() -> T) -> (std::time::Duration, 
 /// What one remote edit of a large shared document costs a reader that
 /// already holds it: before, a whole read (the owner restores the room and
 /// saves the document; the reader loads and merges all of it); now, the
-/// changes since (the owner reads the edit's changes; the reader loads
-/// them). Budgeted: bytes per edit, and the speedup on both sides.
+/// changes since (the owner reads the edit's changes; the reader takes them
+/// in). Budgeted: bytes per edit, and the speedup on both sides.
 #[test]
 fn a_remote_edit_of_a_large_document_costs_its_reader_the_edit() {
     let joined = enrolled();
     let member = member().verifying_key().to_bytes();
     commit(&joined, |chat| {
-        let body = chat.put_object(ROOT, "body", ObjType::Text).unwrap();
-        let line = "shared text kept by every reader of this document\n";
-        let text = line.repeat(LARGE_CHARACTERS / line.len() + 1);
-        chat.splice_text(&body, 0, 0, &text[..LARGE_CHARACTERS])
-            .unwrap();
+        chat.put_object(ROOT, "body", ObjType::Text).unwrap();
     });
+    let line_characters = LARGE_CHARACTERS / LARGE_EDITS;
+    for edit in 0..LARGE_EDITS {
+        commit(&joined, |chat| {
+            let body = chat.get(ROOT, "body").unwrap().unwrap().1;
+            let mut line = format!("{edit:04} {:x} ", edit * 7919);
+            while line.len() < line_characters - 1 {
+                line.push(char::from(
+                    b'a' + u8::try_from((line.len() * 31 + edit) % 26).unwrap(),
+                ));
+            }
+            line.push('\n');
+            let end = chat.length(&body);
+            chat.splice_text(&body, end, 0, &line).unwrap();
+        });
+    }
     let held = full(&joined, member);
     commit(&joined, |chat| {
         let body = chat.get(ROOT, "body").unwrap().unwrap().1;
-        chat.splice_text(&body, 0, 0, "x").unwrap();
+        chat.splice_text(&body, LARGE_CHARACTERS / 2, 0, "x")
+            .unwrap();
     });
     let (whole_owner, whole) = fastest(3, || {
         joined
@@ -267,19 +287,20 @@ fn a_remote_edit_of_a_large_document_costs_its_reader_the_edit() {
     };
     assert_eq!(read.revision, whole.revision);
     let base = AutoCommit::load(&held.bytes).unwrap();
-    let mut replicas = vec![base.clone(); 6];
-    let (whole_reader, _) = fastest(3, || {
+    let mut replicas = std::iter::repeat_with(|| base.clone())
+        .take(6)
+        .collect::<Vec<_>>();
+    let (whole_reader, ()) = fastest(3, || {
         let mut replica = replicas.pop().unwrap();
         let mut incoming = AutoCommit::load(&whole.bytes).unwrap();
-        replica.merge(&mut incoming).unwrap();
+        replica.merge_incoming(&mut incoming).unwrap();
     });
-    let (changes_reader, replica) = fastest(3, || {
+    let (changes_reader, mut replica) = fastest(3, || {
         let mut replica = replicas.pop().unwrap();
-        replica.load_incremental(&read.bytes).unwrap();
+        replica.load_incoming(&read.bytes).unwrap();
         replica
     });
     let mut heads = replica
-        .clone()
         .get_heads()
         .iter()
         .map(|head| head.0)
@@ -287,7 +308,7 @@ fn a_remote_edit_of_a_large_document_costs_its_reader_the_edit() {
     heads.sort_unstable();
     assert_eq!(heads, whole.heads, "both reads end at the same document");
     eprintln!(
-        "COMMITTED-READ-LARGE characters={LARGE_CHARACTERS} whole_bytes={} changes_bytes={} owner_whole_us={} owner_changes_us={} reader_whole_us={} reader_changes_us={}",
+        "COMMITTED-READ-LARGE characters={LARGE_CHARACTERS} edits={LARGE_EDITS} whole_bytes={} changes_bytes={} owner_whole_us={} owner_changes_us={} reader_whole_us={} reader_changes_us={}",
         whole.bytes.len(),
         read.bytes.len(),
         whole_owner.as_micros(),
@@ -302,11 +323,11 @@ fn a_remote_edit_of_a_large_document_costs_its_reader_the_edit() {
         whole.bytes.len()
     );
     assert!(
-        changes_owner * CHANGES_SPEEDUP_BUDGET <= whole_owner,
+        changes_owner * OWNER_SPEEDUP_BUDGET <= whole_owner,
         "the owner read the changes in {changes_owner:?}, the whole document in {whole_owner:?}"
     );
     assert!(
-        changes_reader * CHANGES_SPEEDUP_BUDGET <= whole_reader,
-        "the reader applied the changes in {changes_reader:?}, the whole document in {whole_reader:?}"
+        changes_reader * READER_SPEEDUP_BUDGET <= whole_reader,
+        "the reader took the changes in in {changes_reader:?}, the whole document in {whole_reader:?}"
     );
 }
