@@ -795,12 +795,13 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
     // render worker starts the rest once that frame is presented. On a
     // software adapter the worker rasterizes frames on the CPU and vello draws
     // only backdrop blurs, so none of its pipelines are on the way there.
-    let deferral = if crate::render_thread::rasterizes_on_cpu(&device_handle.adapter.get_info()) {
+    let software = crate::render_thread::rasterizes_on_cpu(&device_handle.adapter.get_info());
+    let deferral = if software {
         vello::PipelineDeferral::All
     } else {
         vello::PipelineDeferral::Unused
     };
-    let renderer = Renderer::new_deferring(
+    let mut renderer = Renderer::new_deferring(
         device,
         RendererOptions {
             // Diagnostic/low-end fallback: CPU coarse stages with the same
@@ -823,9 +824,17 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
     )
     .map_err(|e| format!("could not create the renderer: {e}"))?;
     tilo_startup_metrics::mark("window-vello-init-done");
-    // Kept once the render worker has built the deferred pipelines too.
+    // Kept once the deferred pipelines are built too.
     if let Some(pipelines) = pipelines {
         pipelines.keep_until_built();
+    }
+    // A frame that draws a backdrop blur renders with vello even on a
+    // software adapter. Build at once, on the init threads and default-path
+    // pipelines first, so such a first frame waits on a build well under way
+    // instead of compiling each pipeline it dispatches alone. A frame the
+    // CPU rasterizes waits on nothing.
+    if software {
+        renderer.start_deferred_pipelines(device, crate::pipeline_cache::persist_unsaved);
     }
     #[cfg(all(windows, feature = "dx12-shader-cache"))]
     device_handle.finish_shader_cache();

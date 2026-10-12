@@ -1781,6 +1781,7 @@ impl Renderer {
             engine.use_parallel_initialisation();
         }
         engine.set_pipeline_deferral(deferral);
+        engine.set_deferred_build_threads(options.num_init_threads.map_or(1, NonZeroUsize::get));
         let shaders = shaders::full_shaders(device, &mut engine, &options);
         // Shaders registered later (canonical segment order, replays) build
         // when they are added, as before.
@@ -1854,8 +1855,10 @@ impl Renderer {
         })
     }
 
-    /// Build the pipelines [`Self::new_deferring`] deferred, on one background
-    /// thread, largest first; renders install them as they arrive. `built`
+    /// Build the pipelines [`Self::new_deferring`] deferred, in the background
+    /// on the renderer's init threads: those a full frame on the default path
+    /// dispatches first, the largest of each group first. Renders install them
+    /// as they arrive, and wait for one they dispatch. `built`
     /// runs once every one is built (on that thread), or at once when nothing
     /// was deferred: the moment to keep a pipeline cache. A second call does
     /// nothing and drops its `built`.
