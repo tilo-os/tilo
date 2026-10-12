@@ -555,6 +555,36 @@ Not copied: several displays at once (each draws the desktop at its own place
 and scale), a desktop under materials or HDR layers, a strip pan, and the CPU
 presenter some boards use.
 
+### Copies go on while collaborators are on screen
+
+A native window used to refuse every copy while a collaborator's pointer,
+name or activity was painted over it, so a shared document scrolled at the
+no-copy cost. The presence layer's marks are now their own damage: where the
+copy took the marks of the frame on screen, and where this frame paints them,
+repaint (`scroll_copy::marks_over_copies`); the content beneath still copies.
+`framework-scaling -- 5000 scroll` scrolls the window with a peer's pointer
+and name resting over the list (`FRAMEWORK-SCROLL-PEER`; release, M-series
+Mac, 1280×800, pixel-identical):
+
+| | Repainted px p50 (max) | Copied px p50 | Whole-window frames |
+|---|---:|---:|---:|
+| A peer on screen, before (every copy refused) | 983,616 (983,616) | 0 | 0 |
+| A peer on screen, after | 109,168 (125,248) | 756,288 | 0 |
+| Alone, for comparison | 99,792 (115,872) | 756,288 | 0 |
+
+The nightly render job enforces `render.framework_scroll.peer_pixels.5k`. A
+peer's dot also claimed 96 px square of damage for a 23 px mark; its bounds now
+cover what it paints, which trims every peer-pointer frame too. In the shell,
+the Notes tile with a peer's pointer over it now rasterises 215,456 of
+1,112,672 px per frame scrolling down (19.4 %, was 223,648) and 180,480 up.
+
+An in-process app planned its copies in whole logical pixels, so on a 200 %
+display a step of half a logical pixel repainted the tile. The compositor now
+says how many device pixels a unit is (`HostCopies::begin_scaled`) and the app
+plans in those: half-pixel steps at 200 % rasterise 527,850 of 4,450,688 px
+per frame (11.9 %), and whole steps 693,328 down and 552,832 up (were about
+725,000 and 584,832).
+
 ## Verified shared-list CPU workload
 
 The `ui-perf perf_scenario --count 1200 --json` list case now checks the real
