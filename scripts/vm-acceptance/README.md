@@ -88,12 +88,14 @@ because an app needs the exact runtime it was built with, and the host builder d
 assemble the paired cohort:
 
 ```sh
-fgj --hostname code.tilo.so actions workflow run vm-acceptance.yml -R tilo/tilo -r main \
-  -f ref=<branch> -f swap=apps+runtime -f prebuilt_cohort=true -f only=P01,A15
+echo '{"ref":"main","inputs":{"ref":"<branch>","swap":"apps+runtime",
+       "prebuilt_cohort":"true","only":"P01,A15"}}' |
+  fgj api --hostname code.tilo.so -X POST repos/tilo/tilo/actions/workflows/vm-acceptance.yml/dispatches
 ```
 
-`-r` picks the workflow, the checks and the artifact consumer (main, or a branch that
-changes them); `ref` is the code under test. P01 then reads `+ launcher, install, shell,
+(`fgj actions workflow run -f only=P01,A15` splits the value at its comma and sends
+`only=P01`; the API body does not.) The outer `ref` picks the workflow, the checks and the
+artifact consumer (main, or a branch that changes them); `inputs.ref` is the code under test. P01 then reads `+ launcher, install, shell,
 apps+runtime swapped from <branch>`, and each swap entry names the consumer that
 installed it. The ref's own `tilo-vm` packs the layers, so it needs `layer-pack`.
 
