@@ -145,27 +145,6 @@ impl ParticipantView {
         })
     }
 
-    /// Rebuild the view a resource context was projected from. The context
-    /// keeps the selection in document order, so the anchor is whichever end
-    /// the caret is not on (the start when the caret is on neither). Find
-    /// hits are kept; the query is not part of the context.
-    pub fn from_ctx(ctx: &WpResourceCtx) -> Self {
-        let caret = ViewPoint::new(&ctx.caret_block, ctx.caret_offset);
-        let anchor = ctx.selection.as_ref().map(|selection| {
-            let start = ViewPoint::new(&selection.start_block, selection.start);
-            let end = ViewPoint::new(&selection.end_block, selection.end);
-            if start == caret { end } else { start }
-        });
-        let anchor = anchor.filter(|anchor| *anchor != caret);
-        Self {
-            caret,
-            anchor,
-            region: ctx.region,
-            find: FindState::new("", ctx.search_hits.iter().cloned()),
-            pending: None,
-        }
-    }
-
     /// Resolve a [`PendingCaret`] against `doc`: once the edit that set it
     /// has been applied, the caret moves into the block it created and the
     /// selection collapses; before that (or if the edit was refused) the

@@ -3057,10 +3057,6 @@ pub fn continue_paragraph_action(text: &str) -> RichTextAction {
     }
 }
 
-pub fn remove_blocks_action(blocks: Vec<String>) -> RichTextAction {
-    RichTextAction::RemoveBlocks { blocks }
-}
-
 /// Replace the whole document body with `markdown`.
 pub fn replace_body_action(markdown: &str) -> RichTextAction {
     RichTextAction::ReplaceBody {
