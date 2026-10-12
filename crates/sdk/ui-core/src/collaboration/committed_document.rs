@@ -244,10 +244,17 @@ impl Reads {
             }
             // An owner being built needs the whole document: the reader
             // drops these changes and reads it whole.
+            #[cfg(any(test, feature = "test-support"))]
+            tracing::warn!(
+                key,
+                "staged committed changes refused for an owner being built"
+            );
             read.refuse();
             return None;
         }
         if self.publishable(key) && self.required(key) {
+            #[cfg(any(test, feature = "test-support"))]
+            tracing::warn!(key, "an owner asked for a whole committed read");
             if let Ok(mut refresh) = self.2.lock() {
                 refresh.insert(key.into());
             }
