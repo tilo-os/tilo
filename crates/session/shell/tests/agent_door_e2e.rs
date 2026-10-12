@@ -302,8 +302,10 @@ impl Drop for McpClient {
 
 /// An agent in a terminal with no `XDG_CURRENT_DESKTOP` is served by the
 /// session's door, not a standalone runtime of its own, and reads and edits
-/// the note Notes restored by the names a person uses, with no id in sight:
-/// ls, a new page, a paragraph appended to its body, a read back.
+/// Notes by the names a person uses, with no id in sight: ls, a new note, the
+/// note found by its title under the notebook, a paragraph appended through
+/// its body's own action, a read back; then the grant is taken back and the
+/// agent is refused.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -359,57 +361,58 @@ fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
     });
     assert!(apps.starts_with("apps\n"), "{apps}");
     let notes = agent.tool_until("tilo_ls", &serde_json::json!({"path": "notes"}), |text| {
-        text.contains("#new-page")
+        text.contains("#new-note") && text.lines().any(|line| line.starts_with("Notebook/"))
     });
-    assert!(
-        !notes.contains("tilo-ui-bound") && !notes.contains('\u{1f}'),
-        "an opaque id reached the agent: {notes}"
-    );
+    assert_no_opaque_id(&notes);
 
-    // A new note, then its body once the editor publishes it.
+    // A new note, by the parameter its action page names.
     let params = agent
-        .tool("tilo_ls", &serde_json::json!({"path": "notes#new-page"}))
+        .tool("tilo_ls", &serde_json::json!({"path": "notes#new-note"}))
         .0;
-    // The action page lists its parameters, one per indented line, the name
-    // first: the title is the first required one.
-    let title_parameter = params
-        .lines()
-        .filter(|line| line.starts_with("  "))
-        .find_map(|line| line.split_whitespace().next())
-        .map(str::to_owned);
-    let mut arguments = serde_json::Map::new();
-    if let Some(name) = title_parameter {
-        arguments.insert(name, "Agent todo".into());
-    }
+    assert!(
+        params
+            .lines()
+            .any(|line| line.trim_start().starts_with("title")),
+        "{params}"
+    );
     let (created, failed) = agent.tool(
         "tilo_do",
-        &serde_json::json!({"path": "notes#new-page", "args": arguments}),
+        &serde_json::json!({"path": "notes#new-note", "args": {"title": "Agent todo"}}),
     );
     assert!(!failed && created.starts_with("ok"), "{created}");
-    let listed = agent.tool_until("tilo_ls", &serde_json::json!({"path": "notes"}), |text| {
-        text.contains("notes.page")
-    });
-    let page = listed
-        .lines()
-        .find(|line| line.contains("  notes.page"))
-        .and_then(|line| line.split("  ").next())
-        .map(|name| name.trim_end_matches('/').to_owned())
-        .expect("the new page is listed");
 
-    let body = format!("notes/{page}/body");
-    let appended = agent.tool_until(
+    // Found by its title under the notebook, its body a resource of its own.
+    let notebook = agent.tool_until(
+        "tilo_ls",
+        &serde_json::json!({"path": "notes/Notebook"}),
+        |text| text.lines().any(|line| line.starts_with("Agent todo")),
+    );
+    assert_no_opaque_id(&notebook);
+    let page = "notes/Notebook/Agent todo";
+    let inside = agent.tool_until("tilo_ls", &serde_json::json!({"path": page}), |text| {
+        text.lines()
+            .any(|line| line.starts_with("Body") && line.contains("tilo.rich-text"))
+    });
+    assert_no_opaque_id(&inside);
+    let body = format!("{page}/body");
+    let actions = agent.tool("tilo_ls", &serde_json::json!({"path": body})).0;
+    assert!(actions.contains("#append-paragraph"), "{actions}");
+    assert_no_opaque_id(&actions);
+
+    let (appended, failed) = agent.tool(
         "tilo_do",
         &serde_json::json!({"path": format!("{body}#append-paragraph"),
             "args": {"text": "buy milk"}}),
-        |text| text.starts_with("ok"),
     );
-    assert!(appended.starts_with("ok"), "{appended}");
-    let read = agent.tool_until(
-        "tilo_read",
-        &serde_json::json!({"path": format!("notes/{page}")}),
-        |text| text.contains("buy milk"),
-    );
-    assert!(read.contains("buy milk"), "{read}");
+    assert!(!failed && appended.starts_with("ok"), "{appended}");
+    let read = agent.tool_until("tilo_read", &serde_json::json!({"path": body}), |text| {
+        text.contains("buy milk")
+    });
+    assert_no_opaque_id(&read);
+    let note = agent.tool_until("tilo_read", &serde_json::json!({"path": page}), |text| {
+        text.contains("buy milk")
+    });
+    assert!(note.contains("Agent todo"), "{note}");
 
     // Admission is not the grant: take the grant back and the same read, which
     // needs no view of anyone's, is refused all the same.
@@ -420,10 +423,7 @@ fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
     assert!(revoked.get("err").is_none(), "{revoked}");
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let (text, failed) = agent.tool(
-            "tilo_read",
-            &serde_json::json!({"path": format!("notes/{page}")}),
-        );
+        let (text, failed) = agent.tool("tilo_read", &serde_json::json!({"path": page}));
         assert!(
             !text.contains("buy milk") || Instant::now() < deadline,
             "an agent without a grant on Notes still read a note: {text}"
@@ -433,4 +433,32 @@ fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
         }
         std::thread::sleep(Duration::from_millis(200));
     }
+    // Nor may it write: the body refuses its action.
+    let (refused, failed) = agent.tool(
+        "tilo_do",
+        &serde_json::json!({"path": format!("{body}#append-paragraph"),
+            "args": {"text": "buy eggs"}}),
+    );
+    assert!(
+        failed,
+        "an agent without a grant on Notes still wrote a note: {refused}"
+    );
+
+    // The compositor kept its state file's writer the whole time.
+    let busy = crate::idle_wakeups::matching(&session.log(), &["file lease is busy"], 3);
+    assert!(
+        busy.is_empty(),
+        "the state file's writer lease was taken:\n{busy}"
+    );
+}
+
+/// What the agent reads names resources as a person does: never by a bound
+/// UI id, a separator-joined handle or the app's own resource id.
+fn assert_no_opaque_id(text: &str) {
+    assert!(
+        !text.contains("tilo-ui-bound")
+            && !text.contains('\u{1f}')
+            && !text.contains("notes.notebook/"),
+        "an opaque id reached the agent: {text}"
+    );
 }
