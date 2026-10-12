@@ -6065,10 +6065,7 @@ impl WordProcessorWidget {
                         .with_name(review_action_a11y_label(action, self.review.changes()))
                         .with_bounds(*rect)
                         .with_action_target(review_action_target(action))
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        }),
+                        .with_state(AccessState::new().focusable(true)),
                 )
             })
             .collect();
@@ -6116,10 +6113,7 @@ impl WordProcessorWidget {
                         .with_description(description)
                         .with_bounds(*rect)
                         .with_action_target(format!("word-processor.image-placement:{id}"))
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        }),
+                        .with_state(AccessState::new().focusable(true)),
                 ))
             })
             .collect::<Vec<_>>();
@@ -6422,12 +6416,12 @@ impl WordProcessorWidget {
         }
 
         A11yTreeNode {
-            node: AccessNode::new(Role::Document).with_state(AccessState {
-                focusable: true,
-                focused: self.lifecycle.focused,
-                multiline: true,
-                ..Default::default()
-            }),
+            node: AccessNode::new(Role::Document).with_state(
+                AccessState::new()
+                    .focusable(true)
+                    .focused(self.lifecycle.focused)
+                    .multiline(true),
+            ),
             children,
         }
     }
