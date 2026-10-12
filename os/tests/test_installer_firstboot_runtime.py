@@ -33,6 +33,7 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             target = work / "target" / "etc"
             target.mkdir(parents=True)
             for relative in ("usr/libexec/tilo-firstboot-user",
+                             "usr/libexec/tilo-firstboot-files.py",
                              "usr/libexec/tilo-firstboot-home-seeds.py",
                              "usr/libexec/tilo-installer-prepared-setup-extract.py",
                              "usr/lib/systemd/system/tilo-firstboot-user.service",
@@ -55,6 +56,9 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             helper = target / "tilo/firstboot-user"
             self.assertEqual(helper.read_bytes(), (source / "usr/libexec/tilo-firstboot-user").read_bytes())
             self.assertEqual(helper.stat().st_mode & 0o777, 0o644)
+            files = target / "tilo/tilo-firstboot-files.py"
+            self.assertEqual(files.read_bytes(), (source / "usr/libexec/tilo-firstboot-files.py").read_bytes())
+            self.assertIn("/etc/tilo/tilo-firstboot-files.py", (work / "target/labels").read_text())
             seeds = target / "tilo/firstboot-home-seeds.py"
             self.assertEqual(seeds.read_bytes(), (source / "usr/libexec/tilo-firstboot-home-seeds.py").read_bytes())
             self.assertEqual(seeds.stat().st_mode & 0o777, 0o644)
@@ -145,6 +149,7 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
     def test_base_os_ships_native_firstboot_runtime(self):
         containerfile = (ROOT / "os/Containerfile").read_text()
         for path in ("os/usr/libexec/tilo-firstboot-user",
+                     "os/usr/libexec/tilo-firstboot-files.py",
                      "os/usr/libexec/tilo-firstboot-home-seeds.py",
                      "os/usr/libexec/tilo-firstboot-autologin-cleanup",
                      "os/usr/lib/systemd/system/tilo-firstboot-user.service",

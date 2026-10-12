@@ -45,10 +45,12 @@ def locked():
     assert (r / 'shadow').read_text().startswith('!'), 'delivery ran unlocked'
 """
         tools = {
+            # Flush only fixture files, not unrelated host filesystem workloads.
+            'sync': "fail('intent-sync'); fd = os.open(sys.argv[-1], os.O_RDONLY); os.fsync(fd); os.close(fd)",
             'id': "raise SystemExit(0 if (r / 'shadow').exists() else 1)",
             'stat': "print('0:600:1' if sys.argv[2] == '%u:%a:%h' else Path(sys.argv[-1]).stat().st_size)",
-            'getent': "print('fixtureuser:' + (r / 'shadow').read_text() + ':1000:1000::/home/fixtureuser:/bin/bash')",
-            'useradd': "assert not (r / 'shadow').exists(); (r / 'shadow').write_text(sys.argv[sys.argv.index('-p') + 1]); (r / 'useradd').write_text(json.dumps(sys.argv[1:])); fail('useradd')",
+            'getent': "print('fixtureuser:' + ((r / 'shadow').read_text() if sys.argv[1] == 'shadow' else 'x') + ':' + str(os.getuid()) + ':' + str(os.getgid()) + '::' + str(r / 'home/fixtureuser') + ':/bin/bash')",
+            'useradd': "fail('useradd-before'); assert not (r / 'shadow').exists(); (r / 'shadow').write_text(sys.argv[sys.argv.index('-p') + 1]); (r / 'useradd').write_text(json.dumps(sys.argv[1:])); fail('useradd')",
             'chpasswd': "value = sys.stdin.read().strip().split(':', 1)[1]; fail('password'); (r / 'shadow').write_text(value)",
             'chown': "locked(); fail('chown')",
             'shred': "Path(sys.argv[-1]).unlink()",
@@ -57,7 +59,30 @@ def locked():
             p = r / 'bin' / name
             p.write_text('#!/usr/bin/env python3\n' + common + body + '\n')
             p.chmod(0o755)
-        (r / 'seeds.py').write_text(common + "locked(); fail('seeds')\n")
+        (r / 'skel').mkdir()
+        (r / 'skel/default').write_text('generated')
+        (r / 'seeds.py').write_text(common + f"""locked()
+fail('seeds')
+import importlib.util, stat
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location('seeds', {str(ROOT / 'os/usr/libexec/tilo-firstboot-home-seeds.py')!r})
+helper = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(helper)
+# Simulated NSS account and root authority; production seed I/O is unchanged.
+def trusted(path):
+    info = path.lstat()
+    if info.st_uid != os.getuid() or info.st_mode & 0o022 or stat.S_ISLNK(info.st_mode):
+        raise ValueError('untrusted fixture authority')
+writer = helper.atomic.write_file
+def write(directory, name, source, mode, uid, gid):
+    writer(directory, name, source, mode, os.getuid() if uid == 0 else uid,
+           os.getgid() if gid == 0 else gid)
+with patch.object(helper.os, 'geteuid', return_value=0), \\
+        patch.object(helper, 'trusted', side_effect=trusted), \\
+        patch.object(helper.atomic, 'write_file', side_effect=write):
+    helper.seed(r / 'home/fixtureuser', r / 'skel', os.getuid(), os.getgid(), r / 'state/seeds')
+fail('seeds-after')
+""")
         (r / 'handoff').write_text('#!/usr/bin/env python3\n' + common + """if sys.argv[1] == 'required-user-id':
     assert not (r / 'shadow').exists(), 'retry repeated UID availability query'
     print('1000')
@@ -73,6 +98,7 @@ else:
             '/var/lib/tilo': str(r / 'state'),
             '/var/home': str(r / 'home'),
             '"/home/$user"': f'"{r}/home/$user"',
+            'FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files.py"': f'FILES_HELPER="{ROOT}/os/usr/libexec/tilo-firstboot-files.py"',
             '/usr/libexec/tilo-staging-handoff': str(r / 'handoff'),
             'seed_helper=/usr/libexec/tilo-firstboot-home-seeds.py': f'seed_helper={r}/seeds.py',
         }.items():
@@ -89,7 +115,7 @@ else:
         return result
 
     def test_every_failed_delivery_is_locked_and_retryable(self):
-        for stage in ['useradd', 'chown', 'seeds', 'plan', 'deliver-user', 'deliver-home-user', 'password']:
+        for stage in ['useradd', 'seeds', 'seeds-after', 'plan', 'deliver-user', 'deliver-home-user', 'password']:
             with self.subTest(stage=stage):
                 result = self.run_boot(stage)
                 self.assertNotEqual(result.returncode, 0)
@@ -150,9 +176,334 @@ else:
         self.assertEqual((self.root / 'shadow').read_text(), '!unrelated')
         self.assertTrue(self.credential.exists())
 
+    def test_intent_is_durable_before_account_creation(self):
+        self.assertNotEqual(self.run_boot('intent-sync').returncode, 0)
+        self.assertFalse((self.root / 'shadow').exists())
+        self.assertTrue(self.credential.exists())
+        self.assertEqual(self.run_boot().returncode, 0)
+
+    def test_useradd_failure_before_creation_retries(self):
+        self.assertNotEqual(self.run_boot('useradd-before').returncode, 0)
+        self.assertFalse((self.root / 'shadow').exists())
+        self.assertTrue(self.credential.exists())
+        self.assertTrue((self.root / 'etc/install-user.transaction').exists())
+        self.assertEqual(self.run_boot().returncode, 0)
+
+    def test_unseeded_home_is_repaired_after_account_committed(self):
+        import shutil
+        shutil.rmtree(self.root / 'home/fixtureuser')
+        result = self.run_boot('useradd')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / 'home/fixtureuser').exists())
+        self.assertTrue((self.root / 'shadow').read_text().startswith('!'))
+        result = self.run_boot()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        home = self.root / 'home/fixtureuser'
+        self.assertTrue(home.is_dir())
+        self.assertIn('-M', json.loads((self.root / 'useradd').read_text()))
+        self.assertEqual((home.stat().st_uid, home.stat().st_gid),
+                         (os.getuid(), os.getgid()))
+
+    def test_home_symlink_cannot_unlock_or_modify_outside(self):
+        import shutil
+        home = self.root / 'home/fixtureuser'
+        shutil.rmtree(home)
+        outside = self.root / 'outside'
+        outside.mkdir()
+        home.symlink_to(outside, target_is_directory=True)
+        result = self.run_boot()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((self.root / 'shadow').read_text().startswith('!'))
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertTrue(self.credential.exists())
+
+    def test_attested_output_tampering_blocks_retry_before_custody_or_unlock(self):
+        result = self.run_boot('plan')
+        self.assertNotEqual(result.returncode, 0)
+        receipt = self.root / 'state/seeds' / (str(os.getuid()) + '.json')
+        before = receipt.read_bytes()
+        (self.root / 'home/fixtureuser/default').write_text('changed')
+        result = self.run_boot()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('home defaults could not be attested', result.stderr)
+        self.assertTrue((self.root / 'shadow').read_text().startswith('!'))
+        self.assertTrue(self.credential.exists())
+        self.assertEqual(receipt.read_bytes(), before)
+
     def test_service_allows_size_independent_transfer_duration(self):
         unit = (ROOT / 'os/usr/lib/systemd/system/tilo-firstboot-user.service').read_text()
         self.assertIn('TimeoutStartSec=infinity\n', unit)
+
+
+class AtomicFilesTests(unittest.TestCase):
+    def setUp(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'firstboot_files', ROOT / 'os/usr/libexec/tilo-firstboot-files.py')
+        self.helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.helper)
+        self.work = tempfile.TemporaryDirectory()
+        self.addCleanup(self.work.cleanup)
+        self.root = Path(self.work.name)
+
+    def test_interrupted_file_copy_has_no_final_and_retry_is_complete(self):
+        import io
+        directory = os.open(self.root, self.helper.DIR)
+        self.addCleanup(os.close, directory)
+        class Interrupted(io.BytesIO):
+            def read(self, size):
+                if self.tell():
+                    raise InterruptedError('copy interrupted')
+                return super().read(3)
+        with self.assertRaises(InterruptedError):
+            self.helper.publish(directory, 'default', lambda name:
+                self.helper.write_file(directory, name, Interrupted(b'complete'),
+                                       0o640, os.getuid(), os.getgid()))
+        self.assertFalse((self.root / 'default').exists())
+        self.helper.publish(directory, 'default', lambda name:
+            self.helper.write_file(directory, name, io.BytesIO(b'complete'),
+                                   0o640, os.getuid(), os.getgid()))
+        self.assertEqual((self.root / 'default').read_bytes(), b'complete')
+        self.assertEqual((self.root / 'default').stat().st_mode & 0o777, 0o640)
+
+    def test_truncated_intent_input_is_never_published(self):
+        path = self.root / 'intent'
+        helper = ROOT / 'os/usr/libexec/tilo-firstboot-files.py'
+        result = subprocess.run(['python3', str(helper), 'intent', str(path)],
+                                input=b'fixtureuser:!tilo-firstboot-', capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(path.exists())
+        complete = b'fixtureuser:!tilo-firstboot-' + b'a' * 32 + b'\n'
+        result = subprocess.run(['python3', str(helper), 'intent', str(path)],
+                                input=complete, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(path.read_bytes(), complete)
+
+    def test_killed_partial_temporary_never_becomes_default_or_intent(self):
+        import io
+        code = '''import importlib.util, os, signal, sys
+spec = importlib.util.spec_from_file_location('files', sys.argv[1])
+helper = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(helper)
+directory = os.open(sys.argv[2], helper.DIR)
+def interrupted(name):
+    fd = os.open(name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=directory)
+    os.write(fd, b'partial')
+    os.fsync(fd)
+    os.kill(os.getpid(), signal.SIGKILL)
+helper.publish(directory, sys.argv[3], interrupted)
+'''
+        directory = os.open(self.root, self.helper.DIR)
+        self.addCleanup(os.close, directory)
+        for name in ['intent', 'default']:
+            result = subprocess.run(['python3', '-c', code,
+                                     str(ROOT / 'os/usr/libexec/tilo-firstboot-files.py'),
+                                     str(self.root), name], capture_output=True)
+            self.assertEqual(result.returncode, -9, result.stderr)
+            self.assertFalse((self.root / name).exists())
+            self.helper.publish(directory, name, lambda temporary:
+                self.helper.write_file(directory, temporary, io.BytesIO(b'complete'),
+                                       0o600, os.getuid(), os.getgid()))
+            self.assertEqual((self.root / name).read_bytes(), b'complete')
+            self.assertEqual((self.root / name).stat().st_nlink, 1)
+
+    def test_truncated_intent_before_publication_never_blocks_retry(self):
+        from unittest.mock import patch
+        import io
+        directory = os.open(self.root, self.helper.DIR)
+        self.addCleanup(os.close, directory)
+        def interrupted(name):
+            (self.root / name).write_bytes(b'fixtureuser:!tilo-')
+            raise InterruptedError('before publication')
+        with self.assertRaises(InterruptedError):
+            self.helper.publish(directory, 'intent', interrupted)
+        self.assertFalse((self.root / 'intent').exists())
+        calls = []
+        fsync = os.fsync
+        with patch.object(self.helper.os, 'fsync', side_effect=lambda fd:
+                          (calls.append(os.fstat(fd).st_mode), fsync(fd))):
+            self.helper.publish(directory, 'intent', lambda name:
+                self.helper.write_file(directory, name, io.BytesIO(b'complete\n'),
+                                       0o600, os.getuid(), os.getgid()))
+        self.assertEqual((self.root / 'intent').read_bytes(), b'complete\n')
+        self.assertEqual((self.root / 'intent').stat().st_nlink, 1)
+        import stat
+        self.assertTrue(stat.S_ISREG(calls[0]))
+        self.assertTrue(stat.S_ISDIR(calls[1]))
+        with self.assertRaises(FileExistsError):
+            self.helper.publish(directory, 'intent', lambda name:
+                (self.root / name).write_text('replacement'))
+        self.assertEqual((self.root / 'intent').read_bytes(), b'complete\n')
+
+    def test_partial_defaults_retry_preserves_seeds_links_modes_and_ownership(self):
+        from unittest.mock import patch
+        skel = self.root / 'skel'
+        home = self.root / 'home'
+        skel.mkdir()
+        home.mkdir()
+        (skel / 'first').write_text('one')
+        (skel / 'second').write_text('two')
+        (skel / 'second').chmod(0o640)
+        (skel / 'seed').write_text('default')
+        (home / 'seed').write_text('installer')
+        (skel / 'link').symlink_to('../literal')
+        src = os.open(skel, self.helper.DIR)
+        dst = os.open(home, self.helper.DIR)
+        self.addCleanup(os.close, src)
+        self.addCleanup(os.close, dst)
+        publish = self.helper.publish
+        def interrupt(directory, name, writer):
+            if name == 'second':
+                raise InterruptedError('between defaults')
+            publish(directory, name, writer)
+        with patch.object(self.helper.os, 'listdir', return_value=['first', 'second']), \
+                patch.object(self.helper, 'publish', side_effect=interrupt):
+            with self.assertRaises(InterruptedError):
+                self.helper.defaults(src, dst, os.getuid(), os.getgid())
+        self.assertEqual((home / 'first').read_text(), 'one')
+        self.assertFalse((home / 'second').exists())
+        self.helper.defaults(src, dst, os.getuid(), os.getgid())
+        self.helper.ownership(dst, os.getuid(), os.getgid())
+        self.assertEqual((home / 'seed').read_text(), 'installer')
+        self.assertEqual((home / 'second').read_text(), 'two')
+        self.assertEqual((home / 'second').stat().st_mode & 0o777, 0o640)
+        self.assertEqual(os.readlink(home / 'link'), '../literal')
+        for file in home.iterdir():
+            self.assertEqual((file.lstat().st_uid, file.lstat().st_gid),
+                             (os.getuid(), os.getgid()))
+
+    def test_destination_directory_symlink_is_never_followed(self):
+        skel = self.root / 'skel'
+        home = self.root / 'home'
+        outside = self.root / 'outside'
+        (skel / 'nested').mkdir(parents=True)
+        (skel / 'nested/default').write_text('default')
+        home.mkdir()
+        outside.mkdir()
+        (home / 'nested').symlink_to(outside)
+        src = os.open(skel, self.helper.DIR)
+        dst = os.open(home, self.helper.DIR)
+        self.addCleanup(os.close, src)
+        self.addCleanup(os.close, dst)
+        with self.assertRaises(OSError):
+            self.helper.defaults(src, dst, os.getuid(), os.getgid())
+        self.assertEqual(list(outside.iterdir()), [])
+
+class HomeSeedTests(unittest.TestCase):
+    """Real seed I/O; substitute only root authority for unprivileged fixtures."""
+    def setUp(self):
+        import importlib.util
+        from unittest.mock import patch
+        import stat
+        spec = importlib.util.spec_from_file_location(
+            'home_seeds', ROOT / 'os/usr/libexec/tilo-firstboot-home-seeds.py')
+        self.helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.helper)
+        self.work = tempfile.TemporaryDirectory()
+        self.addCleanup(self.work.cleanup)
+        self.root = Path(self.work.name)
+        self.home = self.root / 'home'
+        self.skel = self.root / 'skel'
+        self.skel.mkdir()
+        self.proofs = self.root / 'state/proofs'
+        self.proofs.parent.mkdir()
+        (self.skel / 'default').write_text('generated')
+        (self.skel / 'migrated').write_text('matching')
+        self.home.mkdir()
+        (self.home / 'migrated').write_text('matching')
+        def fixture_authority(path):
+            info = path.lstat()
+            if info.st_uid != os.getuid() or info.st_mode & 0o022 or stat.S_ISLNK(info.st_mode):
+                raise ValueError('untrusted fixture authority')
+        writer = self.helper.atomic.write_file
+        def fixture_writer(directory, name, source, mode, uid, gid):
+            writer(directory, name, source, mode,
+                   os.getuid() if uid == 0 else uid, os.getgid() if gid == 0 else gid)
+        for mock in [patch.object(self.helper.os, 'geteuid', return_value=0),
+                     patch.object(self.helper, 'trusted', side_effect=fixture_authority),
+                     patch.object(self.helper.atomic, 'write_file', side_effect=fixture_writer)]:
+            mock.start()
+            self.addCleanup(mock.stop)
+
+    def seed(self):
+        return self.helper.seed(self.home, self.skel, os.getuid(), os.getgid(), self.proofs)
+
+    def test_existing_receipt_verifies_and_resumes_without_new_proofs(self):
+        body = self.seed()
+        self.assertEqual([entry['path'] for entry in body['files']], ['default'])
+        before = (self.proofs / (str(os.getuid()) + '.json')).read_bytes()
+        # The same ownership pass used by firstboot must not change witnesses.
+        fd = os.open(self.home, self.helper.atomic.DIR)
+        try:
+            self.helper.atomic.ownership(fd, os.getuid(), os.getgid())
+        finally:
+            os.close(fd)
+        (self.skel / 'later').write_text('not in original transaction')
+        self.assertEqual(self.seed(), body)
+        self.assertFalse((self.home / 'later').exists())
+        self.assertEqual((self.proofs / (str(os.getuid()) + '.json')).read_bytes(), before)
+        self.assertEqual((self.home / 'migrated').read_text(), 'matching')
+
+    def test_changed_attested_output_fails_closed(self):
+        self.seed()
+        (self.home / 'default').write_text('tampered')
+        with self.assertRaises(ValueError):
+            self.seed()
+
+    def test_redirected_attested_output_fails_closed(self):
+        self.seed()
+        (self.home / 'default').unlink()
+        (self.home / 'default').symlink_to(self.skel / 'default')
+        with self.assertRaises((ValueError, OSError)):
+            self.seed()
+
+    def test_partial_file_and_receipt_never_publish(self):
+        from unittest.mock import patch
+        def interrupted(directory, name, source, mode, uid, gid):
+            fd = os.open(name, os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                         0o600, dir_fd=directory)
+            try:
+                os.write(fd, b'partial')
+            finally:
+                os.close(fd)
+            raise InterruptedError('interrupted write')
+        with patch.object(self.helper.atomic, 'write_file', side_effect=interrupted):
+            with self.assertRaises(InterruptedError):
+                self.seed()
+        self.assertFalse((self.home / 'default').exists())
+        self.assertEqual(list(self.proofs.iterdir()), [])
+        self.assertEqual([entry['path'] for entry in self.seed()['files']], ['default'])
+
+    def test_receipt_interruption_does_not_fabricate_migrated_file_proofs(self):
+        from unittest.mock import patch
+        publish = self.helper.publish_bytes
+        def interrupted(directory, name, data, mode, uid, gid):
+            if directory == self.proofs:
+                # Fail during the actual atomic write, not before the call.
+                def partial(fd, temporary, source, mode, uid, gid):
+                    descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                                         0o600, dir_fd=fd)
+                    os.write(descriptor, b'{"schema":')
+                    os.close(descriptor)
+                    raise InterruptedError('receipt interrupted')
+                with patch.object(self.helper.atomic, 'write_file', side_effect=partial):
+                    publish(directory, name, data, mode, uid, gid)
+            else:
+                publish(directory, name, data, mode, uid, gid)
+        with patch.object(self.helper, 'publish_bytes', side_effect=interrupted):
+            with self.assertRaises(InterruptedError):
+                self.seed()
+        self.assertEqual((self.home / 'default').read_text(), 'generated')
+        self.assertEqual(list(self.proofs.iterdir()), [])
+        # No durable receipt means no provenance: neither matching existing file
+        # may be fabricated into an automatically replaceable default.
+        self.assertEqual(self.seed()['files'], [])
+
+    def test_truncated_existing_receipt_fails_closed(self):
+        self.seed()
+        (self.proofs / (str(os.getuid()) + '.json')).write_text('{"schema":')
+        with self.assertRaises(ValueError):
+            self.seed()
 
 
 if __name__ == '__main__':

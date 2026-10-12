@@ -410,6 +410,7 @@ if grep -Fq "refusing to modify pre-existing account" "$firstboot_user" \
    && grep -Fq 'valid_sha512_crypt "$hash"' "$firstboot_user" \
    && grep -Fq 'rounds=([1-9][0-9]{3,8})' "$firstboot_user" \
    && grep -Fq -- '-M -d "$native_home" -p "$lock_value"' "$firstboot_user" \
+   && ! grep -Fq 'useradd -m ' "$firstboot_user" \
    && ! grep -Fq -- '-p "$hash"' "$firstboot_user" \
    && grep -Fq '| chpasswd --encrypted' "$firstboot_user"; then
   ok "first boot revalidates credentials and installs the hash through stdin into a locked account"
