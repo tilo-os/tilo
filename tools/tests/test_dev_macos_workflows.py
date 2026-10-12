@@ -45,6 +45,13 @@ class DevMacosWorkflowTests(unittest.TestCase):
                     source.count("uses: actions/checkout@"),
                 )
 
+    def test_app_jobs_prepare_the_fonts_their_tests_render_with(self) -> None:
+        source = (WORKFLOWS / "dev-apps-macos.yml").read_text()
+        self.assertEqual(
+            source.count("uses: ./.forgejo/actions/prepare-font-assets"),
+            source.count("uses: actions/checkout@"),
+        )
+
     def test_runtime_check_follows_pull_requests(self) -> None:
         on = triggers((WORKFLOWS / "dev-runtime-macos.yml").read_text())
         self.assertIn("  pull_request:\n", on)
