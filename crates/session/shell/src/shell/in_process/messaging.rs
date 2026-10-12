@@ -186,6 +186,93 @@ impl NativeMessagingCredential {
     }
 }
 
+/// The phase an enrollment shows for an account it last moved to `phase`,
+/// once the account's native assembly reports `native`: a started account
+/// is ready only while that assembly is.
+fn projected_phase(
+    phase: tilo_messaging::EnrollmentPhase,
+    cancelled: bool,
+    native: Option<AccountState>,
+) -> tilo_messaging::EnrollmentPhase {
+    use tilo_messaging::EnrollmentPhase;
+    match native {
+        _ if cancelled => EnrollmentPhase::Interrupted,
+        Some(AccountState::Ready) => EnrollmentPhase::Ready,
+        Some(AccountState::Locked | AccountState::Failed) => EnrollmentPhase::Interrupted,
+        Some(_) if phase == EnrollmentPhase::Ready => EnrollmentPhase::Interrupted,
+        _ => phase,
+    }
+}
+
+/// The owner decision an enrollment waits on: the profile key it prepared
+/// for the new account and the Passwords proposal that grants Messages that
+/// key.
+struct OwnerPermission {
+    request: AccessRequest,
+    proposal: String,
+}
+
+/// Where the owner stands on an [`OwnerPermission`].
+enum Grant {
+    Approved(NativeMessagingCredential),
+    Pending,
+    Refused,
+}
+
+impl OwnerPermission {
+    /// Ask the owner to let Messages use `item_id`, the key just prepared for
+    /// `identity`. When the proposal cannot be made the key is removed again.
+    fn ask(
+        apps: &super::InProcessApps,
+        identity: &NativeMessagingIdentity,
+        item_id: accounts::SecretId,
+        purpose: String,
+        origin: &str,
+    ) -> Result<Self, SendError> {
+        let request = AccessRequest {
+            app_id: "so.tilo.messages".into(),
+            item_id,
+            purpose,
+            origin: Some(origin.into()),
+        };
+        let Ok(proposal) = apps.propose_native_messaging_permission(identity, request.clone())
+        else {
+            if let Some(vault) = &apps.credential_owner {
+                let _ = vault.edit(|store| store.remove(&request.item_id));
+            }
+            return Err(SendError::Revoked);
+        };
+        Ok(Self { request, proposal })
+    }
+
+    fn grant(&self, apps: &super::InProcessApps, identity: &NativeMessagingIdentity) -> Grant {
+        if let Ok(credential) = apps.native_messaging_credential(identity, self.request.clone())
+            && credential.check().is_ok()
+        {
+            return Grant::Approved(credential);
+        }
+        let pending = apps
+            .credential_owner
+            .as_ref()
+            .and_then(|vault| vault.proposals().ok())
+            .is_some_and(|proposals| proposals.iter().any(|p| p.id == self.proposal));
+        if pending {
+            Grant::Pending
+        } else {
+            Grant::Refused
+        }
+    }
+
+    /// Deny the proposal and remove the key this enrollment created. Only
+    /// that exact unused item is removed, never another account's.
+    fn withdraw(&self, apps: &super::InProcessApps) {
+        if let Some(vault) = &apps.credential_owner {
+            let _ = vault.decide_proposal(&self.proposal, accounts::AccessDecision::Deny);
+            let _ = vault.edit(|store| store.remove(&self.request.item_id));
+        }
+    }
+}
+
 /// Inputs retained by startup and every native Signal I/O operation. Contacts
 /// and provider fingerprint validation remain the existing authority's job.
 pub struct SignalAccountStartup {
