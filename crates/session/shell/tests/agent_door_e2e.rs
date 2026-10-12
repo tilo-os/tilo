@@ -304,8 +304,9 @@ impl Drop for McpClient {
 /// session's door, not a standalone runtime of its own, and reads and edits
 /// Notes by the names a person uses, with no id in sight: ls, a new note, the
 /// note found by its title under the notebook, a paragraph appended through
-/// its body's own action, a read back; then the grant is taken back and the
-/// agent is refused.
+/// its body's own action, a read back; then the Notes grant is taken back
+/// and the agent may no longer write, and its membership is taken back and
+/// it may no longer read.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -414,26 +415,13 @@ fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
     });
     assert!(note.contains("Agent todo"), "{note}");
 
-    // Admission is not the grant: take the grant back and the same read, which
-    // needs no view of anyone's, is refused all the same.
+    // Taking the Notes grant back ends what it added, at once: the agent may
+    // no longer write to the body.
     let revoked = control(
         &session.control(),
         &serde_json::json!({"op":"disallow","id":"e2e-agent-notes"}),
     );
     assert!(revoked.get("err").is_none(), "{revoked}");
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let (text, failed) = agent.tool("tilo_read", &serde_json::json!({"path": page}));
-        assert!(
-            !text.contains("buy milk") || Instant::now() < deadline,
-            "an agent without a grant on Notes still read a note: {text}"
-        );
-        if failed && !text.contains("buy milk") {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    // Nor may it write: the body refuses its action.
     let (refused, failed) = agent.tool(
         "tilo_do",
         &serde_json::json!({"path": format!("{body}#append-paragraph"),
@@ -442,6 +430,24 @@ fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
     assert!(
         failed,
         "an agent without a grant on Notes still wrote a note: {refused}"
+    );
+    // Reading the room is its membership's (the door admits an agent as an
+    // Observer: AgentPreset grants it the room's reads), so the read stands
+    // until the membership is taken back, and then ends with the next call.
+    let (still, failed) = agent.tool("tilo_read", &serde_json::json!({"path": page}));
+    assert!(
+        !failed && still.contains("buy milk"),
+        "an admitted Observer reads the room: {still}"
+    );
+    let removed = control(
+        &session.control(),
+        &serde_json::json!({"op":"disallow","id":"agent-member:claude-code:observer"}),
+    );
+    assert!(removed.get("err").is_none(), "{removed}");
+    let (text, failed) = agent.tool("tilo_read", &serde_json::json!({"path": page}));
+    assert!(
+        failed && !text.contains("buy milk"),
+        "an agent whose membership was taken back still read a note: {text}"
     );
 
     // The compositor kept its state file's writer the whole time.
