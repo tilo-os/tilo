@@ -134,7 +134,7 @@ fn an_agent_turns_the_todo_page_into_a_checklist_ticks_items_and_rewords_one() {
     let ticked = call(
         &mut app,
         &body,
-        "set-block-done",
+        "set-block-kind",
         json!({ "block": milk, "done": true }),
     );
     assert_eq!(ticked, json!({ "changed": [milk] }));
@@ -225,7 +225,7 @@ fn a_bad_block_is_refused_by_name_and_writes_nothing() {
     let body = note["body"].as_str().unwrap().to_owned();
     let before = app.read_document(|doc| doc.clone().get_heads());
     let refused = app
-        .call_on(&body, "set-block-done", json!({ "block": "nope" }))
+        .call_on(&body, "set-block-kind", json!({ "block": "nope" }))
         .expect_err("an unknown block");
     assert!(format!("{refused:?}").contains("no block"), "{refused:?}");
     assert_eq!(app.read_document(|doc| doc.clone().get_heads()), before);

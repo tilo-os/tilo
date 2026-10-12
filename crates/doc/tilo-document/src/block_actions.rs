@@ -12,9 +12,8 @@
 //! | `insert-block` | `kind`, `text`, `after`/`position`, `level`, `indent`, `done`, `lang` | one block |
 //! | `insert-markdown` | `markdown`, `after`/`position` | the blocks it says |
 //! | `set-block-text` | `block`, `text`, `markdown` | a block's text |
-//! | `set-block-kind` | `block`, `kind`, `level`, `indent`, `done`, `lang` | a block's kind |
-//! | `set-block-done` | `block`, `done` | a checklist item |
-//! | `indent-block`, `outdent-block` | `block`, `levels` | a list item |
+//! | `set-block-kind` | `block`, `kind`, `level`, `indent`, `done`, `lang` | a block's kind, or (no kind) a checklist item's state |
+//! | `indent-block` | `block`, `levels` (negative outdents) | a list item |
 //! | `move-block` | `block`, `after`/`position` | a block's place |
 //! | `delete-blocks` | `blocks` | blocks |
 //! | `replace-body` | `markdown` | the whole body, kept block by block |
@@ -36,12 +35,11 @@ use crate::block_edit::{BlockKind, BlockShape, NewBlock, Placement};
 use crate::block_markdown::{render, short_ids};
 
 /// The ids of the declared actions that answer what they changed.
-pub const ANSWERING: [&str; 9] = [
+pub const ANSWERING: [&str; 8] = [
     "insert-block",
     "insert-markdown",
     "set-block-text",
     "set-block-kind",
-    "set-block-done",
     "indent-block",
     "move-block",
     "delete-blocks",
@@ -159,17 +157,18 @@ fn block_of(args: &ActionArgs) -> Result<String, String> {
         .ok_or_else(|| "name the block".to_owned())
 }
 
-fn shifted(args: &ActionArgs, direction: i64) -> Result<RichTextAction, String> {
+/// Indent (`levels` positive, default 1) or outdent (negative) a list item.
+fn shifted(args: &ActionArgs) -> Result<RichTextAction, String> {
     let levels = args.integer("levels").unwrap_or(1);
-    if !(1..=crate::block_markdown::MAX_INDENT).contains(&levels) {
+    let max = crate::block_markdown::MAX_INDENT;
+    if levels == 0 || !(-max..=max).contains(&levels) {
         return Err(format!(
-            "levels is 1 to {}, not {levels}",
-            crate::block_markdown::MAX_INDENT
+            "levels is 1 to {max} to indent or -1 to -{max} to outdent, not {levels}"
         ));
     }
     Ok(RichTextAction::ShiftIndent {
         block: block_of(args)?,
-        by: levels.saturating_mul(direction),
+        by: levels,
     })
 }
 
@@ -188,7 +187,7 @@ pub(crate) fn declarations() -> Vec<ActionDecl<RichText>> {
     insert.extend(placement_params());
     insert.extend(shape_params());
 
-    let mut set_kind = vec![block_param(), kind_param(true)];
+    let mut set_kind = vec![block_param(), kind_param(false)];
     set_kind.extend(shape_params());
 
     let mut insert_markdown = vec![text_param(
@@ -252,54 +251,38 @@ pub(crate) fn declarations() -> Vec<ActionDecl<RichText>> {
         .describe("Replace one block's text, changing only the characters that differ. Answers the block's id.")
         .answering(),
         ActionDecl::new("set-block-kind", "Set block kind", set_kind, |args, _| {
-            Ok(RichTextAction::SetBlockShape {
-                block: block_of(args)?,
-                shape: shape_of(args, None)?,
-            })
-        })
-        .describe("Turn a block into a paragraph, heading, bullet, numbered or checklist item, quote or code line, keeping its text. Answers the block's id.")
-        .answering(),
-        ActionDecl::new(
-            "set-block-done",
-            "Set item done",
-            vec![
-                block_param(),
-                optional(
-                    "done",
-                    ParamType::Boolean,
-                    "true to tick, false to untick; leave out to toggle",
-                ),
-            ],
-            |args, _| {
+            let named = args
+                .text("kind")
+                .is_some_and(|kind| !kind.trim().is_empty());
+            if named {
+                Ok(RichTextAction::SetBlockShape {
+                    block: block_of(args)?,
+                    shape: shape_of(args, None)?,
+                })
+            } else {
+                // Without a kind, `done` alone ticks, unticks or toggles an item.
                 Ok(RichTextAction::SetBlockDone {
                     block: block_of(args)?,
                     done: args.boolean("done"),
                 })
-            },
-        )
-        .describe("Tick, untick or toggle a checklist item; a bullet or numbered item becomes a checklist item. Answers the block's id.")
+            }
+        })
+        .describe("Turn a block into a paragraph, heading, bullet, numbered or checklist item, quote or code line, keeping its text; or, with no kind, tick, untick (`done`) or toggle (leave `done` out) a list item, which becomes a checklist item. Answers the block's id.")
         .answering(),
         ActionDecl::new(
             "indent-block",
-            "Indent item",
+            "Indent or outdent item",
             vec![
                 block_param(),
-                optional("levels", ParamType::Integer, "How many levels (default 1)"),
+                optional(
+                    "levels",
+                    ParamType::Integer,
+                    "How many levels to indent (default 1); negative outdents",
+                ),
             ],
-            |args, _| shifted(args, 1),
+            |args, _| shifted(args),
         )
-        .describe("Indent a list item. Answers the block's id.")
-        .answering(),
-        ActionDecl::new(
-            "outdent-block",
-            "Outdent item",
-            vec![
-                block_param(),
-                optional("levels", ParamType::Integer, "How many levels (default 1)"),
-            ],
-            |args, _| shifted(args, -1),
-        )
-        .describe("Outdent a list item. Answers the block's id.")
+        .describe("Indent a list item, or outdent it with a negative `levels`. Answers the block's id.")
         .answering(),
         ActionDecl::new("move-block", "Move block", move_params, |args, _| {
             Ok(RichTextAction::MoveBlock {
@@ -557,13 +540,8 @@ pub fn action_result_under(
     action: &str,
     changes: &[automerge::Patch],
 ) -> Option<serde_json::Value> {
-    let declared = if action == "outdent-block" {
-        "indent-block"
-    } else {
-        action
-    };
     ANSWERING
-        .contains(&declared)
+        .contains(&action)
         .then(|| changes_under(doc, root, changes))
 }
 
