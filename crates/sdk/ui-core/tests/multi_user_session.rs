@@ -1,13 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use crate::support::{MemoryRelay, document_mutation, headless_app, pump};
 use std::time::SystemTime;
 use tilo_ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};

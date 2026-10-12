@@ -1999,7 +1999,6 @@ fn read_png_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>), String> {
 mod tests {
     #![allow(
         clippy::field_reassign_with_default,
-        clippy::too_many_lines,
         reason = "capture integration tests keep their full scenario setup explicit"
     )]
     #![allow(

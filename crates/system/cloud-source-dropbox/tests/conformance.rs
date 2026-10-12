@@ -10,12 +10,7 @@
 //!   `TILO_LIVE_DROPBOX_APP_KEY` (and `TILO_LIVE_DROPBOX_APP_SECRET` for
 //!   confidential apps).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "test fixtures"
-)]
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
 
 use std::sync::{Arc, Mutex};
 

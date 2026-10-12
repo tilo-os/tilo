@@ -3454,10 +3454,6 @@ mod two_sessions {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario walks each roster input in turn on one fixture"
-    )]
     fn the_roster_is_derived_again_only_after_one_of_its_inputs_changed() {
         let guest_peer = peer_id(71);
         let host_peer = peer_id(72);

@@ -3835,10 +3835,6 @@ impl MapsApp {
     /// The departure time: a quiet Leave/Arrive choice and a stepper that
     /// moves the time in quarter hours, with "Now" to go back. Defaults to
     /// leaving now. Returns the y below it.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one row of related controls laid out against each other"
-    )]
     fn draw_time_picker(
         &mut self,
         scene: &mut Scene,

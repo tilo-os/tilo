@@ -105,10 +105,6 @@ impl MenuMetrics {
 
 /// An anchored floating Panel holding an option menu or any content widget.
 /// See the module docs for the contract.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent open, presentation and invalidation flags"
-)]
 pub struct Popover<C: Widget = NoContent> {
     content: C,
     options: Option<Options>,

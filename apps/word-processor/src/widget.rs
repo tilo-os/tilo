@@ -10284,10 +10284,6 @@ impl Widget for WordProcessorWidget {
         }))
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the editor binds, rebases and reconciles in one sync pass"
-    )]
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         // The toolbar is painted inside the document's authored chrome rather
         // than exposed as another accessibility child. Its deferred native
@@ -10434,10 +10430,6 @@ impl Widget for WordProcessorWidget {
         self.modal_capture().is_some()
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the frame compositor keeps its ordered page/chrome layers together"
-    )]
     fn draw(
         &mut self,
         scene: &mut Scene,

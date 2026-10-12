@@ -798,10 +798,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn the_visible_view_is_each_grant_plus_its_ancestors() {
         // Phase `the_view_is_the_grant_plus_the_path_to_it`.
         // The view is the granted subtree plus the directories leading to

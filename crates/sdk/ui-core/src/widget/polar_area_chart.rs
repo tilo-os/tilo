@@ -26,10 +26,6 @@ use crate::widget::chart_navigation::{
     moved_index,
 };
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent polar presentation toggles are composable"
-)]
 #[derive(Clone, Debug)]
 pub struct PolarAreaStyle {
     pub max: Option<f64>,

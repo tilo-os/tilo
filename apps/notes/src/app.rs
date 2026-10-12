@@ -3088,10 +3088,6 @@ impl NotesApp {
     }
 
     /// Route note commands before pointer or keyboard events reach the editor.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "routes the complete context-menu event lifecycle through one stateful boundary"
-    )]
     fn handle_note_context_menu(
         &mut self,
         event: &WindowEvent,
@@ -3660,7 +3656,6 @@ mod tests {
         crate::resource::Notebook::child(&state, id).unwrap()
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn images_beside_a_markdown_file_become_notebook_assets() {
         eprintln!("phase images_beside_a_launched_file_join_the_notebook");
@@ -3748,7 +3743,6 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn page_events_create_delete_rename_and_dispatch_canonical_actions() {
         eprintln!("phase apply_event_create_child_appends_and_selects");
@@ -4184,7 +4178,6 @@ mod tests {
         );
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn navigation_and_backlinks_follow_stable_page_identity() {
         eprintln!("phase canonical_links_produce_sorted_backlinks_for_the_target_note");
@@ -4275,7 +4268,6 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn exported_notes_carry_their_images_and_import_them_again() {
         eprintln!("phase an_exported_note_carries_its_images_and_imports_them_again");

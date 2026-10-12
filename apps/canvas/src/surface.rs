@@ -3621,11 +3621,6 @@ fn saved(
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "test assertions over exact, hand-written fixtures"
-    )]
 
     use super::*;
     use crate::panels::shortcuts::{GROUPS, tools};

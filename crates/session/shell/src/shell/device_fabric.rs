@@ -3501,10 +3501,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn roaming_settings_accept_only_audited_leaves_and_resolve_deterministically() {
         fn local_hardware_settings_do_not_roam() {
             for key in [

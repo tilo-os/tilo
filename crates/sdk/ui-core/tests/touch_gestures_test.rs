@@ -2,14 +2,6 @@
 //! contract: two fingers pinch or pan, a still hold is a secondary click, and
 //! a widget claiming raw touch receives every finger itself.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;

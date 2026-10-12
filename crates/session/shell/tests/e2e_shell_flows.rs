@@ -14,9 +14,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -547,10 +545,6 @@ fn render_frame_to(
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the drag-reorder integration scenario couples input, layout, and golden-frame assertions"
-)]
 #[test]
 fn e2e_tab_drag_reorder() {
     let _guard = TEST_LOCK

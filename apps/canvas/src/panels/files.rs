@@ -565,7 +565,6 @@ impl ui::widget::Decorator for FileDesk {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "test fixtures")]
 
     use super::*;
 
