@@ -300,7 +300,12 @@ differences are of nearby values and exact, so coverage is accurate to f32
 precision and the same at every whole-pixel offset (in the strip pan test,
 whole renders at two pans went from up to 31 pixels more than a step apart
 to none). Edge pixels move to their correct coverage, so visual goldens of
-antialiased text change by up to that much.
+antialiased text change by up to that much. The accurate form also keeps
+the slivers of coverage the `1e-6` nudges add next to an edge on a whole
+pixel (about `1e-6`), which the expanded form happened to round to zero;
+the store divided such a pixel's colour out to full strength under an alpha
+that stores as 0. Fine therefore stores a pixel whose alpha rounds to 0 as
+transparent black, which nothing composited can tell apart.
 
 ## Total bump budget (`config.rs`, `bump_budget.rs`, `lib.rs`)
 
