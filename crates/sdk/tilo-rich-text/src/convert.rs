@@ -37,10 +37,7 @@ pub(crate) fn chars(text: &str) -> usize {
 }
 
 fn int_attr(view: &BlockView, key: &str) -> Option<i64> {
-    match view.attrs.get(key) {
-        Some(tilo_doc::AttrVal::Int(value)) => Some(*value),
-        _ => None,
-    }
+    view.int_attr(key)
 }
 
 fn bool_attr(view: &BlockView, key: &str) -> Option<bool> {
@@ -51,10 +48,7 @@ fn bool_attr(view: &BlockView, key: &str) -> Option<bool> {
 }
 
 fn str_attr<'a>(view: &'a BlockView, key: &str) -> Option<&'a str> {
-    match view.attrs.get(key) {
-        Some(tilo_doc::AttrVal::Str(value)) => Some(value.as_str()),
-        _ => None,
-    }
+    view.str_attr(key)
 }
 
 fn indent_of(view: &BlockView) -> u8 {

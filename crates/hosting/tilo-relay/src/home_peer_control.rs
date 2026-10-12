@@ -33,6 +33,8 @@ enum BrokerCommand {
     ApproveEnrollment {
         #[arg(long)]
         identity_root: PathBuf,
+        #[arg(long)]
+        identity_dir: Option<PathBuf>,
         #[arg(long = "workspace-id")]
         workspace_ids: Vec<u64>,
         #[arg(long)]
@@ -533,6 +535,7 @@ fn validate_identity_root(identity_root: &Path, uid: u32, home: &Path) -> anyhow
 
 fn approve_enrollment(
     identity_root: &Path,
+    identity_dir: Option<&Path>,
     workspace_ids: Vec<u64>,
     expected_device: Option<String>,
     expected_service: Option<String>,
@@ -565,7 +568,20 @@ fn approve_enrollment(
         (None, None) => {}
         _ => bail!("nearby device and service identities must be supplied together"),
     }
-    run_enrollment_as_identity_owner(&mut command, &identity_root, uid, account.gid);
+    if let Some(identity_dir) = identity_dir {
+        let identity_dir = validate_identity_dir(identity_dir, uid, &account.home)?;
+        command.arg("--identity-dir").arg(identity_dir);
+        if tilo_user_identity::IdentityPaths::under(&identity_root)
+            .user_privkey
+            .exists()
+        {
+            run_enrollment_as_identity_owner(&mut command, &identity_root, uid, account.gid);
+        } else {
+            run_as_invoking_person(&mut command, uid, &account)?;
+        }
+    } else {
+        run_enrollment_as_identity_owner(&mut command, &identity_root, uid, account.gid);
+    }
     let output =
         bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(90))?;
     enrollment_command_result(&output, "home-server enrollment was not completed")
@@ -708,11 +724,13 @@ fn run() -> anyhow::Result<()> {
         BrokerCommand::Apply => apply(&read_request()?),
         BrokerCommand::ApproveEnrollment {
             identity_root,
+            identity_dir,
             workspace_ids,
             expected_device,
             expected_service,
         } => approve_enrollment(
             &identity_root,
+            identity_dir.as_deref(),
             workspace_ids,
             expected_device,
             expected_service,

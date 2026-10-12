@@ -36,6 +36,7 @@
 
 mod body;
 pub mod capability;
+mod ordinals;
 mod provider;
 mod query;
 pub mod rank;

@@ -1,4 +1,5 @@
 //! Native semantic service consuming the ordinary durable invocation stream.
+use super::room_service::ServiceOutcome;
 use super::{
     Arc, CapnpBrokerState, CrdtRoute, InvocationEnvelope, PublishedAction, PublishedInput,
     PublishedSurface,
@@ -17,15 +18,6 @@ impl CapnpBrokerState {
         let room = service.room().to_string();
         uuid::Uuid::parse_str(&room).map_err(|e| e.to_string())?;
         let peer_id = self.next_service_peer_id();
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        self.invocation_subscribers
-            .lock()
-            .map_err(|_| "invocation subscribers unavailable")?
-            .insert(peer_id, sender);
-        self.stable_invocation_subscribers
-            .lock()
-            .map_err(|_| "stable invocation registry unavailable")?
-            .insert(peer_id);
         *self
             .desktop_command_peer
             .lock()
@@ -42,67 +34,41 @@ impl CapnpBrokerState {
                 })
                 .map(|entry| open_app_action(entry.app_id, entry.title)),
         );
-        self.surfaces
-            .lock()
-            .map_err(|_| "action surfaces unavailable")?
-            .insert(
-                peer_id,
-                PublishedSurface {
-                    peer_id,
-                    app_id: command::APP_ID.into(),
-                    route: CrdtRoute::record(command::APP_ID, &room, ""),
-                    live: true,
-                    actions,
-                },
-            );
-        let state = self.clone();
-        tokio::task::spawn_local(async move {
-            while let Some(envelope) = receiver.recv().await {
-                let mut id = None;
-                let outcome = state
-                    .execute_desktop_command(peer_id, &envelope, service.as_ref(), &mut id)
-                    .await;
-                let update = match outcome {
-                    Ok(receipt) => tilo_actions::InvocationUpdate::Succeeded {
-                        invocation: envelope.invocation,
-                        output: tilo_actions::ActionOutput {
-                            value: Some(receipt.to_value()),
-                            resources: Vec::new(),
-                        },
-                    },
-                    Err(DesktopCommandError::Rejected(message)) => {
-                        tilo_actions::InvocationUpdate::Failed {
-                            invocation: envelope.invocation,
-                            error: refusal(id.as_ref(), message),
+        let surface = PublishedSurface {
+            peer_id,
+            app_id: command::APP_ID.into(),
+            route: CrdtRoute::record(command::APP_ID, &room, ""),
+            live: true,
+            actions,
+        };
+        self.serve_room(
+            surface,
+            move |state, envelope| {
+                let service = service.clone();
+                async move {
+                    let mut id = None;
+                    match state
+                        .execute_desktop_command(peer_id, &envelope, service.as_ref(), &mut id)
+                        .await
+                    {
+                        Ok(receipt) => ServiceOutcome::Succeeded(receipt.to_value()),
+                        Err(DesktopCommandError::Rejected(message)) => {
+                            ServiceOutcome::Failed(refusal(id.as_ref(), message))
+                        }
+                        Err(DesktopCommandError::Uncertain(reason)) => {
+                            ServiceOutcome::Uncertain(reason)
                         }
                     }
-                    Err(DesktopCommandError::Uncertain(reason)) => {
-                        if let Ok(mut failure) = state.owner_commit_failure.lock() {
-                            failure.get_or_insert(reason);
-                        }
-                        break;
-                    }
-                };
-                if let Err(error) = state
-                    .apply_invocation_update(peer_id, envelope.id, update, None)
-                    .await
-                {
-                    if let Ok(mut failure) = state.owner_commit_failure.lock() {
-                        failure.get_or_insert(error.to_string());
-                    }
-                    break;
                 }
-            }
-            if let Ok(mut surfaces) = state.surfaces.lock() {
-                surfaces.remove(&peer_id);
-            }
-            if let Ok(mut desktop) = state.desktop_command_peer.lock()
-                && *desktop == Some(peer_id)
-            {
-                *desktop = None;
-            }
-        });
-        Ok(())
+            },
+            move |state, _| {
+                if let Ok(mut desktop) = state.desktop_command_peer.lock()
+                    && *desktop == Some(peer_id)
+                {
+                    *desktop = None;
+                }
+            },
+        )
     }
 
     async fn execute_desktop_command(
@@ -154,9 +120,8 @@ impl CapnpBrokerState {
             return Err(Rejected("desktop invocation binding changed".into()));
         }
         let (command, direct_delivery) = if let Some(app) = open_app {
-            if !open_app_argument_is_empty(envelope.argument.as_deref()) {
-                return Err(Rejected("opening an application takes no arguments".into()));
-            }
+            let beside = open_app_beside(envelope.argument.as_deref())
+                .map_err(|reason| Rejected(reason.into()))?;
             if service.catalogue().find(app).is_none() {
                 return Err(Rejected("application cannot be opened here".into()));
             }
@@ -169,6 +134,7 @@ impl CapnpBrokerState {
                     },
                     command: command::DesktopCommand::OpenApp {
                         app: app.to_owned(),
+                        beside,
                     },
                 },
                 false,
@@ -237,14 +203,30 @@ fn refusal(id: Option<&DesktopCommandId>, message: String) -> tilo_actions::Acti
 /// Whether an open's wire argument carries nothing: absent (the palette's
 /// immediate invoke) or the typed empty argument object every task step
 /// sends for a nullary operation. Anything else is refused.
-fn open_app_argument_is_empty(argument: Option<&str>) -> bool {
-    argument.is_none_or(|argument| {
-        argument
-            .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
-            .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
-            .is_some_and(|value| value.as_object().is_some_and(serde_json::Map::is_empty))
-    })
+/// The group an open's argument asks the app to open beside: `None` for
+/// no argument or an empty one.
+///
+/// # Errors
+/// Any other argument.
+fn open_app_beside(argument: Option<&str>) -> Result<Option<u64>, &'static str> {
+    const REFUSED: &str = "opening an application takes only the group to open beside";
+    let Some(argument) = argument else {
+        return Ok(None);
+    };
+    let value = argument
+        .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+        .ok_or(REFUSED)?;
+    let object = value.as_object().ok_or(REFUSED)?;
+    match (object.len(), object.get(OPEN_APP_BESIDE)) {
+        (0, _) => Ok(None),
+        (1, Some(group)) => group.as_u64().map(Some).ok_or(REFUSED),
+        _ => Err(REFUSED),
+    }
 }
+
+/// The open action's one optional parameter: the group to open beside.
+const OPEN_APP_BESIDE: &str = "beside";
 
 /// Action id of the per-application open action.
 pub(crate) const OPEN_APP_ACTION: &str = command::OPEN_APP_ACTION;
@@ -261,7 +243,7 @@ pub(crate) fn open_app_resource(resource: &str) -> Option<&str> {
 /// names its command id and the windows it opened.
 fn desktop_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
-        permission: tilo_actions::PermissionRequirement::Write,
+        kind: tilo_actions::ActionKind::Undoable,
         result: tilo_actions::ResultSpec::Json {
             schema: DesktopCommandReceipt::schema(),
         },
@@ -311,7 +293,11 @@ fn open_app_action(app: &str, title: &str) -> PublishedAction {
         action_label: format!("Open {title}"),
         description: Some(format!("Open {title} in a new window with a new document")),
         operation_kind: tilo_actions::OperationKind::Effect,
-        params: vec![],
+        params: vec![tilo_actions::ActionParam::optional(
+            OPEN_APP_BESIDE,
+            tilo_actions::ParamType::Integer,
+            "The group to open beside: the view the actor works in",
+        )],
         contract: desktop_contract(),
         view: None,
         input: PublishedInput::None,
@@ -323,16 +309,20 @@ mod open_app_tests {
     use super::*;
 
     /// A task step's typed empty argument object is no argument, as the
-    /// palette's immediate invoke is; any real argument is still refused.
+    /// palette's immediate invoke is; the group to open beside is the only
+    /// argument, and anything else is still refused.
     #[test]
-    fn an_open_accepts_only_an_absent_or_empty_argument() {
+    fn an_open_accepts_only_an_absent_empty_or_beside_argument() {
         let typed = |json: &str| format!("{}{json}", tilo_actions::ARGUMENTS_JSON_PREFIX);
-        assert!(open_app_argument_is_empty(None));
-        assert!(open_app_argument_is_empty(Some(&typed("{}"))));
-        assert!(!open_app_argument_is_empty(Some(&typed("{\"x\":1}"))));
-        assert!(!open_app_argument_is_empty(Some(&typed("[]"))));
-        assert!(!open_app_argument_is_empty(Some("{}")));
-        assert!(!open_app_argument_is_empty(Some("")));
+        assert_eq!(open_app_beside(None), Ok(None));
+        assert_eq!(open_app_beside(Some(&typed("{}"))), Ok(None));
+        assert_eq!(open_app_beside(Some(&typed("{\"beside\":7}"))), Ok(Some(7)));
+        assert!(open_app_beside(Some(&typed("{\"beside\":\"7\"}"))).is_err());
+        assert!(open_app_beside(Some(&typed("{\"x\":1}"))).is_err());
+        assert!(open_app_beside(Some(&typed("{\"beside\":7,\"x\":1}"))).is_err());
+        assert!(open_app_beside(Some(&typed("[]"))).is_err());
+        assert!(open_app_beside(Some("{}")).is_err());
+        assert!(open_app_beside(Some("")).is_err());
     }
 
     /// Opens and layout commands answer with the receipt their contract
@@ -409,7 +399,15 @@ mod open_app_tests {
         assert_eq!(action.resource, "desktop:app:so.tilo.notes");
         assert_eq!(action.action, OPEN_APP_ACTION);
         assert_eq!(action.action_label, "Open Notes");
-        assert!(action.params.is_empty());
+        assert_eq!(
+            action
+                .params
+                .iter()
+                .map(|param| (&*param.name, param.required))
+                .collect::<Vec<_>>(),
+            [(OPEN_APP_BESIDE, false)],
+            "opening takes nothing but, optionally, the group to open beside"
+        );
         assert_eq!(action.operation_kind, tilo_actions::OperationKind::Effect);
         assert!(matches!(
             action.contract.confirmation,

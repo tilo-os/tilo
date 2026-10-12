@@ -87,7 +87,7 @@ impl SecretServiceProvider {
     }
 
     /// Whether the store answers on this session.
-    #[cfg_attr(test, allow(dead_code, reason = "tests use the broker file provider"))]
+    #[cfg(not(test))]
     fn available(&self) -> bool {
         self.store.probe_blocking().is_ok()
     }
@@ -400,7 +400,8 @@ pub(crate) fn fallback_provider(identity_dir: &Path) -> BrokerFileProvider {
     BrokerFileProvider::new(identity_dir)
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
+#[cfg(target_os = "macos")]
 mod tests {
     /// A dev build (cargo's test binaries included) has only the linker's
     /// ad-hoc signature, so its Keychain items would not outlive it.

@@ -40,6 +40,66 @@ pub struct OperationRequest<'a> {
     pub payload: &'a [u8],
 }
 
+/// Inert routing facts captured from the actual resolved record owner.
+/// These are neither a certificate nor permission to execute a host job.
+#[derive(Clone, Debug)]
+pub struct OperationTarget {
+    route: crate::collaboration::RouteSpec,
+    address: tilo_actions::ActionAddress,
+}
+impl OperationTarget {
+    pub(crate) fn new(
+        route: crate::collaboration::RouteSpec,
+        address: tilo_actions::ActionAddress,
+    ) -> Self {
+        Self { route, address }
+    }
+    pub fn route(&self) -> &crate::collaboration::RouteSpec {
+        &self.route
+    }
+    pub fn address(&self) -> &tilo_actions::ActionAddress {
+        &self.address
+    }
+
+    /// Request one approved ID on this dispatch target's acknowledged record route.
+    /// The broker recovers actual caller/target authority from the invocation.
+    ///
+    /// # Errors
+    /// Refuses other action types, absent routing, malformed IDs or unavailable transport.
+    pub fn approved_check(
+        &self,
+        invocation: tilo_actions::InvocationId,
+        check_id: &str,
+    ) -> Result<crate::invocation_scope::ApprovedCheckFuture, String> {
+        if self.address.action != runtime_collab::approved_checks::ACTION_ID
+            || self.address.resource.is_empty()
+            || self.route.record.as_deref().is_none_or(str::is_empty)
+        {
+            return Err("approved check requires the exact dispatched project resource".into());
+        }
+        #[cfg(feature = "broker-transport")]
+        {
+            let request = runtime_collab::approved_checks::Request {
+                version: 1,
+                invocation: invocation.0.to_string(),
+                check_id: check_id.into(),
+            };
+            let receive =
+                crate::collaboration::approved_checks::enqueue(&self.route.channel_id(), request)?;
+            Ok(Box::pin(async move {
+                receive
+                    .await
+                    .map_err(|_| "approved-check transport retired")?
+            }))
+        }
+        #[cfg(not(feature = "broker-transport"))]
+        {
+            let _ = (invocation, check_id);
+            Err("approved project checks require the admitted native broker transport".into())
+        }
+    }
+}
+
 /// An exported effect/view operation offered to the retained tree.
 ///
 /// A *required* operation — a hosted invocation admitted for its original
@@ -51,6 +111,7 @@ pub struct OperationRequest<'a> {
 pub struct ResourceOperation<'a> {
     request: OperationRequest<'a>,
     scope: Option<&'a ResourceInvocationScope>,
+    target: Option<&'a OperationTarget>,
 }
 
 impl std::fmt::Debug for ResourceOperation<'_> {
@@ -79,6 +140,7 @@ impl<'a> ResourceOperation<'a> {
                 payload,
             },
             scope: None,
+            target: None,
         }
     }
 
@@ -97,7 +159,18 @@ impl<'a> ResourceOperation<'a> {
                 payload,
             },
             scope: Some(scope),
+            target: None,
         }
+    }
+
+    pub(crate) fn with_target(mut self, target: Option<&'a OperationTarget>) -> Self {
+        self.target = target;
+        self
+    }
+
+    /// Exact inert record routing facts when the dispatcher observed an owner.
+    pub fn target(&self) -> Option<&OperationTarget> {
+        self.target
     }
 
     pub fn invocation(&self) -> tilo_actions::InvocationId {

@@ -5,7 +5,7 @@
 # The custom installer cannot create users at install time (bootc install
 # makes no users), so it drops `<name>:<sha512-crypt-hash>` into the new
 # deployment's /etc/tilo/install-user.conf. On first boot, tilo-firstboot-user.service
-# runs this once: it creates the user (in wheel for sudo) initially locked,
+# runs this once: it creates the user (in wheel for sudo) locked and expired,
 # installs the supplied pre-hashed password through stdin,
 # then SHREDS the file so the hash does not linger or appear in process argv.
 set -euo pipefail
@@ -15,7 +15,7 @@ valid_sha512_crypt() {
 
   # crypt(5) SHA-512 hashes have an optional rounds field, a 1-16 byte
   # crypt-base64 salt, and an exact 86 byte crypt-base64 digest. Keep this
-  # parser strict: this value is passed directly to useradd(8)'s -p option.
+  # parser strict: this value is installed through chpasswd --encrypted.
   if [[ "$candidate" =~ ^\$6\$[./0-9A-Za-z]{1,16}\$[./0-9A-Za-z]{86}$ ]]; then
     return 0
   fi
@@ -127,12 +127,42 @@ repair_enrolled_device_key() {
   fi
 }
 
-if id "$user" >/dev/null 2>&1; then
-  echo "tilo-firstboot-user: refusing to modify pre-existing account '$user'" >&2
-  repair_enrolled_device_key
-  shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
+# The private intent's random locked shadow value proves transaction ownership.
+TRANSACTION=/etc/tilo/install-user.transaction
+FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files.py"
+retry=0
+lock_value=""
+if [ -e "$TRANSACTION" ] || [ -L "$TRANSACTION" ]; then
+  valid_seed_file "$TRANSACTION" 1024 || exit 1
+  IFS=: read -r transaction_user lock_value < "$TRANSACTION" || true
+  [ "$transaction_user" = "$user" ] \
+    && [[ "$lock_value" =~ ^!tilo-firstboot-[a-f0-9]{32}$ ]] || exit 1
+  if id "$user" >/dev/null 2>&1; then
+    shadow="$(getent shadow "$user")" || exit 1
+    shadow="${shadow#*:}"
+    shadow="${shadow%%:*}"
+    # A crash after release may leave the intent. Expire before retry: a
+    # password lock alone does not block SSH public-key authentication.
+    [ "$shadow" = "$lock_value" ] || [ "$shadow" = "$hash" ] || exit 1
+    chage -E 1970-01-02 "$user"
+    printf '%s:%s\n' "$user" "$lock_value" | chpasswd --encrypted
+    retry=1
+  fi
+elif id "$user" >/dev/null 2>&1; then
+  echo "tilo-firstboot-user: refusing to modify pre-existing account '$user'; preserving credential seed" >&2
   exit 1
-else
+fi
+
+if [ -z "$lock_value" ]; then
+  lock_value="!tilo-firstboot-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+  # Do not replace an unexpected intent; create it before useradd can succeed.
+  printf '%s:%s\n' "$user" "$lock_value" | /usr/bin/python3 -I "$FILES_HELPER" intent "$TRANSACTION"
+fi
+# Persist both the intent and its directory entry before account creation.
+# A power loss must not leave an account with no durable ownership witness.
+sync -f -- "$TRANSACTION"
+
+if [ "$retry" -eq 0 ]; then
   # `tilo-identity` is read access to the machine's device key. The
   # compositor runs in this user's session and presents the device
   # identity on the network — the same identity fs.service presents as
@@ -155,42 +185,137 @@ else
   done
   if [ -n "$seeded_home" ]; then
     if [ -n "$full_name" ]; then
-      useradd -M -d "$seeded_home" -p '!' -c "$full_name" -G wheel,tilo-identity,video "$user"
+      useradd -M -e 1970-01-02 -d "$seeded_home" -p "$lock_value" -c "$full_name" -G wheel,tilo-identity,video "$user"
     else
-      useradd -M -d "$seeded_home" -p '!' -G wheel,tilo-identity,video "$user"
+      useradd -M -e 1970-01-02 -d "$seeded_home" -p "$lock_value" -G wheel,tilo-identity,video "$user"
     fi
-    if [ -d /etc/skel ]; then
-      cp -an /etc/skel/. "$seeded_home/" || true
-    fi
-    seeded_by="$(stat -c '%u' -- "$seeded_home")"
-    chown -R "$user:$user" "$seeded_home"
-    # The handoff seeded this person's directory of direct peers and shared
-    # rooms too, before the account existed, as whoever wrote the home. Only
-    # a directory written that way (or by root) is theirs.
-    for person in /var/lib/tilo/peers/*; do
-      if [ -d "$person" ] && [ ! -L "$person" ] \
-        && [[ "$(basename -- "$person")" =~ ^[0-9a-f]{64}(\.[0-9a-f]{16})?$ ]] \
-        && { owner="$(stat -c '%u' -- "$person")"; [ "$owner" = 0 ] || [ "$owner" = "$seeded_by" ]; }; then
-        chown -R --no-dereference "$user:tilo-identity" -- "$person"
-        chmod 2750 -- "$person"
-      fi
-    done
   elif [ -n "$full_name" ]; then
-    useradd -m -p '!' -c "$full_name" -G wheel,tilo-identity,video "$user"
+    # Do not let useradd copy skeleton files non-atomically either.
+    useradd -M -p "$lock_value" -e 1970-01-02 -c "$full_name" -G wheel,tilo-identity,video "$user"
   else
-    useradd -m -p '!' -G wheel,tilo-identity,video "$user"
+    useradd -M -p "$lock_value" -e 1970-01-02 -G wheel,tilo-identity,video "$user"
   fi
 fi
 
-# Keep the account locked until shadow-utils accepts the complete hash.
+# useradd may commit passwd before creating the home. Provision the exact
+# passwd home on every attempt, and fail closed before password delivery.
+passwd_entry="$(getent passwd "$user")" || exit 1
+IFS=: read -r passwd_user _ account_uid account_gid _ account_home _ <<< "$passwd_entry"
+[ "$passwd_user" = "$user" ] && [[ "$account_uid:$account_gid" =~ ^[0-9]+:[0-9]+$ ]] || exit 1
+case "$account_home" in
+  "/home/$user"|"/var/home/$user") ;;
+  *) echo "tilo-firstboot-user: refusing unexpected account home" >&2; exit 1 ;;
+esac
+repair_enrolled_device_key
+
+# Transfer the seeded person's peers before changing the home's ownership.
+# This is retried while the account remains expired. Only this device owner's
+# identity and directories owned by the home writer, root or the new account
+# are eligible; never adopt another person's directory from the shared parent.
+[ ! -f "$key" ] || /usr/bin/python3 -I - "$account_home" "$account_uid" <<'PY'
+import grp
+import os
+import re
+import stat
+import sys
+
+home, uid = sys.argv[1], int(sys.argv[2])
+directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+try:
+    home_fd = os.open(home, directory_flags)
+except FileNotFoundError:
+    raise SystemExit(0)
+try:
+    seeded_by = os.fstat(home_fd).st_uid
+finally:
+    os.close(home_fd)
+try:
+    key_fd = os.open('/var/lib/tilo/user-identity/pubkey.bin',
+                     os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+except FileNotFoundError:
+    raise SystemExit(0)
+try:
+    metadata = os.fstat(key_fd)
+    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1
+            or metadata.st_uid not in (0, seeded_by, uid)
+            or metadata.st_mode & 0o022):
+        raise ValueError('unsafe enrolled owner key')
+    key = os.read(key_fd, 33)
+    if len(key) != 32:
+        raise ValueError('invalid enrolled owner key')
+finally:
+    os.close(key_fd)
+try:
+    peers = os.open('/var/lib/tilo/peers', directory_flags)
+except FileNotFoundError:
+    raise SystemExit(0)
+gid = grp.getgrnam('tilo-identity').gr_gid
+owners = (0, seeded_by, uid)
+
+def transfer(fd, depth=0):
+    metadata = os.fstat(fd)
+    if metadata.st_uid not in owners or metadata.st_mode & 0o022:
+        raise ValueError('unsafe seeded person directory')
+    names = os.listdir(fd)
+    if len(names) > 4096 or depth > 1:
+        raise ValueError('seeded person directory exceeds bounds')
+    for name in names:
+        child = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                        dir_fd=fd)
+        try:
+            metadata = os.fstat(child)
+            if metadata.st_uid not in owners or metadata.st_mode & 0o022:
+                raise ValueError('unsafe seeded person entry')
+            if stat.S_ISDIR(metadata.st_mode):
+                transfer(child, depth + 1)
+            elif stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1:
+                os.fchown(child, uid, gid)
+                os.fchmod(child, 0o640)
+                os.fsync(child)
+            else:
+                raise ValueError('unsupported seeded person inode')
+        finally:
+            os.close(child)
+    os.fchown(fd, uid, gid)
+    os.fchmod(fd, 0o2750)
+    os.fsync(fd)
+
+try:
+    metadata = os.fstat(peers)
+    if (metadata.st_uid != 0 or metadata.st_mode & 0o002
+            or (metadata.st_mode & 0o020 and not metadata.st_mode & stat.S_ISVTX)):
+        raise ValueError('unsafe peers parent')
+    names = os.listdir(peers)
+    if len(names) > 4096:
+        raise ValueError('peers parent exceeds bounds')
+    for name in names:
+        if not re.fullmatch(key.hex() + r'(\.[0-9a-f]{16})?', name):
+            continue
+        metadata = os.stat(name, dir_fd=peers, follow_symlinks=False)
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid not in owners:
+            continue
+        person = os.open(name, directory_flags, dir_fd=peers)
+        try:
+            transfer(person)
+        finally:
+            os.close(person)
+    os.fsync(peers)
+finally:
+    os.close(peers)
+PY
+/usr/bin/python3 -I "$FILES_HELPER" home "$account_home" "$account_uid" "$account_gid" /etc/skel
+
+# Keep the account expired until every fallible provisioning step and password
+# installation succeeds. No migration work may follow the expiry release.
 # printf is a shell builtin: credential bytes travel only over the pipe,
 # never through useradd/chpasswd's observable process arguments.
 printf '%s:%s\n' "$user" "$hash" | chpasswd --encrypted
-
-repair_enrolled_device_key
+chage -E -1 "$user"
 
 # Remove the seed file (best-effort shred; fall back to rm).
 shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
 [ ! -f "$FULL_NAME_CONF" ] || shred -u -- "$FULL_NAME_CONF" 2>/dev/null || rm -f -- "$FULL_NAME_CONF"
+
+rm -f -- "$TRANSACTION"
 
 echo "tilo-firstboot-user: created account '$user'"

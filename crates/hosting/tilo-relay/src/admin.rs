@@ -5,6 +5,9 @@
 //! `status` combines configuration, workspace state, and the daemon's
 //! periodically persisted metrics snapshot.
 
+mod files_probe;
+mod files_setup;
+
 use std::path::PathBuf;
 
 use anyhow::Context;
@@ -30,10 +33,49 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Prepare an exact enrolled Files binding using existing identity and explicit filesystem permission.
+    FilesWorkspaceJoin {
+        #[command(flatten)]
+        options: files_setup::JoinOptions,
+    },
+    /// Explicitly prepare an empty primary Files namespace for the existing device; never recover or replace saved data.
+    FilesWorkspaceInitialize {
+        #[command(flatten)]
+        options: files_setup::InitializeOptions,
+    },
+    /// Validate existing primary Files state and its signed filesystem permission before service launch.
+    FilesWorkspaceCheck {
+        #[arg(long)]
+        identity_root: PathBuf,
+        #[arg(long)]
+        cache_dir: PathBuf,
+    },
+    /// Sign an existing Files authority revision through the existing protected person identity.
+    PublishAuthority {
+        #[arg(long)]
+        acl: PathBuf,
+    },
+    /// Query an already-enrolled home peer for public Files binding metadata, without updating local state.
+    HomePeerFilesStatus {
+        #[arg(long)]
+        identity_root: PathBuf,
+        #[arg(long)]
+        device: String,
+        #[arg(long)]
+        service: String,
+        #[arg(long)]
+        workspace_id: u64,
+        /// Inspect an existing legacy registry without migrating or copying it.
+        #[arg(long)]
+        registry: Option<PathBuf>,
+    },
     /// Retry durable removals queued while a home peer was offline.
     HomePeerRetryRemovals {
         #[arg(long)]
         identity_root: PathBuf,
+        /// Existing person record, opened through its ordinary secret provider.
+        #[arg(long)]
+        identity_dir: Option<PathBuf>,
     },
     /// Read authenticated health from an enrolled home peer.
     HomePeerStatus {
@@ -66,6 +108,9 @@ enum Cmd {
     HomePeerRemove {
         #[arg(long)]
         identity_root: PathBuf,
+        /// Existing person record, opened through its ordinary secret provider.
+        #[arg(long)]
+        identity_dir: Option<PathBuf>,
         #[arg(long)]
         device: String,
         #[arg(long)]
@@ -163,7 +208,30 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::HomePeerRetryRemovals { identity_root } => retry_pending_removals(&identity_root),
+        Cmd::FilesWorkspaceJoin { options } => files_setup::join(&options),
+        Cmd::FilesWorkspaceInitialize { options } => files_setup::initialize(&options),
+        Cmd::FilesWorkspaceCheck {
+            identity_root,
+            cache_dir,
+        } => files_setup::check(&identity_root, &cache_dir),
+        Cmd::PublishAuthority { acl } => files_setup::publish(&acl),
+        Cmd::HomePeerFilesStatus {
+            identity_root,
+            device,
+            service,
+            workspace_id,
+            registry,
+        } => files_probe::run(
+            &identity_root,
+            &device,
+            &service,
+            workspace_id,
+            registry.as_deref(),
+        ),
+        Cmd::HomePeerRetryRemovals {
+            identity_root,
+            identity_dir,
+        } => retry_pending_removals(&identity_root, identity_dir.as_deref()),
         Cmd::HomePeerStatus {
             identity_root,
             device,
@@ -178,9 +246,10 @@ fn run() -> anyhow::Result<()> {
         Cmd::HomePeerRefresh { identity_root } => cmd_home_peer_refresh(&identity_root),
         Cmd::HomePeerRemove {
             identity_root,
+            identity_dir,
             device,
             service,
-        } => cmd_home_peer_remove(&identity_root, &device, &service),
+        } => cmd_home_peer_remove(&identity_root, identity_dir.as_deref(), &device, &service),
         Cmd::BindWorkspace { workspace_id, pin } => {
             cmd_bind_workspace(&cli.config, workspace_id, pin)
         }
@@ -342,8 +411,33 @@ fn refresh_home_peer_endpoint(
     Ok(())
 }
 
+fn sign_host_revocation(
+    identity_root: &std::path::Path,
+    identity_dir: Option<&std::path::Path>,
+    target: [u8; 32],
+) -> anyhow::Result<tilo_user_identity::RevocationEntry> {
+    let paths = tilo_user_identity::IdentityPaths::under(identity_root);
+    let root = tilo_relay::root_signer::load_root(identity_root, identity_dir)?;
+    let user = tilo_user_identity::persist::read_public_key(&paths.user_pubkey)?;
+    if root.public_key() != user {
+        anyhow::bail!("active signing record belongs to another person");
+    }
+    let mut revocation = tilo_user_identity::RevocationEntry {
+        user_public_key: root.public_key(),
+        revoked_device_public_key: target,
+        revoked_at_ns: tilo_clock::unix_now_ns(),
+        reason: tilo_user_identity::RevocationReason::Retired,
+        signature: [0; 64],
+    };
+    revocation.signature =
+        root.sign_message(&tilo_user_identity::revocation_signing_digest(&revocation)?)?;
+    tilo_user_identity::verify_revocation_entry(&revocation)?;
+    Ok(revocation)
+}
+
 fn cmd_home_peer_remove(
     identity_root: &std::path::Path,
+    identity_dir: Option<&std::path::Path>,
     device: &str,
     service: &str,
 ) -> anyhow::Result<()> {
@@ -357,15 +451,7 @@ fn cmd_home_peer_remove(
     {
         existing
     } else {
-        let root = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)?;
-        let mut revocation = tilo_user_identity::RevocationEntry {
-            user_public_key: root.verifying_key().to_bytes(),
-            revoked_device_public_key: target,
-            revoked_at_ns: tilo_clock::unix_now_ns(),
-            reason: tilo_user_identity::RevocationReason::Retired,
-            signature: [0; 64],
-        };
-        tilo_user_identity::sign_revocation_entry(&mut revocation, &root)?;
+        let revocation = sign_host_revocation(identity_root, identity_dir, target)?;
         let intent = PendingDecommission {
             device: device.to_string(),
             service: service.to_string(),
@@ -384,7 +470,7 @@ fn cmd_home_peer_remove(
     fleet_revocations.retain(|entry| entry.revoked_device_public_key != target);
     fleet_revocations.push(intent.revocation.clone());
     tilo_relay::store::save_revocations(identity_root, &fleet_revocations)?;
-    persist_fleet_revocation(&intent.revocation)?;
+    persist_fleet_revocation(&intent.revocation, identity_dir)?;
     if tilo_relay::home_peer_registry_path(identity_root).exists() {
         update_home_peer_registry(identity_root, device, None)?;
     }
@@ -453,7 +539,10 @@ fn save_pending_decommissions(
     Ok(())
 }
 
-fn retry_pending_removals(identity_root: &std::path::Path) -> anyhow::Result<()> {
+fn retry_pending_removals(
+    identity_root: &std::path::Path,
+    identity_dir: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
     let mut pending = load_pending_decommissions(identity_root)?;
     for intent in pending.clone() {
         let paths = tilo_user_identity::IdentityPaths::under(identity_root);
@@ -463,7 +552,7 @@ fn retry_pending_removals(identity_root: &std::path::Path) -> anyhow::Result<()>
         relay_revocations.retain(|entry| entry.revoked_device_public_key != target);
         relay_revocations.push(intent.revocation.clone());
         tilo_relay::store::save_revocations(identity_root, &relay_revocations)?;
-        persist_fleet_revocation(&intent.revocation)?;
+        persist_fleet_revocation(&intent.revocation, identity_dir)?;
         if tilo_relay::home_peer_registry_path(identity_root).exists() {
             update_home_peer_registry(identity_root, &intent.device, None)?;
         }
@@ -518,11 +607,16 @@ fn persist_canonical_revocation(
 
 fn persist_fleet_revocation(
     revocation: &tilo_user_identity::RevocationEntry,
+    identity_dir: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    let config = xdg_paths::xdg::config_home()
-        .ok_or_else(|| anyhow::anyhow!("user configuration directory is unavailable"))?;
-    let path = config
-        .join("tilo/identities/fleets")
+    let directory = match identity_dir {
+        Some(directory) => directory.to_path_buf(),
+        None => tilo_paths::xdg::config_home()
+            .ok_or_else(|| anyhow::anyhow!("user configuration directory is unavailable"))?
+            .join("tilo/identities"),
+    };
+    let path = directory
+        .join("fleets")
         .join(format!("{}.json", hex::encode(revocation.user_public_key)));
     if !path.exists() {
         return Ok(());
@@ -715,6 +809,14 @@ fn cmd_status(config: &std::path::Path) -> anyhow::Result<()> {
         println!("  deltas received:      {}", metrics.deltas_received);
         println!("  deltas fanned out:    {}", metrics.deltas_fanned_out);
         println!("  bytes queued:         {}", metrics.bytes_queued);
+        println!("  bytes sent:           {}", metrics.bytes_sent);
+        println!("  bytes sent live:      {}", metrics.bytes_sent_live);
+        for (workspace_id, egress) in &metrics.rooms {
+            println!(
+                "  {workspace_id}\tbytes sent={}\tlive={}",
+                egress.bytes_sent, egress.bytes_sent_live
+            );
+        }
     }
     Ok(())
 }
@@ -762,6 +864,42 @@ fn cmd_revoke_device(
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn host_record_retirement_signs_and_rejects_another_person() {
+        let temp = tempfile::tempdir().unwrap();
+        let identities = temp.path().join("identities");
+        let identity_root = temp.path().join("tilo");
+        let paths = tilo_user_identity::IdentityPaths::under(&identity_root);
+        tilo_identity_host::provisioning::ensure_collaboration_identity(
+            &identities,
+            &paths,
+            tilo_identity_host::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
+        assert!(!paths.user_privkey.exists());
+        let user = tilo_user_identity::persist::read_public_key(&paths.user_pubkey).unwrap();
+        let revocation = sign_host_revocation(&identity_root, Some(&identities), [72; 32]).unwrap();
+        tilo_user_identity::verify_revocation_entry(&revocation).unwrap();
+        assert_eq!(revocation.user_public_key, user);
+        assert_eq!(revocation.revoked_device_public_key, [72; 32]);
+        persist_fleet_revocation(&revocation, Some(&identities)).unwrap();
+        let fleet: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(
+                identities
+                    .join("fleets")
+                    .join(format!("{}.json", hex::encode(user))),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(fleet["revocations"].as_array().unwrap().len(), 1);
+        tilo_user_identity::persist::write_public_key(&paths.user_pubkey, &[73; 32]).unwrap();
+        let error = sign_host_revocation(&identity_root, Some(&identities), [72; 32]).unwrap_err();
+        assert!(error.to_string().contains("another person"));
+        assert!(!pending_decommissions_path(&temp.path().join("tilo")).exists());
+        assert!(!paths.user_privkey.exists());
+    }
 
     #[test]
     fn canonical_revocation_aggregate_is_verified_deduplicated_and_private() {

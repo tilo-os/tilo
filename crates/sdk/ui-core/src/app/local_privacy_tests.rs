@@ -5,6 +5,7 @@
 #![cfg(unix)]
 
 use super::*;
+use crate::widget::TaffyTreeExt;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -31,29 +32,11 @@ impl Widget for LocalEffectProbe {
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         *self.captured.borrow_mut() = Some(crate::WakeHandle::new());
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {}
-
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut TextRenderer,
-        _: &Theme,
-        _: &PresenceCtx,
-    ) {
+        taffy.widget_leaf(taffy::Style::default(), nodes, self)
     }
 
     fn name(&self) -> &'static str {
         "local-effect-probe"
-    }
-
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {

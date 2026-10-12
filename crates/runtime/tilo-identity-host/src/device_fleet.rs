@@ -505,26 +505,6 @@ impl DeviceFleetStore {
             .map_err(|error| io::Error::other(error.to_string()))
     }
 
-    /// Sign the digest of an owner-only disk-unlock setting (a device's
-    /// auto-approval) with the root of `identity_id`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity cannot sign.
-    pub fn sign_unlock_setting(
-        &self,
-        identity_id: &str,
-        digest: &[u8; 32],
-    ) -> io::Result<[u8; 64]> {
-        let (root, _) = self.root_identity(
-            identity_id,
-            RootOnly::SignUnlockSetting,
-            tilo_clock::unix_now_ns(),
-        )?;
-        root.sign(digest)
-            .map_err(|error| io::Error::other(error.to_string()))
-    }
-
     /// The person's secret-sync key, when this device holds the root of
     /// `identity_id`.
     ///
@@ -669,7 +649,7 @@ impl DeviceFleetStore {
     /// The identity's root signer for `operation`. A device that holds only
     /// the identity's public record refuses with a message naming the
     /// devices that hold the root.
-    fn root_identity(
+    pub(crate) fn root_identity(
         &self,
         identity_id: &str,
         operation: RootOnly,
@@ -705,6 +685,9 @@ impl DeviceFleetStore {
         if let Ok(mut cache) = FLEET_CACHE.write() {
             cache.remove(&self.cache_key(&fleet.identity_id));
         }
+        // An enrolment or a revocation changes who may act: re-check now,
+        // not when the identity directory's watch reports it.
+        crate::policy_change::announce();
         written
     }
 
@@ -727,6 +710,12 @@ impl DeviceFleetStore {
             .parent()
             .and_then(Path::parent)
             .map(tilo_relay_protocol::home_peer_registry_path)
+    }
+
+    /// Stamps of the files [`Self::load_cached`] reads for `identity_id`, or
+    /// `None` when one can't be examined.
+    pub(crate) fn stamps(&self, identity_id: &str) -> Option<FleetStamps> {
+        self.cache_key(identity_id).stamps()
     }
 
     fn cache_key(&self, identity_id: &str) -> FleetKey {
@@ -789,14 +778,14 @@ pub(crate) struct VerifiedFleet {
     pub(crate) revocations: tilo_user_identity::RevocationList,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FleetStamps {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct FleetStamps {
     fleet: Option<FileStamp>,
     home_peers: Option<FileStamp>,
 }
 
 impl FleetStamps {
-    fn settled(self) -> bool {
+    pub(crate) fn settled(self) -> bool {
         [self.fleet, self.home_peers]
             .into_iter()
             .flatten()
@@ -807,8 +796,8 @@ impl FleetStamps {
 /// Identity of one file's contents, as far as a writer can change it: a
 /// rename gives a new inode, an in-place rewrite a new length or time, and a
 /// permission change or a reset modification time a new status-change time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FileStamp {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct FileStamp {
     dev: u64,
     ino: u64,
     len: u64,
@@ -818,7 +807,7 @@ struct FileStamp {
 
 impl FileStamp {
     /// `Ok(None)` for a missing file; an error when it can't be examined.
-    fn of(path: &Path) -> io::Result<Option<Self>> {
+    pub(crate) fn of(path: &Path) -> io::Result<Option<Self>> {
         match fs::metadata(path) {
             Ok(meta) => Ok(Some(Self {
                 dev: meta.dev(),
@@ -834,7 +823,7 @@ impl FileStamp {
 
     /// Old enough that a later write, which stamps the current time, cannot
     /// share its modification time.
-    fn settled(self) -> bool {
+    pub(crate) fn settled(self) -> bool {
         SystemTime::now()
             .duration_since(self.modified)
             .is_ok_and(|age| age >= Duration::from_secs(2))

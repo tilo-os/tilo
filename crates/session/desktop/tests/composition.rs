@@ -175,8 +175,8 @@ struct OverlayApp {
     draws: std::rc::Rc<std::cell::Cell<usize>>,
 }
 impl ui::widget::Widget for OverlayApp {
-    fn next_wake_deadline(&self) -> Option<ui::clock::Instant> {
-        self.capture.then(ui::clock::Instant::now)
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.capture.then(ui::time::Instant::now)
     }
     fn modal_capture(&self) -> Option<vello::kurbo::Rect> {
         self.capture
@@ -205,15 +205,6 @@ impl ui::widget::Widget for OverlayApp {
         map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn ui::Widget>,
     ) -> taffy::NodeId {
         self.leaf.build_layout(tree, theme, map)
-    }
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut ui::TextRenderer,
-        _: &ui::Theme,
-        _: &ui::presence::PresenceCtx,
-    ) {
     }
     fn draw_overlay(
         &mut self,
@@ -300,7 +291,7 @@ fn replacing_the_room_requires_fresh_component_contexts() {
     let records = RecordStore::in_memory();
     let mut surface =
         DesktopSurface::build(&tree, &records, &mut Unavailable, SurfaceChrome::default());
-    tree.workspaces[0].room = tilo_desktop_model::RoomId::new();
+    tree.workspaces[0].set_room(tilo_desktop_model::RoomId::new());
     assert_eq!(
         surface.reconcile(&tree, &records, &mut Unavailable),
         tilo_desktop::composition::ReconcileOutcome::RebuildRequired

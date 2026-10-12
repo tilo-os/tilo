@@ -9,6 +9,7 @@
 //! shows through [`NotificationHost`].
 
 use std::collections::BTreeSet;
+use ui::num::{f32_of_f64, f64_of_usize, usize_of_f64};
 
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::text_render::{TextRenderer, TextWeight};
@@ -35,33 +36,6 @@ use ui::TextRole;
 /// Rows the panel asks room for before it starts paging.
 const PREFERRED_ROWS: usize = 7;
 
-/// Lossy but bounded: row counts never approach f64's exact-integer range.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "row counts stay far below f64's exact-integer range"
-)]
-fn usize_to_f64_lossy(n: usize) -> f64 {
-    n as f64
-}
-
-/// Floors a row-count computation; a negative input saturates to 0.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "float-to-usize casts saturate; a negative input already floors to 0"
-)]
-fn f64_floor_to_usize_saturating(v: f64) -> usize {
-    v.floor() as usize
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "device-pixel wrap width; f32 is already the renderer's own unit"
-)]
-pub(super) fn f64_to_f32_lossy(v: f64) -> f32 {
-    v as f32
-}
-
 /// Rows promise one line per field; the complete text remains in their
 /// accessible description. Use toolkit shaping/elision, including graphemes.
 fn preview_line(
@@ -79,6 +53,8 @@ fn preview_line(
 #[derive(Clone, Copy, Debug)]
 pub struct CenterMetrics {
     lines: (f64, f64),
+    title_width: f64,
+    cleared_width: f64,
     back_width: f64,
     clear_width: f64,
     undo_width: f64,
@@ -90,6 +66,8 @@ impl From<(f64, f64)> for CenterMetrics {
     fn from(lines: (f64, f64)) -> Self {
         Self {
             lines,
+            title_width: 0.0,
+            cleared_width: 0.0,
             back_width: 2.0 * qs::TARGET,
             clear_width: 2.0 * qs::TARGET,
             undo_width: 2.0 * qs::TARGET,
@@ -120,7 +98,41 @@ impl CenterLayout {
     }
 
     fn header_height(&self) -> f64 {
-        self.actions.height + 2.0 * qs::RELATED_GAP
+        self.actions.height
+            + 2.0 * qs::RELATED_GAP
+            + if self.wrapped_header() {
+                self.label_lh + qs::RELATED_GAP
+            } else {
+                0.0
+            }
+    }
+
+    fn wrapped_header(&self) -> bool {
+        self.panel.width() > 0.0
+            && self.panel.width() - 2.0 * qs::PANEL_PAD
+                < self.actions.back_width
+                    + self.actions.clear_width
+                    + self.actions.title_width
+                    + 2.0 * qs::RELATED_GAP
+    }
+
+    fn title_rect(&self) -> Rect {
+        if self.wrapped_header() {
+            let y0 = self.back().y1 + qs::RELATED_GAP;
+            Rect::new(
+                self.panel.x0 + qs::PANEL_PAD,
+                y0,
+                self.panel.x1 - qs::PANEL_PAD,
+                y0 + self.label_lh,
+            )
+        } else {
+            Rect::new(
+                self.back().x1 + qs::RELATED_GAP,
+                self.panel.y0,
+                self.clear().x0 - qs::RELATED_GAP,
+                self.panel.y0 + self.header_height(),
+            )
+        }
     }
 
     /// Resolve the same widths and height the shared button painter needs.
@@ -133,6 +145,24 @@ impl CenterLayout {
         };
         CenterMetrics {
             lines: Self::type_lines(theme),
+            title_width: f64::from(
+                text.measure_style(
+                    &t("notification-center-title"),
+                    None,
+                    &theme
+                        .text(TextRole::Label)
+                        .with_weight(TextWeight::Semibold),
+                )
+                .0,
+            ),
+            cleared_width: f64::from(
+                text.measure_style(
+                    &t("notification-center-cleared"),
+                    None,
+                    &theme.text(TextRole::Caption),
+                )
+                .0,
+            ),
             back_width: width("drill-in-back", ButtonRole::Plain, text),
             clear_width: width("notification-center-clear-all", ButtonRole::Plain, text),
             undo_width: width("notification-center-undo", ButtonRole::Secondary, text),
@@ -191,7 +221,38 @@ impl CenterLayout {
     }
     /// The "cleared" status band at the panel's foot.
     fn cleared_band(&self) -> Rect {
-        self.footer().inflate(qs::CONTROL_PAD, qs::CONTROL_PAD)
+        let mut band = self.footer();
+        band.y0 -= self.cleared_extra_height();
+        band.inflate(qs::CONTROL_PAD, qs::CONTROL_PAD)
+    }
+
+    fn cleared_extra_height(&self) -> f64 {
+        if self.panel.width() > 0.0 && self.actions.cleared_width > self.cleared_inline_width() {
+            self.caption_lh + qs::RELATED_GAP
+        } else {
+            0.0
+        }
+    }
+
+    fn cleared_inline_width(&self) -> f64 {
+        self.footer().width() - self.actions.undo_width - 2.0 * qs::RELATED_GAP
+    }
+
+    fn cleared_label_rect(&self) -> Rect {
+        let band = self.cleared_band();
+        let x0 = band.x0 + qs::CONTROL_INSET;
+        let y0 = band.y0
+            + if self.cleared_extra_height() > 0.0 {
+                qs::CONTROL_PAD
+            } else {
+                qs::CONTROL_INSET
+            };
+        let x1 = if self.cleared_extra_height() > 0.0 {
+            band.x1 - qs::CONTROL_INSET
+        } else {
+            self.undo().x0 - qs::CONTROL_INSET
+        };
+        Rect::new(x0, y0, x1, y0 + self.caption_lh)
     }
     /// Top of the position line ("Newest 1–4 of 9"): where a list starts.
     fn position_y(&self) -> f64 {
@@ -210,7 +271,7 @@ impl CenterLayout {
     }
     /// The `index`th visible row.
     pub fn row(&self, index: usize) -> Rect {
-        let y0 = self.rows_top() + usize_to_f64_lossy(index) * self.pitch();
+        let y0 = self.rows_top() + f64_of_usize(index) * self.pitch();
         Rect::new(
             self.panel.x0 + qs::PANEL_PAD,
             y0,
@@ -231,7 +292,7 @@ impl CenterLayout {
     /// Complete rows that fit above `bottom_reserve` at the panel's foot.
     fn rows_that_fit(&self, bottom_reserve: f64) -> usize {
         let available = self.panel.y1 - bottom_reserve - self.rows_top() + qs::RELATED_GAP;
-        f64_floor_to_usize_saturating(available / self.pitch())
+        usize_of_f64(available / self.pitch())
     }
     /// Complete rows the panel shows of `total`. A history that fits ends on
     /// the panel padding and has no pager; only one that overflows gives the
@@ -259,9 +320,9 @@ impl CenterLayout {
             qs::PANEL_PAD
         };
         l.rows_top()
-            + usize_to_f64_lossy(rows) * l.row_h()
+            + f64_of_usize(rows) * l.row_h()
             // `rows` is non-zero past the early return, so this never saturates.
-            + usize_to_f64_lossy(rows.saturating_sub(1)) * qs::RELATED_GAP
+            + f64_of_usize(rows.saturating_sub(1)) * qs::RELATED_GAP
             + foot
     }
     /// Trailing icon buttons of a row: dismiss on the trailing edge,
@@ -328,6 +389,7 @@ pub struct NotificationCenter {
     /// Keyboard focus on a header action: `Some(false)` Clear all,
     /// `Some(true)` Undo.
     action_focus: Option<bool>,
+    back_focused: bool,
     /// The keyboard-selected row, by identity so it survives re-derivation.
     selected: Option<RowIdentity>,
     /// The selected row's focused trailing control.
@@ -405,6 +467,24 @@ impl NotificationCenter {
         } else {
             height
         }
+    }
+
+    /// Resolve the existing history/Undo budget at the host's actual width.
+    pub fn preferred_height_for_width(
+        &self,
+        log: &NotificationLog,
+        metrics: impl Into<CenterMetrics>,
+        width: f64,
+    ) -> f64 {
+        let metrics = metrics.into();
+        let layout = CenterLayout::new(Rect::new(0.0, 0.0, width, 0.0), metrics);
+        self.preferred_height(log, metrics) + layout.header_height()
+            - CenterLayout::new(Rect::ZERO, metrics).header_height()
+            + if log.can_undo_clear() {
+                layout.cleared_extra_height()
+            } else {
+                0.0
+            }
     }
 
     /// The first visible row, newest first.
@@ -507,6 +587,7 @@ impl NotificationCenter {
             self.row_control = None;
         }
         self.selected = identity;
+        self.back_focused = false;
         self.action_focus = None;
         let visible = layout.visible_rows(rows.len()).max(1);
         if index < self.start {
@@ -601,6 +682,7 @@ impl NotificationCenter {
                 if let Some(id) = id {
                     self.selected = Some(RowIdentity::Item(id));
                     self.row_control = Some(RowControl::Read);
+                    self.back_focused = false;
                     self.action_focus = None;
                     self.reader = Some(NotificationReader::new(id));
                     host.changed();
@@ -702,11 +784,13 @@ impl NotificationCenter {
         };
         if layout.undo().contains(p) && can_undo {
             host.undo_clear();
+            self.back_focused = false;
             self.action_focus = None;
             self.selected = None;
             self.row_control = None;
         } else if layout.clear().contains(p) && !history_empty {
             self.clear(host);
+            self.back_focused = false;
             self.action_focus = Some(true);
             self.selected = None;
             self.row_control = None;
@@ -715,6 +799,7 @@ impl NotificationCenter {
             // selection ring behind it.
             self.selected = None;
             self.row_control = None;
+            self.back_focused = false;
             self.action_focus = None;
             return self.activate_row(host, layout, row, control);
         } else {
@@ -803,6 +888,7 @@ impl NotificationCenter {
                     .flatten();
             }
         }
+        self.back_focused = false;
         self.action_focus = None;
         host.changed();
     }
@@ -834,10 +920,14 @@ impl NotificationCenter {
         let mut outcome = CenterOutcome::Handled;
         match logical_key {
             Key::Named(NamedKey::Escape) => return CenterOutcome::Back,
+            Key::Named(NamedKey::Enter | NamedKey::Space) if self.back_focused => {
+                return CenterOutcome::Back;
+            }
             Key::Named(NamedKey::Enter | NamedKey::Space)
                 if self.action_focus == Some(false) && total > 0 =>
             {
                 host.clear_history();
+                self.back_focused = false;
                 self.action_focus = Some(true);
                 self.start = 0;
                 self.selected = None;
@@ -890,6 +980,7 @@ impl NotificationCenter {
             }
             Key::Named(NamedKey::Enter | NamedKey::Space) if can_undo => {
                 host.undo_clear();
+                self.back_focused = false;
                 self.action_focus = None;
             }
             Key::Named(NamedKey::Delete) if total > 0 => self.clear(host),
@@ -1012,11 +1103,28 @@ impl NotificationCenter {
                     ),
             );
         }
+        children.push(
+            AccessNode::new(Role::Button)
+                .with_name(t("drill-in-back"))
+                .with_bounds(layout.back())
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.back_focused),
+                ),
+        );
         AccessNode::new(Role::Dialog)
             .with_name(t("a11y-notifications"))
             .with_description(description)
             .with_state(AccessState::new().modal(true))
             .with_children(children)
+    }
+
+    /// Appended after existing children so row, Clear and Undo paths stay stable.
+    fn back_path_index(host: &dyn NotificationHost) -> usize {
+        1usize
+            .saturating_add(usize::from(!host.log().history().is_empty()))
+            .saturating_add(if host.log().can_undo_clear() { 2 } else { 0 })
     }
 
     /// The accessibility path index of Undo inside the dialog.
@@ -1049,6 +1157,7 @@ impl NotificationCenter {
         };
         match path {
             [] => Some(layout.panel()),
+            [index] if *index == Self::back_path_index(host) => Some(layout.back()),
             [0, row, rest @ ..] => {
                 let items = self.accessibility_rows(host, layout, ui::time::now());
                 let item = items.get(*row)?;
@@ -1079,6 +1188,14 @@ impl NotificationCenter {
             }
             return focused;
         }
+        if path == [Self::back_path_index(host)] {
+            self.action_focus = None;
+            self.selected = None;
+            self.row_control = None;
+            self.back_focused = true;
+            host.changed();
+            return true;
+        }
         if let [0, row, rest @ ..] = path {
             let rows = self.rows(host);
             let index = self.start.saturating_add(*row);
@@ -1105,6 +1222,7 @@ impl NotificationCenter {
             };
             self.selected = Some(identity);
             self.row_control = control;
+            self.back_focused = false;
             self.action_focus = None;
             host.changed();
             return true;
@@ -1118,6 +1236,7 @@ impl NotificationCenter {
             [index] if can_undo && *index == Self::undo_path_index(host) => true,
             _ => return false,
         };
+        self.back_focused = false;
         self.action_focus = Some(undo);
         self.selected = None;
         host.changed();
@@ -1313,43 +1432,33 @@ impl NotificationCenter {
             transform,
             text_renderer,
             theme,
-            (layout.back(), cursor, false),
+            (layout.back(), cursor, self.back_focused),
             &t("drill-in-back"),
             ButtonRole::Plain,
         );
         let title_style = label_style.clone().with_weight(TextWeight::Semibold);
-        let title_width = f64_to_f32_lossy(
-            (layout.clear().x0 - layout.back().x1 - 2.0 * qs::RELATED_GAP).max(1.0),
-        );
+        let title_rect = layout.title_rect();
+        let title_width = f32_of_f64(title_rect.width().max(1.0));
         let title = preview_line(
             text_renderer,
             &t("notification-center-title"),
             title_width,
             &title_style,
         );
-        let (title_w, title_h) = text_renderer.measure_style(
-            &title,
-            None,
-            &label_style.clone().with_weight(TextWeight::Semibold),
-        );
+        let (title_w, title_h) = text_renderer.measure_style(&title, None, &title_style);
         text_renderer.draw_style(
             scene,
             &title,
             colors.text_primary,
             transform.pre_translate(
                 (
-                    layout.back().x1.midpoint(layout.clear().x0)
-                        - f64::from(title_w).min(
-                            (layout.clear().x0 - layout.back().x1 - 2.0 * qs::RELATED_GAP).max(1.0),
-                        ) / 2.0,
-                    rect.y0 + (layout.header_height() - f64::from(title_h)) / 2.0,
+                    title_rect.center().x - f64::from(title_w) / 2.0,
+                    title_rect.center().y - f64::from(title_h) / 2.0,
                 )
                     .into(),
             ),
-            Some(f64_to_f32_lossy(
-                (layout.clear().x0 - layout.back().x1 - 2.0 * qs::RELATED_GAP).max(1.0),
-            )),
-            &label_style.clone().with_weight(TextWeight::Semibold),
+            Some(title_width),
+            &title_style,
         );
         let rows = self.rows(host);
         let log = host.log();
@@ -1357,13 +1466,14 @@ impl NotificationCenter {
         let can_undo = log.can_undo_clear();
         if history.is_empty() {
             self.start = 0;
-            DrillInList::draw_empty(
+            DrillInList::draw_empty_from(
                 scene,
                 transform,
                 text_renderer,
                 theme,
                 rect,
                 &t("notification-center-empty"),
+                layout.position_y() - rect.y0,
             );
             if can_undo {
                 Self::draw_cleared_band(
@@ -1422,7 +1532,7 @@ impl NotificationCenter {
             &position,
             colors.text_dim,
             transform.pre_translate((rect.x0 + qs::PANEL_PAD, layout.position_y()).into()),
-            Some(f64_to_f32_lossy(rect.width() - 2.0 * qs::PANEL_PAD)),
+            Some(f32_of_f64(rect.width() - 2.0 * qs::PANEL_PAD)),
             &caption_style,
         );
 
@@ -1517,7 +1627,7 @@ impl NotificationCenter {
             // label, so the fold reads as a hierarchy.
             let x = row.x0 + qs::CONTROL_INSET + if grouped { qs::GLYPH } else { 0.0 };
             let source_y = row.y0 + qs::CONTROL_PAD;
-            let source_width = f64_to_f32_lossy(
+            let source_width = f32_of_f64(
                 (row.x1 - qs::CONTROL_INSET - f64::from(time_width) - qs::RELATED_GAP - x).max(0.0),
             );
             let source = preview_line(text_renderer, &source, source_width, &caption_style);
@@ -1526,7 +1636,7 @@ impl NotificationCenter {
                 &source,
                 colors.text_dim,
                 transform.pre_translate((x, source_y).into()),
-                Some(f64_to_f32_lossy(
+                Some(f32_of_f64(
                     row.x1 - qs::CONTROL_INSET - f64::from(time_width) - qs::RELATED_GAP - x,
                 )),
                 &caption_style,
@@ -1542,7 +1652,7 @@ impl NotificationCenter {
                 &caption_style,
             );
             let title_y = source_y + layout.caption_lh;
-            let preview_width = f64_to_f32_lossy((text_right - x).max(0.0));
+            let preview_width = f32_of_f64((text_right - x).max(0.0));
             let title_style = label_style.clone().with_weight(TextWeight::Semibold);
             let title = preview_line(
                 text_renderer,
@@ -1555,7 +1665,7 @@ impl NotificationCenter {
                 &title,
                 colors.text_primary,
                 transform.pre_translate((x, title_y).into()),
-                Some(f64_to_f32_lossy(text_right - x)),
+                Some(f32_of_f64(text_right - x)),
                 &label_style.clone().with_weight(TextWeight::Semibold),
             );
             if notification.show_preview && !notification.body.is_empty() {
@@ -1570,7 +1680,7 @@ impl NotificationCenter {
                     &body,
                     colors.text_dim,
                     transform.pre_translate((x, title_y + layout.label_lh).into()),
-                    Some(f64_to_f32_lossy(text_right - x)),
+                    Some(f32_of_f64(text_right - x)),
                     &caption_style,
                 );
             }
@@ -1638,7 +1748,7 @@ impl NotificationCenter {
                     )
                         .into(),
                 ),
-                Some(f64_to_f32_lossy(footer.width() - 2.0 * qs::CONTROL_INSET)),
+                Some(f32_of_f64(footer.width() - 2.0 * qs::CONTROL_INSET)),
                 &caption_style,
             );
         }
@@ -1684,16 +1794,15 @@ impl NotificationCenter {
             transform,
             colors.lift(0.35),
             None,
-            &RoundedRect::from_rect(status, 10.0),
+            &RoundedRect::from_rect(status, qs::control_radius(theme, status)),
         );
+        let label = layout.cleared_label_rect();
         text_renderer.draw_style(
             scene,
             &t("notification-center-cleared"),
             colors.text_primary,
-            transform.pre_translate((status.x0 + 12.0, status.y0 + 12.0).into()),
-            Some(f64_to_f32_lossy(
-                layout.undo().x0 - status.x0 - 2.0 * qs::CONTROL_INSET,
-            )),
+            transform.pre_translate((label.x0, label.y0).into()),
+            Some(f32_of_f64(label.width().max(1.0))),
             &style,
         );
         Self::chip(
@@ -1748,7 +1857,7 @@ impl NotificationCenter {
             &count_label,
             colors.text_dim,
             transform.pre_translate((x, source_y).into()),
-            Some(f64_to_f32_lossy(
+            Some(f32_of_f64(
                 row.x1 - qs::CONTROL_INSET - f64::from(time_width) - qs::RELATED_GAP - x,
             )),
             &caption_style,
@@ -1763,7 +1872,7 @@ impl NotificationCenter {
             None,
             &caption_style,
         );
-        let text_w = f64_to_f32_lossy(dismiss.x0 - qs::RELATED_GAP - x);
+        let text_w = f32_of_f64(dismiss.x0 - qs::RELATED_GAP - x);
         let title_y = source_y + layout.caption_lh;
         let title_style = label_style.with_weight(TextWeight::Semibold);
         let label = preview_line(text_renderer, label, text_w, &title_style);
@@ -2194,3 +2303,7 @@ mod tests {
         assert!(center.is_reading());
     }
 }
+
+#[cfg(test)]
+#[path = "center_header_tests.rs"]
+mod header_tests;

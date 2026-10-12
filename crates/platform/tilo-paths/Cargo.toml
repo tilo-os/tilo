@@ -24,5 +24,6 @@ windows-sys = { version = "0.61.2", features = ["Win32_System_Com", "Win32_UI_Sh
 workspace = true
 
 [dependencies]
+tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

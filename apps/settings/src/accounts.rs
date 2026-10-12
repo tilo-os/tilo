@@ -26,9 +26,10 @@
 //! [`AccountDirectory::load`] projects that shared store into the in-memory
 //! [`MailStore`] / [`DavStore`] shapes this pane renders, so the pane code is
 //! unchanged while the on-disk store is the shared one. Consequently the
-//! `MailStore` / `MailAccount` / `AccountConfig` types below are now **render
-//! view-models** populated from the shared store; every account kind writes
-//! the canonical store.
+//! `MailStore` / `MailAccount` types below are now **render view-models**
+//! populated from the shared store (around the shared
+//! [`accounts::email::AccountConfig`]); every account kind writes the
+//! canonical store.
 //!
 //! # Whose accounts these are
 //!
@@ -47,6 +48,7 @@
 
 use std::path::PathBuf;
 
+use accounts::email::AccountConfig;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -470,6 +472,15 @@ impl AccountRoot {
         self.finish_mutation()
     }
 
+    /// Whether a mutation's intent is on disk, so loading the stores
+    /// recovers it first. An intent that cannot be ruled out counts.
+    pub(crate) fn mutation_pending(&self) -> bool {
+        self.path().is_some()
+            && self
+                .mutation_journal_path()
+                .is_ok_and(|path| path.try_exists().unwrap_or(true))
+    }
+
     /// Recover an interrupted mutation, logging rather than failing: the
     /// inventory is still worth presenting.
     pub(crate) fn recover_mutation_or_warn(&self) {
@@ -485,136 +496,18 @@ impl AccountRoot {
 // Mail view-model.
 // ---------------------------------------------------------------------------
 
-/// IMAP receive + SMTP send settings. Field-for-field the shape Mail's
-/// transport layer consumes. `password` is `#[serde(skip)]` — it never
-/// touches the JSON; Settings stores it in the OS secret store.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AccountConfig {
-    pub display_name: String,
-    pub email: String,
-    pub imap_host: String,
-    pub imap_port: u16,
-    pub imap_tls: bool,
-    pub smtp_host: String,
-    pub smtp_port: u16,
-    pub smtp_tls: bool,
-    pub username: String,
-    #[serde(skip)]
-    pub password: String,
-}
-
-impl Default for AccountConfig {
-    fn default() -> Self {
-        Self {
-            display_name: String::new(),
-            email: String::new(),
-            imap_host: String::new(),
-            imap_port: 993,
-            imap_tls: true,
-            smtp_host: String::new(),
-            smtp_port: 465,
-            smtp_tls: true,
-            username: String::new(),
-            password: String::new(),
-        }
-    }
-}
-
-impl AccountConfig {
-    /// Provider autoconfig: given an email, guess IMAP/SMTP hosts for the
-    /// big providers — mirrors Thunderbird's autoconfig. Returns whether
-    /// the domain was recognised.
-    pub fn autofill_from_email(&mut self) -> bool {
-        let Some((local, domain)) = self.email.split_once('@') else {
-            return false;
-        };
-        if self.username.is_empty() {
-            self.username = self.email.clone();
-        }
-        if self.display_name.is_empty() {
-            self.display_name = local.to_string();
-        }
-        let known = match domain.to_ascii_lowercase().as_str() {
-            "gmail.com" | "googlemail.com" => Some(("imap.gmail.com", "smtp.gmail.com")),
-            "outlook.com" | "hotmail.com" | "live.com" => {
-                Some(("outlook.office365.com", "smtp.office365.com"))
-            }
-            "yahoo.com" => Some(("imap.mail.yahoo.com", "smtp.mail.yahoo.com")),
-            "icloud.com" | "me.com" => Some(("imap.mail.me.com", "smtp.mail.me.com")),
-            _ => None,
-        };
-        if let Some((imap, smtp)) = known {
-            self.imap_host = imap.to_string();
-            self.smtp_host = smtp.to_string();
-            true
-        } else {
-            self.imap_host = format!("imap.{domain}");
-            self.smtp_host = format!("smtp.{domain}");
-            false
-        }
-    }
-}
-
-/// A single configured mail account — Mail's `Account` shape.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A single configured mail account.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MailAccount {
     pub id: String,
     pub config: AccountConfig,
-    #[serde(default)]
-    pub collapsed: bool,
-    #[serde(default)]
     pub tint: u8,
 }
 
-impl MailAccount {
-    pub fn new(config: AccountConfig) -> Self {
-        let id = if config.email.is_empty() {
-            format!("account-{}", uuid::Uuid::new_v4())
-        } else {
-            config.email.clone()
-        };
-        Self {
-            id,
-            config,
-            collapsed: false,
-            tint: 0,
-        }
-    }
-
-    /// Display label: display name → email → placeholder.
-    pub fn label(&self) -> &str {
-        if !self.config.display_name.is_empty() {
-            &self.config.display_name
-        } else if !self.config.email.is_empty() {
-            &self.config.email
-        } else {
-            "New account"
-        }
-    }
-}
-
-/// The mail account list — Mail's `AccountStore` shape.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// The mail account list.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MailStore {
     pub accounts: Vec<MailAccount>,
-    #[serde(default)]
-    pub active: usize,
-}
-
-impl MailStore {
-    pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
-    }
-
-    pub fn from_json(s: &str) -> Option<Self> {
-        serde_json::from_str(s).ok()
-    }
-
-    pub fn remove(&mut self, id: &str) -> bool {
-        let before = self.accounts.len();
-        self.accounts.retain(|a| a.id != id);
-        self.accounts.len() != before
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -658,21 +551,9 @@ impl DavAccount {
 
 /// A DAV account list. The *same* struct backs both the calendar and the
 /// files view of the canonical store.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DavStore {
-    #[serde(default = "default_version")]
-    pub version: u32,
     pub accounts: Vec<DavAccount>,
-}
-
-impl DavStore {
-    pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
-    }
-
-    pub fn from_json(s: &str) -> Option<Self> {
-        serde_json::from_str(s).ok()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -729,21 +610,9 @@ impl NextcloudAccount {
 }
 
 /// The Nextcloud account list.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NextcloudStore {
-    #[serde(default = "default_version")]
-    pub version: u32,
     pub accounts: Vec<NextcloudAccount>,
-}
-
-impl NextcloudStore {
-    pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
-    }
-
-    pub fn from_json(s: &str) -> Option<Self> {
-        serde_json::from_str(s).ok()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -789,19 +658,6 @@ impl AccountKind {
         }
     }
 
-    pub fn glyph(self) -> &'static str {
-        match self {
-            AccountKind::Mail => "\u{f01ee}",   // md-email
-            AccountKind::CalDav => "\u{f00ed}", // md-calendar
-            AccountKind::WebDav => "\u{f0256}", // md-folder_outline
-            AccountKind::Nextcloud
-            | AccountKind::GoogleDrive
-            | AccountKind::OneDrive
-            | AccountKind::Dropbox
-            | AccountKind::ICloudDrive => "\u{f015f}", // md-cloud
-        }
-    }
-
     pub fn slug(self) -> &'static str {
         match self {
             AccountKind::Mail => "mail",
@@ -834,6 +690,9 @@ impl AccountKind {
     }
 
     pub fn from_type_id(type_id: &str) -> Option<Self> {
+        if type_id == accounts::thunderbird::PENDING_TYPE {
+            return Some(Self::Mail);
+        }
         Self::ALL.into_iter().find(|kind| kind.type_id() == type_id)
     }
 
@@ -888,13 +747,6 @@ pub struct AccountDirectory {
 }
 
 impl AccountDirectory {
-    /// Load every store. Email and `CalDAV` accounts come from the shared
-    /// canonical store ([`accounts::AccountStore`]) — the same store Mail and
-    /// Calendar read, so the shapes can no longer drift apart.
-    pub fn load() -> Self {
-        Self::load_in(&AccountRoot::live())
-    }
-
     /// [`Self::load`] from the stores under `root`.
     pub fn load_in(root: &AccountRoot) -> Self {
         root.recover_mutation_or_warn();
@@ -936,7 +788,7 @@ impl AccountDirectory {
                 .map(|a| AccountView {
                     id: a.id.clone(),
                     kind,
-                    label: a.label().to_string(),
+                    label: a.config.label().to_string(),
                     summary: a.config.email.clone(),
                     enabled: true,
                     tint: a.tint,
@@ -1027,9 +879,6 @@ pub fn short_url(url: &str) -> String {
 fn default_true() -> bool {
     true
 }
-fn default_version() -> u32 {
-    1
-}
 
 // ---------------------------------------------------------------------------
 // Bridges onto the shared canonical store.
@@ -1053,24 +902,19 @@ fn mail_store_from_shared(shared: &accounts::AccountStore) -> MailStore {
     let accounts: Vec<MailAccount> = shared
         .list(&ty)
         .into_iter()
+        .chain(shared.list(&accounts::thunderbird::PENDING_TYPE.into()))
         .filter_map(|a| {
-            // The opaque config deserialises into the same `AccountConfig`
-            // shape; unknown fields (Mail's `auth`, the sidebar `collapsed`)
-            // are ignored.
-            let config: AccountConfig = serde_json::from_value(a.config.clone()).ok()?;
+            // The opaque config is Mail's own `AccountConfig`.
+            let mut config: AccountConfig = serde_json::from_value(a.config.clone()).ok()?;
+            config.import_pending |= a.type_id.as_str() == accounts::thunderbird::PENDING_TYPE;
             Some(MailAccount {
                 id: a.id.to_string(),
                 config,
-                collapsed: false,
                 tint: a.tint,
             })
         })
         .collect();
-    let active = shared
-        .active_id(&ty)
-        .and_then(|id| accounts.iter().position(|m| m.id == id.as_str()))
-        .unwrap_or(0);
-    MailStore { accounts, active }
+    MailStore { accounts }
 }
 
 /// Project the shared store's `CalDAV` accounts into a [`DavStore`] (the shape
@@ -1100,16 +944,12 @@ fn caldav_store_from_shared(shared: &accounts::AccountStore) -> DavStore {
             password: String::new(),
         })
         .collect();
-    DavStore {
-        version: 1,
-        accounts,
-    }
+    DavStore { accounts }
 }
 
 fn webdav_store_from_shared(shared: &accounts::AccountStore) -> DavStore {
     let ty = accounts::AccountTypeId::from(WEBDAV_TYPE);
     DavStore {
-        version: 1,
         accounts: shared
             .list(&ty)
             .into_iter()
@@ -1129,7 +969,6 @@ fn webdav_store_from_shared(shared: &accounts::AccountStore) -> DavStore {
 fn nextcloud_store_from_shared(shared: &accounts::AccountStore) -> NextcloudStore {
     let ty = accounts::AccountTypeId::from(NEXTCLOUD_TYPE);
     NextcloudStore {
-        version: 1,
         accounts: shared
             .list(&ty)
             .into_iter()
@@ -1146,44 +985,42 @@ fn nextcloud_store_from_shared(shared: &accounts::AccountStore) -> NextcloudStor
     }
 }
 
-/// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo` or `~/.config/tilo`.
-/// Shared by every account store and the region store so they all resolve
-/// the same directory — and, through [`settings_store`], the same directory
-/// the compositor and every other app resolve.
-pub fn config_root() -> Option<PathBuf> {
-    settings_store::config_root()
-}
-
 /// A deterministic, populated directory for `--shots` and tests so the
 /// panel renders a realistic accounts list without touching disk.
 pub fn sample_directory() -> AccountDirectory {
-    let mut work = MailAccount::new(AccountConfig {
-        email: "ada@example.com".into(),
-        display_name: "Work email".into(),
-        imap_host: "imap.fastmail.com".into(),
-        imap_port: 993,
-        imap_tls: true,
-        smtp_host: "smtp.fastmail.com".into(),
-        smtp_port: 465,
-        smtp_tls: true,
-        username: "ada@example.com".into(),
-        password: String::new(),
-    });
-    work.tint = 2;
+    let work = MailAccount {
+        id: "ada@example.com".into(),
+        config: AccountConfig {
+            email: "ada@example.com".into(),
+            display_name: "Work email".into(),
+            imap_host: "imap.fastmail.com".into(),
+            imap_port: 993,
+            imap_tls: true,
+            smtp_host: "smtp.fastmail.com".into(),
+            smtp_port: 465,
+            smtp_tls: true,
+            username: "ada@example.com".into(),
+            ..Default::default()
+        },
+        tint: 2,
+    };
 
-    let mut personal = MailAccount::new(AccountConfig {
-        email: "ada.personal@gmail.com".into(),
-        display_name: "Personal email".into(),
-        imap_host: "imap.gmail.com".into(),
-        imap_port: 993,
-        imap_tls: true,
-        smtp_host: "smtp.gmail.com".into(),
-        smtp_port: 465,
-        smtp_tls: true,
-        username: "ada.personal@gmail.com".into(),
-        password: String::new(),
-    });
-    personal.tint = 5;
+    let personal = MailAccount {
+        id: "ada.personal@gmail.com".into(),
+        config: AccountConfig {
+            email: "ada.personal@gmail.com".into(),
+            display_name: "Personal email".into(),
+            imap_host: "imap.gmail.com".into(),
+            imap_port: 993,
+            imap_tls: true,
+            smtp_host: "smtp.gmail.com".into(),
+            smtp_port: 465,
+            smtp_tls: true,
+            username: "ada.personal@gmail.com".into(),
+            ..Default::default()
+        },
+        tint: 5,
+    };
 
     let mut cal = DavAccount::new(
         "Team calendar",
@@ -1199,15 +1036,12 @@ pub fn sample_directory() -> AccountDirectory {
     AccountDirectory {
         mail: MailStore {
             accounts: vec![work, personal],
-            active: 0,
         },
         calendar: DavStore {
-            version: 1,
             accounts: vec![cal],
         },
         files: DavStore::default(),
         nextcloud: NextcloudStore {
-            version: 1,
             accounts: vec![cloud],
         },
         cloud: Vec::new(),
@@ -1217,6 +1051,58 @@ pub fn sample_directory() -> AccountDirectory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_profiles_do_not_take_in_another_profiles_browser_identity() {
+        use ui::framework::testing::TestApp;
+
+        let mut before = TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        let key = "ef".repeat(32);
+        let origin = "https://isolated-profile.example";
+        let id = format!("settings.browser-identity:tilo-identity:{key}@{origin}");
+        assert!(
+            before
+                .actions()
+                .unwrap()
+                .iter()
+                .all(|action| action.address.resource != id)
+        );
+
+        let mut publisher = TestApp::<crate::resource::SettingsShell>::for_person(&key).unwrap();
+        let record = publisher
+            .person::<accounts::person::PersonAccounts>()
+            .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        AccountRoot::at(directory.path())
+            .with_person(record)
+            .publish_browser_identity(key, origin.into(), "Private profile".into())
+            .unwrap();
+        publisher.settle();
+        assert!(
+            publisher
+                .actions()
+                .unwrap()
+                .iter()
+                .any(|action| action.address.resource == id)
+        );
+
+        let mut after = TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        assert!(
+            after
+                .actions()
+                .unwrap()
+                .iter()
+                .all(|action| action.address.resource != id),
+            "a fresh profile must not import another profile's browser identity through the session account file"
+        );
+        assert!(
+            before
+                .actions()
+                .unwrap()
+                .iter()
+                .all(|action| action.address.resource != id)
+        );
+    }
 
     #[test]
     fn browser_identity_publication_is_a_settings_owned_personal_record_action() {
@@ -1389,61 +1275,6 @@ mod tests {
         assert!(record.get().store().get(&local.id).is_none());
     }
 
-    /// Every account store round-trips through JSON at its contract path, and
-    /// no store ever writes a password.
-    #[test]
-    fn account_stores_round_trip_without_passwords() {
-        let mut acct = MailAccount::new(AccountConfig {
-            email: "a@x.example".into(),
-            password: "hunter2".into(),
-            ..Default::default()
-        });
-        acct.tint = 4;
-        let store = MailStore {
-            accounts: vec![acct],
-            active: 0,
-        };
-        let json = store.to_json();
-        assert!(
-            !json.contains("hunter2"),
-            "mail password must never reach the JSON"
-        );
-        let back = MailStore::from_json(&json).expect("parse");
-        // Everything except the (skipped) password round-trips.
-        assert_eq!(back.accounts[0].config.email, "a@x.example");
-        assert_eq!(back.accounts[0].tint, 4);
-        assert_eq!(back.accounts[0].config.password, "");
-
-        let dav = DavStore {
-            version: 1,
-            accounts: vec![DavAccount::new("Cal", "https://d.example/c/", "ada")],
-        };
-        assert_eq!(DavStore::from_json(&dav.to_json()).unwrap(), dav);
-        let nc = NextcloudStore {
-            version: 1,
-            accounts: vec![NextcloudAccount::new("NC", "https://cloud.example", "ada")],
-        };
-        assert_eq!(NextcloudStore::from_json(&nc.to_json()).unwrap(), nc);
-
-        let mut a = DavAccount::new("Cal", "https://d/", "u");
-        a.password = "secret".into();
-        let store = DavStore {
-            version: 1,
-            accounts: vec![a],
-        };
-        assert!(!store.to_json().contains("secret"), "dav password leaked");
-        let mut n = NextcloudAccount::new("NC", "https://c", "u");
-        n.password = "nextsecret".into();
-        let store = NextcloudStore {
-            version: 1,
-            accounts: vec![n],
-        };
-        assert!(
-            !store.to_json().contains("nextsecret"),
-            "nextcloud password leaked"
-        );
-    }
-
     #[test]
     fn account_directory_views_summarise_and_autofill() {
         let dir = sample_directory();
@@ -1462,19 +1293,6 @@ mod tests {
         assert_eq!(dir.mail.accounts[0].config.imap_host, "imap.fastmail.com");
         let cloud = &dir.views_of(AccountKind::Nextcloud)[0];
         assert_eq!(cloud.summary, "cloud.example.com");
-
-        // (email, recognised provider, resulting IMAP host)
-        for (email, known, host) in [
-            ("x@gmail.com", true, "imap.gmail.com"),
-            ("x@acme.test", false, "imap.acme.test"),
-        ] {
-            let mut c = AccountConfig {
-                email: email.into(),
-                ..Default::default()
-            };
-            assert_eq!(c.autofill_from_email(), known, "{email}");
-            assert_eq!(c.imap_host, host, "{email}");
-        }
 
         for (url, short) in [
             ("https://cloud.example.com/", "cloud.example.com"),

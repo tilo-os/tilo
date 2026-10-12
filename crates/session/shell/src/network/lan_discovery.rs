@@ -1,5 +1,5 @@
 //! The session's side of "linked device, where are you?" on the nearby
-//! rendezvous ([`tilo_relay::nearby::linked`] documents the exchange and its
+//! rendezvous ([`tilo_relay_session::nearby::linked`] documents the exchange and its
 //! privacy properties): ask the person's linked devices on the local network
 //! for their endpoint addresses, answer them when they ask, and dial each
 //! device found through the same path as the enrolled direct-peer list.
@@ -9,7 +9,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use tilo_relay::nearby::{self, linked};
+use tilo_relay_session::nearby::{self, linked};
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, watch};
 

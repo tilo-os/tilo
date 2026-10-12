@@ -10,17 +10,17 @@ fn unavailable_projection_never_reports_a_successful_control_write() {
     let path = directory.path().join("document.txt");
     std::fs::write(&path, b"local document").unwrap();
     assert_eq!(
-        get(&path, crate::model::SYNC_XATTR).unwrap_err().kind(),
+        get(&path, fs_protocol::SYNC_XATTR).unwrap_err().kind(),
         io::ErrorKind::Unsupported
     );
     assert_eq!(
-        set(&path, crate::model::AVAILABILITY_CONTROL_XATTR, b"evict")
+        set(&path, fs_protocol::AVAILABILITY_CONTROL_XATTR, b"evict")
             .unwrap_err()
             .kind(),
         io::ErrorKind::Unsupported
     );
     assert_eq!(
-        remove(&path, crate::model::PIN_XATTR).unwrap_err().kind(),
+        remove(&path, fs_protocol::PIN_XATTR).unwrap_err().kind(),
         io::ErrorKind::Unsupported
     );
     assert_eq!(std::fs::read(&path).unwrap(), b"local document");
@@ -44,7 +44,7 @@ fn unavailable_projection_never_reports_a_successful_control_write() {
         runtime
             .block_on(crate::sharing::create_one_use_view_link(
                 &path,
-                collab_types::FileRecordId::new()
+                fs_protocol::FileRecordId::new()
             ))
             .unwrap()
             .is_err()

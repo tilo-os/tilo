@@ -33,6 +33,10 @@ struct NavigationRequests {
 
 #[derive(Default)]
 struct Shared {
+    text_input: Mutex<super::text_input::Transactions>,
+    native_edit_history: AtomicBool,
+    guarded_edit_history: AtomicBool,
+    native_caret_text_input: AtomicBool,
     open_tabs: Mutex<VecDeque<(String, bool)>>,
     frames: FrameSlot,
     events: Mutex<VecDeque<WebViewEvent>>,
@@ -159,6 +163,15 @@ impl Shared {
         if matches!(event, WebViewEvent::TabClosed | WebViewEvent::TabDetached) {
             self.stopping.store(true, Ordering::Release);
         }
+        if matches!(
+            event,
+            WebViewEvent::RendererTerminated | WebViewEvent::TabClosed | WebViewEvent::TabDetached
+        ) {
+            self.text_input
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unavailable();
+        }
         // Renderer termination is visual: the host names each affected owner
         // explicitly. Its delayed generic event cannot invalidate a recovery
         // command admitted after the corresponding owned failure.
@@ -224,6 +237,10 @@ impl Shared {
     fn fail(&self, message: String) {
         if !self.stopping.load(Ordering::Acquire) && !self.failed.swap(true, Ordering::AcqRel) {
             self.fail_navigations(&message);
+            self.text_input
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unavailable();
             let uri = self.uri.lock().map(|uri| uri.clone()).unwrap_or_default();
             self.event(WebViewEvent::LoadFailed {
                 uri,
@@ -243,12 +260,16 @@ pub struct ChromiumEngine {
 }
 
 type Routes = Arc<Mutex<HashMap<u32, Weak<Shared>>>>;
-const PRIVATE_ROOT_PREFIX: &str = "tilo-browser-private-";
-const PRIVATE_ROOT_MARKER: &str = ".tilo-private-root-v1";
-const PRIVATE_ROOT_MARKER_CONTENT: &str = "tilo-browser-owned-private-root-v1\n";
-const PRIVATE_ROOT_HELPER: &str = ".tilo-private-helper-pid";
-#[cfg(unix)]
-const PRIVATE_ROOT_LOCK: &str = ".tilo-private-root.lock";
+/// A private window's disposable root is a temp directory named with this
+/// prefix that holds [`PRIVATE_ROOT_MARKER`] reading
+/// [`PRIVATE_ROOT_MARKER_CONTENT`]; only such a root is ever removed.
+pub const PRIVATE_ROOT_PREFIX: &str = "tilo-browser-private-";
+pub const PRIVATE_ROOT_MARKER: &str = ".tilo-private-root-v1";
+pub const PRIVATE_ROOT_MARKER_CONTENT: &str = "tilo-browser-owned-private-root-v1\n";
+/// The engine helper's pid, written once it runs inside the root.
+pub const PRIVATE_ROOT_HELPER: &str = ".tilo-private-helper-pid";
+/// Writers hold this file shared and cleanup holds it exclusive.
+pub const PRIVATE_ROOT_LOCK: &str = ".tilo-private-root.lock";
 
 struct PrivateRootCleanup(Option<PathBuf>);
 impl PrivateRootCleanup {
@@ -264,7 +285,9 @@ impl Drop for PrivateRootCleanup {
     }
 }
 
-fn owned_private_root(root: &Path) -> bool {
+/// Whether `root` is a private window root Browser allocated: a real
+/// directory with the prefix and an intact marker, never a symlink.
+pub fn is_owned_private_root(root: &Path) -> bool {
     std::fs::symlink_metadata(root)
         .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
         && root
@@ -281,7 +304,7 @@ fn owned_private_root(root: &Path) -> bool {
 /// Remove a private window's disposable root that no engine will use, if it
 /// is one Browser owns.
 pub fn release_private_root(root: &Path) {
-    if owned_private_root(root) {
+    if is_owned_private_root(root) {
         cleanup_private_root(root);
     }
 }
@@ -308,7 +331,7 @@ fn cleanup_private_root(root: &Path) {
             }
         }
     };
-    if owned_private_root(root)
+    if is_owned_private_root(root)
         && let Err(error) = std::fs::remove_dir_all(root)
         && error.kind() != std::io::ErrorKind::NotFound
     {
@@ -455,6 +478,10 @@ impl UnavailableEngine {
         Arc::new(Self {
             message,
             shared: Shared {
+                text_input: Mutex::default(),
+                native_edit_history: AtomicBool::new(false),
+                guarded_edit_history: AtomicBool::new(false),
+                native_caret_text_input: AtomicBool::new(false),
                 open_tabs: Mutex::default(),
                 frames: Arc::new(Mutex::new(None)),
                 events: Mutex::new(VecDeque::new()),
@@ -814,7 +841,7 @@ impl ChromiumEngine {
     ///
     /// Returns an error if the private root is not owned, the profile cannot be prepared, or the helper cannot initialize.
     pub fn with_private_host(host: &Path, root: &Path) -> Result<Arc<Self>, String> {
-        if !owned_private_root(root) {
+        if !is_owned_private_root(root) {
             return Err("Private Chromium root is not owned by Browser".into());
         }
         Self::with_host_extensions(host, &root.join("chromium"), &[], Some(root.to_owned()))
@@ -971,6 +998,49 @@ impl ChromiumEngine {
 }
 
 impl WebViewEngine for ChromiumEngine {
+    fn handle_undo_request(&self, request: crate::undo::UndoRequest) -> bool {
+        if !self.supports_text_input() || !self.shared.native_edit_history.load(Ordering::Acquire) {
+            return false;
+        }
+        let direction = match request {
+            crate::undo::UndoRequest::Undo => "undo",
+            crate::undo::UndoRequest::Redo => "redo",
+        };
+        self.tx
+            .push(json!({"op":"edit_history","tab":self.tab,"direction":direction}))
+            .is_ok()
+    }
+
+    fn supports_guarded_edit_history(&self) -> bool {
+        self.supports_text_input() && self.shared.guarded_edit_history.load(Ordering::Acquire)
+    }
+
+    fn supports_text_input(&self) -> bool {
+        !self.shared.failed.load(Ordering::Acquire) && !self.shared.stopping.load(Ordering::Acquire)
+    }
+
+    fn text_input(
+        &self,
+        request: super::text_input::Request,
+    ) -> Option<super::text_input::Receipt> {
+        if self.shared.failed.load(Ordering::Acquire)
+            || self.shared.stopping.load(Ordering::Acquire)
+        {
+            return None;
+        }
+        let (receipt, mut value) = self.shared.text_input.lock().ok()?.admit(request)?;
+        value["tab"] = json!(self.tab);
+        if value["action"] == "prepare_text_input"
+            && self.shared.native_caret_text_input.load(Ordering::Acquire)
+        {
+            value["native_caret"] = json!(true);
+        }
+        if self.tx.push(value).is_err() {
+            receipt.complete(Err(super::text_input::Failure::Rejected));
+        }
+        Some(receipt)
+    }
+
     fn navigate_owned(&self, request_id: u32, command: NavigationCommand) -> Result<(), String> {
         if !super::navigation_request_id(request_id) || !command.valid() {
             return Err("Invalid owned navigation request".into());
@@ -1265,6 +1335,20 @@ fn route_native_event(
         }
     };
     if let Some(shared) = endpoint {
+        if matches!(event_name, "ready" | "tab_ready") {
+            shared.native_caret_text_input.store(
+                value["native_caret_text_input"].as_bool() == Some(true),
+                Ordering::Release,
+            );
+            shared.guarded_edit_history.store(
+                value["guarded_edit_history"].as_bool() == Some(true),
+                Ordering::Release,
+            );
+            shared.native_edit_history.store(
+                value["native_edit_history"].as_bool() == Some(true),
+                Ordering::Release,
+            );
+        }
         if let Some(outbox) = &shared.remote {
             outbox.event(value.clone());
             return Ok(());
@@ -1287,6 +1371,15 @@ fn route_native_event(
             }
             drop(requests);
             shared.wake();
+        }
+        if event_name == "text_input_result" {
+            shared
+                .text_input
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .reply(value);
+            shared.wake();
+            return Ok(());
         }
         if let Some(event) = decode_event(value) {
             shared.event(event);
@@ -1485,7 +1578,30 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .as_str()
                     .is_some_and(|error| error.len() <= 1024)
         }
-        "ready" => text("cef_version") && text("chromium_version"),
+        "ready" => {
+            value
+                .get("native_caret_text_input")
+                .is_none_or(Value::is_boolean)
+                && text("cef_version")
+                && text("chromium_version")
+                && value
+                    .get("guarded_edit_history")
+                    .is_none_or(Value::is_boolean)
+                && value
+                    .get("native_edit_history")
+                    .is_none_or(Value::is_boolean)
+        }
+        "tab_ready" => {
+            value
+                .get("native_caret_text_input")
+                .is_none_or(Value::is_boolean)
+                && value
+                    .get("guarded_edit_history")
+                    .is_none_or(Value::is_boolean)
+                && value
+                    .get("native_edit_history")
+                    .is_none_or(Value::is_boolean)
+        }
         "open_tab" => {
             value["url"].as_str().is_some_and(|url| url.len() <= 8192)
                 && value["background"].is_boolean()
@@ -1522,7 +1638,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                 })
         }
         "history" => value["back"].is_boolean() && value["forward"].is_boolean(),
-        "page_result" => super::page::decode_result(value).is_some(),
+        "page_result" | "text_input_result" => super::page::decode_result(value).is_some(),
         "paint_snapshot" | "paint_resource" => {
             value["request_id"]
                 .as_u64()

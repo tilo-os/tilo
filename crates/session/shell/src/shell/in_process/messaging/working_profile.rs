@@ -83,18 +83,6 @@ impl NativeSignalWorkingProfile {
             .checkpoint(image)
             .map_err(|_| SendError::Unavailable)
     }
-    /// Own the signed provider until its namespace has stopped, then collect
-    /// and seal its newest private image. No PID label or leader status can
-    /// substitute for the launcher's unforgeable, exact-lease exit witness.
-    /// # Errors
-    /// Refuses invalid launch, revocation, forced exit or failed collection.
-    pub fn run_and_checkpoint(
-        self,
-        launch: launcher::owned_service::ServiceLaunch,
-        cancellation: launcher::owned_service::ServiceCancellation,
-    ) -> Result<(), SendError> {
-        self.run_connected_and_checkpoint(launch, cancellation, None, None)
-    }
     pub(super) fn run_connected_and_checkpoint(
         mut self,
         mut launch: launcher::owned_service::ServiceLaunch,
@@ -254,7 +242,10 @@ impl RamDirectory {
         }
         let mut file = unsafe { File::from_raw_fd(fd) };
         let metadata = file.metadata()?;
-        if !metadata.is_file() || metadata.nlink() != 1 || !private_fs::is_owner_only(&metadata) {
+        if !metadata.is_file()
+            || metadata.nlink() != 1
+            || !tilo_files::native::private::is_owner_only(&metadata)
+        {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         file.write_all(bytes)
@@ -304,7 +295,7 @@ fn validate_directory(file: &File) -> io::Result<()> {
     let metadata = file.metadata()?;
     if !metadata.is_dir()
         || metadata.uid() != unsafe { libc::geteuid() }
-        || !private_fs::is_owner_only(&metadata)
+        || !tilo_files::native::private::is_owner_only(&metadata)
     {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
@@ -496,7 +487,9 @@ pub(super) mod tests {
             libc::TMPFS_MAGIC,
             "fixture must observe a disk filesystem to prove disk refusal"
         );
-        assert!(private_fs::is_owner_only(&fd.metadata().unwrap()));
+        assert!(tilo_files::native::private::is_owner_only(
+            &fd.metadata().unwrap()
+        ));
         assert!(validate_directory(&fd).is_err());
         assert_eq!(std::fs::read_dir(disk.path()).unwrap().count(), 0);
     }
@@ -522,7 +515,7 @@ pub(super) mod tests {
         );
         let file = profile.join("data/account.db");
         assert_eq!(std::fs::read(&file).unwrap(), b"fixture-profile-state");
-        assert!(private_fs::is_owner_only(
+        assert!(tilo_files::native::private::is_owner_only(
             &std::fs::metadata(&file).unwrap()
         ));
         assert!(ram.write_profile("../escaped", b"forbidden").is_err());

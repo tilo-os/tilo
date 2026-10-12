@@ -86,13 +86,7 @@ fn body(scene: &mut Scene) {
 
 #[test]
 fn dest_in_mask_layer_is_affordable_at_viewport_size() {
-    let Some(mut renderer) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        OffscreenRenderer::new(W, H)
-    }))
-    .ok() else {
-        eprintln!("skip: no wgpu adapter available");
-        return;
-    };
+    let mut renderer = OffscreenRenderer::new(W, H);
 
     // Control: plain clip layer, no blending.
     let mut plain = Scene::new();

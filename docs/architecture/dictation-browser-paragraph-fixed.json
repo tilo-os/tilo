@@ -1,0 +1,1889 @@
+{
+  "qualification": "corrected_browser_paragraphs_and_concurrent_public_worker",
+  "runtime_version": "2026.10.9-chromium",
+  "browser_build": {
+    "exit_code": 0,
+    "sdk": {
+      "name": "cef_binary_152.0.6+g708dc14+chromium-152.0.7977.83_linux64_minimal.tar.bz2",
+      "size": 321503907,
+      "sha1": "9711b86c105fb590da576fe5a829802f1a79d520",
+      "sha256": "daf8c2b6e63787d6a91d666205a8a4521419937eabaf47723738c86aea7135bd"
+    },
+    "sources": {
+      "apps/browser/chromium/src/host.cc": "4397f77cbaed86358756c79befc91f2aa05e6c1f2562592f997fd311f64615b2",
+      "apps/browser/chromium/src/renderer.cc": "e96289b156f47fab209a124062b489cf676fa8cb092c90dfdf01a2b865d47ec5",
+      "apps/browser/chromium/src/main_linux.cc": "0a2014a70869cd01acd94906627b2448321b3405a37493452719a6f850d7be26",
+      "apps/browser/chromium/src/page_automation.js": "ec950e3be387bd350562bd3f4c515789dfc436c10ab52530496839017d5556a0",
+      "apps/browser/chromium/src/page_automation.h": "34d93aa25ac1f624202d6b30139283ad4bc20723b3b34f753841984b9310b588",
+      "apps/browser/chromium/tests/guarded_text_input.py": "2bf08873cb04c372a41d2d1235dfcb14fce31fef965e1c4d92aed9a5a6fea683"
+    },
+    "elapsed_seconds": 25.627899429004174,
+    "host_sha256": "84e96605a63e974d6ac4a5c3e8a26979357819df299319f88a7fd20c62d8600a"
+  },
+  "focused_final_log": "test_multiline_paragraph_replacement_is_one_native_history_edit (__main__.GuardedTextInput.test_multiline_paragraph_replacement_is_one_native_history_edit) ... ok\ntest_paragraph_only_and_trailing_breaks_keep_selection_and_history (__main__.GuardedTextInput.test_paragraph_only_and_trailing_breaks_keep_selection_and_history) ... ok\ntest_collapsing_rich_whitespace_rejects_boundary_edits_before_handlers (__main__.GuardedTextInput.test_collapsing_rich_whitespace_rejects_boundary_edits_before_handlers) ... ok\ntest_rich_paragraph_mixed_selection_keeps_native_start_format (__main__.GuardedTextInput.test_rich_paragraph_mixed_selection_keeps_native_start_format) ... ok\ntest_paragraph_undo_does_not_absorb_previous_native_typing (__main__.GuardedTextInput.test_paragraph_undo_does_not_absorb_previous_native_typing) ... ok\ntest_rich_paragraph_retains_native_inline_typing_format (__main__.GuardedTextInput.test_rich_paragraph_retains_native_inline_typing_format) ... ok\ntest_paragraph_input_handler_cannot_redirect_remaining_text (__main__.GuardedTextInput.test_paragraph_input_handler_cannot_redirect_remaining_text) ... ok\ntest_control_characters_never_delete_the_original_selection (__main__.GuardedTextInput.test_control_characters_never_delete_the_original_selection) ... ok\ntest_single_line_kinds_reject_paragraphs_before_page_handlers (__main__.GuardedTextInput.test_single_line_kinds_reject_paragraphs_before_page_handlers) ... ok\n\n----------------------------------------------------------------------\nRan 9 tests in 9.269s\n\nOK\n",
+  "full_suite_boundary_revision_log": "test_beforeinput_denial_and_focus_redirect_do_not_fallback (__main__.GuardedTextInput.test_beforeinput_denial_and_focus_redirect_do_not_fallback) ... ok\ntest_bounded_session_start_outlives_warm_expiry_without_sliding (__main__.GuardedTextInput.test_bounded_session_start_outlives_warm_expiry_without_sliding) ... LEASE lifetime: original warm lease prepared\nLEASE lifetime: explicit original session acknowledged\nLEASE lifetime: original survives warm expiry; replay cannot extend it\nLEASE lifetime: fixed active-session bound expired without editing\nok\ntest_cancel_and_retired_cancel_cannot_affect_a_successor (__main__.GuardedTextInput.test_cancel_and_retired_cancel_cannot_affect_a_successor) ... ok\ntest_collapsing_rich_whitespace_rejects_boundary_edits_before_handlers (__main__.GuardedTextInput.test_collapsing_rich_whitespace_rejects_boundary_edits_before_handlers) ... ok\ntest_composition_before_first_private_prepare_is_refused_and_recovers (__main__.GuardedTextInput.test_composition_before_first_private_prepare_is_refused_and_recovers) ... ok\ntest_control_characters_never_delete_the_original_selection (__main__.GuardedTextInput.test_control_characters_never_delete_the_original_selection) ... ok\ntest_cross_origin_frame_remains_closed_without_observable_ancestors (__main__.GuardedTextInput.test_cross_origin_frame_remains_closed_without_observable_ancestors) ... ok\ntest_document_open_cannot_reuse_removed_composition_observer (__main__.GuardedTextInput.test_document_open_cannot_reuse_removed_composition_observer) ... ok\ntest_expired_delivery_cannot_insert_or_consume_a_successor (__main__.GuardedTextInput.test_expired_delivery_cannot_insert_or_consume_a_successor) ... ok\ntest_explicit_page_history_matches_native_cross_field_stack (__main__.GuardedTextInput.test_explicit_page_history_matches_native_cross_field_stack) ... ok\ntest_explicit_start_is_one_shot_and_preserves_the_original_selection (__main__.GuardedTextInput.test_explicit_start_is_one_shot_and_preserves_the_original_selection) ... ok\ntest_focus_change_and_return_permanently_retires_original_lease (__main__.GuardedTextInput.test_focus_change_and_return_permanently_retires_original_lease) ... ok\ntest_focused_iframe_original_ack_unicode_and_native_undo (__main__.GuardedTextInput.test_focused_iframe_original_ack_unicode_and_native_undo) ... ok\ntest_hidden_view_cannot_prepare_or_commit_but_can_cancel (__main__.GuardedTextInput.test_hidden_view_cannot_prepare_or_commit_but_can_cancel) ... ok\ntest_iframe_readonly_ancestor_revocation_is_not_cleared_by_restore (__main__.GuardedTextInput.test_iframe_readonly_ancestor_revocation_is_not_cleared_by_restore) ... ok\ntest_iframe_replacement_refuses_old_final_and_allows_new_original_session (__main__.GuardedTextInput.test_iframe_replacement_refuses_old_final_and_allows_new_original_session) ... ok\ntest_multiline_paragraph_replacement_is_one_native_history_edit (__main__.GuardedTextInput.test_multiline_paragraph_replacement_is_one_native_history_edit) ... ok\ntest_native_capability_preserves_sensitive_field_refusal_and_recovery (__main__.GuardedTextInput.test_native_capability_preserves_sensitive_field_refusal_and_recovery) ... ok\ntest_native_caret_does_not_trust_page_selection_prototype (__main__.GuardedTextInput.test_native_caret_does_not_trust_page_selection_prototype) ... ok\ntest_native_email_beforeinput_cannot_lower_maxlength_and_truncate_text (__main__.GuardedTextInput.test_native_email_beforeinput_cannot_lower_maxlength_and_truncate_text) ... ok\ntest_native_email_number_replace_cancel_repeat_and_history (__main__.GuardedTextInput.test_native_email_number_replace_cancel_repeat_and_history) ... ok\ntest_native_fields_inside_original_iframe_and_shadow_host (__main__.GuardedTextInput.test_native_fields_inside_original_iframe_and_shadow_host) ... ok\ntest_native_fields_refuse_focus_readonly_and_beforeinput_caret_changes (__main__.GuardedTextInput.test_native_fields_refuse_focus_readonly_and_beforeinput_caret_changes) ... ok\ntest_native_number_rejects_filtered_text_without_deleting_original (__main__.GuardedTextInput.test_native_number_rejects_filtered_text_without_deleting_original) ... ok\ntest_navigation_invalidates_the_original_document_lease (__main__.GuardedTextInput.test_navigation_invalidates_the_original_document_lease) ... ok\ntest_nested_shadow_host_revocation_and_restore_retire_the_original (__main__.GuardedTextInput.test_nested_shadow_host_revocation_and_restore_retire_the_original) ... ok\ntest_original_field_history_flags_follow_native_undo_and_redo (__main__.GuardedTextInput.test_original_field_history_flags_follow_native_undo_and_redo) ... ok\ntest_original_field_history_never_undoes_a_successor_entry (__main__.GuardedTextInput.test_original_field_history_never_undoes_a_successor_entry) ... ok\ntest_paragraph_input_handler_cannot_redirect_remaining_text (__main__.GuardedTextInput.test_paragraph_input_handler_cannot_redirect_remaining_text) ... ok\ntest_paragraph_only_and_trailing_breaks_keep_selection_and_history (__main__.GuardedTextInput.test_paragraph_only_and_trailing_breaks_keep_selection_and_history) ... ok\ntest_password_otp_and_composition_are_refused (__main__.GuardedTextInput.test_password_otp_and_composition_are_refused) ... ok\ntest_preexisting_composition_blocks_successor_focus_until_it_ends (__main__.GuardedTextInput.test_preexisting_composition_blocks_successor_focus_until_it_ends) ... ok\ntest_private_bridge_is_inaccessible_to_page_script (__main__.GuardedTextInput.test_private_bridge_is_inaccessible_to_page_script) ... ok\ntest_private_lease_check_observes_the_original_edit_stamp (__main__.GuardedTextInput.test_private_lease_check_observes_the_original_edit_stamp) ... ok\ntest_private_text_operations_never_create_site_user_activation (__main__.GuardedTextInput.test_private_text_operations_never_create_site_user_activation) ... ok\ntest_readonly_revocation_and_restore_still_retire_the_lease (__main__.GuardedTextInput.test_readonly_revocation_and_restore_still_retire_the_lease) ... ok\ntest_rich_paragraph_retains_native_inline_typing_format (__main__.GuardedTextInput.test_rich_paragraph_retains_native_inline_typing_format) ... ok\ntest_rich_selection_preserves_structure_and_native_undo (__main__.GuardedTextInput.test_rich_selection_preserves_structure_and_native_undo) ... ok\ntest_selected_unicode_replacement_is_one_native_undo_and_cannot_repeat (__main__.GuardedTextInput.test_selected_unicode_replacement_is_one_native_undo_and_cannot_repeat) ... ok\ntest_selectionless_dom_snapshot_cannot_bind_two_native_carets (__main__.GuardedTextInput.test_selectionless_dom_snapshot_cannot_bind_two_native_carets) ... ok\ntest_selectionless_email_and_number_refuse_deferred_input_and_recover (__main__.GuardedTextInput.test_selectionless_email_and_number_refuse_deferred_input_and_recover) ... ok\ntest_shadow_host_readonly_is_part_of_field_eligibility (__main__.GuardedTextInput.test_shadow_host_readonly_is_part_of_field_eligibility) ... ok\ntest_single_line_kinds_reject_paragraphs_before_page_handlers (__main__.GuardedTextInput.test_single_line_kinds_reject_paragraphs_before_page_handlers) ... ok\ntest_start_cannot_acquire_a_changed_or_expired_original_target (__main__.GuardedTextInput.test_start_cannot_acquire_a_changed_or_expired_original_target) ... ok\ntest_textarea_and_open_shadow_input_keep_the_original_selection (__main__.GuardedTextInput.test_textarea_and_open_shadow_input_keep_the_original_selection) ... ok\ntest_transient_css_masking_permanently_retires_the_lease (__main__.GuardedTextInput.test_transient_css_masking_permanently_retires_the_lease) ... ok\ntest_unrelated_sibling_updates_preserve_original_iframe_and_main_field (__main__.GuardedTextInput.test_unrelated_sibling_updates_preserve_original_iframe_and_main_field) ... ok\ntest_value_selection_and_readonly_changes_prevent_insertion (__main__.GuardedTextInput.test_value_selection_and_readonly_changes_prevent_insertion) ... ok\ntest_window_focus_loss_prevents_insertion_after_focus_returns (__main__.GuardedTextInput.test_window_focus_loss_prevents_insertion_after_focus_returns) ... ok\n\n----------------------------------------------------------------------\nRan 49 tests in 245.880s\n\nOK\n",
+  "previous_typing_undo_control": "COMMIT {\"event\": \"text_input_result\", \"loading\": false, \"message\": \"Text input committed\", \"navigated\": false, \"ok\": true, \"outline\": null, \"request_id\": 3, \"tab\": 1, \"url\": \"http://127.0.0.1:41099/input\"}\nBEFORE \"alpha beta gamma typed\"\nFINAL \"alpha beta gamma typedFirst\\n\\nSecond\"\nAFTER_UNDO \"alpha beta gamma typed\"\n",
+  "mounted_sdk_initial_stdout": "QUALIFY direct retained field owner\nPASS mounted one-shot session start: stable original stamp, private ACK and final\nPASS mounted canceled session start and independently consented repeated session\nPASS mounted cancel after start ACK: fresh session survives retired cancellation\nPASS mounted iframe first: original ACK, Unicode replacement and native undo\nPASS mounted iframe notes: original ACK, Unicode replacement and native undo\nPASS mounted iframe rich: original ACK, Unicode replacement and native undo\nPASS mounted iframe removal: rejected original final and independently started recovery session\nPASS mounted first: acknowledged Unicode selection replacement and native undo/redo\nPASS mounted notes: acknowledged Unicode selection replacement and native undo/redo\nPASS mounted rich: acknowledged Unicode selection replacement and native undo/redo\nPASS mounted paragraph intent: exact final, one undo/redo and single-line rejection\nPASS mounted search: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted tel: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted url: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted plaintext-only: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted focus return: refused original transaction without retargeting\nPASS mounted edit stamp: refused original transaction without retargeting\nPASS mounted transient protected styling: refused original transaction without retargeting\nPASS mounted field replacement: refused original transaction without retargeting\nPASS mounted page rejection: refused original transaction without retargeting\nPASS mounted protected field: refused original transaction without retargeting\nPASS mounted queued check: one original-field final and one native undo\nPASS mounted canceled queued final and repeated fresh session without retargeting\nPASS mounted cross-site frame replacement and recovery to a fresh original-field lease\nPASS mounted cancellation: no edit or successor retargeting\nQUALIFY decorated retained field owner\nPASS mounted one-shot session start: stable original stamp, private ACK and final\nPASS mounted canceled session start and independently consented repeated session\nPASS mounted cancel after start ACK: fresh session survives retired cancellation\nPASS mounted iframe first: original ACK, Unicode replacement and native undo\nPASS mounted iframe notes: original ACK, Unicode replacement and native undo\nPASS mounted iframe rich: original ACK, Unicode replacement and native undo\nPASS mounted iframe removal: rejected original final and independently started recovery session\nPASS mounted first: acknowledged Unicode selection replacement and native undo/redo\nPASS mounted notes: acknowledged Unicode selection replacement and native undo/redo\nPASS mounted rich: acknowledged Unicode selection replacement and native undo/redo\nPASS mounted paragraph intent: exact final, one undo/redo and single-line rejection\nPASS mounted search: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted tel: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted url: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted plaintext-only: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted focus return: refused original transaction without retargeting\nPASS mounted edit stamp: refused original transaction without retargeting\nPASS mounted transient protected styling: refused original transaction without retargeting\nPASS mounted field replacement: refused original transaction without retargeting\nPASS mounted page rejection: refused original transaction without retargeting\nPASS mounted protected field: refused original transaction without retargeting\nPASS mounted queued check: one original-field final and one native undo\nPASS mounted canceled queued final and repeated fresh session without retargeting\nPASS mounted cross-site frame replacement and recovery to a fresh original-field lease\nPASS mounted cancellation: no edit or successor retargeting\n[4:19:1009/073401.200764:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[4:19:1009/073401.202818:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:19:1009/073401.207667:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[4:19:1009/073401.207906:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[4:19:1009/073401.207977:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n[4:19:1009/073401.940794:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:19:1009/073401.962984:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:4:1009/073402.191781:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:19:1009/073402.191884:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:4:1009/073402.191965:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:19:1009/073402.191986:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:4:1009/073402.192088:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:4:1009/073402.196584:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:4:1009/073402.209826:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:19:1009/073402.211001:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[4:19:1009/073402.211141:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[4:4:1009/073402.211195:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:19:1009/073402.211233:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:4:1009/073402.221515:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.Properties.GetAll: object_path= /org/freedesktop/UPower/devices/DisplayDevice: unknown error type: \n[4:4:1009/073402.222550:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:19:1009/073402.224464:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:4:1009/073402.233274:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:19:1009/073402.233600:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:4:1009/073402.237312:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n----------------------------------------\nException occurred during processing of request from ('127.0.0.1', 41126)\nTraceback (most recent call last):\n  File \"/usr/lib64/python3.14/socketserver.py\", line 697, in process_request_thread\n    self.finish_request(request, client_address)\n    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib64/python3.14/socketserver.py\", line 362, in finish_request\n    self.RequestHandlerClass(request, client_address, self)\n    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib64/python3.14/socketserver.py\", line 766, in __init__\n    self.handle()\n    ~~~~~~~~~~~^^\n  File \"/usr/lib64/python3.14/http/server.py\", line 500, in handle\n    self.handle_one_request()\n    ~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/usr/lib64/python3.14/http/server.py\", line 488, in handle_one_request\n    method()\n    ~~~~~~^^\n  File \"${BUILD_ROOT}/apps/browser/chromium/tests/guarded_text_input.py\", line 47, in do_GET\n    self.wfile.write(body)\n    ~~~~~~~~~~~~~~~~^^^^^^\n  File \"/usr/lib64/python3.14/socketserver.py\", line 845, in write\n    self._sock.sendall(b)\n    ~~~~~~~~~~~~~~~~~~^^^\nBrokenPipeError:",
+  "native_ime_control": "notes {\"events\": [\"insertText\", \"insertText\", \"insertText\", \"insertText\"], \"value\": \"alpha First café.\\n\\nSecond 👋 gamma\", \"rich\": \"alpha beta gamma\", \"html\": \"alpha <b>beta</b> gamma\"}\nundo True alpha beta gamma\nrich {\"events\": [\"insertText\", \"insertText\", \"insertText\", \"insertText\"], \"value\": \"alpha beta gamma\", \"rich\": \"alpha First café.\\n\\n\\nSecond 👋 gamma\", \"html\": \"alpha <b>First café.</b><div><br></div><div>Second 👋 gamma</div>\"}\nundo True alpha <b>beta</b> gamma\n",
+  "concurrent_initial_four_cases": {
+    "cases": [
+      {
+        "mode": "keep",
+        "replies": [
+          {
+            "kind": "ready",
+            "sequence": 1,
+            "model": "whistle-image-public-review",
+            "revision": "b358ddadd89b7a713b5aa131f23032d3cca1b251",
+            "wall_seconds": 1.1938220239971997
+          },
+          {
+            "kind": "draft",
+            "sequence": 4,
+            "text": "Merci.",
+            "wall_seconds": 2.7404774250026094
+          },
+          {
+            "kind": "draft",
+            "sequence": 6,
+            "text": "L'accident a...",
+            "wall_seconds": 3.39352184200834
+          },
+          {
+            "kind": "draft",
+            "sequence": 8,
+            "text": "L'accident a eu lieu en terrain.",
+            "wall_seconds": 4.420659865005291
+          },
+          {
+            "kind": "draft",
+            "sequence": 10,
+            "text": "L'accident a eu lieu en terrain montagneux.",
+            "wall_seconds": 5.790066318004392
+          },
+          {
+            "kind": "draft",
+            "sequence": 12,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.",
+            "wall_seconds": 6.888066769999568
+          },
+          {
+            "kind": "draft",
+            "sequence": 14,
+            "text": "L'accident a eu lieu en terrain montagneux et il semblerait que cela ait été causé.",
+            "wall_seconds": 7.867842189007206
+          },
+          {
+            "kind": "draft",
+            "sequence": 16,
+            "text": "L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait été causé par un incendie.",
+            "wall_seconds": 8.995615040999837
+          },
+          {
+            "kind": "draft",
+            "sequence": 18,
+            "text": "L'accident a eu lieu en terrain montagneux, il semblerait que cela ait été causé par un incendie malveillant.",
+            "wall_seconds": 10.466096578995348
+          },
+          {
+            "kind": "draft",
+            "sequence": 20,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+            "wall_seconds": 11.659859652994783
+          },
+          {
+            "kind": "done",
+            "sequence": 21,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+            "wall_seconds": 11.660401809000177
+          }
+        ],
+        "final": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+        "cancelled": false,
+        "seconds": 13.283603378993575,
+        "recognition": {
+          "exit": 0,
+          "guarded": null,
+          "memory_peak": {
+            "VmPeak": 179972,
+            "VmSize": 179972,
+            "VmHWM": 167148,
+            "VmRSS": 157480,
+            "Threads": 1
+          },
+          "cpu_seconds": 8.940000000000001,
+          "sampled_cpu_lower_bound_seconds": 8.89,
+          "wall_seconds": 12.93581971299136,
+          "stdout": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-image-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"wall_seconds\": 1.1938220239971997}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 4, \"text\": \"Merci.\", \"wall_seconds\": 2.7404774250026094}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 6, \"text\": \"L'accident a...\", \"wall_seconds\": 3.39352184200834}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 8, \"text\": \"L'accident a eu lieu en terrain.\", \"wall_seconds\": 4.420659865005291}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 10, \"text\": \"L'accident a eu lieu en terrain montagneux.\", \"wall_seconds\": 5.790066318004392}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 12, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.\", \"wall_seconds\": 6.888066769999568}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 14, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9.\", \"wall_seconds\": 7.867842189007206}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 16, \"text\": \"L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie.\", \"wall_seconds\": 8.995615040999837}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 18, \"text\": \"L'accident a eu lieu en terrain montagneux, il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 10.466096578995348}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 20, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.659859652994783}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 21, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.660401809000177}\n",
+          "stderr": "ASR_RESOURCE {\"user\":7.36,\"system\":1.58}\n",
+          "stdout_events": [
+            {
+              "wall_seconds": 1.2320107569976244,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-image-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"wall_seconds\": 1.1938220239971997}"
+            },
+            {
+              "wall_seconds": 3.972567992997938,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 4, \"text\": \"Merci.\", \"wall_seconds\": 2.7404774250026094}"
+            },
+            {
+              "wall_seconds": 4.625574769990635,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 6, \"text\": \"L'accident a...\", \"wall_seconds\": 3.39352184200834}"
+            },
+            {
+              "wall_seconds": 5.652745033992687,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 8, \"text\": \"L'accident a eu lieu en terrain.\", \"wall_seconds\": 4.420659865005291}"
+            },
+            {
+              "wall_seconds": 7.022151535988087,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 10, \"text\": \"L'accident a eu lieu en terrain montagneux.\", \"wall_seconds\": 5.790066318004392}"
+            },
+            {
+              "wall_seconds": 8.120113907993073,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 12, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.\", \"wall_seconds\": 6.888066769999568}"
+            },
+            {
+              "wall_seconds": 9.099931377000757,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 14, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9.\", \"wall_seconds\": 7.867842189007206}"
+            },
+            {
+              "wall_seconds": 10.227661078999517,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 16, \"text\": \"L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie.\", \"wall_seconds\": 8.995615040999837}"
+            },
+            {
+              "wall_seconds": 11.698170487987227,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 18, \"text\": \"L'accident a eu lieu en terrain montagneux, il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 10.466096578995348}"
+            },
+            {
+              "wall_seconds": 12.891954360995442,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 20, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.659859652994783}"
+            },
+            {
+              "wall_seconds": 12.89240496599814,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 21, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.660401809000177}"
+            }
+          ],
+          "case": "fr_fr-0",
+          "mode": "complete",
+          "repeat_audio": 1,
+          "fixture_language": "fr",
+          "requested_language": "fr",
+          "appended_silence_seconds": 0.0,
+          "fixture_sha256": "f76c0a92ca39d2533aa105ac5794b08f004e15a3ff5ba32f4ba4995f45cd22fd",
+          "fixture_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+          "submitted_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+          "submitted_seconds": 10.2,
+          "original_seconds": 10.2,
+          "source_receipt": {
+            "files": {
+              "image-worker": {
+                "bytes": 20452736,
+                "sha256": "acb4b9f166aea21f40b2a54550e3b81fb6c937d0a520f1ba69ab68478e0c10c3"
+              },
+              "whistle.cact": {
+                "bytes": 16919407,
+                "sha256": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb"
+              },
+              "usr/lib64/tilo-speech/whistle/x86-64-v3/libwasmtime.so": {
+                "bytes": 17465504,
+                "sha256": "2d232d8bc62ece8ded8179cbb354f17729dadfdf04ff018a96cbbdaf075433dd"
+              },
+              "usr/lib64/tilo-speech/whistle/x86-64-v3/aot-bridge.so": {
+                "bytes": 36544,
+                "sha256": "d628553aea35bf059b9e30676c123868193aee8e59b1783f43028690f22abe34"
+              },
+              "usr/lib64/tilo-speech/whistle/x86-64-v3/needle.aot": {
+                "bytes": 3437656,
+                "sha256": "a74daea810fcccb4053ff8639f7bae9b7010fd9d9e1ad80a0deecc17c2cb3d26"
+              },
+              "source/tools/release/qualify_whistle_image_scope.py": {
+                "bytes": 6369,
+                "sha256": "2b304632c570cbc362ee5fa928097aa4b8b9244370286aea4a003e4ccc8f5a53"
+              },
+              "source/tools/release/qualify_whistle_aot_scope.py": {
+                "bytes": 17618,
+                "sha256": "a6e6e0ee80cfb1678d0e09ede4f061144dfa52cd314b25905a6ae7f24e50bd53"
+              },
+              "source/tools/release/qualify_whistle_cli_scope.py": {
+                "bytes": 7699,
+                "sha256": "b9abfe655f8da2990052d22efab02358c0159f278818bfea24f0a731b59d0984"
+              },
+              "source/tools/release/probe_asr_candidate.py": {
+                "bytes": 14568,
+                "sha256": "5339a08a8c152d3da6d83456d7da607f7ffe24b59ea75ca8eed8977b05720c0e"
+              },
+              "source/tools/release/summarize_speech_benchmark.py": {
+                "bytes": 4671,
+                "sha256": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+              }
+            },
+            "sources": {
+              "crates/agent/local-model-service/src/speech.rs": "8af0df03e21fadc7d0af69be9379520e148c5ae26a2f28d4fed91b2d9507fca2",
+              "crates/agent/local-model-service/src/speech/aot.rs": "c087c3441768a706d695204d8336ea26e1c4835804d48f4709acebfd68999a30",
+              "crates/agent/local-model-service/src/speech/model.rs": "f43419aba070c85db3ebe6a8d3418ede07e0a9253f68b9f406121af031376a01",
+              "crates/agent/local-model-service/src/speech/recognition.rs": "8edd172f8f0c9d988e6561ca49b80d548db18dd6931dab828795f5a2a7faff19",
+              "crates/agent/local-model-service/src/speech/worker.rs": "429a85bf98ab99d081bb762ba8bb463511b91f780d2c598200279a23a44c9d0c",
+              "crates/agent/local-model-service/src/lib.rs": "9ff6b9944c39792d7c37ac6d9fbf0d608e9fe8bb59c4ec0baa6d822d161a56e2",
+              "crates/agent/local-model-service/examples/whistle_aot_image_review.rs": "f6f8120763cb213728c181d6c4a3e409be84a324f198f481aa4aefe91afce6f6",
+              "crates/agent/local-model-service/Cargo.toml": "9ea7dec110d78bdf9e693b26dd93de6a145fb3deff34d3bf7056982eae42a153",
+              "crates/agent/provider-config/src/local.rs": "b254be22db9492c1e11086298bfe0e064eab4ff5fd7a75588fa5e190fda03351"
+            },
+            "features": [
+              "whistle-aot"
+            ],
+            "host_root": false,
+            "production_image_installed": false
+          },
+          "scope_before": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0,
+            "sock_throttled": 0
+          },
+          "scope_after": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0,
+            "sock_throttled": 0
+          },
+          "live_microphone": false,
+          "installed": false
+        },
+        "stderr": "Running as unit: tilo-dictation-browser-worker-947924-0.service\n          Finished with result: success\nMain processes terminated with: code=exited, status=0/SUCCESS\n               Service runtime: 13.247s\n             CPU time consumed: 9.258s\n                   Memory peak: 264.5M (swap: 0B)\n",
+        "target": "notes",
+        "scope_exit": 0,
+        "decoder_exit": 0
+      },
+      {
+        "mode": "focus",
+        "replies": [
+          {
+            "kind": "ready",
+            "sequence": 1,
+            "model": "whistle-image-public-review",
+            "revision": "b358ddadd89b7a713b5aa131f23032d3cca1b251",
+            "wall_seconds": 1.228820887990878
+          },
+          {
+            "kind": "draft",
+            "sequence": 4,
+            "text": "Merci.",
+            "wall_seconds": 2.72179905899975,
+            "focus_retired": true
+          },
+          {
+            "kind": "draft",
+            "sequence": 6,
+            "text": "L'accident a...",
+            "wall_seconds": 3.490065562989912
+          },
+          {
+            "kind": "draft",
+            "sequence": 8,
+            "text": "L'accident a eu lieu en terrain.",
+            "wall_seconds": 4.417912042001262
+          },
+          {
+            "kind": "draft",
+            "sequence": 10,
+            "text": "L'accident a eu lieu en terrain montagneux.",
+            "wall_seconds": 6.152606452989858
+          },
+          {
+            "kind": "draft",
+            "sequence": 12,
+            "text": "L'accident a eu lieu en terrain montagneux et il semblerait que cela.",
+            "wall_seconds": 6.872547481994843
+          },
+          {
+            "kind": "draft",
+            "sequence": 14,
+            "text": "L'accident a eu lieu en terrain montagneux et il semblerait que cela ait été causé.",
+            "wall_seconds": 8.089425084996037
+          },
+          {
+            "kind": "draft",
+            "sequence": 16,
+            "text": "L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait été causé par un incendie.",
+            "wall_seconds": 9.817145501991035
+          },
+          {
+            "kind": "draft",
+            "sequence": 18,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+            "wall_seconds": 11.109859453994432
+          },
+          {
+            "kind": "draft",
+            "sequence": 20,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+            "wall_seconds": 12.314149934987654
+          },
+          {
+            "kind": "done",
+            "sequence": 21,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+            "wall_seconds": 12.31466156100214
+          }
+        ],
+        "final": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+        "cancelled": false,
+        "seconds": 13.81402091900236,
+        "recognition": {
+          "exit": 0,
+          "guarded": null,
+          "memory_peak": {
+            "VmPeak": 180484,
+            "VmSize": 180484,
+            "VmHWM": 168844,
+            "VmRSS": 155908,
+            "Threads": 1
+          },
+          "cpu_seconds": 9.76,
+          "sampled_cpu_lower_bound_seconds": 9.72,
+          "wall_seconds": 13.633537111993064,
+          "stdout": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-image-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"wall_seconds\": 1.228820887990878}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 4, \"text\": \"Merci.\", \"wall_seconds\": 2.72179905899975}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 6, \"text\": \"L'accident a...\", \"wall_seconds\": 3.490065562989912}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 8, \"text\": \"L'accident a eu lieu en terrain.\", \"wall_seconds\": 4.417912042001262}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 10, \"text\": \"L'accident a eu lieu en terrain montagneux.\", \"wall_seconds\": 6.152606452989858}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 12, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela.\", \"wall_seconds\": 6.872547481994843}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 14, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9.\", \"wall_seconds\": 8.089425084996037}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 16, \"text\": \"L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie.\", \"wall_seconds\": 9.817145501991035}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 18, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.109859453994432}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 20, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 12.314149934987654}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 21, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 12.31466156100214}\n",
+          "stderr": "ASR_RESOURCE {\"user\":7.54,\"system\":2.22}\n",
+          "stdout_events": [
+            {
+              "wall_seconds": 1.282745481992606,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-image-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"wall_seconds\": 1.228820887990878}"
+            },
+            {
+              "wall_seconds": 4.004805024000234,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 4, \"text\": \"Merci.\", \"wall_seconds\": 2.72179905899975}"
+            },
+            {
+              "wall_seconds": 4.7730702179978834,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 6, \"text\": \"L'accident a...\", \"wall_seconds\": 3.490065562989912}"
+            },
+            {
+              "wall_seconds": 5.7008984870044515,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 8, \"text\": \"L'accident a eu lieu en terrain.\", \"wall_seconds\": 4.417912042001262}"
+            },
+            {
+              "wall_seconds": 7.435586138002691,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 10, \"text\": \"L'accident a eu lieu en terrain montagneux.\", \"wall_seconds\": 6.152606452989858}"
+            },
+            {
+              "wall_seconds": 8.15550174699456,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 12, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela.\", \"wall_seconds\": 6.872547481994843}"
+            },
+            {
+              "wall_seconds": 9.372410009993473,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 14, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9.\", \"wall_seconds\": 8.089425084996037}"
+            },
+            {
+              "wall_seconds": 11.10013599699596,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 16, \"text\": \"L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie.\", \"wall_seconds\": 9.817145501991035}"
+            },
+            {
+              "wall_seconds": 12.392843220004579,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 18, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.109859453994432}"
+            },
+            {
+              "wall_seconds": 13.597160991004785,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 20, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 12.314149934987654}"
+            },
+            {
+              "wall_seconds": 13.597583006005152,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 21, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 12.31466156100214}"
+            }
+          ],
+          "case": "fr_fr-0",
+          "mode": "complete",
+          "repeat_audio": 1,
+          "fixture_language": "fr",
+          "requested_language": "fr",
+          "appended_silence_seconds": 0.0,
+          "fixture_sha256": "f76c0a92ca39d2533aa105ac5794b08f004e15a3ff5ba32f4ba4995f45cd22fd",
+          "fixture_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+          "submitted_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+          "submitted_seconds": 10.2,
+          "original_seconds": 10.2,
+          "source_receipt": {
+            "files": {
+              "image-worker": {
+                "bytes": 20452736,
+                "sha256": "acb4b9f166aea21f40b2a54550e3b81fb6c937d0a520f1ba69ab68478e0c10c3"
+              },
+              "whistle.cact": {
+                "bytes": 16919407,
+                "sha256": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb"
+              },
+              "usr/lib64/tilo-speech/whistle/x86-64-v3/libwasmtime.so": {
+                "bytes": 17465504,
+                "sha256": "2d232d8bc62ece8ded8179cbb354f17729dadfdf04ff018a96cbbdaf075433dd"
+              },
+              "usr/lib64/tilo-speech/whistle/x86-64-v3/aot-bridge.so": {
+                "bytes": 36544,
+                "sha256": "d628553aea35bf059b9e30676c123868193aee8e59b1783f43028690f22abe34"
+              },
+              "usr/lib64/tilo-speech/whistle/x86-64-v3/needle.aot": {
+                "bytes": 3437656,
+                "sha256": "a74daea810fcccb4053ff8639f7bae9b7010fd9d9e1ad80a0deecc17c2cb3d26"
+              },
+              "source/tools/release/qualify_whistle_image_scope.py": {
+                "bytes": 6369,
+                "sha256": "2b304632c570cbc362ee5fa928097aa4b8b9244370286aea4a003e4ccc8f5a53"
+              },
+              "source/tools/release/qualify_whistle_aot_scope.py": {
+                "bytes": 17618,
+                "sha256": "a6e6e0ee80cfb1678d0e09ede4f061144dfa52cd314b25905a6ae7f24e50bd53"
+              },
+              "source/tools/release/qualify_whistle_cli_scope.py": {
+                "bytes": 7699,
+                "sha256": "b9abfe655f8da2990052d22efab02358c0159f278818bfea24f0a731b59d0984"
+              },
+              "source/tools/release/probe_asr_candidate.py": {
+                "bytes": 14568,
+                "sha256": "5339a08a8c152d3da6d83456d7da607f7ffe24b59ea75ca8eed8977b05720c0e"
+              },
+              "source/tools/release/summarize_speech_benchmark.py": {
+                "bytes": 4671,
+                "sha256": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+              }
+            },
+            "sources": {
+              "crates/agent/local-model-service/src/speech.rs": "8af0df03e21fadc7d0af69be9379520e148c5ae26a2f28d4fed91b2d9507fca2",
+              "crates/agent/local-model-service/src/speech/aot.rs": "c087c3441768a706d695204d8336ea26e1c4835804d48f4709acebfd68999a30",
+              "crates/agent/local-model-service/src/speech/model.rs": "f43419aba070c85db3ebe6a8d3418ede07e0a9253f68b9f406121af031376a01",
+              "crates/agent/local-model-service/src/speech/recognition.rs": "8edd172f8f0c9d988e6561ca49b80d548db18dd6931dab828795f5a2a7faff19",
+              "crates/agent/local-model-service/src/speech/worker.rs": "429a85bf98ab99d081bb762ba8bb463511b91f780d2c598200279a23a44c9d0c",
+              "crates/agent/local-model-service/src/lib.rs": "9ff6b9944c39792d7c37ac6d9fbf0d608e9fe8bb59c4ec0baa6d822d161a56e2",
+              "crates/agent/local-model-service/examples/whistle_aot_image_review.rs": "f6f8120763cb213728c181d6c4a3e409be84a324f198f481aa4aefe91afce6f6",
+              "crates/agent/local-model-service/Cargo.toml": "9ea7dec110d78bdf9e693b26dd93de6a145fb3deff34d3bf7056982eae42a153",
+              "crates/agent/provider-config/src/local.rs": "b254be22db9492c1e11086298bfe0e064eab4ff5fd7a75588fa5e190fda03351"
+            },
+            "features": [
+              "whistle-aot"
+            ],
+            "host_root": false,
+            "production_image_installed": false
+          },
+          "scope_before": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0,
+            "sock_throttled": 0
+          },
+          "scope_after": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0,
+            "sock_throttled": 0
+          },
+          "live_microphone": false,
+          "installed": false
+        },
+        "stderr": "Running as unit: tilo-dictation-browser-worker-947924-1.service\n          Finished with result: success\nMain processes terminated with: code=exited, status=0/SUCCESS\n               Service runtime: 13.793s\n             CPU time consumed: 10.147s\n                   Memory peak: 207.6M (swap: 0B)\n",
+        "target": "first",
+        "scope_exit": 0,
+        "decoder_exit": 0
+      },
+      {
+        "mode": "cancel",
+        "replies": [
+          {
+            "kind": "ready",
+            "sequence": 1,
+            "model": "whistle-image-public-review",
+            "revision": "b358ddadd89b7a713b5aa131f23032d3cca1b251",
+            "wall_seconds": 1.1982547280058498
+          },
+          {
+            "kind": "draft",
+            "sequence": 4,
+            "text": "Merci.",
+            "wall_seconds": 2.7354079939977964
+          }
+        ],
+        "final": null,
+        "cancelled": true,
+        "seconds": 4.10083999800554,
+        "recognition": null,
+        "stderr": "Running as unit: tilo-dictation-browser-worker-947924-2.service; invocation ID: f6f6b9b464a64f09a9ad3404673ffc03\n          Finished with result: success\nMain processes terminated with: code=killed, status=15/TERM\n               Service runtime: 4.081s\n             CPU time consumed: 2.099s\n                   Memory peak: 181.1M (swap: 0B)\n",
+        "target": "notes",
+        "scope_exit": 0,
+        "decoder_exit": null
+      },
+      {
+        "mode": "keep",
+        "replies": [
+          {
+            "kind": "ready",
+            "sequence": 1,
+            "model": "whistle-image-public-review",
+            "revision": "b358ddadd89b7a713b5aa131f23032d3cca1b251",
+            "wall_seconds": 1.2125430710002547
+          },
+          {
+            "kind": "draft",
+            "sequence": 4,
+            "text": "Merci.",
+            "wall_seconds": 2.779438327997923
+          },
+          {
+            "kind": "draft",
+            "sequence": 6,
+            "text": "L'accident a...",
+            "wall_seconds": 3.387436228993465
+          },
+          {
+            "kind": "draft",
+            "sequence": 8,
+            "text": "L'accident a eu lieu en terrain.",
+            "wall_seconds": 4.412721109998529
+          },
+          {
+            "kind": "draft",
+            "sequence": 10,
+            "text": "L'accident a eu lieu en terrain montagneux.",
+            "wall_seconds": 5.715644205993158
+          },
+          {
+            "kind": "draft",
+            "sequence": 12,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.",
+            "wall_seconds": 6.89649057299539
+          },
+          {
+            "kind": "draft",
+            "sequence": 14,
+            "text": "L'accident a eu lieu en terrain montagneux et il semblerait que cela ait été causé.",
+            "wall_seconds": 7.8457480409997515
+          },
+          {
+            "kind": "draft",
+            "sequence": 16,
+            "text": "L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait été causé par un incendie.",
+            "wall_seconds": 9.080227258004015
+          },
+          {
+            "kind": "draft",
+            "sequence": 18,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+            "wall_seconds": 10.79771757099661
+          },
+          {
+            "kind": "draft",
+            "sequence": 20,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+            "wall_seconds": 12.025360783998622
+          },
+          {
+            "kind": "done",
+            "sequence": 21,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+            "wall_seconds": 12.025890841003275
+          }
+        ],
+        "final": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+        "cancelled": false,
+        "seconds": 13.451950260001468,
+        "recognition": {
+          "exit": 0,
+          "guarded": null,
+          "memory_peak": {
+            "VmPeak": 179972,
+            "VmSize": 179972,
+            "VmHWM": 167068,
+            "VmRSS": 166584,
+            "Threads": 1
+          },
+          "cpu_seconds": 9.07,
+          "sampled_cpu_lower_bound_seconds": 9.01,
+          "wall_seconds": 13.324445223988732,
+          "stdout": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-image-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"wall_seconds\": 1.2125430710002547}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 4, \"text\": \"Merci.\", \"wall_seconds\": 2.779438327997923}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 6, \"text\": \"L'accident a...\", \"wall_seconds\": 3.387436228993465}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 8, \"text\": \"L'accident a eu lieu en terrain.\", \"wall_seconds\": 4.412721109998529}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 10, \"text\": \"L'accident a eu lieu en terrain montagneux.\", \"wall_seconds\": 5.715644205993158}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 12, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.\", \"wall_seconds\": 6.89649057299539}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 14, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9.\", \"wall_seconds\": 7.8457480409997515}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 16, \"text\": \"L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie.\", \"wall_seconds\": 9.080227258004015}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 18, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 10.79771757099661}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 20, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 12.025360783998622}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 21, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 12.025890841003275}\n",
+          "stderr": "ASR_RESOURCE {\"user\":7.39,\"system\":1.68}\n",
+          "stdout_events": [
+            {
+              "wall_seconds": 1.2599790259992005,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-image-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"wall_seconds\": 1.2125430710002547}"
+            },
+            {
+              "wall_seconds": 4.0394508939934894,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 4, \"text\": \"Merci.\", \"wall_seconds\": 2.779438327997923}"
+            },
+            {
+              "wall_seconds": 4.647450574993854,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 6, \"text\": \"L'accident a...\", \"wall_seconds\": 3.387436228993465}"
+            },
+            {
+              "wall_seconds": 5.672740695998073,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 8, \"text\": \"L'accident a eu lieu en terrain.\", \"wall_seconds\": 4.412721109998529}"
+            },
+            {
+              "wall_seconds": 6.975651571992785,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 10, \"text\": \"L'accident a eu lieu en terrain montagneux.\", \"wall_seconds\": 5.715644205993158}"
+            },
+            {
+              "wall_seconds": 8.15650553899468,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 12, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.\", \"wall_seconds\": 6.89649057299539}"
+            },
+            {
+              "wall_seconds": 9.105730326991761,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 14, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9.\", \"wall_seconds\": 7.8457480409997515}"
+            },
+            {
+              "wall_seconds": 10.340232963993913,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 16, \"text\": \"L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie.\", \"wall_seconds\": 9.080227258004015}"
+            },
+            {
+              "wall_seconds": 12.058065020988579,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 18, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 10.79771757099661}"
+            },
+            {
+              "wall_seconds": 13.28538010099146,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 20, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 12.025360783998622}"
+            },
+            {
+              "wall_seconds": 13.285832145993481,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 21, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 12.025890841003275}"
+            }
+          ],
+          "case": "fr_fr-0",
+          "mode": "complete",
+          "repeat_audio": 1,
+          "fixture_language": "fr",
+          "requested_language": "fr",
+          "appended_silence_seconds": 0.0,
+          "fixture_sha256": "f76c0a92ca39d2533aa105ac5794b08f004e15a3ff5ba32f4ba4995f45cd22fd",
+          "fixture_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+          "submitted_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+          "submitted_seconds": 10.2,
+          "original_seconds": 10.2,
+          "source_receipt": {
+            "files": {
+              "image-worker": {
+                "bytes": 20452736,
+                "sha256": "acb4b9f166aea21f40b2a54550e3b81fb6c937d0a520f1ba69ab68478e0c10c3"
+              },
+              "whistle.cact": {
+                "bytes": 16919407,
+                "sha256": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb"
+              },
+              "usr/lib64/tilo-speech/whistle/x86-64-v3/libwasmtime.so": {
+                "bytes": 17465504,
+                "sha256": "2d232d8bc62ece8ded8179cbb354f17729dadfdf04ff018a96cbbdaf075433dd"
+              },
+              "usr/lib64/tilo-speech/whistle/x86-64-v3/aot-bridge.so": {
+                "bytes": 36544,
+                "sha256": "d628553aea35bf059b9e30676c123868193aee8e59b1783f43028690f22abe34"
+              },
+              "usr/lib64/tilo-speech/whistle/x86-64-v3/needle.aot": {
+                "bytes": 3437656,
+                "sha256": "a74daea810fcccb4053ff8639f7bae9b7010fd9d9e1ad80a0deecc17c2cb3d26"
+              },
+              "source/tools/release/qualify_whistle_image_scope.py": {
+                "bytes": 6369,
+                "sha256": "2b304632c570cbc362ee5fa928097aa4b8b9244370286aea4a003e4ccc8f5a53"
+              },
+              "source/tools/release/qualify_whistle_aot_scope.py": {
+                "bytes": 17618,
+                "sha256": "a6e6e0ee80cfb1678d0e09ede4f061144dfa52cd314b25905a6ae7f24e50bd53"
+              },
+              "source/tools/release/qualify_whistle_cli_scope.py": {
+                "bytes": 7699,
+                "sha256": "b9abfe655f8da2990052d22efab02358c0159f278818bfea24f0a731b59d0984"
+              },
+              "source/tools/release/probe_asr_candidate.py": {
+                "bytes": 14568,
+                "sha256": "5339a08a8c152d3da6d83456d7da607f7ffe24b59ea75ca8eed8977b05720c0e"
+              },
+              "source/tools/release/summarize_speech_benchmark.py": {
+                "bytes": 4671,
+                "sha256": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+              }
+            },
+            "sources": {
+              "crates/agent/local-model-service/src/speech.rs": "8af0df03e21fadc7d0af69be9379520e148c5ae26a2f28d4fed91b2d9507fca2",
+              "crates/agent/local-model-service/src/speech/aot.rs": "c087c3441768a706d695204d8336ea26e1c4835804d48f4709acebfd68999a30",
+              "crates/agent/local-model-service/src/speech/model.rs": "f43419aba070c85db3ebe6a8d3418ede07e0a9253f68b9f406121af031376a01",
+              "crates/agent/local-model-service/src/speech/recognition.rs": "8edd172f8f0c9d988e6561ca49b80d548db18dd6931dab828795f5a2a7faff19",
+              "crates/agent/local-model-service/src/speech/worker.rs": "429a85bf98ab99d081bb762ba8bb463511b91f780d2c598200279a23a44c9d0c",
+              "crates/agent/local-model-service/src/lib.rs": "9ff6b9944c39792d7c37ac6d9fbf0d608e9fe8bb59c4ec0baa6d822d161a56e2",
+              "crates/agent/local-model-service/examples/whistle_aot_image_review.rs": "f6f8120763cb213728c181d6c4a3e409be84a324f198f481aa4aefe91afce6f6",
+              "crates/agent/local-model-service/Cargo.toml": "9ea7dec110d78bdf9e693b26dd93de6a145fb3deff34d3bf7056982eae42a153",
+              "crates/agent/provider-config/src/local.rs": "b254be22db9492c1e11086298bfe0e064eab4ff5fd7a75588fa5e190fda03351"
+            },
+            "features": [
+              "whistle-aot"
+            ],
+            "host_root": false,
+            "production_image_installed": false
+          },
+          "scope_before": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0,
+            "sock_throttled": 0
+          },
+          "scope_after": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0,
+            "sock_throttled": 0
+          },
+          "live_microphone": false,
+          "installed": false
+        },
+        "stderr": "Running as unit: tilo-dictation-browser-worker-947924-3.service\n          Finished with result: success\nMain processes terminated with: code=exited, status=0/SUCCESS\n               Service runtime: 13.426s\n             CPU time consumed: 9.358s\n                   Memory peak: 206.1M (swap: 0B)\n",
+        "target": "first",
+        "scope_exit": 0,
+        "decoder_exit": 0
+      }
+    ],
+    "browser": {
+      "exit_code": 0,
+      "sdk": {
+        "name": "cef_binary_152.0.6+g708dc14+chromium-152.0.7977.83_linux64_minimal.tar.bz2",
+        "size": 321503907,
+        "sha1": "9711b86c105fb590da576fe5a829802f1a79d520",
+        "sha256": "daf8c2b6e63787d6a91d666205a8a4521419937eabaf47723738c86aea7135bd"
+      },
+      "sources": {
+        "apps/browser/chromium/src/host.cc": "4397f77cbaed86358756c79befc91f2aa05e6c1f2562592f997fd311f64615b2",
+        "apps/browser/chromium/src/renderer.cc": "e96289b156f47fab209a124062b489cf676fa8cb092c90dfdf01a2b865d47ec5",
+        "apps/browser/chromium/src/main_linux.cc": "0a2014a70869cd01acd94906627b2448321b3405a37493452719a6f850d7be26",
+        "apps/browser/chromium/src/page_automation.js": "ec950e3be387bd350562bd3f4c515789dfc436c10ab52530496839017d5556a0",
+        "apps/browser/chromium/src/page_automation.h": "34d93aa25ac1f624202d6b30139283ad4bc20723b3b34f753841984b9310b588",
+        "apps/browser/chromium/tests/guarded_text_input.py": "2bf08873cb04c372a41d2d1235dfcb14fce31fef965e1c4d92aed9a5a6fea683"
+      },
+      "elapsed_seconds": 25.627899429004174,
+      "host_sha256": "84e96605a63e974d6ac4a5c3e8a26979357819df299319f88a7fd20c62d8600a"
+    },
+    "live_microphone": false,
+    "compositor_journey": false,
+    "installed": false
+  },
+  "strict_cancellation_rerun_log": "CONCURRENT_BROWSER_CASE {\"mode\": \"keep\", \"target\": \"notes\", \"cancelled\": false, \"scope_exit\": 0, \"decoder_exit\": 0, \"seconds\": 12.948619069997221, \"final\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\"}\nCONCURRENT_BROWSER_CASE {\"mode\": \"focus\", \"target\": \"first\", \"cancelled\": false, \"scope_exit\": 0, \"decoder_exit\": 0, \"seconds\": 12.73105754199787, \"final\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\"}\nCONCURRENT_BROWSER_CASE {\"mode\": \"cancel\", \"target\": \"notes\", \"cancelled\": true, \"scope_exit\": 0, \"decoder_exit\": null, \"seconds\": 4.862872890997096, \"final\": null}\nTraceback (most recent call last):\n  File \"${BUILD_ROOT}/tools/release/qualify_dictation_browser_worker.py\", line 124, in worker_run\n    line = read_line(process, 180)\n  File \"${BUILD_ROOT}/tools/release/qualify_dictation_browser_worker.py\", line 77, in read_line\n    raise RuntimeError('missing or unbounded owned process reply')\nRuntimeError: missing or unbounded owned process reply\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"${BUILD_ROOT}/tools/release/qualify_dictation_browser_worker.py\", line 237, in <module>\n    main()\n    ~~~~^^\n  File \"${BUILD_ROOT}/tools/release/qualify_dictation_browser_worker.py\", line 213, in main\n    row = worker_run(browser, args, index, mode)\n  File \"${BUILD_ROOT}/tools/release/qualify_dictation_browser_worker.py\", line 174, in worker_run\n    raise RuntimeError('owned recognition scope failed: ' + diagnostic) from error\nRuntimeError: owned recognition scope failed: Running as unit: tilo-dictation-browser-worker-1193231-3.service; invocation ID: 352c5da5b2bf4fefb8f9fd5619b2bcf4\nTraceback (most recent call last):\n  File \"${BUILD_ROOT}/tools/release/qualify_whistle_image_scope.py\", line 146, in <module>\n    main()\n    ~~~~^^\n  File \"${BUILD_ROOT}/tools/release/qualify_whistle_image_scope.py\", line 50, in main\n    cg = scope.admitted_scope()\n  File \"${BUILD_ROOT}/tools/release/qualify_whistle_cli_scope.py\", line 49, in admitted_scope\n    raise RuntimeError('host pressure admission')\nRuntimeError: host pressure admission\n          Finished with result: exit-code\nMain processes terminated with: code=exited, status=1/FAILURE\n               Service runtime: 135ms\n             CPU time consumed: 73ms\n                   Memory peak: 12.5M (swap: 0B)\n\n",
+  "strict_rerun_completed_case_receipts": {
+    "concurrent-0-result.json": {
+      "exit": 0,
+      "guarded": null,
+      "memory_peak": {
+        "VmPeak": 179908,
+        "VmSize": 179908,
+        "VmHWM": 169008,
+        "VmRSS": 154556,
+        "Threads": 1
+      },
+      "cpu_seconds": 8.48,
+      "sampled_cpu_lower_bound_seconds": 8.45,
+      "wall_seconds": 12.660042993011302,
+      "stdout": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-image-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"wall_seconds\": 1.1765746749879327}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 4, \"text\": \"Merci.\", \"wall_seconds\": 2.6804787480068626}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 6, \"text\": \"L'accident a...\", \"wall_seconds\": 3.385630935008521}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 8, \"text\": \"L'accident a eu lieu en terrain.\", \"wall_seconds\": 4.418096819004859}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 10, \"text\": \"L'accident a eu lieu en terrain montagneux.\", \"wall_seconds\": 5.771116845004144}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 12, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que \\u00e7a.\", \"wall_seconds\": 6.780624114006059}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 14, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9.\", \"wall_seconds\": 7.868037207997986}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 16, \"text\": \"L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie.\", \"wall_seconds\": 8.991206580001744}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 18, \"text\": \"L'accident a eu lieu en terrain montagneux, il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 10.269873040000675}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 20, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.42497501699836}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 21, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.42786815900763}\n",
+      "stderr": "ASR_RESOURCE {\"user\":7.09,\"system\":1.39}\n",
+      "stdout_events": [
+        {
+          "wall_seconds": 1.2002936990029411,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-image-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"wall_seconds\": 1.1765746749879327}"
+        },
+        {
+          "wall_seconds": 3.8808065480116056,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 4, \"text\": \"Merci.\", \"wall_seconds\": 2.6804787480068626}"
+        },
+        {
+          "wall_seconds": 4.5859766750072595,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 6, \"text\": \"L'accident a...\", \"wall_seconds\": 3.385630935008521}"
+        },
+        {
+          "wall_seconds": 5.618425719003426,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 8, \"text\": \"L'accident a eu lieu en terrain.\", \"wall_seconds\": 4.418096819004859}"
+        },
+        {
+          "wall_seconds": 6.971441055007745,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 10, \"text\": \"L'accident a eu lieu en terrain montagneux.\", \"wall_seconds\": 5.771116845004144}"
+        },
+        {
+          "wall_seconds": 7.9809264130017255,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 12, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que \\u00e7a.\", \"wall_seconds\": 6.780624114006059}"
+        },
+        {
+          "wall_seconds": 9.068365698010894,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 14, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9.\", \"wall_seconds\": 7.868037207997986}"
+        },
+        {
+          "wall_seconds": 10.191539899999043,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 16, \"text\": \"L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie.\", \"wall_seconds\": 8.991206580001744}"
+        },
+        {
+          "wall_seconds": 11.470170290005626,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 18, \"text\": \"L'accident a eu lieu en terrain montagneux, il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 10.269873040000675}"
+        },
+        {
+          "wall_seconds": 12.625276837003184,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 20, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.42497501699836}"
+        },
+        {
+          "wall_seconds": 12.628130638011498,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 21, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.42786815900763}"
+        }
+      ],
+      "case": "fr_fr-0",
+      "mode": "complete",
+      "repeat_audio": 1,
+      "fixture_language": "fr",
+      "requested_language": "fr",
+      "appended_silence_seconds": 0.0,
+      "fixture_sha256": "f76c0a92ca39d2533aa105ac5794b08f004e15a3ff5ba32f4ba4995f45cd22fd",
+      "fixture_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+      "submitted_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+      "submitted_seconds": 10.2,
+      "original_seconds": 10.2,
+      "source_receipt": {
+        "files": {
+          "image-worker": {
+            "bytes": 20452736,
+            "sha256": "acb4b9f166aea21f40b2a54550e3b81fb6c937d0a520f1ba69ab68478e0c10c3"
+          },
+          "whistle.cact": {
+            "bytes": 16919407,
+            "sha256": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb"
+          },
+          "usr/lib64/tilo-speech/whistle/x86-64-v3/libwasmtime.so": {
+            "bytes": 17465504,
+            "sha256": "2d232d8bc62ece8ded8179cbb354f17729dadfdf04ff018a96cbbdaf075433dd"
+          },
+          "usr/lib64/tilo-speech/whistle/x86-64-v3/aot-bridge.so": {
+            "bytes": 36544,
+            "sha256": "d628553aea35bf059b9e30676c123868193aee8e59b1783f43028690f22abe34"
+          },
+          "usr/lib64/tilo-speech/whistle/x86-64-v3/needle.aot": {
+            "bytes": 3437656,
+            "sha256": "a74daea810fcccb4053ff8639f7bae9b7010fd9d9e1ad80a0deecc17c2cb3d26"
+          },
+          "source/tools/release/qualify_whistle_image_scope.py": {
+            "bytes": 6369,
+            "sha256": "2b304632c570cbc362ee5fa928097aa4b8b9244370286aea4a003e4ccc8f5a53"
+          },
+          "source/tools/release/qualify_whistle_aot_scope.py": {
+            "bytes": 17618,
+            "sha256": "a6e6e0ee80cfb1678d0e09ede4f061144dfa52cd314b25905a6ae7f24e50bd53"
+          },
+          "source/tools/release/qualify_whistle_cli_scope.py": {
+            "bytes": 7699,
+            "sha256": "b9abfe655f8da2990052d22efab02358c0159f278818bfea24f0a731b59d0984"
+          },
+          "source/tools/release/probe_asr_candidate.py": {
+            "bytes": 14568,
+            "sha256": "5339a08a8c152d3da6d83456d7da607f7ffe24b59ea75ca8eed8977b05720c0e"
+          },
+          "source/tools/release/summarize_speech_benchmark.py": {
+            "bytes": 4671,
+            "sha256": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+          }
+        },
+        "sources": {
+          "crates/agent/local-model-service/src/speech.rs": "8af0df03e21fadc7d0af69be9379520e148c5ae26a2f28d4fed91b2d9507fca2",
+          "crates/agent/local-model-service/src/speech/aot.rs": "c087c3441768a706d695204d8336ea26e1c4835804d48f4709acebfd68999a30",
+          "crates/agent/local-model-service/src/speech/model.rs": "f43419aba070c85db3ebe6a8d3418ede07e0a9253f68b9f406121af031376a01",
+          "crates/agent/local-model-service/src/speech/recognition.rs": "8edd172f8f0c9d988e6561ca49b80d548db18dd6931dab828795f5a2a7faff19",
+          "crates/agent/local-model-service/src/speech/worker.rs": "429a85bf98ab99d081bb762ba8bb463511b91f780d2c598200279a23a44c9d0c",
+          "crates/agent/local-model-service/src/lib.rs": "9ff6b9944c39792d7c37ac6d9fbf0d608e9fe8bb59c4ec0baa6d822d161a56e2",
+          "crates/agent/local-model-service/examples/whistle_aot_image_review.rs": "f6f8120763cb213728c181d6c4a3e409be84a324f198f481aa4aefe91afce6f6",
+          "crates/agent/local-model-service/Cargo.toml": "9ea7dec110d78bdf9e693b26dd93de6a145fb3deff34d3bf7056982eae42a153",
+          "crates/agent/provider-config/src/local.rs": "b254be22db9492c1e11086298bfe0e064eab4ff5fd7a75588fa5e190fda03351"
+        },
+        "features": [
+          "whistle-aot"
+        ],
+        "host_root": false,
+        "production_image_installed": false
+      },
+      "scope_before": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "scope_after": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "live_microphone": false,
+      "installed": false
+    },
+    "concurrent-1-result.json": {
+      "exit": 0,
+      "guarded": null,
+      "memory_peak": {
+        "VmPeak": 179972,
+        "VmSize": 179972,
+        "VmHWM": 169048,
+        "VmRSS": 159396,
+        "Threads": 1
+      },
+      "cpu_seconds": 8.379999999999999,
+      "sampled_cpu_lower_bound_seconds": 8.35,
+      "wall_seconds": 12.593697624994093,
+      "stdout": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-image-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"wall_seconds\": 1.1321024920034688}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 4, \"text\": \"Merci.\", \"wall_seconds\": 2.7346711100108223}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 6, \"text\": \"L'accident a...\", \"wall_seconds\": 3.3690084900008515}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 8, \"text\": \"L'accident a eu lieu en terrain.\", \"wall_seconds\": 4.411308983006165}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 10, \"text\": \"L'accident a eu lieu en terrain montagneux.\", \"wall_seconds\": 5.658863147007651}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 12, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.\", \"wall_seconds\": 6.857435477009858}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 14, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9.\", \"wall_seconds\": 7.834741778002353}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 16, \"text\": \"L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie.\", \"wall_seconds\": 8.980263808000018}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 18, \"text\": \"L'accident a eu lieu en terrain montagneux, il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 10.256983457002207}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 20, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.404275767010404}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 21, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.40499662500224}\n",
+      "stderr": "ASR_RESOURCE {\"user\":7.09,\"system\":1.29}\n",
+      "stdout_events": [
+        {
+          "wall_seconds": 1.1549060239922255,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-image-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"wall_seconds\": 1.1321024920034688}"
+        },
+        {
+          "wall_seconds": 3.889588054997148,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 4, \"text\": \"Merci.\", \"wall_seconds\": 2.7346711100108223}"
+        },
+        {
+          "wall_seconds": 4.5239207849954255,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 6, \"text\": \"L'accident a...\", \"wall_seconds\": 3.3690084900008515}"
+        },
+        {
+          "wall_seconds": 5.5662227279972285,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 8, \"text\": \"L'accident a eu lieu en terrain.\", \"wall_seconds\": 4.411308983006165}"
+        },
+        {
+          "wall_seconds": 6.813786181999603,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 10, \"text\": \"L'accident a eu lieu en terrain montagneux.\", \"wall_seconds\": 5.658863147007651}"
+        },
+        {
+          "wall_seconds": 8.012343751994194,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 12, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.\", \"wall_seconds\": 6.857435477009858}"
+        },
+        {
+          "wall_seconds": 8.989652492993628,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 14, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9.\", \"wall_seconds\": 7.834741778002353}"
+        },
+        {
+          "wall_seconds": 10.135160952995648,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 16, \"text\": \"L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie.\", \"wall_seconds\": 8.980263808000018}"
+        },
+        {
+          "wall_seconds": 11.411893840995617,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 18, \"text\": \"L'accident a eu lieu en terrain montagneux, il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 10.256983457002207}"
+        },
+        {
+          "wall_seconds": 12.5591876309918,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 20, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.404275767010404}"
+        },
+        {
+          "wall_seconds": 12.559854588995222,
+          "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 21, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.40499662500224}"
+        }
+      ],
+      "case": "fr_fr-0",
+      "mode": "complete",
+      "repeat_audio": 1,
+      "fixture_language": "fr",
+      "requested_language": "fr",
+      "appended_silence_seconds": 0.0,
+      "fixture_sha256": "f76c0a92ca39d2533aa105ac5794b08f004e15a3ff5ba32f4ba4995f45cd22fd",
+      "fixture_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+      "submitted_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+      "submitted_seconds": 10.2,
+      "original_seconds": 10.2,
+      "source_receipt": {
+        "files": {
+          "image-worker": {
+            "bytes": 20452736,
+            "sha256": "acb4b9f166aea21f40b2a54550e3b81fb6c937d0a520f1ba69ab68478e0c10c3"
+          },
+          "whistle.cact": {
+            "bytes": 16919407,
+            "sha256": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb"
+          },
+          "usr/lib64/tilo-speech/whistle/x86-64-v3/libwasmtime.so": {
+            "bytes": 17465504,
+            "sha256": "2d232d8bc62ece8ded8179cbb354f17729dadfdf04ff018a96cbbdaf075433dd"
+          },
+          "usr/lib64/tilo-speech/whistle/x86-64-v3/aot-bridge.so": {
+            "bytes": 36544,
+            "sha256": "d628553aea35bf059b9e30676c123868193aee8e59b1783f43028690f22abe34"
+          },
+          "usr/lib64/tilo-speech/whistle/x86-64-v3/needle.aot": {
+            "bytes": 3437656,
+            "sha256": "a74daea810fcccb4053ff8639f7bae9b7010fd9d9e1ad80a0deecc17c2cb3d26"
+          },
+          "source/tools/release/qualify_whistle_image_scope.py": {
+            "bytes": 6369,
+            "sha256": "2b304632c570cbc362ee5fa928097aa4b8b9244370286aea4a003e4ccc8f5a53"
+          },
+          "source/tools/release/qualify_whistle_aot_scope.py": {
+            "bytes": 17618,
+            "sha256": "a6e6e0ee80cfb1678d0e09ede4f061144dfa52cd314b25905a6ae7f24e50bd53"
+          },
+          "source/tools/release/qualify_whistle_cli_scope.py": {
+            "bytes": 7699,
+            "sha256": "b9abfe655f8da2990052d22efab02358c0159f278818bfea24f0a731b59d0984"
+          },
+          "source/tools/release/probe_asr_candidate.py": {
+            "bytes": 14568,
+            "sha256": "5339a08a8c152d3da6d83456d7da607f7ffe24b59ea75ca8eed8977b05720c0e"
+          },
+          "source/tools/release/summarize_speech_benchmark.py": {
+            "bytes": 4671,
+            "sha256": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+          }
+        },
+        "sources": {
+          "crates/agent/local-model-service/src/speech.rs": "8af0df03e21fadc7d0af69be9379520e148c5ae26a2f28d4fed91b2d9507fca2",
+          "crates/agent/local-model-service/src/speech/aot.rs": "c087c3441768a706d695204d8336ea26e1c4835804d48f4709acebfd68999a30",
+          "crates/agent/local-model-service/src/speech/model.rs": "f43419aba070c85db3ebe6a8d3418ede07e0a9253f68b9f406121af031376a01",
+          "crates/agent/local-model-service/src/speech/recognition.rs": "8edd172f8f0c9d988e6561ca49b80d548db18dd6931dab828795f5a2a7faff19",
+          "crates/agent/local-model-service/src/speech/worker.rs": "429a85bf98ab99d081bb762ba8bb463511b91f780d2c598200279a23a44c9d0c",
+          "crates/agent/local-model-service/src/lib.rs": "9ff6b9944c39792d7c37ac6d9fbf0d608e9fe8bb59c4ec0baa6d822d161a56e2",
+          "crates/agent/local-model-service/examples/whistle_aot_image_review.rs": "f6f8120763cb213728c181d6c4a3e409be84a324f198f481aa4aefe91afce6f6",
+          "crates/agent/local-model-service/Cargo.toml": "9ea7dec110d78bdf9e693b26dd93de6a145fb3deff34d3bf7056982eae42a153",
+          "crates/agent/provider-config/src/local.rs": "b254be22db9492c1e11086298bfe0e064eab4ff5fd7a75588fa5e190fda03351"
+        },
+        "features": [
+          "whistle-aot"
+        ],
+        "host_root": false,
+        "production_image_installed": false
+      },
+      "scope_before": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "scope_after": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "live_microphone": false,
+      "installed": false
+    }
+  },
+  "strict_rerun_failure": "Running as unit: tilo-dictation-browser-worker-1193231-3.service; invocation ID: 352c5da5b2bf4fefb8f9fd5619b2bcf4\nTraceback (most recent call last):\n  File \"${BUILD_ROOT}/tools/release/qualify_whistle_image_scope.py\", line 146, in <module>\n    main()\n    ~~~~^^\n  File \"${BUILD_ROOT}/tools/release/qualify_whistle_image_scope.py\", line 50, in main\n    cg = scope.admitted_scope()\n  File \"${BUILD_ROOT}/tools/release/qualify_whistle_cli_scope.py\", line 49, in admitted_scope\n    raise RuntimeError('host pressure admission')\nRuntimeError: host pressure admission\n          Finished with result: exit-code\nMain processes terminated with: code=exited, status=1/FAILURE\n               Service runtime: 135ms\n             CPU time consumed: 73ms\n                   Memory peak: 12.5M (swap: 0B)\n",
+  "live_microphone": false,
+  "installed": false,
+  "compositor_worker_audio_journey": false,
+  "literal_normal_rich_edge_whitespace": "rejected before handlers; not claimed accepted",
+  "receipt_root": "${BUILD_ROOT}/target/dictation-browser-paragraph-20261009",
+  "concurrent_final_four_cases": {
+    "complete": true,
+    "cases": [
+      {
+        "mode": "keep",
+        "replies": [
+          {
+            "kind": "ready",
+            "sequence": 1,
+            "model": "whistle-image-public-review",
+            "revision": "b358ddadd89b7a713b5aa131f23032d3cca1b251",
+            "wall_seconds": 1.1531570719962474
+          },
+          {
+            "kind": "draft",
+            "sequence": 4,
+            "text": "Merci.",
+            "wall_seconds": 2.68473898000957
+          },
+          {
+            "kind": "draft",
+            "sequence": 6,
+            "text": "L'accident a...",
+            "wall_seconds": 3.3775694700016174
+          },
+          {
+            "kind": "draft",
+            "sequence": 8,
+            "text": "L'accident a eu lieu en terrain.",
+            "wall_seconds": 4.429912024002988
+          },
+          {
+            "kind": "draft",
+            "sequence": 10,
+            "text": "L'accident a eu lieu en terrain montagneux.",
+            "wall_seconds": 5.703033748010057
+          },
+          {
+            "kind": "draft",
+            "sequence": 12,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.",
+            "wall_seconds": 6.875295493999147
+          },
+          {
+            "kind": "draft",
+            "sequence": 14,
+            "text": "L'accident a eu lieu en terrain montagneux et il semblerait que cela ait été causé.",
+            "wall_seconds": 7.861769677008851
+          },
+          {
+            "kind": "draft",
+            "sequence": 16,
+            "text": "L'accident a eu lieu en terrain montagneux et il semblerait que cela ait été causé par un incendie.",
+            "wall_seconds": 8.972163662008825
+          },
+          {
+            "kind": "draft",
+            "sequence": 18,
+            "text": "L'accident a eu lieu en terrain montagneux, il semblerait que cela ait été causé par un incendie malveillant.",
+            "wall_seconds": 10.257083696007612
+          },
+          {
+            "kind": "draft",
+            "sequence": 20,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+            "wall_seconds": 11.409251828008564
+          },
+          {
+            "kind": "done",
+            "sequence": 21,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+            "wall_seconds": 11.409744383010548
+          }
+        ],
+        "final": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+        "scope_exit": 0,
+        "decoder_exit": 0,
+        "cancelled": false,
+        "seconds": 12.925388956995448,
+        "recognition": {
+          "exit": 0,
+          "guarded": null,
+          "memory_peak": {
+            "VmPeak": 179972,
+            "VmSize": 179972,
+            "VmHWM": 169288,
+            "VmRSS": 158472,
+            "Threads": 1
+          },
+          "cpu_seconds": 8.46,
+          "sampled_cpu_lower_bound_seconds": 8.43,
+          "wall_seconds": 12.626773113996023,
+          "stdout": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-image-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"wall_seconds\": 1.1531570719962474}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 4, \"text\": \"Merci.\", \"wall_seconds\": 2.68473898000957}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 6, \"text\": \"L'accident a...\", \"wall_seconds\": 3.3775694700016174}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 8, \"text\": \"L'accident a eu lieu en terrain.\", \"wall_seconds\": 4.429912024002988}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 10, \"text\": \"L'accident a eu lieu en terrain montagneux.\", \"wall_seconds\": 5.703033748010057}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 12, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.\", \"wall_seconds\": 6.875295493999147}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 14, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9.\", \"wall_seconds\": 7.861769677008851}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 16, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie.\", \"wall_seconds\": 8.972163662008825}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 18, \"text\": \"L'accident a eu lieu en terrain montagneux, il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 10.257083696007612}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 20, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.409251828008564}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 21, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.409744383010548}\n",
+          "stderr": "ASR_RESOURCE {\"user\":7.17,\"system\":1.29}\n",
+          "stdout_events": [
+            {
+              "wall_seconds": 1.181963814990013,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-image-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"wall_seconds\": 1.1531570719962474}"
+            },
+            {
+              "wall_seconds": 3.8667666149995057,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 4, \"text\": \"Merci.\", \"wall_seconds\": 2.68473898000957}"
+            },
+            {
+              "wall_seconds": 4.559557134998613,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 6, \"text\": \"L'accident a...\", \"wall_seconds\": 3.3775694700016174}"
+            },
+            {
+              "wall_seconds": 5.611938988993643,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 8, \"text\": \"L'accident a eu lieu en terrain.\", \"wall_seconds\": 4.429912024002988}"
+            },
+            {
+              "wall_seconds": 6.885027671989519,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 10, \"text\": \"L'accident a eu lieu en terrain montagneux.\", \"wall_seconds\": 5.703033748010057}"
+            },
+            {
+              "wall_seconds": 8.057315888989251,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 12, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.\", \"wall_seconds\": 6.875295493999147}"
+            },
+            {
+              "wall_seconds": 9.043779190993519,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 14, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9.\", \"wall_seconds\": 7.861769677008851}"
+            },
+            {
+              "wall_seconds": 10.154186426996603,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 16, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie.\", \"wall_seconds\": 8.972163662008825}"
+            },
+            {
+              "wall_seconds": 11.439075290996698,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 18, \"text\": \"L'accident a eu lieu en terrain montagneux, il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 10.257083696007612}"
+            },
+            {
+              "wall_seconds": 12.591230801990605,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 20, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.409251828008564}"
+            },
+            {
+              "wall_seconds": 12.591696276998846,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 21, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.409744383010548}"
+            }
+          ],
+          "case": "fr_fr-0",
+          "mode": "complete",
+          "repeat_audio": 1,
+          "fixture_language": "fr",
+          "requested_language": "fr",
+          "appended_silence_seconds": 0.0,
+          "fixture_sha256": "f76c0a92ca39d2533aa105ac5794b08f004e15a3ff5ba32f4ba4995f45cd22fd",
+          "fixture_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+          "submitted_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+          "submitted_seconds": 10.2,
+          "original_seconds": 10.2,
+          "source_receipt": {
+            "files": {
+              "image-worker": {
+                "bytes": 20452736,
+                "sha256": "acb4b9f166aea21f40b2a54550e3b81fb6c937d0a520f1ba69ab68478e0c10c3"
+              },
+              "whistle.cact": {
+                "bytes": 16919407,
+                "sha256": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb"
+              },
+              "usr/lib64/tilo-speech/whistle/x86-64-v3/libwasmtime.so": {
+                "bytes": 17465504,
+                "sha256": "2d232d8bc62ece8ded8179cbb354f17729dadfdf04ff018a96cbbdaf075433dd"
+              },
+              "usr/lib64/tilo-speech/whistle/x86-64-v3/aot-bridge.so": {
+                "bytes": 36544,
+                "sha256": "d628553aea35bf059b9e30676c123868193aee8e59b1783f43028690f22abe34"
+              },
+              "usr/lib64/tilo-speech/whistle/x86-64-v3/needle.aot": {
+                "bytes": 3437656,
+                "sha256": "a74daea810fcccb4053ff8639f7bae9b7010fd9d9e1ad80a0deecc17c2cb3d26"
+              },
+              "source/tools/release/qualify_whistle_image_scope.py": {
+                "bytes": 6369,
+                "sha256": "2b304632c570cbc362ee5fa928097aa4b8b9244370286aea4a003e4ccc8f5a53"
+              },
+              "source/tools/release/qualify_whistle_aot_scope.py": {
+                "bytes": 17618,
+                "sha256": "a6e6e0ee80cfb1678d0e09ede4f061144dfa52cd314b25905a6ae7f24e50bd53"
+              },
+              "source/tools/release/qualify_whistle_cli_scope.py": {
+                "bytes": 7699,
+                "sha256": "b9abfe655f8da2990052d22efab02358c0159f278818bfea24f0a731b59d0984"
+              },
+              "source/tools/release/probe_asr_candidate.py": {
+                "bytes": 14568,
+                "sha256": "5339a08a8c152d3da6d83456d7da607f7ffe24b59ea75ca8eed8977b05720c0e"
+              },
+              "source/tools/release/summarize_speech_benchmark.py": {
+                "bytes": 4671,
+                "sha256": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+              }
+            },
+            "sources": {
+              "crates/agent/local-model-service/src/speech.rs": "8af0df03e21fadc7d0af69be9379520e148c5ae26a2f28d4fed91b2d9507fca2",
+              "crates/agent/local-model-service/src/speech/aot.rs": "c087c3441768a706d695204d8336ea26e1c4835804d48f4709acebfd68999a30",
+              "crates/agent/local-model-service/src/speech/model.rs": "f43419aba070c85db3ebe6a8d3418ede07e0a9253f68b9f406121af031376a01",
+              "crates/agent/local-model-service/src/speech/recognition.rs": "8edd172f8f0c9d988e6561ca49b80d548db18dd6931dab828795f5a2a7faff19",
+              "crates/agent/local-model-service/src/speech/worker.rs": "429a85bf98ab99d081bb762ba8bb463511b91f780d2c598200279a23a44c9d0c",
+              "crates/agent/local-model-service/src/lib.rs": "9ff6b9944c39792d7c37ac6d9fbf0d608e9fe8bb59c4ec0baa6d822d161a56e2",
+              "crates/agent/local-model-service/examples/whistle_aot_image_review.rs": "f6f8120763cb213728c181d6c4a3e409be84a324f198f481aa4aefe91afce6f6",
+              "crates/agent/local-model-service/Cargo.toml": "9ea7dec110d78bdf9e693b26dd93de6a145fb3deff34d3bf7056982eae42a153",
+              "crates/agent/provider-config/src/local.rs": "b254be22db9492c1e11086298bfe0e064eab4ff5fd7a75588fa5e190fda03351"
+            },
+            "features": [
+              "whistle-aot"
+            ],
+            "host_root": false,
+            "production_image_installed": false
+          },
+          "scope_before": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0,
+            "sock_throttled": 0
+          },
+          "scope_after": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0,
+            "sock_throttled": 0
+          },
+          "live_microphone": false,
+          "installed": false
+        },
+        "stderr": "Running as unit: tilo-dictation-browser-worker-1440013-0.service\n          Finished with result: success\nMain processes terminated with: code=exited, status=0/SUCCESS\n               Service runtime: 12.910s\n             CPU time consumed: 8.673s\n                   Memory peak: 262.5M (swap: 0B)\n",
+        "target": "notes"
+      },
+      {
+        "mode": "focus",
+        "replies": [
+          {
+            "kind": "ready",
+            "sequence": 1,
+            "model": "whistle-image-public-review",
+            "revision": "b358ddadd89b7a713b5aa131f23032d3cca1b251",
+            "wall_seconds": 1.1138139810063876
+          },
+          {
+            "kind": "draft",
+            "sequence": 4,
+            "text": "Merci.",
+            "wall_seconds": 2.6278467499942053,
+            "focus_retired": true
+          },
+          {
+            "kind": "draft",
+            "sequence": 6,
+            "text": "L'accident a...",
+            "wall_seconds": 3.3678070299938554
+          },
+          {
+            "kind": "draft",
+            "sequence": 8,
+            "text": "L'accident a eu lieu en terrain.",
+            "wall_seconds": 4.4075030560052255
+          },
+          {
+            "kind": "draft",
+            "sequence": 10,
+            "text": "L'accident a eu lieu en terrain montagneux.",
+            "wall_seconds": 5.664716946994304
+          },
+          {
+            "kind": "draft",
+            "sequence": 12,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.",
+            "wall_seconds": 6.859652205006569
+          },
+          {
+            "kind": "draft",
+            "sequence": 14,
+            "text": "L'accident a eu lieu en terrain montagneux et il semblerait que cela ait été causé.",
+            "wall_seconds": 7.832258845999604
+          },
+          {
+            "kind": "draft",
+            "sequence": 16,
+            "text": "L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait été causé par un incendie.",
+            "wall_seconds": 8.976503965997836
+          },
+          {
+            "kind": "draft",
+            "sequence": 18,
+            "text": "L'accident a eu lieu en terrain montagneux, il semblerait que cela ait été causé par un incendie malveillant.",
+            "wall_seconds": 10.290207933998317
+          },
+          {
+            "kind": "draft",
+            "sequence": 20,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+            "wall_seconds": 11.442484386003343
+          },
+          {
+            "kind": "done",
+            "sequence": 21,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+            "wall_seconds": 11.442973380995682
+          }
+        ],
+        "final": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+        "scope_exit": 0,
+        "decoder_exit": 0,
+        "cancelled": false,
+        "seconds": 12.748128391001956,
+        "recognition": {
+          "exit": 0,
+          "guarded": null,
+          "memory_peak": {
+            "VmPeak": 179972,
+            "VmSize": 179972,
+            "VmHWM": 169236,
+            "VmRSS": 160520,
+            "Threads": 1
+          },
+          "cpu_seconds": 8.290000000000001,
+          "sampled_cpu_lower_bound_seconds": 8.26,
+          "wall_seconds": 12.61463253099646,
+          "stdout": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-image-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"wall_seconds\": 1.1138139810063876}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 4, \"text\": \"Merci.\", \"wall_seconds\": 2.6278467499942053}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 6, \"text\": \"L'accident a...\", \"wall_seconds\": 3.3678070299938554}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 8, \"text\": \"L'accident a eu lieu en terrain.\", \"wall_seconds\": 4.4075030560052255}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 10, \"text\": \"L'accident a eu lieu en terrain montagneux.\", \"wall_seconds\": 5.664716946994304}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 12, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.\", \"wall_seconds\": 6.859652205006569}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 14, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9.\", \"wall_seconds\": 7.832258845999604}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 16, \"text\": \"L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie.\", \"wall_seconds\": 8.976503965997836}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 18, \"text\": \"L'accident a eu lieu en terrain montagneux, il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 10.290207933998317}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 20, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.442484386003343}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 21, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.442973380995682}\n",
+          "stderr": "ASR_RESOURCE {\"user\":7.15,\"system\":1.14}\n",
+          "stdout_events": [
+            {
+              "wall_seconds": 1.136600482990616,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-image-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"wall_seconds\": 1.1138139810063876}"
+            },
+            {
+              "wall_seconds": 3.764449402995524,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 4, \"text\": \"Merci.\", \"wall_seconds\": 2.6278467499942053}"
+            },
+            {
+              "wall_seconds": 4.504410672991071,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 6, \"text\": \"L'accident a...\", \"wall_seconds\": 3.3678070299938554}"
+            },
+            {
+              "wall_seconds": 5.544101227991632,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 8, \"text\": \"L'accident a eu lieu en terrain.\", \"wall_seconds\": 4.4075030560052255}"
+            },
+            {
+              "wall_seconds": 6.801301300001796,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 10, \"text\": \"L'accident a eu lieu en terrain montagneux.\", \"wall_seconds\": 5.664716946994304}"
+            },
+            {
+              "wall_seconds": 7.996245076996274,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 12, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.\", \"wall_seconds\": 6.859652205006569}"
+            },
+            {
+              "wall_seconds": 8.968867518997286,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 14, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9.\", \"wall_seconds\": 7.832258845999604}"
+            },
+            {
+              "wall_seconds": 10.113118688997929,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 16, \"text\": \"L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie.\", \"wall_seconds\": 8.976503965997836}"
+            },
+            {
+              "wall_seconds": 11.426838606988895,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 18, \"text\": \"L'accident a eu lieu en terrain montagneux, il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 10.290207933998317}"
+            },
+            {
+              "wall_seconds": 12.57909138899413,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 20, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.442484386003343}"
+            },
+            {
+              "wall_seconds": 12.579531303999829,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 21, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.442973380995682}"
+            }
+          ],
+          "case": "fr_fr-0",
+          "mode": "complete",
+          "repeat_audio": 1,
+          "fixture_language": "fr",
+          "requested_language": "fr",
+          "appended_silence_seconds": 0.0,
+          "fixture_sha256": "f76c0a92ca39d2533aa105ac5794b08f004e15a3ff5ba32f4ba4995f45cd22fd",
+          "fixture_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+          "submitted_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+          "submitted_seconds": 10.2,
+          "original_seconds": 10.2,
+          "source_receipt": {
+            "files": {
+              "image-worker": {
+                "bytes": 20452736,
+                "sha256": "acb4b9f166aea21f40b2a54550e3b81fb6c937d0a520f1ba69ab68478e0c10c3"
+              },
+              "whistle.cact": {
+                "bytes": 16919407,
+                "sha256": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb"
+              },
+              "usr/lib64/tilo-speech/whistle/x86-64-v3/libwasmtime.so": {
+                "bytes": 17465504,
+                "sha256": "2d232d8bc62ece8ded8179cbb354f17729dadfdf04ff018a96cbbdaf075433dd"
+              },
+              "usr/lib64/tilo-speech/whistle/x86-64-v3/aot-bridge.so": {
+                "bytes": 36544,
+                "sha256": "d628553aea35bf059b9e30676c123868193aee8e59b1783f43028690f22abe34"
+              },
+              "usr/lib64/tilo-speech/whistle/x86-64-v3/needle.aot": {
+                "bytes": 3437656,
+                "sha256": "a74daea810fcccb4053ff8639f7bae9b7010fd9d9e1ad80a0deecc17c2cb3d26"
+              },
+              "source/tools/release/qualify_whistle_image_scope.py": {
+                "bytes": 6369,
+                "sha256": "2b304632c570cbc362ee5fa928097aa4b8b9244370286aea4a003e4ccc8f5a53"
+              },
+              "source/tools/release/qualify_whistle_aot_scope.py": {
+                "bytes": 17618,
+                "sha256": "a6e6e0ee80cfb1678d0e09ede4f061144dfa52cd314b25905a6ae7f24e50bd53"
+              },
+              "source/tools/release/qualify_whistle_cli_scope.py": {
+                "bytes": 7699,
+                "sha256": "b9abfe655f8da2990052d22efab02358c0159f278818bfea24f0a731b59d0984"
+              },
+              "source/tools/release/probe_asr_candidate.py": {
+                "bytes": 14568,
+                "sha256": "5339a08a8c152d3da6d83456d7da607f7ffe24b59ea75ca8eed8977b05720c0e"
+              },
+              "source/tools/release/summarize_speech_benchmark.py": {
+                "bytes": 4671,
+                "sha256": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+              }
+            },
+            "sources": {
+              "crates/agent/local-model-service/src/speech.rs": "8af0df03e21fadc7d0af69be9379520e148c5ae26a2f28d4fed91b2d9507fca2",
+              "crates/agent/local-model-service/src/speech/aot.rs": "c087c3441768a706d695204d8336ea26e1c4835804d48f4709acebfd68999a30",
+              "crates/agent/local-model-service/src/speech/model.rs": "f43419aba070c85db3ebe6a8d3418ede07e0a9253f68b9f406121af031376a01",
+              "crates/agent/local-model-service/src/speech/recognition.rs": "8edd172f8f0c9d988e6561ca49b80d548db18dd6931dab828795f5a2a7faff19",
+              "crates/agent/local-model-service/src/speech/worker.rs": "429a85bf98ab99d081bb762ba8bb463511b91f780d2c598200279a23a44c9d0c",
+              "crates/agent/local-model-service/src/lib.rs": "9ff6b9944c39792d7c37ac6d9fbf0d608e9fe8bb59c4ec0baa6d822d161a56e2",
+              "crates/agent/local-model-service/examples/whistle_aot_image_review.rs": "f6f8120763cb213728c181d6c4a3e409be84a324f198f481aa4aefe91afce6f6",
+              "crates/agent/local-model-service/Cargo.toml": "9ea7dec110d78bdf9e693b26dd93de6a145fb3deff34d3bf7056982eae42a153",
+              "crates/agent/provider-config/src/local.rs": "b254be22db9492c1e11086298bfe0e064eab4ff5fd7a75588fa5e190fda03351"
+            },
+            "features": [
+              "whistle-aot"
+            ],
+            "host_root": false,
+            "production_image_installed": false
+          },
+          "scope_before": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0,
+            "sock_throttled": 0
+          },
+          "scope_after": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0,
+            "sock_throttled": 0
+          },
+          "live_microphone": false,
+          "installed": false
+        },
+        "stderr": "Running as unit: tilo-dictation-browser-worker-1440013-1.service\n          Finished with result: success\nMain processes terminated with: code=exited, status=0/SUCCESS\n               Service runtime: 12.714s\n             CPU time consumed: 8.495s\n                   Memory peak: 206.7M (swap: 0B)\n",
+        "target": "first"
+      },
+      {
+        "mode": "cancel",
+        "replies": [
+          {
+            "kind": "ready",
+            "sequence": 1,
+            "model": "whistle-image-public-review",
+            "revision": "b358ddadd89b7a713b5aa131f23032d3cca1b251",
+            "wall_seconds": 1.1172510229953332
+          },
+          {
+            "kind": "draft",
+            "sequence": 4,
+            "text": "Merci.",
+            "wall_seconds": 2.6551852260017768
+          }
+        ],
+        "final": null,
+        "scope_exit": 0,
+        "decoder_exit": null,
+        "cancelled": true,
+        "seconds": 3.922179030996631,
+        "recognition": null,
+        "stderr": "Running as unit: tilo-dictation-browser-worker-1440013-2.service\n          Finished with result: success\nMain processes terminated with: code=killed, status=15/TERM\n               Service runtime: 3.895s\n             CPU time consumed: 1.898s\n                   Memory peak: 180.9M (swap: 0B)\n",
+        "target": "notes"
+      },
+      {
+        "mode": "keep",
+        "replies": [
+          {
+            "kind": "ready",
+            "sequence": 1,
+            "model": "whistle-image-public-review",
+            "revision": "b358ddadd89b7a713b5aa131f23032d3cca1b251",
+            "wall_seconds": 1.123837958992226
+          },
+          {
+            "kind": "draft",
+            "sequence": 4,
+            "text": "Merci.",
+            "wall_seconds": 2.648088364992873
+          },
+          {
+            "kind": "draft",
+            "sequence": 6,
+            "text": "L'accident a...",
+            "wall_seconds": 3.3672053839982254
+          },
+          {
+            "kind": "draft",
+            "sequence": 8,
+            "text": "L'accident a eu lieu en terrain.",
+            "wall_seconds": 4.402471668989165
+          },
+          {
+            "kind": "draft",
+            "sequence": 10,
+            "text": "L'accident a eu lieu en terrain montagneux.",
+            "wall_seconds": 5.647472016993561
+          },
+          {
+            "kind": "draft",
+            "sequence": 12,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.",
+            "wall_seconds": 6.852504137001233
+          },
+          {
+            "kind": "draft",
+            "sequence": 14,
+            "text": "L'accident a eu lieu en terrain montagneux et il semblerait que cela ait été causé.",
+            "wall_seconds": 7.8279711450013565
+          },
+          {
+            "kind": "draft",
+            "sequence": 16,
+            "text": "L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait été causé par un incendie.",
+            "wall_seconds": 8.966549100994598
+          },
+          {
+            "kind": "draft",
+            "sequence": 18,
+            "text": "L'accident a eu lieu en terrain montagneux, il semblerait que cela ait été causé par un incendie malveillant.",
+            "wall_seconds": 10.23265513998922
+          },
+          {
+            "kind": "draft",
+            "sequence": 20,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+            "wall_seconds": 11.376286925995373
+          },
+          {
+            "kind": "done",
+            "sequence": 21,
+            "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+            "wall_seconds": 11.376894981993246
+          }
+        ],
+        "final": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+        "scope_exit": 0,
+        "decoder_exit": 0,
+        "cancelled": false,
+        "seconds": 12.689497644998482,
+        "recognition": {
+          "exit": 0,
+          "guarded": null,
+          "memory_peak": {
+            "VmPeak": 179972,
+            "VmSize": 179972,
+            "VmHWM": 169008,
+            "VmRSS": 161588,
+            "Threads": 1
+          },
+          "cpu_seconds": 8.219999999999999,
+          "sampled_cpu_lower_bound_seconds": 8.2,
+          "wall_seconds": 12.55934416600212,
+          "stdout": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-image-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"wall_seconds\": 1.123837958992226}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 4, \"text\": \"Merci.\", \"wall_seconds\": 2.648088364992873}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 6, \"text\": \"L'accident a...\", \"wall_seconds\": 3.3672053839982254}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 8, \"text\": \"L'accident a eu lieu en terrain.\", \"wall_seconds\": 4.402471668989165}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 10, \"text\": \"L'accident a eu lieu en terrain montagneux.\", \"wall_seconds\": 5.647472016993561}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 12, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.\", \"wall_seconds\": 6.852504137001233}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 14, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9.\", \"wall_seconds\": 7.8279711450013565}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 16, \"text\": \"L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie.\", \"wall_seconds\": 8.966549100994598}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 18, \"text\": \"L'accident a eu lieu en terrain montagneux, il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 10.23265513998922}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 20, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.376286925995373}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 21, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.376894981993246}\n",
+          "stderr": "ASR_RESOURCE {\"user\":7.10,\"system\":1.12}\n",
+          "stdout_events": [
+            {
+              "wall_seconds": 1.147280442994088,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-image-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"wall_seconds\": 1.123837958992226}"
+            },
+            {
+              "wall_seconds": 3.7953787879960146,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 4, \"text\": \"Merci.\", \"wall_seconds\": 2.648088364992873}"
+            },
+            {
+              "wall_seconds": 4.514505116996588,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 6, \"text\": \"L'accident a...\", \"wall_seconds\": 3.3672053839982254}"
+            },
+            {
+              "wall_seconds": 5.549776642001234,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 8, \"text\": \"L'accident a eu lieu en terrain.\", \"wall_seconds\": 4.402471668989165}"
+            },
+            {
+              "wall_seconds": 6.794758520001778,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 10, \"text\": \"L'accident a eu lieu en terrain montagneux.\", \"wall_seconds\": 5.647472016993561}"
+            },
+            {
+              "wall_seconds": 7.999805230007041,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 12, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.\", \"wall_seconds\": 6.852504137001233}"
+            },
+            {
+              "wall_seconds": 8.975267917005112,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 14, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9.\", \"wall_seconds\": 7.8279711450013565}"
+            },
+            {
+              "wall_seconds": 10.113826913002413,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 16, \"text\": \"L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie.\", \"wall_seconds\": 8.966549100994598}"
+            },
+            {
+              "wall_seconds": 11.379947132998495,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 18, \"text\": \"L'accident a eu lieu en terrain montagneux, il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 10.23265513998922}"
+            },
+            {
+              "wall_seconds": 12.52357513899915,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 20, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.376286925995373}"
+            },
+            {
+              "wall_seconds": 12.524136213993188,
+              "line": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 21, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.376894981993246}"
+            }
+          ],
+          "case": "fr_fr-0",
+          "mode": "complete",
+          "repeat_audio": 1,
+          "fixture_language": "fr",
+          "requested_language": "fr",
+          "appended_silence_seconds": 0.0,
+          "fixture_sha256": "f76c0a92ca39d2533aa105ac5794b08f004e15a3ff5ba32f4ba4995f45cd22fd",
+          "fixture_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+          "submitted_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+          "submitted_seconds": 10.2,
+          "original_seconds": 10.2,
+          "source_receipt": {
+            "files": {
+              "image-worker": {
+                "bytes": 20452736,
+                "sha256": "acb4b9f166aea21f40b2a54550e3b81fb6c937d0a520f1ba69ab68478e0c10c3"
+              },
+              "whistle.cact": {
+                "bytes": 16919407,
+                "sha256": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb"
+              },
+              "usr/lib64/tilo-speech/whistle/x86-64-v3/libwasmtime.so": {
+                "bytes": 17465504,
+                "sha256": "2d232d8bc62ece8ded8179cbb354f17729dadfdf04ff018a96cbbdaf075433dd"
+              },
+              "usr/lib64/tilo-speech/whistle/x86-64-v3/aot-bridge.so": {
+                "bytes": 36544,
+                "sha256": "d628553aea35bf059b9e30676c123868193aee8e59b1783f43028690f22abe34"
+              },
+              "usr/lib64/tilo-speech/whistle/x86-64-v3/needle.aot": {
+                "bytes": 3437656,
+                "sha256": "a74daea810fcccb4053ff8639f7bae9b7010fd9d9e1ad80a0deecc17c2cb3d26"
+              },
+              "source/tools/release/qualify_whistle_image_scope.py": {
+                "bytes": 6369,
+                "sha256": "2b304632c570cbc362ee5fa928097aa4b8b9244370286aea4a003e4ccc8f5a53"
+              },
+              "source/tools/release/qualify_whistle_aot_scope.py": {
+                "bytes": 17618,
+                "sha256": "a6e6e0ee80cfb1678d0e09ede4f061144dfa52cd314b25905a6ae7f24e50bd53"
+              },
+              "source/tools/release/qualify_whistle_cli_scope.py": {
+                "bytes": 7699,
+                "sha256": "b9abfe655f8da2990052d22efab02358c0159f278818bfea24f0a731b59d0984"
+              },
+              "source/tools/release/probe_asr_candidate.py": {
+                "bytes": 14568,
+                "sha256": "5339a08a8c152d3da6d83456d7da607f7ffe24b59ea75ca8eed8977b05720c0e"
+              },
+              "source/tools/release/summarize_speech_benchmark.py": {
+                "bytes": 4671,
+                "sha256": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+              }
+            },
+            "sources": {
+              "crates/agent/local-model-service/src/speech.rs": "8af0df03e21fadc7d0af69be9379520e148c5ae26a2f28d4fed91b2d9507fca2",
+              "crates/agent/local-model-service/src/speech/aot.rs": "c087c3441768a706d695204d8336ea26e1c4835804d48f4709acebfd68999a30",
+              "crates/agent/local-model-service/src/speech/model.rs": "f43419aba070c85db3ebe6a8d3418ede07e0a9253f68b9f406121af031376a01",
+              "crates/agent/local-model-service/src/speech/recognition.rs": "8edd172f8f0c9d988e6561ca49b80d548db18dd6931dab828795f5a2a7faff19",
+              "crates/agent/local-model-service/src/speech/worker.rs": "429a85bf98ab99d081bb762ba8bb463511b91f780d2c598200279a23a44c9d0c",
+              "crates/agent/local-model-service/src/lib.rs": "9ff6b9944c39792d7c37ac6d9fbf0d608e9fe8bb59c4ec0baa6d822d161a56e2",
+              "crates/agent/local-model-service/examples/whistle_aot_image_review.rs": "f6f8120763cb213728c181d6c4a3e409be84a324f198f481aa4aefe91afce6f6",
+              "crates/agent/local-model-service/Cargo.toml": "9ea7dec110d78bdf9e693b26dd93de6a145fb3deff34d3bf7056982eae42a153",
+              "crates/agent/provider-config/src/local.rs": "b254be22db9492c1e11086298bfe0e064eab4ff5fd7a75588fa5e190fda03351"
+            },
+            "features": [
+              "whistle-aot"
+            ],
+            "host_root": false,
+            "production_image_installed": false
+          },
+          "scope_before": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0,
+            "sock_throttled": 0
+          },
+          "scope_after": {
+            "low": 0,
+            "high": 0,
+            "max": 0,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0,
+            "sock_throttled": 0
+          },
+          "live_microphone": false,
+          "installed": false
+        },
+        "stderr": "Running as unit: tilo-dictation-browser-worker-1440013-3.service\n          Finished with result: success\nMain processes terminated with: code=exited, status=0/SUCCESS\n               Service runtime: 12.651s\n             CPU time consumed: 8.407s\n                   Memory peak: 206M (swap: 0B)\n",
+        "target": "first"
+      }
+    ],
+    "browser": {
+      "exit_code": 0,
+      "sdk": {
+        "name": "cef_binary_152.0.6+g708dc14+chromium-152.0.7977.83_linux64_minimal.tar.bz2",
+        "size": 321503907,
+        "sha1": "9711b86c105fb590da576fe5a829802f1a79d520",
+        "sha256": "daf8c2b6e63787d6a91d666205a8a4521419937eabaf47723738c86aea7135bd"
+      },
+      "sources": {
+        "apps/browser/chromium/src/host.cc": "4397f77cbaed86358756c79befc91f2aa05e6c1f2562592f997fd311f64615b2",
+        "apps/browser/chromium/src/renderer.cc": "e96289b156f47fab209a124062b489cf676fa8cb092c90dfdf01a2b865d47ec5",
+        "apps/browser/chromium/src/main_linux.cc": "0a2014a70869cd01acd94906627b2448321b3405a37493452719a6f850d7be26",
+        "apps/browser/chromium/src/page_automation.js": "89e1e539392fb02667c6bebfe9d43e98b526a1cd8d79e2497f486b2c693625a2",
+        "apps/browser/chromium/src/page_automation.h": "34d93aa25ac1f624202d6b30139283ad4bc20723b3b34f753841984b9310b588",
+        "apps/browser/chromium/tests/guarded_text_input.py": "ea403b9be976cd498fb4b16693bcda2fa879654765407ece71ab087ef0c20b88"
+      },
+      "elapsed_seconds": 22.868486573992413,
+      "host_sha256": "0df93a17c9fe7289af0e6f710ca1cd8655b3833fb1f0500e92ace8922fbad42c"
+    },
+    "live_microphone": false,
+    "compositor_journey": false,
+    "installed": false
+  },
+  "focused_capacity_final_log": "test_multiline_paragraph_replacement_is_one_native_history_edit (__main__.GuardedTextInput.test_multiline_paragraph_replacement_is_one_native_history_edit) ... ok\ntest_paragraph_only_and_trailing_breaks_keep_selection_and_history (__main__.GuardedTextInput.test_paragraph_only_and_trailing_breaks_keep_selection_and_history) ... ok\ntest_collapsing_rich_whitespace_rejects_boundary_edits_before_handlers (__main__.GuardedTextInput.test_collapsing_rich_whitespace_rejects_boundary_edits_before_handlers) ... ok\ntest_rich_paragraph_mixed_selection_keeps_native_start_format (__main__.GuardedTextInput.test_rich_paragraph_mixed_selection_keeps_native_start_format) ... ok\ntest_paragraph_undo_does_not_absorb_previous_native_typing (__main__.GuardedTextInput.test_paragraph_undo_does_not_absorb_previous_native_typing) ... ok\ntest_rich_paragraph_retains_native_inline_typing_format (__main__.GuardedTextInput.test_rich_paragraph_retains_native_inline_typing_format) ... ok\ntest_paragraph_input_handler_cannot_redirect_remaining_text (__main__.GuardedTextInput.test_paragraph_input_handler_cannot_redirect_remaining_text) ... ok\ntest_final_capacity_cannot_truncate_or_delete_original_selection (__main__.GuardedTextInput.test_final_capacity_cannot_truncate_or_delete_original_selection) ... ok\ntest_paragraph_handler_capacity_change_interrupts_remaining_edit (__main__.GuardedTextInput.test_paragraph_handler_capacity_change_interrupts_remaining_edit) ... ok\ntest_native_email_beforeinput_cannot_lower_maxlength_and_truncate_text (__main__.GuardedTextInput.test_native_email_beforeinput_cannot_lower_maxlength_and_truncate_text) ... ok\ntest_control_characters_never_delete_the_original_selection (__main__.GuardedTextInput.test_control_characters_never_delete_the_original_selection) ... ok\ntest_single_line_kinds_reject_paragraphs_before_page_handlers (__main__.GuardedTextInput.test_single_line_kinds_reject_paragraphs_before_page_handlers) ... ok\n\n----------------------------------------------------------------------\nRan 12 tests in 11.522s\n\nOK\n",
+  "capacity_browser_build": {
+    "exit_code": 0,
+    "sdk": {
+      "name": "cef_binary_152.0.6+g708dc14+chromium-152.0.7977.83_linux64_minimal.tar.bz2",
+      "size": 321503907,
+      "sha1": "9711b86c105fb590da576fe5a829802f1a79d520",
+      "sha256": "daf8c2b6e63787d6a91d666205a8a4521419937eabaf47723738c86aea7135bd"
+    },
+    "sources": {
+      "apps/browser/chromium/src/host.cc": "4397f77cbaed86358756c79befc91f2aa05e6c1f2562592f997fd311f64615b2",
+      "apps/browser/chromium/src/renderer.cc": "e96289b156f47fab209a124062b489cf676fa8cb092c90dfdf01a2b865d47ec5",
+      "apps/browser/chromium/src/main_linux.cc": "0a2014a70869cd01acd94906627b2448321b3405a37493452719a6f850d7be26",
+      "apps/browser/chromium/src/page_automation.js": "89e1e539392fb02667c6bebfe9d43e98b526a1cd8d79e2497f486b2c693625a2",
+      "apps/browser/chromium/src/page_automation.h": "34d93aa25ac1f624202d6b30139283ad4bc20723b3b34f753841984b9310b588",
+      "apps/browser/chromium/tests/guarded_text_input.py": "ea403b9be976cd498fb4b16693bcda2fa879654765407ece71ab087ef0c20b88"
+    },
+    "elapsed_seconds": 22.868486573992413,
+    "host_sha256": "0df93a17c9fe7289af0e6f710ca1cd8655b3833fb1f0500e92ace8922fbad42c"
+  },
+  "mounted_sdk_final_success_log": "QUALIFY direct retained field owner\nPASS mounted one-shot session start: stable original stamp, private ACK and final\nPASS mounted canceled session start and independently consented repeated session\nPASS mounted cancel after start ACK: fresh session survives retired cancellation\nPASS mounted iframe first: original ACK, Unicode replacement and native undo\nPASS mounted iframe notes: original ACK, Unicode replacement and native undo\nPASS mounted iframe rich: original ACK, Unicode replacement and native undo\nPASS mounted iframe removal: rejected original final and independently started recovery session\nPASS mounted first: acknowledged Unicode selection replacement and native undo/redo\nPASS mounted notes: acknowledged Unicode selection replacement and native undo/redo\nPASS mounted rich: acknowledged Unicode selection replacement and native undo/redo\nPASS mounted rich paragraph: literal breaks, inherited bold, one native undo/redo\nPASS mounted paragraph intent: exact final, one undo/redo and single-line rejection\nPASS mounted search: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted tel: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted url: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted plaintext-only: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted focus return: refused original transaction without retargeting\nPASS mounted edit stamp: refused original transaction without retargeting\nPASS mounted transient protected styling: refused original transaction without retargeting\nPASS mounted field replacement: refused original transaction without retargeting\nPASS mounted page rejection: refused original transaction without retargeting\nPASS mounted protected field: refused original transaction without retargeting\nPASS mounted queued check: one original-field final and one native undo\nPASS mounted canceled queued final and repeated fresh session without retargeting\nPASS mounted cross-site frame replacement and recovery to a fresh original-field lease\nPASS mounted cancellation: no edit or successor retargeting\nQUALIFY decorated retained field owner\nPASS mounted one-shot session start: stable original stamp, private ACK and final\nPASS mounted canceled session start and independently consented repeated session\nPASS mounted cancel after start ACK: fresh session survives retired cancellation\nPASS mounted iframe first: original ACK, Unicode replacement and native undo\nPASS mounted iframe notes: original ACK, Unicode replacement and native undo\nPASS mounted iframe rich: original ACK, Unicode replacement and native undo\nPASS mounted iframe removal: rejected original final and independently started recovery session\nPASS mounted first: acknowledged Unicode selection replacement and native undo/redo\nPASS mounted notes: acknowledged Unicode selection replacement and native undo/redo\nPASS mounted rich: acknowledged Unicode selection replacement and native undo/redo\nPASS mounted rich paragraph: literal breaks, inherited bold, one native undo/redo\nPASS mounted paragraph intent: exact final, one undo/redo and single-line rejection\nPASS mounted search: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted tel: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted url: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted plaintext-only: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted focus return: refused original transaction without retargeting\nPASS mounted edit stamp: refused original transaction without retargeting\nPASS mounted transient protected styling: refused original transaction without retargeting\nPASS mounted field replacement: refused original transaction without retargeting\nPASS mounted page rejection: refused original transaction without retargeting\nPASS mounted protected field: refused original transaction without retargeting\nPASS mounted queued check: one original-field final and one native undo\nPASS mounted canceled queued final and repeated fresh session without retargeting\nPASS mounted cross-site frame replacement and recovery to a fresh original-field lease\nPASS mounted cancellation: no edit or successor retargeting\n[4:19:1009/081858.464994:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[4:19:1009/081858.465061:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:19:1009/081858.467108:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[4:19:1009/081858.467129:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[4:19:1009/081858.467134:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n[4:19:1009/081858.562528:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:19:1009/081858.575081:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:4:1009/081858.592689:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:19:1009/081858.592760:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:4:1009/081858.592792:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:19:1009/081858.592812:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:4:1009/081858.592924:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:4:1009/081858.594140:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:4:1009/081858.595640:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:19:1009/081858.595702:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[4:19:1009/081858.595733:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[4:4:1009/081858.595718:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:19:1009/081858.595938:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:4:1009/081858.596561:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.Properties.GetAll: object_path= /org/freedesktop/UPower/devices/DisplayDevice: unknown error type: \n[4:4:1009/081858.596646:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:19:1009/081858.596951:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:4:1009/081858.597838:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:19:1009/081858.597939:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:4:1009/081858.598636:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[200:216:1009/081907.828014:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[200:216:1009/081907.828070:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[200:216:1009/081907.830250:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[200:216:1009/081907.830264:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[200:216:1009/081907.830268:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n[200:216:1009/081907.934989:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[200:216:1009/081907.948234:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[200:200:1009/081907.965529:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[200:200:1009/081907.965655:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[200:216:1009/081907.965658:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[200:216:1009/081907.965679:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[200:200:1009/081907.965790:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[200:200:1009/081907.967022:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[200:200:1009/081907.968772:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[200:216:1009/081907.968805:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[200:216:1009/081907.968823:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[200:200:1009/081907.968928:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[200:216:1009/081907.968950:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[200:200:1009/081907.969702:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.Properties.GetAll: object_path= /org/freedesktop/UPower/devices/DisplayDevice: unknown error type: \n[200:200:1009/081907.969911:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[200:216:1009/081907.969944:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[200:200:1009/081907.971631:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[200:216:1009/081907.971673:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[200:200:1009/081907.972012:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n",
+  "mounted_sdk_cleanup_failure_log": "QUALIFY direct retained field owner\nPASS mounted one-shot session start: stable original stamp, private ACK and final\nPASS mounted canceled session start and independently consented repeated session\nPASS mounted cancel after start ACK: fresh session survives retired cancellation\nPASS mounted iframe first: original ACK, Unicode replacement and native undo\nPASS mounted iframe notes: original ACK, Unicode replacement and native undo\nPASS mounted iframe rich: original ACK, Unicode replacement and native undo\nPASS mounted iframe removal: rejected original final and independently started recovery session\nPASS mounted first: acknowledged Unicode selection replacement and native undo/redo\nPASS mounted notes: acknowledged Unicode selection replacement and native undo/redo\nPASS mounted rich: acknowledged Unicode selection replacement and native undo/redo\nPASS mounted rich paragraph: literal breaks, inherited bold, one native undo/redo\nPASS mounted paragraph intent: exact final, one undo/redo and single-line rejection\nPASS mounted search: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted tel: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted url: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted plaintext-only: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted focus return: refused original transaction without retargeting\nPASS mounted edit stamp: refused original transaction without retargeting\nPASS mounted transient protected styling: refused original transaction without retargeting\nPASS mounted field replacement: refused original transaction without retargeting\nPASS mounted page rejection: refused original transaction without retargeting\nPASS mounted protected field: refused original transaction without retargeting\nPASS mounted queued check: one original-field final and one native undo\nPASS mounted canceled queued final and repeated fresh session without retargeting\nPASS mounted cross-site frame replacement and recovery to a fresh original-field lease\nPASS mounted cancellation: no edit or successor retargeting\nQUALIFY decorated retained field owner\nPASS mounted one-shot session start: stable original stamp, private ACK and final\nPASS mounted canceled session start and independently consented repeated session\nPASS mounted cancel after start ACK: fresh session survives retired cancellation\nPASS mounted iframe first: original ACK, Unicode replacement and native undo\nPASS mounted iframe notes: original ACK, Unicode replacement and native undo\nPASS mounted iframe rich: original ACK, Unicode replacement and native undo\nPASS mounted iframe removal: rejected original final and independently started recovery session\nPASS mounted first: acknowledged Unicode selection replacement and native undo/redo\nPASS mounted notes: acknowledged Unicode selection replacement and native undo/redo\nPASS mounted rich: acknowledged Unicode selection replacement and native undo/redo\nPASS mounted rich paragraph: literal breaks, inherited bold, one native undo/redo\nPASS mounted paragraph intent: exact final, one undo/redo and single-line rejection\nPASS mounted search: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted tel: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted url: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted plaintext-only: original start/final ACK, Unicode replacement and native undo/redo\nPASS mounted focus return: refused original transaction without retargeting\nPASS mounted edit stamp: refused original transaction without retargeting\nPASS mounted transient protected styling: refused original transaction without retargeting\nPASS mounted field replacement: refused original transaction without retargeting\nPASS mounted page rejection: refused original transaction without retargeting\nPASS mounted protected field: refused original transaction without retargeting\nPASS mounted queued check: one original-field final and one native undo\nPASS mounted canceled queued final and repeated fresh session without retargeting\nPASS mounted cross-site frame replacement and recovery to a fresh original-field lease\nPASS mounted cancellation: no edit or successor retargeting\n[4:17:1009/081342.730689:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[4:17:1009/081342.730742:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:17:1009/081342.730756:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[4:17:1009/081342.730766:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[4:17:1009/081342.730771:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n[4:17:1009/081342.823594:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:17:1009/081342.836220:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:4:1009/081342.858919:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:4:1009/081342.858982:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:17:1009/081342.858994:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:17:1009/081342.859010:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:4:1009/081342.859062:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:4:1009/081342.860279:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:17:1009/081342.861627:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[4:4:1009/081342.861640:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:17:1009/081342.861686:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[4:4:1009/081342.861727:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:17:1009/081342.861781:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:4:1009/081342.862344:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.Properties.GetAll: object_path= /org/freedesktop/UPower/devices/DisplayDevice: unknown error type: \n[4:4:1009/081342.862379:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:17:1009/081342.862414:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:4:1009/081342.863280:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[4:17:1009/081342.864182:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[4:4:1009/081342.864266:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[200:216:1009/081351.934401:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[200:216:1009/081351.936490:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[200:216:1009/081351.936512:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[200:216:1009/081351.936522:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[200:216:1009/081351.936525:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n\nFontconfig error: No writable cache directories\n\t/usr/lib/fontconfig/cache\n\t${BUILD_ROOT}/.cache/fontconfig\n\t${BUILD_ROOT}/.fontconfig\n[200:216:1009/081352.031783:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[200:216:1009/081352.044454:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[200:200:1009/081352.060886:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[200:200:1009/081352.060947:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[200:216:1009/081352.060963:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[200:216:1009/081352.060984:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[200:200:1009/081352.061081:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[200:200:1009/081352.062376:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[200:216:1009/081352.064026:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[200:216:1009/081352.064047:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n[200:200:1009/081352.064058:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[200:200:1009/081352.064142:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[200:216:1009/081352.064165:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[200:200:1009/081352.064859:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.Properties.GetAll: object_path= /org/freedesktop/UPower/devices/DisplayDevice: unknown error type: \n[200:200:1009/081352.065022:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[200:216:1009/081352.065054:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[200:200:1009/081352.066189:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[200:216:1009/081352.066262:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[200:200:1009/081352.066966:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \nTraceback (most recent call last):\n  File \"<string>\", line 9, in <module>\n    raise SystemExit(p.returncode)\nSystemExit: 0\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"<string>\", line 7, in <module>\n    with tempfile.TemporaryDirectory(prefix='tilo-dictation-sdk-') as profile:\n         ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib64/python3.14/tempfile.py\", line 972, in __exit__\n    self.cleanup()\n    ~~~~~~~~~~~~^^\n  File \"/usr/lib64/python3.14/tempfile.py\", line 976, in cleanup\n    self._rmtree(self.name, ignore_errors=self._ignore_cleanup_errors)\n    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib64/python3.14/tempfile.py\", line 956, in _rmtree\n    _shutil.rmtree(name, onexc=onexc)\n    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib64/python3.14/shutil.py\", line 852, in rmtree\n    _rmtree_impl(path, dir_fd, onexc)\n    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib64/python3.14/shutil.py\", line 721, in _rmtree_safe_fd\n    _rmtree_safe_fd_step(stack, onexc)\n    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^\n  File \"/usr/lib64/python3.14/shutil.py\", line 802, in _rmtree_safe_fd_step\n    onexc(func, path, err)\n    ~~~~~^^^^^^^^^^^^^^^^^\n  File \"/usr/lib64/python3.14/shutil.py\", line 753, in _rmtree_safe_fd_step\n    os.rmdir(name, dir_fd=dirfd)\n    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^\nOSError: [Errno 39] Directory not empty: '/tmp/tilo-dictation-sdk-9t7vsyfy/decorated/Default'\n",
+  "mounted_sdk_cleanup": "private PID-namespace init waits for all owned native descendants before profile removal; no process-name kill or ignored cleanup error",
+  "sources": {
+    "apps/browser/chromium/src/page_automation.js": "89e1e539392fb02667c6bebfe9d43e98b526a1cd8d79e2497f486b2c693625a2",
+    "apps/browser/chromium/src/page_automation.h": "34d93aa25ac1f624202d6b30139283ad4bc20723b3b34f753841984b9310b588",
+    "apps/browser/chromium/tests/guarded_text_input.py": "ea403b9be976cd498fb4b16693bcda2fa879654765407ece71ab087ef0c20b88",
+    "tools/release/qualify_dictation_browser_worker.py": "558486c3d74c1da8f5f373c445090df244e5986af5e44b7d531c540515b664fe",
+    "tools/release/probe_asr_candidate.py": "d5ba4b64acd3790a6262fa1dd9dbd2f824e3872cc1cdfca01227e8c68f7c87fd",
+    "tools/release/qualify_whistle_image_scope.py": "447e3d24119a18c7b1053543a49e1811da224441305c5c296dc7bbd54e481a23"
+  },
+  "execution_environment_normalization": {
+    "description": "This is a portable view of the original committed measurement receipt. Only execution-environment path prefixes are normalized. Measurements, transcripts, artifact hashes, outcomes and failure records are unchanged.",
+    "original_commit": "a7306895e056155ca8e221b37031af23ff0f82f0",
+    "original_git_blob": "5e62b029341067ae19fcd29e52af97b660e6814b",
+    "original_sha256": "bcb02e2b164b3ae697a6e73cf827f7d8b31642e1b397f3e229c945aee7956f7a",
+    "original_path": "docs/architecture/dictation-browser-paragraph-fixed.json",
+    "placeholder": "${BUILD_ROOT}",
+    "normalized_string_fields": [
+      "$.mounted_sdk_initial_stdout",
+      "$.strict_cancellation_rerun_log",
+      "$.strict_rerun_failure",
+      "$.receipt_root",
+      "$.mounted_sdk_final_success_log",
+      "$.mounted_sdk_cleanup_failure_log"
+    ]
+  }
+}

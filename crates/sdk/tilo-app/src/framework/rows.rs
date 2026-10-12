@@ -35,6 +35,16 @@ impl LiveRow {
         }
     }
 
+    /// `resource`, an entity the surface already describes as a resource
+    /// (a search hit, a catalogue entry), as a row: its presentation,
+    /// views, operations and children. Its document actions are dropped at
+    /// any depth: the resource's own publication carries them.
+    pub fn from_resource(resource: Resource) -> Self {
+        Self {
+            resource: resolved_outside_document(resource),
+        }
+    }
+
     /// Offer a view or effect operation on the row.
     ///
     /// # Panics
@@ -63,6 +73,15 @@ impl LiveRow {
     #[must_use]
     pub fn effect<E: Effect>(self, effect: &E) -> Self {
         self.operation(effect.bound())
+    }
+
+    /// Offer `view` of the row's entity: a way to show it (a message in
+    /// its conversation, a range of its text) that a link or an agent
+    /// navigates to, opened by one of the row's own operations.
+    #[must_use]
+    pub fn view(mut self, view: tilo_actions::ResourceViewSpec) -> Self {
+        self.resource = self.resource.with_view(view);
+        self
     }
 
     /// Nest `row` beneath this one (a container's logs).
@@ -137,8 +156,8 @@ pub(crate) fn merge(children: &mut Vec<Resource>, rows: impl IntoIterator<Item =
     }
 }
 
-/// Add to `existing` the presentation, operations and rows of `row`, which
-/// names it, that it lacks.
+/// Add to `existing` the presentation, operations, views and rows of `row`,
+/// which names it, that it lacks.
 pub(crate) fn join(existing: &mut Resource, row: Resource) {
     if existing.presentation.is_none() {
         existing.presentation = row.presentation;
@@ -146,6 +165,11 @@ pub(crate) fn join(existing: &mut Resource, row: Resource) {
     for action in row.actions {
         if !existing.actions.iter().any(|known| known.id == action.id) {
             existing.actions.push(action);
+        }
+    }
+    for view in row.views {
+        if !existing.views.iter().any(|known| known.id == view.id) {
+            existing.views.push(view);
         }
     }
     merge(&mut existing.children, row.children);

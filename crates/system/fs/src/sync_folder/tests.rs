@@ -2,7 +2,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use collab_types::{Ed25519PublicKey, FileActor, FileProvenance, FileRecordId};
+use collab_types::Ed25519PublicKey;
+use fs_protocol::{FileActor, FileProvenance, FileRecordId};
 use iroh::endpoint::{Endpoint, presets};
 
 use super::{Pass, STAGING_PREFIX, SyncFolder};
@@ -75,7 +76,7 @@ impl Fixture {
         self.fs.entry_at(Path::new(path)).unwrap().record.unwrap()
     }
 
-    fn versions(&self, path: &str) -> Vec<collab_types::FileVersionV1> {
+    fn versions(&self, path: &str) -> Vec<fs_protocol::FileVersionV1> {
         self.history.snapshot(self.record(path)).unwrap().versions
     }
 }

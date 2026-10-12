@@ -1,9 +1,11 @@
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "policy/check_source_content.py"
@@ -101,6 +103,48 @@ class SourceContentTests(unittest.TestCase):
         self.manifest([{"path": "fixture", "oid": replacement, "reason": "Changed asset"}])
         self.assertEqual(contract.audit(self.root, staged=True)[0],
                          ["fixture: non-text content; new/modified non-text or non-LF blobs are forbidden"])
+
+    def test_batches_cross_large_bodies_and_preserve_each_diagnostic(self):
+        # More than two batches, including bodies larger than a pipe buffer:
+        # an unbounded request writer would stop making progress on this tree.
+        for index in range(70):
+            suffix = b"\r" if index in (0, 31, 32, 63, 69) else b"\n"
+            self.stage(f"blob-{index:03}", b"text" * 20000 + suffix)
+        failures, count = contract.audit(self.root, staged=True)
+        self.assertEqual(count, 71)
+        self.assertEqual(failures, [
+            f"blob-{index:03}: non-LF line endings; new/modified non-text or non-LF blobs are forbidden"
+            for index in (0, 31, 32, 63, 69)
+        ])
+
+    def test_unobservable_or_mismatched_blob_response_fails(self):
+        self.stage("source", b"text\n")
+        oid = self.git("rev-parse", ":source").decode().strip()
+        for reply, message in [
+            (b"missing\n", "cannot inspect blob"),
+            (b"0" * 40 + b" blob 1\nx\n", "cannot inspect blob"),
+            (oid.encode() + b" blob -1\n", "invalid blob size"),
+            (oid.encode() + b" blob 100\nx", "incomplete blob"),
+        ]:
+            with self.subTest(reply=reply):
+                process = mock.MagicMock()
+                process.__enter__.return_value = process
+                process.wait.return_value = 0
+                process.stdout = io.BytesIO(reply)
+                process.stdin = io.BytesIO()
+                # Force the requested source to be the first response expected.
+                manifest = json.dumps([]).encode()
+                records = b"100644 blob " + oid.encode() + b"\tsource\0"
+                def git_reply(root, *arguments):
+                    if arguments[0] == "ls-tree":
+                        return records
+                    if arguments[0] == "show":
+                        return manifest
+                    raise AssertionError(arguments)
+                with mock.patch.object(contract, "git", side_effect=git_reply), \
+                     mock.patch.object(contract.subprocess, "Popen", return_value=process):
+                    with self.assertRaisesRegex(ValueError, message):
+                        contract.audit(self.root)
 
     def test_duplicate_exception_fails(self):
         entry = {"path": "fixture", "oid": "0" * 40, "reason": "Test fixture"}

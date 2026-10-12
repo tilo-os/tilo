@@ -109,6 +109,54 @@ fn peer_auth_establishes_certified_identity_for_the_observed_endpoint() {
 }
 
 #[test]
+fn peer_auth_known_future_revocation_is_permanent_and_root_scoped() {
+    let (root, device, cert) = party(None);
+    let other_root = SigningKey::from_bytes(&[33; 32]);
+    let mut revocations = RevocationList::new();
+    let mut pending = verifier();
+
+    // Neither a past nor a future entry from a foreign root revokes this cert.
+    for (nonce, revoked_at_ns) in [(16, NOW - 1), (17, u64::MAX)] {
+        let mut entry = RevocationEntry {
+            user_public_key: other_root.verifying_key().to_bytes(),
+            revoked_device_public_key: cert.device_public_key,
+            revoked_at_ns,
+            reason: RevocationReason::Compromised,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut entry, &other_root).unwrap();
+        let mut foreign_revocations = RevocationList::new();
+        foreign_revocations.insert(entry).unwrap();
+        let proof = proof_for(&mut pending, &device, cert.clone(), nonce);
+        let peer = pending
+            .verify(&proof, cert.device_public_key, &foreign_revocations, NOW)
+            .unwrap();
+        assert_eq!(peer.cert, cert);
+    }
+
+    let mut entry = RevocationEntry {
+        user_public_key: cert.user_public_key,
+        revoked_device_public_key: cert.device_public_key,
+        revoked_at_ns: u64::MAX,
+        reason: RevocationReason::Compromised,
+        signature: [0; 64],
+    };
+    sign_revocation_entry(&mut entry, &root).unwrap();
+    revocations.insert(entry).unwrap();
+    let proof = proof_for(&mut pending, &device, cert.clone(), 18);
+    assert_eq!(
+        pending.verify(&proof, cert.device_public_key, &revocations, NOW),
+        Err(PeerAuthError::Revoked),
+        "a known revocation cannot be deferred by its recorded timestamp"
+    );
+    assert_eq!(
+        pending.verify(&proof, cert.device_public_key, &revocations, NOW),
+        Err(PeerAuthError::UnknownOrReplayedChallenge),
+        "a revoked proof still consumes its challenge"
+    );
+}
+
+#[test]
 fn peer_auth_challenges_are_one_use_bounded_and_fail_closed() {
     // Phase `tampered_proof_is_rejected_and_burns_challenge`.
     {

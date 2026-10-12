@@ -70,6 +70,7 @@ pub(crate) fn catalogue() -> Vec<Application> {
 
 /// Everything a tab's component is prepared with.
 pub(crate) struct Inputs {
+    pub feedback: Option<tilo_desktop::feedback::transport::Startup>,
     pub owners: RecordOwners,
     pub views: Rc<InstanceViewStore>,
     pub device: String,
@@ -459,7 +460,12 @@ impl Tiles {
                 },
                 None,
             ),
-            None if definition.keeps_room_record() => (definition.unsaved_target(&store), None),
+            None if definition.keeps_room_record() => (
+                definition
+                    .unsaved_target(&store)
+                    .map_err(|error| error.to_string())?,
+                None,
+            ),
             None => self.unbound_target(definition, &store, tab.id)?,
         };
         let restore = self
@@ -769,7 +775,7 @@ impl Persistence {
             &mut history,
             &value,
             &self.author,
-            crate::history::now_seconds(),
+            ui::time::unix_now_i64(),
         ) {
             self.history_dirty.set(true);
         }
@@ -897,7 +903,7 @@ fn stored_records(desktop: &StoredDesktop) -> HashMap<TabId, RecordCheckout> {
 /// # Errors
 /// Refuses an application id the page does not register.
 pub(crate) fn mount(
-    inputs: Inputs,
+    mut inputs: Inputs,
     store: Rc<dyn DurableStore>,
     apps: Option<&[String]>,
     workspace_name: Option<&str>,
@@ -906,6 +912,16 @@ pub(crate) fn mount(
     let key = StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "desktop");
     let salt = peer_salt(&inputs.salt);
     let shared = Shared::default();
+    if let Some(startup) = inputs.feedback.take() {
+        if startup.reporter().principal()
+            != &tilo_actions::remote::CallerPrincipal::Person(inputs.author.clone())
+        {
+            return Err("feedback reporter does not own this profile".into());
+        }
+        startup
+            .install(Rc::clone(&store), &mut shared.feedback.borrow_mut())
+            .map_err(|error| error.to_string())?;
+    }
     let tree = if let Some(stored) = load_stored(store.as_ref(), &key) {
         *shared.records.borrow_mut() = stored_records(&stored);
         stored.tree

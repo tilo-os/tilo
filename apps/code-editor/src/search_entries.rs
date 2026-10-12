@@ -93,10 +93,7 @@ mod tests {
 
     /// The editor's search source over `symbols`, as the framework builds it.
     fn source(symbols: &[SymbolRef]) -> impl SearchProvider + use<> {
-        ui::framework::testing::search_source::<crate::resource::CodeEditor>(code_entries(
-            symbols,
-            &[],
-        ))
+        ui::framework::testing::search_source::<crate::project::Project>(code_entries(symbols, &[]))
     }
 
     fn symbol(index: usize, name: &str, path: &str) -> SymbolRef {

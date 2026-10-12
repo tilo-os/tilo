@@ -124,6 +124,8 @@ pub trait Apply {
         None
     }
     fn remove_user(&mut self, user: &str) -> Result<(), DaemonError>;
+    /// Private device identity for a disposable slot, inside its removable home.
+    fn slot_identity_environment(&mut self, user: &str) -> Result<String, DaemonError>;
     fn write_dropin(&mut self, unit: &str, file: &str, contents: &str) -> Result<(), DaemonError>;
     fn remove_dropin(&mut self, unit: &str, file: &str) -> Result<(), DaemonError>;
     /// Prepare one readonly combined filesystem view for a stand-in slot.
@@ -289,6 +291,15 @@ pub fn check_scope(
     component: &str,
     info: &ComponentInfo,
 ) -> Result<(), DaemonError> {
+    if info.frame_cpu_trace
+        && (component != "shell"
+            || info.scope != Scope::Session
+            || !matches!(record.kind, SlotKind::Headful | SlotKind::Headless))
+    {
+        return Err(DaemonError::InvalidParams(
+            "phase CPU recording requires a stand-in slot's shell component".into(),
+        ));
+    }
     let fits = match record.kind {
         SlotKind::Vm => info.scope == Scope::Vm,
         SlotKind::Headful | SlotKind::Headless | SlotKind::Device => info.scope != Scope::Vm,
@@ -418,6 +429,28 @@ pub fn seat_dropin(record: &SlotRecord) -> Option<String> {
     }
 }
 
+/// Encode a slot-private identity root in a systemd service environment.
+/// The real account home comes from passwd; no manager `%h` expansion is used.
+/// # Errors
+/// Relative, non-UTF-8 or control-character home directories are refused.
+pub fn slot_identity_environment(home: &std::path::Path) -> Result<String, DaemonError> {
+    let home = home
+        .to_str()
+        .filter(|home| {
+            std::path::Path::new(home).is_absolute() && !home.chars().any(char::is_control)
+        })
+        .ok_or_else(|| {
+            DaemonError::InvalidParams(
+                "slot home must be an absolute UTF-8 path without control characters".into(),
+            )
+        })?;
+    let root = format!("{home}/.local/share/tilo/test-identity")
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('%', "%%");
+    Ok(format!("Environment=\"TILO_IDENTITY_ROOT={root}\"\n"))
+}
+
 /// How the session reacts to an activation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionChange {
@@ -498,9 +531,22 @@ pub fn activate(
         record.seat = Some(seat);
     }
 
-    let dropin = apply.session_layer_dropin(&record.name, generation.number, layers)?;
+    let mut dropin = apply.session_layer_dropin(&record.name, generation.number, layers)?;
+    if session.stand_in {
+        dropin.push_str(&apply.slot_identity_environment(&session.user)?);
+    }
     for unit in layered_units(&session, uid) {
-        apply.write_dropin(&unit, LAYERS_DROPIN, &dropin)?;
+        let text = if unit == session.unit
+            && generation
+                .components
+                .get("shell")
+                .is_some_and(|entry| entry.info.frame_cpu_trace)
+        {
+            format!("{dropin}\n[Service]\nEnvironment=TILO_VM_FRAME_CPU_TRACE=1\n")
+        } else {
+            dropin.clone()
+        };
+        apply.write_dropin(&unit, LAYERS_DROPIN, &text)?;
         actions.push(Action::WriteDropIn { unit });
     }
     // The device's own session picks its seat itself.
@@ -786,6 +832,9 @@ impl Apply for RecordingApply {
     fn device_session(&mut self) -> Option<DeviceSession> {
         self.device.clone()
     }
+    fn slot_identity_environment(&mut self, user: &str) -> Result<String, DaemonError> {
+        slot_identity_environment(std::path::Path::new(&format!("/home/{user}")))
+    }
     fn remove_user(&mut self, user: &str) -> Result<(), DaemonError> {
         self.call(format!("remove_user {user}"));
         self.users.remove(user);
@@ -1068,6 +1117,70 @@ mod tests {
             );
         }
         g
+    }
+
+    #[test]
+    fn slot_identity_environment_quotes_the_actual_account_home() {
+        assert_eq!(
+            slot_identity_environment(std::path::Path::new("/var/home/you")).unwrap(),
+            "Environment=\"TILO_IDENTITY_ROOT=/var/home/you/.local/share/tilo/test-identity\"\n"
+        );
+        assert_eq!(
+            slot_identity_environment(std::path::Path::new("/home/a %u\"b")).unwrap(),
+            "Environment=\"TILO_IDENTITY_ROOT=/home/a %%u\\\"b/.local/share/tilo/test-identity\"\n"
+        );
+        assert!(slot_identity_environment(std::path::Path::new("relative")).is_err());
+        assert!(
+            slot_identity_environment(std::path::Path::new("/home/a\nEnvironment=BAD")).is_err()
+        );
+    }
+
+    #[test]
+    fn frame_cpu_trace_is_generation_scoped_and_stand_in_only() {
+        let mut apply = RecordingApply::default();
+        let mut slot = record("cpu", SlotKind::Headless);
+        let plain = generation(1, &[("shell", "h1", Scope::Session, &[])]);
+        let mut traced = plain.clone();
+        traced.number = 2;
+        traced
+            .components
+            .get_mut("shell")
+            .unwrap()
+            .info
+            .frame_cpu_trace = true;
+        let info = &traced.components["shell"].info;
+        check_scope(&slot, "shell", info).unwrap();
+        for kind in [SlotKind::Vm, SlotKind::Device] {
+            assert!(check_scope(&record("other", kind), "shell", info).is_err());
+        }
+        assert!(check_scope(&slot, "music", info).is_err());
+        let layers = [PathBuf::from("/var/lib/tilo-vm/layers/h1")];
+        let key = (session_unit("cpu"), LAYERS_DROPIN.into());
+        for (g, enabled) in [(&traced, true), (&plain, false), (&traced, true)] {
+            activate(
+                &mut apply,
+                &mut slot,
+                g,
+                &layers,
+                Policy::SessionRestart,
+                &Restarts::default(),
+                SessionChange::Keep,
+            )
+            .unwrap();
+            assert_eq!(
+                apply.dropins[&key].contains("Environment=TILO_VM_FRAME_CPU_TRACE=1"),
+                enabled
+            );
+            assert!(
+                !apply.dropins[&(user_unit(60_001), LAYERS_DROPIN.into())]
+                    .contains("TILO_VM_FRAME_CPU_TRACE")
+            );
+            for unit in [session_unit("cpu"), user_unit(60_001)] {
+                assert!(apply.dropins[&(unit, LAYERS_DROPIN.into())].contains(
+                    "Environment=\"TILO_IDENTITY_ROOT=/home/tds-cpu/.local/share/tilo/test-identity\"\n"
+                ));
+            }
+        }
     }
 
     #[test]
@@ -1398,6 +1511,11 @@ mod tests {
             assert!(dropin.contains(
                 "ExtensionDirectories=\nExtensionDirectories=/var/lib/tilo-vm/layers/h1\n"
             ));
+            for unit in ["user@60001.service", "tilo-vm-session@a.service"] {
+                assert!(apply.dropins[&(unit.into(), LAYERS_DROPIN.into())].contains(
+                    "Environment=\"TILO_IDENTITY_ROOT=/home/tds-a/.local/share/tilo/test-identity\"\n"
+                ));
+            }
         }
         // Phase `the_device_session_restarts_through_its_own_unit_as_its_account`.
         {
@@ -1435,6 +1553,13 @@ mod tests {
                     .iter()
                     .any(|a| matches!(a, Action::EnsureUser { .. })),
                 "the account is not a slot user: {actions:?}"
+            );
+            assert!(
+                apply
+                    .dropins
+                    .values()
+                    .all(|text| !text.contains("TILO_IDENTITY_ROOT")),
+                "a real device retains its existing identity environment"
             );
             let session = device.session().unwrap();
             assert!(!session.stand_in);

@@ -11,6 +11,15 @@ pub mod bounded;
 pub mod lock;
 pub mod private;
 
+/// Whether the native path itself names a regular file, without following a symlink.
+///
+/// # Errors
+/// Preserves metadata errors, including a missing path or denied access;
+/// unsupported targets fail.
+pub fn is_regular_file(path: &std::path::Path) -> std::io::Result<bool> {
+    std::fs::symlink_metadata(path).map(|metadata| metadata.is_file())
+}
+
 /// Create the parents of a native path shared with another program.
 /// Unlike private-directory provisioning this retains existing modes and
 /// the standard recursive creation contract.
@@ -22,8 +31,69 @@ pub fn create_dir_all(path: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(path)
 }
 
+/// Watches the entries directly in the native directory `dir` — files created,
+/// replaced or removed there — but not what happens below its
+/// subdirectories, so a busy subtree does not wake the watcher. Paths are
+/// reported relative to `dir`. Unlike [`Dir::watch`](crate::Dir::watch) on a
+/// file, a file atomically replaced in `dir` keeps reporting.
+///
+/// # Errors
+///
+/// [`FsError::NotFound`](crate::FsError::NotFound) when `dir` does not exist,
+/// or the platform's failure to watch it.
+#[cfg(all(
+    feature = "watch",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+pub fn watch_entries(dir: &std::path::Path) -> Result<crate::Watch, crate::FsError> {
+    crate::disk_watch::watch_entries(dir)
+}
+
+/// Whether a watch on the native directory `dir` ([`watch_entries`]) sees
+/// every change to its entries. Not on a FUSE or network mount (a projected
+/// collaborative filesystem, virtiofs, NFS, SMB, 9P, Ceph, AFS), whose
+/// entries can change without passing through this kernel, and not where
+/// the filesystem's type cannot be told: there a watch reports local edits
+/// only, and whoever lists `dir` must still read it again for the rest.
+#[cfg(all(
+    feature = "watch",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+#[must_use]
+pub fn watch_sees_every_change(dir: &std::path::Path) -> bool {
+    crate::disk_watch::sees_every_change(dir)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_regular_file_query_preserves_non_file_and_missing_refusals() {
+        let root = tempfile::tempdir().expect("temporary native directory");
+        assert!(!super::is_regular_file(root.path()).expect("directory metadata"));
+        let path = root.path().join("file");
+        assert_eq!(
+            super::is_regular_file(&path)
+                .expect_err("missing file")
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+        std::fs::write(&path, b"held").expect("native file");
+        assert!(super::is_regular_file(&path).expect("regular file metadata"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_regular_file_query_rejects_matching_and_dangling_symlinks() {
+        let root = tempfile::tempdir().expect("temporary native directory");
+        let target = root.path().join("file");
+        let alias = root.path().join("alias");
+        std::fs::write(&target, b"held").expect("native file");
+        std::os::unix::fs::symlink(&target, &alias).expect("symlink fixture");
+        assert!(!super::is_regular_file(&alias).expect("symlink metadata"));
+        std::fs::remove_file(&target).expect("remove owned fixture target");
+        assert!(!super::is_regular_file(&alias).expect("dangling symlink metadata"));
+    }
+
     #[test]
     fn native_directory_creation_preserves_recursive_and_failure_contracts() {
         let root = tempfile::tempdir().expect("temporary native directory");

@@ -259,9 +259,18 @@ pub(super) struct Sorter {
 impl Sorter {
     pub fn new(root: PathBuf) -> Result<Self, StoreError> {
         fs::create_dir(&root)?;
-        Ok(Self {
+        let mut sorter = Self::unspilled(root);
+        sorter.buffer.reserve_exact(RUN_ENTRIES);
+        Ok(sorter)
+    }
+    /// A sorter that has created nothing on disk, for a pass that pushes no
+    /// metadata (a delta's retention). Spilling a run fails: its directory
+    /// does not exist.
+    #[must_use]
+    pub fn unspilled(root: PathBuf) -> Self {
+        Self {
             root,
-            buffer: Vec::with_capacity(RUN_ENTRIES),
+            buffer: Vec::new(),
             bytes: 0,
             runs: 0,
             spill: None,
@@ -273,7 +282,7 @@ impl Sorter {
             cleaning: None,
             sealed: false,
             stats: WorkStats::default(),
-        })
+        }
     }
     fn path(&self, pass: u64, run: u64) -> PathBuf {
         self.root.join(format!("{pass:016x}-{run:016x}.run"))

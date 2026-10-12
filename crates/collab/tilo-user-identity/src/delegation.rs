@@ -250,7 +250,7 @@ pub struct DelegatedSignature {
     pub cert: DeviceCert,
     /// Ed25519 signature by `cert.device_public_key` over
     /// [`delegated_signing_digest`].
-    #[serde(with = "crate::cert::serde_bytes_64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 

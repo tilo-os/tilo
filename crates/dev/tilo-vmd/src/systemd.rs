@@ -8,12 +8,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use tilo_vm_protocol::layer_hash::walk;
 use tilo_vm_protocol::{BootChange, BootConfirmResult, ControlResult, InputAction, OutputSpec};
 
 use crate::apply::{Apply, GREETER_UNIT, Session, SessionProcess};
 use crate::boot::Boot;
 use crate::error::DaemonError;
-use crate::fsutil::{symlink, walk, write_atomic};
+use crate::fsutil::{symlink, write_atomic};
 use crate::input;
 use crate::slots::{DeviceSession, Login};
 
@@ -529,6 +530,14 @@ impl Apply for SystemdApply {
             control_socket: device_control_socket(uid),
             login: None,
         })
+    }
+
+    fn slot_identity_environment(&mut self, user: &str) -> Result<String, DaemonError> {
+        let home = home_of(user).ok_or_else(|| DaemonError::Apply {
+            step: "resolve slot identity home".into(),
+            detail: format!("no home directory for {user}"),
+        })?;
+        crate::apply::slot_identity_environment(Path::new(&home))
     }
 
     fn remove_user(&mut self, user: &str) -> Result<(), DaemonError> {
@@ -1168,11 +1177,12 @@ fn start_input_server(
     })
 }
 
-/// The desktop layout under `~/.config/tilo`: the tree, its document and
-/// the document's meta, and the action invocations recorded against it.
-const DESKTOP_STATE: [&str; 4] = [
+/// The desktop layout under `~/.config/tilo`: the tree, its document, the
+/// document's log and meta, and the action invocations recorded against it.
+const DESKTOP_STATE: [&str; 5] = [
     "state.json",
     "state.automerge",
+    "state.automerge.log",
     "state.automerge.meta",
     "state.json.invocations",
 ];

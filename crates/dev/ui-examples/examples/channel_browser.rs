@@ -25,7 +25,7 @@ use std::time::{Duration, SystemTime};
 use collab_types::ChannelId;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::widget::channel_browser::{ChannelBrowser, ChannelEntry};
-use tilo_ui::{App, State, Theme};
+use tilo_ui::{App, State};
 
 /// Viewport for the headless frame: the sheet's own 640 px layout width
 /// plus a margin of ground on every side, so the sheet edge is visible.
@@ -165,10 +165,7 @@ pub fn run(args: &[String]) {
 /// One headless frame of the sheet: PNG composited on the theme background
 /// plus the harness inspection beside it.
 fn render_shot(browser: ChannelBrowser, out: &Path) {
-    let theme = std::env::var("TILO_SHOTS_THEME")
-        .ok()
-        .and_then(|name| Theme::named(&name))
-        .unwrap_or_else(Theme::dark);
+    let theme = crate::registry::shot_theme();
     let harness = FrameHarness::new_with_theme(
         State::new(),
         Box::new(browser),

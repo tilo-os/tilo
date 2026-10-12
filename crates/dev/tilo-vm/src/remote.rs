@@ -13,6 +13,78 @@ mod keepawake;
 
 pub const DEFAULT_DAEMON: &str = "tilo-vmd rpc";
 
+/// The already-imported daemon must apply its own replacement: the old RPC
+/// process keeps executing its old mount-composition code after a sysext swap.
+/// Preserve the configured RPC flags and the authenticated daemon's state root.
+pub(crate) fn imported_daemon_command(
+    configured: Option<&str>,
+    root: &str,
+    layer: &str,
+) -> Result<Vec<String>, CliError> {
+    let invalid = |detail| {
+        CliError::io("prepare imported daemon handoff")(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            detail,
+        ))
+    };
+    let path = std::path::Path::new(root);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+        || root.chars().any(char::is_control)
+        || layer.len() != 64
+        || !layer
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(invalid(
+            "expected an absolute state root and an imported SHA-256 layer",
+        ));
+    }
+    let mut words: Vec<String> = configured
+        .unwrap_or(DEFAULT_DAEMON)
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    let executable = words
+        .iter()
+        .position(|word| {
+            std::path::Path::new(word)
+                .file_name()
+                .is_some_and(|name| name == "tilo-vmd")
+        })
+        .ok_or_else(|| {
+            invalid("configured daemon must invoke tilo-vmd rpc for a daemon upgrade")
+        })?;
+    if words.get(executable.saturating_add(1)).map(String::as_str) != Some("rpc") {
+        return Err(invalid(
+            "configured daemon must invoke tilo-vmd rpc for a daemon upgrade",
+        ));
+    }
+    *words
+        .get_mut(executable)
+        .ok_or_else(|| invalid("configured daemon has no executable"))? = path
+        .join("layers")
+        .join(layer)
+        .join("usr/libexec/tilo-vmd")
+        .to_string_lossy()
+        .into_owned();
+    let mut command = Vec::new();
+    let mut arguments = words.into_iter();
+    while let Some(word) = arguments.next() {
+        if word == "--root" {
+            arguments
+                .next()
+                .ok_or_else(|| invalid("configured --root has no value"))?;
+        } else if !word.starts_with("--root=") {
+            command.push(word);
+        }
+    }
+    command.extend(["--root".into(), root.into()]);
+    Ok(command)
+}
+
 /// The VM's own `known_hosts`, beside its key. Local VMs all answer on
 /// 127.0.0.1 with forwarded ports, and a recreated VM has new host keys, so
 /// one shared `~/.ssh/known_hosts` entry per port would refuse the next VM.
@@ -197,6 +269,15 @@ impl Remote {
             .map(str::to_owned)
             .collect();
         let line = ssh_command(endpoint, key, &remote, false);
+        Self::connect_line(vm, &line, endpoint, debug)
+    }
+
+    fn connect_line(
+        vm: &str,
+        line: &CommandLine,
+        endpoint: &SshEndpoint,
+        debug: Vec<String>,
+    ) -> Result<Self, CliError> {
         let mut child = Command::new(&line.program)
             .args(&line.args)
             .stdin(Stdio::piped())
@@ -217,6 +298,8 @@ impl Remote {
             return Err(CliError::io("start ssh")(std::io::Error::other("no pipes")));
         };
         let mut client = Client::new(BufReader::new(stdout), stdin);
+        // SSH stdio is byte-transparent; the audited peer bridge stays JSON-line oriented.
+        client.enable_binary_uploads();
         match client.hello(env!("CARGO_PKG_VERSION")) {
             Ok(hello) => Ok(Self {
                 child,
@@ -268,6 +351,34 @@ impl Remote {
                 Err(error.into())
             }
         }
+    }
+
+    /// Hand off to a verified imported daemon before its normal swap/recovery.
+    /// No registered command or persistent access policy is changed.
+    pub(crate) fn handoff(
+        &self,
+        vm: &str,
+        line: &CommandLine,
+        endpoint: &SshEndpoint,
+        debug: Vec<String>,
+    ) -> Result<Self, CliError> {
+        if self.peer {
+            return Err(CliError::io("upgrade the guest daemon")(
+                std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "daemon handoff requires the existing SSH route; reconnect on the LAN before swapping vmd",
+                ),
+            ));
+        }
+        let replacement = Self::connect_line(vm, line, endpoint, debug)?;
+        if replacement.hello.root != self.hello.root || replacement.hello.arch != self.hello.arch {
+            return Err(CliError::io("upgrade the guest daemon")(
+                std::io::Error::other(
+                    "imported daemon answered for a different state root or architecture",
+                ),
+            ));
+        }
+        Ok(replacement)
     }
 
     /// Open tilo-vmd's RPC over the peer network: `line` runs
@@ -542,6 +653,127 @@ impl Drop for Remote {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imported_daemon_command_preserves_rpc_policy_and_refuses_untrusted_paths() {
+        let hash = "ab".repeat(32);
+        let command = imported_daemon_command(
+            Some("sudo -n /usr/libexec/tilo-vmd rpc --root /old --expect-domain greetd_t"),
+            "/var/lib/tilo-vm",
+            &hash,
+        )
+        .unwrap();
+        assert_eq!(
+            command,
+            [
+                "sudo".to_owned(),
+                "-n".into(),
+                format!("/var/lib/tilo-vm/layers/{hash}/usr/libexec/tilo-vmd"),
+                "rpc".into(),
+                "--expect-domain".into(),
+                "greetd_t".into(),
+                "--root".into(),
+                "/var/lib/tilo-vm".into(),
+            ]
+        );
+        for root in ["relative", "/var/lib/../etc", "/var/lib/a\nBAD"] {
+            assert!(imported_daemon_command(None, root, &hash).is_err());
+        }
+        for layer in ["../outside", &"a".repeat(63), &"z".repeat(64)] {
+            assert!(imported_daemon_command(None, "/var/lib/tilo-vm", layer).is_err());
+        }
+        assert!(
+            imported_daemon_command(Some("other-daemon rpc"), "/var/lib/tilo-vm", &hash).is_err()
+        );
+        assert!(imported_daemon_command(Some("tilo-vmd exec"), "/var/lib/tilo-vm", &hash).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn imported_daemon_handoff_applies_through_new_rpc_and_leaves_old_process_intact() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use tilo_vm_protocol::{Scope, Swap, VM_SLOT, manifest::ComponentInfo};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("state");
+        let hash = "ab".repeat(32);
+        let binary = root.join("layers").join(&hash).join("usr/libexec/tilo-vmd");
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        let script = r"#!/usr/bin/env python3
+import json,os,sys
+root=sys.argv[sys.argv.index('--root')+1]
+source='imported' if '/layers/' in sys.argv[0] else 'old'
+for line in sys.stdin:
+ request=json.loads(line)
+ method=request['method']
+ with open(os.path.join(root,'calls'),'a') as log: log.write(source+' '+method+'\n')
+ if method=='hello':
+  result={'protocol':request['params']['protocol'],'daemon_version':source,'root':root,'arch':'x86_64'}
+ elif method=='swap' and source=='old':
+  print(json.dumps({'jsonrpc':'2.0','id':request['id'],'error':{'code':-32000,'message':'legacy ExtensionDirectories third overlay: /usr Invalid argument','hint':'upgrade applying daemon'}}),flush=True)
+  continue
+ elif method=='swap':
+  result={'slot':'vm','generation':1,'changed':True,'policy':'vm_refresh','actions':[],'warnings':[]}
+ else: raise AssertionError(method)
+ print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)
+";
+        std::fs::write(&binary, script).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let old = tmp.path().join("tilo-vmd");
+        std::fs::write(&old, script).unwrap();
+        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let old_line = CommandLine::new(
+            old.to_str().unwrap(),
+            &["rpc", "--root", root.to_str().unwrap()],
+        );
+        let endpoint = SshEndpoint {
+            user: "root".into(),
+            host: "fixture".into(),
+            port: 22,
+        };
+        let mut old_remote = Remote::connect_line("fixture", &old_line, &endpoint, vec![]).unwrap();
+        let swap = || Swap {
+            slot: VM_SLOT.into(),
+            component: "vmd".into(),
+            layer: hash.clone(),
+            info: Some(ComponentInfo::new(Scope::Vm, vec![])),
+        };
+        let error = old_remote.call(swap()).unwrap_err();
+        assert!(error.to_string().contains("Invalid argument"));
+        let command = imported_daemon_command(None, &old_remote.hello.root, &hash).unwrap();
+        let line = CommandLine {
+            program: command[0].clone(),
+            args: command[1..].to_vec(),
+            env: vec![],
+        };
+        let mut imported = old_remote
+            .handoff("fixture", &line, &endpoint, vec![])
+            .unwrap();
+        assert_eq!(imported.call(swap()).unwrap().generation, 1);
+        // The old process still reports its own code: replacing a path cannot
+        // fix an already-running RPC implementation.
+        old_remote.client.as_mut().unwrap().hello("test").unwrap();
+        assert_eq!(old_remote.hello.daemon_version, "old");
+        assert_eq!(
+            std::fs::read_to_string(root.join("calls")).unwrap(),
+            "old hello\nold swap\nimported hello\nimported swap\nold hello\n"
+        );
+        // A replacement for a different state root must never reach apply.
+        let wrong_root = tmp.path().join("wrong");
+        std::fs::create_dir(&wrong_root).unwrap();
+        let wrong = CommandLine::new(
+            binary.to_str().unwrap(),
+            &["rpc", "--root", wrong_root.to_str().unwrap()],
+        );
+        assert!(
+            old_remote
+                .handoff("fixture", &wrong, &endpoint, vec![])
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(wrong_root.join("calls")).unwrap(),
+            "imported hello\n"
+        );
+    }
 
     /// The SSH command is key-only and bounded, and the VM lock is the one the daemon takes.
     #[test]

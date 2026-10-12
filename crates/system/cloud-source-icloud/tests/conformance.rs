@@ -90,6 +90,7 @@ impl Fixture for FakeFixture {
             Fault::RateLimited => FakeFault::RateLimited,
             Fault::ServerError => FakeFault::ServerError,
             Fault::TruncatedBody => FakeFault::TruncatedBody,
+            Fault::ClosedEarly => FakeFault::ClosedEarly,
             Fault::ExpiredCredential => FakeFault::ExpiredSession,
             // No change feed, no cursors.
             Fault::CursorReset => return false,

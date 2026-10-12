@@ -61,3 +61,9 @@ workspace-notes-placeholder = Add project notes…
 workspace-preview-heading = Live preview
 workspace-back = Back
 workspace-share = Share
+
+## History
+
+hot-reload-demo-document-title = Retitled { $item }
+hot-reload-demo-document-body = Edited the body of { $item }
+hot-reload-demo-clear = Cleared { $item }

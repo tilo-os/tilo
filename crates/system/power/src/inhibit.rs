@@ -18,6 +18,11 @@
 //! that stops counting at a deadline unless [`InhibitToken::renew_until`]
 //! moves it. A remote admin's hold therefore lapses by itself when the
 //! requests stop, with no timer and nobody having to remember to drop it.
+//!
+//! Whoever mirrors the registry elsewhere waits instead of polling: every
+//! acquire, renewal and release calls the [`InhibitRegistry::on_change`]
+//! listeners, and [`InhibitRegistry::next_lapse_for`] names the one moment a
+//! lease stops counting on its own.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,11 +43,43 @@ impl Hold {
     }
 }
 
-#[derive(Debug, Default)]
+type ChangeListener = Arc<dyn Fn() + Send + Sync>;
+
+#[derive(Default)]
 struct RegistryInner {
     /// `id -> hold`. A `BTreeMap` keeps `active_reasons` deterministic for
     /// tests and logs.
     held: BTreeMap<u64, Hold>,
+    /// Called after every change to `held`, outside the lock.
+    listeners: Vec<ChangeListener>,
+}
+
+impl std::fmt::Debug for RegistryInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegistryInner")
+            .field("held", &self.held)
+            .field("listeners", &self.listeners.len())
+            .finish()
+    }
+}
+
+/// Apply `change` to the holds, then tell every listener — after the lock is
+/// released, so a listener may read the registry.
+fn change_holds<R>(
+    inner: &Mutex<RegistryInner>,
+    change: impl FnOnce(&mut BTreeMap<u64, Hold>) -> R,
+) -> R {
+    let (result, listeners) = {
+        let mut inner = inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let result = change(&mut inner.held);
+        (result, inner.listeners.clone())
+    };
+    for listener in &listeners {
+        listener();
+    }
+    result
 }
 
 pub const INHIBIT_LOGOUT: u32 = 1;
@@ -103,12 +140,8 @@ impl InhibitRegistry {
 
     fn insert(&self, reason: String, flags: u32, until: Option<Instant>) -> InhibitToken {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        {
-            let mut inner = self
-                .inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            inner.held.insert(
+        change_holds(&self.inner, |held| {
+            held.insert(
                 id,
                 Hold {
                     reason,
@@ -116,11 +149,37 @@ impl InhibitRegistry {
                     until,
                 },
             );
-        }
+        });
         InhibitToken {
             id,
             inner: Arc::downgrade(&self.inner),
         }
+    }
+
+    /// Call `listener` after every acquire, renewal and release, on the
+    /// thread that made it. Keep it short and non-blocking (wake a task); it
+    /// lives as long as the registry.
+    pub fn on_change(&self, listener: impl Fn() + Send + Sync + 'static) {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .listeners
+            .push(Arc::new(listener));
+    }
+
+    /// The earliest moment after `now` at which a lease holding any of
+    /// `flags` stops counting by itself — the only change to
+    /// [`Self::is_inhibited_for`] that no acquire, renewal or release
+    /// announces. `None` when no such lease is pending.
+    pub fn next_lapse_for(&self, flags: u32, now: Instant) -> Option<Instant> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .held
+            .values()
+            .filter(|hold| hold.counts(flags, now))
+            .filter_map(|hold| hold.until)
+            .min()
     }
 
     /// Whether any inhibitor is currently held — the signal the idle loop
@@ -198,27 +257,22 @@ impl InhibitToken {
         let Some(inner) = self.inner.upgrade() else {
             return false;
         };
-        inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .held
-            .get_mut(&self.id)
-            .map(|hold| {
-                hold.reason = reason.into();
-                hold.until = Some(until);
-            })
-            .is_some()
+        let reason = reason.into();
+        change_holds(&inner, |held| {
+            held.get_mut(&self.id)
+                .map(|hold| {
+                    hold.reason = reason;
+                    hold.until = Some(until);
+                })
+                .is_some()
+        })
     }
 }
 
 impl Drop for InhibitToken {
     fn drop(&mut self) {
         if let Some(inner) = self.inner.upgrade() {
-            inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .held
-                .remove(&self.id);
+            change_holds(&inner, |held| held.remove(&self.id));
         }
     }
 }
@@ -292,6 +346,57 @@ mod tests {
             // fails and the drop is a no-op).
             drop(token);
         }
+    }
+
+    #[test]
+    fn every_change_is_announced_and_the_next_lapse_is_named() {
+        let registry = InhibitRegistry::new();
+        let changes = Arc::new(AtomicU64::new(0));
+        registry.on_change({
+            let changes = Arc::clone(&changes);
+            let registry = registry.clone();
+            move || {
+                // A listener may read the registry: it runs outside the lock.
+                let _ = registry.count();
+                changes.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        let start = Instant::now();
+        let minute = std::time::Duration::from_secs(60);
+        assert_eq!(registry.next_lapse_for(INHIBIT_POWER, start), None);
+
+        let hold = registry.acquire("media");
+        assert_eq!(changes.load(Ordering::SeqCst), 1, "acquire is announced");
+        assert_eq!(
+            registry.next_lapse_for(INHIBIT_POWER, start),
+            None,
+            "a plain hold never lapses by itself"
+        );
+        let lease = registry.acquire_until("remote use", INHIBIT_SUSPEND, start + minute);
+        assert_eq!(changes.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            registry.next_lapse_for(INHIBIT_POWER, start),
+            Some(start + minute)
+        );
+        assert_eq!(
+            registry.next_lapse_for(INHIBIT_IDLE, start),
+            None,
+            "a suspend lease does not lapse an idle hold"
+        );
+        assert!(lease.renew_until("remote use", start + 2 * minute));
+        assert_eq!(changes.load(Ordering::SeqCst), 3, "renewal is announced");
+        assert_eq!(
+            registry.next_lapse_for(INHIBIT_POWER, start),
+            Some(start + 2 * minute)
+        );
+        assert_eq!(
+            registry.next_lapse_for(INHIBIT_POWER, start + 2 * minute),
+            None,
+            "a lapsed lease has nothing left to announce"
+        );
+        drop(lease);
+        drop(hold);
+        assert_eq!(changes.load(Ordering::SeqCst), 5, "releases are announced");
     }
 
     #[test]

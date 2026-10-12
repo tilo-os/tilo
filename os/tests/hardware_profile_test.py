@@ -44,6 +44,45 @@ def restart_fixture(test):
 
 
 class HardwareProfileTest(unittest.TestCase):
+    def test_lenovo_wifi_default_explicitly_disables_unsafe_wowlan(self):
+        prepare.prepare_profile("lenovo-83ed", self.root, self.kver, self.firmware,
+                                target_update_ref=TARGET_REF)
+        policy = self.root / "usr/lib/NetworkManager/conf.d/30-tilo-lenovo-wifi.conf"
+        self.assertTrue(policy.is_file(), "Lenovo image must carry an explicit safe Wi-Fi wake default")
+        import configparser
+        config = configparser.ConfigParser()
+        config.read(policy)
+        section = config["connection-tilo-lenovo-wifi"]
+        self.assertEqual(section["match-device"], "driver:ath12k_wifi7_pci")
+        self.assertEqual(section["wifi.wake-on-wlan"], "0")
+        self.assertEqual(set(section), {"match-device", "wifi.wake-on-wlan"})
+
+    def test_wifi_wake_policy_is_board_bound_and_never_migrates_profiles(self):
+        definitions, data = self.definition()
+        data = data | {"schema_version": 2, "system_firmware": []}
+        for value in [0, 8, True, "0"]:
+            with self.subTest(other_board=value):
+                with self.assertRaisesRegex(ValueError, "Wi-Fi wake policy"):
+                    hardware_profile.validate_definition(data | {"wifi_wake_on_wlan": value})
+        for value in [8, True, "0", None]:
+            with self.subTest(lenovo=value):
+                with self.assertRaisesRegex(ValueError, "Wi-Fi wake policy"):
+                    hardware_profile.validate_definition(LENOVO | {"wifi_wake_on_wlan": value})
+        saved = self.root / "etc/NetworkManager/system-connections/owner.nmconnection"
+        saved.parent.mkdir(parents=True)
+        original = b"[wifi]\nwake-on-wlan=8\n[connection]\nautoconnect=true\n"
+        saved.write_bytes(original)
+        prepare.prepare_profile("lenovo-83ed", self.root, self.kver, self.firmware,
+                                target_update_ref=TARGET_REF)
+        self.assertEqual(saved.read_bytes(), original)
+        # A fresh unrelated image gets no Lenovo policy.
+        restart_fixture(self)
+        definitions, data = self.definition()
+        prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent",
+                                definitions, target_update_ref=TARGET_REF)
+        self.assertNotIn("wifi_wake_on_wlan", json.loads((self.root / prepare.DEFINITION_PATH).read_text()))
+        self.assertFalse((self.root / "usr/lib/NetworkManager/conf.d/30-tilo-lenovo-wifi.conf").exists())
+
     def test_current_dev_origin_requires_target_flavour_and_policy(self):
         from hardware_profile import install_update_origin, validate_target_imgref
         ref = "registry.tilo.so/tilo/tilo-vm:fixture-lenovo-83ed-ci"
@@ -201,6 +240,7 @@ class HardwareProfileTest(unittest.TestCase):
             kargs = self.root / prepare.KARGS_PATH
             self.assertEqual(tomllib.loads(kargs.read_text())["kargs"], ["systemd.tpm2_wait=0"])
             outputs = [profile_path, self.root / prepare.DEFINITION_PATH, parser, dracut, kargs,
+                       self.root / "usr/lib/NetworkManager/conf.d/30-tilo-lenovo-wifi.conf",
                        *(installed / name for name in NAMES)]
             self.assertEqual(self.ownership.call_count, len(outputs))
             for output in outputs:

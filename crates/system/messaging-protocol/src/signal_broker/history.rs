@@ -10,6 +10,9 @@ use std::{
 use tilo_contact_directory::routing::Route;
 use tilo_messaging::{Delivery, Direction, HistoryPage, Message, SendError};
 use zeroize::{Zeroize, Zeroizing};
+#[path = "history/groups.rs"]
+pub(crate) mod groups;
+pub(crate) use groups::GroupIncoming;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ROWS: usize = 16_384;
 const FORMAT: VaultFormat = VaultFormat {
@@ -70,6 +73,8 @@ struct Ledger {
     owner: Owner,
     rows: BTreeMap<String, Row>,
     #[serde(default)]
+    groups: BTreeMap<String, GroupIncoming>,
+    #[serde(default)]
     pending: Vec<Vec<u8>>,
 }
 impl Drop for Ledger {
@@ -111,13 +116,16 @@ impl History {
         {
             return Err(SendError::Unavailable);
         }
-        private_fs::directory(root).map_err(|_| SendError::Unavailable)?;
-        let file = private_fs::lock_file(&root.join("history.lock"))
+        tilo_files::native::private::directory(root).map_err(|_| SendError::Unavailable)?;
+        let file = tilo_files::native::private::lock_file(&root.join("history.lock"))
             .map_err(|_| SendError::Unavailable)?;
         let lock = FileLock::try_exclusive(file).map_err(|_| SendError::Unavailable)?;
         let path = root.join("history.enc");
         let mut created = false;
-        let ledger = match private_fs::open_owned_for_read(&path, (MAX_BYTES + 1024) as u64) {
+        let ledger = match tilo_files::native::private::open_owned_for_read(
+            &path,
+            (MAX_BYTES + 1024) as u64,
+        ) {
             Ok((mut file, _)) => {
                 use std::io::Read;
                 let mut bytes = Vec::new();
@@ -132,13 +140,18 @@ impl History {
                 Ledger {
                     owner: owner.clone(),
                     rows: BTreeMap::new(),
+                    groups: BTreeMap::new(),
                     pending: Vec::new(),
                 }
             }
             Err(_) => return Err(SendError::Unavailable),
         };
         if &ledger.owner != owner
-            || ledger.rows.len() > MAX_ROWS
+            || ledger.rows.len().saturating_add(ledger.groups.len()) > MAX_ROWS
+            || (!ledger.groups.is_empty() && owner.service != crate::Service::Whatsapp)
+            || ledger.groups.iter().any(|(key, row)| {
+                !row.valid() || !matches!(row.key(),Ok(ref expected) if expected==key)
+            })
             || ledger.pending.len() > 64
             || ledger.pending.iter().map(Vec::len).sum::<usize>() > 4 * 1024 * 1024
             || ledger.rows.values().any(|r| {
@@ -183,7 +196,8 @@ impl History {
             let sealed = FORMAT
                 .seal(&self.key, &bytes)
                 .ok_or(SendError::Unavailable)?;
-            private_fs::write_atomic(&self.path, &sealed).map_err(|_| SendError::Unavailable)
+            tilo_files::native::private::write_atomic(&self.path, &sealed)
+                .map_err(|_| SendError::Unavailable)
         })();
         if result.is_err() {
             self.usable = false;
@@ -303,9 +317,13 @@ impl History {
         &mut self,
         batch: &[IncomingRecord<'_>],
     ) -> Result<usize, SendError> {
-        if !self.usable || batch.is_empty() || batch.len() > 64 {
-            return Err(SendError::Unavailable);
-        }
+        self.incoming_mixed(batch, &[])
+    }
+    #[cfg(feature = "whatsapp-sdk")]
+    fn stage_direct(
+        &self,
+        batch: &[IncomingRecord<'_>],
+    ) -> Result<BTreeMap<String, Row>, SendError> {
         let mut staged = BTreeMap::<String, Row>::new();
         let mut bytes = 0usize;
         for incoming in batch {
@@ -343,22 +361,7 @@ impl History {
                 },
             );
         }
-        let count = staged.len();
-        if self.ledger.rows.len().saturating_add(count) > MAX_ROWS {
-            return Err(SendError::Unavailable);
-        }
-        if count == 0 {
-            return Ok(0);
-        }
-        let keys: Vec<_> = staged.keys().cloned().collect();
-        self.ledger.rows.append(&mut staged);
-        if let Err(error) = self.persist() {
-            for key in keys {
-                self.ledger.rows.remove(&key);
-            }
-            return Err(error);
-        }
-        Ok(count)
+        Ok(staged)
     }
     fn insert(
         &mut self,
@@ -368,7 +371,15 @@ impl History {
         time: u64,
         incoming: bool,
     ) -> Result<(), SendError> {
-        if !self.usable || self.ledger.rows.len() >= MAX_ROWS || text.len() > 32 * 1024 || time == 0
+        if !self.usable
+            || self
+                .ledger
+                .rows
+                .len()
+                .saturating_add(self.ledger.groups.len())
+                >= MAX_ROWS
+            || text.len() > 32 * 1024
+            || time == 0
         {
             return Err(SendError::Unavailable);
         }

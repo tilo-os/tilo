@@ -23,7 +23,6 @@
 )]
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -47,6 +46,7 @@ use super::PromptOutcome;
 use super::auth::authenticate_call;
 #[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+use super::restore::{RestoreRecord, RestoreStore, restore_data, restore_key};
 use super::screencast_pipewire::{
     PipewireStreamInfo, PipewireStreamRequest, ScreenCastStreamProvisionerHandle,
 };
@@ -55,9 +55,6 @@ use super::{CapabilityKind, PortalContext, flow};
 
 #[cfg(target_os = "linux")]
 const MAX_LIVE_SESSIONS: usize = 64;
-const MAX_RESTORE_TOKENS: usize = 256;
-const RESTORE_VENDOR: &str = "tilo";
-const RESTORE_DATA_VERSION: u32 = 1;
 
 /// Source-type bitmask (`ScreenCast.AvailableSourceTypes`).
 pub mod source_type {
@@ -84,93 +81,23 @@ pub const SCREENCAST_VERSION: u32 = 4;
 /// Per-session negotiated selection, keyed by the frontend's `session_handle` object path.
 #[derive(Clone, Debug, Default)]
 struct ScreenCastSession {
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     owner: String,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     app_id: String,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     caller: Option<PortalCaller>,
     /// Bitmask of requested source types (`SelectSources` `types`).
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     source_types: u32,
     /// Requested cursor mode.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     cursor_mode: u32,
     /// Whether the app allowed selecting multiple sources.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     multiple: bool,
     /// Requested persistence: 0 none, 1 while-running, 2 until-revoked.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     persist_mode: u32,
     /// True once valid standard `restore_data` pre-approved this session, so
     /// `Start` skips the consent prompt (persisted-share fast path).
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     restored: bool,
     /// Consent is requested exactly once, at Start (unless restored).
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     consented: bool,
     /// Serializes concurrent Start calls across the async prompt.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     starting: bool,
     /// PipeWire nodes owned by this session, released on lifecycle close.
     streams: Vec<u32>,
@@ -189,126 +116,19 @@ struct RestoreData {
     issued_unix_seconds: u64,
 }
 
-/// Durable mode-2 restore records.  They deliberately live outside the
-/// replicated workspace document: an opaque restore payload is an authority secret for
-/// one local application installation, never a collaboration record.
-#[derive(Default)]
-struct RestoreStore {
-    memory: HashMap<String, RestoreData>,
-    durable: HashMap<String, RestoreData>,
-    path: Option<PathBuf>,
-}
-
-impl RestoreStore {
-    #[cfg(target_os = "linux")]
-    fn load() -> Self {
-        Self::load_at(restore_path())
+impl RestoreRecord for RestoreData {
+    fn app_id(&self) -> &str {
+        &self.app_id
     }
-
-    fn load_at(path: Option<PathBuf>) -> Self {
-        let Some(path) = path else {
-            return Self::default();
-        };
-        let durable = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice::<HashMap<String, RestoreData>>(&bytes)
-                .ok()
-                .filter(valid_restore_map)
-                .unwrap_or_else(|| {
-                    // A corrupt restore record must never become a grant. Keep
-                    // forensic evidence rather than overwriting it in place.
-                    let quarantine =
-                        path.with_extension(format!("corrupt-{}", uuid::Uuid::new_v4()));
-                    let _ = std::fs::rename(&path, quarantine);
-                    HashMap::new()
-                }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
-            Err(_) => HashMap::new(),
-        };
-        Self {
-            memory: HashMap::new(),
-            durable,
-            path: Some(path),
-        }
+    fn persist_mode(&self) -> u32 {
+        self.persist_mode
     }
-
-    fn get(&self, token: &str) -> Option<RestoreData> {
-        self.memory
-            .get(token)
-            .or_else(|| self.durable.get(token))
-            .cloned()
+    fn issued_unix_seconds(&self) -> u64 {
+        self.issued_unix_seconds
     }
-
-    fn insert(&mut self, token: String, data: RestoreData) -> Result<(), String> {
-        let target = if data.persist_mode == 2 {
-            &mut self.durable
-        } else {
-            &mut self.memory
-        };
-        target.insert(token, data);
-        while target.len() > MAX_RESTORE_TOKENS {
-            let Some(oldest) = target
-                .iter()
-                .min_by_key(|(_, data)| data.issued_unix_seconds)
-                .map(|(token, _)| token.clone())
-            else {
-                break;
-            };
-            target.remove(&oldest);
-        }
-        self.persist_durable()
+    fn grant_in_range(&self) -> bool {
+        self.source_types & !source_type::ALL == 0 && self.cursor_mode & !cursor_mode::ALL == 0
     }
-
-    fn persist_durable(&self) -> Result<(), String> {
-        let Some(path) = &self.path else {
-            // Mode 1 is still useful in an ephemeral/CI session.  Mode 2
-            // cannot truthfully survive a restart without private state.
-            return if self.durable.is_empty() {
-                Ok(())
-            } else {
-                Err("private portal state directory is unavailable".into())
-            };
-        };
-        let bytes = serde_json::to_vec(&self.durable)
-            .map_err(|error| format!("serialise restore records: {error}"))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("create restore directory: {error}"))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-                    .map_err(|error| format!("secure restore directory: {error}"))?;
-            }
-        }
-        tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
-            .map_err(|error| format!("write restore records: {error}"))
-    }
-
-    /// Revoke every restore authority for an app.  Package removal and the
-    /// shell's privacy controls call this rather than trying to guess tokens.
-    fn revoke_app(&mut self, app_id: &str) -> Result<(), String> {
-        self.memory.retain(|_, record| record.app_id != app_id);
-        self.durable.retain(|_, record| record.app_id != app_id);
-        self.persist_durable()
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn restore_path() -> Option<PathBuf> {
-    let root = xdg_paths::state_dir()?;
-    Some(root.join("tilo/portal/screencast-restore.json"))
-}
-
-fn valid_restore_map(records: &HashMap<String, RestoreData>) -> bool {
-    records.len() <= MAX_RESTORE_TOKENS
-        && records.iter().all(|(token, data)| {
-            uuid::Uuid::parse_str(token).is_ok()
-                && !data.app_id.is_empty()
-                && data.app_id.len() <= 256
-                && data.source_types & !source_type::ALL == 0
-                && data.cursor_mode & !cursor_mode::ALL == 0
-                && data.persist_mode == 2
-        })
 }
 
 #[cfg(target_os = "linux")]
@@ -319,7 +139,7 @@ pub struct ScreenCastBackend {
     sessions: Arc<Mutex<HashMap<String, ScreenCastSession>>>,
     /// Issued opaque restore payloads → the selection they restore. Mode 1 is session
     /// memory; mode 2 is an app-bound private, atomically-written local file.
-    restore: Arc<Mutex<RestoreStore>>,
+    restore: Arc<Mutex<RestoreStore<RestoreData>>>,
 }
 
 /// Lifecycle hook retained by `serve`: closing a frontend Session object
@@ -374,7 +194,7 @@ impl ScreenCastBackend {
             ctx,
             lifecycle,
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            restore: Arc::new(Mutex::new(RestoreStore::load())),
+            restore: Arc::new(Mutex::new(RestoreStore::load("screencast-restore.json"))),
         }
     }
 
@@ -383,16 +203,6 @@ impl ScreenCastBackend {
             sessions: self.sessions.clone(),
             provisioner: self.ctx.screencast_provisioner.clone(),
         }
-    }
-
-    /// Remove durable and session restore records when an app is uninstalled,
-    /// its capture permission is revoked, or Tilo privacy controls disable
-    /// screen sharing.  Tokens remain app-bound even before this is called.
-    pub fn revoke_restore_tokens_for_app(&self, app_id: &str) -> Result<(), String> {
-        self.restore
-            .lock()
-            .map_err(|_| "restore-data store is unavailable".to_string())?
-            .revoke_app(app_id)
     }
 
     fn reset_starting(&self, key: &str) {
@@ -866,29 +676,6 @@ fn opt_bool(options: &HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
     bool::try_from(v).ok()
 }
 
-/// Decode Tilo's opaque key from standard `restore_data` `(suv)`. Unknown
-/// vendors, versions, malformed variants, and non-UUID payloads are not an
-/// error: the portal spec says a backend may simply prompt normally when it
-/// cannot restore a record.
-fn restore_key(options: &HashMap<String, OwnedValue>) -> Option<String> {
-    let raw = options.get("restore_data")?.try_clone().ok()?;
-    let (vendor, version, payload): (String, u32, OwnedValue) = raw.try_into().ok()?;
-    if vendor != RESTORE_VENDOR || version != RESTORE_DATA_VERSION {
-        return None;
-    }
-    let token = Value::from(payload).downcast::<String>().ok()?;
-    uuid::Uuid::parse_str(&token).ok().map(|_| token)
-}
-
-/// Build a standard `(suv)` `restore_data` value. The variant payload is the
-/// random key understood only by this backend's private store.
-fn restore_data(key: String) -> Option<OwnedValue> {
-    // `OwnedValue`'s D-Bus type is `v`, so the tuple is exactly `(suv)`;
-    // the opaque payload itself is a normal string inside that variant.
-    let payload = OwnedValue::from(zbus::zvariant::Str::from(key));
-    OwnedValue::try_from(Value::new((RESTORE_VENDOR, RESTORE_DATA_VERSION, payload))).ok()
-}
-
 /// Build `Start`'s `(response, results)` from the provisioned streams and optional restore data. The `streams` field is `a(ua{sv})`.
 fn start_response(
     infos: Vec<PipewireStreamInfo>,
@@ -1016,8 +803,8 @@ mod tests {
             options.insert("restore_data".into(), restore_data(key.clone()).unwrap());
             let raw = options["restore_data"].try_clone().unwrap();
             let parsed: (String, u32, OwnedValue) = raw.try_into().unwrap();
-            assert_eq!(parsed.0, RESTORE_VENDOR);
-            assert_eq!(parsed.1, RESTORE_DATA_VERSION);
+            assert_eq!(parsed.0, "tilo");
+            assert_eq!(parsed.1, 1);
             assert_eq!(Value::from(parsed.2).downcast::<String>().unwrap(), key);
             let key = uuid::Uuid::new_v4().to_string();
             options.insert("restore_data".into(), restore_data(key.clone()).unwrap());
@@ -1038,7 +825,7 @@ mod tests {
                 .insert(token.clone(), durable_record("org.example.share"))
                 .expect("durable write");
             drop(store);
-            let after_restart = RestoreStore::load_at(Some(path));
+            let after_restart = RestoreStore::<RestoreData>::load_at(Some(path));
             assert_eq!(
                 after_restart.get(&token).map(|record| record.app_id),
                 Some("org.example.share".into())
@@ -1051,8 +838,8 @@ mod tests {
             std::fs::create_dir_all(&root).expect("root");
             let path = root.join("restore.json");
             std::fs::write(&path, b"not json").expect("corrupt fixture");
-            let store = RestoreStore::load_at(Some(path.clone()));
-            assert!(store.durable.is_empty());
+            let store = RestoreStore::<RestoreData>::load_at(Some(path.clone()));
+            assert!(store.durable_is_empty());
             assert!(!path.exists(), "corrupt data must not remain authoritative");
             assert!(
                 std::fs::read_dir(&root)
@@ -1064,20 +851,6 @@ mod tests {
                         .starts_with("restore.corrupt-")),
                 "corrupt artifact is retained for diagnosis rather than overwritten"
             );
-            let _ = std::fs::remove_dir_all(root);
-        }
-        // Phase `revocation_removes_durable_restore_authority`.
-        {
-            let root = std::env::temp_dir().join(format!("tilo-sc-{}", uuid::Uuid::new_v4()));
-            let path = root.join("restore.json");
-            let token = uuid::Uuid::new_v4().to_string();
-            let mut store = RestoreStore::load_at(Some(path.clone()));
-            store
-                .insert(token.clone(), durable_record("org.example.share"))
-                .expect("durable write");
-            store.revoke_app("org.example.share").expect("revoke");
-            drop(store);
-            assert!(RestoreStore::load_at(Some(path)).get(&token).is_none());
             let _ = std::fs::remove_dir_all(root);
         }
     }

@@ -16,9 +16,8 @@ use vello::peniko::Color;
 
 use crate::engine;
 use crate::graph2d::Pointer;
-use crate::mathfield::MathField;
 use crate::model::CalcModel;
-use crate::plot_panel::{Formulas, Hover, PlotPanel, SURFACES};
+use crate::plot_panel::{Formulas, PlotPanel, SURFACES};
 use crate::zoom::ZoomAnim3d;
 
 /// Half-width of the sampled domain in x and y.
@@ -39,7 +38,8 @@ pub struct Graph3dScreen {
     pub canvas: Rect,
     /// The window area the screen was last laid out in.
     area: Rect,
-    panel: PlotPanel,
+    /// The formula list beside (or floating over) the plot.
+    pub panel: PlotPanel,
     /// Projected + depth-sorted geometry for ALL visible surfaces, rebuilt only
     /// when the surfaces, orbit/zoom, domain, or canvas size change — never on a
     /// theme or tab switch. Each cell carries its function's series index; the
@@ -145,11 +145,6 @@ impl SurfaceKey {
 }
 
 impl Graph3dScreen {
-    /// Adopt the theme's scale and metrics.
-    pub fn scale_for(&mut self, theme: &Theme) {
-        self.panel.scale_for(theme);
-    }
-
     /// Resolve the panel, the content column and the plot for the window
     /// `area` (the header row included).
     pub fn layout(&mut self, area: Rect, model: &CalcModel) {
@@ -162,127 +157,6 @@ impl Graph3dScreen {
             content.x1,
             content.y1,
         );
-    }
-
-    /// The column beside the panel, header row included.
-    pub fn content_column(&self) -> Rect {
-        self.panel.side().content()
-    }
-
-    /// Reconcile the per-row editors with `model.surfaces`.
-    pub fn sync_fields(&mut self, model: &CalcModel) {
-        self.panel.sync_fields(&model.surfaces);
-    }
-
-    /// The math field for the active surface row, if any.
-    pub fn active_field_mut(&mut self, active: usize) -> Option<&mut MathField> {
-        self.panel.active_field_mut(active)
-    }
-
-    /// The row index whose editor rect contains `p`.
-    pub fn field_at(&self, p: Point) -> Option<usize> {
-        self.panel.field_at(p)
-    }
-
-    /// End any in-progress drag-selection in every row's field.
-    pub fn release_fields(&mut self) {
-        self.panel.release_fields();
-    }
-
-    /// Paint remote collaborators' carets into the active surface field.
-    pub fn draw_remote_carets(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        active: usize,
-        cursors: &[(Point, Color)],
-    ) {
-        self.panel.draw_remote_carets(scene, t, active, cursors);
-    }
-
-    // -- panel chrome --------------------------------------------------------
-
-    pub fn toggle_at(&self, p: Point) -> bool {
-        self.panel.side().toggle_at(p)
-    }
-    pub fn scrim_at(&self, p: Point) -> bool {
-        self.panel.side().scrim_at(p)
-    }
-    pub fn add_at(&self, p: Point) -> bool {
-        self.panel.add_at(p)
-    }
-    pub fn vis_at(&self, p: Point) -> Option<usize> {
-        self.panel.vis_at(p)
-    }
-    pub fn delete_at(&self, p: Point) -> Option<usize> {
-        self.panel.delete_at(p)
-    }
-    pub fn row_at(&self, p: Point) -> Option<usize> {
-        self.panel.row_at(p)
-    }
-    pub fn toggle_panel(&mut self) {
-        self.panel.side_mut().toggle();
-    }
-    pub fn close_panel(&mut self) {
-        self.panel.side_mut().close();
-    }
-    /// Snap the panel open or shut with no animation (captures and tests).
-    pub fn snap_panel(&mut self, open: bool) {
-        self.panel.side_mut().snap(open);
-    }
-    pub fn overlay_captures(&self, p: Point) -> bool {
-        self.panel.side().covers(p)
-    }
-    /// Whether the Surfaces panel is currently shown.
-    pub fn panel_open(&self) -> bool {
-        self.panel.side().is_open()
-    }
-    /// Whether the panel floats over the plot.
-    pub fn is_overlay(&self) -> bool {
-        self.panel.side().is_overlay()
-    }
-    /// Whether the panel's slide is still running.
-    pub fn panel_animating(&self) -> bool {
-        self.panel.side().is_animating()
-    }
-    /// The panel's show/hide button, for the accessibility tree.
-    pub fn toggle_rect(&self) -> Option<Rect> {
-        Some(self.panel.side().toggle_rect()).filter(|r| *r != Rect::ZERO)
-    }
-    pub fn add_rect(&self) -> Option<Rect> {
-        self.panel.add_rect()
-    }
-    pub fn row_rect(&self, i: usize) -> Option<Rect> {
-        self.panel.row_rect(i)
-    }
-    pub fn field_rect(&self, i: usize) -> Option<Rect> {
-        self.panel.field_rect(i)
-    }
-    pub fn visibility_rect(&self, i: usize) -> Option<Rect> {
-        self.panel.visibility_rect(i)
-    }
-    pub fn delete_rect(&self, i: usize) -> Option<Rect> {
-        self.panel.delete_rect(i)
-    }
-    /// Center of the panel toggle, if one is placed this frame (test helper).
-    #[doc(hidden)]
-    pub fn toggle_center(&self) -> Option<Point> {
-        self.toggle_rect().map(|r| r.center())
-    }
-    /// Center of surface row `i`'s visibility toggle, once laid out (test
-    /// helper).
-    #[doc(hidden)]
-    pub fn vis_center(&self, i: usize) -> Option<Point> {
-        self.visibility_rect(i).map(|r| r.center())
-    }
-
-    /// Track the pointer over the panel; whether anything it paints changed.
-    pub fn set_pointer(&mut self, p: Point) -> bool {
-        self.panel.set_pointer(p)
-    }
-
-    pub fn hover(&self) -> Hover {
-        self.panel.hover()
     }
 
     /// Measure the formulas and lay the screen out for this frame, then
@@ -599,10 +473,7 @@ impl Graph3dScreen {
     pub fn canvas_contains(&self, p: Point) -> bool {
         // An open floating drawer makes the canvas non-interactive (a press
         // there dismisses the drawer instead of orbiting).
-        if self.panel.side().is_overlay() && self.panel.side().is_open() {
-            return false;
-        }
-        self.canvas.contains(p)
+        !self.panel.floats_open() && self.canvas.contains(p)
     }
 }
 
@@ -652,24 +523,28 @@ mod tests {
             let m = CalcModel::seeded();
             let wide = Rect::new(0.0, 0.0, 1280.0, 800.0);
             s.layout(wide, &m);
-            assert!(!s.is_overlay() && s.panel_open());
+            assert!(!s.panel.side().is_overlay() && s.panel.side().is_open());
             let column = s.panel.side().column();
             assert!(column.width() > 0.0 && s.canvas.x0 >= column.x1 - 0.5);
             // Narrow: collapsed drawer, the plot takes the full width.
             let narrow = Rect::new(0.0, 0.0, 560.0, 800.0);
             s.layout(narrow, &m);
-            assert!(s.is_overlay() && !s.panel_open());
+            assert!(s.panel.side().is_overlay() && !s.panel.side().is_open());
             assert_eq!(s.panel.side().column(), Rect::ZERO);
             assert!((s.canvas.width() - 560.0).abs() < 0.5);
-            let toggle = s.toggle_rect().expect("a button opens the drawer");
-            assert!(s.toggle_at(toggle.center()));
+            let toggle = s.panel.toggle_rect().expect("a button opens the drawer");
+            assert!(s.panel.side().toggle_at(toggle.center()));
             // Open it → drawer + scrim; a press inside must not orbit.
-            s.toggle_panel();
-            s.snap_panel(true);
+            s.panel.side_mut().toggle();
+            s.panel.side_mut().snap(true);
             s.layout(narrow, &m);
             let column = s.panel.side().column();
-            assert!(s.panel_open() && column.width() > 0.0);
-            assert!(s.scrim_at(Point::new(narrow.x1 - 10.0, narrow.center().y)));
+            assert!(s.panel.side().is_open() && column.width() > 0.0);
+            assert!(
+                s.panel
+                    .side()
+                    .scrim_at(Point::new(narrow.x1 - 10.0, narrow.center().y))
+            );
             assert!(!s.canvas_contains(column.center()));
         }
 
@@ -679,26 +554,31 @@ mod tests {
             let m = CalcModel::seeded();
             let area = Rect::new(0.0, 0.0, 390.0, 844.0);
             s.layout(area, &m);
-            s.toggle_panel();
-            s.snap_panel(true);
+            s.panel.side_mut().toggle();
+            s.panel.side_mut().snap(true);
             s.layout(area, &m);
             let target = f64::from(ui::tokens::Metrics::BASE.min_pointer_target);
-            let delete = s.delete_rect(0).expect("delete target");
-            let visible = s.visibility_rect(0).expect("visibility target");
+            let delete = s.panel.delete_rect(0).expect("delete target");
+            let visible = s.panel.visibility_rect(0).expect("visibility target");
             assert!(delete.width() >= target - 0.5 && delete.height() >= target - 0.5);
             assert!(visible.width() >= target - 0.5 && visible.height() >= target - 0.5);
             assert!(
                 visible.x1 <= delete.x0 + 0.5,
                 "row buttons must not overlap"
             );
-            assert_eq!(s.delete_at(delete.center()), Some(0));
-            assert_eq!(s.vis_at(visible.center()), Some(0));
+            assert_eq!(s.panel.delete_at(delete.center()), Some(0));
+            assert_eq!(s.panel.vis_at(visible.center()), Some(0));
             assert_eq!(
-                s.delete_at(s.delete_rect(1).expect("second delete target").center()),
+                s.panel.delete_at(
+                    s.panel
+                        .delete_rect(1)
+                        .expect("second delete target")
+                        .center()
+                ),
                 Some(1),
                 "a delete hit must not target the adjacent row"
             );
-            let edit = s.field_rect(0).expect("editor");
+            let edit = s.panel.field_rect(0).expect("editor");
             assert!(
                 edit.x1 <= visible.x0 + 0.5,
                 "math editing must not steal a button's target"

@@ -116,8 +116,16 @@ impl PeerIdentityStore {
             .inner
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        inner.by_peer.insert(peer, identity.clone());
+        let changed = inner
+            .by_peer
+            .insert(peer, identity.clone())
+            .is_none_or(|previous| previous.device_cert != identity.device_cert);
         drop(inner);
+        // Channel stewards read the devices the session authenticated; a
+        // handshake that repeats what is known changes nothing they read.
+        if changed {
+            tilo_identity_host::policy_change::announce();
+        }
         Ok(identity)
     }
 
@@ -127,7 +135,28 @@ impl PeerIdentityStore {
             .inner
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        inner.by_peer.remove(peer);
+        let removed = inner.by_peer.remove(peer).is_some();
+        drop(inner);
+        if removed {
+            tilo_identity_host::policy_change::announce();
+        }
+    }
+
+    /// The first instant after `now_ns` at which [`Self::devices_of`] can
+    /// answer differently with nothing written: a certificate expiring.
+    /// Revocations apply when recorded, not at their audit timestamp.
+    pub fn next_change_after(&self, now_ns: u64) -> Option<u64> {
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let expiries = inner
+            .by_peer
+            .values()
+            .filter_map(|identity| identity.device_cert.expires_at_ns);
+        let next = expiries.filter(|at| *at > now_ns).min();
+        drop(inner);
+        next
     }
 
     /// Look up a peer by its [`PeerOrigin`].
@@ -206,14 +235,18 @@ impl PeerIdentityStore {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let current = inner.revocations.entry(user_pubkey).or_default();
+        let mut changed = false;
         for entry in list.iter().cloned() {
-            // Never let a later handshake erase a revocation this device has
-            // already verified; only the person's own root counts.
+            // Only this person's root counts; later handshakes cannot
+            // erase or postpone a revocation already verified here.
             if entry.user_public_key == user_pubkey {
-                let _ = current.insert(entry);
+                changed |= current.insert(entry).unwrap_or(false);
             }
         }
         drop(inner);
+        if changed {
+            tilo_identity_host::policy_change::announce();
+        }
     }
 
     /// True if `user_pubkey`'s root revoked `device_pubkey`. Permanent: it
@@ -707,5 +740,62 @@ mod tests {
         let persons = store.authenticated_persons(700);
         assert!(!persons.contains_key(&peer(5)));
         assert_eq!(persons.get(&peer(6)), Some(&laptop.user_public_key));
+    }
+
+    /// TIL-707: channel stewards read the authenticated devices without a
+    /// clock, so the store announces each change and names the instant its
+    /// answer next changes by time alone.
+    #[test]
+    fn authenticated_devices_announce_changes_and_name_their_next_expiry() {
+        use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
+        let (root, _, mut cert) = fresh_identity(DeviceCapabilities::primary());
+        cert.expires_at_ns = Some(5_000);
+        sign_device_cert(&mut cert, &root).unwrap();
+        let user = cert.user_public_key;
+        let device = cert.device_public_key;
+        let store = PeerIdentityStore::new();
+        assert_eq!(store.next_change_after(500), None);
+
+        let epoch = tilo_identity_host::policy_change::epoch();
+        store.insert(peer(1), cert, 500).unwrap();
+        assert_ne!(
+            tilo_identity_host::policy_change::epoch(),
+            epoch,
+            "a newly authenticated device is announced"
+        );
+        assert_eq!(store.next_change_after(500), Some(5_000), "its expiry");
+
+        // A recorded revocation is permanent, even when its audit timestamp
+        // is ahead of the current clock.
+        let mut revocation = RevocationEntry {
+            user_public_key: user,
+            revoked_device_public_key: device,
+            revoked_at_ns: 2_000,
+            reason: RevocationReason::Compromised,
+            signature: [0u8; 64],
+        };
+        sign_revocation_entry(&mut revocation, &root).unwrap();
+        let mut list = RevocationList::new();
+        list.insert(revocation).unwrap();
+        let epoch = tilo_identity_host::policy_change::epoch();
+        store.set_revocations(user, &list);
+        assert_ne!(
+            tilo_identity_host::policy_change::epoch(),
+            epoch,
+            "a new revocation is announced"
+        );
+        assert_eq!(store.next_change_after(500), Some(5_000));
+        assert_eq!(store.next_change_after(2_000), Some(5_000));
+        assert_eq!(store.next_change_after(5_000), None);
+        assert!(store.devices_of(&user, 1_999).is_empty());
+        assert!(store.devices_of(&user, 2_000).is_empty());
+
+        let epoch = tilo_identity_host::policy_change::epoch();
+        store.remove(&peer(1));
+        assert_ne!(
+            tilo_identity_host::policy_change::epoch(),
+            epoch,
+            "a disconnected device is announced"
+        );
     }
 }
