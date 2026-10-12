@@ -1063,8 +1063,15 @@ edge kept at full strength, so rest and disabled never look the same.
 | StatusBar, History bar | none: the region's ground | `edge_on(ground)` where the bar meets the content |
 | Selectors (tab pills, tray pill, scope chip) | idle none | none (`glass_selector`) |
 
-A declared border or ramp token (`border_standard`, `border_strong`,
-`overlay_border_strong`, `colors.neutral[..]`) on a chrome surface is a defect;
+Forced-colour accessibility is the field-edge exception: when
+`Theme::colors_are_forced()` collapses surface levels, the shared field painter
+uses `border_standard` for its idle outline so its boundary retains non-text
+contrast, including disabled fields under the existing disabled group opacity.
+Enabled focus and error outlines keep their own roles.
+
+Outside that forced-colour field branch, a declared border or ramp token
+(`border_standard`, `border_strong`, `overlay_border_strong`,
+`colors.neutral[..]`) on a chrome surface is a defect;
 `tests/design_token_audit.rs::declared_borders_in_chrome_do_not_grow` ratchets
 their count against the shards under `tests/baselines/chrome-border/`.
 
