@@ -86,5 +86,14 @@ class UploadTransport(unittest.TestCase):
             run.assert_not_called()
 
 
+class WorkflowCredentialContract(unittest.TestCase):
+    def test_publication_uses_existing_package_scoped_credential(self):
+        workflow = (Path(__file__).resolve().parents[2]
+                    / ".forgejo/workflows/release-local-model-catalog.yml").read_text()
+        publish_job = workflow.split("\n  publish:\n", 1)[1]
+        self.assertIn("PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}", publish_job)
+        self.assertNotIn("secrets.RELEASE_TOKEN", publish_job)
+
+
 if __name__ == "__main__":
     unittest.main()
