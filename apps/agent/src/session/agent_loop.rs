@@ -374,7 +374,7 @@ enum Started {
     Running,
     /// It was refused before anything ran (by the live surface or the
     /// broker): its report.
-    Refused(InvokeReport),
+    Refused(Box<InvokeReport>),
     /// It runs in order instead, after everything in flight.
     InOrder,
     /// The task was cancelled before it started.
@@ -1335,7 +1335,7 @@ impl Session {
                     match self.start_independent(run, state, call)? {
                         Started::Running => return Ok(Handled::Pending),
                         Started::Refused(report) => {
-                            return Ok(self.conclude_invoke(state, call, report, failed));
+                            return Ok(self.conclude_invoke(state, call, *report, failed));
                         }
                         Started::Cancelled(message) => return Ok(Handled::Cancelled(message)),
                         Started::InOrder => {}
@@ -1486,12 +1486,8 @@ impl Session {
         run: &runtime_collab::TaskRunEnvelope,
         state: &LoopState,
         input: &Value,
-    ) -> Result<Prepared, InvokeReport> {
-        let refused = |error: String| InvokeReport {
-            succeeded: false,
-            error: Some(error),
-            ..InvokeReport::default()
-        };
+    ) -> Result<Prepared, Box<InvokeReport>> {
+        let refused = |error: String| Box::new(refused_report(error));
         let invocation = tools::read_invoke(input, &state.revealed).map_err(refused)?;
         if state.step_index >= MAX_TASK_STEPS {
             return Err(refused(format!(
@@ -1570,7 +1566,7 @@ impl Session {
             before,
         } = match self.prepare_invoke(run, state, input) {
             Ok(prepared) => prepared,
-            Err(report) => return Ok((report, None)),
+            Err(report) => return Ok((*report, None)),
         };
         let before_revision = self.broker_revision;
         // The windows the application an open starts already has, so the
@@ -1774,7 +1770,7 @@ impl Session {
             }
             Err(TaskActionStop::Failed(message)) => {
                 self.step_settled();
-                Ok(Started::Refused(refused_report(message)))
+                Ok(Started::Refused(Box::new(refused_report(message))))
             }
             Err(TaskActionStop::Cancelled(message)) => {
                 Ok(Started::Cancelled(message.unwrap_or_else(|| {
@@ -1826,9 +1822,9 @@ impl Session {
                 }
                 Err(TaskActionStop::Failed(message)) => refused_report(message),
                 Err(TaskActionStop::Cancelled(message)) => {
-                    cancelled.get_or_insert(
-                        message.unwrap_or_else(|| "Cancelled while an action was running".into()),
-                    );
+                    cancelled.get_or_insert_with(|| {
+                        message.unwrap_or_else(|| "Cancelled while an action was running".into())
+                    });
                     continue;
                 }
             };
@@ -3116,8 +3112,24 @@ mod tests {
                     );
                 }
                 CollabRequest::RemoteAction {
-                    message: RemoteActionMessage::Observe { invocation, .. },
-                } => {
+                    message:
+                        message @ (RemoteActionMessage::Observe { .. }
+                        | RemoteActionMessage::Cancel { .. }),
+                } => self.answer_remote(message),
+                CollabRequest::Presence { .. } => {}
+                other => panic!("unexpected request {other:?}"),
+            }
+            self.sent.borrow_mut().push(request);
+            Ok(())
+        }
+    }
+
+    impl Broker {
+        /// Answer an observation of, or a request to cancel, a legacy
+        /// invocation, as the action host does.
+        fn answer_remote(&mut self, message: &RemoteActionMessage) {
+            let answer = match message {
+                RemoteActionMessage::Observe { invocation, .. } => {
                     let state =
                         self.world
                             .borrow()
@@ -3133,35 +3145,26 @@ mod tests {
                                 };
                                 tilo_actions::remote::InvocationState::new(*invocation, update)
                             });
-                    self.events.push(CollabEvent::RemoteAction {
-                        message: RemoteActionMessage::Update {
-                            invocation: *invocation,
-                            state,
-                        },
-                    });
+                    RemoteActionMessage::Update {
+                        invocation: *invocation,
+                        state,
+                    }
                 }
-                CollabRequest::RemoteAction {
-                    message: RemoteActionMessage::Cancel { invocation },
-                } => {
+                RemoteActionMessage::Cancel { invocation } => {
                     let mut world = self.world.borrow_mut();
                     world.cancelled.push(*invocation);
                     world.settling.remove(invocation);
-                    self.events.push(CollabEvent::RemoteAction {
-                        message: RemoteActionMessage::CancelResponse {
-                            invocation: *invocation,
-                            result: Ok(()),
-                        },
-                    });
+                    RemoteActionMessage::CancelResponse {
+                        invocation: *invocation,
+                        result: Ok(()),
+                    }
                 }
-                CollabRequest::Presence { .. } => {}
-                other => panic!("unexpected request {other:?}"),
-            }
-            self.sent.borrow_mut().push(request);
-            Ok(())
+                other => panic!("unexpected remote action {other:?}"),
+            };
+            self.events
+                .push(CollabEvent::RemoteAction { message: answer });
         }
-    }
 
-    impl Broker {
         /// Start a legacy invocation as the action broker does: refused
         /// before anything runs when it is not permitted, else accepted at
         /// once and settled in its application `settle_after` later, when
@@ -5637,6 +5640,7 @@ mod tests {
     /// each to take; the scheduled perf run records them.
     #[test]
     fn pipelined_task_benchmark() {
+        use std::fmt::Write as _;
         let settle = Duration::from_millis(100);
         let reps: usize = std::env::var("TILO_AGENT_PIPELINE_REPS")
             .ok()
@@ -5688,7 +5692,10 @@ mod tests {
             let dir = std::path::Path::new(&dir);
             std::fs::create_dir_all(dir).unwrap();
             for (name, samples) in [("pipelined", &pipelined), ("sequential", &sequential)] {
-                let lines: String = samples.iter().map(|ms| format!("{ms:.3}\n")).collect();
+                let mut lines = String::new();
+                for ms in samples {
+                    let _ = writeln!(lines, "{ms:.3}");
+                }
                 std::fs::write(dir.join(format!("{name}.txt")), lines).unwrap();
             }
         }
