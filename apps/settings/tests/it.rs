@@ -111,3 +111,6 @@ mod published_surface;
 mod accounts_mail_loop;
 #[path = "perf_budget.rs"]
 mod perf_budget;
+
+#[path = "a11y_bus.rs"]
+mod a11y_bus;

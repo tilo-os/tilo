@@ -4222,6 +4222,21 @@ impl FrameHarness {
         .nodes
     }
 
+    /// The whole accessibility tree as one update, as the native runner hands
+    /// it to a platform adapter after a frame. The ordinary tree only: no
+    /// History presentation and no palette.
+    #[doc(hidden)]
+    pub fn a11y_tree_update(&self) -> accesskit::TreeUpdate {
+        self.drain_component_wakes();
+        let exported = self.bindings.exported_nodes(&self.node_map);
+        build_tree_update_bound(
+            self.root.as_ref(),
+            &exported.nodes,
+            exported.focus(self.focused),
+            1.0,
+        )
+    }
+
     /// The id of the exported accessibility node whose accessible name is
     /// `name` — the handle a headless test uses to address an element that has
     /// no widget of its own (a table row, a clip on a timeline track).
