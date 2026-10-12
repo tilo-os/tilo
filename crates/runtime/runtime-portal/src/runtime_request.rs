@@ -119,25 +119,40 @@ pub fn read_message<R: Read, T: for<'de> Deserialize<'de>>(
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-/// The app side: one connection to the host's `app-host` service.
-#[cfg(unix)]
-pub struct Client(std::os::unix::net::UnixStream);
+/// The app side: one connection to the host's `app-host` service. The type
+/// exists on every target so callers need no target selection; where the
+/// launcher hands no service sockets (off unix), `from_service` finds none.
+pub struct Client(Connection);
 
 #[cfg(unix)]
+type Connection = std::os::unix::net::UnixStream;
+
+/// No transport carries the service off unix, so no client is ever made there.
+#[cfg(not(unix))]
+enum Connection {}
+
 impl Client {
     /// Claim the connection the launcher handed this app, if it did.
     #[must_use]
     pub fn from_service() -> Option<Self> {
-        use std::os::fd::FromRawFd as _;
-        let fd = crate::service_fd(crate::runtime_request::SERVICE)?;
-        // SAFETY: `service_fd` verified the descriptor is open, and the
-        // launcher gave it to this process alone; the client owns it.
-        Some(Self(unsafe {
-            std::os::unix::net::UnixStream::from_raw_fd(fd)
-        }))
+        #[cfg(unix)]
+        {
+            use std::os::fd::FromRawFd as _;
+            let fd = crate::service_fd(crate::runtime_request::SERVICE)?;
+            // SAFETY: `service_fd` verified the descriptor is open, and the
+            // launcher gave it to this process alone; the client owns it.
+            Some(Self(unsafe {
+                std::os::unix::net::UnixStream::from_raw_fd(fd)
+            }))
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
     }
 
     /// A client on an explicit connection (a test host).
+    #[cfg(unix)]
     #[must_use]
     pub fn from_stream(stream: std::os::unix::net::UnixStream) -> Self {
         Self(stream)
@@ -165,6 +180,7 @@ impl Client {
         })
     }
 
+    #[cfg(unix)]
     fn exchange(&mut self, request: &Request) -> io::Result<Response> {
         write_message(&mut self.0, request)?;
         read_message(&mut self.0)?.ok_or_else(|| {
@@ -173,6 +189,11 @@ impl Client {
                 "the host closed the connection",
             )
         })
+    }
+
+    #[cfg(not(unix))]
+    fn exchange(&mut self, _request: &Request) -> io::Result<Response> {
+        match self.0 {}
     }
 }
 

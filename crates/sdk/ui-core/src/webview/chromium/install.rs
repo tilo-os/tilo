@@ -58,7 +58,7 @@ pub trait EngineInstaller: Send {
 }
 
 /// The host's installer, when the launcher granted this app the service.
-#[cfg(all(unix, feature = "local-daemons"))]
+#[cfg(feature = "local-daemons")]
 #[must_use]
 pub fn host_installer() -> Option<Box<dyn EngineInstaller>> {
     runtime_portal::runtime_request::Client::from_service()
@@ -66,16 +66,16 @@ pub fn host_installer() -> Option<Box<dyn EngineInstaller>> {
 }
 
 /// Without the host service there is nothing to ask.
-#[cfg(not(all(unix, feature = "local-daemons")))]
+#[cfg(not(feature = "local-daemons"))]
 #[must_use]
 pub fn host_installer() -> Option<Box<dyn EngineInstaller>> {
     None
 }
 
-#[cfg(all(unix, feature = "local-daemons"))]
+#[cfg(feature = "local-daemons")]
 struct HostInstaller(runtime_portal::runtime_request::Client);
 
-#[cfg(all(unix, feature = "local-daemons"))]
+#[cfg(feature = "local-daemons")]
 impl EngineInstaller for HostInstaller {
     fn status(&mut self) -> Result<InstallStatus, String> {
         use runtime_portal::runtime_request::{Phase, Response};
