@@ -410,6 +410,29 @@ pub fn to_ui_tile(t: &ShellTile) -> UiTile {
     to_ui_tile_with_inputs(t, &hosted_inputs::HostedTileInputs::default())
 }
 
+/// Build a hosted-window card with the room that determines whether its
+/// device is reachable. Other tile kinds keep their ordinary conversion.
+pub(crate) fn to_ui_tile_in_room(t: &ShellTile, room: state::RoomId) -> UiTile {
+    if let ShellTile::HostedWindow {
+        label,
+        host,
+        host_label,
+        ..
+    } = t
+    {
+        UiTile::Notice {
+            title: label.clone(),
+            detail: hosted_liveness::running_on(
+                host,
+                host_label,
+                hosted_liveness::is_live(room, host),
+            ),
+        }
+    } else {
+        to_ui_tile(t)
+    }
+}
+
 pub(crate) fn to_ui_tile_with_inputs(
     t: &ShellTile,
     inputs: &hosted_inputs::HostedTileInputs,
@@ -508,7 +531,9 @@ fn try_to_ui_tile_for_tab(
             ..
         } => UiTile::Notice {
             title: label.clone(),
-            detail: hosted_liveness::running_on(host, host_label, hosted_liveness::is_live(host)),
+            // Callers without a room cannot claim the host is reachable in
+            // this workspace. The native resolver supplies the exact room.
+            detail: hosted_liveness::running_on(host, host_label, false),
         },
         ShellTile::LocalApp {
             app_id,
@@ -906,6 +931,12 @@ impl tilo_desktop::resolver::TileResolver for NativeTileResolver<'_> {
     ) -> tilo_desktop::resolver::TileResolution {
         if let Some(mounted) = mount_in_process(&request, self.inputs) {
             return mounted;
+        }
+        if matches!(&request.tab.tile, ShellTile::HostedWindow { .. }) {
+            return tilo_desktop::resolver::TileResolution::Content(to_ui_tile_in_room(
+                &request.tab.tile,
+                request.room,
+            ));
         }
         tilo_desktop::resolver::TileResolution::Content(to_ui_tile_for_tab_with_inputs(
             &request.tab.tile,

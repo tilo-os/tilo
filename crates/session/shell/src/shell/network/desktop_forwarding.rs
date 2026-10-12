@@ -185,16 +185,19 @@ impl ShellNetwork {
     }
 
     /// Tell the hosted-window cards which devices are reachable now: every
-    /// device live in a room with this one.
+    /// device live in each exact room with this one.
     fn publish_hosted_liveness(&self) {
-        let live = self.live_room_peers.lock().map_or_else(
-            |_| BTreeSet::new(),
-            |live| {
-                live.iter()
-                    .map(|(_, endpoint)| hex::encode(endpoint.as_bytes()))
-                    .collect()
-            },
-        );
+        let peers: Vec<_> = self
+            .live_room_peers
+            .lock()
+            .map_or_else(|_| Vec::new(), |live| live.iter().copied().collect());
+        let live = peers
+            .into_iter()
+            .filter_map(|(topic, endpoint)| {
+                self.unique_room_for_topic(topic)
+                    .map(|room| (room, hex::encode(endpoint.as_bytes())))
+            })
+            .collect();
         crate::shell::hosted_liveness::set_live(live);
     }
 

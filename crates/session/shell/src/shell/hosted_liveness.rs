@@ -10,11 +10,13 @@
 use std::collections::BTreeSet;
 use std::sync::RwLock;
 
-static LIVE: RwLock<(BTreeSet<String>, u64)> = RwLock::new((BTreeSet::new(), 0));
+use crate::shell::state::RoomId;
 
-/// Record the devices (lowercase hex device keys) that are live now.
+static LIVE: RwLock<(BTreeSet<(RoomId, String)>, u64)> = RwLock::new((BTreeSet::new(), 0));
+
+/// Record each room and device (lowercase hex device key) that is live now.
 /// Returns whether that changed anything.
-pub fn set_live(devices: BTreeSet<String>) -> bool {
+pub fn set_live(devices: BTreeSet<(RoomId, String)>) -> bool {
     let Ok(mut live) = LIVE.write() else {
         return false;
     };
@@ -26,10 +28,11 @@ pub fn set_live(devices: BTreeSet<String>) -> bool {
     true
 }
 
-/// Whether the device `host` (hex device key) is live now.
-pub fn is_live(host: &str) -> bool {
+/// Whether `host` is live in this exact room. Reachability in another
+/// workspace cannot make this window look usable here.
+pub fn is_live(room: RoomId, host: &str) -> bool {
     LIVE.read()
-        .is_ok_and(|live| live.0.contains(&host.to_ascii_lowercase()))
+        .is_ok_and(|live| live.0.contains(&(room, host.to_ascii_lowercase())))
 }
 
 /// Moves whenever the set of live devices changes.
@@ -58,6 +61,34 @@ pub fn running_on(host: &str, host_label: &str, live: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::state::TileContent;
+
+    #[test]
+    fn a_host_in_another_room_does_not_make_this_window_online() {
+        let here = RoomId::new();
+        let elsewhere = RoomId::new();
+        let host = "ab12cd34ef";
+        set_live(BTreeSet::from([(elsewhere, host.into())]));
+        let tile = TileContent::HostedWindow {
+            app_id: "org.mozilla.firefox".into(),
+            label: "Firefox".into(),
+            host: host.into(),
+            host_label: "Laptop".into(),
+        };
+        let ui::widget::TileContent::Notice { detail, .. } =
+            crate::shell::to_ui_tile_in_room(&tile, here)
+        else {
+            panic!("the hosted window must show its status card");
+        };
+        assert_eq!(detail, "Running on Laptop — offline");
+        let ui::widget::TileContent::Notice { detail, .. } =
+            crate::shell::to_ui_tile_in_room(&tile, elsewhere)
+        else {
+            panic!("the hosted window must show its status card");
+        };
+        assert_eq!(detail, "Running on Laptop");
+        set_live(BTreeSet::new());
+    }
 
     #[test]
     fn a_hosted_window_says_when_its_host_is_offline() {

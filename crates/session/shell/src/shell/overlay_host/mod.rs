@@ -4633,12 +4633,12 @@ impl ShellOverlayHost {
                             .tabs
                             .iter()
                             .find(|tab| tab.id == tab_id)
-                            .map(|tab| tab.tile.clone())
+                            .map(|tab| (workspace.room, tab.tile.clone()))
                     })
                 })
             })
         });
-        let Some(tile) = tile else {
+        let Some((room, tile)) = tile else {
             return false;
         };
         for &row_ptr in self.group_row_ptrs.values() {
@@ -4646,7 +4646,7 @@ impl ShellOverlayHost {
             let row: &mut GroupRow = unsafe { &mut *row_ptr };
             for group in &mut row.groups {
                 if let Some(host) = group.host_for_tab_mut(tab_id) {
-                    host.replace_content(crate::shell::to_ui_tile(&tile));
+                    host.replace_content(crate::shell::to_ui_tile_in_room(&tile, room));
                     return true;
                 }
             }
@@ -4661,22 +4661,32 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let hosted: std::collections::HashMap<u64, crate::shell::state::TileContent> = {
+        let hosted: std::collections::HashMap<
+            u64,
+            (
+                crate::shell::state::RoomId,
+                crate::shell::state::TileContent,
+            ),
+        > = {
             let state = chrome.borrow();
             let tree = state.tree();
             tree.desktop
                 .workspaces
                 .iter()
-                .flat_map(|workspace| &workspace.strips)
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .filter(|tab| {
+                .flat_map(|workspace| {
+                    workspace.strips.iter().flat_map(move |strip| {
+                        strip.window_groups.iter().flat_map(move |group| {
+                            group.tabs.iter().map(move |tab| (workspace.room, tab))
+                        })
+                    })
+                })
+                .filter(|(_, tab)| {
                     matches!(
                         tab.tile,
                         crate::shell::state::TileContent::HostedWindow { .. }
                     ) && !self.peer_stream_tabs.values().any(|id| *id == tab.id)
                 })
-                .map(|tab| (tab.id, tab.tile.clone()))
+                .map(|(room, tab)| (tab.id, (room, tab.tile.clone())))
                 .collect()
         };
         if hosted.is_empty() {
@@ -4687,9 +4697,9 @@ impl ShellOverlayHost {
             // SAFETY: same row ownership invariant as `mount_peer_stream`.
             let row: &mut GroupRow = unsafe { &mut *row_ptr };
             for group in &mut row.groups {
-                for (tab, tile) in &hosted {
+                for (tab, (room, tile)) in &hosted {
                     if let Some(host) = group.host_for_tab_mut(*tab) {
-                        host.replace_content(crate::shell::to_ui_tile(tile));
+                        host.replace_content(crate::shell::to_ui_tile_in_room(tile, *room));
                         replaced = true;
                     }
                 }

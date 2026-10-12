@@ -1423,8 +1423,8 @@ impl ShellDriver {
     pub fn scene_setup(&mut self, name: &str) -> Result<(), String> {
         match name {
             "desktop" => Self::scene_desktop(),
-            "hosted-online" => self.scene_hosted_window(true),
-            "hosted-offline" => self.scene_hosted_window(false),
+            "hosted-online" => self.scene_hosted_window(true)?,
+            "hosted-offline" => self.scene_hosted_window(false)?,
             "overview" => self.scene_overview(),
             "overview-shared" => self.scene_overview_shared(),
             "palette" => self.scene_palette(),
@@ -1490,10 +1490,17 @@ impl ShellDriver {
     fn scene_desktop() {}
 
     /// Production hosted-window card, without a live desktop or transport.
-    fn scene_hosted_window(&mut self, online: bool) {
+    fn scene_hosted_window(&mut self, online: bool) -> Result<(), String> {
         let host = "aa".repeat(32);
+        let room = self
+            .chrome()
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room)
+            .ok_or("the hosted-window scene has no workspace")?;
         shell::shell::hosted_liveness::set_live(if online {
-            std::collections::BTreeSet::from([host.clone()])
+            std::collections::BTreeSet::from([(room, host.clone())])
         } else {
             std::collections::BTreeSet::new()
         });
@@ -1520,6 +1527,7 @@ impl ShellDriver {
             st.bump();
         });
         self.fb.host_mut().refresh_hosted_window_cards();
+        Ok(())
     }
 
     fn scene_overview(&mut self) {
