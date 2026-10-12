@@ -134,7 +134,7 @@ fn load_or_create_salt(path: &Path) -> io::Result<Zeroizing<[u8; 32]>> {
     use std::io::Read;
     let read = |path: &Path| -> io::Result<Zeroizing<[u8; 32]>> {
         let mut bytes = Zeroizing::new(Vec::with_capacity(32));
-        private_fs::read(path)?.take(33).read_to_end(&mut bytes)?;
+        tilo_files::native::private::read(path)?.take(33).read_to_end(&mut bytes)?;
         let mut salt = Zeroizing::new([0_u8; 32]);
         if bytes.len() != salt.len() {
             return Err(io::Error::new(
@@ -149,11 +149,11 @@ fn load_or_create_salt(path: &Path) -> io::Result<Zeroizing<[u8; 32]>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         existing => return existing,
     }
-    private_fs::directory(path.parent().ok_or(io::ErrorKind::InvalidInput)?)?;
+    tilo_files::native::private::directory(path.parent().ok_or(io::ErrorKind::InvalidInput)?)?;
     let mut fresh = Zeroizing::new([0_u8; 32]);
     tilo_seal::fill_random(fresh.as_mut()).map_err(io::Error::other)?;
     // `false`: a concurrent starter published first; use theirs.
-    private_fs::create_atomic(path, fresh.as_ref())?;
+    tilo_files::native::private::create_atomic(path, fresh.as_ref())?;
     read(path)
 }
 
@@ -315,8 +315,8 @@ impl Store {
             .path
             .parent()
             .ok_or_else(|| StoreError::Io("no parent directory".into()))?;
-        private_fs::directory(parent).map_err(|error| StoreError::Io(error.to_string()))?;
-        private_fs::write_atomic(&self.path, &sealed)
+        tilo_files::native::private::directory(parent).map_err(|error| StoreError::Io(error.to_string()))?;
+        tilo_files::native::private::write_atomic(&self.path, &sealed)
             .map_err(|error| StoreError::Io(error.to_string()))
     }
 

@@ -23,7 +23,7 @@ tilo-seal = { version = "0.1.0", path = "../tilo-seal" }
 # The device identity whose key the store key derives from.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 # Owner-only files, written atomically.
-private-fs = { version = "0.1.0", path = "../private-fs" }
+tilo-files = { path = "../../platform/tilo-files" }
 serde.workspace = true
 serde_json.workspace = true
 postcard.workspace = true
