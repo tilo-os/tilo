@@ -658,7 +658,10 @@ were the same; dnf records it as each package's install time in the rpmdb;
 `fc-cache` records the font directories' times. With it stable, two release
 builds share those layers unless what is in them changed. A publication still
 reseals a second UKI on top, which carries the new tree's composefs digest and
-is new in every release by design.
+is new in every release by design. With the runtime, Chromium and Tilo trees,
+an update for a framework change went from 518 MB to 448 MB on x86_64, and the
+release lane no longer re-sends the UKI (116 MB) and the rpmdb (17 MB) when
+nothing in them changed (`docs/benchmarks/os-image-size-2026-10-12-update-layers.md`).
 
 The nightly footprint group records `footprint.image.update_bytes.<arch>`,
 the update from main's previous build (`image_size.py --update-from-previous
