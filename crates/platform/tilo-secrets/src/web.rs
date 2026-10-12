@@ -112,7 +112,7 @@ impl crate::SecretBackend for MirrorBackend {
 }
 
 fn not_mirrored() -> SecretError {
-    SecretError::Unsupported(crate::caps::unsupported(crate::Feature::Blocking))
+    SecretError::Unsupported(crate::Unsupported::of(crate::Feature::Blocking))
 }
 
 /// Keep the mirror, when there is one, in step with a write.

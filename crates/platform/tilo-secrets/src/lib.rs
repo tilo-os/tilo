@@ -65,7 +65,7 @@ pub mod web;
 #[cfg(target_os = "windows")]
 mod windows;
 
-pub use caps::{Availability, CAPABILITIES, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability};
 
 /// Secret bytes: wiped from memory on drop and never printed by `Debug`.
 #[derive(Clone, PartialEq, Eq)]
@@ -400,9 +400,7 @@ impl SecretStore {
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             Backend::Web if web::mirrored() => Ok(&web::MirrorBackend),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            Backend::Web => Err(SecretError::Unsupported(caps::unsupported(
-                Feature::Blocking,
-            ))),
+            Backend::Web => Err(SecretError::Unsupported(Unsupported::of(Feature::Blocking))),
         }
     }
 }
