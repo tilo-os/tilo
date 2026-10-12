@@ -1565,28 +1565,27 @@ impl FrameBuilder {
         })
     }
 
+    /// The native editor actually owned by the active mounted tab.
+    fn active_terminal_node(&self) -> Option<NodeId> {
+        fn terminal_pointer(widget: &dyn Widget) -> Option<*const ()> {
+            if is_terminal(widget) && widget.is_focusable() && widget.is_enabled() {
+                return Some(std::ptr::from_ref(widget).cast::<()>());
+            }
+            widget.children().into_iter().find_map(terminal_pointer)
+        }
+        let pointer = terminal_pointer(self.host.active_app_host()?)?;
+        // AppWidget and Widget can have different vtables for one owned object.
+        self.node_map
+            .iter()
+            .find_map(|(&id, &widget)| (widget.cast::<()>().cast_const() == pointer).then_some(id))
+    }
+
     fn initial_focus_target(&self, order: &[NodeId]) -> Option<NodeId> {
         // A focused Terminal must receive typing, including Space and Enter.
         // Chrome controls come first in DFS and used to steal initial focus;
         // Activate then opened workspace settings instead of sending CR.
         if self.active_tile_is_terminal() {
-            // TileHost children are `dyn AppWidget`; chrome focus order
-            // compares `dyn Widget` fat pointers and used to miss the
-            // Terminal even though it is in the live node map.
-            if let Some((&id, _)) = self.node_map.iter().find(|(_, mapped)| {
-                let widget = unsafe { &***mapped };
-                is_terminal(widget) && widget.is_focusable() && widget.is_enabled()
-            }) {
-                return Some(id);
-            }
-            if let Some(terminal) = order.iter().copied().find(|id| {
-                self.node_map
-                    .get(id)
-                    // SAFETY: this map belongs to the current, live layout tree.
-                    .is_some_and(|&widget| is_terminal(unsafe { &*widget }))
-            }) {
-                return Some(terminal);
-            }
+            return self.active_terminal_node();
         }
         // Overflowing scroll regions are keyboard targets too, but an
         // unnamed container must not take the initial focus from the setup
@@ -4855,6 +4854,9 @@ impl FrameBuilder {
                         key.logical_key,
                         Key::Named(NamedKey::Enter | NamedKey::Space)
                     )
+                    // Local consent owns these keys before the underlying
+                    // process can edit or submit its original shell line.
+                    && !self.host.dictation_owns_key(&key.logical_key)
         ) || !self.active_tile_is_terminal()
         {
             return false;
@@ -4865,11 +4867,10 @@ impl FrameBuilder {
         if mods.super_key() || mods.shift_key() {
             return false;
         }
-        let Some((&id, &widget)) = self
-            .node_map
-            .iter()
-            .find(|(_, mapped)| is_terminal(unsafe { &***mapped }))
-        else {
+        let Some(id) = self.active_terminal_node() else {
+            return false;
+        };
+        let Some(&widget) = self.node_map.get(&id) else {
             return false;
         };
         let mut handled = false;
@@ -5251,16 +5252,9 @@ mod tests {
         // Focus-window first changes chrome structure; materialize that tab
         // before looking for its mounted application in the current node map.
         fb.relayout();
-        let terminal = fb
-            .node_map
-            .values()
-            .find_map(|widget| {
-                // SAFETY: these pointers still belong to the current live tree.
-                let widget = unsafe { &mut **widget };
-                is_terminal(widget)
-                    .then(|| hosted_terminal(widget))
-                    .flatten()
-            })
+        let id = fb.active_terminal_node().expect("active mounted Terminal");
+        // SAFETY: this pointer belongs to the current active mounted owner.
+        let terminal = hosted_terminal(unsafe { &mut **fb.node_map.get(&id).unwrap() })
             .expect("production chrome must mount a hosted Terminal");
         *terminal = terminal::TerminalWidget::spawn_command(terminal::CommandBuilder::new("cat"))
             .expect("attach a real PTY process to the hosted Terminal");
@@ -5277,16 +5271,9 @@ mod tests {
     }
 
     fn finish_hosted_terminal_probe(fb: &mut FrameBuilder) {
-        let terminal = fb
-            .node_map
-            .values_mut()
-            .find_map(|widget| {
-                // SAFETY: the map was rebuilt after attaching the real process.
-                let widget = unsafe { &mut **widget };
-                is_terminal(widget)
-                    .then(|| hosted_terminal(widget))
-                    .flatten()
-            })
+        let id = fb.active_terminal_node().expect("active mounted Terminal");
+        // SAFETY: the live map was rebuilt after attaching its real process.
+        let terminal = hosted_terminal(unsafe { &mut **fb.node_map.get(&id).unwrap() })
             .expect("the live hosted Terminal remains mounted");
         // The assertion already consumed the tested bytes. EOF is cleanup,
         // delivered through the same real PTY so cat and its reader both exit.
@@ -7365,6 +7352,232 @@ mod tests {
         native_oobe_tab_and_shift_tab_follow_dfs_order();
         native_oobe_focus_order_excludes_disabled_controls();
         focused_terminal_gets_plain_tab_before_focus_traversal();
+    }
+
+    #[test]
+    fn native_terminal_focus_follows_the_active_owner_with_two_windows() {
+        fn contains_pointer(widget: &dyn Widget, pointer: *const ()) -> bool {
+            std::ptr::from_ref(widget).cast::<()>() == pointer
+                || widget
+                    .children()
+                    .into_iter()
+                    .any(|child| contains_pointer(child, pointer))
+        }
+        let (mut tree, strip, groups, tabs) = axis_a11y_tree();
+        let workspace = tree.desktop.active_workspace_mut().expect("test workspace");
+        workspace.strips[0].window_groups.truncate(2);
+        for group in &mut workspace.strips[0].window_groups {
+            group.tabs.truncate(1);
+            group.tabs[0].tile = crate::shell::state::TileContent::AppPlaceholder {
+                kind: crate::shell::state::AppKind::Terminal,
+                label: "Terminal".into(),
+            };
+        }
+        let mut frame = FrameBuilder::with_tree(tree, (3200, 900));
+        frame.relayout();
+        // Both real mounted owners remain in the live widget map. Visit both
+        // through the production window focus door: choosing an arbitrary
+        // HashMap Terminal cannot satisfy both owner assertions.
+        for index in 0..2 {
+            frame
+                .host_mut()
+                .focus_window_on_strip(strip, groups[index], tabs[index][0]);
+            assert_eq!(frame.chrome().active_tab_id(), Some(tabs[index][0]));
+            let owner = frame
+                .host()
+                .active_app_host()
+                .expect("active mounted app owner");
+            let target = frame
+                .initial_focus_target(&frame.focusable_order())
+                .expect("the active Terminal must have a native keyboard target");
+            let pointer = *frame.node_map.get(&target).expect("live focus node");
+            // SAFETY: no rebuild or mutation occurs while the live owner and
+            // its node-map pointer are inspected.
+            assert!(is_terminal(unsafe { &*pointer }));
+            assert!(
+                contains_pointer(owner, pointer.cast::<()>()),
+                "native focus must belong to the active tab, never another Terminal"
+            );
+        }
+    }
+
+    #[test]
+    fn native_terminal_typing_and_consent_follow_two_actual_mounted_owners() {
+        let (mut tree, strip, groups, tabs) = axis_a11y_tree();
+        let workspace = tree.desktop.active_workspace_mut().unwrap();
+        workspace.strips[0].window_groups.truncate(2);
+        for group in &mut workspace.strips[0].window_groups {
+            group.tabs.truncate(1);
+            group.tabs[0].tile = crate::shell::state::TileContent::AppPlaceholder {
+                kind: crate::shell::state::AppKind::Terminal,
+                label: "Terminal".into(),
+            };
+        }
+        let mut frame = FrameBuilder::with_tree(tree, (3200, 900));
+        frame.relayout();
+        let probes = (0..2)
+            .map(|index| {
+                assert!(frame.host_mut().focus_window_on_strip(
+                    strip,
+                    groups[index],
+                    tabs[index][0]
+                ));
+                live_hosted_terminal_probe(&mut frame)
+            })
+            .collect::<Vec<_>>();
+        let mut document = AutoCommit::new();
+        let mut focus = None;
+        for index in 0..2 {
+            assert!(
+                frame
+                    .host_mut()
+                    .focus_window_on_strip(strip, groups[index], tabs[index][0])
+            );
+            frame.relayout();
+            for (key, expected) in [(NamedKey::Space, b' '), (NamedKey::Enter, b'\r')] {
+                assert!(frame.dispatch_event(
+                    &key_press(Key::Named(key)),
+                    &Modifiers::default(),
+                    &mut ui::widget::Edits::lend(&mut document),
+                    &automerge::ROOT,
+                    &mut focus
+                ));
+                assert_eq!(
+                    probes[index]
+                        .recv_timeout(std::time::Duration::from_secs(2))
+                        .unwrap(),
+                    vec![expected]
+                );
+                assert!(
+                    probes[1 - index].try_recv().is_err(),
+                    "inactive Terminal must receive no bytes"
+                );
+            }
+            frame.host_mut().dictation_surface_mut().consent();
+            assert!(frame.dispatch_event(
+                &key_press(Key::Named(NamedKey::Enter)),
+                &Modifiers::default(),
+                &mut ui::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+                &mut focus
+            ));
+            assert!(matches!(
+                frame.host_mut().dictation_surface_mut().take_request(),
+                Some(crate::shell::overlay_host::dictation_layer::Request::Cancel(None))
+            ));
+            assert!(
+                probes.iter().all(|probe| probe.try_recv().is_err()),
+                "consent must reach neither PTY"
+            );
+            // Acknowledge the observed cancellation as the frontend does.
+            frame
+                .host_mut()
+                .dictation_surface_mut()
+                .status(crate::compositor::dictation::DictationStatus::Idle);
+        }
+        for index in 0..2 {
+            assert!(
+                frame
+                    .host_mut()
+                    .focus_window_on_strip(strip, groups[index], tabs[index][0])
+            );
+            frame.relayout();
+            finish_hosted_terminal_probe(&mut frame);
+        }
+    }
+
+    #[test]
+    fn dictation_consent_keys_do_not_reach_the_hosted_terminal_pty() {
+        use crate::shell::state::{AppKind, TileContent};
+        // Production chrome path: `FrameBuilder::dispatch_event`, the same
+        // route tilo-control type/key and the DRM keyboard take once the
+        // compositor has mapped the press.
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        // W17 / window.new.terminal leaves the Terminal tile active. The
+        // demo tree otherwise keeps Notes first, so chrome would still
+        // steal initial focus. Switch through the live GroupRow so harvest
+        // cannot write the Notes tab back over the tree.
+        let target = {
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            tree.desktop.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .find(|tab| {
+                                matches!(
+                                    &tab.tile,
+                                    TileContent::AppPlaceholder {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    } | TileContent::Stub {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    }
+                                )
+                            })
+                            .map(|tab| (strip.id, group.id, tab.id))
+                    })
+                })
+            })
+        };
+        let (strip, group, tab) = target.expect("production chrome must include a Terminal tab");
+        assert!(
+            fb.host_mut().focus_window_on_strip(strip, group, tab),
+            "the compositor must be able to focus the hosted Terminal tab"
+        );
+        let probe = live_hosted_terminal_probe(&mut fb);
+        let mut focus = None;
+        fb.reconcile_native_focus(&mut focus);
+        let focused = focus.expect("a terminal tile must take initial focus");
+        assert!(
+            // SAFETY: node_map pointers are owned by the live widget tree.
+            fb.node_map
+                .get(&focused)
+                .is_some_and(|&widget| is_terminal(unsafe { &*widget })),
+            "chrome must not keep initial focus on a workspace pill: {:?}",
+            fb.widget_name(focused)
+        );
+        let mut doc = AutoCommit::new();
+        // Use the real local consent widget and production event dispatch.
+        // No recognizer or microphone exists in this keyboard-routing test.
+        fb.host_mut().dictation_surface_mut().consent();
+        assert!(fb.dispatch_event(
+            &key_press(Key::Named(NamedKey::Enter)),
+            &Modifiers::default(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert!(
+            matches!(
+                fb.host_mut().dictation_surface_mut().take_request(),
+                Some(crate::shell::overlay_host::dictation_layer::Request::Cancel(None))
+            ),
+            "Enter must select the prompt's conservative cancellation default"
+        );
+        assert!(
+            probe.try_recv().is_err(),
+            "consent Enter must never submit the shell line"
+        );
+        fb.host_mut().dictation_surface_mut().consent();
+        for key in [NamedKey::ArrowLeft, NamedKey::Space] {
+            assert!(fb.dispatch_event(
+                &key_press(Key::Named(key)),
+                &Modifiers::default(),
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &mut focus,
+            ));
+        }
+        assert!(
+            probe.try_recv().is_err(),
+            "consent Space must never edit the shell line"
+        );
+        finish_hosted_terminal_probe(&mut fb);
     }
 
     #[test]
