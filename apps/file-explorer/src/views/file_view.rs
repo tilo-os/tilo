@@ -1205,10 +1205,7 @@ impl Widget for FileView {
                     .with_description(accessible_entry_description(entry))
                     .with_position(index + 1, self.entries.len())
                     .with_bounds(self.cell_rect(index))
-                    .with_state(AccessState {
-                        selected: self.selection.is_selected(index),
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().selected(self.selection.is_selected(index)))
             })
             .collect();
         let mut node = AccessNode::new(Role::List)
@@ -1220,11 +1217,7 @@ impl Widget for FileView {
                     .map_or(self.rect, |viewport| self.rect.intersect(viewport)),
             )
             .with_optional_value(value)
-            .with_state(AccessState {
-                focusable: true,
-                focused: self.is_focused,
-                ..Default::default()
-            })
+            .with_state(AccessState::new().focusable(true).focused(self.is_focused))
             .with_children(children);
         if let Some(i) = primary
             && i < self.entries.len()

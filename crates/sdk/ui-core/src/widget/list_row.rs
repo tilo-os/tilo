@@ -3404,10 +3404,7 @@ impl crate::widget::Decorator for ControlRow {
         Some(
             AccessNode::new(Role::ListItem)
                 .with_optional_name(self.name.clone())
-                .with_state(AccessState {
-                    selected: self.selected,
-                    ..Default::default()
-                }),
+                .with_state(AccessState::new().selected(self.selected)),
         )
     }
 

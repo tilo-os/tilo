@@ -938,22 +938,22 @@ impl Widget for CollaborationLaunchpad {
                                 .with_bounds(bounds)
                                 .with_description(action.detail())
                                 .with_action_target(action.path())
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    focused: self.focused && self.selected == index,
-                                    ..Default::default()
-                                })
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .focused(self.focused && self.selected == index),
+                                )
                         })
                         .chain(std::iter::once(
                             AccessNode::new(Role::Button)
                                 .with_name(t("launchpad-open-app"))
                                 .with_action_target(EMPTY_WORKSPACE_OPEN_APP)
                                 .with_bounds(self.app_button_rect())
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    focused: self.focused && self.selected == 6,
-                                    ..Default::default()
-                                }),
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .focused(self.focused && self.selected == 6),
+                                ),
                         ))
                         .collect(),
                 ),
