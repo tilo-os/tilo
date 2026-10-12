@@ -36,7 +36,6 @@ pub mod app;
 mod comment_overlay;
 pub mod component;
 pub mod content;
-pub mod doc;
 pub mod epub;
 mod hosted_dropdown;
 mod input_controls;
@@ -58,4 +57,4 @@ pub mod xhtml;
 
 pub use app::BooksApp;
 pub use component::definition;
-pub use resource::{BooksEffect, Ebook, EbookShell, EbookState};
+pub use resource::{BooksEffect, Ebook, EbookShell};

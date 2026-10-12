@@ -112,7 +112,6 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             development_app_id: text("QUICK_APP_ID"),
             app_name: text("TILO_APP_NAME"),
             workspace_id: text("TILO_WORKSPACE_ID"),
-            cluster_id: text("QUICK_CLUSTER_ID"),
             user_id: text("TILO_USER_ID"),
             presence_handle: text("TILO_PRESENCE_HANDLE"),
             account_name: text("USER"),
@@ -125,6 +124,7 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             user_home: path("TILO_USER_HOME"),
             home: path("HOME"),
             config_home: path("XDG_CONFIG_HOME"),
+            cache_home: path("XDG_CACHE_HOME"),
             pipeline_seed: path("TILO_PIPELINE_SEED_DIR"),
         },
         accessibility: crate::host::AccessibilityInputs {

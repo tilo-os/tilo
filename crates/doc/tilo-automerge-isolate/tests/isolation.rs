@@ -521,3 +521,99 @@ fn admission_latency() {
         samples[samples.len() * 99 / 100]
     );
 }
+
+/// A list `[1]` by actor `aa`: the list is op 1, its item op 2.
+const LIST_BASE: &str = "856f4a83ae6ec86200760101aa0127bb838ff217b4f57fe5bfffa75af586b3da7e148ef1e872591780a55722fcc2060102030213022302400256020b01040204130415052102230234024203560357018001027f007f017f027f007f007f0700017f0000017f0100017f007f016c00010200020101017e02017e001401020000";
+/// A text `"ab"` by actor `aa`: the text is op 1, `a` op 2, `b` op 3.
+const TEXT_BASE: &str = "856f4a83ac2187e60080010101aa011a190725c9e01787574caaf60bf64d2dcea17d67eac3bb9aa2c9ca1318e3c015060102030213022302400256020c010402041104130515052102230234024204560457028001027f007f017f037f007f007f07000102000001020100027f0000017e00027f017400020300030101027f0402017f0002166162030000";
+
+/// A change by the new actor `f0 01` with `ops`, on top of `doc`.
+fn crafted(doc: &mut AutoCommit, start: u64, ops: Vec<automerge::legacy::Op>) -> Vec<u8> {
+    let change = automerge::ExpandedChange {
+        operations: ops,
+        actor_id: ActorId::from(&[0xf0, 1][..]),
+        hash: None,
+        seq: 1,
+        start_op: std::num::NonZeroU64::new(start).unwrap(),
+        time: 0,
+        message: None,
+        deps: doc.get_heads(),
+        extra_bytes: Vec::new(),
+        author: None,
+    };
+    automerge::Change::from(change).raw_bytes().to_vec()
+}
+
+/// List and text changes stock Automerge panics on, or takes into a
+/// document whose next save no longer loads, are refused as invalid rather
+/// than costing a worker; and a delete of a character a peer put a forged
+/// second value on is admitted, where it used to crash the worker.
+#[test]
+fn crafted_sequence_changes_are_refused_without_a_crash() {
+    use automerge::legacy::{ElementId, Key, ObjectId, Op, OpId, OpType, SortedVec};
+    let isolate = isolate();
+    let aa = ActorId::from(&[0xaa][..]);
+    let list = ObjectId::Id(OpId(1, aa.clone()));
+    let put = |key: ElementId, pred: Vec<OpId>, insert: bool| Op {
+        action: OpType::Put(5.into()),
+        obj: list.clone(),
+        key: Key::Seq(key),
+        pred: SortedVec::from(pred),
+        insert,
+    };
+    // The list object itself, which is no element of it.
+    let ghost = ElementId::Id(OpId(1, aa.clone()));
+    let item = ElementId::Id(OpId(2, aa.clone()));
+    let base = hex::decode(LIST_BASE).unwrap();
+    let mut doc = AutoCommit::load(&base).unwrap();
+    let cases = [
+        (
+            "an update of an unknown element",
+            vec![put(ghost.clone(), vec![], false)],
+        ),
+        (
+            "an insert after an unknown element",
+            vec![put(ghost.clone(), vec![], true)],
+        ),
+        (
+            "an update of an unknown element beside a valid one",
+            vec![
+                put(item, vec![OpId(2, aa.clone())], false),
+                put(ghost, vec![], false),
+            ],
+        ),
+    ];
+    for (what, ops) in cases {
+        let change = crafted(&mut doc, 3, ops);
+        let outcome = isolate.apply(&mut doc, &change, Dependencies::RetainOrphans);
+        assert!(
+            matches!(outcome, Err(Rejected::Invalid(_))),
+            "{what}: {outcome:?}"
+        );
+        assert_eq!(doc.save(), base, "{what}: a rejection changed the document");
+    }
+
+    let mut doc = AutoCommit::load(&hex::decode(TEXT_BASE).unwrap()).unwrap();
+    let forged_value = Op {
+        action: OpType::Put("Q".into()),
+        obj: ObjectId::Id(OpId(1, aa.clone())),
+        key: Key::Seq(ElementId::Id(OpId(2, aa))),
+        pred: SortedVec::from(vec![]),
+        insert: false,
+    };
+    let forged = crafted(&mut doc, 4, vec![forged_value]);
+    let mut deleter = doc.fork().with_actor(ActorId::from(&[0xf0, 2][..]));
+    let heads = deleter.get_heads();
+    let (_, text) = deleter.get(ROOT, "t").unwrap().unwrap();
+    deleter.delete(&text, 0).unwrap();
+    deleter.commit();
+    let delete = deleter.save_after(&heads);
+    for change in [forged, delete] {
+        assert_eq!(
+            isolate.apply(&mut doc, &change, Dependencies::RequireComplete),
+            Ok(Applied::Changed(true))
+        );
+    }
+    assert_eq!(doc.text(&text).unwrap(), "Qb");
+    still_admits(&isolate);
+}

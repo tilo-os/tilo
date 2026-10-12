@@ -446,7 +446,6 @@ mod tests {
             builds: usize,
         }
         impl Widget for ThemedBox {
-            crate::testing::inert_widget_methods!(apply_layout, draw, get_rect);
             fn build_layout(
                 &mut self,
                 tree: &mut TaffyTree<()>,

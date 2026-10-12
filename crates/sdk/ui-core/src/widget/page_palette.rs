@@ -8,6 +8,7 @@
 //! result list, sized to look like a fullscreen-ish dialog when
 //! anchored at a generous offset from the window's top-center.
 
+use crate::num::f64_of_usize;
 use crate::widget::ModelPath;
 use std::collections::HashMap;
 
@@ -19,7 +20,6 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
 use crate::text_render::TextRenderer;
 use crate::text_selection::Selection;
@@ -34,17 +34,6 @@ const ROW_HEIGHT: f64 = 36.0;
 const INPUT_HEIGHT: f64 = 44.0;
 const PADDING: f64 = 12.0;
 const MAX_VISIBLE_ROWS: usize = 10;
-
-/// Narrows a visible-row count/slot index (always `<= MAX_VISIBLE_ROWS`)
-/// to `f64` for layout math. Bounded far below `f64`'s precision limit,
-/// so this never loses precision in practice.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "row counts/slots are bounded to MAX_VISIBLE_ROWS (10)"
-)]
-fn row_f64(v: usize) -> f64 {
-    v as f64
-}
 
 /// Composes `base` with a translation for text placement. Affine
 /// composition is floating-point matrix multiply — it cannot overflow or
@@ -216,7 +205,7 @@ impl PageJumpPalette {
         };
         let available = viewport.height() - 32.0 - (PADDING * 3.0 + INPUT_HEIGHT) * self.text_scale;
         (1..=MAX_VISIBLE_ROWS)
-            .rfind(|rows| row_f64(*rows) * self.row_height() * self.text_scale <= available)
+            .rfind(|rows| f64_of_usize(*rows) * self.row_height() * self.text_scale <= available)
             .unwrap_or(1)
     }
 
@@ -228,7 +217,7 @@ impl PageJumpPalette {
                 let rect = self.rect();
                 let top = rect.y0 + (PADDING * 2.0 + INPUT_HEIGHT) * self.text_scale;
                 for slot in 0..self.visible_capacity() {
-                    let y = top + row_f64(slot) * self.row_height() * self.text_scale;
+                    let y = top + f64_of_usize(slot) * self.row_height() * self.text_scale;
                     if Rect::new(rect.x0, y, rect.x1, y + self.row_height() * self.text_scale)
                         .contains(self.pointer)
                     {
@@ -304,7 +293,7 @@ impl PageJumpPalette {
     }
 
     pub fn height(&self) -> f64 {
-        let rows = row_f64(self.visible.len().clamp(1, self.visible_capacity()));
+        let rows = f64_of_usize(self.visible.len().clamp(1, self.visible_capacity()));
         (PADDING * 3.0 + INPUT_HEIGHT + self.row_height() * rows) * self.text_scale
     }
 
@@ -580,7 +569,7 @@ impl PageJumpPalette {
             let Some(row) = self.items.get(idx) else {
                 continue;
             };
-            let y0 = list_top + row_f64(slot) * self.row_height() * scale;
+            let y0 = list_top + f64_of_usize(slot) * self.row_height() * scale;
             let row_rect = Rect::new(
                 rect.x0 + PADDING * scale,
                 y0,
@@ -648,16 +637,6 @@ impl Widget for PageJumpPalette {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         taffy.widget_leaf(Style::default(), node_map, self)
-    }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
     fn name(&self) -> &'static str {
         "PageJumpPalette"

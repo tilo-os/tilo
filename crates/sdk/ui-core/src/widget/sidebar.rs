@@ -630,7 +630,7 @@ impl SidebarDrawer {
     }
 
     /// Toggle from the toggle's node (`key_path` from
-    /// `Widget::perform_action_at`); returns whether it did.
+    /// `Widget::perform_action`); returns whether it did.
     pub fn perform_toggle_action(
         &mut self,
         action: &crate::a11y::Action,

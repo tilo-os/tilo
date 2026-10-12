@@ -10,8 +10,8 @@ use ui::LocalState;
 use ui::prelude::*;
 use ui::tilo_actions::remote::{CatalogueResource, CatalogueRow};
 use ui::tilo_actions::{
-    ActionAddress, ActionContract, ActionDescriptor, ActionParam, ExecutionLocus, InputSpec,
-    OperationKind, ParamType, PermissionRequirement, ResultSpec,
+    ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
+    InputSpec, OperationKind, ParamType, ResultSpec,
 };
 
 use crate::door::{DoorState, Drafting, Loaded, RunRecord, RunStatus};
@@ -36,9 +36,9 @@ fn resource(id: &str, kind: &str, label: &str) -> CatalogueResource {
     }
 }
 
-fn contract(permission: PermissionRequirement, result: ResultSpec) -> ActionContract {
+fn contract(kind: ActionKind, result: ResultSpec) -> ActionContract {
     ActionContract {
-        permission,
+        kind,
         result,
         ..ActionContract::default()
     }
@@ -92,7 +92,7 @@ pub fn catalog() -> ActionCatalog {
             resource("notes.folder:inbox", "notes.folder", "Inbox"),
             ("list", "List notes"),
             Vec::new(),
-            contract(PermissionRequirement::Read, titles),
+            contract(ActionKind::Read, titles),
         ),
         row(
             NOTES,
@@ -102,7 +102,7 @@ pub fn catalog() -> ActionCatalog {
                 ActionParam::required("title", ParamType::Text, "Title"),
                 ActionParam::required("pinned", ParamType::Boolean, "Pin it"),
             ],
-            contract(PermissionRequirement::Write, ResultSpec::None),
+            contract(ActionKind::Undoable, ResultSpec::None),
         ),
         row(
             MAIL,
@@ -112,7 +112,7 @@ pub fn catalog() -> ActionCatalog {
                 ActionParam::required("to", ParamType::Text, "Recipient"),
                 ActionParam::required("body", ParamType::Text, "Message"),
             ],
-            contract(PermissionRequirement::Write, ResultSpec::None),
+            contract(ActionKind::Undoable, ResultSpec::None),
         ),
         row(
             AGENT_APP_ID,
@@ -120,7 +120,7 @@ pub fn catalog() -> ActionCatalog {
             (AGENT_SUMMARISE_ACTION, "Summarise"),
             vec![ActionParam::required("input", ParamType::Text, "Text")],
             contract(
-                PermissionRequirement::Read,
+                ActionKind::Read,
                 ResultSpec::Json {
                     schema: json!({"type": "string"}),
                 },
@@ -131,7 +131,7 @@ pub fn catalog() -> ActionCatalog {
             resource("shortcuts", "shortcuts.library", "Shortcuts"),
             ("list", "List shortcuts"),
             Vec::new(),
-            contract(PermissionRequirement::Read, ResultSpec::None),
+            contract(ActionKind::Read, ResultSpec::None),
         ),
     ])
 }
@@ -149,10 +149,7 @@ fn staged_catalog() -> ActionCatalog {
             ActionParam::required("input", ParamType::Text, "Text"),
             ActionParam::required("schema", ParamType::Object, "Shape of the answer"),
         ],
-        contract(
-            PermissionRequirement::Read,
-            ResultSpec::Json { schema: json!({}) },
-        ),
+        contract(ActionKind::Read, ResultSpec::Json { schema: json!({}) }),
     ));
     ActionCatalog::new(rows)
 }
@@ -162,12 +159,12 @@ fn morning_digest() -> Value {
         "id": "morning-digest",
         "name": "Morning digest",
         "steps": [
-            {"id": "list", "step": "invoke", "app_id": NOTES,
-             "resource": {"fixed": "notes.folder:inbox"}, "action": "list"},
+            {"id": "list", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "list"},
+             "resource": {"fixed": "notes.folder:inbox"}},
             {"id": "ai", "step": "ai", "transform": "summarise",
              "input": {"template": "{{step.list/titles}}"}},
-            {"id": "send", "step": "invoke", "app_id": MAIL,
-             "resource": {"fixed": "mail.outbox"}, "action": "send",
+            {"id": "send", "step": "invoke", "action": {"app": MAIL, "kind": "mail.outbox", "action": "send"},
+             "resource": {"fixed": "mail.outbox"},
              "args": {"to": {"literal": "me@example.org"}, "body": {"step_output": {"step": "ai"}}}}
         ]
     })
@@ -179,12 +176,12 @@ fn weekly_summary() -> Value {
         "id": "weekly-summary",
         "name": "Weekly summary",
         "steps": [
-            {"id": "list", "step": "invoke", "app_id": NOTES,
-             "resource": {"fixed": "notes.folder:inbox"}, "action": "list"},
+            {"id": "list", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "list"},
+             "resource": {"fixed": "notes.folder:inbox"}},
             {"id": "ai", "step": "ai", "transform": "summarise",
              "input": {"template": "{{step.list/titles}}"}},
-            {"id": "send", "step": "invoke", "app_id": MAIL,
-             "resource": {"fixed": "mail.outbox"}, "action": "send",
+            {"id": "send", "step": "invoke", "action": {"app": MAIL, "kind": "mail.outbox", "action": "send"},
+             "resource": {"fixed": "mail.outbox"},
              "args": {"to": {"literal": "me@example.org"}, "body": {"step_output": {"step": "ai"}}}}
         ]
     })
@@ -199,8 +196,8 @@ fn quick_note() -> Value {
             "description": "Note title", "nullable": false
         }],
         "steps": [
-            {"id": "create", "step": "invoke", "app_id": NOTES,
-             "resource": {"fixed": "notes.folder:inbox"}, "action": "create",
+            {"id": "create", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "create"},
+             "resource": {"fixed": "notes.folder:inbox"},
              "args": {"title": {"input": "title"}, "pinned": {"literal": false}}}
         ]
     })
@@ -211,10 +208,10 @@ fn mail_me_my_notes() -> Value {
         "id": "mail-me-my-notes",
         "name": "Mail me my notes",
         "steps": [
-            {"id": "list", "step": "invoke", "app_id": NOTES,
-             "resource": {"fixed": "notes.folder:inbox"}, "action": "list"},
-            {"id": "send", "step": "invoke", "app_id": MAIL,
-             "resource": {"fixed": "mail.outbox"}, "action": "send",
+            {"id": "list", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "list"},
+             "resource": {"fixed": "notes.folder:inbox"}},
+            {"id": "send", "step": "invoke", "action": {"app": MAIL, "kind": "mail.outbox", "action": "send"},
+             "resource": {"fixed": "mail.outbox"},
              "args": {"to": {"literal": "me@example.org"},
                       "body": {"template": "Today's notes: {{step.list/titles}}"}}}
         ]
@@ -228,10 +225,10 @@ fn drafted() -> Option<Drafting> {
         "id": "note-the-inbox",
         "name": "Note the inbox",
         "steps": [
-            {"id": "list", "step": "invoke", "app_id": NOTES,
-             "resource": {"fixed": "notes.folder:inbox"}, "action": "list"},
-            {"id": "create", "step": "invoke", "app_id": NOTES,
-             "resource": {"fixed": "notes.folder:inbox"}, "action": "create",
+            {"id": "list", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "list"},
+             "resource": {"fixed": "notes.folder:inbox"}},
+            {"id": "create", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "create"},
+             "resource": {"fixed": "notes.folder:inbox"},
              "args": {"title": {"literal": "Inbox today"}, "pinned": {"literal": false}}}
         ]
     });
@@ -252,14 +249,14 @@ fn tidy_notes() -> Value {
             "description": "Keyword", "nullable": false
         }],
         "steps": [
-            {"id": "list", "step": "invoke", "app_id": NOTES,
-             "resource": {"fixed": "notes.folder:inbox"}, "action": "list"},
+            {"id": "list", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "list"},
+             "resource": {"fixed": "notes.folder:inbox"}},
             {"id": "each", "step": "for_each",
              "items": {"step_output": {"step": "list", "pointer": "/titles"}},
              "item": "title",
              "body": [
-                {"id": "create", "step": "invoke", "app_id": NOTES,
-                 "resource": {"fixed": "notes.folder:inbox"}, "action": "create",
+                {"id": "create", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "create"},
+                 "resource": {"fixed": "notes.folder:inbox"},
                  "args": {"title": {"var": "title"}, "pinned": {"literal": false}}}
              ]},
             {"id": "if", "step": "if", "cond": {"truthy": {"input": "keyword"}},

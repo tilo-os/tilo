@@ -5,8 +5,11 @@
 
 use std::sync::OnceLock;
 
-use crate::actions::PhotosAction;
-use crate::model::{Album, LibraryPhoto, LocationProvenance, OpenImage, PhotoLocation, Rect01};
+use ui::tilo_resource::{Id, Invoke};
+
+use crate::model::{
+    Album, Edits, LibraryPhoto, LocationProvenance, OpenImage, PhotoLibrary, PhotoLocation, Rect01,
+};
 use crate::pixels;
 
 /// A generated test pattern.
@@ -183,8 +186,10 @@ fn harbour() -> Option<&'static Sample> {
             // an orphaned "Undated" tile ahead of the collection.
             sample.photo.captured_at = Some("2026-07-12T18:16".into());
             sample.photo.folder = Some("Travel 2026".into());
-            sample.photo.people = vec!["Élodie".into(), "Sam".into()];
-            sample.photo.tags = vec!["golden hour".into()];
+            sample.photo.people = ["Élodie".to_owned(), "Sam".to_owned()]
+                .into_iter()
+                .collect();
+            sample.photo.tags = std::iter::once("golden hour".to_owned()).collect();
             Some(sample)
         })
         .as_ref()
@@ -234,20 +239,22 @@ fn gallery() -> &'static [Sample] {
             } else {
                 "Travel 2026".into()
             });
-            photo.people = if name.contains("Summer") || name.contains("Dog") {
-                vec!["Élodie".into(), "Sam".into()]
+            let people: &[&str] = if name.contains("Summer") || name.contains("Dog") {
+                &["Élodie", "Sam"]
             } else if name.contains("cat") {
-                vec!["Noor".into()]
+                &["Noor"]
             } else {
-                vec!["Élodie".into()]
+                &["Élodie"]
             };
-            photo.tags = vec![if name.contains("Rainy") {
-                "rain".into()
+            photo.people = people.iter().map(|&person| person.to_owned()).collect();
+            let tag = if name.contains("Rainy") {
+                "rain"
             } else if name.contains("Dog") || name.contains("cat") {
-                "pets".into()
+                "pets"
             } else {
-                "golden hour".into()
-            }];
+                "golden hour"
+            };
+            photo.tags = std::iter::once(tag.to_owned()).collect();
             photo.captured_at = Some(captured_at.into());
             Some(sample)
         })
@@ -298,20 +305,12 @@ fn placeholder(name: &str, content: String) -> LibraryPhoto {
 
 /// The library edits that stage `scenario` (`None` for a plain `--shots`,
 /// which shows the opened photograph).
-pub fn scenario(scenario: Option<&str>) -> Vec<PhotosAction> {
+pub fn scenario(scenario: Option<&str>) -> Vec<Invoke<PhotoLibrary>> {
     let scenario = scenario.unwrap_or("opened");
     match scenario {
         "empty" => return Vec::new(),
-        "loading" => {
-            return vec![PhotosAction::ImportPhoto {
-                photo: not_here_yet(),
-            }];
-        }
-        "error" => {
-            return vec![PhotosAction::ImportPhoto {
-                photo: unreadable(),
-            }];
-        }
+        "loading" => return vec![crate::resource::import(&not_here_yet())],
+        "error" => return vec![crate::resource::import(&unreadable())],
         _ => {}
     }
     let Some(harbour) = harbour() else {
@@ -321,43 +320,50 @@ pub fn scenario(scenario: Option<&str>) -> Vec<PhotosAction> {
     if shows_library(scenario) {
         actions.extend(library(scenario));
     }
-    actions.push(PhotosAction::ImportPhoto {
-        photo: harbour.photo.clone(),
-    });
+    actions.extend(Invoke::edit(&crate::resource::insert(&harbour.photo)));
+    let harbour_id = Id::from_raw(harbour.photo.id.clone());
     match scenario {
         // A completed crop, rendered fit-to-canvas. A screenshot must show a
         // truthful edit, not a deliberately zoomed inspection state that can
         // be mistaken for a broken initial fit on a narrow viewport.
-        "cropping" => actions.push(PhotosAction::set(
-            &harbour.photo.id,
-            &crate::model::Edits::default().cropped_from_view(Rect01 {
+        "cropping" => actions.push(PhotoLibrary::CROP.with((
+            harbour_id,
+            Rect01 {
                 x: 0.12,
                 y: 0.08,
                 w: 0.76,
                 h: 0.84,
-            }),
-        )),
+            },
+        ))),
         // A crop and a turn together, which is the pair worth showing: the
         // crop is stored against the *original*, so it keeps naming the same
         // region of the photograph however the view is later turned.
-        "edited" => actions.push(PhotosAction::set(
-            &harbour.photo.id,
-            &crate::model::Edits::default()
+        "edited" => {
+            let edits = Edits::default()
                 .cropped_from_view(Rect01 {
                     x: 0.06,
                     y: 0.06,
                     w: 0.46,
                     h: 0.5,
                 })
-                .rotated_right(),
-        )),
+                .rotated_right();
+            let paths = crate::model::photo_paths(&harbour.photo.id).edits;
+            actions.extend(
+                [
+                    paths.crop.set(edits.crop),
+                    paths.rotate_quarters.set(edits.rotate_quarters),
+                ]
+                .iter()
+                .filter_map(|edit| Invoke::edit(edit).ok()),
+            );
+        }
         _ => {}
     }
     actions
 }
 
 /// The gallery imported, with the albums `scenario` browses.
-fn library(scenario: &str) -> Vec<PhotosAction> {
+fn library(scenario: &str) -> Vec<Invoke<PhotoLibrary>> {
     let mut actions = Vec::new();
     let mut travel = Vec::new();
     for (index, sample) in gallery().iter().enumerate() {
@@ -384,12 +390,12 @@ fn library(scenario: &str) -> Vec<PhotosAction> {
             });
         }
         travel.push(photo.id.clone());
-        actions.push(PhotosAction::ImportPhoto { photo });
+        actions.extend(Invoke::edit(&crate::resource::insert(&photo)));
     }
     let mut albums = vec![Album {
         id: "photos.album:travel".into(),
         name: "Travel".into(),
-        photo_ids: travel.clone(),
+        photo_ids: travel.iter().cloned().collect(),
     }];
     if scenario == "albums" {
         albums.extend([
@@ -411,7 +417,7 @@ fn library(scenario: &str) -> Vec<PhotosAction> {
             Album {
                 id: "photos.album:new-home".into(),
                 name: "New home".into(),
-                photo_ids: Vec::new(),
+                photo_ids: ui::tilo_resource::Set::new(),
             },
         ]);
     }
@@ -419,14 +425,16 @@ fn library(scenario: &str) -> Vec<PhotosAction> {
         albums.extend((1..=17).map(|number| Album {
             id: format!("photos.album:destination-{number}"),
             name: format!("Destination album {number}"),
-            photo_ids: Vec::new(),
+            photo_ids: ui::tilo_resource::Set::new(),
         }));
     }
-    actions.extend(albums.into_iter().map(|album| PhotosAction::SaveAlbum {
-        id: album.id,
-        name: album.name,
-        photo_ids: album.photo_ids,
-        create: true,
+    actions.extend(albums.iter().filter_map(|album| {
+        Invoke::edit(
+            &PhotoLibrary::paths()
+                .albums
+                .insert_as(&album.item(), usize::MAX, album),
+        )
+        .ok()
     }));
     actions
 }
@@ -469,15 +477,16 @@ mod tests {
 
         let store = tilo_content::ContentStore::memory();
         put_content(&store);
-        let mut doc = automerge::AutoCommit::new();
         for &name in SCENARIOS {
-            let mut staged = doc.clone();
+            let mut staged = ui::tilo_resource::Replica::<PhotoLibrary>::new();
             for action in scenario(Some(name)) {
-                tilo_actions::Action::apply(&action, &mut staged)
-                    .unwrap_or_else(|error| panic!("{name}: {action:?} refused: {error}"));
+                let id = action.id;
+                staged
+                    .apply(action)
+                    .unwrap_or_else(|error| panic!("{name}: {id} refused: {error}"));
             }
-            let library = crate::doc::PhotosDoc::library(&staged);
-            for photo in &library.photos {
+            let library = staged.state().unwrap();
+            for photo in library.all_photos() {
                 let content = photo.image.content.as_deref().unwrap();
                 if !matches!(name, "loading") {
                     assert!(
@@ -488,12 +497,10 @@ mod tests {
                 }
             }
         }
+        let mut library = ui::tilo_resource::Replica::<PhotoLibrary>::new();
         for action in scenario(Some("library")) {
-            tilo_actions::Action::apply(&action, &mut doc).unwrap();
+            library.apply(action).unwrap();
         }
-        assert_eq!(
-            crate::doc::PhotosDoc::library(&doc).photos.len(),
-            gallery.len() + 1
-        );
+        assert_eq!(library.state().unwrap().photos.len(), gallery.len() + 1);
     }
 }

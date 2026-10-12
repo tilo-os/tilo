@@ -335,14 +335,6 @@ fn dictionary_identity_owner() -> Option<[u8; 32]> {
         .map(|identity| identity.group_public_key)
 }
 
-fn legacy_dictionary_owner() -> Option<[u8; 32]> {
-    let store = identity_provisioning::DiskIdentityStore::from_env().ok()?;
-    let path = store.path().parent()?.join("primary.json");
-    runtime_identity::load_metadata_from_path(&path)
-        .ok()
-        .map(|identity| identity.group_public_key)
-}
-
 fn session_host_view(
     session: std::sync::Arc<settings_store::SessionSettings>,
     copy_watched: bool,
@@ -401,42 +393,12 @@ fn install_session_settings() {
                 .and_then(|root| settings_store::personal_dictionary::Service::new(root).ok())
             {
                 Some(service) => {
-                    use settings_store::personal_dictionary::Vocabulary as _;
-                    // The legacy global file has no account identity. Claim it
-                    // once for the verified local person, never for an app or
-                    // a room's XDG directory and never again after reset.
-                    let legacy_owner = legacy_dictionary_owner();
-                    if let Some(owner) = dictionary_identity_owner()
-                        && Some(owner) == legacy_owner
-                        && let Some(reader) = service.bind(Some(owner))
-                        && let Some(path) = copy.parent().map(|root| root.join("userdict.txt"))
-                        && let Ok(metadata) = std::fs::symlink_metadata(&path)
-                        && metadata.file_type().is_file()
-                        && metadata.len() <= 512 * 1024
-                    {
-                        use std::io::Read;
-                        use std::os::unix::fs::OpenOptionsExt;
-                        let mut text = String::new();
-                        if let Ok(file) = std::fs::OpenOptions::new()
-                            .read(true)
-                            .custom_flags(libc::O_NOFOLLOW)
-                            .open(&path)
-                            && file.take(512 * 1024 + 1).read_to_string(&mut text).is_ok()
-                            && let Ok(snapshot) = reader.snapshot()
-                            && let Err(error) =
-                                service.import_legacy(&reader, snapshot.revision, owner, &text)
-                        {
-                            tracing::warn!(%error, "legacy personal dictionary import unavailable");
-                        }
-                    }
-                    let host = std::sync::Arc::new(
-                        settings_store::personal_dictionary::host::Host::new(
+                    let host =
+                        std::sync::Arc::new(settings_store::personal_dictionary::host::Host::new(
                             source,
                             std::sync::Arc::new(service),
                             std::sync::Arc::new(dictionary_identity_owner),
-                        )
-                        .with_legacy_owner(legacy_owner),
-                    );
+                        ));
                     if let Ok(store) = identity_provisioning::DiskIdentityStore::from_env()
                         && let Some(directory) =
                             store.path().parent().filter(|directory| directory.is_dir())
@@ -496,6 +458,7 @@ pub fn run() -> std::process::ExitCode {
         eprintln!("error: {refusal}");
         return std::process::ExitCode::from(2);
     }
+    shell::shell::decide_receipt_against_surfaces();
     if let Err(error) = shell::shell::install_approved_checks_from_args(std::env::args_os().skip(1))
     {
         eprintln!("approved project check configuration refused: {error}");
@@ -560,6 +523,9 @@ pub fn run() -> std::process::ExitCode {
     // Pinning here, while `main` is still single-threaded, makes the
     // compositor and every launched app agree on one device.
     let gpu_pin = paints.then(compositor::render_node::pin_process).flatten();
+    // The single-threaded start is over: startup marks are written from their
+    // own thread from here on, never by the thread that marks.
+    tilo_startup_metrics::start_writer();
 
     // Cold-start warmup on a background thread, as early as possible.
     // cosmic-text's `FontSystem::new` (mmaps every face, up to ~1s) and

@@ -49,7 +49,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
 use ui::widget::toggle_group::ToggleGroup;
-use ui::widget::{Button, Widget};
+use ui::widget::{Button, Widget, layout_rect};
 
 use crate::command::{CommandSink, FileCommand, push};
 use crate::i18n::t;
@@ -357,17 +357,6 @@ fn row_style(sp: &ui::tokens::spacing::Spacing, grows: bool) -> Style {
     }
 }
 
-fn rect_of(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
-    // `node` was built in this same tree by `build_layout`; a miss would mean
-    // the frame cycle called these out of order.
-    #[allow(
-        clippy::unwrap_used,
-        reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
-    )]
-    let l = taffy.layout(node).unwrap();
-    ui::widget::placed(l, origin)
-}
-
 /// The header's leading fill: the nav cluster and the path bar.
 pub struct FileToolbar {
     controls: Controls,
@@ -478,7 +467,7 @@ impl Widget for FileToolbar {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = rect_of(taffy, node, origin);
+        self.rect = layout_rect(taffy, node, origin);
         let base = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(children) = taffy.children(node) {
             let nleft = self.left.len();
@@ -508,22 +497,6 @@ impl Widget for FileToolbar {
             c.draw(scene, transform, tr, theme, presence);
         }
         self.path_bar.draw(scene, transform, tr, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        for c in &mut self.left {
-            c.draw_with_presence(scene, transform, tr, theme, presence, permissions);
-        }
-        self.path_bar
-            .draw_with_presence(scene, transform, tr, theme, presence, permissions);
     }
 
     fn draw_overlay(
@@ -632,7 +605,7 @@ impl Widget for ToolbarActions {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = rect_of(taffy, node, origin);
+        self.rect = layout_rect(taffy, node, origin);
         let base = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(children) = taffy.children(node) {
             for (c, &n) in self.right.iter_mut().zip(children.iter()) {
@@ -665,20 +638,6 @@ impl Widget for ToolbarActions {
     ) {
         for c in &mut self.right {
             c.draw(scene, transform, tr, theme, presence);
-        }
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        for c in &mut self.right {
-            c.draw_with_presence(scene, transform, tr, theme, presence, permissions);
         }
     }
 

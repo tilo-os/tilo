@@ -77,3 +77,54 @@ pub fn decode_action<'a>(id: &'a str, prefix: &str) -> Option<(&'a str, &'a str)
     (!key.is_empty() && key.len() <= 4610 && key.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .then_some((room, key))
 }
+
+/// Bounded provider-owned observation, read through the currently admitted catalogue.
+/// The provider owns its payload/source/time/freshness; this is never inferred from history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MorningPayload {
+    pub label: String,
+    pub presentation: tilo_actions::ResourcePresentation,
+    pub refreshable: bool,
+}
+impl MorningPayload {
+    pub fn text(&self) -> String {
+        [
+            self.presentation.preview.as_deref(),
+            self.presentation.detail.as_deref(),
+            self.presentation.badge.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n")
+    }
+}
+
+pub const MORNING_REFRESH: &str = "room.activity.morning.refresh.";
+pub const MORNING_DRAFT: &str = "room.activity.morning.draft.";
+pub const MORNING_NEXT: &str = "room.activity.morning.next.";
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MorningCommand {
+    Open,
+    Refresh,
+    DraftRefresh,
+    NextSource,
+}
+impl MorningCommand {
+    pub fn prefix(self) -> &'static str {
+        match self {
+            Self::Open => MORNING_OPEN,
+            Self::Refresh => MORNING_REFRESH,
+            Self::DraftRefresh => MORNING_DRAFT,
+            Self::NextSource => MORNING_NEXT,
+        }
+    }
+    pub fn label_key(self) -> &'static str {
+        match self {
+            Self::Open => "activity-morning-open",
+            Self::Refresh => "activity-morning-refresh",
+            Self::DraftRefresh => "activity-morning-draft",
+            Self::NextSource => "activity-morning-next",
+        }
+    }
+}

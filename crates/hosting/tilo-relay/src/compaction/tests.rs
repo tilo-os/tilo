@@ -60,7 +60,7 @@ fn signed_frames(
                     artifact,
                     collab_types::Ed25519PublicKey::from_bytes(author),
                     attestation,
-                    collab_types::OpClass::Splice,
+                    collab_types::OpKind::Change,
                     std::time::UNIX_EPOCH,
                     seq.saturating_add(index as u64),
                     collab_types::EncryptionMetadata::mls_application(
@@ -74,7 +74,7 @@ fn signed_frames(
                     artifact,
                     collab_types::Ed25519PublicKey::from_bytes(author),
                     attestation,
-                    collab_types::OpClass::Splice,
+                    collab_types::OpKind::Change,
                     std::time::UNIX_EPOCH,
                     seq.saturating_add(index as u64),
                 )

@@ -131,9 +131,12 @@ pub enum DesktopCommand {
     /// agent, the command palette). The owner places it in its own turn, as
     /// a new group at the end of its last strip, or as the first strip of an
     /// empty workspace. Placement-independent, so a stale source revision
-    /// does not refuse it. Appended last: existing encodings are unchanged.
+    /// does not refuse it. `beside` names the group of the view the actor
+    /// that needs this one works in: it opens right after that group, on
+    /// whichever strip holds it, when the owner still has it.
     OpenApp {
         app: String,
+        beside: Option<u64>,
     },
     /// Save a shortcut in the workspace, replacing the shortcut with the same
     /// id. The shortcut travels as its JSON: its inputs and bindings carry
@@ -156,20 +159,18 @@ pub enum DesktopCommand {
     ClaimNamespace {
         salt: u16,
     },
-    /// Save a workspace permission profile, replacing the one with the same
-    /// name. The profile travels as its JSON. Only a native owner applies it,
-    /// with the caller's authority over workspace governance. Appended last:
-    /// existing encodings are unchanged.
-    SavePermissionProfile {
-        profile_json: String,
+    /// Save a named grant set, replacing the one with the same name. The set
+    /// travels as its JSON. Only a native owner applies it, with the caller's
+    /// authority over the room's settings.
+    SavePreset {
+        preset_json: String,
     },
-    /// Assign the saved permission profile `profile` to a `person`, `app` or
-    /// `agent` `subject` until `expires_unix` (`0` never expires), as the
-    /// capabilities it expands to. Only a native owner applies it, as for
-    /// [`Self::SavePermissionProfile`]. Appended last: existing encodings are
-    /// unchanged.
-    AssignPermissionProfile {
-        profile: String,
+    /// Assign the saved grant set `preset` to a `person`, `app` or `agent`
+    /// `subject` until `expires_unix` (`0` never expires), as the grants it
+    /// expands to. Only a native owner applies it, with the caller's
+    /// authority to grant.
+    AssignPreset {
+        preset: String,
         subject_kind: String,
         subject: String,
         expires_unix: u64,
@@ -223,8 +224,8 @@ impl DesktopCommand {
             self,
             Self::OpenApp { .. }
                 | Self::ClaimNamespace { .. }
-                | Self::SavePermissionProfile { .. }
-                | Self::AssignPermissionProfile { .. }
+                | Self::SavePreset { .. }
+                | Self::AssignPreset { .. }
                 | Self::RecordEffectReceipt { .. }
                 | Self::GrantAppAction { .. }
                 | Self::RevokeAppAction { .. }
@@ -801,8 +802,8 @@ pub fn apply_command(
         DesktopCommand::SaveShortcut { .. } | DesktopCommand::DeleteShortcut { .. } => {
             apply_shortcut_command(workspace, command)?;
         }
-        DesktopCommand::SavePermissionProfile { .. }
-        | DesktopCommand::AssignPermissionProfile { .. }
+        DesktopCommand::SavePreset { .. }
+        | DesktopCommand::AssignPreset { .. }
         | DesktopCommand::RecordEffectReceipt { .. }
         | DesktopCommand::GrantAppAction { .. }
         | DesktopCommand::RevokeAppAction { .. } => {

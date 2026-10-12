@@ -471,7 +471,7 @@ mod imp_web {
     enum Never {}
 
     fn unsupported<T>() -> Result<T, NetError> {
-        Err(crate::caps::unsupported(Feature::Sockets).into())
+        Err(crate::Unsupported::of(Feature::Sockets).into())
     }
 
     pub(super) async fn deadline<T>(

@@ -19,6 +19,20 @@ fn sidebar_toggle(app: &mut TestApp<SettingsShell>) -> ui::vello::kurbo::Rect {
         .expect("the mounted shared sidebar toggle is accessible")
 }
 
+/// Run frames until the window's layout stops moving: a sidebar opening
+/// slides its rows in, so a row's bounds are only where a click lands once
+/// the slide is done.
+fn settle(app: &mut TestApp<SettingsShell>) {
+    let deadline = tilo_test_env::hang_deadline();
+    while app.harness().frame_schedule().needs_animation_frame {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the window kept animating"
+        );
+        app.harness().poll_frame().unwrap();
+    }
+}
+
 fn dirty_leaves(widget: &dyn ui::Widget, out: &mut Vec<serde_json::Value>) {
     let children = widget.children();
     if children.is_empty() && widget.layout_needs_measure() {
@@ -39,7 +53,7 @@ fn measure(
     act: impl FnOnce(&mut TestApp<SettingsShell>),
 ) {
     app.harness().clear_profile_samples();
-    let ((elapsed, drain_elapsed, frames), phases) = ui::framework::profiling::observe(|| {
+    let ((elapsed, drain_elapsed, frames), phases) = ui::tilo_resource::profiling::observe(|| {
         let started = std::time::Instant::now();
         act(app);
         let elapsed = started.elapsed().as_nanos();
@@ -84,7 +98,7 @@ fn measure(
                 "last_layout_marked_dirty": layout.marked_dirty,
                 "last_layout_marked_leaves": layout.marked_leaves,
                 "event_elapsed_ns": elapsed, "profile_drain_elapsed_ns": drain_elapsed,
-                "framework_phases": phases, "frames": frames, "dirty_leaves_after_draw": leaves,
+                "phases": phases, "frames": frames, "dirty_leaves_after_draw": leaves,
                 "includes_cpu_layout_and_scene_draw": true,
                 "includes_gpu_or_display": false,
                 "execution_host": "mounted headless framework; no GPU or device presentation",
@@ -98,12 +112,11 @@ fn mounted_settings_cpu_interactions_observe_canonical_panes_and_shared_controls
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<SettingsShell>::new().expect("Settings mounts normally");
     app.harness().resize((1472, 920)).unwrap();
-    let address = crate::effects::open_pane_address(Category::Displays);
-    app.harness()
-        .invoke_action(&address, &serde_json::Map::new(), false, None)
-        .expect("initial ordinary pane selection")
-        .completed()
-        .expect("selection completes");
+    app.call(
+        "open",
+        serde_json::json!({ "anchor": crate::effects::pane_row_id(Category::Displays) }),
+    )
+    .expect("initial ordinary pane selection");
     app.harness().begin_profiling();
     for sample in 0..9 {
         for category in [
@@ -171,6 +184,8 @@ fn mounted_settings_cpu_interactions_observe_canonical_panes_and_shared_controls
                 app.harness().native_input_snapshot().unwrap()["sidebar_open"],
                 true
             );
+            // The next pane's row is clicked where the opened sidebar shows it.
+            settle(&mut app);
         }
     }
 }

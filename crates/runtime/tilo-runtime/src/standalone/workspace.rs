@@ -100,7 +100,7 @@ impl ProfileWorkspace {
             .workspaces
             .first_mut()
             .ok_or_else(|| io::Error::other("runtime profile has no workspace"))?;
-        if workspace.owner.is_none() {
+        if workspace.owner().is_none() {
             if self.path.is_none() {
                 return Err(io::Error::other(
                     "the desktop session's runtime workspace has no owner",
@@ -205,7 +205,11 @@ impl AppActionGrants for ProfileGrants {
                     .iter()
                     .find(|workspace| workspace.room.to_string() == room)
                     .is_some_and(|workspace| {
-                        workspace.may_administer_at(&person.to_owned(), tilo_clock::unix_now())
+                        workspace.may_govern_at(
+                            person,
+                            tilo_action_policy::roles::governance::GRANT,
+                            tilo_clock::unix_now(),
+                        )
                     })
             })
     }
@@ -213,7 +217,7 @@ impl AppActionGrants for ProfileGrants {
     fn record(
         &self,
         request: &tilo_action_broker::app_actions::AppActionConsentRequest,
-        capability: collab_types::caps::CapOverride,
+        grant: tilo_action_policy::Grant,
         answer: tilo_action_broker::app_actions::AppActionConsent,
     ) -> Option<String> {
         if !self.workspace.governs() {
@@ -233,25 +237,29 @@ impl AppActionGrants for ProfileGrants {
                 .iter()
                 .find(|workspace| workspace.room.to_string() == request.room)?
                 .id;
-            let stored = tree.grant_in_workspace_at(workspace, &request.person, capability, now)?;
-            tree.append_workspace_effect_receipt_at(
+            let stored = tree
+                .grant_in_workspace_at(workspace, &request.person, grant, now)
+                .ok()?;
+            tree.append_workspace_effect_receipt(
                 workspace,
-                tilo_actions::InvocationId::new(),
-                &request.person,
-                context,
-                tilo_actions::EffectReceiptStatus::Succeeded,
-                i64::try_from(now).unwrap_or(i64::MAX),
+                tilo_desktop_model::WorkspaceEffectReceipt::recorded(
+                    tilo_actions::InvocationId::new(),
+                    &request.person,
+                    context,
+                    tilo_actions::EffectReceiptStatus::Succeeded,
+                    i64::try_from(now).unwrap_or(i64::MAX),
+                ),
             );
-            Some(stored.id)
+            Some(stored.id.as_str().to_owned())
         })
     }
 
-    fn revoke(&self, room: &str, capability: &str) {
+    fn revoke(&self, room: &str, grant: &str) {
         self.workspace.update(|tree| {
             tree.workspaces
                 .iter_mut()
                 .find(|workspace| workspace.room.to_string() == room)?
-                .revoke_capability(capability)
+                .revoke_grant(&tilo_action_policy::GrantId::new(grant))
                 .then_some(())
         });
     }
@@ -272,13 +280,15 @@ impl LegacyWorkspaceProjection for ProfileWorkspace {
         let completed_at = tilo_clock::unix_now_i64();
         self.record(room, |tree, workspace| {
             // A retried invocation keeps its first receipt.
-            tree.append_workspace_effect_receipt_at(
+            tree.append_workspace_effect_receipt(
                 workspace,
-                invocation,
-                actor,
-                context,
-                status,
-                completed_at,
+                tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+                    invocation,
+                    actor,
+                    context,
+                    status,
+                    completed_at,
+                ),
             );
             Some(())
         })
@@ -300,6 +310,7 @@ impl LegacyWorkspaceProjection for ProfileWorkspace {
                 .find(|candidate| candidate.id == workspace)?;
             if let Some(status) = status {
                 workspace.set_task_status_at(task, status, actor, now);
+                workspace.lapse_task_grants();
             }
             workspace.append_task_audit_at(task, actor, summary, now)?;
             Some(())

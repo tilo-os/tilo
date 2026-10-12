@@ -30,6 +30,7 @@ use shell::compositor::lock_screen::{self, LockOutput, LockView};
 use shell::compositor::tab_binding;
 use shell::shell::capture_protection;
 use shell::shell::state::WorkspaceTree;
+use ui::num::u32_of_f64;
 use ui::offscreen::OffscreenRenderer;
 use ui::widget::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode, PipLayout,
@@ -43,15 +44,6 @@ const H: u32 = 900;
 /// A colour no theme paints, so a match can only be the client's pixels.
 const CLIENT: (u8, u8, u8) = (0xE0, 0x18, 0xA0);
 const TOLERANCE: u8 = 4;
-
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "float-to-int `as` saturates in Rust (no UB/wrap/panic); nothing here can misbehave"
-)]
-fn as_u32(v: f64) -> u32 {
-    v as u32
-}
 
 fn near(pixel: (u8, u8, u8, u8), rgb: (u8, u8, u8)) -> bool {
     pixel.0.abs_diff(rgb.0) <= TOLERANCE
@@ -74,8 +66,8 @@ fn interior_samples(rgba: &[u8], width: u32, rect: Rect) -> Vec<(u8, u8, u8, u8)
             samples.push(OffscreenRenderer::sample(
                 rgba,
                 width,
-                as_u32(rect.x0 + rect.width() * fx),
-                as_u32(rect.y0 + rect.height() * fy),
+                u32_of_f64(rect.x0 + rect.width() * fx),
+                u32_of_f64(rect.y0 + rect.height() * fy),
             ));
         }
     }
@@ -416,15 +408,15 @@ fn assert_prompt_withheld(
     let mut samples = 0_usize;
     let mut shown = 0_usize;
     let mut withheld = 0_usize;
-    for row in 0..as_u32(area.height() / 3.0) {
+    for row in 0..u32_of_f64(area.height() / 3.0) {
         let y = area.y0 + f64::from(row) * 3.0;
-        for column in 0..as_u32(area.width() / 3.0) {
+        for column in 0..u32_of_f64(area.width() / 3.0) {
             let x = area.x0 + f64::from(column) * 3.0;
             if mark.contains(vello::kurbo::Point::new(x, y)) {
                 continue;
             }
             samples += 1;
-            let (px, py) = (as_u32(x), as_u32(y));
+            let (px, py) = (u32_of_f64(x), u32_of_f64(y));
             if !near(OffscreenRenderer::sample(local, W, px, py), fill) {
                 shown += 1;
             }

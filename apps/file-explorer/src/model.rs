@@ -900,6 +900,12 @@ impl WorkspaceRecordIndexPager {
     /// Cheap, periodic manifest/root-set poll. It never reads record pages;
     /// a changed or vanished authority withdraws the retained index before a
     /// fresh bounded page is admitted on the next idle turn.
+    /// Whether there is any root whose generation [`Self::poll_generation`]
+    /// watches; without one, polling it is a no-op.
+    pub fn has_roots(&self) -> bool {
+        !self.source_roots.is_empty() || !self.roots.is_empty()
+    }
+
     pub fn poll_generation(&mut self) -> bool {
         const ROOT_WATCH_BUDGET: usize = 8;
         let mut roots = self.source_roots.clone();

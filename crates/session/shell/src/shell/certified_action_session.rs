@@ -26,6 +26,8 @@ pub(crate) struct ActionSessionSource {
     broker: AppActionBroker,
     #[cfg(test)]
     fixture: Option<super::remote_actions::BrokerActionHost>,
+    #[cfg(test)]
+    mock: Option<Arc<dyn ActionHost + Send + Sync>>,
     /// Sessions [`Self::open`] opened, shared by every clone.
     #[cfg(test)]
     opens: Arc<std::sync::atomic::AtomicUsize>,
@@ -33,6 +35,11 @@ pub(crate) struct ActionSessionSource {
 
 pub(crate) enum DesktopActionSession {
     Certified(CertifiedActionSession),
+    #[cfg(test)]
+    Mock {
+        host: Arc<dyn ActionHost + Send + Sync>,
+        caller: Caller,
+    },
     #[cfg(test)]
     Fixture {
         host: super::remote_actions::BrokerActionHost,
@@ -47,6 +54,8 @@ impl ActionSessionSource {
             #[cfg(test)]
             fixture: None,
             #[cfg(test)]
+            mock: None,
+            #[cfg(test)]
             opens: Arc::default(),
         }
     }
@@ -55,11 +64,24 @@ impl ActionSessionSource {
     pub(crate) fn fixture(broker: AppActionBroker) -> Self {
         Self {
             fixture: Some(super::remote_actions::BrokerActionHost::new(broker.clone())),
+            mock: None,
             broker,
             opens: Arc::default(),
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_mock(
+        broker: AppActionBroker,
+        host: Arc<dyn ActionHost + Send + Sync>,
+    ) -> Self {
+        Self {
+            broker,
+            fixture: None,
+            mock: Some(host),
+            opens: Arc::default(),
+        }
+    }
     /// How many sessions this source and its clones opened.
     #[cfg(test)]
     pub(crate) fn opens(&self) -> usize {
@@ -82,7 +104,7 @@ impl ActionSessionSource {
     pub(crate) fn identity_revision(&self, room: &str) -> Option<u64> {
         use std::hash::{Hash as _, Hasher as _};
         #[cfg(test)]
-        if self.fixture.is_some() {
+        if self.fixture.is_some() || self.mock.is_some() {
             return Some(0);
         }
         let stamp = tilo_identity_host::join_proof::current_device_stamp(room)
@@ -100,6 +122,13 @@ impl ActionSessionSource {
         #[cfg(test)]
         self.opens
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(test)]
+        if let Some(host) = &self.mock {
+            return Ok(DesktopActionSession::Mock {
+                host: Arc::clone(host),
+                caller: Caller::local_person("synthetic").in_room(room),
+            });
+        }
         #[cfg(test)]
         if let Some(host) = &self.fixture {
             let person = expected_person.ok_or("fixture action Person is required")?;
@@ -121,6 +150,8 @@ impl DesktopActionSession {
         match self {
             Self::Certified(session) => session.query(query),
             #[cfg(test)]
+            Self::Mock { host, caller } => host.query(caller, query),
+            #[cfg(test)]
             Self::Fixture { host, caller } => host.query(caller, query),
         }
     }
@@ -131,6 +162,10 @@ impl DesktopActionSession {
     ) -> Pending<Result<(u64, InvocationReceipt), ActionHostError>> {
         match self {
             Self::Certified(session) => session.invoke_job(request),
+            #[cfg(test)]
+            Self::Mock { host, caller } => host
+                .invoke(caller, request)
+                .map(|result| result.map(|receipt| (0, receipt))),
             #[cfg(test)]
             Self::Fixture { host, caller } => host.invoke_job(caller, request),
         }

@@ -8,6 +8,8 @@
 //! both `entry.name` and `entry.space_name` so typing a space prefix
 //! narrows the list.
 
+use crate::num::f32_of_f64;
+use crate::num::f64_of_usize;
 use crate::search::ListIndex;
 use crate::time::SystemTime;
 use std::collections::HashMap;
@@ -998,25 +1000,6 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
 }
 
-/// Widens a row/entry count to `f64` for layout math. Goes through `u32`
-/// (exactly representable in `f64`) with a saturating fallback rather than
-/// an `as` cast, so it's lossless for any realistic list length.
-fn rows_to_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
-/// Narrows a layout dimension to `f32` for taffy. The only call site is
-/// this sheet's overall height, always many orders of magnitude below
-/// `f32::MAX`, so the truncation the lint warns about can't actually
-/// occur.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "sheet layout height in this widget never approaches f32::MAX"
-)]
-fn px(v: f64) -> f32 {
-    v as f32
-}
-
 impl Widget for ChannelBrowser {
     fn build_layout(
         &mut self,
@@ -1027,7 +1010,7 @@ impl Widget for ChannelBrowser {
         // The host typically positions the sheet inside an overlay
         // container that hands it a final rect via apply_layout; this
         // returns a sensible standalone default.
-        let rows = rows_to_f64(self.visible.len().max(1));
+        let rows = f64_of_usize(self.visible.len().max(1));
         let height = PADDING * 4.0
             + INPUT_HEIGHT
             + FILTER_STRIP_HEIGHT
@@ -1037,7 +1020,7 @@ impl Widget for ChannelBrowser {
         let style = Style {
             size: Size {
                 width: Dimension::length(640.0),
-                height: Dimension::length(px(height)),
+                height: Dimension::length(f32_of_f64(height)),
             },
             ..Default::default()
         };
@@ -1045,9 +1028,8 @@ impl Widget for ChannelBrowser {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
         let prev = self.rect;
-        self.rect = crate::widget::placed(&l, origin);
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if prev != self.rect {
             self.dirty = true;
         }

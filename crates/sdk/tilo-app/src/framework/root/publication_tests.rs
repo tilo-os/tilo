@@ -19,6 +19,7 @@ use ui_core::automerge::transaction::Transactable;
 use ui_core::automerge::{ROOT, ReadDoc, ScalarValue, Value};
 
 use super::*;
+use crate::advanced::{NodeId, TaffyTree};
 use crate::prelude::*;
 
 const ACTION_TYPE: &str = "test.shelf.action";
@@ -89,11 +90,8 @@ impl Resource for Shelf {
                 },
             )
             .describe("Add items to the shelf."),
+            add("double", "Double the shelf", 2),
         ]
-    }
-
-    fn bound_declarations(count: &i64) -> Vec<ActionDecl<Self>> {
-        vec![add("double", "Double the shelf", *count)]
     }
 
     fn children(count: &i64) -> Vec<tilo_actions::Resource> {
@@ -144,9 +142,6 @@ impl Widget for Rows {
         self.rect = Rect::from_origin_size(origin, Size::ZERO);
     }
 
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
-
     fn name(&self) -> &'static str {
         "Rows"
     }
@@ -189,7 +184,12 @@ impl ResourceSurface<Shelf> for Rows {
                     preview: None,
                 },
             ),
-            LiveRow::new("shelf/visitor", "test.shelf.visitor", "Visitor"),
+            // A row nesting one of its own: the nested row is bound too.
+            LiveRow::new("shelf/visitor", "test.shelf.visitor", "Visitor").row(LiveRow::new(
+                "shelf/visitor/guest",
+                "test.shelf.guest",
+                "Guest",
+            )),
         ]
     }
 
@@ -281,7 +281,7 @@ fn the_published_tree_is_the_one_recorded_before_rows_were_indexed() {
     let mut app = shelf(3).expect("the shelf opens");
     let (nobody, ada) = app
         .harness()
-        .with_widget_mut(|root: &mut ResourceRoot<Shelf>| {
+        .with_widget_mut(|root: &mut ResourceRoot| {
             let nobody = outline(&root.publication());
             let _viewer = ui_core::invocation_scope::ViewerScope::enter(
                 tilo_actions::ParticipantId::new("ada").expect("a participant id"),
@@ -353,6 +353,23 @@ fn rows_bind_the_edits_surfaces_offer_in_surface_order() {
         ("mark-right", "Mark right"),
         ("label", "Label from the right"),
     ];
+    let guest = root
+        .children
+        .iter()
+        .find(|child| child.id.as_str() == "shelf/visitor")
+        .and_then(|visitor| visitor.children.first())
+        .map(|guest| {
+            guest
+                .actions
+                .iter()
+                .map(|action| (action.id.as_str(), action.label.as_str()))
+                .collect::<Vec<_>>()
+        });
+    assert_eq!(
+        guest,
+        Some(visitor.clone()),
+        "a nested row is bound as its parent is"
+    );
     assert_eq!(
         rows,
         vec![
@@ -370,7 +387,7 @@ fn one_publication_walks_the_view_twice_whatever_the_rows() {
         let mut app = shelf(items).expect("the shelf opens");
         let walks = app
             .harness()
-            .with_widget_mut(|root: &mut ResourceRoot<Shelf>| {
+            .with_widget_mut(|root: &mut ResourceRoot| {
                 WALKS.set(0);
                 let published = root.publication();
                 assert!(published.children.len() > usize::try_from(items).unwrap_or(0));
@@ -388,14 +405,21 @@ fn one_publication_walks_the_view_twice_whatever_the_rows() {
 fn controls_bind_to_the_published_actions_without_its_children() {
     let mut app = shelf(5).expect("the shelf opens");
     app.harness()
-        .with_widget_mut(|root: &mut ResourceRoot<Shelf>| {
+        .with_widget_mut(|root: &mut ResourceRoot| {
             let published = root.publication();
             let bound = root.binding_publication(&root.binding_head());
             assert!(bound.children.is_empty(), "no child is built for bindings");
             let head = without_children(&published);
+            // Bound controls look actions up by id: the same actions, in
+            // whatever order.
+            let surveyed = |resource| {
+                let mut actions = tilo_actions::door::survey(&[resource]);
+                actions.sort_by(|a, b| a.address.action.cmp(&b.address.action));
+                actions
+            };
             assert_eq!(
-                tilo_actions::door::survey(&[bound]),
-                tilo_actions::door::survey(&[head]),
+                surveyed(bound),
+                surveyed(head),
                 "bindings see exactly the published resource's actions"
             );
             WALKS.set(0);

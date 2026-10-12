@@ -1397,7 +1397,11 @@ impl Session {
             Err(error) => return Ok(refused(with_hint(error))),
         };
         let arguments = match state.handoff.outcome().and_then(|previous| {
-            arguments_for_step(action.carries, &action.arguments, previous.as_ref())
+            arguments_for_step(
+                action.carries.as_deref(),
+                &action.arguments,
+                previous.as_ref(),
+            )
         }) {
             Ok(arguments) => arguments,
             Err(error) => return Ok(refused(error)),
@@ -2055,7 +2059,6 @@ mod tests {
     use tilo_actions::{ActionContract, ActionParam, Availability, ParamType};
     use ui::collaboration::CollabRequest;
     use ui::collaboration::{BrokerActionDescriptor, BrokerActionInput, BrokerActionSurface};
-    use ui::permissions::PermissionContext;
     use uuid::Uuid;
 
     // -- A scripted model ------------------------------------------------
@@ -2071,11 +2074,21 @@ mod tests {
         pace: Option<Duration>,
         /// Events delivered so far, across turns.
         emitted: Arc<std::sync::atomic::AtomicUsize>,
+        /// Steps the world has applied so far.
+        applied: Arc<std::sync::atomic::AtomicUsize>,
+        /// Hold event `n` back until the first step is applied (or
+        /// [`HOLD_LIMIT`] passes), so a test can tell a call that runs
+        /// while the model still writes from one that waits for the turn
+        /// to end without racing the clock.
+        hold_before: std::sync::OnceLock<usize>,
         /// Host answers (reports and cancellation polls) delivered so far.
         host_answers: Arc<std::sync::atomic::AtomicUsize>,
         /// [`Self::host_answers`] when each turn was asked of the model.
         host_answers_at_turn: Mutex<Vec<usize>>,
     }
+
+    /// How long a held event waits for the first step.
+    const HOLD_LIMIT: Duration = Duration::from_secs(5);
 
     struct Scripted(Arc<Script>);
 
@@ -2097,10 +2110,20 @@ mod tests {
                 .pop_front()
                 .unwrap_or_else(|| vec![TurnEvent::Finished(Err("script exhausted".into()))]);
             let emitted = Arc::clone(&self.0.emitted);
+            let applied = Arc::clone(&self.0.applied);
+            let hold_before = self.0.hold_before.get().copied();
             let send = move |events: Vec<TurnEvent>, pace: Option<Duration>| {
                 for event in events {
                     if let Some(pace) = pace {
                         std::thread::sleep(pace);
+                    }
+                    if hold_before == Some(emitted.load(std::sync::atomic::Ordering::SeqCst)) {
+                        let began = std::time::Instant::now();
+                        while applied.load(std::sync::atomic::Ordering::SeqCst) == 0
+                            && began.elapsed() < HOLD_LIMIT
+                        {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
                     }
                     let _ = tx.send(event);
                     emitted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -2220,7 +2243,7 @@ mod tests {
             semantic_identity: None,
             resource: DOC.into(),
             action: action.into(),
-            resource_kind: "word_processor.document".into(),
+            resource_kind: "word-processor.document".into(),
             resource_label: "Brief".into(),
             action_label: label.into(),
             description: None,
@@ -2255,6 +2278,7 @@ mod tests {
         /// Model events delivered when each step arrived.
         steps_at: Vec<usize>,
         emitted: Arc<std::sync::atomic::AtomicUsize>,
+        applied: Arc<std::sync::atomic::AtomicUsize>,
         /// Messages posted in the Chat channel.
         posts: Vec<String>,
         /// A fresh workspace: Writer is closed (publishes nothing) until the
@@ -2360,21 +2384,7 @@ mod tests {
                             tilo_actions::OperationKind::Document,
                             vec![text("text")],
                             Availability::Available,
-                            vec![format!(
-                                "{}text:continue-paragraph",
-                                crate::live::INCREMENTAL_TEXT_TAG
-                            )],
-                        ),
-                        descriptor(
-                            "continue-paragraph",
-                            "Continue last paragraph",
-                            tilo_actions::OperationKind::Document,
-                            vec![text("text")],
-                            Availability::Available,
-                            vec![format!(
-                                "{}text:continue-paragraph",
-                                crate::live::INCREMENTAL_TEXT_TAG
-                            )],
+                            vec![],
                         ),
                         descriptor(
                             "type-text",
@@ -2382,10 +2392,7 @@ mod tests {
                             tilo_actions::OperationKind::Document,
                             vec![text("text")],
                             Availability::Available,
-                            vec![format!(
-                                "{}text:type-text",
-                                crate::live::INCREMENTAL_TEXT_TAG
-                            )],
+                            vec![],
                         ),
                         descriptor(
                             "erase-text",
@@ -2509,6 +2516,8 @@ mod tests {
             self.report_answers_at_steps.push(self.report_answers);
             self.steps_at
                 .push(self.emitted.load(std::sync::atomic::Ordering::SeqCst));
+            self.applied
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self
                 .refuse_nth
                 .as_ref()
@@ -2552,12 +2561,6 @@ mod tests {
                 "append-paragraph" => {
                     self.blocks
                         .push((format!("p{}", self.blocks.len() + 1), text("text")));
-                    (serde_json::json!({"succeeded": {}}), false)
-                }
-                "continue-paragraph" => {
-                    if let Some(last) = self.blocks.last_mut() {
-                        last.1.push_str(&text("text"));
-                    }
                     (serde_json::json!({"succeeded": {}}), false)
                 }
                 "erase-text" => {
@@ -2791,6 +2794,7 @@ mod tests {
         budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     ) -> Fixture {
         let emitted = Arc::clone(&world.emitted);
+        let applied = Arc::clone(&world.applied);
         let world = Rc::new(RefCell::new(world));
         let sent = Rc::new(RefCell::new(Vec::new()));
         let script = Arc::new(Script {
@@ -2799,6 +2803,8 @@ mod tests {
             timeouts: Mutex::new(Vec::new()),
             pace,
             emitted,
+            applied,
+            hold_before: std::sync::OnceLock::new(),
             host_answers: Arc::clone(&world.borrow().host_answers),
             host_answers_at_turn: Mutex::new(Vec::new()),
         });
@@ -2856,18 +2862,14 @@ mod tests {
                 model_timeout: Duration::from_secs(5),
                 await_document: Duration::ZERO,
                 settle: Duration::ZERO,
-                permissions: PermissionContext::from_capabilities(
-                    ui::permissions::Actor::agent("agent-1"),
-                    vec![],
+                permissions: ui::permissions::PermissionContext::agent_granted_at(
+                    "agent-1",
+                    &[],
+                    ui::permissions::KindSet::READ_UNDOABLE,
                 ),
                 content: tilo_content::ContentStore::memory(),
             },
             link,
-            editor: None,
-            peers: BTreeMap::new(),
-            handled: HashSet::new(),
-            watching: HashMap::new(),
-            dispatched_this_turn: HashSet::new(),
             chooser: Chooser::scripted(
                 Duration::from_secs(5),
                 agent_provider_config::ProviderProtocol::OpenAiCompatible,
@@ -2878,18 +2880,8 @@ mod tests {
             enrolled_sequence: 0,
             task_deadline: None,
             native_task: None,
-            asked_at: ui::time::now(),
-            last_route: None,
             broker_surfaces: surfaces,
-            broker_catalogue: tilo_actions::remote::CataloguePage::default(),
-            catalogue_fetched: None,
             next_broker_request: 1,
-            active_run: None,
-            chat_run: None,
-            chat_pending: false,
-            chat_catalogue_received: false,
-            last_chat_action: None,
-            chat_sources: HashMap::new(),
             live: crate::live::LivePublisher::default(),
             memory: Memory::default(),
             broker_revision: 0,
@@ -3634,7 +3626,7 @@ mod tests {
     }
 
     /// One turn does the whole job: the paragraph is written as ordered
-    /// chunk steps (declared by the operation's own tag), its text previewed
+    /// chunk steps (the word processor's writing, `live::continuation`), its text previewed
     /// while it streams, and the reply finishes the task — no second turn.
     #[test]
     fn a_single_turn_writes_streams_and_finishes() {
@@ -3853,165 +3845,6 @@ mod tests {
         ));
     }
 
-    const LONG: &str = "The ocean covers more than seventy percent of our planet, holding \
-                        ninety-seven percent of its water and most of its life, from reefs \
-                        to trenches.";
-
-    /// Where `event` (a completed-call frame of call `index`) sits in `turn`.
-    fn frame_position(events: &[TurnEvent], index: usize) -> usize {
-        events
-            .iter()
-            .position(|event| match event {
-                TurnEvent::Frame { event, output } => {
-                    event == tilo_model_gateway::EVENT_TOOL_CALL
-                        && output.contains(&format!("\"call_{index}\""))
-                }
-                TurnEvent::Finished(_) => false,
-            })
-            .unwrap()
-    }
-
-    /// The text of a declared-incremental operation is written while the
-    /// model is still streaming the call: a small first chunk commits before
-    /// the call is complete, the rest follow strictly in order, and they
-    /// rejoin to exactly the final text.
-    #[test]
-    fn streamed_text_is_written_before_its_call_completes() {
-        let events = turn(
-            &[
-                invoke("type-text", &serde_json::json!({"text": LONG})),
-                finish("Written.", true),
-            ],
-            6,
-        );
-        let call_complete = frame_position(&events, 0);
-        let mut f = paced_fixture(
-            "write about the ocean",
-            World::default(),
-            vec![events],
-            Some(Duration::from_millis(4)),
-        );
-        f.session.run_task(&f.run).unwrap();
-
-        let world = f.world.borrow();
-        assert_eq!(world.blocks[0].1, LONG);
-        let chunks: Vec<&str> = world
-            .steps
-            .iter()
-            .map(|(action, arguments)| {
-                assert_eq!(action, "type-text");
-                arguments["text"].as_str().unwrap()
-            })
-            .collect();
-        assert!(chunks.len() >= 2, "{chunks:?}");
-        assert!(
-            chunks[0].len() <= FIRST_CHUNK_TARGET + FIRST_CHUNK_TARGET / 3,
-            "the first chunk is small: {:?}",
-            chunks[0]
-        );
-        assert_eq!(chunks.concat(), LONG);
-        assert!(
-            world.steps_at[0] < call_complete,
-            "the first chunk committed at event {} of {call_complete}",
-            world.steps_at[0]
-        );
-        let sent = f.sent.borrow();
-        let steps: Vec<Option<u32>> = sent
-            .iter()
-            .filter_map(|request| match request {
-                CollabRequest::InvokeTaskAction { step, .. } => Some(*step),
-                _ => None,
-            })
-            .collect();
-        let expected: Vec<Option<u32>> = (0..chunks.len())
-            .map(|step| Some(u32::try_from(step).unwrap()))
-            .collect();
-        assert_eq!(steps, expected, "strictly sequential durable steps");
-        assert_eq!(f.script.bodies.lock().unwrap().len(), 1);
-        assert_eq!(
-            terminal(&sent),
-            runtime_collab::TaskRunUpdate::Succeeded {
-                message: "Written.".into()
-            }
-        );
-    }
-
-    /// A chunk refused mid-stream stops the writing: no later chunk runs,
-    /// the invoke reports what was already written, and the turn's `plan`
-    /// does not finish the task.
-    #[test]
-    fn a_refused_chunk_stops_the_stream_and_is_observed() {
-        let world = World {
-            refuse_nth: Some(("type-text".into(), 1)),
-            ..World::default()
-        };
-        let events = turn(
-            &[
-                invoke("type-text", &serde_json::json!({"text": LONG})),
-                finish("Written.", true),
-            ],
-            6,
-        );
-        let mut f = paced_fixture(
-            "write about the ocean",
-            world,
-            vec![
-                events,
-                turn(&[finish("Writing stopped part-way.", false)], 64),
-            ],
-            Some(Duration::from_millis(2)),
-        );
-        f.session.run_task(&f.run).unwrap();
-        assert_eq!(f.world.borrow().steps.len(), 2, "nothing after the refusal");
-        let bodies = f.script.bodies.lock().unwrap().clone();
-        assert_eq!(bodies.len(), 2);
-        let second = bodies[1]["messages"].to_string();
-        assert!(second.contains("type-text was refused"), "{second}");
-        assert!(second.contains("already written"), "{second}");
-        assert!(second.contains("Not finished"), "{second}");
-        assert!(matches!(
-            terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded { .. }
-        ));
-    }
-
-    /// The model failing mid-stream stops the writing; the task fails and
-    /// says how much was already written.
-    #[test]
-    fn a_model_error_mid_stream_stops_writing() {
-        let mut events = turn(
-            &[invoke("type-text", &serde_json::json!({"text": LONG}))],
-            6,
-        );
-        let cut = frame_position(&events, 0) - 4;
-        events.truncate(cut);
-        events.push(TurnEvent::Finished(Err("provider stream reset".into())));
-        let mut f = paced_fixture(
-            "write about the ocean",
-            World::default(),
-            vec![events],
-            Some(Duration::from_millis(4)),
-        );
-        f.session.run_task(&f.run).unwrap();
-        let written: String = f
-            .world
-            .borrow()
-            .steps
-            .iter()
-            .map(|(_, arguments)| arguments["text"].as_str().unwrap().to_owned())
-            .collect();
-        assert!(
-            !written.is_empty() && LONG.starts_with(&written),
-            "{written:?}"
-        );
-        assert!(written.len() < LONG.len());
-        assert!(matches!(
-            terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Failed { message }
-                if message.contains("provider stream reset") && message.contains("already written")
-        ));
-    }
-
     /// With Anthropic streamed like the `OpenAI` dialect, a call runs the
     /// moment its `tool_use` block closes, while Claude still writes the
     /// next one; the assembled body's pass then skips every call that ran
@@ -4038,6 +3871,9 @@ mod tests {
             vec![first, anthropic_turn(&[finish("Wrote it.", true)], 8)],
             Some(Duration::from_millis(4)),
         );
+        // A call that runs as its block closes lands before the next call
+        // is written; one that waits for the turn's end never does.
+        f.script.hold_before.set(second_call).unwrap();
         f.session.chooser = Chooser::scripted(
             Duration::from_secs(5),
             agent_provider_config::ProviderProtocol::Anthropic,
@@ -4118,97 +3954,6 @@ mod tests {
         assert_eq!(
             streaming_chunk_len(&tail, STREAM_CHUNK_TARGET, 12, true),
             Some(tail.len())
-        );
-    }
-
-    /// `events` with call 0's argument deltas after the first `keep` merged
-    /// into one: the rest of its arguments arrives at once.
-    fn burst_after(events: Vec<TurnEvent>, keep: usize) -> Vec<TurnEvent> {
-        let mut out = Vec::new();
-        let mut seen = 0;
-        let mut merged: Option<Value> = None;
-        for event in events {
-            if let TurnEvent::Frame {
-                event: name,
-                output,
-            } = &event
-                && name == tilo_model_gateway::EVENT_TOOL_CALL_DELTA
-            {
-                let delta: Value = serde_json::from_str(output).unwrap();
-                if delta["index"] == 0 {
-                    seen += 1;
-                    if seen > keep {
-                        merged = Some(match merged.take() {
-                            Some(mut earlier) => {
-                                let joined = format!(
-                                    "{}{}",
-                                    earlier["delta"].as_str().unwrap(),
-                                    delta["delta"].as_str().unwrap()
-                                );
-                                earlier["delta"] = Value::String(joined);
-                                earlier
-                            }
-                            None => delta,
-                        });
-                        continue;
-                    }
-                }
-            }
-            if let Some(merged) = merged.take() {
-                out.push(TurnEvent::Frame {
-                    event: tilo_model_gateway::EVENT_TOOL_CALL_DELTA.into(),
-                    output: merged.to_string(),
-                });
-            }
-            out.push(event);
-        }
-        out
-    }
-
-    /// Once the streamed text is complete, everything not yet written lands
-    /// in one step — not in stream-sized chunks after the model is done.
-    #[test]
-    fn a_completed_stream_writes_its_whole_tail_in_one_step() {
-        let text = "The ocean covers more than seventy percent of our planet. ".repeat(12);
-        let call = invoke("type-text", &serde_json::json!({"text": text}));
-        let arguments = call.1.to_string();
-        let text_at = arguments.find("The ocean").unwrap();
-        // Stream the first ~120 bytes of text six at a time (enough for the
-        // small first chunk, too little for a second), then the rest at once.
-        let events = burst_after(
-            turn(&[call, finish("Written.", true)], 6),
-            (text_at + 120) / 6,
-        );
-        let call_complete = frame_position(&events, 0);
-        let mut f = paced_fixture(
-            "write about the ocean",
-            World::default(),
-            vec![events],
-            Some(Duration::from_millis(4)),
-        );
-        f.session.run_task(&f.run).unwrap();
-
-        let world = f.world.borrow();
-        assert_eq!(world.blocks[0].1, text);
-        let chunks: Vec<&str> = world
-            .steps
-            .iter()
-            .map(|(_, arguments)| arguments["text"].as_str().unwrap())
-            .collect();
-        assert_eq!(chunks.len(), 2, "{chunks:?}");
-        assert!(
-            chunks[0].len() <= FIRST_CHUNK_TARGET + FIRST_CHUNK_TARGET / 3,
-            "the first chunk is small: {:?}",
-            chunks[0]
-        );
-        assert!(
-            world.steps_at[0] < call_complete,
-            "the first chunk committed while the text streamed"
-        );
-        assert_eq!(
-            chunks[1],
-            &text[chunks[0].len()..],
-            "the whole tail at once"
         );
     }
 

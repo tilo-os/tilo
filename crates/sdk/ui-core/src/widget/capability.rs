@@ -165,7 +165,7 @@ mod tests {
 
     impl Widget for Probe {
         crate::provides!(#[cfg(all())] dyn Greeting, #[cfg(any())] dyn Unrelated);
-        crate::testing::inert_widget_methods!(leaf_layout, apply_layout, draw, get_rect);
+        crate::testing::inert_widget_methods!(leaf_layout);
         fn name(&self) -> &'static str {
             "probe"
         }
@@ -194,7 +194,7 @@ mod tests {
 
     impl Widget for Wrapper {
         crate::provides!(#[cfg(any())] dyn Unrelated; inner = inner);
-        crate::testing::inert_widget_methods!(leaf_layout, apply_layout, draw, get_rect);
+        crate::testing::inert_widget_methods!(leaf_layout);
         fn name(&self) -> &'static str {
             "wrapper"
         }

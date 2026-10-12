@@ -420,7 +420,11 @@ fn validate_open_uri(manifest: &ManifestView, opts: &RunOptions) -> Result<(), R
         .split_once(':')
         .ok_or_else(|| RunError::InvalidOpenUri("URI has no scheme".into()))?;
     let scheme = scheme.to_ascii_lowercase();
-    if rest.is_empty() || !manifest.opens_schemes.iter().any(|claim| claim == &scheme) {
+    // Every app opens its own records; the record names nothing outside them.
+    let own_record = scheme == collab_types::RECORD_URI_SCHEME;
+    if rest.is_empty()
+        || !(own_record || manifest.opens_schemes.iter().any(|claim| claim == &scheme))
+    {
         return Err(RunError::InvalidOpenUri(format!(
             "{} does not declare scheme {scheme}",
             manifest.package_id
@@ -539,11 +543,18 @@ mod resource_claim_tests {
                 ..Default::default()
             };
             validate_open_uri(&manifest, &accepted).unwrap();
+            let own_record = RunOptions {
+                open_uri: Some("tilo-record:3f0c9a1e-2b4d-4e8f-9a6b-7c5d1e2f3a4b".into()),
+                ..Default::default()
+            };
+            validate_open_uri(&manifest, &own_record)
+                .expect("every app opens its own records unclaimed");
 
             for uri in [
                 "http://example.test",
                 "file:///etc/passwd",
                 "https://x\n--flag",
+                "tilo-record:",
             ] {
                 let opts = RunOptions {
                     open_uri: Some(uri.into()),
@@ -802,17 +813,18 @@ mod managed_service_tests {
 /// for this app now. Split out so [`run_with_captured`] and tests share it.
 pub fn resolve_capabilities(manifest: &ManifestView, opts: &RunOptions) -> CapabilityPlan {
     let app_id = manifest.package_id.clone();
-    let records = opts
+    let grants = opts
         .capabilities_path
         .as_deref()
         .map(load_capability_file)
         .unwrap_or_default();
-    let mut plan = CapabilityPlan::for_app(&app_id, &records, Some(unix_now()));
-    // A workspace launch with no explicit author grant is a viewer. Treating
-    // missing/malformed policy as authorship made every failure permissive.
-    if opts.workspace_id.is_some()
-        && plan.participation == crate::capabilities::Participation::Unscoped
-    {
+    let mut plan = CapabilityPlan::for_app(&app_id, &grants.sandbox, Some(unix_now()));
+    // An app the room's grants make an author changes it; a workspace launch
+    // of any other app is a viewer. Treating missing or malformed policy as
+    // authorship made every failure permissive.
+    if grants.authors(&app_id) {
+        plan.participation = crate::capabilities::Participation::Author;
+    } else if opts.workspace_id.is_some() {
         plan.participation = crate::capabilities::Participation::ReadOnly;
     }
     tracing::info!(
@@ -2110,9 +2122,7 @@ fn splice_action_authority(
     manifest: &ManifestView,
     opts: &RunOptions,
 ) -> Result<(), RunError> {
-    use collab_types::caps::action_authority::{
-        AppActionAuthorityProjection, MAX_PROJECTION_BYTES,
-    };
+    use collab_types::action_authority::{AppActionAuthorityProjection, MAX_PROJECTION_BYTES};
     use std::io::Read as _;
     let Some(path) = opts.action_authority_host_path.as_deref() else {
         return Ok(());
@@ -2191,6 +2201,14 @@ fn splice_gpu(
             sel,
             crate::sandbox::grants_drm(manifest, capabilities),
         );
+        argv.push(entry);
+    } else if opts.render_node.is_none()
+        && let Some(pin) = crate::gpu::inherited_software_pin()
+    {
+        // A compositor with no GPU renders with lavapipe and pinned its own
+        // loaders to it; its apps follow, as they follow a GPU's pin.
+        let entry = pop_entry(argv)?;
+        crate::sandbox::push_software_pin(argv, &pin);
         argv.push(entry);
     }
     let seed = gpu
@@ -4758,6 +4776,30 @@ mod app_dir_tests {
                 personal.participation,
                 crate::capabilities::Participation::Unscoped
             );
+
+            // The room's grants make the app an author.
+            let dir = tempfile::tempdir().expect("tempdir");
+            let file = dir.path().join("grants.json");
+            std::fs::write(
+                &file,
+                serde_json::to_vec(&collab_types::caps::LaunchGrants {
+                    authors: vec!["so.tilo.fixture".into()],
+                    sandbox: Vec::new(),
+                })
+                .expect("encodes"),
+            )
+            .expect("written");
+            let authored = resolve_capabilities(
+                &m,
+                &RunOptions {
+                    capabilities_path: Some(file),
+                    ..opts_in(Some("room-a"))
+                },
+            );
+            assert_eq!(
+                authored.participation,
+                crate::capabilities::Participation::Author
+            );
         }
         // Phase `the_launch_resolves_one_directory_per_room`.
         // The launch path resolves the directory rather than the manifest
@@ -5033,25 +5075,27 @@ mod debug_output_tests {
 #[cfg(test)]
 mod action_authority_tests {
     use super::*;
-    use collab_types::caps::action_authority::AppActionAuthorityProjection;
+    use collab_types::action_authority::AppActionAuthorityProjection;
     #[test]
     fn action_authority_binding_is_readonly_scoped_and_separate_from_sandbox_grants() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("current.json");
         let manifest: ManifestView = crate::manifest::test_manifest(
-            "id = \"so.tilo.store\"\nversion = \"1.0\"\nkind = \"app\"",
-            "[entrypoint]\nbin = \"store\"\n",
+            "id = \"so.tilo.store\"
+version = \"1.0\"
+kind = \"app\"",
+            "[entrypoint]
+bin = \"store\"
+",
         );
-        let policy = AppActionAuthorityProjection {
-            schema_version: 1,
-            room: "room-a".into(),
-            app_id: manifest.package_id.clone(),
-            person: "person-a".into(),
-            owner: Some("person-a".into()),
-            capabilities: vec![],
-            issued_at_unix_ms: 10_000,
-            valid_until_unix_ms: 13_000,
-        };
+        let policy = AppActionAuthorityProjection::project(
+            &tilo_action_policy::RoomPolicy::new("room-a", "person-a"),
+            &manifest.package_id,
+            "person-a",
+            false,
+            10_000,
+            13_000,
+        );
         std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
         let opts = RunOptions {
             workspace_id: Some("room-a".into()),
@@ -5089,7 +5133,7 @@ mod action_authority_tests {
         assert!(splice_action_authority(&mut vec!["store".into()], &manifest, &opts).is_err());
         std::fs::write(
             opts.action_authority_host_path.as_ref().unwrap(),
-            vec![b' '; collab_types::caps::action_authority::MAX_PROJECTION_BYTES + 1],
+            vec![b' '; collab_types::action_authority::MAX_PROJECTION_BYTES + 1],
         )
         .unwrap();
         assert!(splice_action_authority(&mut vec!["store".into()], &manifest, &opts).is_err());
@@ -5101,8 +5145,68 @@ mod mesa_seed_software_tests {
     use super::*;
 
     #[test]
+    fn a_launch_without_a_render_node_follows_a_gpu_less_compositor_onto_lavapipe() {
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        let icds = home.root().join("vulkan/icd.d");
+        std::fs::create_dir_all(&icds).unwrap();
+        let lavapipe = icds.join("lvp_icd.json");
+        std::fs::write(
+            &lavapipe,
+            r#"{"file_format_version":"1.0.1","ICD":{"library_path":"libvulkan_lvp.so"}}"#,
+        )
+        .unwrap();
+        let radeon = icds.join("radeon_icd.json");
+        std::fs::write(
+            &radeon,
+            r#"{"file_format_version":"1.0.1","ICD":{"library_path":"libvulkan_radeon.so"}}"#,
+        )
+        .unwrap();
+        home.env()
+            .set(crate::gpu::VK_DRIVER_FILES_ENV, &lavapipe)
+            .remove(crate::gpu::VK_ICD_FILENAMES_ENV)
+            .remove(crate::gpu::EGL_VENDOR_ENV);
+        let manifest: ManifestView = crate::manifest::test_manifest(
+            "id = \"io.tilo.software-pin\"\nversion = \"0.1.0\"\nkind = \"app\"",
+            "[entrypoint]\nbin = \"bin/probe\"\n",
+        );
+        let opts = RunOptions::default();
+        let mut argv = vec!["/app/probe".to_owned()];
+        let (gpu, _) = splice_gpu(&mut argv, &manifest, &opts, &CapabilityPlan::empty()).unwrap();
+        assert!(gpu.is_none(), "no render node, no device pin");
+        let path = lavapipe.to_str().unwrap();
+        assert!(
+            argv.windows(3)
+                .any(|args| args == ["--ro-bind-try", path, path])
+        );
+        for key in [
+            crate::gpu::VK_DRIVER_FILES_ENV,
+            crate::gpu::VK_ICD_FILENAMES_ENV,
+        ] {
+            assert!(argv.windows(3).any(|args| args == ["--setenv", key, path]));
+        }
+        assert!(!argv.iter().any(|arg| arg == "--dev-bind-try"));
+        assert_eq!(argv.last().map(String::as_str), Some("/app/probe"));
+
+        // A GPU's driver in the environment is not the software pin.
+        home.env().set(crate::gpu::VK_DRIVER_FILES_ENV, &radeon);
+        let mut argv = vec!["/app/probe".to_owned()];
+        splice_gpu(&mut argv, &manifest, &opts, &CapabilityPlan::empty()).unwrap();
+        assert!(
+            !argv
+                .iter()
+                .any(|arg| arg == crate::gpu::VK_DRIVER_FILES_ENV)
+        );
+    }
+
+    #[test]
     fn a_software_launch_gets_only_the_read_only_session_seed_without_a_device_pin() {
-        let home = tilo_test_env::TestHome::new().unwrap();
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        // A compositor's software pin is its own case below; CI pins
+        // lavapipe in the test environment itself.
+        home.env()
+            .remove(crate::gpu::VK_DRIVER_FILES_ENV)
+            .remove(crate::gpu::VK_ICD_FILENAMES_ENV)
+            .remove(crate::gpu::EGL_VENDOR_ENV);
         let source = home.runtime().join("tilo/pipeline-seed");
         std::fs::create_dir_all(&source).unwrap();
         let manifest: ManifestView = crate::manifest::test_manifest(

@@ -20,6 +20,7 @@ use crate::ActionContract;
 use crate::ActionParam;
 use crate::action::{EncodedAction, ExecutionLocus, OperationKind};
 use crate::context::ActionContext;
+use crate::entry::Described;
 use crate::executor::{ActionTransport, Dispatched, dispatch_by_with_context};
 use crate::registry::ActionRegistry;
 use crate::resource::{
@@ -310,11 +311,23 @@ fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
 /// Resolve `address` against `resources` without running anything, so a caller
 /// can check what an address currently names before committing to it.
 pub fn resolve<'a>(resources: &'a [Resource], address: &ActionAddress) -> Option<&'a ActionSpec> {
-    fn walk<'a>(r: &'a Resource, address: &ActionAddress) -> Option<&'a ActionSpec> {
+    locate(resources, address).map(|(_, spec)| spec)
+}
+
+/// [`resolve`], with the resource that publishes the action: what a door
+/// needs to place the action in the tree it grants over.
+pub fn locate<'a>(
+    resources: &'a [Resource],
+    address: &ActionAddress,
+) -> Option<(&'a Resource, &'a ActionSpec)> {
+    fn walk<'a>(
+        r: &'a Resource,
+        address: &ActionAddress,
+    ) -> Option<(&'a Resource, &'a ActionSpec)> {
         if r.id.as_str() == address.resource
             && let Some(spec) = r.actions.iter().find(|a| a.id == address.action)
         {
-            return Some(spec);
+            return Some((r, spec));
         }
         r.children.iter().find_map(|c| walk(c, address))
     }
@@ -658,14 +671,20 @@ fn dispatch_encoded_with_context(
             spec.kind.as_str()
         )));
     }
-    let mut context = ActionContext::for_resource(
-        &spec.label,
-        resource.id.as_str(),
-        &resource.kind,
-        &resource.label,
-    );
+    let mut context =
+        ActionContext::for_resource(resource.id.as_str(), &resource.kind, &resource.label);
     if let Some(ambient) = provenance.ambient {
         context = context.enriched_by(ambient);
+    }
+    // The published action is the verb history names, unless the value
+    // describes itself or the action only carries others.
+    if !spec.carries_actions()
+        && let Some(described) = Described::of_published(
+            &encoded,
+            crate::ActionKey::new("", &resource.kind, &spec.id),
+        )
+    {
+        context = context.with_described(described);
     }
     let action = registry.decode(&encoded).map_err(DoorError::decoding)?;
     if spec.deferred_invocation_type().is_some() && action.locus() != spec.locus {
@@ -1074,7 +1093,7 @@ mod tests {
         let env = dispatched.envelope().clone();
         assert_eq!(env.actor.as_deref(), Some(caller));
         let context = env.context.as_ref().expect("door supplies provenance");
-        assert_eq!(context.action_label, "Star");
+        assert_eq!(published_verb(context), "star");
         assert_eq!(
             context
                 .resource
@@ -1131,7 +1150,7 @@ mod tests {
         .expect("door action");
 
         let context = dispatched.envelope().context.as_ref().expect("context");
-        assert_eq!(context.action_label, "Star");
+        assert_eq!(published_verb(context), "star");
         assert_eq!(context.purpose.as_deref(), Some("Prepare launch"));
         assert_eq!(
             context.group.as_ref().map(|group| group.id.as_str()),
@@ -1305,7 +1324,18 @@ mod tests {
 
     /// Read the durable change the door just committed back from its message,
     /// and require it to carry both the resource's own context and the run's.
-    fn assert_recorded_within_run(doc: &mut AutoCommit, label: &str) {
+    /// The published action an entry names, with the resource kind it was
+    /// published on.
+    fn published_verb(context: &ActionContext) -> &str {
+        let Some(crate::Did::Verb(verb)) = &context.what else {
+            panic!("a verb: {context:?}");
+        };
+        assert_eq!(verb.action.kind, "notes.note");
+        assert!(!verb.action.app.is_empty(), "the app is filled in");
+        &verb.action.action
+    }
+
+    fn assert_recorded_within_run(doc: &mut AutoCommit, action: &str) {
         let heads = doc.get_heads();
         let change = doc
             .get_change_by_hash(&heads[0])
@@ -1315,7 +1345,7 @@ mod tests {
             .message()
             .and_then(ActionContext::from_change_message)
             .expect("the change carries its semantic provenance");
-        assert_eq!(context.action_label, label);
+        assert_eq!(published_verb(&context), action);
         assert_eq!(
             context
                 .resource
@@ -1381,7 +1411,7 @@ mod tests {
             Some("agent-run:7"),
             "the replicated envelope carries the run too"
         );
-        assert_recorded_within_run(&mut doc, "Star");
+        assert_recorded_within_run(&mut doc, "star");
     }
 
     /// Both typed-argument entry points record the run's context: the
@@ -1405,7 +1435,7 @@ mod tests {
             &mut transport,
         )
         .expect("an ordinary value runs");
-        assert_recorded_within_run(&mut doc, "Edit");
+        assert_recorded_within_run(&mut doc, "edit");
 
         invoke_json_confirmed(
             &mut doc,
@@ -1418,7 +1448,7 @@ mod tests {
         )
         .expect("a confirmed destructive value runs");
         assert_eq!(stored_title(&doc).as_deref(), Some(""));
-        assert_recorded_within_run(&mut doc, "Edit");
+        assert_recorded_within_run(&mut doc, "edit");
     }
 
     fn effective_confirmation_reads_every_argument_form() {

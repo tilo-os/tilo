@@ -95,7 +95,7 @@ impl ParticipantView {
     /// A collapsed caret at the end of the body's last block, or `None` for a
     /// document without body blocks. The default spawn position of an agent.
     pub fn at_document_end(doc: &AutoCommit) -> Option<Self> {
-        let containers = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+        let containers = crate::model::open(doc).ok()?;
         let block = tilo_doc::model::region_blocks_in_order(
             doc,
             &containers,
@@ -106,25 +106,43 @@ impl ParticipantView {
         Some(Self::at(ViewPoint::new(block, offset), RegionKind::Body))
     }
 
-    /// Rebuild the view a resource context was projected from. The context
-    /// keeps the selection in document order, so the anchor is whichever end
-    /// the caret is not on (the start when the caret is on neither). Find
-    /// hits are kept; the query is not part of the context.
-    pub fn from_ctx(ctx: &WpResourceCtx) -> Self {
-        let caret = ViewPoint::new(&ctx.caret_block, ctx.caret_offset);
-        let anchor = ctx.selection.as_ref().map(|selection| {
-            let start = ViewPoint::new(&selection.start_block, selection.start);
-            let end = ViewPoint::new(&selection.end_block, selection.end);
-            if start == caret { end } else { start }
-        });
-        let anchor = anchor.filter(|anchor| *anchor != caret);
-        Self {
-            caret,
-            anchor,
-            region: ctx.region,
-            find: FindState::new("", ctx.search_hits.iter().cloned()),
-            pending: None,
-        }
+    /// The view an edit told where to act (`at`) acts from: a paragraph
+    /// selected whole, a collapsed caret in it, or a range of it.
+    ///
+    /// # Errors
+    /// Returns why `place` is not in `doc`: its paragraph is gone, or an
+    /// offset lies past the paragraph's end.
+    pub fn at_place(doc: &AutoCommit, place: &ui::tilo_resource::Place) -> Result<Self, String> {
+        use ui::tilo_resource::Place;
+        let containers = crate::model::open(doc)?;
+        let block = place.item();
+        let region = [RegionKind::Body, RegionKind::Header, RegionKind::Footer]
+            .into_iter()
+            .find(|region| {
+                tilo_doc::model::region_blocks_in_order(doc, &containers, region.to_region())
+                    .iter()
+                    .any(|candidate| candidate == block)
+            })
+            .ok_or_else(|| format!("there is no paragraph {block} in the document"))?;
+        let chars = block_chars(doc, &containers, region, block);
+        let within = |offset: usize| {
+            if offset <= chars {
+                Ok(ViewPoint::new(block, offset))
+            } else {
+                Err(format!(
+                    "the paragraph is {chars} characters long; {offset} is past its end"
+                ))
+            }
+        };
+        let (anchor, caret) = match place {
+            Place::Item(_) => (Some(within(0)?), within(chars)?),
+            Place::Caret { at, .. } => (None, within(*at)?),
+            Place::Range { start, end, .. } => (Some(within(*start)?), within(*end)?),
+        };
+        Ok(Self {
+            anchor: anchor.filter(|anchor| *anchor != caret),
+            ..Self::at(caret, region)
+        })
     }
 
     /// Resolve a [`PendingCaret`] against `doc`: once the edit that set it
@@ -153,7 +171,7 @@ impl ParticipantView {
             body.position(&pending.after)
                 .map(|index| at(&|i| body.id_at(i).map(str::to_owned), index))
         } else {
-            let Ok(containers) = tilo_doc::model::open(doc, &automerge::ROOT) else {
+            let Ok(containers) = crate::model::open(doc) else {
                 return out;
             };
             let order =
@@ -180,7 +198,7 @@ impl ParticipantView {
         if self.pending.is_some() {
             return self.settle(doc).selection(doc);
         }
-        let containers = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+        let containers = crate::model::open(doc).ok()?;
         let order =
             tilo_doc::model::region_blocks_in_order(doc, &containers, self.region.to_region());
         self.ordered_selection(&order)
@@ -232,7 +250,7 @@ impl ParticipantView {
         if self.caret.block.is_empty() {
             return None;
         }
-        let containers = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+        let containers = crate::model::open(doc).ok()?;
         let order =
             tilo_doc::model::region_blocks_in_order(doc, &containers, self.region.to_region());
         if !order.contains(&self.caret.block) {
@@ -308,7 +326,7 @@ mod tests {
 
     fn doc_with(paragraphs: &[&str]) -> (AutoCommit, Vec<String>) {
         let mut doc = AutoCommit::new();
-        let containers = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+        let containers = crate::model::init(&mut doc).unwrap();
         let mut ids = tilo_doc::model::seeded_id_gen(&doc, &containers);
         let mut dm = tilo_doc::DocMut {
             doc: &mut doc,

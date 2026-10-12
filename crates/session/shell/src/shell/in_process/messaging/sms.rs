@@ -99,7 +99,7 @@ impl Account {
         transport.validate().await.map_err(|_| SendError::Revoked)?;
         self.gate.check()?;
         if save {
-            private_fs::directory(&root).map_err(|_| SendError::Unavailable)?;
+            tilo_files::native::private::directory(&root).map_err(|_| SendError::Unavailable)?;
             self.gate.check()?;
             binding
                 .save(

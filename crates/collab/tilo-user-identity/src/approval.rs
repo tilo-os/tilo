@@ -104,7 +104,7 @@ pub struct ApprovalRequest {
     /// Exclusive expiry in Unix-epoch nanoseconds.
     pub expires_at_ns: u64,
     /// Requester-device Ed25519 signature over the canonical request.
-    #[serde(with = "crate::cert::serde_bytes_64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 
@@ -219,7 +219,7 @@ pub struct DeviceApproval {
     /// Decision time in Unix-epoch nanoseconds.
     pub decided_at_ns: u64,
     /// Approver-device Ed25519 signature over the canonical response.
-    #[serde(with = "crate::cert::serde_bytes_64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 

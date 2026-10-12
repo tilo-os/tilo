@@ -1299,6 +1299,67 @@ impl OpSet {
         self.get_op_id_pos(id)
     }
 
+    // TILO(seq-apply-skip): lookups a list or text apply uses to jump over
+    // elements it cannot change (vendor/automerge/TILO-PATCH.md).
+
+    /// Where the sequence element holding the op at `pos` starts (its
+    /// insert op), if that lies in `range` with `pos`.
+    pub(crate) fn element_start(&self, pos: usize, range: Range<usize>) -> Option<usize> {
+        if !range.contains(&pos) {
+            return None;
+        }
+        let inserts = self.cols.insert.get_total(pos);
+        if inserts == 0 {
+            return None;
+        }
+        let start = self.cols.insert.get_index_for_total(inserts);
+        (range.start <= start && start <= pos).then_some(start)
+    }
+
+    // TILO(peer-change-check): what checking an incoming change needs to know
+    // of an op it names (vendor/automerge/TILO-PATCH.md).
+
+    /// The object of the op `id`, the map key or sequence element it is in,
+    /// and whether it inserts that element, if the document holds it.
+    pub(crate) fn op_place(&self, id: OpId) -> Option<(ObjId, KeyRef<'_>, bool)> {
+        let pos = self.get_op_id_pos(id)?;
+        let range = pos..pos + 1;
+        let obj = ObjIdIter::new_range(
+            self.cols.obj_actor.iter_range(range.clone()),
+            self.cols.obj_ctr.iter_range(range.clone()),
+        )
+        .next()?;
+        let insert = InsertIter::new(self.cols.insert.values().iter_range(range.clone())).next()?;
+        if insert {
+            return Some((obj, KeyRef::Seq(types::ElemId(id)), true));
+        }
+        let key = KeyIter::new(
+            self.cols.key_str.iter_range(range.clone()),
+            self.cols.key_actor.iter_range(range.clone()),
+            self.cols.key_ctr.iter_range(range),
+        )
+        .next()?;
+        Some((obj, key, false))
+    }
+
+    /// The visible width of the sequence elements in `range`, as the
+    /// sequence's patches count it: one per element of a list, the width of
+    /// the element's text in a text.
+    pub(crate) fn visible_width(&self, range: Range<usize>, seq_type: SequenceType) -> usize {
+        match seq_type {
+            SequenceType::List => self.cols.index.top.sum_range(range),
+            SequenceType::Text => self.cols.index.text.sum_range(range) as usize,
+        }
+    }
+
+    /// The first mark op in `range`.
+    pub(crate) fn next_mark(&self, range: Range<usize>) -> Option<usize> {
+        self.cols
+            .action
+            .iter_range(range)
+            .scan_to_value(Action::Mark)
+    }
+
     pub(crate) fn iter_obj<'a>(&'a self, obj: &ObjId) -> OpIter<'a> {
         let range = self.scope_to_obj(obj);
         self.iter_range(&range)

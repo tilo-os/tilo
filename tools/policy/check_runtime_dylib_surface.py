@@ -13,6 +13,10 @@ downloads it. Two rules hold for its dependency graph (TIL-353):
   code it calls.
 - **No dead weight.** Every crate in the runtime is reached by at least one
   app of the default collection without going through the runtime.
+- **No moved engine.** An engine that has a library of its own beside the
+  runtime (crates/runtime/engines/) is loaded by its one app; its
+  crates never re-enter the runtime, through the workspace-hack or any app's
+  feature.
 
 The graph is resolved the way the release builds it
 (os/scripts/build-thin-apps.sh through dist/apps/package-apps.sh): the
@@ -55,6 +59,17 @@ DENIED = {
     "shell": "the compositor",
     "ush": "the user shell daemon",
     "compat-service": "the Windows compatibility service",
+}
+# Crates of an engine that is a library of its own beside the runtime
+# (crates/runtime/engines/): only its app maps them.
+ENGINES = {
+    "tilo-typst-engine": "Typst's engine library (libtilo_typst_engine.so)",
+    "typst": "Typst, which Typst Editor loads from libtilo_typst_engine.so",
+    "typst-library": "Typst's standard library, in libtilo_typst_engine.so",
+    "typst-assets": "Typst's 9.6 MB font table, in libtilo_typst_engine.so",
+    "tilo-spotify-engine": "Spotify playback's engine library (libtilo_spotify_engine.so)",
+    "tilo-spotify": "Spotify playback, which Music loads from libtilo_spotify_engine.so",
+    "librespot": "the Spotify client, in libtilo_spotify_engine.so",
 }
 
 
@@ -140,6 +155,13 @@ def violations(tree: str, apps: list[str], target: str) -> list[str]:
             f"{RUNTIME} reaches {name}, {DENIED[name]}, for {target}: OS internals are not app "
             "runtime; an app reaches them through a service or links what it calls itself"
         )
+    for name in sorted(runtime & ENGINES.keys()):
+        found.append(
+            f"{RUNTIME} reaches {name}, {ENGINES[name]}, for {target}: an engine with a library "
+            "of its own stays out of the runtime every app maps; keep it out of the runtime's "
+            "dependencies, and out of the workspace-hack by building it with one feature set "
+            "across the workspace (DEVELOPMENT.md, \"Runtime size\")"
+        )
     absent = sorted(set(apps) - set(roots))
     if absent:
         return found + [f"cargo tree did not describe {', '.join(absent)} for {target}"]
@@ -164,7 +186,7 @@ def main() -> int:
                 print(message, file=sys.stderr)
             failed = failed or bool(found)
             if not found:
-                print(f"{RUNTIME} ({target}): no OS internals, every crate used by an app")
+                print(f"{RUNTIME} ({target}): no OS internals or moved engines, every crate used by an app")
     except RuntimeError as error:
         print(error, file=sys.stderr)
         return 1

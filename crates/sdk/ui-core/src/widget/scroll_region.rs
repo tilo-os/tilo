@@ -43,6 +43,24 @@ pub struct ScrollRegion {
     focused: bool,
     edge_fade: bool,
     persisted: Option<Rc<Cell<(f32, f32)>>>,
+    /// What the frame being drawn shows of the content, and what the last
+    /// frame the host presented showed ([`Self::offer_copy`]).
+    shown_drawing: std::cell::RefCell<Option<RegionShown>>,
+    shown_presented: Option<RegionShown>,
+}
+
+/// Where a frame shows the content: its offset, the clip it paints into,
+/// the transform it lands on screen with, what the region paints over it
+/// without moving it (the edge fades' bands), its bars' tracks, which
+/// lie beside the content, and the thumbs the bars painted in them.
+#[derive(Clone, Debug, PartialEq)]
+struct RegionShown {
+    offset: Vec2,
+    clip: Rect,
+    transform: Affine,
+    overlays: Vec<Rect>,
+    tracks: Vec<Rect>,
+    thumbs: Vec<(Rect, vello::peniko::Color)>,
 }
 
 impl ScrollRegion {
@@ -63,6 +81,8 @@ impl ScrollRegion {
             focused: false,
             edge_fade: false,
             persisted: None,
+            shown_drawing: std::cell::RefCell::new(None),
+            shown_presented: None,
         }
     }
 
@@ -107,15 +127,23 @@ impl ScrollRegion {
     /// The region's rect (bar lanes included) for this layout, and the
     /// theme its lanes and steps come from.
     pub fn set_viewport(&mut self, viewport: Rect, theme: &Theme) {
+        let lane = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        if self.viewport != viewport || self.lane.to_bits() != lane.to_bits() {
+            self.cancel_interaction();
+        }
         self.viewport = viewport;
-        self.lane = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        self.lane = lane;
         self.line = f64::from(theme.tokens.metrics.wheel_line);
         self.clamp();
     }
 
     /// How big the content is, in the host's content coordinates.
     pub fn set_content_size(&mut self, width: f64, height: f64) {
-        self.content = Vec2::new(width.max(0.0), height.max(0.0));
+        let content = Vec2::new(width.max(0.0), height.max(0.0));
+        if self.content != content {
+            self.cancel_interaction();
+        }
+        self.content = content;
         self.clamp();
     }
 
@@ -275,6 +303,98 @@ impl ScrollRegion {
             || self.hbar.is_active()
     }
 
+    /// Note what the frame being drawn shows, for a host that clips and
+    /// draws its content itself (with [`Self::paint_bars`]) and offers its
+    /// scrolls as copies ([`Self::offer_copy`]); [`Self::paint`] notes it.
+    pub fn note_shown(&self, transform: Affine, theme: &Theme) {
+        let clip = self.content_rect();
+        let tracks: Vec<Rect> = [self.v_track(theme), self.h_track(theme)]
+            .into_iter()
+            .flatten()
+            .collect();
+        let mut overlays = Vec::new();
+        if self.edge_fade {
+            let reach = crate::surface::CONTENT_FADE_PX;
+            if self.has_vertical() {
+                overlays.push(Rect::new(clip.x0, clip.y0, clip.x1, clip.y0 + reach));
+                overlays.push(Rect::new(clip.x0, clip.y1 - reach, clip.x1, clip.y1));
+            }
+            if self.has_horizontal() {
+                overlays.push(Rect::new(clip.x0, clip.y0, clip.x0 + reach, clip.y1));
+                overlays.push(Rect::new(clip.x1 - reach, clip.y0, clip.x1, clip.y1));
+            }
+        }
+        *self.shown_drawing.borrow_mut() = Some(RegionShown {
+            offset: self.offset,
+            clip,
+            transform: crate::scroll_copy::on_screen(transform),
+            overlays,
+            tracks,
+            thumbs: Vec::new(),
+        });
+    }
+
+    /// From the host's `collect_damage`, on a frame whose content and
+    /// offset are as on screen: add the bars' tracks to `regions` when what
+    /// the bars paint changed since the frame on screen (a thumb fading out
+    /// or lighting up under the pointer). Without both frames noted, every
+    /// track either knows is added.
+    pub fn damage_changed_bars(&self, regions: &mut Vec<Rect>) {
+        let drawing = self.shown_drawing.borrow();
+        match (drawing.as_ref(), self.shown_presented.as_ref()) {
+            (Some(drawing), Some(presented))
+                if drawing.thumbs == presented.thumbs && drawing.tracks == presented.tracks => {}
+            (drawing, presented) => regions.extend(
+                drawing
+                    .into_iter()
+                    .chain(presented)
+                    .flat_map(|shown| shown.tracks.iter().copied()),
+            ),
+        }
+    }
+
+    /// From the host's `collect_damage`, when nothing it paints in the
+    /// region changed since the frame on screen but the offset: offer the
+    /// scroll to a host that copies what stays on screen
+    /// ([`crate::scroll_copy::offer`]), and add the bars' tracks, where the
+    /// thumbs moved, to `regions`. `false` when the host does not copy, or
+    /// the frame shows the content in another clip or under another
+    /// transform, or the offset did not move: the host then damages the
+    /// region as it would without copies.
+    pub fn offer_copy<T: ?Sized>(&self, owner: &T, regions: &mut Vec<Rect>) -> bool {
+        let drawing = self.shown_drawing.borrow();
+        let (Some(drawing), Some(presented)) = (drawing.as_ref(), self.shown_presented.as_ref())
+        else {
+            return false;
+        };
+        let offered = drawing.clip == presented.clip
+            && drawing.transform == presented.transform
+            && drawing.offset != presented.offset
+            && crate::scroll_copy::offer(
+                owner,
+                drawing.clip,
+                presented.offset - drawing.offset,
+                drawing
+                    .overlays
+                    .iter()
+                    .chain(&drawing.tracks)
+                    .copied()
+                    .collect(),
+                drawing.transform,
+            );
+        if offered {
+            regions.extend(drawing.tracks.iter().chain(&presented.tracks).copied());
+        }
+        offered
+    }
+
+    /// From the host's `mark_drawn`: the frame just drawn is on screen. Not
+    /// drawn this frame, the region's content is not known to be there, and
+    /// its next scroll repaints.
+    pub fn mark_presented(&mut self) {
+        self.shown_presented = self.shown_drawing.get_mut().take();
+    }
+
     /// Paint the content with `draw` (handed the scene and the content
     /// transform), clipped to the region, then the edge fades and the bars.
     pub fn paint(
@@ -284,6 +404,7 @@ impl ScrollRegion {
         theme: &Theme,
         draw: impl FnOnce(&mut Scene, Affine),
     ) {
+        self.note_shown(transform, theme);
         let shown = self.content_rect();
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shown);
         draw(scene, self.content_transform(transform));
@@ -345,6 +466,9 @@ impl ScrollRegion {
                     None,
                     &RoundedRect::from_rect(thumb, radius),
                 );
+                if let Some(shown) = self.shown_drawing.borrow_mut().as_mut() {
+                    shown.thumbs.push((thumb, colour));
+                }
             }
         }
     }
@@ -378,24 +502,51 @@ impl ScrollRegion {
         ctx: &mut crate::widget::EventCtx<'_>,
         theme: &Theme,
     ) -> bool {
+        self.handle_window_event(
+            event,
+            ctx.scale_factor,
+            ctx.modifiers.state(),
+            ctx.handled,
+            theme,
+        )
+    }
+
+    /// Retire a captured scrollbar gesture and its transient pointer feedback.
+    pub fn cancel_interaction(&mut self) -> bool {
+        let changed = self.vbar.release()
+            | self.hbar.release()
+            | self.vbar.set_hover(false)
+            | self.hbar.set_hover(false);
+        self.pointer_near = false;
+        changed
+    }
+
+    /// The same input path for painted hosts without a retained widget tree.
+    pub fn handle_window_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::keyboard::ModifiersState,
+        handled: &mut bool,
+        theme: &Theme,
+    ) -> bool {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
                 let mut changed = false;
                 if self.vbar.is_dragging()
                     && let Some(track) = self.v_track(theme)
                     && let Some(target) = self.vbar.drag_to(track, self.v_metrics(), self.cursor)
                 {
                     changed |= self.scroll_by(Vec2::new(0.0, target - self.offset.y));
-                    *ctx.handled = true;
+                    *handled = true;
                 }
                 if self.hbar.is_dragging()
                     && let Some(track) = self.h_track(theme)
                     && let Some(target) = self.hbar.drag_to(track, self.h_metrics(), self.cursor)
                 {
                     changed |= self.scroll_by(Vec2::new(target - self.offset.x, 0.0));
-                    *ctx.handled = true;
+                    *handled = true;
                 }
                 if let Some(track) = self.v_track(theme) {
                     changed |= self.vbar.update_hover(track, self.v_metrics(), self.cursor);
@@ -413,16 +564,23 @@ impl ScrollRegion {
                 }
                 changed
             }
+            WindowEvent::Focused(false) => self.cancel_interaction(),
+            WindowEvent::KeyboardInput { event, .. }
+                if self.is_dragging()
+                    && event.state == ElementState::Pressed
+                    && event.logical_key == Key::Named(NamedKey::Escape) =>
+            {
+                *handled = true;
+                self.cancel_interaction()
+            }
             WindowEvent::MouseWheel { delta, .. } if self.viewport.contains(self.cursor) => {
                 let (mut dx, mut dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => {
                         (-f64::from(*x) * self.line, -f64::from(*y) * self.line)
                     }
-                    MouseScrollDelta::PixelDelta(p) => {
-                        (-p.x / ctx.scale_factor, -p.y / ctx.scale_factor)
-                    }
+                    MouseScrollDelta::PixelDelta(p) => (-p.x / scale_factor, -p.y / scale_factor),
                 };
-                if ctx.modifiers.state().shift_key() && self.has_horizontal() && dx == 0.0 {
+                if modifiers.shift_key() && self.has_horizontal() && dx == 0.0 {
                     (dx, dy) = (dy, 0.0);
                 }
                 if !self.has_horizontal() {
@@ -433,7 +591,7 @@ impl ScrollRegion {
                 }
                 let moved = self.scroll_by(Vec2::new(dx, dy));
                 if moved {
-                    *ctx.handled = true;
+                    *handled = true;
                 }
                 moved
             }
@@ -460,7 +618,7 @@ impl ScrollRegion {
                         match bar.press(track, metrics, self.cursor) {
                             PressOutcome::Thumb => {
                                 self.fade.wake(crate::time::now());
-                                *ctx.handled = true;
+                                *handled = true;
                                 return true;
                             }
                             PressOutcome::Page(target) => {
@@ -469,7 +627,7 @@ impl ScrollRegion {
                                 } else {
                                     Vec2::new(target - self.offset.x, 0.0)
                                 };
-                                *ctx.handled = true;
+                                *handled = true;
                                 return self.scroll_by(delta);
                             }
                             PressOutcome::Miss => {}
@@ -480,7 +638,7 @@ impl ScrollRegion {
                 ElementState::Released => {
                     let released = self.vbar.release() | self.hbar.release();
                     if released {
-                        *ctx.handled = true;
+                        *handled = true;
                     }
                     released
                 }
@@ -512,7 +670,7 @@ impl ScrollRegion {
                 };
                 let moved = self.scroll_by(delta);
                 if moved {
-                    *ctx.handled = true;
+                    *handled = true;
                 }
                 moved
             }
@@ -554,6 +712,14 @@ impl ScrollRegion {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "scroll_region/capture_tests.rs"]
+mod capture_tests;
+
+#[cfg(test)]
+#[path = "scroll_region/copy_tests.rs"]
+mod copy_tests;
 
 #[cfg(test)]
 mod tests {

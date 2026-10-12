@@ -159,7 +159,7 @@ fn owner_domains_and_key_corruption_refuse_without_overwrite() {
         .is_err()
     );
     assert_eq!(std::fs::read(root.join("profile.enc")).unwrap(), before);
-    private_fs::write_atomic(&root.join("profile.enc"), b"corrupt").unwrap();
+    tilo_files::native::private::write_atomic(&root.join("profile.enc"), b"corrupt").unwrap();
     assert!(EncryptedSignalProfile::open_with_key(&root, owner(), key(), authority()).is_err());
     assert_eq!(std::fs::read(root.join("profile.enc")).unwrap(), b"corrupt");
 }
@@ -183,7 +183,7 @@ fn exclusive_lease_foreign_image_and_tampered_marker_refuse() {
         Err(ProfileError::Interrupted)
     ));
     let before = std::fs::read(root.join("profile.enc")).unwrap();
-    private_fs::write_atomic(&root.join("active.enc"), b"tampered").unwrap();
+    tilo_files::native::private::write_atomic(&root.join("active.enc"), b"tampered").unwrap();
     assert!(first.checkpoint(image).is_err());
     assert_eq!(std::fs::read(root.join("profile.enc")).unwrap(), before);
     assert!(root.join("active.enc").exists());

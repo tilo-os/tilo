@@ -83,20 +83,28 @@ def audit(root, staged=False):
         ["git", "-C", str(root), "cat-file", "--batch"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
     ) as process:
-        for oid, path in entries:
-            process.stdin.write((oid + "\n").encode())
+        # Keep requests below Linux's minimum pipe capacity. Git may block on
+        # a large response before reading the remaining requests, so writing an
+        # unbounded list before reading would deadlock. Small batches remove a
+        # flush/read round trip per blob while retaining one body in memory.
+        for offset in range(0, len(entries), 32):
+            batch = entries[offset:offset + 32]
+            process.stdin.write(b"".join((oid + "\n").encode() for oid, _ in batch))
             process.stdin.flush()
-            header = process.stdout.readline().split()
-            if len(header) != 3 or header[1] != b"blob":
-                raise ValueError("cannot inspect blob: " + path)
-            size = int(header[2])
-            data = process.stdout.read(size)
-            if len(data) != size or process.stdout.read(1) != b"\n":
-                raise ValueError("incomplete blob: " + path)
-            issues = content_issues(data)
-            changed_exception = staged and issues and oid not in previous.get(path, set())
-            if issues and (allowed.get(path) != oid or changed_exception):
-                failures.append(path + ": " + ", ".join(issues) + ("; new/modified non-text or non-LF blobs are forbidden" if changed_exception else ""))
+            for oid, path in batch:
+                header = process.stdout.readline().split()
+                if len(header) != 3 or header[:2] != [oid.encode(), b"blob"]:
+                    raise ValueError("cannot inspect blob: " + path)
+                size = int(header[2])
+                if size < 0:
+                    raise ValueError("invalid blob size: " + path)
+                data = process.stdout.read(size)
+                if len(data) != size or process.stdout.read(1) != b"\n":
+                    raise ValueError("incomplete blob: " + path)
+                issues = content_issues(data)
+                changed_exception = staged and issues and oid not in previous.get(path, set())
+                if issues and (allowed.get(path) != oid or changed_exception):
+                    failures.append(path + ": " + ", ".join(issues) + ("; new/modified non-text or non-LF blobs are forbidden" if changed_exception else ""))
         process.stdin.close()
         if process.wait() != 0:
             raise ValueError("Git blob reader failed")

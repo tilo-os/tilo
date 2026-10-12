@@ -9,10 +9,10 @@
 
 use std::cell::Cell;
 
-use tilo_app::framework::profiling::observe;
 use tilo_app::framework::testing::drive_live_window;
 use tilo_app::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
+use tilo_app::tilo_resource::profiling::observe;
 
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
@@ -20,7 +20,6 @@ static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
         "en-US",
         "keystroke-draft = Next task\nkeystroke-done = Completed\n",
     )],
-    "keystroke-draft",
 );
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -96,19 +95,24 @@ impl ResourceApp for Keystrokes {
     }
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
-        let draft = cx
-            .input(|list| list.draft.clone(), Checklist::DRAFT)
-            .with_id("draft");
+        let draft = cx.control_with(
+            |shown| TextInput::from_state(shown).with_id("draft"),
+            |list| list.draft.clone(),
+            Checklist::DRAFT,
+        );
         let rows = cx.each(
             |list| &list.tasks,
             |row| {
                 let Some(id) = row.item().cloned() else {
                     return Box::new(Column::new()) as Element;
                 };
+                let control = format!("set-done-{id}");
                 Box::new(tilo_app::row![
                     row.text(|task| task.title.clone()),
-                    row.checkbox(
-                        "keystroke-done",
+                    row.control_with(
+                        |shown| Checkbox::from_state(shown)
+                            .with_id(&control)
+                            .with_label("keystroke-done"),
                         |task| task.done,
                         Checklist::SET_DONE.map(move |done| (id.clone(), done))
                     ),
@@ -144,12 +148,10 @@ fn one_keystroke(tasks: u32) -> Result<Phases, String> {
             app.state().draft
         ));
     }
-    let mut counts = Phases::new();
-    for phase in phases {
-        let count = counts.entry(phase.phase).or_insert(0);
-        *count = count.saturating_add(1);
-    }
-    Ok(counts)
+    Ok(phases
+        .into_iter()
+        .map(|phase| (phase.phase, phase.calls))
+        .collect())
 }
 
 #[test]
@@ -198,7 +200,7 @@ impl tilo_app::app::AppSurface for Region {
 /// at rest, then the accessibility tree the host's walk reads.
 fn host_frame(app: &mut tilo_app::App) {
     for _ in 0..3 {
-        let mut scene = Scene::new();
+        let mut scene = tilo_app::advanced::Scene::new();
         if !app.surface_frame(&Region, &mut scene) || !app.unsettled() {
             break;
         }
@@ -247,8 +249,8 @@ fn hosted_keystrokes(tasks: u32) -> Result<Vec<usize>, String> {
                 counts.push(
                     phases
                         .iter()
-                        .filter(|phase| phase.phase == "framework.publication")
-                        .count(),
+                        .find(|phase| phase.phase == "framework.publication")
+                        .map_or(0, |phase| phase.calls),
                 );
             }
             Ok((counts, draft_value(app)))

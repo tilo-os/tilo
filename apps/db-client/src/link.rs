@@ -12,8 +12,8 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::record::Workspace as Record;
 use ui::framework::Dispatcher;
-use ui::tilo_resource::PlainText;
 use uuid::Uuid;
 
 use crate::model::{
@@ -107,6 +107,9 @@ impl Default for ViewModel {
 pub enum Intent {
     /// Make a saved connection the active one and open it.
     Connect(Uuid),
+    /// Open a saved connection or saved query a search hit or an agent
+    /// names.
+    OpenItem(Uuid),
     RemoveConnection(Uuid),
     /// Show the new-connection form.
     NewConnection,
@@ -138,7 +141,7 @@ struct Inner {
     sql: String,
     /// Where the editor submits its edits of the shared SQL, once the
     /// framework dispatcher is attached.
-    sql_edits: Option<Dispatcher<PlainText>>,
+    sql_edits: Option<Dispatcher<Record>>,
 }
 
 /// A shared handle on the model and the intent queue.
@@ -184,12 +187,12 @@ impl Link {
     }
 
     /// Hand the editor the dispatcher its edits of the SQL go through.
-    pub fn attach_sql_edits(&self, dispatcher: Dispatcher<PlainText>) {
+    pub fn attach_sql_edits(&self, dispatcher: Dispatcher<Record>) {
         self.inner.borrow_mut().sql_edits = Some(dispatcher);
     }
 
     /// The dispatcher the editor's edits go through, once attached.
-    pub fn sql_edits(&self) -> Option<Dispatcher<PlainText>> {
+    pub fn sql_edits(&self) -> Option<Dispatcher<Record>> {
         self.inner.borrow().sql_edits.clone()
     }
 }

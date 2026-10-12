@@ -53,12 +53,14 @@ RUN --network=none \
 # an OCI layout). os/scripts/rechunk-chunkah.py runs chunkah over it, with
 # /sysroot's contents pruned (the base's ostree repository, which bootc's
 # composefs backend never deploys), and gives trees that change on their own
-# schedule (Proton and the Steam runtime) layers of their own. The epoch caps
+# schedule (Proton and the Steam runtime, the apps, the runtimes, Tilo's own
+# programs) layers of their own. The main run's budget leaves room for theirs:
+# ~200 layers in all, well under containers-storage's 500. The epoch caps
 # the time of files no package owns (a package's files are capped at its build
 # time), so it must be the same for two builds that should share layers.
 FROM chunkah AS rechunk
 ARG SOURCE_DATE_EPOCH
-ARG TILO_RECHUNK_MAX_LAYERS=128
+ARG TILO_RECHUNK_MAX_LAYERS=96
 COPY --from=tilo-scripts /rechunk-chunkah.py /usr/local/libexec/tilo-rechunk-chunkah
 RUN --network=none \
     --mount=type=bind,from=rootfs,source=/,target=/rootfs,rw \

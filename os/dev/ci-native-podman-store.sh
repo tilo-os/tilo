@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Give this CI job's rootless Podman a native overlay store on a disposable
+# Give this CI job's Podman a native overlay store on a disposable
 # ext4 loop volume, and print the storage.conf that selects it.
 #
 #   export CONTAINERS_STORAGE_CONF="$(os/dev/ci-native-podman-store.sh)"
@@ -22,20 +22,26 @@ name="tilo-podman-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}"
 backing="$scratch/$name.img"
 root="$scratch/$name"
 
-if [[ -s $root/storage.conf ]] && mountpoint -q "$root"; then
-  printf '%s\n' "$root/storage.conf"
-  exit 0
+uid=$(id -u)
+graph="$root/graph"
+# disk-image.sh binds this parent at /var/lib/containers in the bootc container.
+# Use its existing layout so both Podman invocations see the same image layers.
+if [[ $uid == 0 ]]; then
+  graph="$root/containers/storage"
 fi
-truncate -s "$size" "$backing"
-sudo -n mkfs.ext4 -F -q -i 32768 "$backing" >&2
-mkdir -p "$root"
-loop=$(sudo -n losetup --find --show "$backing")
-sudo -n mount -t ext4 "$loop" "$root"
-sudo -n chown "$(id -u):$(id -g)" "$root"
-printf '[storage]\ndriver="overlay"\ngraphroot="%s/graph"\nrunroot="%s/run"\n' \
-  "$root" "$root" > "$root/storage.conf"
+
+if ! [[ -s $root/storage.conf ]] || ! mountpoint -q "$root"; then
+  truncate -s "$size" "$backing"
+  sudo -n mkfs.ext4 -F -q -i 32768 "$backing" >&2
+  mkdir -p "$root"
+  loop=$(sudo -n losetup --find --show "$backing")
+  sudo -n mount -t ext4 "$loop" "$root"
+  sudo -n chown "$uid:$(id -g)" "$root"
+  printf '[storage]\ndriver="overlay"\ngraphroot="%s"\nrunroot="%s/run"\n' \
+    "$graph" "$root" > "$root/storage.conf"
+fi
 export CONTAINERS_STORAGE_CONF="$root/storage.conf"
-podman info --format json | jq -e --arg graph "$root/graph" '
+podman info --format json | jq -e --arg graph "$graph" '
   .store.graphDriverName == "overlay"
   and .store.graphRoot == $graph
   and .store.graphStatus["Backing Filesystem"] == "extfs"
@@ -43,12 +49,20 @@ podman info --format json | jq -e --arg graph "$root/graph" '
   echo '::error::Podman did not adopt the ext4 overlay store' >&2
   exit 1
 }
-test "$(cat "$root/graph/overlay/.has-mount-program")" = false || {
+test "$(cat "$graph/overlay/.has-mount-program")" = false || {
   echo '::error::Podman did not select native overlay on the ext4 volume' >&2
   exit 1
 }
 if [[ -n ${GITHUB_ENV:-} ]]; then
   echo "CONTAINERS_STORAGE_CONF=$CONTAINERS_STORAGE_CONF" >> "$GITHUB_ENV"
+  # Only root may reuse this store across sudo. Preserve explicit caller
+  # choices, and never expose a rootless user's image store to privileged Podman.
+  if [[ $uid == 0 && -z ${TILO_ROOT_PODMAN_STORE:-} && -z ${TILO_ROOT_PODMAN_STORAGE_CONF:-} ]]; then
+    {
+      echo "TILO_ROOT_PODMAN_STORE=$root"
+      echo "TILO_ROOT_PODMAN_STORAGE_CONF=$CONTAINERS_STORAGE_CONF"
+    } >> "$GITHUB_ENV"
+  fi
 fi
-echo "::notice::rootless Podman uses native overlay on a disposable ext4 loop volume ($size)" >&2
+echo "::notice::Podman uses native overlay on a disposable ext4 loop volume ($size)" >&2
 printf '%s\n' "$CONTAINERS_STORAGE_CONF"
