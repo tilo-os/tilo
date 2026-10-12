@@ -2526,7 +2526,12 @@ fn x11_clipboard_pastes_into_x11_and_wayland_into_x11() {
     let owner = serve_x11_clipboard(conn, window, "x11 to x11".to_string());
     // Another X11 program of the same display pastes.
     assert_eq!(x11_paste(&compositor), "x11 to x11");
-    std::thread::sleep(Duration::from_millis(500));
+    // Satellite logs this when the compositor has taken the copy over and
+    // handed it back: from here the X11 CLIPBOARD is served from Tilo's mirror.
+    compositor.wait_for_log(
+        &["Clipboard set from Wayland"],
+        "the compositor never took the X11 copy over",
+    );
     assert_eq!(
         x11_paste(&compositor),
         "x11 to x11",
@@ -2543,21 +2548,14 @@ fn x11_clipboard_pastes_into_x11_and_wayland_into_x11() {
         "x11 to x11",
         "after the X11 owner exited"
     );
-    // The user goes back to the native app and copies there ...
-    if !native.state.keyboard_focused {
-        compositor.modifiers(false, false, false, true);
-        compositor.key("ArrowLeft");
-        compositor.modifiers(false, false, false, false);
-    }
-    native.wait_until(
-        |s| s.keyboard_focused,
-        "the native app never regained focus",
-    );
-    let serial = press_ctrl_c(&compositor, &mut native);
-    native.copy_with_serial("wayland to x11", serial);
+    // The user opens a native app and copies there ...
+    let mut terminal = TestClient::new(compositor.connect(), "org.tilo.test.x11-x11-terminal");
+    terminal.map_window(&compositor);
+    let serial = press_ctrl_c(&compositor, &mut terminal);
+    terminal.copy_with_serial("wayland to x11", serial);
     // ... then pastes into an X11 program that has just been focused.
     let token = compositor.mint_host_launch_activation("org.example.x11-paster", "X11 paster");
-    let (_conn, _window) = x11_focused_window(&compositor, &mut native, &token);
+    let (_conn, _window) = x11_focused_window(&compositor, &mut terminal, &token);
     assert_eq!(x11_paste(&compositor), "wayland to x11");
 }
 
@@ -6722,4 +6720,42 @@ fn a_copy_with_an_empty_internal_format_survives_the_client_disconnecting() {
     let mut late = TestClient::new(compositor.connect(), "org.tilo.test.after-chromium");
     late.map_window(&compositor);
     assert_eq!(late.read_clipboard(None), "chromium text");
+}
+
+/// Closing the focused window gives keyboard focus back to the window that
+/// had it before: the next keystrokes must go somewhere.
+#[test]
+#[ignore = "known gap: DesktopTree::remove_tab (desktop-model/src/topology.rs) activates the tab now at the closed tab's index, not the one that was active before it opened, so a window that opened beside a shell tab hands focus to that tab"]
+fn closing_a_wayland_window_returns_keyboard_focus_to_the_previous_one() {
+    let compositor = Compositor::start();
+    let mut a = TestClient::new(compositor.connect(), "org.tilo.test.focus-return-a");
+    a.map_window(&compositor);
+    let mut b = TestClient::new(compositor.connect(), "org.tilo.test.focus-return-b");
+    b.map_window(&compositor);
+    a.wait_until(|s| !s.keyboard_focused, "A kept focus when B opened");
+    b.destroy_toplevel();
+    a.wait_until(
+        |s| s.keyboard_focused,
+        "keyboard focus never returned to the window that had it before B closed",
+    );
+}
+
+/// Same, with an X11 window (through satellite) as the one that closes.
+#[test]
+#[ignore = "known gap: DesktopTree::remove_tab (desktop-model/src/topology.rs) activates the tab now at the closed tab's index, not the one that was active before it opened, so a window that opened beside a shell tab hands focus to that tab"]
+fn closing_an_x11_window_returns_keyboard_focus_to_the_previous_wayland_window() {
+    assert!(
+        Path::new("/usr/bin/xwayland-satellite").is_file(),
+        "xwayland-satellite is not installed, so no X11 path can be tested"
+    );
+    let compositor = Compositor::start_host_desktop();
+    let mut a = TestClient::new(compositor.connect(), "org.tilo.test.focus-return-x11-a");
+    a.map_window(&compositor);
+    let token = compositor.mint_host_launch_activation("org.example.x11-closer", "X11 closer");
+    let (conn, _window) = x11_focused_window(&compositor, &mut a, &token);
+    drop(conn);
+    a.wait_until(
+        |s| s.keyboard_focused,
+        "keyboard focus never returned to the Wayland window after the X11 window closed",
+    );
 }
