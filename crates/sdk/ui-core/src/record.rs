@@ -1335,7 +1335,6 @@ impl RecordSet {
         let home = identity
             .workspace_id
             .clone()
-            .or_else(|| identity.cluster_id.clone())
             // A launcher-less process still gets an explicit, non-routable
             // scope.  It may not collaborate (the broker rejects nil), but
             // it must never fall back to the historical package-global file.
