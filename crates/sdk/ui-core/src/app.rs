@@ -93,7 +93,7 @@ mod input_publication;
 #[cfg(feature = "native")]
 mod surface;
 #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
-pub(crate) use native_runner::prepare_native_renderer;
+pub(crate) use native_runner::startup::prepare_native_renderer;
 #[cfg(feature = "native")]
 pub use surface::{AppSurface, SurfaceDamage};
 #[cfg(feature = "native")]
@@ -506,7 +506,7 @@ pub use crate::action_locus::ActionUiRoute;
 pub struct App {
     retirement: Option<crate::semantic_document_read::retirement::RootRetirementPrelude>,
     #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
-    startup_renderer: Option<native_runner::RendererPreparation>,
+    startup_renderer: Option<native_runner::startup::RendererPreparation>,
     control_domain: crate::ControlDomain,
     wake_scope: Option<crate::wake::WakeScope>,
     state: State,
