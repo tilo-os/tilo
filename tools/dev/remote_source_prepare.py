@@ -15,7 +15,20 @@ import subprocess
 
 ROOT_FILES = {'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'rustfmt.toml', 'clippy.toml'}
 ROOTS = {'apps', 'crates', 'examples', 'vendor', '.cargo'}
-SOURCE_HELPERS = {'tools/cargo-runner.sh', 'tools/with-test-environment.sh'}
+# Exact public build inputs outside the source roots. Rust includes these
+# assets directly; omitting them makes an otherwise complete locked workspace
+# fail before its selected tests can run. Keep this list explicit rather than
+# allowing arbitrary tools, docs, environment files or imported payloads.
+SOURCE_HELPERS = {
+    'tools/cargo-runner.sh', 'tools/with-test-environment.sh',
+    'tools/test-assets-build.rs', 'tools/test-assets.py',
+    'tools/protocols/airdrop_sender.py',
+    'os/legacy-guest-snapshot.env', 'dist/VERSION',
+    'docs/shell-navigation-keyboard-map.md',
+    'docs/architecture/dictation-whistle-aot-review.json',
+    'docs/architecture/dictation-whistle-aot-image.json',
+    'docs/architecture/dictation-whistle-aot-image-120s.json',
+}
 BUILD_ROOTS = ('dist/dev/', 'dist/ci/')
 FORBIDDEN = {'.git', '.worktrees', 'target', '.aws', '.ssh', '.config', 'credentials', 'imports', 'imported', 'datasets', 'secrets', 'keys'}
 UNTRACKED_SOURCE = {'.rs', '.toml', '.ftl'}
