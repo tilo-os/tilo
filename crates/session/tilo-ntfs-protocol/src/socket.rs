@@ -4,14 +4,14 @@ use rustix::{
     event::{PollFd, PollFlags, Timespec, poll},
     net::{
         AddressFamily, RecvAncillaryBuffer, RecvFlags, ReturnFlags, SendFlags, SocketAddrUnix,
-        SocketFlags, SocketType, recvmsg, send as send_packet, socket_with, sockopt,
+        SocketFlags, SocketType, recvmsg, send as send_packet, socket_with,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
     io::{self, IoSliceMut},
     mem::MaybeUninit,
-    os::fd::{AsFd, OwnedFd},
+    os::fd::{AsFd, AsRawFd, OwnedFd},
     time::{Duration, Instant},
 };
 fn create() -> io::Result<OwnedFd> {
@@ -52,7 +52,26 @@ pub fn accept(listener: &OwnedFd, deadline: Instant) -> io::Result<OwnedFd> {
 /// # Errors
 /// Refuses socket credentials that cannot be obtained from the kernel.
 pub fn peer_uid(fd: &OwnedFd) -> io::Result<u32> {
-    Ok(sockopt::socket_peercred(fd)?.uid.as_raw())
+    // Not rustix's `socket_peercred`: its `UCred` holds a non-zero `Pid`, and the kernel
+    // reports pid 0 for a peer outside this PID namespace.
+    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut size = libc::socklen_t::try_from(size_of::<libc::ucred>()).map_err(io::Error::other)?;
+    if unsafe {
+        libc::getsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut cred).cast(),
+            &raw mut size,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if size as usize != size_of::<libc::ucred>() {
+        return Err(io::Error::other("peer credentials size"));
+    }
+    Ok(cred.uid)
 }
 fn ready(fd: &OwnedFd, events: PollFlags, deadline: Instant) -> io::Result<()> {
     loop {
