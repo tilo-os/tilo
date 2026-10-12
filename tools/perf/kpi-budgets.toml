@@ -975,6 +975,29 @@ p99_tolerance = 1.5
 min_delta = 2.0
 source = "framework-scaling scroll shown in a host's scene, frames repainted whole in 120, 5,000 items (reported)"
 
+# The same window scrolled with a collaborator's pointer and name resting over
+# the list, painted over the widgets as a window paints them
+# (`FRAMEWORK-SCROLL-PEER`): the copies go on, and the mark repaints where it
+# is and where the copy took it. 109,168 px p50 of the 1280x800 window on an
+# M-series Mac (99,792 alone; 983,616 when a peer on screen refused every copy).
+# Enforced about 40 % above that.
+[kpi."render.framework_scroll.peer_pixels.5k"]
+unit = "pixels"
+p50 = 153000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "framework-scaling scroll beside a collaborator's pointer, pixels one copied scroll frame repaints, 5,000 items"
+
+[kpi."render.framework_scroll.peer_whole_frames.5k"]
+unit = "count"
+max = 0.0
+p50_tolerance = 1.5
+p99_tolerance = 1.5
+min_delta = 2.0
+source = "framework-scaling scroll beside a collaborator's pointer, frames repainted whole in 120, 5,000 items (reported)"
+
 [kpi."render.framework_scroll.whole_frames.5k"]
 unit = "count"
 max = 0.0

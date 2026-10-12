@@ -53,7 +53,9 @@ Each adapter reads what a benchmark already prints and emits records through
   lines are the same list shown in a region of a host's scene, as the shell
   shows an in-process app: its line with copies and a whole-pixel step
   becomes `render.framework_scroll.hosted_pixels.<size>` and
-  `.hosted_whole_frames.<size>`.
+  `.hosted_whole_frames.<size>`. `FRAMEWORK-SCROLL-PEER` lines are the
+  window scrolled with a collaborator's pointer resting over the list:
+  `render.framework_scroll.peer_pixels.<size>` and `.peer_whole_frames.<size>`.
 - `hosting-load REPORT_JSON`: the relay load bench's `hosting-load.json`
   (`crates/hosting/tilo-relay/examples/relay_load`). Each KPI it measured
   becomes `<kpi>.n<collaborators>`, one sample per measured minute (fan-out
@@ -271,7 +273,7 @@ def framework_open(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
 
 
 FRAMEWORK_SCROLL_LINE = re.compile(
-    r"^FRAMEWORK-SCROLL(?P<hosted>-HOSTED)? tasks=(?P<tasks>[0-9]+) step=(?P<step>[0-9.]+) copying=(?P<copying>true|false) "
+    r"^FRAMEWORK-SCROLL(?P<kind>-HOSTED|-PEER)? tasks=(?P<tasks>[0-9]+) step=(?P<step>[0-9.]+) copying=(?P<copying>true|false) "
     r"pixels_p50=(?P<pixels>[0-9]+) pixels_max=(?P<max>[0-9]+) copied_p50=(?P<copied>[0-9]+) "
     r"whole=(?P<whole>[0-9]+) frames=(?P<frames>[0-9]+) cpu_ms=(?P<cpu>[0-9.]+) gpu_ms=(?P<gpu>[0-9.]+) "
     r"gpu_full_ms=(?P<gpu_full>[0-9.]+) differing=(?P<differing>[0-9]+)$")
@@ -292,10 +294,11 @@ def framework_scroll(logs: list[str], env: dict[str, Any]) -> list[record.Record
             if line["copying"] != "true" or float(line["step"]) != int(float(line["step"])):
                 continue
             size = framework_open_size(int(line["tasks"]))
-            if line["hosted"]:
+            if line["kind"]:
+                kind = "hosted" if line["kind"] == "-HOSTED" else "peer"
                 measured = {
-                    (f"render.framework_scroll.hosted_pixels.{size}", "pixels"): float(line["pixels"]),
-                    (f"render.framework_scroll.hosted_whole_frames.{size}", "count"): float(line["whole"]),
+                    (f"render.framework_scroll.{kind}_pixels.{size}", "pixels"): float(line["pixels"]),
+                    (f"render.framework_scroll.{kind}_whole_frames.{size}", "count"): float(line["whole"]),
                 }
             else:
                 measured = {
