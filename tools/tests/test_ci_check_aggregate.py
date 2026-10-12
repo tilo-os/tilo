@@ -193,6 +193,7 @@ class CheckAggregateTests(unittest.TestCase):
             "needs.select.outputs.wasm_required": "true",
             "needs.select.outputs.tapp_required": "true",
             "needs.policy.result": "success",
+            "needs.web-tool.result": "success",
             "needs.builder.outputs.affected": "true",
             "needs.builder.outputs.linux_affected": "true",
         }
@@ -238,11 +239,22 @@ class CheckAggregateTests(unittest.TestCase):
                 self.assertNotEqual(self.aggregate(security="failure", affected="skipped")[0], 0)
 
         sdk = (ROOT / ".forgejo/workflows/app-sdk.yml").read_text()
-        for name in ("linux", "web", "web-size"):
+        for name in ("linux", "web-tool", "web", "web-size"):
             with self.subTest(sdk_job=name):
                 job = section(sdk, name, 2)
-                self.assertIn("needs: [builder, policy]", job)
+                consumes_tool = name in ("web", "web-size")
+                dependencies = "builder, policy, web-tool" if consumes_tool else "builder, policy"
+                self.assertIn(f"needs: [{dependencies}]", job)
                 self.assertTrue(admitted(job))
+                # Both browser lanes require a verified tool even on main;
+                # its producer and Linux remain independent of its outcome.
+                for event in ("pull_request", "push", "workflow_dispatch"):
+                    for status in ("failure", "cancelled", "skipped", "", "running"):
+                        self.assertEqual(
+                            admitted(job, **{"github.event_name": event,
+                                             "needs.web-tool.result": status}),
+                            not consumes_tool,
+                        )
                 for event in ("pull_request", "push"):
                     self.assertTrue(admitted(job, **{"github.event_name": event,
                                                      "github.event.inputs.lanes": "linux"}))

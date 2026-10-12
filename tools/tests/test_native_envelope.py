@@ -159,9 +159,22 @@ class NativeEnvelope(unittest.TestCase):
         self.assertIn("  workflow_dispatch:\n", diagnostic)
         self.assertNotRegex(diagnostic, r"(?m)^  (push|pull_request):")
         self.assertNotIn("Merge onto main", combined)
+        # The production browser lanes import a shared x86 tool. This ARM
+        # envelope diagnostic must still compile its own native tool, while
+        # preserving every downstream build, browser and provenance step.
+        tool_import = {"Download the same-run native tool", "Verify and install the exact native tool"}
+        self.assertTrue(tool_import.issubset(original))
         for name, body in original.items():
-            if name != "Merge onto main":
+            if name not in {"Merge onto main", *tool_import}:
                 self.assertEqual(combined[name], body, name)
+        for name in tool_import:
+            self.assertNotIn(name, combined)
+        self.assertEqual(
+            bundle["Build tilo-app"],
+            '      - name: Build tilo-app\n'
+            '        run: bash tools/ci/measure.sh "SDK release web tool build" -- '
+            'cargo build --locked -p tilo-app-cli --bin tilo-app',
+        )
         self.assertIn("runs-on: runner-large-arm64", job(diagnostic, "bundle"))
         self.assertIn("--memory-swap=${{ needs.builder.outputs.memory }}g --cpus=24", job(diagnostic, "bundle"))
         self.assertIn("needs: [builder, bundle]", job(diagnostic, "browser"))
