@@ -101,16 +101,12 @@ impl EnrollmentHost for Port {
         (self.wake)();
     }
 }
-struct Permission {
-    proposal: String,
-    request: accounts::AccessRequest,
-}
 struct Attempt {
     identity: NativeMessagingIdentity,
     review: EnrollmentReview,
     cancellation: ServiceCancellation,
-    permission: Option<Permission>,
-    approved: Option<Permission>,
+    permission: Option<super::OwnerPermission>,
+    approved: Option<super::OwnerPermission>,
     native: Option<Arc<super::whatsapp::NativeWhatsappAccount>>,
     activation: Option<PendingStart<Result<Arc<WhatsappLinking>, SendError>>>,
     linker: Option<Arc<WhatsappLinking>>,
@@ -536,27 +532,18 @@ impl Actor {
         attempt: &mut Attempt,
         name: &str,
     ) -> Result<String, SendError> {
-        let id = apps
+        let item_id = apps
             .prepare_native_messaging_profile_key(&attempt.identity, ORIGIN)
             .map_err(|_| SendError::Revoked)?;
-        let request = accounts::AccessRequest {
-            app_id: "so.tilo.messages".into(),
-            item_id: id.clone(),
-            purpose: format!("Private WhatsApp profile for {name}"),
-            origin: Some(ORIGIN.into()),
-        };
-        let Ok(proposal) =
-            apps.propose_native_messaging_permission(&attempt.identity, request.clone())
-        else {
-            if let Some(vault) = &apps.credential_owner {
-                let _ = vault.edit(|store| store.remove(&id));
-            }
-            return Err(SendError::Revoked);
-        };
-        attempt.permission = Some(Permission {
-            proposal: proposal.clone(),
-            request,
-        });
+        let asked = super::OwnerPermission::ask(
+            apps,
+            &attempt.identity,
+            item_id,
+            format!("Private WhatsApp profile for {name}"),
+            ORIGIN,
+        )?;
+        let proposal = asked.proposal.clone();
+        attempt.permission = Some(asked);
         Ok(proposal)
     }
     fn publish(
@@ -605,12 +592,9 @@ impl Actor {
         &self,
         apps: &mut super::super::InProcessApps,
         attempt: &mut Attempt,
-        permission: Permission,
+        permission: super::OwnerPermission,
+        credential: super::NativeMessagingCredential,
     ) -> Result<(), SendError> {
-        let credential = apps
-            .native_messaging_credential(&attempt.identity, permission.request.clone())
-            .map_err(|_| SendError::Revoked)?;
-        credential.check()?;
         super::first_account::ensure_contacts(apps, &attempt.identity)?;
         ensure_accounts(apps)?;
         let authority = apps
@@ -705,22 +689,21 @@ impl Actor {
         let Some(permission) = attempt.permission.take() else {
             return;
         };
-        let approved = apps
-            .native_messaging_credential(&attempt.identity, permission.request.clone())
-            .is_ok_and(|c| c.check().is_ok());
-        if !approved {
-            let pending = apps
-                .credential_owner
-                .as_ref()
-                .and_then(|v| v.proposals().ok())
-                .is_some_and(|p| p.iter().any(|p| p.id == permission.proposal));
-            attempt.permission = Some(permission);
-            if !pending {
-                self.retire(apps, attempt);
+        let credential = match permission.grant(apps, &attempt.identity) {
+            super::Grant::Approved(credential) => credential,
+            grant => {
+                let refused = matches!(grant, super::Grant::Refused);
+                attempt.permission = Some(permission);
+                if refused {
+                    self.retire(apps, attempt);
+                }
+                return;
             }
-            return;
-        }
-        if self.activate(apps, attempt, permission).is_err() {
+        };
+        if self
+            .activate(apps, attempt, permission, credential)
+            .is_err()
+        {
             self.retire(apps, attempt);
         }
     }
@@ -735,11 +718,8 @@ impl Actor {
         if let Some(reply) = attempt.reply.take() {
             let _ = reply.send(Err(SendError::Revoked));
         }
-        if let Some(permission) = attempt.permission.take()
-            && let Some(vault) = &apps.credential_owner
-        {
-            let _ = vault.decide_proposal(&permission.proposal, accounts::AccessDecision::Deny);
-            let _ = vault.edit(|store| store.remove(&permission.request.item_id));
+        if let Some(permission) = attempt.permission.take() {
+            permission.withdraw(apps);
         }
         self.phase(&attempt.review.account, EnrollmentPhase::Interrupted);
     }
