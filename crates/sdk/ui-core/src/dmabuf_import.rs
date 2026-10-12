@@ -1062,15 +1062,7 @@ impl<'a> VulkanImporter<'a> {
             .try_clone_to_owned()
             .map_err(|e| ImportError::Vulkan(format!("dup dmabuf fd: {e}")))?;
         // The GPU reads `reqs.size` bytes of this buffer: refuse one shorter.
-        let have = {
-            use std::io::{Seek as _, SeekFrom};
-            let mut file = std::fs::File::from(
-                dup.try_clone()
-                    .map_err(|e| ImportError::Vulkan(format!("dup dmabuf fd: {e}")))?,
-            );
-            file.seek(SeekFrom::End(0))
-                .map_err(|e| ImportError::Vulkan(format!("dmabuf size: {e}")))?
-        };
+        let have = dmabuf_len(&dup)?;
         if have < reqs.size {
             return Err(ImportError::Vulkan(format!(
                 "dmabuf is {have} bytes but its image needs {} (offset {}, pitch {})",
@@ -1305,16 +1297,7 @@ impl<'a> VulkanImporter<'a> {
         } else {
             u64::from(plane.offset)
         });
-        let have = {
-            use std::io::{Seek as _, SeekFrom};
-            let mut file = std::fs::File::from(
-                dup.try_clone()
-                    .map_err(|e| ImportError::Vulkan(format!("dup dmabuf fd: {e}")))?,
-            );
-            file.seek(SeekFrom::End(0))
-                .map_err(|e| ImportError::Vulkan(format!("dmabuf size: {e}")))
-        };
-        let have = match have {
+        let have = match dmabuf_len(&dup) {
             Ok(have) => have,
             Err(e) => {
                 cleanup_image(dev);
@@ -1425,6 +1408,13 @@ impl<'a> VulkanImporter<'a> {
             )
         })
     }
+}
+
+/// The bytes `fd`'s dma-buf holds (`media::dmabuf::dmabuf_size`): what the GPU
+/// may read from it.
+fn dmabuf_len(fd: &std::os::fd::OwnedFd) -> Result<u64, ImportError> {
+    media::dmabuf::dmabuf_size(fd)
+        .ok_or_else(|| ImportError::Vulkan("dmabuf size: the fd does not seek".into()))
 }
 
 /// First memory type allowed by `type_bits`. Imported dmabuf memory carries no
