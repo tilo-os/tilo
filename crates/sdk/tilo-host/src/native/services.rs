@@ -112,7 +112,6 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             development_app_id: text("QUICK_APP_ID"),
             app_name: text("TILO_APP_NAME"),
             workspace_id: text("TILO_WORKSPACE_ID"),
-            cluster_id: text("QUICK_CLUSTER_ID"),
             user_id: text("TILO_USER_ID"),
             presence_handle: text("TILO_PRESENCE_HANDLE"),
             account_name: text("USER"),
