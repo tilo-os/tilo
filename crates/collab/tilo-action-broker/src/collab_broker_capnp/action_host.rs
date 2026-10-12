@@ -769,7 +769,7 @@ impl CapnpBrokerState {
                             )
                         })
                         .map(|action| {
-                            action_row(
+                            CatalogueRow::for_action(
                                 surface.peer_id.to_string(),
                                 &surface.app_id,
                                 descriptor(action),
@@ -830,7 +830,11 @@ impl CapnpBrokerState {
                             )
                         })
                         .map(|descriptor| {
-                            action_row(provider.clone(), governance.app_id(), descriptor)
+                            CatalogueRow::for_action(
+                                provider.clone(),
+                                governance.app_id(),
+                                descriptor,
+                            )
                         }),
                 );
             }
@@ -853,7 +857,7 @@ impl CapnpBrokerState {
                             )
                         })
                         .map(|descriptor| {
-                            action_row(provider.clone(), SHORTCUTS_APP_ID, descriptor)
+                            CatalogueRow::for_action(provider.clone(), SHORTCUTS_APP_ID, descriptor)
                         }),
                 );
             }
@@ -902,7 +906,11 @@ impl CapnpBrokerState {
                             )
                         })
                         .map(|app| {
-                            action_row(provider.clone(), &app.package_id, app_open_descriptor(app))
+                            CatalogueRow::for_action(
+                                provider.clone(),
+                                &app.package_id,
+                                app_open_descriptor(app),
+                            )
                         }),
                 );
                 rows.extend(
@@ -919,7 +927,7 @@ impl CapnpBrokerState {
                             )
                         })
                         .map(|app| {
-                            action_row(
+                            CatalogueRow::for_action(
                                 provider.clone(),
                                 &app.package_id,
                                 app_close_descriptor(&app.package_id, &app.display_name),
@@ -1003,7 +1011,11 @@ impl CapnpBrokerState {
                             )
                         })
                         .map(|action| {
-                            action_row(provider.clone(), &surface.app_id, descriptor(action))
+                            CatalogueRow::for_action(
+                                provider.clone(),
+                                &surface.app_id,
+                                descriptor(action),
+                            )
                         }),
                 );
             }
@@ -2872,23 +2884,6 @@ impl CapnpBrokerState {
             .ok_or(ActionHostError::UnknownInvocation)?;
         self.request_cancellation(job, &BrokerActor::for_caller(caller).id)
             .map_err(|reason| ActionHostError::NotCancellable { reason })
-    }
-}
-
-fn action_row(provider: String, app_id: &str, action: ActionDescriptor) -> CatalogueRow {
-    CatalogueRow {
-        provider,
-        app_id: app_id.to_string(),
-        parent_resource: String::new(),
-        resource: CatalogueResource {
-            id: action.address.resource.clone(),
-            kind: action.resource_kind.clone(),
-            label: action.resource_label.clone(),
-            presentation: None,
-        },
-        action: Some(action),
-        has_children: false,
-        visibility: None,
     }
 }
 

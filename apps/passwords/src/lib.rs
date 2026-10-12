@@ -199,17 +199,6 @@ impl PasswordsModel {
         }
         .map_err(|error| format!("could not revoke app access: {error:?}"))
     }
-    /// Revoke all durable vault access for an application.
-    ///
-    /// # Errors
-    /// Returns an error if the vault cannot durably store the revocations.
-    pub fn revoke_all_app_grants(&mut self, app_id: &str) -> Result<usize, String> {
-        match &mut self.store {
-            Some(Vault::Shared(owner)) => owner.revoke_app(app_id),
-            _ => self.edit(|store| store.revoke_app_grants(app_id))?,
-        }
-        .map_err(|error| format!("could not revoke app access: {error:?}"))
-    }
     pub fn search(&self, query: &str) -> Vec<SecretItem> {
         let query = query.trim().to_lowercase();
         self.items()

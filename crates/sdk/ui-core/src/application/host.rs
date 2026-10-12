@@ -145,7 +145,6 @@ struct NativeProcessEnvironment {
     surface_hash: Option<String>,
     quick_app_id: Option<String>,
     workspace_id: Option<String>,
-    quick_workspace_id: Option<String>,
     participation: Option<String>,
     continuity_instance: Option<String>,
     person_dir: Option<PathBuf>,
@@ -188,7 +187,6 @@ impl NativeProcessEnvironment {
             surface_hash: string(crate::app_surface::SURFACE_HASH_ENV),
             quick_app_id: string("QUICK_APP_ID"),
             workspace_id: string("TILO_WORKSPACE_ID"),
-            quick_workspace_id: string("QUICK_CLUSTER_ID"),
             participation: string("TILO_PARTICIPATION"),
             continuity_instance: string("TILO_CONTINUITY_INSTANCE"),
             person_dir: path(PERSON_DIR_ENV),
@@ -233,11 +231,7 @@ impl NativeProcessEnvironment {
         }
         let profile_root = self.persistent_profile_root()?;
         let device_id = persistent_device_id(&profile_root)?;
-        let workspace = self
-            .workspace_id
-            .as_deref()
-            .or(self.quick_workspace_id.as_deref());
-        let (workspace_id, workspace_scoped) = launcher_workspace(workspace)?;
+        let (workspace_id, workspace_scoped) = launcher_workspace(self.workspace_id.as_deref())?;
         let mut permissions = permissions_for_participation(
             author,
             &workspace_id,
@@ -367,11 +361,7 @@ impl NativeProfile {
         let environment = NativeProcessEnvironment::capture();
         let instance = environment.continuity_instance.as_deref()?.parse().ok()?;
         let root = environment.persistent_profile_root().ok()?;
-        let room = environment
-            .workspace_id
-            .as_deref()
-            .or(environment.quick_workspace_id.as_deref());
-        Self::open(&root, room)
+        Self::open(&root, environment.workspace_id.as_deref())
             .ok()
             .map(|profile| (profile, instance))
     }

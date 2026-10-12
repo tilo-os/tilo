@@ -191,6 +191,28 @@ impl<Row> SearchPage<Row> {
         }
     }
 
+    /// The last page when `next_token` is `None`; otherwise a page its budget
+    /// cut short, continuing at that token.
+    pub fn continuing(
+        revision: impl Into<String>,
+        results: Vec<Row>,
+        next_token: Option<String>,
+    ) -> Self {
+        let revision = revision.into();
+        let exhausted = next_token.is_none();
+        Self {
+            next_cursor: next_token.map(|token| SearchCursor {
+                revision: revision.clone(),
+                token,
+            }),
+            revision,
+            results,
+            exhausted,
+            stale_cursor: false,
+            budget_exhausted: !exhausted,
+        }
+    }
+
     pub fn stale(revision: impl Into<String>) -> Self {
         Self {
             revision: revision.into(),

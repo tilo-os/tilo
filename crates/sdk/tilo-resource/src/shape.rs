@@ -79,6 +79,59 @@ pub struct FieldShape {
     pub absent: fn() -> Option<serde_json::Value>,
 }
 
+/// `value`, the JSON form of a value of `shape`, without the record fields
+/// that hold what their absent key reads as: what an edit that writes a new
+/// value carries of it, which reads back as the whole value.
+///
+/// Only a record has such fields, and `T::SHAPE` is known where this is
+/// instantiated, so for every other model this compiles to `value`.
+#[must_use]
+#[inline]
+pub(crate) fn without_absent<T: crate::Model>(value: serde_json::Value) -> serde_json::Value {
+    if matches!(T::SHAPE, Shape::Record(_)) {
+        (T::TABLE.ops.without_absent)(T::TABLE, value)
+    } else {
+        value
+    }
+}
+
+/// [`without_absent`] of a record, reached through its table's functions
+/// rather than `T::SHAPE`, which would copy its field list into every caller.
+pub(crate) fn record_without_absent(
+    table: &crate::table::ModelTable,
+    value: serde_json::Value,
+) -> serde_json::Value {
+    match table.record().map(|record| record.shape) {
+        Some(Shape::Record(fields)) => without_absent_fields(fields, value),
+        _ => value,
+    }
+}
+
+/// [`without_absent`] of a value that is no record: all of it.
+pub(crate) fn kept_whole(
+    _: &crate::table::ModelTable,
+    value: serde_json::Value,
+) -> serde_json::Value {
+    value
+}
+
+#[inline(never)]
+fn without_absent_fields(
+    fields: &'static [FieldShape],
+    mut value: serde_json::Value,
+) -> serde_json::Value {
+    if let serde_json::Value::Object(map) = &mut value {
+        for field in fields {
+            if let Some(absent) = (field.absent)()
+                && map.get(field.key) == Some(&absent)
+            {
+                map.remove(field.key);
+            }
+        }
+    }
+    value
+}
+
 /// The value an absent key of a scalar `T` reads as, in JSON; `None` for a
 /// type stored as an object or without an empty value.
 #[must_use]

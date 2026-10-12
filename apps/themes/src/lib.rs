@@ -59,9 +59,13 @@ impl ResourceApp for App {
     type Resource = Studio;
     const ID: &'static str = APP_ID;
     const TITLE: &'static str = APP_TITLE;
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     const ICON: Option<&'static str> = Some("themes");
     fn view(cx: &mut ViewCx<Studio>) -> Element {
-        locales::install();
         view::root(cx)
     }
 

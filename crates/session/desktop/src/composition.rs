@@ -404,6 +404,10 @@ impl DesktopSurface {
     pub fn workspace_context(&self) -> Option<(tilo_desktop_model::WorkspaceId, RoomId)> {
         self.context
     }
+    /// The tabs this surface hosts.
+    pub fn tab_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.tiles.keys().copied()
+    }
     pub fn strip_ids(&self) -> Vec<StripId> {
         self.order.clone()
     }

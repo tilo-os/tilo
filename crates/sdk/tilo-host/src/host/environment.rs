@@ -50,8 +50,6 @@ pub struct HostIdentity {
     pub app_name: Option<String>,
     /// The workspace this process collaborates in.
     pub workspace_id: Option<String>,
-    /// The collaboration cluster, used when no workspace id is set.
-    pub cluster_id: Option<String>,
     /// The signed-in person's id, when the launcher bound one.
     pub user_id: Option<String>,
     /// The presence handle to announce, overriding the user id.

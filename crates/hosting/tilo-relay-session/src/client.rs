@@ -1187,6 +1187,14 @@ impl RelayClient {
         self.inbound.lock().await.recv().await
     }
 
+    /// The connection's own packet and frame counters (UDP datagrams each
+    /// way, frames by type), read from the transport on each call: what a
+    /// bench needs to count packets, at no cost to the session.
+    #[must_use]
+    pub fn transport_stats(&self) -> Option<iroh::endpoint::ConnectionStats> {
+        self.carrier.transport_stats()
+    }
+
     /// Disconnect this session without closing an endpoint shared with state peers.
     pub(crate) async fn disconnect(&self) {
         self.carrier.disconnect().await;

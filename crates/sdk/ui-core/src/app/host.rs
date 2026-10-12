@@ -241,6 +241,7 @@ fn draw_frame_content(
         draw_us: t_draw_us,
         top_layer,
         tooltip,
+        painted_over: scene.encoding().draw_tags.len() != layer_start,
     }
 }
 
@@ -260,6 +261,10 @@ struct DrawnFrame {
     /// Every pixel the tooltip painted over everything else, shadow
     /// included, in scene (physical) coordinates.
     tooltip: Option<KurboRect>,
+    /// Whether anything at all was painted over the widgets (an overlay,
+    /// a history overlay, a dialog, the palette, the tooltip), tracked in a
+    /// damage part or not: a scroll copy would move it with the content.
+    painted_over: bool,
 }
 
 /// Paint the tooltip on screen, if any, and return every pixel it painted
@@ -395,6 +400,36 @@ fn draw_presence_layer(
     });
     let damage = layer.damage();
     if widgets_changed { None } else { damage }
+}
+
+/// Where collaborators' marks painted over the widgets (`layer`, with this
+/// frame recorded) are on screen and this frame, in whole device pixels of
+/// the `physical_viewport`: what a scroll copy beneath them repaints
+/// ([`crate::scroll_copy::marks_over_copies`]). `None` when the marks
+/// cannot be bounded, and scrolls beneath them repaint instead of copying.
+#[cfg(feature = "native")]
+fn peer_marks(
+    layer: &crate::presence::PresenceLayer,
+    bounds: &mut crate::scene_parts::DrawBounds,
+    physical_viewport: KurboRect,
+) -> Option<crate::presence::LayerMarks> {
+    if !layer.paints() {
+        return Some(crate::presence::LayerMarks::default());
+    }
+    let marks = layer.marks(bounds)?;
+    // As the layer's damage is submitted: bounds already cover
+    // antialiasing; whole pixels plus one absorb rounding.
+    let device = |rects: Vec<KurboRect>| -> Vec<KurboRect> {
+        rects
+            .into_iter()
+            .map(|rect| rect.expand().inflate(1.0, 1.0).intersect(physical_viewport))
+            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+            .collect()
+    };
+    Some(crate::presence::LayerMarks {
+        shown: device(marks.shown),
+        painted: device(marks.painted),
+    })
 }
 
 /// Turn a frame's widget damage (`regions`, logical, as collected) into the

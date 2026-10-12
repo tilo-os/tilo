@@ -25,6 +25,7 @@ host-media-writer = []
 flatpak-media-writer = ["dep:zbus", "block-devices/udisks"]
 
 [dependencies]
+install-profile-model = { path = "../../crates/session/install-profile-model" }
 uuid.workspace = true
 base64.workspace = true
 crc32fast.workspace = true

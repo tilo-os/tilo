@@ -251,6 +251,8 @@ mod window_switcher;
 mod window_transfer_flow;
 #[path = "workspace_settings_state_test.rs"]
 mod workspace_settings_state_test;
+#[path = "workspace_switch_cost.rs"]
+mod workspace_switch_cost;
 #[path = "xdg_activation.rs"]
 mod xdg_activation;
 

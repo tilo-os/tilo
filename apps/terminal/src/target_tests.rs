@@ -393,8 +393,6 @@ fn supervisor_replies_say_what_to_do_next() {
         assert_eq!(request["target"], serde_json::json!({"kind": "host"}));
         assert_eq!(request["requested_by"], "person");
         assert_eq!(request["runs"], "0123456789abcdef");
-        assert!(crate::inner::marks_runs(br#"{"result":"ok","runs":true}"#));
-        assert!(!crate::inner::marks_runs(br#"{"result":"ok"}"#));
         assert!(
             crate::inner::ush_request(
                 &[],

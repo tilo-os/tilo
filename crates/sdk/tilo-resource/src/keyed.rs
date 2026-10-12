@@ -553,6 +553,7 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
                 ))
             },
             whole: &edit_whole::<Self>,
+            order_only: false,
         };
         if S::ARRANGED {
             crate::collection::edit_entries(doc, slot, path, op, cx, &edits)

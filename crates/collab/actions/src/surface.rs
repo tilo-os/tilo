@@ -2,6 +2,11 @@
 //! parameters and kinds, and its fields with their schema. An app's
 //! `surface.toml` holds it (written by `tilo-app surface` from the code), and
 //! it is what a receiver without the app knows about the app's changes.
+//!
+//! The file keeps what receipt and the storage check need. The labels,
+//! descriptions, field titles and owners the code reports are for people and
+//! history; `tilo-app surface` leaves them out of the file, so they read as
+//! empty here.
 
 use serde::{Deserialize, Serialize};
 
@@ -45,12 +50,15 @@ pub struct Surface {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VerbSurface {
     pub id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub kind: ActionKind,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub destructive: bool,
+    /// Left out of a surface file when it takes none.
+    #[serde(default)]
     pub params: Vec<ParamSurface>,
     /// The units it writes (`tilo_resource::footprint`), when more than the
     /// record unit.
@@ -61,6 +69,13 @@ pub struct VerbSurface {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
 }
+
+fn stored_value() -> String {
+    STORED_VALUE.to_owned()
+}
+
+/// How a field holding a plain value is stored.
+pub const STORED_VALUE: &str = "value";
 
 fn record_unit() -> Vec<String> {
     vec![RECORD_UNIT.to_owned()]
@@ -87,9 +102,13 @@ pub struct FieldSurface {
     /// collection (`snippets.*.title`).
     pub path: String,
     /// The record type it belongs to, kebab case.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub owner: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
-    /// How it is stored: `value`, `record` or `collection`.
+    /// How it is stored: `value` (left out of a surface file), `record` or
+    /// `collection`.
+    #[serde(default = "stored_value")]
     pub stored: String,
     /// Its Rust type as written.
     #[serde(rename = "type")]

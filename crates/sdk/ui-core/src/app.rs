@@ -93,7 +93,7 @@ mod input_publication;
 #[cfg(feature = "native")]
 mod surface;
 #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
-pub(crate) use native_runner::prepare_native_renderer;
+pub(crate) use native_runner::startup::prepare_native_renderer;
 #[cfg(feature = "native")]
 pub use surface::{AppSurface, SurfaceDamage};
 #[cfg(feature = "native")]
@@ -506,7 +506,7 @@ pub use crate::action_locus::ActionUiRoute;
 pub struct App {
     retirement: Option<crate::semantic_document_read::retirement::RootRetirementPrelude>,
     #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
-    startup_renderer: Option<native_runner::RendererPreparation>,
+    startup_renderer: Option<native_runner::startup::RendererPreparation>,
     control_domain: crate::ControlDomain,
     wake_scope: Option<crate::wake::WakeScope>,
     state: State,
@@ -744,7 +744,7 @@ impl AppConstructionInputs {
             presence_ctx: ConstructionValue::Lazy(App::initial_presence_context),
             screen_reader: || {
                 if crate::host::environment().accessibility.screen_reader
-                    || settings_store::screen_reader::ScreenReaderSettings::load().enabled
+                    || settings_store::accessibility::ScreenReaderSettings::load().enabled
                 {
                     Some(App::configured_screen_reader())
                 } else {
@@ -2112,7 +2112,7 @@ impl App {
         // Screen reader is a device/personal setting, not a per-application
         // opt-in. Every Tilo app watches the same file and changes its real
         // narrator lifecycle when Personal Settings changes it.
-        let settings = settings_store::screen_reader::ScreenReaderSettings::load();
+        let settings = settings_store::accessibility::ScreenReaderSettings::load();
         self.set_screen_reader_enabled(
             settings.enabled || crate::host::environment().accessibility.screen_reader,
         );

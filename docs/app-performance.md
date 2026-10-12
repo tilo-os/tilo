@@ -525,10 +525,65 @@ compositor still repaints where the copies landed: the client's pixels there
 changed. The nightly render job records `render.framework_scroll.*` and
 enforces the pixels.
 
-Not yet copied: the shell's in-process apps (the compositor composites their
-scene and would need to copy the app's moved region itself), `ScrollRegion`
-(chat transcripts), `VirtualList`, `DocumentViewport`, and Notes blocks with
-hover chrome (code, tables, images, lists).
+Since then the shell's in-process apps copy too (below), and so do
+`VirtualList` (rows a scroll brings near are mounted in a rebuild the frame's
+damage describes; rows move without a rebuild), a painted host scrolling a
+`ScrollRegion` that says only its offset changed (`ScrollRegion::offer_copy`;
+Mail's message list), `DocumentViewport` around a widget, and Notes pages
+with lists, to-dos, code runs, tables and images: what a block paints for the
+pointer rather than the text (`BlockEditor::pointer_chrome`) is repainted
+where it is and was. A note of eight sections of a paragraph, a list, a to-do
+and a code run repaints 119,560 px per frame scrolling down and 96,402
+scrolling up (1280×900, all three themes, pixel-identical); before, it
+repainted the window. `Toggle` repaints only when what it paints changed.
+
+### In-process apps copy too
+
+The shell's in-process apps (Notes, Files, Messages in a tile) hand the
+compositor what a scroll moved, and the DRM presenter copies those pixels in
+its retained target before it rasterises the rest (`ui-rendering-internals.md`).
+`framework-scaling -- 5000 scroll` also shows the checklist in a host's scene
+as the shell shows a tile (`FRAMEWORK-SCROLL-HOSTED`): 985,280 px per frame for
+a host that does not copy, 158,040 px p50 (174,838 max) with copies, 756,288 px
+copied, pixel-identical (M-series Mac, 1280×800 region). The nightly render job
+enforces `render.framework_scroll.hosted_pixels.5k`. The shell's own test
+(`frame_scroll_copy_tests.rs`) scrolls a 60-paragraph note on the 1600×1000
+desktop at 100 % and 200 % with a peer's pointer resting over it and checks
+every presented frame against a whole render.
+
+Not copied: several displays at once (each draws the desktop at its own place
+and scale), a desktop under materials or HDR layers, a strip pan, and the CPU
+presenter some boards use.
+
+### Copies go on while collaborators are on screen
+
+A native window used to refuse every copy while a collaborator's pointer,
+name or activity was painted over it, so a shared document scrolled at the
+no-copy cost. The presence layer's marks are now their own damage: where the
+copy took the marks of the frame on screen, and where this frame paints them,
+repaint (`scroll_copy::marks_over_copies`); the content beneath still copies.
+`framework-scaling -- 5000 scroll` scrolls the window with a peer's pointer
+and name resting over the list (`FRAMEWORK-SCROLL-PEER`; release, M-series
+Mac, 1280×800, pixel-identical):
+
+| | Repainted px p50 (max) | Copied px p50 | Whole-window frames |
+|---|---:|---:|---:|
+| A peer on screen, before (every copy refused) | 983,616 (983,616) | 0 | 0 |
+| A peer on screen, after | 109,168 (125,248) | 756,288 | 0 |
+| Alone, for comparison | 99,792 (115,872) | 756,288 | 0 |
+
+The nightly render job enforces `render.framework_scroll.peer_pixels.5k`. A
+peer's dot also claimed 96 px square of damage for a 23 px mark; its bounds now
+cover what it paints, which trims every peer-pointer frame too. In the shell,
+the Notes tile with a peer's pointer over it now rasterises 215,456 of
+1,112,672 px per frame scrolling down (19.4 %, was 223,648) and 180,480 up.
+
+An in-process app planned its copies in whole logical pixels, so on a 200 %
+display a step of half a logical pixel repainted the tile. The compositor now
+says how many device pixels a unit is (`HostCopies::begin_scaled`) and the app
+plans in those: half-pixel steps at 200 % rasterise 527,850 of 4,450,688 px
+per frame (11.9 %), and whole steps 693,328 down and 552,832 up (were about
+725,000 and 584,832).
 
 ## Verified shared-list CPU workload
 

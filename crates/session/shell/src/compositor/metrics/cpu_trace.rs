@@ -209,7 +209,7 @@ fn posix_time(clock: libc::clockid_t) -> Option<Duration> {
     ))
 }
 
-fn process_cpu_time() -> Option<Duration> {
+pub(crate) fn process_cpu_time() -> Option<Duration> {
     #[cfg(unix)]
     {
         posix_time(libc::CLOCK_PROCESS_CPUTIME_ID)

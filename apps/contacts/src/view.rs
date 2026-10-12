@@ -172,7 +172,11 @@ pub(crate) struct ContactList {
     hovered: Option<ContactId>,
     pressed: Option<ContactId>,
     last_click: Option<(Instant, ContactId)>,
+    /// Something the rows paint from changed besides the offset.
     dirty: bool,
+    /// Only the offset changed since the frame on screen: a host that
+    /// copies what stays on screen may move the rows instead.
+    scrolled: bool,
 }
 
 impl ContactList {
@@ -189,6 +193,7 @@ impl ContactList {
             pressed: None,
             last_click: None,
             dirty: true,
+            scrolled: false,
         }
     }
 
@@ -301,6 +306,7 @@ impl ContactList {
             EmptyState::paint(ctx, self.rect, &content, self.cursor);
         }
         drop(bridge);
+        self.scroller.note_shown(ctx.transform, theme);
         self.scroller.paint_bars(ctx.scene, ctx.transform, theme);
         self.shared.borrow_mut().painted = painted;
     }
@@ -365,13 +371,26 @@ impl Widget for ContactList {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        self.seen = self.shared.borrow().revision;
+        // A new book revision is a change to the rows: the damage
+        // collected after this draw must cover it.
+        let revision = self.shared.borrow().revision;
+        self.dirty |= self.seen != revision;
+        self.seen = revision;
         self.paint(&mut PaintCtx::new(scene, transform, text, theme));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // The scroll region takes the wheel, touchpad gestures and its bar.
-        self.dirty |= self.scroller.handle_event(event, ctx, &self.theme);
+        // A move of the offset alone moves the rows (the hovered and pressed
+        // rows are rows, and move with them); anything else repaints.
+        let offset = self.scroller.offset();
+        if self.scroller.handle_event(event, ctx, &self.theme) {
+            if self.scroller.offset() == offset {
+                self.dirty = true;
+            } else {
+                self.scrolled = true;
+            }
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor =
@@ -421,11 +440,27 @@ impl Widget for ContactList {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.seen != self.shared.borrow().revision
+        self.dirty || self.scrolled || self.seen != self.shared.borrow().revision
+    }
+
+    /// A scroll that changed nothing else offers the host a copy of the
+    /// rows that stay on screen; a thumb fading while nothing else changes
+    /// repaints its track. Anything else repaints the list.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if !self.needs_redraw() {
+            self.scroller.damage_changed_bars(regions);
+            return;
+        }
+        if self.scrolled && !self.dirty && self.scroller.offer_copy(self, regions) {
+            return;
+        }
+        regions.push(self.rect);
     }
 
     fn mark_drawn(&mut self) {
+        self.scroller.mark_presented();
         self.dirty = false;
+        self.scrolled = false;
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -531,3 +566,7 @@ pub(crate) fn empty_pane(
 
 /// The empty state's action, for assistive technology and agents.
 pub(crate) const EMPTY_ACTION: &str = "contacts.empty.action";
+
+#[cfg(test)]
+#[path = "view/copy_tests.rs"]
+mod copy_tests;

@@ -49,11 +49,6 @@ tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional 
 [features]
 person = ["dep:tilo-resource"]
 
-[dev-dependencies]
-# Tests stage and inspect key files through the vault's own private-file
-# checks, and edit Windows ACLs through a bounded `icacls` call.
-private-fs = { path = "../private-fs" }
-
 [lints]
 workspace = true
 

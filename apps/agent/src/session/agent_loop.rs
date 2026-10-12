@@ -2074,11 +2074,21 @@ mod tests {
         pace: Option<Duration>,
         /// Events delivered so far, across turns.
         emitted: Arc<std::sync::atomic::AtomicUsize>,
+        /// Steps the world has applied so far.
+        applied: Arc<std::sync::atomic::AtomicUsize>,
+        /// Hold event `n` back until the first step is applied (or
+        /// [`HOLD_LIMIT`] passes), so a test can tell a call that runs
+        /// while the model still writes from one that waits for the turn
+        /// to end without racing the clock.
+        hold_before: std::sync::OnceLock<usize>,
         /// Host answers (reports and cancellation polls) delivered so far.
         host_answers: Arc<std::sync::atomic::AtomicUsize>,
         /// [`Self::host_answers`] when each turn was asked of the model.
         host_answers_at_turn: Mutex<Vec<usize>>,
     }
+
+    /// How long a held event waits for the first step.
+    const HOLD_LIMIT: Duration = Duration::from_secs(5);
 
     struct Scripted(Arc<Script>);
 
@@ -2100,10 +2110,20 @@ mod tests {
                 .pop_front()
                 .unwrap_or_else(|| vec![TurnEvent::Finished(Err("script exhausted".into()))]);
             let emitted = Arc::clone(&self.0.emitted);
+            let applied = Arc::clone(&self.0.applied);
+            let hold_before = self.0.hold_before.get().copied();
             let send = move |events: Vec<TurnEvent>, pace: Option<Duration>| {
                 for event in events {
                     if let Some(pace) = pace {
                         std::thread::sleep(pace);
+                    }
+                    if hold_before == Some(emitted.load(std::sync::atomic::Ordering::SeqCst)) {
+                        let began = std::time::Instant::now();
+                        while applied.load(std::sync::atomic::Ordering::SeqCst) == 0
+                            && began.elapsed() < HOLD_LIMIT
+                        {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
                     }
                     let _ = tx.send(event);
                     emitted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -2258,6 +2278,7 @@ mod tests {
         /// Model events delivered when each step arrived.
         steps_at: Vec<usize>,
         emitted: Arc<std::sync::atomic::AtomicUsize>,
+        applied: Arc<std::sync::atomic::AtomicUsize>,
         /// Messages posted in the Chat channel.
         posts: Vec<String>,
         /// A fresh workspace: Writer is closed (publishes nothing) until the
@@ -2495,6 +2516,8 @@ mod tests {
             self.report_answers_at_steps.push(self.report_answers);
             self.steps_at
                 .push(self.emitted.load(std::sync::atomic::Ordering::SeqCst));
+            self.applied
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self
                 .refuse_nth
                 .as_ref()
@@ -2771,6 +2794,7 @@ mod tests {
         budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     ) -> Fixture {
         let emitted = Arc::clone(&world.emitted);
+        let applied = Arc::clone(&world.applied);
         let world = Rc::new(RefCell::new(world));
         let sent = Rc::new(RefCell::new(Vec::new()));
         let script = Arc::new(Script {
@@ -2779,6 +2803,8 @@ mod tests {
             timeouts: Mutex::new(Vec::new()),
             pace,
             emitted,
+            applied,
+            hold_before: std::sync::OnceLock::new(),
             host_answers: Arc::clone(&world.borrow().host_answers),
             host_answers_at_turn: Mutex::new(Vec::new()),
         });
@@ -3845,6 +3871,9 @@ mod tests {
             vec![first, anthropic_turn(&[finish("Wrote it.", true)], 8)],
             Some(Duration::from_millis(4)),
         );
+        // A call that runs as its block closes lands before the next call
+        // is written; one that waits for the turn's end never does.
+        f.script.hold_before.set(second_call).unwrap();
         f.session.chooser = Chooser::scripted(
             Duration::from_secs(5),
             agent_provider_config::ProviderProtocol::Anthropic,
