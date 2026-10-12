@@ -273,9 +273,7 @@ fn bound_edits_are_one_owned_history_entry_each() {
         let f = NotebookFixture::rich();
         let component = component(&f, 11, ui::application::LaunchTarget::New);
         let checkout = component.record().clone();
-        let mut a =
-            ui::headless::FrameHarness::from_component(component, (1000, 700), runner_inputs())
-                .unwrap();
+        let mut a = component_driver(component);
         new_note(&mut a, 11, "Rich");
         let page = f
             .records
@@ -631,9 +629,7 @@ fn bound_undo_is_per_instance_and_retypes_once() {
         let f = NotebookFixture::rich();
         let component = component(&f, 11, ui::application::LaunchTarget::New);
         let checkout = component.record().clone();
-        let mut a =
-            ui::headless::FrameHarness::from_component(component, (1000, 700), runner_inputs())
-                .unwrap();
+        let mut a = component_driver(component);
         new_note(&mut a, 11, "Empty again");
         let page = f
             .records
@@ -664,9 +660,7 @@ fn bound_undo_is_per_instance_and_retypes_once() {
         let f = NotebookFixture::rich();
         let component = component(&f, 11, ui::application::LaunchTarget::New);
         let checkout = component.record().clone();
-        let mut a =
-            ui::headless::FrameHarness::from_component(component, (1000, 700), runner_inputs())
-                .unwrap();
+        let mut a = component_driver(component);
         new_note(&mut a, 11, "Peer page");
         let page = f
             .records
