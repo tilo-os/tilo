@@ -22,6 +22,7 @@ use iroh::{Endpoint, EndpointAddr, EndpointId};
 use iroh_gossip::api::{Event as GossipEvent, GossipSender};
 use iroh_gossip::net::{GOSSIP_ALPN, Gossip};
 use iroh_gossip::proto::TopicId;
+use tilo_relay_session::pointer_pacing::{Pacing, PointerPacer, slot_pacing};
 use tilo_relay_session::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
@@ -1175,6 +1176,15 @@ struct ActorState {
     /// Remote-action requests that found neither a direct nor a relayed
     /// route. Sent when that peer is next seen on the workspace.
     pending_remote_actions: PendingRemoteActions,
+    /// Pointer moves held back from gossip, per slot, to the rate the relay
+    /// path writes them (see [`ActorState::pace_gossip`]).
+    gossip_pointers: PointerPacer<GossipPointer>,
+}
+
+/// An encoded pointer move waiting for its room's gossip topic.
+struct GossipPointer {
+    ws: WorkspaceId,
+    bytes: Bytes,
 }
 
 /// Every application message this device received from its peers, by kind:
@@ -1674,16 +1684,7 @@ impl ActorState {
                     }
                 } else {
                     self.hold_for_host(ws, &msg, false);
-                    publish(
-                        &self.topics,
-                        &self.host_sessions,
-                        ws,
-                        msg,
-                        false,
-                        true,
-                        true,
-                    )
-                    .await;
+                    self.publish_paced(ws, msg).await;
                 }
             }
             Some(NetCmd::SetWake(LoopWake(wake))) => self.wake = Some(wake),
@@ -3255,6 +3256,83 @@ impl ActorState {
         }
     }
 
+    /// Publish `msg` to the room's hosts and its gossip topic, pacing pointer
+    /// moves on the direct path as the session writer paces them to a relay
+    /// (`tilo_relay_session::pointer_pacing`): a pointer slot goes to gossip
+    /// at most every `POINTER_GAP`, the first move after a pause at once and
+    /// the latest when the gap ends, so the resting position always goes.
+    /// The hosts get every message at once; their session writers pace it.
+    ///
+    /// Only the message's own slot decides, never its author: a person's and
+    /// an agent's pointer travel alike. Carets, selections and typing pass a
+    /// held pointer; anything else is broadcast after every held pointer, so
+    /// an app's `Left` never overtakes its last move.
+    async fn publish_paced(&mut self, ws: WorkspaceId, msg: NeighbourMsg) {
+        let pacing = slot_pacing(ws, msg.presence_slot());
+        if let Pacing::Pointer(key) = pacing
+            && self.topics.contains_key(&ws)
+        {
+            let bytes = match postcard::to_allocvec(&msg) {
+                Ok(bytes) => Bytes::from(bytes),
+                Err(error) => {
+                    tracing::warn!(ws, %error, "collaboration message encode failed");
+                    return;
+                }
+            };
+            // Hosts first, as `publish` does: the direct mesh never delays
+            // the hosted path.
+            publish(
+                &self.topics,
+                &self.host_sessions,
+                ws,
+                msg,
+                false,
+                false,
+                true,
+            )
+            .await;
+            let now = tokio::time::Instant::now();
+            self.gossip_pointers
+                .hold(key, GossipPointer { ws, bytes }, now);
+            let due = self.gossip_pointers.take_due(now);
+            self.broadcast_pointers(due).await;
+            return;
+        }
+        if pacing == Pacing::Ordered {
+            let held = self.gossip_pointers.take_all(tokio::time::Instant::now());
+            self.broadcast_pointers(held).await;
+        }
+        publish(
+            &self.topics,
+            &self.host_sessions,
+            ws,
+            msg,
+            false,
+            true,
+            true,
+        )
+        .await;
+    }
+
+    /// Broadcast the held pointer moves whose gap has ended (the run loop
+    /// wakes for [`PointerPacer::next_due`], armed only while one is held).
+    async fn broadcast_due_pointers(&mut self) {
+        let due = self.gossip_pointers.take_due(tokio::time::Instant::now());
+        self.broadcast_pointers(due).await;
+    }
+
+    async fn broadcast_pointers(&self, pointers: Vec<GossipPointer>) {
+        for GossipPointer { ws, bytes } in pointers {
+            // A room left since the move was held has nobody to tell.
+            let Some(topic) = self.topics.get(&ws) else {
+                continue;
+            };
+            if let Err(error) = topic.broadcast(bytes).await {
+                tracing::warn!(ws, %error, "iroh gossip publish failed");
+            }
+        }
+    }
+
     /// Drop the peers whose membership lapsed: their gossip link went down
     /// and stayed down, or they were known only by traffic that stopped.
     /// Runs at [`Self::next_eviction`], never on a fixed tick.
@@ -3949,6 +4027,7 @@ async fn run(
         caps_sent: None,
         compat_beats: 0,
         pending_remote_actions: PendingRemoteActions::default(),
+        gossip_pointers: PointerPacer::default(),
     };
     let mut upkeep = None;
     let mut host_checkpoint = None;
@@ -3973,6 +4052,8 @@ async fn run(
             !state.host_sessions.is_empty(),
             HOST_CHECKPOINT_INTERVAL,
         );
+        // A held pointer move falls due; nothing is armed while none is held.
+        let pointer_due = state.gossip_pointers.next_due();
         tokio::select! {
             biased;
             input = input_rx.recv() => {
@@ -3980,6 +4061,8 @@ async fn run(
                     break;
                 }
             }
+            // Commands before a held pointer's deadline: a newer move already
+            // queued replaces the held one before the gap's end sends it.
             command = cmd_rx.recv() => {
                 if !state.handle_command(command).await {
                     break;
@@ -3990,6 +4073,7 @@ async fn run(
                     break;
                 }
             }
+            () = sleep_until_due(pointer_due) => state.broadcast_due_pointers().await,
             () = sleep_until_lapse(eviction) => state.run_eviction_tick().await,
             () = sleep_until_lapse(upkeep) => {
                 upkeep = None;
@@ -4013,6 +4097,14 @@ async fn run(
     }
     reporting_addrs.abort();
     let _ = router.shutdown().await;
+}
+
+/// Sleep until `at` on the runtime's clock, or forever when nothing is due.
+async fn sleep_until_due(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
 }
 
 /// When the next upkeep tick is due, given when it was due (`armed`) and

@@ -8,13 +8,13 @@ use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-use crate::action::{ActionCx, Refusal};
+use crate::action::ActionCx;
 use crate::delta::{Delta, Touch};
 use crate::model::LocatedAt as _;
 use crate::model::{Doc, Model, ModelError, Slot, Stores, read_key};
 use crate::order;
 use crate::path::{EditOp, Segment, Settable};
-use crate::table::{ModelOps, ModelTable, Run};
+use crate::table::{ModelOps, ModelTable};
 use std::any::Any;
 
 /// A stable identity for an item in a resource. Minted deterministically by
@@ -320,20 +320,6 @@ impl<T> Collection<T> {
         self.items.get(position).map(|entry| &entry.item)
     }
 
-    /// [`get`](Self::get) for a caller that remembers where the item was (a
-    /// list row): looks at `near` and beside it first, so an item that
-    /// stayed or moved by one is found without a scan. Answers where the
-    /// item is now, to remember for next time, and the item.
-    pub fn get_near(&self, id: &Id, near: usize) -> Option<(usize, &T)> {
-        let around = [Some(near), near.checked_add(1), near.checked_sub(1)];
-        around
-            .into_iter()
-            .flatten()
-            .find(|&index| self.items.get(index).is_some_and(|entry| &entry.id == id))
-            .or_else(|| self.position(id))
-            .and_then(|index| self.items.get(index).map(|entry| (index, &entry.item)))
-    }
-
     pub fn get_mut(&mut self, id: &Id) -> Option<&mut T> {
         let position = self.position(id)?;
         self.items.get_mut(position).map(|entry| &mut entry.item)
@@ -514,9 +500,36 @@ impl<T> FromIterator<(Id, T)> for Collection<T> {
 pub(crate) struct Stored {
     pub(crate) id: Id,
     pub(crate) key: String,
-    pub(crate) entry: ObjId,
+    /// The entry's map; `None` for an item stored as its order key alone.
+    pub(crate) entry: Option<ObjId>,
     /// What the entry's value slot holds, for reading the item.
     pub(crate) value: crate::model::MapSlot,
+}
+
+/// Whether items of the type `item` are stored as their order key alone:
+/// an item that stores nothing (`()`, a [`Grid`](crate::Grid)'s rows and
+/// columns) needs no map around the key.
+pub(crate) fn order_only(item: &ModelTable) -> bool {
+    std::ptr::eq(item, <() as Model>::TABLE)
+}
+
+/// Write the entry of the item `id` under the order key `key` into the
+/// collection map `map`: the key itself for an item stored as its order key
+/// alone (`order_only`), else a map `{ k, v }` whose value `store` writes.
+pub(crate) fn put_entry(
+    doc: &mut Doc,
+    map: &ObjId,
+    id: &Id,
+    key: String,
+    order_only: bool,
+    store: &dyn Fn(&mut Doc, Slot<'_>) -> Result<(), ModelError>,
+) -> Result<(), ModelError> {
+    if order_only {
+        return Slot::Key(map, id.as_str()).put_scalar(doc, ScalarValue::Str(key.into()));
+    }
+    let entry = Slot::Key(map, id.as_str()).object(doc, ObjType::Map)?;
+    Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;
+    store(doc, Slot::Key(&entry, VALUE)).located(id.as_str())
 }
 
 /// Write `items`, in this order, as the map from id to `{ k, v }` a
@@ -527,6 +540,7 @@ pub(crate) fn store_in_order(
     doc: &mut Doc,
     slot: Slot<'_>,
     items: &[(&Id, &dyn Stores)],
+    order_only: bool,
 ) -> Result<(), ModelError> {
     let map = slot.object(doc, ObjType::Map)?;
     let stored = stored_entries(doc, &map)?;
@@ -542,10 +556,9 @@ pub(crate) fn store_in_order(
         .collect();
     let keys = order_keys(items.iter().map(|(id, _)| *id), &by_id);
     for ((id, item), key) in items.iter().zip(keys) {
-        let entry = Slot::Key(&map, id.as_str()).object(doc, ObjType::Map)?;
-        Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;
-        item.store_to(doc, Slot::Key(&entry, VALUE))
-            .located(id.as_str())?;
+        put_entry(doc, &map, id, key, order_only, &|doc, slot| {
+            item.store_to(doc, slot)
+        })?;
     }
     Ok(())
 }
@@ -598,6 +611,8 @@ pub(crate) struct EntryEdits<'a> {
     pub(crate) parse: &'a ParseItem<'a>,
     /// The edit of the whole value, for any other operation.
     pub(crate) whole: &'a EditWhole<'a>,
+    /// Items are stored as their order key alone ([`order_only`]).
+    pub(crate) order_only: bool,
 }
 
 /// [`Model::edit`] at a slot.
@@ -641,10 +656,9 @@ pub(crate) fn edit_entries(
             }
             let stored = stored_entries(doc, &map)?;
             let key = key_at(&stored, *at, None);
-            let entry = Slot::Key(&map, id.as_str()).object(doc, ObjType::Map)?;
-            Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;
-            item.store_to(doc, Slot::Key(&entry, VALUE))
-                .located(id.as_str())
+            put_entry(doc, &map, &id, key, edits.order_only, &|doc, slot| {
+                item.store_to(doc, slot)
+            })
         }
         (None, EditOp::RemoveItem { id }) => {
             let map = slot.object(doc, ObjType::Map)?;
@@ -661,7 +675,12 @@ pub(crate) fn edit_entries(
                 return Err(ModelError::invalid(format!("no item `{id}`")));
             };
             let key = key_at(&stored, *at, Some(id));
-            Slot::Key(&entry.entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))
+            match &entry.entry {
+                Some(entry) => {
+                    Slot::Key(entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))
+                }
+                None => Slot::Key(&map, id.as_str()).put_scalar(doc, ScalarValue::Str(key.into())),
+            }
         }
         _ => (edits.whole)(doc, slot, path, op),
     }
@@ -678,6 +697,8 @@ pub(crate) struct EntryWrites<'a> {
     pub(crate) changed: &'a WriteChanged<'a>,
     /// Store the whole collection, when only the document can say.
     pub(crate) whole: &'a StoreWhole<'a>,
+    /// Items are stored as their order key alone ([`order_only`]).
+    pub(crate) order_only: bool,
 }
 
 /// [`Model::store_changed`] of a map of `{ k, v }` entries: the items `ids`
@@ -719,13 +740,19 @@ pub(crate) fn store_entries_changed(
         let touched = dirty.key(&map, id.as_str());
         let Some(&(at, stored_key)) = was.get(id).filter(|_| touched != Touch::Written) else {
             // New here, or replaced by someone else: written whole.
-            let entry = Slot::Key(&map, id.as_str()).object(doc, ObjType::Map)?;
-            Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;
-            (writes.store)(now, doc, Slot::Key(&entry, VALUE)).located(id.as_str())?;
+            put_entry(doc, &map, id, key, writes.order_only, &|doc, slot| {
+                (writes.store)(now, doc, slot)
+            })?;
             continue;
         };
         let kept = touched == Touch::Untouched && stored_key == key;
         if kept && (writes.same)(now, at) {
+            continue;
+        }
+        if writes.order_only {
+            if !kept {
+                Slot::Key(&map, id.as_str()).put_scalar(doc, ScalarValue::Str(key.into()))?;
+            }
             continue;
         }
         let entry = Slot::Key(&map, id.as_str()).object(doc, ObjType::Map)?;
@@ -746,6 +773,8 @@ enum Touched {
     Below { entry: ObjId, order: Option<String> },
     /// A new entry, or one replaced whole.
     Fresh { entry: ObjId, order: String },
+    /// An item stored as its order key alone, new or moved.
+    Order { order: String },
 }
 
 /// How `delta` touched the entry `key` of the collection map `map`; `below`
@@ -757,8 +786,17 @@ fn touched_entry(
     delta: &Delta,
     below: bool,
 ) -> Result<Touched, ModelError> {
-    let Some((Value::Object(ObjType::Map), entry)) = doc.get(map, key)? else {
-        return Ok(Touched::Gone);
+    let entry = match doc.get(map, key)? {
+        Some((Value::Object(ObjType::Map), entry)) => entry,
+        Some((Value::Scalar(scalar), _)) => {
+            return match scalar.as_ref() {
+                ScalarValue::Str(order) => Ok(Touched::Order {
+                    order: order.to_string(),
+                }),
+                _ => Err(ModelError::shape("an order key").at(key)),
+            };
+        }
+        _ => return Ok(Touched::Gone),
     };
     let order = |doc: &Doc| {
         read_key::<crate::Atom>(doc, &entry, ORDER)
@@ -853,6 +891,16 @@ fn stored_order(keys: &[(Option<&str>, &Id)]) -> Vec<usize> {
 pub(crate) fn stored_entries(doc: &Doc, map: &ObjId) -> Result<Vec<Stored>, ModelError> {
     let mut entries = Vec::new();
     for item in doc.map_range(map, ..) {
+        // An item stored as its order key alone.
+        if let automerge::ValueRef::Scalar(automerge::ScalarValueRef::Str(order)) = &item.value {
+            entries.push(Stored {
+                id: Id(item.key.clone().into_owned()),
+                key: order.to_string(),
+                entry: None,
+                value: None,
+            });
+            continue;
+        }
         if item.value != automerge::ValueRef::Object(ObjType::Map) {
             continue;
         }
@@ -862,7 +910,7 @@ pub(crate) fn stored_entries(doc: &Doc, map: &ObjId) -> Result<Vec<Stored>, Mode
         entries.push(Stored {
             id: Id(item.key.into_owned()),
             key: order.0,
-            entry,
+            entry: Some(entry),
             value,
         });
     }
@@ -1077,107 +1125,9 @@ impl<T: Model> Model for Collection<T> {
     // Run by one set of functions for every collection, over `T`'s table.
     const TABLE: &'static ModelTable = &CollectionOf::<T>::TABLE;
     crate::model::leaf_paths!();
-    #[inline]
-    fn op_coalesces(
-        path: &[Segment],
-        previous: &serde_json::Value,
-        next: &serde_json::Value,
-    ) -> Option<bool> {
-        Run(Self::TABLE).op_coalesces(path, previous, next)
-    }
-    #[inline]
-    fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
-        Run(Self::TABLE).op_continuable(path, op)
-    }
-    #[inline]
-    fn op_describe(path: &[Segment], op: &serde_json::Value) -> Option<crate::path::OpDescription> {
-        Run(Self::TABLE).op_describe(path, op)
-    }
-    #[inline]
-    fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
-        Run(Self::TABLE).op_lands(self, path, op)
-    }
-    #[inline]
-    fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
-        Run(Self::TABLE).op_schemas(prefix, out);
-    }
-    /// `[{ "id": .., "value": .. }, ..]` in collection order.
-    #[inline]
-    fn to_json(&self) -> serde_json::Value {
-        Run(Self::TABLE).to_json(self)
-    }
-    #[inline]
-    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
-        Run(Self::TABLE).from_json(value)
-    }
-    #[inline]
-    fn edit(
-        doc: &mut Doc,
-        slot: Slot<'_>,
-        path: &[Segment],
-        op: &EditOp,
-        cx: &mut ActionCx,
-    ) -> Result<(), ModelError> {
-        Run(Self::TABLE).edit(doc, slot, path, op, cx)
-    }
-    #[inline]
-    fn check(&self) -> Result<(), Refusal> {
-        Run(Self::TABLE).check(self)
-    }
-    #[inline]
-    fn get_at(&self, path: &[Segment]) -> Option<&dyn std::any::Any> {
-        Run(Self::TABLE).get_at(self, path)
-    }
-    #[inline]
-    fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
-        Run(Self::TABLE).diff(self, after, path, out);
-    }
-    #[inline]
-    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
-        Run(Self::TABLE).load(doc, value, id)
-    }
-    /// Only the entries `delta` touched are read again
-    /// ([`COLLECTION_OPS`]).
-    #[inline]
-    fn refresh(
-        &mut self,
-        doc: &Doc,
-        value: &Value<'_>,
-        id: &ObjId,
-        delta: &Delta,
-    ) -> Result<(), ModelError> {
-        Run(Self::TABLE).refresh(self, doc, value, id, delta)
-    }
+    crate::__table_functions!();
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::default())
-    }
-    #[inline]
-    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        Run(Self::TABLE).store(self, doc, slot)
-    }
-    /// Equal ids in equal order, each item storing as before, over order
-    /// keys a write would keep.
-    #[inline]
-    fn stores_as(&self, before: &Self) -> bool {
-        Run(Self::TABLE).stores_as(self, before)
-    }
-    /// What [`store`](Model::store) writes, from `before` (which knows every
-    /// stored entry and order key) instead of listing the stored entries:
-    /// only new, moved and changed items are visited, and an item someone
-    /// else touched (`dirty`) is written as `store` writes it.
-    #[inline]
-    fn store_changed(
-        &self,
-        before: &Self,
-        doc: &mut Doc,
-        slot: Slot<'_>,
-        dirty: &Delta,
-    ) -> Result<(), ModelError> {
-        Run(Self::TABLE).store_changed(self, before, doc, slot, dirty)
-    }
-    #[inline]
-    fn collect_text(&self, out: &mut Vec<String>) {
-        Run(Self::TABLE).collect_text(self, out);
     }
 }
 
@@ -1410,6 +1360,7 @@ fn load_into(
 
 /// The functions of every [`Collection`], over its item type's table.
 pub static COLLECTION_OPS: ModelOps = ModelOps {
+    without_absent: crate::shape::kept_whole,
     to_json: |table, value| {
         let (Ok(desc), Some(entries)) = (
             listed(table),
@@ -1478,7 +1429,7 @@ pub static COLLECTION_OPS: ModelOps = ModelOps {
         for (id, item) in &held {
             items.push((*id, item as &dyn Stores));
         }
-        store_in_order(doc, slot, &items)
+        store_in_order(doc, slot, &items, order_only(desc.item))
     },
     stores_as: |table, value, before| {
         let Some(desc) = table.collection() else {
@@ -1551,6 +1502,7 @@ pub static COLLECTION_OPS: ModelOps = ModelOps {
                     _ => Ok(()),
                 },
                 whole: &|doc, slot| (COLLECTION_OPS.store)(table, value, doc, slot),
+                order_only: order_only(item),
             },
         )
     },
@@ -1588,6 +1540,7 @@ pub static COLLECTION_OPS: ModelOps = ModelOps {
                     let staged = ((desc.staged.0)(), desc.staged.1);
                     crate::table::edit_whole(table, staged, false, doc, slot, path, op)
                 },
+                order_only: order_only(item),
             },
         )
     },
@@ -1794,6 +1747,23 @@ fn refresh_entries(
                             .located(key)?;
                     }
                 }
+            }
+            // An item stored as its order key: new, or moved.
+            Touched::Order { order } => {
+                if let Some(position) = position {
+                    entries.set_order(position, Some(order));
+                } else {
+                    entries.push_filled(
+                        (item_id, Some(order), false),
+                        &mut |into: &mut dyn Any| {
+                            crate::table::load_slot(item, doc, None, into)
+                                .located(VALUE)
+                                .located(key)
+                        },
+                    )?;
+                    entries.changed();
+                }
+                reorder = true;
             }
             // A new item, or one whose entry was replaced.
             Touched::Fresh { entry, order } => {

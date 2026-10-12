@@ -22,11 +22,9 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 
 use settings_store::notification_policy::AppNotificationRule;
-use taffy::{NodeId, TaffyTree};
 use tilo_clock::unix_now_i64;
 use ui::LocalState;
 use ui::framework::LiveRow;
-use ui::theme::Theme;
 use ui::tilo_resource;
 use ui::widget::{AppModel, ModelPath, Widget};
 
@@ -881,20 +879,7 @@ impl Widget for NotificationsPane {
         self.composed.sync(state, root);
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let composition = self.build_composition();
-        let child = self
-            .composed
-            .build_layout(composition, taffy, theme, node_map);
-        crate::panes::pane_node(taffy, child, node_map, self)
-    }
-
-    ui::forward_to_composed!(composed);
+    crate::panes::composed_pane!();
 
     fn name(&self) -> &'static str {
         "NotificationsPane"
@@ -906,7 +891,9 @@ mod tests {
     use super::*;
     use crate::host::testing::{NOTIFICATIONS, edit_field, edit_path, invoke_section};
     use crate::resource::SettingsShell;
+    use taffy::{NodeId, TaffyTree};
     use ui::prelude::TestApp;
+    use ui::theme::Theme;
 
     /// Set `field` of the rule of `app_id` through the door, as an agent
     /// does: a field edit of the notification section.

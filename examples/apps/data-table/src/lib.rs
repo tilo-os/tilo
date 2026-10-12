@@ -18,10 +18,6 @@ pub const APP_TITLE: &str = "Data Table";
 
 pub mod locales;
 
-fn install_catalog() {
-    locales::install();
-}
-
 use std::collections::HashMap;
 use std::ops::Range;
 use ui::i18n::I18nManager;
@@ -203,8 +199,11 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn view(cx: &mut ViewCx<Review>) -> Element {
-        install_catalog();
         // Rows are built on demand as the table scrolls, long after this view
         // was; they bind their buttons through the resource's actions.
         let actions = cx.actions();

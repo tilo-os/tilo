@@ -658,6 +658,60 @@ mod tests {
         let _ = crate::crypto::sign_op(&mut op_of(&unnamed), &key);
     }
 
+    /// A grid gesture's entry, written as compactly as the history keeps it
+    /// (a group action stating its members' shared path once, the members'
+    /// paths left to that action), claims each member at its full path.
+    #[test]
+    fn a_compact_group_entry_claims_each_member_at_its_path() {
+        let path = vec![
+            PathStep::Field("sheets".into()),
+            PathStep::Item("s1".into()),
+            PathStep::Field("cells".into()),
+        ];
+        let member = |op| {
+            Did::Edit(FieldEdit {
+                ty: "sheet".into(),
+                field: "cells".into(),
+                path: path.clone(),
+                op,
+                old: None,
+                new: None,
+                args: std::collections::BTreeMap::new(),
+            })
+        };
+        let mut entry =
+            ActionContext::for_resource("sheets.workbook", "sheets.workbook", "Workbook");
+        entry.what = Some(Did::group([
+            member(EditOp::InsertRow),
+            member(EditOp::SetCell),
+        ]));
+        entry.action = Some(tilo_actions::EncodedAction {
+            type_id: "sheets.workbook+group".into(),
+            payload: br#"{"at":5,"ops":[{"action":"field-edit","args":{"at":2,"id":"r2","op":"insert-row"}},{"action":"field-edit","args":{"column":"c0","op":"set-cell","row":"r2","value":{"raw":"2"}}}],"path":[{"field":"sheets"},{"item":"s1"},{"field":"cells"}]}"#.to_vec(),
+        });
+        let message = entry.change_message().unwrap();
+        assert_eq!(
+            tilo_actions::compact::decode(
+                message
+                    .strip_prefix(tilo_actions::CHANGE_MESSAGE_PREFIX)
+                    .unwrap()
+            )
+            .unwrap()
+            .matches("\"s1\"")
+            .count(),
+            1,
+            "the path once: {message}"
+        );
+        let claim = ChangeClaim::of_change([1; 32], Some(&message), Vec::new()).unwrap();
+        assert_eq!(
+            claim.action,
+            ClaimedAction::Group(vec![ClaimedAction::Edit {
+                kind: "sheets.workbook".into(),
+                path,
+            }])
+        );
+    }
+
     /// A continuation claims what its payload does: the field edit at its
     /// path, or the verb it names, of the record's own app and kind.
     #[test]

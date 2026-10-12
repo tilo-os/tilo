@@ -1,28 +1,17 @@
-# The app's public surface, written by `tilo-app surface`: its resources' verbs
-# and stored fields. Review changes to it like an API change; `tilo-app check`
-# fails when the code and this file disagree.
+# Written by `tilo-app surface`; review changes like an API change.
 
 [[resources]]
 kind = "example.activity-feed"
 label = "Activity"
 version = 1
-
-[[resources.fields]]
-owner = "feed"
-path = "opened"
-stored = "value"
-title = "Recently opened activity ids, newest first"
-type = "Vec<u64>"
+fields = [
+  { path = "opened", type = "Vec<u64>" },
+]
 
 [[resources.verbs]]
 id = "open-activity"
 kind = "undoable"
-label = "Open an activity"
+params = [
+  { name = "id", required = true, schema = { type = "integer", minimum = 0 } },
+]
 
-[[resources.verbs.params]]
-name = "id"
-required = true
-
-[resources.verbs.params.schema]
-minimum = 0
-type = "integer"

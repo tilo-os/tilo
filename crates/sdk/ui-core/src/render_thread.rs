@@ -107,6 +107,9 @@ pub enum RenderRequest {
 /// Why the drawing surface was lost, kept for the window that stops on it.
 static SURFACE_LOSS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// Set once this process recorded whether its first frame drew a backdrop.
+static FIRST_FRAME_BACKDROP_RECORDED: AtomicBool = AtomicBool::new(false);
+
 /// Record why the drawing surface was lost; the first reason is the cause.
 /// Whether a window on this adapter rasterizes its frames on the CPU
 /// (`cpu_raster`) and uploads the pixels, instead of running vello's compute
@@ -496,6 +499,30 @@ pub(crate) fn spawn_render_thread_for_window(
                         break;
                     }
                 };
+                // A backdrop is drawn with vello even when the CPU rasterizes
+                // the rest. If the pipelines were left until after the first
+                // present (`create_native_renderer`), start them now on the
+                // init threads: this frame then waits on a parallel build
+                // instead of compiling each pipeline it dispatches alone.
+                if !backdrop.is_empty()
+                    && let Some(device) = render_cx.devices.get(surface.dev_id)
+                {
+                    renderer.start_deferred_pipelines(
+                        &device.device,
+                        crate::pipeline_cache::persist_unsaved,
+                    );
+                }
+                // The process's first frame, the primary window's (its
+                // worker starts before any other window's, as the startup
+                // marks assume): what the next launch's renderer preparation
+                // reads to decide when to build
+                // (`pipeline_cache::first_frame_backdrop`).
+                if frame_ix == 0
+                    && cpu_raster.is_some()
+                    && !FIRST_FRAME_BACKDROP_RECORDED.swap(true, Ordering::AcqRel)
+                {
+                    crate::pipeline_cache::first_frame_backdrop::record(!backdrop.is_empty());
+                }
                 let worker_timing = present_origin.map(|origin| (origin, crate::time::now()));
                 if let Some(observer) = native_timing {
                     timing::handoff::received(

@@ -1,16 +1,10 @@
-# The app's public surface, written by `tilo-app surface`: its resources' verbs
-# and stored fields. Review changes to it like an API change; `tilo-app check`
-# fails when the code and this file disagree.
+# Written by `tilo-app surface`; review changes like an API change.
 
 [[resources]]
 kind = "example.prime-search"
 label = "Prime search"
-verbs = []
 version = 1
+fields = [
+  { path = "limit", type = "u64" },
+]
 
-[[resources.fields]]
-owner = "search"
-path = "limit"
-stored = "value"
-title = "Count the primes below this number"
-type = "u64"

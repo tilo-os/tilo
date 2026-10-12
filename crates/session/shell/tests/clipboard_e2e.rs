@@ -265,6 +265,8 @@ impl Compositor {
         fixture_tree.desktop.workspaces[0].name = "Clipboard test desktop".into();
         shell::shell::persist::save_tree_to(&fixture_tree, &state_path)
             .expect("seed the clipboard e2e desktop");
+        // Let go of the file's writer lease: the compositor owns its session.
+        drop(std::mem::take(&mut fixture_tree.native_runtime));
         Self::seed_tab_records(&runtime_dir, &fixture_tree);
         let identity_root = Self::seed_identity(&runtime_dir);
 
@@ -946,6 +948,9 @@ struct ClientState {
     configured: bool,
     /// The newest non-zero size an `xdg_toplevel.configure` asked for.
     toplevel_size: Option<(i32, i32)>,
+    /// The configure size a buffer was last attached for, so each new
+    /// configure is answered once.
+    answered_size: Option<(i32, i32)>,
     /// Set while this client holds keyboard focus, which gates `set_selection`.
     keyboard_focused: bool,
     /// The compositor requested that this exact xdg toplevel exit.  `close`
@@ -1322,8 +1327,10 @@ impl TestClient {
         let (w, h) = compositor.size;
         panic!(
             "`{}` never received a pointer enter anywhere on a {w}x{h} screen, so its \
-             window is not on screen and no drag could be aimed at it.\n{}",
+             window is not on screen and no drag could be aimed at it.\n\
+             laid-out client surfaces (x, y, w, h): {:?}\n{}",
             self.app_id,
+            compositor.foreign_surface_rects(),
             compositor.debug_state(),
         );
     }
@@ -1342,6 +1349,7 @@ impl TestClient {
             {
                 self.attach_buffer(size.0, size.1);
                 answered = Some(size);
+                self.state.answered_size = Some(size);
             }
             if foreign_frame_presented(compositor, surface_id) {
                 self.step("presented");
@@ -1514,8 +1522,32 @@ impl TestClient {
         panic!("{what} (waited out the hang bound, app_id {})", self.app_id);
     }
 
+    /// Attach a buffer of the newest configured size, once per size.
+    fn answer_configure(&mut self) {
+        let Some(size) = self.state.toplevel_size else {
+            return;
+        };
+        if self.state.answered_size == Some(size) || self.surface.is_none() {
+            return;
+        }
+        self.state.answered_size = Some(size);
+        self.attach_buffer(size.0, size.1);
+    }
+
     /// Pump without requiring progress, for waits on something outside this client.
+    ///
+    /// Answers each new `xdg_toplevel.configure` with a buffer of the asked
+    /// size, as an application does. The compositor shows a window only once
+    /// a frame fits its tab, and while another window opens the strip
+    /// reconfigures the tab frame by frame; a client that keeps its first
+    /// buffer is never shown (no pointer ever enters it) whenever its commit
+    /// lands mid-animation, which a loaded machine makes common.
     fn pump(&mut self) {
+        self.pump_roundtrip();
+        self.answer_configure();
+    }
+
+    fn pump_roundtrip(&mut self) {
         self.queue
             .roundtrip(&mut self.state)
             .unwrap_or_else(|error| {

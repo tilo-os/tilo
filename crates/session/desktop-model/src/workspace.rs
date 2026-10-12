@@ -588,24 +588,6 @@ impl Workspace {
             .apply(actor, &authority, change, &context_at(now), false)
     }
 
-    /// Apply a governance change made through `authority` (a person, or a
-    /// delegation acting for `actor`). `approved` says the host witnessed
-    /// the person's approval where the answer asks first.
-    ///
-    /// # Errors
-    /// See [`RoomPolicy::apply`].
-    pub fn govern_with_at(
-        &mut self,
-        actor: &str,
-        authority: &Authority<'_>,
-        change: Change,
-        now: u64,
-        approved: bool,
-    ) -> Result<(), Refusal> {
-        self.policy
-            .apply(actor, authority, change, &context_at(now), approved)
-    }
-
     /// Admit `agent` to the room with `preset`'s grants, given by
     /// `granted_by`, without a governance check, for a host installing the
     /// room's own state. The ids recorded.
@@ -844,20 +826,6 @@ impl Workspace {
             }
         }
         agents
-    }
-
-    /// The answer task `task`'s grant set gives for an action of `kind` at
-    /// `node`; `None` when the task carries no grant set. Work done in the
-    /// task is bounded by it, as an agent is bounded by its delegation.
-    #[must_use]
-    pub fn task_answer_at(
-        &self,
-        task: &str,
-        node: &TreePath,
-        kind: ActionKind,
-        now: u64,
-    ) -> Option<Answer> {
-        self.policy.task_answer(task, node, kind, &context_at(now))
     }
 
     /// What a launch into this room hands its apps at `now`: the apps the

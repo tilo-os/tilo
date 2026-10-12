@@ -168,6 +168,26 @@ room; members refuse its later writes on their own. Room administration
 refuses agent devices. Other users' agents are not admitted, and agents
 never call the host's room actions.
 
+A room the desktop hosts itself applies the same rule through its action
+broker: an agent session takes the role its membership preset grants,
+capped by its person's role (`admit_agent_delegation_at`,
+`crates/collab/tilo-action-broker/src/collab_broker_capnp.rs`), and acts
+with its person's authority bounded by the preset's grants. Every
+revalidation asks again, so removing the person or revoking the agent's
+admission ends an open session at once. The cap, and the answers to the
+questions about agents that are still open (other people's agents, final
+withdrawal, members enforcing app scope), live in one place,
+`tilo_action_policy::roles::agent_policy`.
+
+History names an agent's work as the agent's, on behalf of its person:
+`ui::history_source::AuthorDirectory` resolves an authenticated agent
+invoker, or an agent's own device key, to "Scribe · Agent, for Ada" in the
+agent's colour, and keeps who acted and for whom as data
+(`HistoryAuthor::attribution`) that `history.list` returns. Files names
+file versions the same way from the identity projection, which marks a
+device governance admitted as an agent (after verifying its person's
+delegation) and keeps agent devices out of the devices sharing encrypts to.
+
 ### Load hints beside local records
 
 Loading a large record spends most of its time rebuilding every change to

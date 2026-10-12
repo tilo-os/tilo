@@ -24,7 +24,7 @@ pub trait LocalPersonServices: Send + Sync {
 pub const APPLICATION_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 pub use crate::collab_broker_capnp::{
-    AudioOutputFuture, AudioOutputServices, CertifiedPersonContext, DocumentBytes,
+    AudioOutputFuture, AudioOutputServices, CertifiedPersonContext, DocumentBytes, HeldRevision,
     NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads, NativeMediaFuture,
     NativeMediaRequestContext, NativeMediaServices,
 };

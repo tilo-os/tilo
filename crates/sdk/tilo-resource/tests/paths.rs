@@ -480,6 +480,95 @@ fn rows_two_replicas_add_under_one_id_keep_both_cells() {
 }
 
 #[test]
+fn rows_stored_as_their_order_keys_order_as_items_do_under_concurrent_inserts() {
+    use automerge::ReadDoc as _;
+    let mut library = Replica::<Library>::new();
+    let sheet = Library::paths().sheet;
+    let snippets = Library::paths().snippets;
+    let row = |id: &str, at| {
+        sheet.edit(tilo_resource::EditOp::InsertRow {
+            id: Some(Id::from_raw(id)),
+            at,
+        })
+    };
+    let item = |id: &str, at| {
+        snippets.insert_as(
+            &Id::from_raw(id),
+            at,
+            &Snippet {
+                title: id.into(),
+                ..Snippet::default()
+            },
+        )
+    };
+    let both = |replica: &mut Replica<Library>, id: &str, at| {
+        edit(replica, &row(id, at)).unwrap();
+        edit(replica, &item(id, at)).unwrap();
+    };
+    both(&mut library, "a", 0);
+    both(&mut library, "b", 1);
+    let mut other = library.fork();
+    // Concurrent inserts at the same place and at different places.
+    both(&mut library, "x", 1);
+    both(&mut library, "y", 0);
+    both(&mut other, "z", 1);
+    both(&mut other, "w", 2);
+    library.sync_with(&mut other).unwrap();
+    let state = library.state().unwrap();
+    let rows: Vec<&str> = state.sheet.rows().map(Id::as_str).collect();
+    let items: Vec<&str> = state.snippets.ids().map(Id::as_str).collect();
+    assert_eq!(
+        rows, items,
+        "a row orders as an item stored with its value does"
+    );
+    assert_eq!(other.state().unwrap().sheet, state.sheet);
+    // A row is its order key alone: no map around it.
+    let doc = library.doc();
+    let (_, grid) = doc.get(automerge::ROOT, "sheet").unwrap().unwrap();
+    let (_, axis) = doc.get(&grid, "rows").unwrap().unwrap();
+    for id in &rows {
+        let (value, _) = doc.get(&axis, *id).unwrap().unwrap();
+        assert!(
+            matches!(value, automerge::Value::Scalar(_)),
+            "row {id} stored as {value:?}"
+        );
+    }
+}
+
+#[test]
+fn a_row_and_cell_gesture_replays_to_the_same_change() {
+    let mut library = Replica::<Library>::new();
+    let sheet = Library::paths().sheet;
+    edit(&mut library, &sheet.insert_column(0)).unwrap();
+    let column = library
+        .state()
+        .unwrap()
+        .sheet
+        .columns()
+        .next()
+        .cloned()
+        .unwrap();
+    let row = Id::from_raw("r1");
+    library
+        .apply(Invoke::group(vec![
+            Invoke::edit(&sheet.edit(tilo_resource::EditOp::InsertRow {
+                id: Some(row.clone()),
+                at: 0,
+            }))
+            .unwrap(),
+            Invoke::edit(&sheet.set_cell(&row, &column, Some(&"a1".to_owned()))).unwrap(),
+        ]))
+        .unwrap();
+    let registry = tilo_actions::ActionRegistry::with(tilo_resource::group::register::<Library>);
+    let hash = *library.heads().first().unwrap();
+    assert_eq!(
+        tilo_actions::executor::verify_change(library.doc_mut(), hash, &registry).unwrap(),
+        tilo_actions::executor::Verified::Reproduced,
+        "the recorded group, written with its shared stamp and path once, reproduces the change"
+    );
+}
+
+#[test]
 fn grid_cells_keep_identity_when_rows_and_columns_move() {
     let mut library = Replica::<Library>::new();
     let sheet = Library::paths().sheet;

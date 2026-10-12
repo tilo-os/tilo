@@ -433,13 +433,23 @@ pub(crate) fn start_local_history(
     let Some(local) = crate::widget::capability::capability_mut::<dyn LocalUndo>(widget) else {
         return Ok(None);
     };
+    start_deferred_undo(local, request.invocation, request.payload)
+}
+
+/// Hands a native Edit request to `local` if it defers its history. Apart from
+/// the generic lookup, so the decoding lives in the toolkit, not in each app.
+#[inline(never)]
+fn start_deferred_undo(
+    local: &mut dyn LocalUndo,
+    invocation: tilo_actions::InvocationId,
+    payload: &[u8],
+) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
     if !local.local_undo_is_deferred() {
         return Ok(None);
     }
-    let direction =
-        serde_json::from_slice(request.payload).map_err(|_| "Invalid native Edit request")?;
+    let direction = serde_json::from_slice(payload).map_err(|_| "Invalid native Edit request")?;
     Ok(local
-        .start_local_undo_operation(request.invocation, direction)?
+        .start_local_undo_operation(invocation, direction)?
         .then_some(crate::widget::ResourceOperationStart::Accepted))
 }
 

@@ -188,4 +188,26 @@ mod tests {
             vec![Vec::<PathStep>::new()]
         );
     }
+
+    /// An item kept as its order key alone is the scalar under its id; it
+    /// falls under its item's unit like an entry map does.
+    #[test]
+    fn an_item_stored_as_its_order_key_writes_its_own_unit() {
+        let mut doc = automerge::AutoCommit::new();
+        let index = doc.put_object(ROOT, UNIT_INDEX, ObjType::List).unwrap();
+        doc.insert(&index, 0, "rows/*").unwrap();
+        let rows = doc.put_object(ROOT, "rows", ObjType::Map).unwrap();
+        doc.commit();
+        let before = doc.clone();
+        doc.put(&rows, "r1", "a0").unwrap();
+        let inserted = doc.commit().unwrap();
+        let change = doc.document().get_change_by_hash(&inserted).unwrap();
+        assert_eq!(
+            written_units(&before, &change).unwrap(),
+            vec![vec![
+                PathStep::Field("rows".into()),
+                PathStep::Item("r1".into())
+            ]]
+        );
+    }
 }

@@ -1583,14 +1583,6 @@ impl<R: Resource> ActionDecl<R> {
         self
     }
 
-    /// Take content another action produced as the one input, described by
-    /// `prompt`; see [`Declaration::content`].
-    #[must_use]
-    pub fn collecting_content(mut self, prompt: impl Into<String>) -> Self {
-        self.decl.content = Some(prompt.into());
-        self
-    }
-
     #[must_use]
     pub fn describe(mut self, description: impl Into<String>) -> Self {
         self.decl.description = Some(description.into());
@@ -2262,10 +2254,7 @@ fn encode_group(vocabulary: &Vocabulary, members: &[Built]) -> EncodedAction {
         }
     }
     payload.push(b']');
-    EncodedAction {
-        type_id: crate::group::group_type_of(vocabulary.action_type),
-        payload,
-    }
+    EncodedAction::written(crate::group::group_type_of(vocabulary.action_type), payload)
 }
 
 fn group_spec(vocabulary: &'static Vocabulary) -> ActionSpec {

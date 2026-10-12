@@ -1637,9 +1637,13 @@ fn pixels_apart(a: &[u8], b: &[u8], width: u32) -> Vec<(usize, usize, u8)> {
         .collect()
 }
 
-/// Pixels of the band copies of `work` that differ by more than one step
-/// between `before`, moved as the copies move it, and `after`: what moving
-/// a full render of one frame gives against a full render of the next.
+/// How many pixels of the band copies of `work` differ by more than one
+/// step between `before`, moved as the copies move it, and `after`, and the
+/// most steps any of them differs by: what moving a full render of one
+/// frame gives against a full render of the next. The most is over every
+/// copied pixel, a step of rounding included: once vello rasterises a shape
+/// alike at every offset, that rounding is all whole renders at two pans
+/// differ in, and a copy can show it.
 #[cfg(target_os = "linux")]
 fn moved_render_apart(
     work: &crate::shell::render::strip_layers::LayerWork,
@@ -1668,8 +1672,9 @@ fn moved_render_apart(
                     .max()
                     .unwrap_or(0);
                 if step > 1 {
-                    apart = (apart.0 + 1, apart.1.max(step));
+                    apart.0 += 1;
                 }
+                apart.1 = apart.1.max(step);
             }
         }
     }
@@ -1917,26 +1922,6 @@ fn render_strips_alone(
     Some(render_whole(target, &scene, painted.revision, label))
 }
 
-/// The pixels whole renders at adjacent pans differ in, moved as the copies
-/// moved them, summed over the frames since the strips were last rasterised
-/// whole, after a frame whose layer `work` copied with `control` such
-/// pixels: a copied pixel keeps the value it was rasterised with, so it can
-/// show the offset variance of every pan it was copied through, and nothing
-/// more.
-#[cfg(target_os = "linux")]
-fn copied_variance_after(
-    work: Option<&crate::shell::render::strip_layers::LayerWork>,
-    variance: usize,
-    control: usize,
-) -> usize {
-    use crate::shell::render::strip_layers::WorkspaceWork;
-    match work.map(|work| &work.workspace) {
-        Some(WorkspaceWork::Pan { .. }) => variance.saturating_add(control),
-        Some(WorkspaceWork::Unchanged) => variance,
-        Some(WorkspaceWork::Whole) | None => 0,
-    }
-}
-
 /// A strip pan presented from retained layers, frame by frame, shows what a
 /// full render of each frame shows, and what the desktop drawn without
 /// layers shows, in every theme; and once the layers are up, a pan frame
@@ -1967,7 +1952,6 @@ fn assert_pan_composites_like_full_renders(desktop: PanDesktop) {
         let mut worst = 0;
         let mut worst_step = 0_u8;
         let mut control_step = 0_u8;
-        let mut copied_variance = 0_usize;
         let mut previous_strips: Option<Vec<u8>> = None;
         frame.host_mut().update_active_strip_pan(0.0, true);
         // Fractional travel, as a touchpad reports it: the pans land on
@@ -2003,11 +1987,6 @@ fn assert_pan_composites_like_full_renders(desktop: PanDesktop) {
                 _ => (0, 0),
             };
             previous_strips = strips;
-            copied_variance = copied_variance_after(
-                layered.last_layer_work_for_test(),
-                copied_variance,
-                control.0,
-            );
             eprintln!(
                 "strip layers {label}: {} pixels more than one step from a full render (max {max}); \
                  whole strip renders at the previous pan, moved: {control:?}; raster {:?}",
@@ -2018,10 +1997,9 @@ fn assert_pan_composites_like_full_renders(desktop: PanDesktop) {
             worst_step = worst_step.max(max);
             control_step = control_step.max(control.1);
             assert!(
-                apart.len() <= OFFSET_PIXELS.max(copied_variance),
+                apart.len() <= OFFSET_PIXELS,
                 "{label}: {} pixels differ from a full render by more than one step (max {max}, \
-                 first {:?}), more than vello's offset variance ({OFFSET_PIXELS}) or what whole \
-                 renders at the pans the copied pixels went through differ in ({copied_variance})",
+                 first {:?})",
                 apart.len(),
                 &apart[..apart.len().min(16)]
             );
@@ -3492,3 +3470,7 @@ fn moving_to_another_strip_repaints_the_focus_and_the_strip_chrome() {
         }
     }
 }
+
+#[cfg(target_os = "linux")]
+#[path = "frame_scroll_copy_tests.rs"]
+mod scroll_copy;

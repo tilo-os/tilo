@@ -16,6 +16,8 @@ use zeroize::Zeroizing;
 use crate::catalog::VerifiedCatalog;
 use crate::{InProcessCapability, installed_in_process_model};
 
+#[cfg(feature = "whisper")]
+pub mod activity;
 #[cfg(feature = "whistle-aot")]
 mod aot;
 mod model;
@@ -41,13 +43,37 @@ pub fn speech_model_file(
     root: &Path,
     catalog: &VerifiedCatalog,
 ) -> Result<SealedSpeechModel, SpeechError> {
+    model_file(root, catalog, InProcessCapability::SpeechRecognition)
+}
+
+/// Require a separately receipt-checked acoustic graph when the signed image
+/// catalogue declares one. Legacy catalogues remain recognizer-only.
+/// # Errors
+/// A declared but uninstalled, changed or unaccepted graph fails before Ready.
+pub fn speech_activity_file(
+    root: &Path,
+    catalog: &VerifiedCatalog,
+) -> Result<Option<SealedSpeechModel>, SpeechError> {
+    if !catalog.payload().models.iter().any(|model| {
+        model.artifact_format == agent_provider_config::local::ModelArtifactFormat::SileroGgml
+    }) {
+        return Ok(None);
+    }
+    model_file(root, catalog, InProcessCapability::SpeechActivity).map(Some)
+}
+
+fn model_file(
+    root: &Path,
+    catalog: &VerifiedCatalog,
+    capability: InProcessCapability,
+) -> Result<SealedSpeechModel, SpeechError> {
     let metadata = fs::symlink_metadata(root).map_err(|_| SpeechError::ModelUnavailable)?;
     // SAFETY: geteuid is argument-free and cannot fail.
     let uid = unsafe { libc::geteuid() };
     if !metadata.is_dir() || metadata.uid() != uid || metadata.permissions().mode() & 0o022 != 0 {
         return Err(SpeechError::ModelUnavailable);
     }
-    let installed = installed_in_process_model(root, InProcessCapability::SpeechRecognition)
+    let installed = installed_in_process_model(root, capability)
         .map_err(|_| SpeechError::ModelUnavailable)?
         .ok_or(SpeechError::ModelUnavailable)?;
     let revision = &installed.revision;
@@ -58,7 +84,7 @@ pub fn speech_model_file(
         .find(|model| {
             model.id == installed.id
                 && &model.version == revision
-                && model.artifact_format.is_speech()
+                && model.in_process_capabilities().contains(&capability)
                 && model.artifact.sha256 == installed.sha256
                 && model.license_id == installed.license_id
         })
@@ -78,6 +104,11 @@ pub fn speech_model_file(
         return Err(SpeechError::ModelUnavailable);
     }
     if release.artifact.size_bytes > MAX_MODEL_BYTES {
+        return Err(SpeechError::ModelUnavailable);
+    }
+    if capability == InProcessCapability::SpeechActivity
+        && release.artifact.size_bytes > 4 * 1024 * 1024
+    {
         return Err(SpeechError::ModelUnavailable);
     }
     let file = OpenOptions::new()
@@ -148,6 +179,8 @@ unsafe extern "C" {
     fn tilo_speech_vocabulary(context: *mut c_void, text: *const c_char, length: usize) -> bool;
     fn tilo_speech_free(context: *mut c_void);
     fn tilo_speech_accepts(context: *mut c_void, language: *const c_char) -> bool;
+    fn tilo_speech_enable_draft_interrupt() -> bool;
+    fn tilo_speech_draft_mode(context: *mut c_void, enabled: bool);
     fn tilo_speech_transcribe(
         context: *mut c_void,
         samples: *const f32,
@@ -165,6 +198,27 @@ unsafe extern "C" {
 pub struct SpeechEngine(NonNull<c_void>);
 #[cfg(feature = "whisper")]
 impl SpeechEngine {
+    /// Install the owned worker's lock-free provisional-inference stop signal.
+    /// Call before Ready; failure never advertises support or opens capture.
+    /// # Errors
+    /// Fails if the private signal handler or signal mask cannot be installed.
+    pub fn enable_draft_interrupt() -> Result<(), SpeechError> {
+        // SAFETY: called once in the owned worker; the native signal handler
+        // only stores a lock-free atomic flag and never touches Rust state.
+        if unsafe { tilo_speech_enable_draft_interrupt() } {
+            Ok(())
+        } else {
+            Err(SpeechError::WorkerStopped)
+        }
+    }
+
+    /// Mark only the synchronous draft call as eligible for interruption.
+    pub fn draft_mode(&mut self, enabled: bool) {
+        // SAFETY: this owner changes the live context only between native
+        // calls. Final inference always clears this mode before decoding.
+        unsafe { tilo_speech_draft_mode(self.0.as_ptr(), enabled) };
+    }
+
     /// Observe the attention strategy actually passed to the loaded native
     /// engine. Qualification must not infer this from filenames or timings.
     pub fn flash_attention_enabled(&self) -> bool {
@@ -334,6 +388,7 @@ impl SpeechEngine {
         let length = usize::try_from(result).map_err(|_| match result {
             -2 => SpeechError::UnsupportedLanguage,
             -4 => SpeechError::TextTooLong,
+            -5 => SpeechError::DraftInterrupted,
             _ => SpeechError::Recognition,
         })?;
         let text = std::str::from_utf8(output.get(..length).ok_or(SpeechError::TextTooLong)?)

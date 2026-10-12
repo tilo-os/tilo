@@ -143,6 +143,25 @@ pub struct FramePaint {
     /// [`FramePaint::scanout_candidate`]: anything drawn into `scene` after
     /// the frame builder found it voids it.
     pub scanout: Option<crate::shell::scanout_candidate::ScanoutCandidate>,
+    /// For a presenter that keeps its target and moves pixels within it
+    /// ([`FrameBuilder::set_scroll_copy_presenter`]): what a scroll in an
+    /// in-process app moved, to copy instead of repainting where it lands.
+    /// `damage_regions` stays every pixel the frame changes, so any other
+    /// presenter ignores this.
+    pub scroll_copies: Option<ScrollCopies>,
+}
+
+/// How a presenter that keeps its target presents a frame in which a scroll
+/// moved what stays on screen ([`FramePaint::scroll_copies`]): copy, then
+/// repaint the rest.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScrollCopies {
+    /// Copies within the target, in scene pixels, made in order before
+    /// anything is repainted.
+    pub copies: Vec<ui::scroll_copy::DeviceCopy>,
+    /// What to repaint after them; [`FramePaint::damage_regions`] is this
+    /// and where the copies land.
+    pub raster: Vec<FineDamageRect>,
 }
 
 /// A strip drawn in canvas coordinates. The presenter shows the workspace
@@ -370,6 +389,8 @@ impl FramePaint {
             // scans it out holds the client frame itself, until the flip
             // that replaces it retires.
             scanout: _,
+            // Pixels the presenter already holds.
+            scroll_copies: _,
         } = self;
         let mut pins = crate::shell::gpu_frames::FramePins::default();
         pins.add_scene(scene);
@@ -418,6 +439,7 @@ impl FramePaint {
             backdrop: None,
             cache: None,
             scanout: None,
+            scroll_copies: None,
         }
     }
 
@@ -444,6 +466,8 @@ impl FramePaint {
     pub fn with_backdrop(mut self, backdrop: Option<Arc<BackdropFrame>>) -> Self {
         if backdrop.is_some() {
             self.cache = None;
+            // What a floating surface blurs moves with no copy of its own.
+            self.repaint_copies();
         }
         self.backdrop = backdrop;
         self
@@ -454,9 +478,15 @@ impl FramePaint {
     pub fn with_hdr_layers(mut self, layers: Vec<crate::shell::hdr_surface::HdrLayer>) -> Self {
         if !layers.is_empty() {
             self.cache = None;
+            self.repaint_copies();
         }
         self.hdr_layers = layers;
         self
+    }
+
+    /// Drop the copies: `damage_regions` already repaints where they land.
+    fn repaint_copies(&mut self) {
+        self.scroll_copies = None;
     }
 
     /// External scene mutation invalidates every retained-damage proof.
@@ -467,6 +497,7 @@ impl FramePaint {
         self.revision = 0;
         self.damage_regions = None;
         self.previous_revision = None;
+        self.scroll_copies = None;
         self.cache = None;
         // The appended commands are in the scene only; a presenter drawing
         // the layers would miss them.
@@ -534,7 +565,7 @@ impl OpaqueParts {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Tint {
     night_light: Option<Color>,
-    color_filter: DesktopColorFilter,
+    color_filter: ColorFilter,
     viewport: (f64, f64),
 }
 
@@ -636,55 +667,32 @@ fn night_light_on(manual: bool, scheduled: bool, night: Option<bool>) -> bool {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum DesktopColorFilter {
-    #[default]
-    None,
-    Grayscale,
-    Inverted,
-    GrayscaleInverted,
-}
-
 use settings_store::magnifier::{MagnifierState, MagnifierView};
+use tilo_accessibility_settings::{AccessibilitySettings, ColorFilter};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct VisualAccessibility {
-    color_filter: DesktopColorFilter,
+    color_filter: ColorFilter,
     magnifier: MagnifierState,
     cursor_crosshair: bool,
 }
 
 impl Default for VisualAccessibility {
     fn default() -> Self {
-        Self {
-            color_filter: DesktopColorFilter::None,
-            magnifier: MagnifierState {
-                zoom: settings_store::magnifier::OFF,
-                view: MagnifierView::Lens,
-            },
-            cursor_crosshair: false,
-        }
+        Self::of(AccessibilitySettings::default())
     }
 }
 
 impl VisualAccessibility {
     fn load() -> Self {
-        let section = settings_store::load_section("accessibility");
+        Self::of(AccessibilitySettings::load())
+    }
+
+    fn of(settings: AccessibilitySettings) -> Self {
         Self {
-            color_filter: match section
-                .get("color_filter")
-                .and_then(serde_json::Value::as_str)
-            {
-                Some("grayscale") => DesktopColorFilter::Grayscale,
-                Some("inverted") => DesktopColorFilter::Inverted,
-                Some("grayscale_inverted") => DesktopColorFilter::GrayscaleInverted,
-                _ => DesktopColorFilter::None,
-            },
-            magnifier: MagnifierState::from_section(&section),
-            cursor_crosshair: section
-                .get("cursor_crosshair")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false),
+            color_filter: settings.color_filter,
+            magnifier: settings.magnifier(),
+            cursor_crosshair: settings.cursor_crosshair,
         }
     }
 }
@@ -848,6 +856,12 @@ pub struct FrameBuilder {
     /// What the presenter asks of strip pans
     /// ([`Self::set_strip_pan_presenter`]): whole-pixel pans, and layers.
     strip_pan_presenter: StripPanPresenter,
+    /// The presenter moves pixels within its target
+    /// ([`Self::set_scroll_copy_presenter`]).
+    scroll_copy_presenter: bool,
+    /// Bounds what the sections draw outside their parts, for scroll
+    /// copies; it keeps glyph outlines between frames.
+    draw_bounds: std::cell::RefCell<tilo_cpu_raster::DrawBounds>,
     /// HDR layers of the latest [`Self::paint`], until taken.
     painted_hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
     /// The backdrops the latest [`Self::paint`] drew floating surfaces over.
@@ -1129,6 +1143,8 @@ impl FrameBuilder {
             layers_generation: 0,
             layers_drawn: None,
             strip_pan_presenter: StripPanPresenter::default(),
+            scroll_copy_presenter: false,
+            draw_bounds: std::cell::RefCell::default(),
             painted_hdr_layers: Vec::new(),
             painted_backdrop: None,
             pointer_image: crate::compositor::cursor::PointerImage::default(),
@@ -1565,28 +1581,27 @@ impl FrameBuilder {
         })
     }
 
+    /// The native editor actually owned by the active mounted tab.
+    fn active_terminal_node(&self) -> Option<NodeId> {
+        fn terminal_pointer(widget: &dyn Widget) -> Option<*const ()> {
+            if is_terminal(widget) && widget.is_focusable() && widget.is_enabled() {
+                return Some(std::ptr::from_ref(widget).cast::<()>());
+            }
+            widget.children().into_iter().find_map(terminal_pointer)
+        }
+        let pointer = terminal_pointer(self.host.active_app_host()?)?;
+        // AppWidget and Widget can have different vtables for one owned object.
+        self.node_map
+            .iter()
+            .find_map(|(&id, &widget)| (widget.cast::<()>().cast_const() == pointer).then_some(id))
+    }
+
     fn initial_focus_target(&self, order: &[NodeId]) -> Option<NodeId> {
         // A focused Terminal must receive typing, including Space and Enter.
         // Chrome controls come first in DFS and used to steal initial focus;
         // Activate then opened workspace settings instead of sending CR.
         if self.active_tile_is_terminal() {
-            // TileHost children are `dyn AppWidget`; chrome focus order
-            // compares `dyn Widget` fat pointers and used to miss the
-            // Terminal even though it is in the live node map.
-            if let Some((&id, _)) = self.node_map.iter().find(|(_, mapped)| {
-                let widget = unsafe { &***mapped };
-                is_terminal(widget) && widget.is_focusable() && widget.is_enabled()
-            }) {
-                return Some(id);
-            }
-            if let Some(terminal) = order.iter().copied().find(|id| {
-                self.node_map
-                    .get(id)
-                    // SAFETY: this map belongs to the current, live layout tree.
-                    .is_some_and(|&widget| is_terminal(unsafe { &*widget }))
-            }) {
-                return Some(terminal);
-            }
+            return self.active_terminal_node();
         }
         // Overflowing scroll regions are keyboard targets too, but an
         // unnamed container must not take the initial focus from the setup
@@ -1969,7 +1984,7 @@ impl FrameBuilder {
                     image: surface.image,
                     rect,
                     blur_px: surface.blur_px * scale,
-                    below: self.to_scene(below),
+                    below: self.below_to_scene(below),
                     ground: surface.ground,
                 })
             })
@@ -2002,10 +2017,7 @@ impl FrameBuilder {
     fn hdr_layers_composited(&self) -> bool {
         !(self.watch_configured_theme
             && (self.night_light
-                || !matches!(
-                    self.visual_accessibility.color_filter,
-                    DesktopColorFilter::None
-                )
+                || !matches!(self.visual_accessibility.color_filter, ColorFilter::None)
                 || self.visual_accessibility.magnifier.is_on()))
     }
 
@@ -2038,6 +2050,21 @@ impl FrameBuilder {
             Some(outputs) if !output_scene::is_identity(outputs) => {
                 let mut scene = Scene::new();
                 output_scene::compose(outputs, &logical, &mut scene);
+                scene
+            }
+            _ => logical,
+        }
+    }
+
+    /// What a floating surface is drawn over, in scene pixels: the scene
+    /// cut where the surface begins, so it may stop inside the layers that
+    /// enclose the surface (a fade, a panel's clip). Each display's pass
+    /// closes them, as the end of a scene does, without reporting a leak.
+    fn below_to_scene(&self, logical: Scene) -> Scene {
+        match &self.outputs {
+            Some(outputs) if !output_scene::is_identity(outputs) => {
+                let mut scene = Scene::new();
+                let _enclosing = output_scene::compose_closing_leaks(outputs, &logical, &mut scene);
                 scene
             }
             _ => logical,
@@ -2151,6 +2178,22 @@ impl FrameBuilder {
         self.refresh_workspace_temperature();
         self.refresh_magnifier();
         let global_filter = self.global_filter();
+        // A presenter that moves pixels within its target gets what a scroll
+        // in an app moved, while the scene is one display's view of the
+        // desktop and nothing follows the pointer over all of it.
+        // Apps plan their copies in the display's pixels, so a step of half
+        // a logical pixel at 200 % copies.
+        let to_scene = self.lone_output_transform();
+        let copying = self.scroll_copy_presenter && !self.pointer_filter() && to_scene.is_some();
+        let device_per_unit = to_scene.map_or(1.0, |to_scene| {
+            let [a, b, c, d, _, _] = to_scene.as_coeffs();
+            if b == 0.0 && c == 0.0 && a.to_bits() == d.to_bits() {
+                a
+            } else {
+                1.0
+            }
+        });
+        let _copies_scope = ui::scroll_copy::HostCopies::begin_scaled(copying, device_per_unit);
         let layered = self.retained_layer_width.is_some();
         // A presenter that composites layers cannot composite HDR layers, and
         // they would be recorded in canvas coordinates.
@@ -2318,6 +2361,7 @@ impl FrameBuilder {
         // Section and foreign-image bounds are in canvas coordinates while
         // a strip is unbaked. They cannot authorize sparse screen damage.
         let screen_space_damage = strips.as_ref().is_none_or(Vec::is_empty);
+        let mut section_copies = Vec::new();
         let damage_regions = (!pointer_filter && strips_kept && screen_space_damage)
             .then(|| {
                 self.damage_from_sections_with_images(
@@ -2325,9 +2369,21 @@ impl FrameBuilder {
                     &parts,
                     (pointer_filter, tint),
                     &foreign_images,
+                    copying.then_some(&mut section_copies),
                 )
             })
             .flatten();
+        // What a floating surface blurs, an HDR layer and a fullscreen
+        // client over the desktop are not moved by a copy.
+        let copies_shown =
+            backdrop_surfaces.is_empty() && hdr_layers.is_empty() && fullscreen_on_top.is_none();
+        let (damage_regions, scroll_copies) = match damage_regions {
+            Some(regions) if !section_copies.is_empty() && copies_shown => {
+                self.present_scroll_copies(&sections, &parts, &section_copies, regions)
+            }
+            Some(regions) => (Some(self.repaint_copies(&section_copies, regions)), None),
+            None => (None, None),
+        };
         let damage_regions = self
             .with_backdrop_damage(damage_regions, &backdrop_surfaces)
             .map(|regions| without_contained_regions(&regions));
@@ -2455,6 +2511,7 @@ impl FrameBuilder {
             backdrop,
             cache,
             scanout,
+            scroll_copies,
         };
         self.keep_layers_in_step(&mut frame, after_layers);
         frame
@@ -2537,6 +2594,112 @@ impl FrameBuilder {
             self.layers_drawn = Some((cache.generation, drawn_sections));
         }
         drawn.cache
+    }
+
+    /// `regions` with where each of `copies` lands, for a frame that makes
+    /// none of them.
+    fn repaint_copies(
+        &self,
+        copies: &[ui::scene_parts::SectionCopy],
+        mut regions: Vec<FineDamageRect>,
+    ) -> Vec<FineDamageRect> {
+        for copy in copies {
+            regions.extend(self.native_damage_rect(Some(copy.moved.destination())));
+        }
+        regions
+    }
+
+    /// Where the sections drawn over the workspace paint (its overlays, the
+    /// top bar, Quick Settings and everything above them), in layout pixels;
+    /// `None` when some of it cannot be bounded, or the backdrop leaves a
+    /// layer open that blends what is drawn after it.
+    fn drawn_over_workspace(
+        &self,
+        sections: &crate::shell::overlay_host::ShellSceneSections,
+        parts: &OpaqueParts,
+    ) -> Option<Vec<Rect>> {
+        let backdrop = sections.backdrop.encoding();
+        if !tilo_cpu_raster::plain_layers_open_at(backdrop, backdrop.draw_tags.len()) {
+            return None;
+        }
+        let mut bounds = self.draw_bounds.borrow_mut();
+        let mut above = Vec::new();
+        for (scene, scene_parts) in [
+            (
+                &sections.workspace_overlays,
+                parts.workspace_overlays.as_ref(),
+            ),
+            (&sections.topbar, None),
+            (&sections.quick_settings, parts.quick_settings.as_ref()),
+            (
+                &sections.above_quick_settings,
+                parts.above_quick_settings.as_ref(),
+            ),
+        ] {
+            above.extend(ui::scene_parts::drawn_bounds(
+                scene,
+                scene_parts,
+                &mut bounds,
+            )?);
+        }
+        Some(above)
+    }
+
+    /// The frame's damage and copies for a presenter that moves pixels
+    /// within its target, from the copies the workspace's in-process apps
+    /// made (`copies`) and every other change (`regions`): what is drawn over
+    /// a copy is repainted where it is and where the copy took it from, a
+    /// copy that cannot be made repaints where it lands
+    /// ([`ui::scene_parts::present_copies`]). The damage it returns is every
+    /// pixel the frame changes, copies included.
+    fn present_scroll_copies(
+        &self,
+        sections: &crate::shell::overlay_host::ShellSceneSections,
+        parts: &OpaqueParts,
+        copies: &[ui::scene_parts::SectionCopy],
+        regions: Vec<FineDamageRect>,
+    ) -> (Option<Vec<FineDamageRect>>, Option<ScrollCopies>) {
+        let (Some(to_scene), Some(above)) = (
+            self.lone_output_transform(),
+            self.drawn_over_workspace(sections, parts),
+        ) else {
+            return (Some(self.repaint_copies(copies, regions)), None);
+        };
+        let damage = regions
+            .iter()
+            .map(|rect| {
+                Rect::new(
+                    f64::from(rect.x),
+                    f64::from(rect.y),
+                    f64::from(rect.x) + f64::from(rect.width),
+                    f64::from(rect.y) + f64::from(rect.height),
+                )
+            })
+            .collect();
+        let size = (scene_px(self.scene_size.0), scene_px(self.scene_size.1));
+        let presented = ui::scene_parts::present_copies(copies, damage, &above, to_scene, size);
+        let raster: Vec<FineDamageRect> = presented
+            .raster
+            .iter()
+            .filter_map(|rect| self.scene_tile_rect(*rect))
+            .collect();
+        if presented.copies.is_empty() {
+            return (Some(raster), None);
+        }
+        let mut changed = raster.clone();
+        changed.extend(
+            presented
+                .copies
+                .iter()
+                .filter_map(|copy| self.scene_tile_rect(copy.destination_rect())),
+        );
+        (
+            Some(changed),
+            Some(ScrollCopies {
+                copies: presented.copies,
+                raster: without_contained_regions(&raster),
+            }),
+        )
     }
 
     /// The frame's scene from its sections, in scene pixels, with the
@@ -2659,6 +2822,7 @@ impl FrameBuilder {
         parts: &OpaqueParts,
         images: &[super::foreign_damage::DrawnImage],
         with_workspace: bool,
+        mut copies: Option<&mut Vec<ui::scene_parts::SectionCopy>>,
     ) -> Option<Vec<FineDamageRect>> {
         let old_scenes = [
             &previous.backdrop,
@@ -2684,7 +2848,7 @@ impl FrameBuilder {
             && super::foreign_damage::unique_uses(new_scenes, images);
         let mut regions = Vec::new();
         // The workspace comes first.
-        for (_, (old, old_parts, new, new_parts)) in [
+        for (index, (old, old_parts, new, new_parts)) in [
             (
                 &previous.workspace,
                 &previous.parts.workspace,
@@ -2728,9 +2892,25 @@ impl FrameBuilder {
             if old.encoding_eq(compared) {
                 continue;
             }
-            let rects =
-                ui::scene_parts::damage(old, old_parts.as_ref()?, compared, new_parts.as_ref()?)
+            // The workspace holds the in-process apps whose scrolls copy.
+            let rects = match copies.as_deref_mut().filter(|_| index == 0) {
+                Some(copies) => {
+                    let damage = ui::scene_parts::damage_with_copies(
+                        old,
+                        old_parts.as_ref()?,
+                        compared,
+                        new_parts.as_ref()?,
+                        &mut self.draw_bounds.borrow_mut(),
+                    )
                     .ok()?;
+                    copies.extend(damage.copies);
+                    damage.rects
+                }
+                None => {
+                    ui::scene_parts::damage(old, old_parts.as_ref()?, compared, new_parts.as_ref()?)
+                        .ok()?
+                }
+            };
             // `scene_parts::damage` admits only finite, non-negative bounds,
             // which already cover antialiasing; a part no display shows
             // needs no repair.
@@ -2770,6 +2950,17 @@ impl FrameBuilder {
             self.set_retained_layer_width(None);
         }
         self.align_strip_pans();
+    }
+
+    /// Tell the producer whether its presenter keeps its target between
+    /// frames and can move pixels within it before it repaints the damage
+    /// ([`FramePaint::scroll_copies`]): a scroll in an in-process app then
+    /// copies what stays on screen instead of repainting it.
+    pub fn set_scroll_copy_presenter(&mut self, copies: bool) {
+        if self.scroll_copy_presenter != copies {
+            self.scroll_copy_presenter = copies;
+            self.last_produced_sections = None;
+        }
     }
 
     /// Whole-pixel pans where the presenter reuses strip pixels as they are.
@@ -2845,10 +3036,7 @@ impl FrameBuilder {
     fn global_filter(&self) -> bool {
         self.watch_configured_theme
             && (self.night_light
-                || !matches!(
-                    self.visual_accessibility.color_filter,
-                    DesktopColorFilter::None
-                )
+                || !matches!(self.visual_accessibility.color_filter, ColorFilter::None)
                 || self.visual_accessibility.magnifier.is_on()
                 || self.visual_accessibility.cursor_crosshair)
     }
@@ -3041,16 +3229,21 @@ impl FrameBuilder {
             &OpaqueParts::default(),
             (current_global_filter, self.tint()),
             &[],
+            None,
         )
     }
 
     /// `filters` is the pointer filter and the tint this frame ends with.
+    /// With `copies`, the workspace's in-process apps' scroll copies are
+    /// collected there instead of damaging where they land (the caller
+    /// repaints there if it makes none of them).
     fn damage_from_sections_with_images(
         &self,
         current: &crate::shell::overlay_host::ShellSceneSections,
         parts: &OpaqueParts,
         (pointer_filter, tint): (bool, Tint),
         images: &[super::foreign_damage::DrawnImage],
+        copies: Option<&mut Vec<ui::scene_parts::SectionCopy>>,
     ) -> Option<Vec<FineDamageRect>> {
         let previous = self.last_produced_sections.as_ref()?;
         if previous.global_filter || pointer_filter || previous.tint != tint {
@@ -3059,7 +3252,8 @@ impl FrameBuilder {
         if !previous.backdrop.encoding_eq(&current.backdrop) {
             return None;
         }
-        let mut regions = self.opaque_damage_regions((previous, current), parts, images, true)?;
+        let mut regions =
+            self.opaque_damage_regions((previous, current), parts, images, true, copies)?;
         let (bars_changed, bars) = self.bar_damage(previous, current, parts)?;
         if !bars_changed {
             // Proven identical to the previous frame. `None` means "no
@@ -3087,7 +3281,8 @@ impl FrameBuilder {
         if previous.global_filter || pointer_filter || previous.tint != tint {
             return None;
         }
-        let mut regions = self.opaque_damage_regions((previous, current), parts, &[], false)?;
+        let mut regions =
+            self.opaque_damage_regions((previous, current), parts, &[], false, None)?;
         let (bars_changed, bars) = self.bar_damage(previous, current, parts)?;
         regions.extend(bars);
         (!bars_changed || !regions.is_empty()).then_some(regions)
@@ -3193,15 +3388,20 @@ impl FrameBuilder {
     }
 
     fn native_damage_rect(&self, rect: Option<Rect>) -> Option<FineDamageRect> {
+        // Sections are drawn in logical coordinates; the damage is in the
+        // scene pixels each display drew them into.
+        self.scene_tile_rect(self.layout_rect_to_scene(rect?)?)
+    }
+
+    /// `rect`, in scene pixels, rounded out to whole clip tiles inside the
+    /// scene.
+    fn scene_tile_rect(&self, rect: Rect) -> Option<FineDamageRect> {
         // Vello evaluates clip layers in 16px tiles. Even outside a layer's
         // exact shape, compositing that tile can round an existing channel by
         // one unit. Retain complete clip tiles so a changed shadow cannot
         // leave those neighbouring pixels from the previous frame behind.
         // Matches TILE_WIDTH/TILE_HEIGHT in vello_encoding/src/config.rs.
         const CLIP_TILE_EDGE: f64 = 16.0;
-        // Sections are drawn in logical coordinates; the damage is in the
-        // scene pixels each display drew them into.
-        let rect = self.layout_rect_to_scene(rect?)?;
         let (width, height) = self.scene_size;
         let x0 = ((rect.x0 / CLIP_TILE_EDGE).floor() * CLIP_TILE_EDGE).clamp(0.0, width);
         let y0 = ((rect.y0 / CLIP_TILE_EDGE).floor() * CLIP_TILE_EDGE).clamp(0.0, height);
@@ -3237,7 +3437,7 @@ impl FrameBuilder {
         };
         if matches!(
             self.visual_accessibility.color_filter,
-            DesktopColorFilter::Grayscale | DesktopColorFilter::GrayscaleInverted
+            ColorFilter::Grayscale | ColorFilter::GrayscaleInverted
         ) {
             // W3C `color` blend with an achromatic source preserves the
             // backdrop luminosity while replacing hue/saturation: true
@@ -3246,7 +3446,7 @@ impl FrameBuilder {
         }
         if matches!(
             self.visual_accessibility.color_filter,
-            DesktopColorFilter::Inverted | DesktopColorFilter::GrayscaleInverted
+            ColorFilter::Inverted | ColorFilter::GrayscaleInverted
         ) {
             // Difference against white is the exact per-channel inverse.
             overlay(Mix::Difference, Color::WHITE);
@@ -3390,8 +3590,11 @@ impl FrameBuilder {
             ) as u32;
         }
         self.visual_accessibility = VisualAccessibility::load();
-        self.narrator
-            .set_enabled(settings_store::screen_reader::ScreenReaderSettings::load().enabled);
+        self.narrator.set_enabled(
+            tilo_accessibility_settings::AccessibilitySettings::load()
+                .screen_reader()
+                .enabled,
+        );
     }
 
     /// Speak what changed in the chrome since the last frame (focus moves in
@@ -4855,6 +5058,9 @@ impl FrameBuilder {
                         key.logical_key,
                         Key::Named(NamedKey::Enter | NamedKey::Space)
                     )
+                    // Local consent owns these keys before the underlying
+                    // process can edit or submit its original shell line.
+                    && !self.host.dictation_owns_key(&key.logical_key)
         ) || !self.active_tile_is_terminal()
         {
             return false;
@@ -4865,11 +5071,10 @@ impl FrameBuilder {
         if mods.super_key() || mods.shift_key() {
             return false;
         }
-        let Some((&id, &widget)) = self
-            .node_map
-            .iter()
-            .find(|(_, mapped)| is_terminal(unsafe { &***mapped }))
-        else {
+        let Some(id) = self.active_terminal_node() else {
+            return false;
+        };
+        let Some(&widget) = self.node_map.get(&id) else {
             return false;
         };
         let mut handled = false;
@@ -5251,16 +5456,9 @@ mod tests {
         // Focus-window first changes chrome structure; materialize that tab
         // before looking for its mounted application in the current node map.
         fb.relayout();
-        let terminal = fb
-            .node_map
-            .values()
-            .find_map(|widget| {
-                // SAFETY: these pointers still belong to the current live tree.
-                let widget = unsafe { &mut **widget };
-                is_terminal(widget)
-                    .then(|| hosted_terminal(widget))
-                    .flatten()
-            })
+        let id = fb.active_terminal_node().expect("active mounted Terminal");
+        // SAFETY: this pointer belongs to the current active mounted owner.
+        let terminal = hosted_terminal(unsafe { &mut **fb.node_map.get(&id).unwrap() })
             .expect("production chrome must mount a hosted Terminal");
         *terminal = terminal::TerminalWidget::spawn_command(terminal::CommandBuilder::new("cat"))
             .expect("attach a real PTY process to the hosted Terminal");
@@ -5277,16 +5475,9 @@ mod tests {
     }
 
     fn finish_hosted_terminal_probe(fb: &mut FrameBuilder) {
-        let terminal = fb
-            .node_map
-            .values_mut()
-            .find_map(|widget| {
-                // SAFETY: the map was rebuilt after attaching the real process.
-                let widget = unsafe { &mut **widget };
-                is_terminal(widget)
-                    .then(|| hosted_terminal(widget))
-                    .flatten()
-            })
+        let id = fb.active_terminal_node().expect("active mounted Terminal");
+        // SAFETY: the live map was rebuilt after attaching its real process.
+        let terminal = hosted_terminal(unsafe { &mut **fb.node_map.get(&id).unwrap() })
             .expect("the live hosted Terminal remains mounted");
         // The assertion already consumed the tested bytes. EOF is cleanup,
         // delivered through the same real PTY so cat and its reader both exit.
@@ -7365,6 +7556,293 @@ mod tests {
         native_oobe_tab_and_shift_tab_follow_dfs_order();
         native_oobe_focus_order_excludes_disabled_controls();
         focused_terminal_gets_plain_tab_before_focus_traversal();
+    }
+
+    #[test]
+    fn native_terminal_focus_follows_the_active_owner_with_two_windows() {
+        fn contains_pointer(widget: &dyn Widget, pointer: *const ()) -> bool {
+            std::ptr::from_ref(widget).cast::<()>() == pointer
+                || widget
+                    .children()
+                    .into_iter()
+                    .any(|child| contains_pointer(child, pointer))
+        }
+        let (mut tree, strip, groups, tabs) = axis_a11y_tree();
+        let workspace = tree.desktop.active_workspace_mut().expect("test workspace");
+        workspace.strips[0].window_groups.truncate(2);
+        for group in &mut workspace.strips[0].window_groups {
+            group.tabs.truncate(1);
+            group.tabs[0].tile = crate::shell::state::TileContent::AppPlaceholder {
+                kind: crate::shell::state::AppKind::Terminal,
+                label: "Terminal".into(),
+            };
+        }
+        let mut frame = FrameBuilder::with_tree(tree, (3200, 900));
+        frame.relayout();
+        // Both real mounted owners remain in the live widget map. Visit both
+        // through the production window focus door: choosing an arbitrary
+        // HashMap Terminal cannot satisfy both owner assertions.
+        for index in 0..2 {
+            frame
+                .host_mut()
+                .focus_window_on_strip(strip, groups[index], tabs[index][0]);
+            assert_eq!(frame.chrome().active_tab_id(), Some(tabs[index][0]));
+            let owner = frame
+                .host()
+                .active_app_host()
+                .expect("active mounted app owner");
+            let target = frame
+                .initial_focus_target(&frame.focusable_order())
+                .expect("the active Terminal must have a native keyboard target");
+            let pointer = *frame.node_map.get(&target).expect("live focus node");
+            // SAFETY: no rebuild or mutation occurs while the live owner and
+            // its node-map pointer are inspected.
+            assert!(is_terminal(unsafe { &*pointer }));
+            assert!(
+                contains_pointer(owner, pointer.cast::<()>()),
+                "native focus must belong to the active tab, never another Terminal"
+            );
+        }
+    }
+
+    #[test]
+    fn native_terminal_typing_and_consent_follow_two_actual_mounted_owners() {
+        let (mut tree, strip, groups, tabs) = axis_a11y_tree();
+        let workspace = tree.desktop.active_workspace_mut().unwrap();
+        workspace.strips[0].window_groups.truncate(2);
+        for group in &mut workspace.strips[0].window_groups {
+            group.tabs.truncate(1);
+            group.tabs[0].tile = crate::shell::state::TileContent::AppPlaceholder {
+                kind: crate::shell::state::AppKind::Terminal,
+                label: "Terminal".into(),
+            };
+        }
+        let mut frame = FrameBuilder::with_tree(tree, (3200, 900));
+        frame.relayout();
+        let probes = (0..2)
+            .map(|index| {
+                frame
+                    .host_mut()
+                    .focus_window_on_strip(strip, groups[index], tabs[index][0]);
+                assert_eq!(frame.chrome().active_tab_id(), Some(tabs[index][0]));
+                live_hosted_terminal_probe(&mut frame)
+            })
+            .collect::<Vec<_>>();
+        let mut document = AutoCommit::new();
+        let mut focus = None;
+        for index in 0..2 {
+            assert!(
+                frame
+                    .host_mut()
+                    .focus_window_on_strip(strip, groups[index], tabs[index][0])
+            );
+            frame.relayout();
+            for (key, expected) in [(NamedKey::Space, b' '), (NamedKey::Enter, b'\r')] {
+                assert!(frame.dispatch_event(
+                    &key_press(Key::Named(key)),
+                    &Modifiers::default(),
+                    &mut ui::widget::Edits::lend(&mut document),
+                    &automerge::ROOT,
+                    &mut focus
+                ));
+                assert_eq!(
+                    probes[index]
+                        .recv_timeout(std::time::Duration::from_secs(2))
+                        .unwrap(),
+                    vec![expected]
+                );
+                assert!(
+                    matches!(
+                        probes[1 - index].try_recv(),
+                        Err(std::sync::mpsc::TryRecvError::Empty)
+                    ),
+                    "inactive Terminal must receive no bytes"
+                );
+            }
+            frame.host_mut().dictation_surface_mut().consent();
+            assert!(frame.dispatch_event(
+                &key_press(Key::Named(NamedKey::Enter)),
+                &Modifiers::default(),
+                &mut ui::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+                &mut focus
+            ));
+            assert!(matches!(
+                frame.host_mut().dictation_surface_mut().take_request(),
+                Some(crate::shell::overlay_host::dictation_layer::Request::Cancel(None))
+            ));
+            assert!(
+                probes.iter().all(|probe| matches!(
+                    probe.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Empty)
+                )),
+                "consent must reach neither PTY"
+            );
+            // Acknowledge the observed cancellation as the frontend does.
+            frame
+                .host_mut()
+                .dictation_surface_mut()
+                .status(crate::compositor::dictation::DictationStatus::Idle);
+        }
+        for index in 0..2 {
+            assert!(
+                frame
+                    .host_mut()
+                    .focus_window_on_strip(strip, groups[index], tabs[index][0])
+            );
+            frame.relayout();
+            finish_hosted_terminal_probe(&mut frame);
+        }
+    }
+
+    #[test]
+    fn native_terminal_missing_active_owner_refuses_the_typing_fast_path() {
+        let (mut tree, strip, groups, tabs) = axis_a11y_tree();
+        let workspace = tree.desktop.active_workspace_mut().unwrap();
+        workspace.strips[0].window_groups.truncate(1);
+        workspace.strips[0].window_groups[0].tabs.truncate(1);
+        workspace.strips[0].window_groups[0].tabs[0].tile =
+            crate::shell::state::TileContent::AppPlaceholder {
+                kind: crate::shell::state::AppKind::Terminal,
+                label: "Terminal".into(),
+            };
+        let mut frame = FrameBuilder::with_tree(tree, (1280, 900));
+        frame.relayout();
+        frame
+            .host_mut()
+            .focus_window_on_strip(strip, groups[0], tabs[0][0]);
+        assert_eq!(frame.chrome().active_tab_id(), Some(tabs[0][0]));
+        let probe = live_hosted_terminal_probe(&mut frame);
+        let active = frame
+            .chrome
+            .borrow_mut()
+            .tree_mut()
+            .desktop
+            .active_group
+            .remove(&strip)
+            .unwrap();
+        assert!(
+            frame.host.active_app_host().is_none(),
+            "a live row cannot stand in for a missing active owner"
+        );
+        assert!(frame.active_terminal_node().is_none());
+        let mut document = AutoCommit::new();
+        let mut focus = None;
+        for key in [NamedKey::Space, NamedKey::Enter] {
+            assert!(!frame.offer_terminal_typing(
+                &key_press(Key::Named(key)),
+                &Modifiers::default(),
+                &mut ui::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+                &mut focus
+            ));
+            assert!(
+                matches!(probe.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+                "the observable live PTY must receive no bytes"
+            );
+        }
+        frame
+            .chrome
+            .borrow_mut()
+            .tree_mut()
+            .desktop
+            .active_group
+            .insert(strip, active);
+        finish_hosted_terminal_probe(&mut frame);
+    }
+
+    #[test]
+    fn dictation_consent_keys_do_not_reach_the_hosted_terminal_pty() {
+        use crate::shell::state::{AppKind, TileContent};
+        // Production chrome path: `FrameBuilder::dispatch_event`, the same
+        // route tilo-control type/key and the DRM keyboard take once the
+        // compositor has mapped the press.
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        // W17 / window.new.terminal leaves the Terminal tile active. The
+        // demo tree otherwise keeps Notes first, so chrome would still
+        // steal initial focus. Switch through the live GroupRow so harvest
+        // cannot write the Notes tab back over the tree.
+        let target = {
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            tree.desktop.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .find(|tab| {
+                                matches!(
+                                    &tab.tile,
+                                    TileContent::AppPlaceholder {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    } | TileContent::Stub {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    }
+                                )
+                            })
+                            .map(|tab| (strip.id, group.id, tab.id))
+                    })
+                })
+            })
+        };
+        let (strip, group, tab) = target.expect("production chrome must include a Terminal tab");
+        assert!(
+            fb.host_mut().focus_window_on_strip(strip, group, tab),
+            "the compositor must be able to focus the hosted Terminal tab"
+        );
+        let probe = live_hosted_terminal_probe(&mut fb);
+        let mut focus = None;
+        fb.reconcile_native_focus(&mut focus);
+        let focused = focus.expect("a terminal tile must take initial focus");
+        assert!(
+            // SAFETY: node_map pointers are owned by the live widget tree.
+            fb.node_map
+                .get(&focused)
+                .is_some_and(|&widget| is_terminal(unsafe { &*widget })),
+            "chrome must not keep initial focus on a workspace pill: {:?}",
+            fb.widget_name(focused)
+        );
+        let mut doc = AutoCommit::new();
+        // Use the real local consent widget and production event dispatch.
+        // No recognizer or microphone exists in this keyboard-routing test.
+        fb.host_mut().dictation_surface_mut().consent();
+        assert!(fb.dispatch_event(
+            &key_press(Key::Named(NamedKey::Enter)),
+            &Modifiers::default(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert!(
+            matches!(
+                fb.host_mut().dictation_surface_mut().take_request(),
+                Some(crate::shell::overlay_host::dictation_layer::Request::Cancel(None))
+            ),
+            "Enter must select the prompt's conservative cancellation default"
+        );
+        assert!(
+            probe.try_recv().is_err(),
+            "consent Enter must never submit the shell line"
+        );
+        fb.host_mut().dictation_surface_mut().consent();
+        for key in [NamedKey::ArrowLeft, NamedKey::Space] {
+            assert!(fb.dispatch_event(
+                &key_press(Key::Named(key)),
+                &Modifiers::default(),
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &mut focus,
+            ));
+        }
+        assert!(
+            probe.try_recv().is_err(),
+            "consent Space must never edit the shell line"
+        );
+        finish_hosted_terminal_probe(&mut fb);
     }
 
     #[test]

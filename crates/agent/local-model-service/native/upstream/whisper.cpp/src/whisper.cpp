@@ -191,7 +191,9 @@ static bool ggml_graph_compute_helper(
       ggml_backend_sched_t   sched,
         struct ggml_cgraph * graph,
                        int   n_threads,
-                      bool   sched_reset = true) {
+                      bool   sched_reset = true,
+       ggml_abort_callback   abort_callback = nullptr,
+                      void * abort_callback_data = nullptr) {
     for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
         ggml_backend_t backend = ggml_backend_sched_get_backend(sched, i);
         ggml_backend_dev_t dev = ggml_backend_get_device(backend);
@@ -201,6 +203,12 @@ static bool ggml_graph_compute_helper(
         if (fn_set_n_threads) {
             fn_set_n_threads(backend, n_threads);
         }
+        // Tilo: propagate the pure stop poll into CPU graph operations rather
+        // than waiting until the complete encoder/decoder graph has finished.
+        // Always set it, including nullptr, so a final cannot inherit a draft.
+        auto * fn_set_abort = (ggml_backend_set_abort_callback_t)
+            ggml_backend_reg_get_proc_address(reg, "ggml_backend_set_abort_callback");
+        if (fn_set_abort) fn_set_abort(backend, abort_callback, abort_callback_data);
     }
 
     const bool t = (ggml_backend_sched_graph_compute(sched, graph) == GGML_STATUS_SUCCESS);
@@ -2403,7 +2411,7 @@ static bool whisper_encode_internal(
         }
 
         if (!whisper_encode_external(wstate)) {
-            if (!ggml_graph_compute_helper(sched, gf, n_threads)) {
+            if (!ggml_graph_compute_helper(sched, gf, n_threads, true, abort_callback, abort_callback_data)) {
                 return false;
             }
         } else {
@@ -2428,7 +2436,7 @@ static bool whisper_encode_internal(
             return false;
         }
 
-        if (!ggml_graph_compute_helper(sched, gf, n_threads)) {
+        if (!ggml_graph_compute_helper(sched, gf, n_threads, true, abort_callback, abort_callback_data)) {
             return false;
         }
     }
@@ -2444,7 +2452,7 @@ static bool whisper_encode_internal(
             return false;
         }
 
-        if (!ggml_graph_compute_helper(sched, gf, n_threads)) {
+        if (!ggml_graph_compute_helper(sched, gf, n_threads, true, abort_callback, abort_callback_data)) {
             return false;
         }
     }
@@ -2941,7 +2949,7 @@ static bool whisper_decode_internal(
 
         logits = ggml_graph_node(gf, -1);
 
-        if (!ggml_graph_compute_helper(sched, gf, n_threads)) {
+        if (!ggml_graph_compute_helper(sched, gf, n_threads, true, abort_callback, abort_callback_data)) {
             return false;
         }
     }
@@ -4018,12 +4026,14 @@ const char * whisper_lang_str_full(int id) {
     return nullptr;
 }
 
-int whisper_lang_auto_detect_with_state(
+static int whisper_lang_auto_detect_with_state_impl(
         struct whisper_context * ctx,
           struct whisper_state * state,
                            int   offset_ms,
                            int   n_threads,
-                         float * lang_probs) {
+                         float * lang_probs,
+           ggml_abort_callback   abort_callback,
+                          void * abort_callback_data) {
     const int seek = offset_ms/10;
 
     if (seek < 0) {
@@ -4037,14 +4047,17 @@ int whisper_lang_auto_detect_with_state(
     }
 
     // run the encoder
-    if (whisper_encode_with_state(ctx, state, seek, n_threads) != 0) {
+    if (!whisper_encode_internal(*ctx, *state, seek, n_threads, abort_callback, abort_callback_data)) {
         WHISPER_LOG_ERROR("%s: failed to encode\n", __func__);
         return -6;
     }
 
     const std::vector<whisper_token> prompt = { whisper_token_sot(ctx) };
 
-    if (whisper_decode_with_state(ctx, state, prompt.data(), prompt.size(), 0, n_threads) != 0) {
+    whisper_batch_prep_legacy(state->batch, prompt.data(), prompt.size(), 0, 0);
+    whisper_kv_cache_seq_rm(state->kv_self, 0, 0, -1);
+    if (!whisper_decode_internal(*ctx, *state, state->batch, n_threads, false,
+                                 abort_callback, abort_callback_data)) {
         WHISPER_LOG_ERROR("%s: failed to decode\n", __func__);
         return -7;
     }
@@ -4091,6 +4104,16 @@ int whisper_lang_auto_detect_with_state(
     }
 
     return logits_id[0].second;
+}
+
+int whisper_lang_auto_detect_with_state(
+        struct whisper_context * ctx,
+          struct whisper_state * state,
+                           int   offset_ms,
+                           int   n_threads,
+                         float * lang_probs) {
+    return whisper_lang_auto_detect_with_state_impl(ctx, state, offset_ms, n_threads,
+                                                    lang_probs, nullptr, nullptr);
 }
 
 int whisper_lang_auto_detect(
@@ -5148,7 +5171,9 @@ bool whisper_vad_detect_speech(
         // do not reset the scheduler - we will reuse the graph in the next chunk
         if (!ggml_graph_compute_helper(sched, gf, vctx->n_threads, false)) {
             WHISPER_LOG_ERROR("%s: failed to compute VAD graph\n", __func__);
-            break;
+            // Partial/uncomputed probabilities are not no-speech evidence.
+            ggml_backend_sched_reset(sched);
+            return false;
         }
 
         // Get the probability for this chunk.
@@ -6789,12 +6814,13 @@ static bool whisper_vad(
     return true;
 }
 
-int whisper_full_with_state(
+static int whisper_full_with_state_impl(
         struct whisper_context * ctx,
           struct whisper_state * state,
     struct whisper_full_params   params,
                    const float * samples,
-                           int   n_samples) {
+                           int   n_samples,
+                          bool   reuse_polling_encoder) {
     // clear old results
     auto & result_all = state->result_all;
 
@@ -6808,17 +6834,28 @@ int whisper_full_with_state(
         }
     }
 
+    // Tilo: language detection already encodes this call's first full-context
+    // window. Reuse it only when no offset, context or callback can change it.
+    // This flag is local to the call: later drafts and language changes still
+    // perform their own detection, and fresh worker state remains mandatory.
+    bool detected_encoder_ready = false;
+
     // auto-detect language if not specified
     if (params.language == nullptr || strlen(params.language) == 0 || strcmp(params.language, "auto") == 0 || params.detect_language) {
         std::vector<float> probs(whisper_lang_max_id() + 1, 0.0f);
 
-        const auto lang_id = whisper_lang_auto_detect_with_state(ctx, state, 0, params.n_threads, probs.data());
+        const auto lang_id = whisper_lang_auto_detect_with_state_impl(ctx, state, 0, params.n_threads,
+            probs.data(), params.abort_callback, params.abort_callback_user_data);
         if (lang_id < 0) {
             WHISPER_LOG_ERROR("%s: failed to auto-detect language\n", __func__);
             return -3;
         }
         state->lang_id = lang_id;
         params.language = whisper_lang_str(lang_id);
+        detected_encoder_ready = state->exp_n_audio_ctx == 0 && params.audio_ctx == 0
+            && params.offset_ms == 0 && !params.token_timestamps
+            && !ctx->params.dtw_token_timestamps && !params.encoder_begin_callback
+            && !params.progress_callback && (!params.abort_callback || reuse_polling_encoder);
 
         WHISPER_LOG_INFO("%s: auto-detected language: %s (p = %f)\n", __func__, params.language, probs[whisper_lang_id(params.language)]);
         if (params.detect_language) {
@@ -7016,8 +7053,12 @@ int whisper_full_with_state(
             }
         }
 
+        // Consume detection's encoding at most once, for its identical window.
+        const bool reuse_detected_encoder = detected_encoder_ready && seek == 0;
+        detected_encoder_ready = false;
+
         // encode audio features starting at offset seek
-        if (!whisper_encode_internal(*ctx, *state, seek, params.n_threads, params.abort_callback, params.abort_callback_user_data)) {
+        if (!reuse_detected_encoder && !whisper_encode_internal(*ctx, *state, seek, params.n_threads, params.abort_callback, params.abort_callback_user_data)) {
             WHISPER_LOG_ERROR("%s: failed to encode\n", __func__);
             return -6;
         }
@@ -7738,6 +7779,26 @@ int whisper_full_with_state(
     }
 
     return 0;
+}
+
+int whisper_full_with_state(
+        struct whisper_context * ctx,
+          struct whisper_state * state,
+    struct whisper_full_params   params,
+                   const float * samples,
+                           int   n_samples) {
+    return whisper_full_with_state_impl(ctx, state, params, samples, n_samples, false);
+}
+
+// Tilo-owned ABI only: its callback is a pure lock-free stop poll, never a
+// context mutation, so the same detected encoder remains valid if not stopped.
+extern "C" int tilo_whisper_full_interruptible(
+        struct whisper_context * ctx,
+          struct whisper_state * state,
+    struct whisper_full_params   params,
+                   const float * samples,
+                           int   n_samples) {
+    return whisper_full_with_state_impl(ctx, state, params, samples, n_samples, true);
 }
 
 int whisper_full(

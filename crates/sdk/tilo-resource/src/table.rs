@@ -69,6 +69,9 @@ pub struct ModelOps {
         fn(&ModelTable, &[Segment], &serde_json::Value) -> Option<OpDescription>,
     pub(crate) op_lands: fn(&ModelTable, &dyn Any, &[Segment], &serde_json::Value) -> Option<Place>,
     pub(crate) op_schemas: fn(&ModelTable, &str, &mut Vec<(String, serde_json::Value)>),
+    /// What an edit that writes a new value carries of the value's JSON
+    /// form ([`crate::shape::without_absent`]).
+    pub(crate) without_absent: fn(&ModelTable, serde_json::Value) -> serde_json::Value,
 }
 
 /// A model type as data: its erased [`Model`] functions, what it is (a
@@ -376,6 +379,7 @@ macro_rules! __own_table {
 impl<T: Model> TableOf<T> {
     /// `T`'s functions.
     pub const OPS: ModelOps = ModelOps {
+        without_absent: crate::shape::kept_whole,
         to_json: to_json_of::<T>,
         from_json: from_json_of::<T>,
         load: load_of::<T>,
@@ -726,6 +730,7 @@ pub static ATOM_STRING: ModelTable = ModelTable {
 };
 
 static ATOM_STRING_OPS: ModelOps = ModelOps {
+    without_absent: crate::shape::kept_whole,
     to_json: atom_to_json,
     from_json: atom_from_json,
     load: atom_load,
@@ -892,6 +897,7 @@ fn atom_get_at<'a>(_: &ModelTable, value: &'a dyn Any, path: &[Segment]) -> Opti
 
 /// The functions of every record, over its [`RecordDesc`].
 pub static RECORD_OPS: ModelOps = ModelOps {
+    without_absent: crate::shape::record_without_absent,
     to_json: |table, value| match table.record() {
         Some(record) => to_json(record, value),
         None => serde_json::Value::Null,
@@ -1954,6 +1960,7 @@ fn is_null(value: &Value<'_>) -> bool {
 /// The functions of every `Option`: `None` is an absent key (or a null list
 /// element).
 pub static OPTION_OPS: ModelOps = ModelOps {
+    without_absent: crate::shape::kept_whole,
     to_json: |table, value| match table.option() {
         Some(option) => match (option.get)(value) {
             Some(inner) => (option.inner.ops.to_json)(option.inner, inner),
@@ -2331,6 +2338,7 @@ pub fn unit_schema(names: &[&str]) -> serde_json::Value {
 
 /// The functions of every enum of unit variants.
 pub static UNIT_OPS: ModelOps = ModelOps {
+    without_absent: crate::shape::kept_whole,
     to_json: |table, value| {
         unit_name(table, value).map_or(serde_json::Value::Null, |name| {
             serde_json::Value::String(name.to_owned())
@@ -2567,6 +2575,7 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static> Json
 
 /// The functions of every type stored as JSON text.
 pub static JSON_OPS: ModelOps = ModelOps {
+    without_absent: crate::shape::kept_whole,
     to_json: |table, value| match table.json() {
         Some(json) => (json.to_value)(value),
         None => serde_json::Value::Null,
@@ -2728,6 +2737,7 @@ fn lists(table: &ModelTable) -> Result<&'static VecDesc, ModelError> {
 
 /// The functions of every `Vec`: a list of values.
 pub static VEC_OPS: ModelOps = ModelOps {
+    without_absent: crate::shape::kept_whole,
     to_json: |table, value| {
         let (Some(list), Some(items)) = (
             table.list(),
@@ -3034,6 +3044,7 @@ fn keyed<'p>(
 
 /// The functions of every map of string keys: a map, one key per entry.
 pub static MAP_OPS: ModelOps = ModelOps {
+    without_absent: crate::shape::kept_whole,
     to_json: |table, value| {
         let mut out = serde_json::Map::new();
         if let Some(map) = table.map()
