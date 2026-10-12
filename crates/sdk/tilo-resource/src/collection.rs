@@ -1063,7 +1063,7 @@ impl<T: Model> Model for Collection<T> {
     // Run by one set of functions for every collection, over `T`'s table.
     const TABLE: &'static ModelTable = &CollectionOf::<T>::TABLE;
     crate::model::leaf_paths!();
-    crate::model::table_functions!();
+    crate::__table_functions!();
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::default())
     }
