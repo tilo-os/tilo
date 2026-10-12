@@ -373,6 +373,162 @@ fn disconnect_and_silence_produce_terminal_observations_and_new_brokers_have_new
     assert_ne!(other_events.try_recv().unwrap().epoch, first.epoch);
 }
 
+/// Dispatch the legacy completion RPC on its own `LocalSet`, just as a connected app does.
+fn settle_legacy_invocation(state: Arc<CapnpBrokerState>, id: u64, route: CrdtRoute) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(tokio::task::LocalSet::new().run_until(async move {
+        let (_, bridge_rx) = std::sync::mpsc::channel();
+        let channel: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+            committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
+            state,
+            directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
+            channel_id: route.channel_key(),
+            peer_id: 7,
+            verified_identity: AdmittedJoinIdentity {
+                host_scope: None,
+                worker_registration: None,
+                certificate: None,
+                verified: VerifiedJoinIdentity {
+                    user_public_key: [0; 32],
+                    device_public_key: [0; 32],
+                    capped: false,
+                },
+                principal_id: "fixture-application".into(),
+                display_handle: None,
+                role: CapRole::Editor,
+                agent_id: None,
+                session_delegated: false,
+            },
+            record_kind: None,
+            lease: None,
+        });
+        let mut complete = channel.complete_invocation_request();
+        complete.get().set_id(id);
+        complete.get().set_code("");
+        complete.get().set_message("");
+        complete.send().promise.await.unwrap();
+    }));
+}
+
+fn assert_receipt_retained_during_settlement(legacy: bool) {
+    let (state, caller, mut app) = fixture();
+    let mut events = state.subscribe_execution_activity();
+    let request = request();
+    assert!(matches!(
+        state
+            .action_invoke(&caller, None, None, &request)
+            .poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    let delivered = app.try_recv().unwrap();
+    assert_eq!(events.try_recv().unwrap().status, ExecutionStatus::Accepted);
+    assert!(state.invocation_receipt_retained(delivered.id).unwrap());
+    assert!(!state.invocation_receipt_retained(u64::MAX).unwrap());
+    let route = state.published_surfaces()[0].route.clone();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let deadline = Duration::from_secs(5);
+    // Terminal activity is published after removal from pending, before insertion
+    // into completed. Hold the latter lock to keep that transition open.
+    let completed = state.completed_invocations.lock().unwrap();
+    let (terminal, pending_locked, early_receipt, retained) = std::thread::scope(|scope| {
+        let settlement_state = Arc::clone(&state);
+        let settlement = scope.spawn(move || {
+            if legacy {
+                settle_legacy_invocation(settlement_state, delivered.id, route);
+            } else {
+                settlement_state.expire_stale_invocations_at(
+                    std::time::Instant::now(),
+                    Duration::ZERO,
+                    Duration::ZERO,
+                );
+            }
+        });
+        let terminal =
+            runtime.block_on(async { tokio::time::timeout(deadline, events.recv()).await });
+        let pending_locked = matches!(
+            state.pending_invocations.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        );
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (receipt_tx, receipt_rx) = std::sync::mpsc::channel();
+        let observer_state = Arc::clone(&state);
+        let observer = scope.spawn(move || {
+            started_tx.send(()).unwrap();
+            receipt_tx
+                .send(observer_state.invocation_receipt_retained(delivered.id))
+                .unwrap();
+        });
+        let started = started_rx.recv_timeout(deadline);
+        let early_receipt = receipt_rx.recv_timeout(Duration::from_millis(100));
+        // Release and join before asserting so a regression cannot strand either
+        // worker waiting for a lock held by a panicking test thread.
+        drop(completed);
+        let settled = settlement.join();
+        let joined = observer.join();
+        started.unwrap();
+        settled.unwrap();
+        joined.unwrap();
+        let retained = receipt_rx.recv_timeout(deadline);
+        (terminal, pending_locked, early_receipt, retained)
+    });
+    let terminal = terminal.unwrap().unwrap();
+    assert_eq!(terminal.invocation, request.invocation);
+    assert_eq!(
+        terminal.status,
+        if legacy {
+            ExecutionStatus::Succeeded
+        } else {
+            ExecutionStatus::Failed
+        }
+    );
+    assert!(
+        pending_locked,
+        "settlement must hold pending through terminal insertion"
+    );
+    assert!(
+        matches!(
+            early_receipt,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ),
+        "receipt retention must wait for terminal insertion: {early_receipt:?}"
+    );
+    assert!(retained.unwrap().unwrap());
+    assert!(state.invocation_receipt_retained(delivered.id).unwrap());
+    assert!(
+        !state
+            .pending_invocations
+            .lock()
+            .unwrap()
+            .contains_key(&delivered.id)
+    );
+    let completed = state.completed_invocations.lock().unwrap();
+    let (_, update) = completed.get(&delivered.id).unwrap();
+    assert_eq!(update.invocation(), request.invocation);
+    if !legacy {
+        assert!(
+            matches!(update, tilo_actions::InvocationUpdate::Failed { error, .. }
+            if error.code == "action_timeout")
+        );
+    }
+    drop(completed);
+}
+
+#[test]
+fn timeout_retains_receipt_across_pending_to_completed_transition() {
+    assert_receipt_retained_during_settlement(false);
+}
+
+#[test]
+fn legacy_completion_retains_receipt_across_pending_to_completed_transition() {
+    assert_receipt_retained_during_settlement(true);
+}
+
 #[test]
 fn closed_application_stream_never_emits_acceptance() {
     let (state, caller, app) = fixture();

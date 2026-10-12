@@ -3590,10 +3590,13 @@ impl CapnpBrokerState {
         idle_timeout: std::time::Duration,
         cancellation_grace: std::time::Duration,
     ) {
+        // Settlement and receipt lookup share this lock: no observer may
+        // mistake a pending-to-completed transition for receipt eviction.
+        let Ok(mut registry) = self.pending_invocations.lock() else {
+            return;
+        };
         let expired = {
-            let Ok(mut pending) = self.pending_invocations.lock() else {
-                return;
-            };
+            let pending = &mut *registry;
             #[allow(
                 clippy::needless_collect,
                 reason = "expired ids must be snapshotted before removing from the same pending-invocation map"
@@ -3672,6 +3675,7 @@ impl CapnpBrokerState {
             let _ = pending.tx.send(completion);
             self.record_effect_receipt(&pending, &update);
         }
+        drop(registry);
     }
 
     fn record_completion(
@@ -5844,6 +5848,28 @@ impl CapnpBrokerState {
             witnessed.remove(token);
         }
         matches
+    }
+
+    /// Whether a receipt is still retained, including terminal settlement.
+    /// Registry failures are not evidence of eviction. All pending removals
+    /// keep the pending lock until completion insertion (or final failure).
+    ///
+    /// # Errors
+    /// Returns an error if either receipt registry cannot be locked.
+    pub fn invocation_receipt_retained(&self, id: u64) -> Result<bool, String> {
+        self.expire_stale_invocations();
+        let pending = self
+            .pending_invocations
+            .lock()
+            .map_err(|_| "invocation registry unavailable".to_string())?;
+        let completed = self
+            .completed_invocations
+            .lock()
+            .map_err(|_| "completion registry unavailable".to_string())?;
+        let retained = pending.contains_key(&id) || completed.contains_key(&id);
+        drop(completed);
+        drop(pending);
+        Ok(retained)
     }
 
     pub fn invocation_status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
@@ -9899,9 +9925,9 @@ impl channel_handle::Server for CapnpChannelHandle {
             let pending = registry
                 .remove(&id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
-            drop(registry);
             state.publish_activity(pending.activity.as_ref(), &update);
             state.record_completion(id, pending.completion_owner(), update.clone());
+            drop(registry);
             if let Ok(mut requests) = state.cancellation_requests.lock() {
                 requests.remove(&id);
             }
@@ -10390,7 +10416,17 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
 
-        let id = self.state.invocation_id.fetch_add(1, Ordering::Relaxed);
+        // Share the action allocator's non-reuse invariant: an evicted
+        // receipt must never be replaced by a new job under the same handle.
+        let Ok(id) =
+            self.state
+                .invocation_id
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        else {
+            return Promise::err(capnp::Error::failed(
+                "invocation handle space exhausted".into(),
+            ));
+        };
         // Authorship is judged at the same policy time as the launch check.
         let author = observed_launch::launch_author(&actor, &workspace, now);
         let started = self.begin_original_launch(

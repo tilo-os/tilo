@@ -553,6 +553,15 @@ impl AppActionBroker {
             .while_live(|state| state.start_invocation(peer_id, resource, action, argument, actor))
     }
 
+    /// Atomically check receipt retention; failure must not retire routing authority.
+    ///
+    /// # Errors
+    /// Returns an error if the broker or either receipt registry is unavailable.
+    pub fn receipt_retained(&self, id: u64) -> Result<bool, String> {
+        self.state
+            .while_live(|state| state.invocation_receipt_retained(id))
+    }
+
     pub fn status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
         self.state
             .while_live(|state| Ok(state.invocation_status(id)))

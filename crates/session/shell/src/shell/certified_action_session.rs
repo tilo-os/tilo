@@ -33,6 +33,7 @@ pub(crate) struct ActionSessionSource {
     opens: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+#[derive(Clone)]
 pub(crate) enum DesktopActionSession {
     Certified(CertifiedActionSession),
     #[cfg(test)]
@@ -143,6 +144,55 @@ impl ActionSessionSource {
 }
 
 impl DesktopActionSession {
+    pub(crate) fn observe(
+        &self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        match self {
+            Self::Certified(session) => {
+                if let Err(reason) = session.recheck_selected() {
+                    tracing::debug!(invocation = %invocation.0, room = session.caller.room(), %reason,
+                        "certified job observation refused selected identity");
+                    return None;
+                }
+                let state = session.host.observe(&session.caller, &invocation);
+                if state.is_none() {
+                    tracing::debug!(invocation = %invocation.0, room = session.caller.room(),
+                        "certified job observation refused original session custody");
+                }
+                state.map(|state| state.update)
+            }
+            #[cfg(test)]
+            Self::Mock { host, caller } => {
+                host.observe(caller, &invocation).map(|state| state.update)
+            }
+            #[cfg(test)]
+            Self::Fixture { host, caller } => {
+                host.observe(caller, &invocation).map(|state| state.update)
+            }
+        }
+    }
+
+    pub(crate) fn cancel(&self, invocation: tilo_actions::InvocationId) -> Result<(), String> {
+        match self {
+            Self::Certified(session) => {
+                session.recheck_selected()?;
+                session
+                    .host
+                    .cancel(&session.caller, &invocation)
+                    .map_err(|error| error.to_string())
+            }
+            #[cfg(test)]
+            Self::Mock { host, caller } => host
+                .cancel(caller, &invocation)
+                .map_err(|error| error.to_string()),
+            #[cfg(test)]
+            Self::Fixture { host, caller } => host
+                .cancel(caller, &invocation)
+                .map_err(|error| error.to_string()),
+        }
+    }
+
     pub(crate) fn query(
         &self,
         query: CatalogueQuery,
@@ -173,6 +223,22 @@ impl DesktopActionSession {
 }
 
 impl CertifiedActionSession {
+    fn recheck_selected(&self) -> Result<(), String> {
+        let room = self.caller.room().ok_or("certified job room unavailable")?;
+        let (_, certificate) = tilo_identity_host::broker::trusted_current_device(room)
+            .map_err(|_| "selected certified job identity unavailable")?;
+        if self.caller.user_public_key() != Some(&certificate.user_public_key)
+            || self.caller.device_public_key() != Some(&certificate.device_public_key)
+        {
+            tracing::debug!(room,
+                original_device = ?self.caller.device_public_key().map(hex::encode),
+                selected_device = hex::encode(certificate.device_public_key),
+                "certified job selected device differs from its original caller");
+            return Err("selected certified job device changed".into());
+        }
+        Ok(())
+    }
+
     /// Bind a fresh execution to the selected Person and device in `room`.
     ///
     /// `expected_person` is only a consistency fence for the UI projection;

@@ -306,6 +306,472 @@ fn fixture() -> NativeFixture {
 }
 
 #[test]
+fn certified_job_canonical_observation_keeps_original_room_device_and_receipt() {
+    use crate::shell::{
+        chrome_state::ChromeState, search::providers::live_app_actions::LiveAppActionsProvider,
+    };
+    use std::rc::Rc;
+    use tilo_actions::remote::PendingPoll;
+
+    let mut fixture = fixture();
+    let actions = fixture.broker.app_action_broker().unwrap();
+    let surface = wait_for_membership_surface(&actions, fixture.room);
+    let expected = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        fixture.certificate.user_public_key,
+    );
+    let provider = Rc::new(LiveAppActionsProvider::new(actions.clone()));
+    let action = surface
+        .actions
+        .iter()
+        .find(|action| action.action == "add-agent")
+        .unwrap();
+    assert_capacity_refuses_before_native_admission(
+        &fixture, &provider, &surface, action, &expected,
+    );
+    let mut pending = provider.begin_published_for_test(
+        &surface,
+        action,
+        expected.clone(),
+        serde_json::json!({"agent":"observed-agent", "preset":"contributor"})
+            .as_object()
+            .unwrap(),
+    );
+    let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+    let (job, original) = loop {
+        match pending.poll_ready() {
+            PendingPoll::Ready(Ok((job, receipt))) => break (job, receipt.invocation),
+            PendingPoll::Ready(Err(error)) => panic!("certified action refused: {error}"),
+            PendingPoll::Abandoned => panic!("certified action abandoned"),
+            PendingPoll::Waiting => {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    };
+    assert_eq!(
+        actions
+            .status_for_actor(job, &expected)
+            .unwrap()
+            .invocation(),
+        original,
+        "the existing local owner must retain this exact certified-origin invocation"
+    );
+    let mut tree = WorkspaceTree::bootstrap_default();
+    assert!(tree.set_room(tree.desktop.active, fixture.room));
+    let chrome = ChromeState::new_with_handle(tree.shared());
+    assert_eq!(chrome.borrow().active_local_user(), expected);
+    loop {
+        let receipt = canonical_job_receipt(provider.clone(), job, &chrome)
+            .expect("original certified status is reachable through the canonical resource door");
+        assert_eq!(receipt.update.invocation(), original);
+        if receipt.update.is_terminal() {
+            assert!(matches!(receipt.update, InvocationUpdate::Succeeded { .. }));
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let palette_job = palette_job_row(&provider, job, &chrome);
+    select_same_person_different_device(&mut fixture);
+    assert!(
+        canonical_job_receipt(provider.clone(), job, &chrome).is_none(),
+        "another signed device of the same Person cannot borrow the original execution"
+    );
+    assert!(
+        matches!(
+            invoke_palette_job(&palette_job, &chrome),
+            Err(crate::shell::search::action_api::ActionError::Refused(_))
+        ),
+        "a retained palette row must recheck the original certified device at invocation"
+    );
+    let original_system = fixture.home.config().join("test-system");
+    fixture
+        .home
+        .env()
+        .set("TILO_IDENTITY_ROOT", original_system);
+    let receipt = canonical_job_receipt(provider.clone(), job, &chrome).unwrap();
+    assert_eq!(
+        receipt.update.invocation(),
+        original,
+        "refused observation must preserve the original terminal route"
+    );
+    let foreign = ChromeState::new_with_handle(WorkspaceTree::default().shared());
+    foreign.borrow_mut().local_user_id = "another-person".into();
+    assert!(canonical_job_receipt(provider.clone(), job, &foreign).is_none());
+    drop(provider);
+    drop(actions);
+    drop(fixture);
+}
+
+#[test]
+fn certified_job_cancel_keeps_original_session_and_rechecks_device() {
+    certified_job_cancel_rechecks_device(false);
+}
+
+#[test]
+fn certified_directory_job_cancel_and_observation_recheck_original_device() {
+    certified_job_cancel_rechecks_device(true);
+}
+
+fn admit_held_directory_job(
+    actions: &tilo_action_broker::collab_broker::AppActionBroker,
+    surface: &crate::shell::collab_broker_capnp::PublishedSurface,
+    person: &str,
+    provider: &crate::shell::search::providers::live_app_actions::LiveAppActionsProvider,
+    chrome: &crate::shell::chrome_state::Chrome,
+    delivered: &mut tokio::sync::mpsc::UnboundedReceiver<
+        tilo_action_broker::collab_broker_capnp::InvocationEnvelope,
+    >,
+) -> (u64, tilo_actions::InvocationId) {
+    use tilo_actions::remote::PendingPoll;
+    let session = ActionSessionSource::new(actions.clone())
+        .open(&surface.route.cluster_id, Some(person))
+        .unwrap();
+    let mut query = session.query(tilo_actions::remote::CatalogueQuery {
+        provider: Some(surface.peer_id.to_string()),
+        ..Default::default()
+    });
+    drop(session);
+    let page = match query.poll_ready() {
+        PendingPoll::Ready(Ok(page)) => page,
+        other => panic!("held directory must resolve: {other:?}"),
+    };
+    let descriptor = page
+        .rows
+        .iter()
+        .find_map(|row| row.action.as_ref())
+        .unwrap();
+    let root = crate::shell::collab_broker_capnp::ActionDirectoryRoot {
+        peer_id: surface.peer_id,
+        cluster_id: surface.route.cluster_id.clone(),
+        record_id: surface.route.record_id.clone(),
+        app_id: surface.app_id.clone(),
+    };
+    let row = provider.directory_action_for_test(&root, &page.revision, descriptor, person);
+    let capacity = provider.exhaust_job_routes_for_test();
+    assert!(
+        row.on_begin_invoke.as_ref().unwrap()(
+            &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+            &automerge::ROOT,
+            chrome,
+            &crate::shell::search::action_api::ActionArgs::none(),
+        )
+        .is_err(),
+        "directory capacity must refuse before native admission"
+    );
+    assert!(delivered.try_recv().is_err());
+    drop(capacity);
+    let disposition = row.on_begin_invoke.as_ref().unwrap()(
+        &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+        &automerge::ROOT,
+        chrome,
+        &crate::shell::search::action_api::ActionArgs::none(),
+    )
+    .unwrap();
+    let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
+        panic!("directory start must use pending admission");
+    };
+    let receipt = ticket().unwrap().expect("held directory job admitted");
+    (
+        receipt.broker_invocation_id.unwrap(),
+        receipt.update.invocation(),
+    )
+}
+
+fn held_job_surface(
+    actions: &tilo_action_broker::collab_broker::AppActionBroker,
+    room: crate::shell::state::RoomId,
+) -> (
+    crate::shell::collab_broker_capnp::PublishedSurface,
+    tokio::sync::mpsc::UnboundedReceiver<
+        tilo_action_broker::collab_broker_capnp::InvocationEnvelope,
+    >,
+) {
+    let mut surface = wait_for_membership_surface(actions, room);
+    // A held application response exercises the production certified door and
+    // broker cancellation path without racing a completed membership effect.
+    surface.peer_id = 900;
+    surface.route.record_id = "held-job".into();
+    let mut action = surface.actions[0].clone();
+    action.resource = "test:held-job".into();
+    action.action = "run".into();
+    action.params.clear();
+    action.input = crate::shell::collab_broker_capnp::PublishedInput::None;
+    action.contract = tilo_actions::ActionContract {
+        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+        result: tilo_actions::ResultSpec::Job,
+        ..tilo_actions::ActionContract::default()
+    };
+    surface.actions = vec![action];
+    actions.replace_published_surfaces_for_test(vec![surface.clone()]);
+    let delivered = actions.capture_invocations_for_test(surface.peer_id);
+
+    (surface, delivered)
+}
+
+fn assert_new_session_refuses_job(
+    actions: &tilo_action_broker::collab_broker::AppActionBroker,
+    fixture: &NativeFixture,
+    person: &str,
+    original: tilo_actions::InvocationId,
+) {
+    let fresh = ActionSessionSource::new(actions.clone())
+        .open(&fixture.room.to_string(), Some(person))
+        .unwrap();
+    assert!(
+        fresh.observe(original).is_none(),
+        "a new execution cannot borrow custody"
+    );
+    assert!(
+        fresh.cancel(original).is_err(),
+        "a new execution cannot cancel the job"
+    );
+    drop(fresh);
+    let other_room = uuid::Uuid::new_v4().to_string();
+    assert!(
+        ActionSessionSource::new(actions.clone())
+            .open(&other_room, Some(person))
+            .is_err(),
+        "original room evidence cannot admit another room"
+    );
+}
+
+fn certified_job_cancel_rechecks_device(directory: bool) {
+    use crate::shell::{
+        chrome_state::ChromeState,
+        search::{SearchProvider, providers::live_app_actions::LiveAppActionsProvider},
+    };
+    use std::rc::Rc;
+    use tilo_actions::remote::PendingPoll;
+
+    let mut fixture = fixture();
+    let actions = fixture.broker.app_action_broker().unwrap();
+    let (surface, mut delivered) = held_job_surface(&actions, fixture.room);
+    let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        fixture.certificate.user_public_key,
+    );
+    let provider = Rc::new(LiveAppActionsProvider::new(actions.clone()));
+    let mut tree = WorkspaceTree::bootstrap_default();
+    assert!(tree.set_room(tree.desktop.active, fixture.room));
+    let chrome = ChromeState::new_with_handle(tree.shared());
+    let (job, original) = if directory {
+        admit_held_directory_job(
+            &actions,
+            &surface,
+            &person,
+            &provider,
+            &chrome,
+            &mut delivered,
+        )
+    } else {
+        let mut pending = provider.begin_published_for_test(
+            &surface,
+            &surface.actions[0],
+            person.clone(),
+            &serde_json::Map::new(),
+        );
+        match pending.poll_ready() {
+            PendingPoll::Ready(Ok((job, receipt))) => (job, receipt.invocation),
+            other => panic!("held certified job must be admitted: {other:?}"),
+        }
+    };
+    assert!(
+        delivered.try_recv().is_ok(),
+        "the held action reached the application"
+    );
+    let rows = provider.query(crate::shell::search::SearchContext {
+        query_scope: Some(crate::shell::chrome_state::SearchScope::All),
+        include_programmatic: false,
+        needle: "jobs",
+        wanted: &[],
+        chrome: &chrome.borrow(),
+        doc: &automerge::AutoCommit::new(),
+        doc_root: &automerge::ROOT,
+    });
+    let cancel = rows
+        .into_iter()
+        .find(|row| row.id == crate::shell::search::providers::live_app_actions::job_cancel_id(job))
+        .expect("the admitted cancellable job exposes Cancel");
+    assert_new_session_refuses_job(&actions, &fixture, &person, original);
+    drop(actions);
+
+    select_same_person_different_device(&mut fixture);
+    let rows = provider.query(crate::shell::search::SearchContext {
+        query_scope: Some(crate::shell::chrome_state::SearchScope::All),
+        include_programmatic: false,
+        needle: "jobs",
+        wanted: &[],
+        chrome: &chrome.borrow(),
+        doc: &automerge::AutoCommit::new(),
+        doc_root: &automerge::ROOT,
+    });
+    assert!(
+        rows.iter().all(|row| row.id
+            != crate::shell::search::providers::live_app_actions::job_status_id(job)
+            && row.id != crate::shell::search::providers::live_app_actions::job_cancel_id(job)),
+        "refused certified observation must not fall back to actor-only job listing"
+    );
+    assert!(
+        invoke_palette_job(&cancel, &chrome).is_err(),
+        "a retained cancel row must refuse another device of the same Person"
+    );
+    let original_system = fixture.home.config().join("test-system");
+    fixture
+        .home
+        .env()
+        .set("TILO_IDENTITY_ROOT", original_system);
+    let foreign = ChromeState::new_with_handle(WorkspaceTree::default().shared());
+    foreign.borrow_mut().local_user_id = "another-person".into();
+    assert!(invoke_palette_job(&cancel, &foreign).is_err());
+    let receipt = invoke_palette_job(&cancel, &chrome)
+        .expect("the originating certified session can request cancellation");
+    assert_eq!(receipt.update.invocation(), original);
+    assert!(
+        !receipt.update.is_terminal(),
+        "a request is not fabricated application completion"
+    );
+    assert_eq!(
+        canonical_job_receipt(provider.clone(), job, &chrome)
+            .unwrap()
+            .update
+            .invocation(),
+        original
+    );
+    drop(provider);
+    drop(fixture);
+}
+
+fn select_same_person_different_device(fixture: &mut NativeFixture) {
+    let identity = runtime_identity::identity_dir_from_env().unwrap();
+    let other_system = fixture.home.config().join("other-signed-device");
+    crate::firstboot::ensure_collaboration_identity(
+        &identity,
+        &tilo_user_identity::IdentityPaths::under(&other_system),
+    )
+    .unwrap();
+    fixture.home.env().set("TILO_IDENTITY_ROOT", &other_system);
+    let (_, changed) =
+        tilo_identity_host::broker::trusted_current_device(&fixture.room.to_string()).unwrap();
+    assert_eq!(changed.user_public_key, fixture.certificate.user_public_key);
+    assert_ne!(
+        changed.device_public_key,
+        fixture.certificate.device_public_key
+    );
+}
+
+fn palette_job_row(
+    provider: &crate::shell::search::providers::live_app_actions::LiveAppActionsProvider,
+    job: u64,
+    chrome: &crate::shell::chrome_state::Chrome,
+) -> crate::shell::search::SearchResult {
+    crate::shell::search::SearchProvider::query(
+        provider,
+        crate::shell::search::SearchContext {
+            query_scope: Some(crate::shell::chrome_state::SearchScope::All),
+            include_programmatic: false,
+            needle: "jobs",
+            wanted: &[],
+            chrome: &chrome.borrow(),
+            doc: &automerge::AutoCommit::new(),
+            doc_root: &automerge::ROOT,
+        },
+    )
+    .into_iter()
+    .find(|row| row.id == crate::shell::search::providers::live_app_actions::job_status_id(job))
+    .expect("the ordinary palette also exposes the retained job")
+}
+
+fn invoke_palette_job(
+    row: &crate::shell::search::SearchResult,
+    chrome: &crate::shell::chrome_state::Chrome,
+) -> Result<crate::shell::search::ActionReceipt, crate::shell::search::action_api::ActionError> {
+    row.on_invoke.as_ref().unwrap()(
+        &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+        &automerge::ROOT,
+        chrome,
+        &crate::shell::search::action_api::ActionArgs::none(),
+    )
+}
+
+fn canonical_job_receipt(
+    provider: std::rc::Rc<
+        crate::shell::search::providers::live_app_actions::LiveAppActionsProvider,
+    >,
+    job: u64,
+    chrome: &crate::shell::chrome_state::Chrome,
+) -> Option<crate::shell::search::ActionReceipt> {
+    use crate::shell::search::{
+        SearchRegistry,
+        action_api::{ActionCatalog, AllVisible, ResourceRef},
+    };
+    let mut registry = SearchRegistry::new();
+    registry.register(provider);
+    let resource = ResourceRef::new(
+        "app-actions",
+        crate::shell::search::providers::live_app_actions::job_status_id(job),
+    );
+    let mut doc = automerge::AutoCommit::new();
+    let catalog = ActionCatalog::build_for_resource(
+        &registry,
+        &resource,
+        crate::shell::chrome_state::SearchScope::All,
+        None,
+        &chrome.borrow(),
+        &doc,
+        &automerge::ROOT,
+        &AllVisible,
+    );
+    let selected = catalog.select(&resource)?;
+    let outcome = selected
+        .invoke_nullary(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            chrome,
+        )
+        .ok()?;
+    let crate::shell::search::InvocationDisposition::Accepted(receipt) = outcome else {
+        panic!("job status must resolve through its actual existing receipt");
+    };
+    Some(receipt)
+}
+
+fn assert_capacity_refuses_before_native_admission(
+    fixture: &NativeFixture,
+    provider: &crate::shell::search::providers::live_app_actions::LiveAppActionsProvider,
+    surface: &tilo_action_broker::collab_broker_capnp::PublishedSurface,
+    action: &tilo_action_broker::collab_broker_capnp::PublishedAction,
+    person: &str,
+) {
+    use tilo_actions::remote::{ActionHostError, PendingPoll};
+    let before = fixture
+        .owner
+        .with_current(fixture.room, |view| Ok(view.generation()))
+        .unwrap();
+    let capacity = provider.exhaust_job_routes_for_test();
+    let mut pending = provider.begin_published_for_test(
+        surface,
+        action,
+        person.to_owned(),
+        serde_json::json!({"agent":"must-not-be-created", "preset":"contributor"})
+            .as_object()
+            .unwrap(),
+    );
+    assert!(
+        matches!(pending.poll_ready(), PendingPoll::Ready(Err(ActionHostError::Unavailable { reason }))
+        if reason == "certified job routing capacity exhausted before admission")
+    );
+    assert_eq!(
+        fixture
+            .owner
+            .with_current(fixture.room, |view| Ok(view.generation()))
+            .unwrap(),
+        before,
+        "capacity refusal must occur before invoking the genuine native owner effect"
+    );
+    drop(capacity);
+}
+
+#[test]
 fn native_certified_local_membership_retains_original_and_settles_failed_and_successful_effects() {
     let NativeFixture {
         home,
