@@ -1,9 +1,17 @@
 //! Stateless client of published native history actions. No revision index or ID codec.
-use super::{
-    ParseError, READ_ANSWER_WAIT_MS, READ_DISCOVERY_WAIT_MS, remaining_ms, round_trip, settled,
-};
+use super::{ParseError, READ_ANSWER_WAIT_MS, READ_DISCOVERY_WAIT_MS, remaining_ms, settled};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, io::Read, os::unix::net::UnixStream, time::Instant};
+use std::{
+    collections::BTreeMap,
+    io::{Read, Write},
+    os::unix::net::UnixStream,
+    time::{Duration, Instant},
+};
+
+// The compositor counts the terminating newline in its request-line limit.
+const MAX_WIRE_BYTES: usize = 64 * 1024;
+const MAX_REVIEW_BYTES: usize = 1024 * 1024;
+const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Request {
@@ -80,6 +88,14 @@ pub(super) fn parse(iter: &mut impl Iterator<Item = String>) -> Result<Request, 
             "history requires all of --application --room --record --resource OR exact discovered --provider --id",
         ));
     }
+    if flags
+        .get("--args-json")
+        .is_some_and(|s| s.len() >= MAX_WIRE_BYTES)
+    {
+        return Err(usage(
+            "history arguments exceed the 64 KiB request-line limit",
+        ));
+    }
     let args: Value = flags
         .get("--args-json")
         .map_or(Ok(json!({})), |s| serde_json::from_str(s))
@@ -117,9 +133,7 @@ fn validate_args(verb: &str, args: &Value) -> Result<(), ParseError> {
     for (key, value) in object {
         let valid = match key.as_str() {
             "last" => value.as_u64().is_some_and(|n| (1..=500).contains(&n)),
-            "paths" => value
-                .as_array()
-                .is_some_and(|a| !a.is_empty() && a.iter().all(nonempty_text)),
+            "paths" => valid_paths(value),
             _ => nonempty_text(value),
         };
         if !valid {
@@ -127,6 +141,15 @@ fn validate_args(verb: &str, args: &Value) -> Result<(), ParseError> {
         }
     }
     Ok(())
+}
+
+fn valid_paths(value: &Value) -> bool {
+    value.as_array().is_some_and(|paths| {
+        (1..=256).contains(&paths.len())
+            && paths.iter().all(|path| {
+                nonempty_text(path) && path.as_str().is_some_and(|text| text.len() <= 1024)
+            })
+    })
 }
 
 fn nonempty_text(value: &Value) -> bool {
@@ -151,13 +174,68 @@ fn failure(code: &str, message: impl Into<String>) -> Value {
 }
 
 /// Return the full wire answer even on denial, stale reviews, or terminal job failures.
-fn exchange(stream: &mut UnixStream, request: &Value) -> Result<Value, Value> {
-    let response = round_trip(stream, &request.to_string())
+fn exchange(stream: &mut UnixStream, request: &Value, start: Instant) -> Result<Value, Value> {
+    let mut wire = request.to_string();
+    wire.push('\n');
+    if wire.len() > MAX_WIRE_BYTES {
+        return Err(failure(
+            "request_too_large",
+            "serialized request exceeds 64 KiB",
+        ));
+    }
+    let response = timed_round_trip(stream, wire.as_bytes(), start)
         .map_err(|e| failure("transport", e.to_string()))?;
     if response.get("err").is_some() {
         Err(response)
     } else {
         Ok(response)
+    }
+}
+
+/// Each I/O syscall gets only the remaining monotonic budget, including partial
+/// writes and trickling responses. Other control commands keep their existing I/O.
+fn io_budget(start: Instant) -> std::io::Result<Duration> {
+    Duration::from_millis(READ_ANSWER_WAIT_MS)
+        .checked_sub(start.elapsed())
+        .filter(|left| !left.is_zero())
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "history completion deadline")
+        })
+}
+
+fn timed_round_trip(
+    stream: &mut UnixStream,
+    mut wire: &[u8],
+    start: Instant,
+) -> std::io::Result<Value> {
+    while !wire.is_empty() {
+        stream.set_write_timeout(Some(io_budget(start)?))?;
+        let written = stream.write(wire)?;
+        if written == 0 {
+            return Err(std::io::ErrorKind::WriteZero.into());
+        }
+        wire = wire.get(written..).unwrap_or_default();
+    }
+    let mut response = Vec::new();
+    loop {
+        stream.set_read_timeout(Some(io_budget(start)?))?;
+        let mut chunk = [0; 8192];
+        let count = stream.read(&mut chunk)?;
+        if count == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        let bytes = chunk.get(..count).unwrap_or_default();
+        if response.len().saturating_add(bytes.len()) > MAX_RESPONSE_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "history response exceeds 16 MiB",
+            ));
+        }
+        response.extend_from_slice(bytes);
+        if bytes.contains(&b'\n') {
+            return serde_json::from_slice(&response)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e));
+        }
     }
 }
 
@@ -177,6 +255,7 @@ fn target(row: &Value) -> Result<Value, Value> {
 
 fn discover(stream: &mut UnixStream, request: &Request) -> Result<Value, Value> {
     // Query the whole catalog: labels and query scores are not identities.
+    let start = Instant::now();
     let mut rows = Vec::new();
     let mut cursor: Option<String> = None;
     for _ in 0..1024 {
@@ -186,7 +265,7 @@ fn discover(stream: &mut UnixStream, request: &Request) -> Result<Value, Value> 
         {
             fields.insert("cursor".into(), Value::String(cursor.clone()));
         }
-        let response = exchange(stream, &wire)?;
+        let response = exchange(stream, &wire, start)?;
         let answer = &response.get("answer").unwrap_or(&Value::Null);
         if answer.get("complete").unwrap_or(&Value::Null) != true {
             return Err(failure(
@@ -258,8 +337,7 @@ fn discover(stream: &mut UnixStream, request: &Request) -> Result<Value, Value> 
     ))
 }
 
-fn follow(stream: &mut UnixStream, mut response: Value) -> Result<Value, Value> {
-    let start = Instant::now();
+fn follow(stream: &mut UnixStream, mut response: Value, start: Instant) -> Result<Value, Value> {
     for _ in 0..64 {
         let update = &response
             .get("answer")
@@ -292,6 +370,7 @@ fn follow(stream: &mut UnixStream, mut response: Value) -> Result<Value, Value> 
         response = exchange(
             stream,
             &json!({"op":"actions_status", "invocation_id":job, "wait_ms":wait}),
+            start,
         )?;
     }
     Ok(response)
@@ -316,22 +395,16 @@ fn validate_review(review: &Value) -> Result<(), Value> {
                                 })
                             })
                             && heads.iter().enumerate().all(|(index, head)| {
-                                !heads.iter().take(index).any(|earlier| earlier == head)
+                                !heads.iter().take(index).any(|earlier| {
+                                    earlier
+                                        .as_str()
+                                        .zip(head.as_str())
+                                        .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
+                                })
                             })
                     })
             })
-            && review
-                .get("paths")
-                .unwrap_or(&Value::Null)
-                .as_array()
-                .is_some_and(|paths| {
-                    !paths.is_empty()
-                        && paths.len() <= 256
-                        && paths.iter().all(|path| {
-                            nonempty_text(path)
-                                && path.as_str().is_some_and(|text| text.len() <= 1024)
-                        })
-                })
+            && valid_paths(review.get("paths").unwrap_or(&Value::Null))
     });
     if valid {
         Ok(())
@@ -352,11 +425,13 @@ fn execute(stream: &mut UnixStream, request: &Request) -> Result<Value, Value> {
             .unwrap_or_default()
             .parse::<u64>()
             .map_err(|e| failure("invalid_arguments", e.to_string()))?;
+        let start = Instant::now();
         let response = exchange(
             stream,
-            &json!({"op":"actions_status", "invocation_id":job, "wait_ms":READ_ANSWER_WAIT_MS}),
+            &json!({"op":"actions_status", "invocation_id":job, "wait_ms":remaining_ms(READ_ANSWER_WAIT_MS, start)}),
+            start,
         )?;
-        return follow(stream, response);
+        return follow(stream, response, start);
     }
     let row = discover(stream, request)?;
     let binding = target(&row)?;
@@ -370,9 +445,12 @@ fn execute(stream: &mut UnixStream, request: &Request) -> Result<Value, Value> {
                 .map(String::as_str)
                 .unwrap_or_default(),
         )
-        .and_then(|file| file.take(1_048_577).read_to_end(&mut bytes))
+        .and_then(|file| {
+            file.take((MAX_REVIEW_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)
+        })
         .map_err(|e| failure("review_file", e.to_string()))?;
-        if bytes.len() > 1_048_576 {
+        if bytes.len() > MAX_REVIEW_BYTES {
             return Err(failure("review_file", "review file exceeds 1 MiB"));
         }
         let file: Value =
@@ -424,11 +502,13 @@ fn execute(stream: &mut UnixStream, request: &Request) -> Result<Value, Value> {
         validate_review(review)?;
         args = json!({"review":review});
     }
+    let start = Instant::now();
     let initial = exchange(
         stream,
-        &json!({"op":"actions_invoke", "provider":row.get("provider").unwrap_or(&Value::Null), "id":row.get("id").unwrap_or(&Value::Null), "args":args, "wait_ms":READ_ANSWER_WAIT_MS}),
+        &json!({"op":"actions_invoke", "provider":row.get("provider").unwrap_or(&Value::Null), "id":row.get("id").unwrap_or(&Value::Null), "args":args, "wait_ms":remaining_ms(READ_ANSWER_WAIT_MS, start)}),
+        start,
     )?;
-    let response = follow(stream, initial)?;
+    let response = follow(stream, initial, start)?;
     Ok(
         json!({"target":binding, "operation":request.operation(), "result":response.pointer("/answer/receipt/update/output/value"), "response":response}),
     )
@@ -440,7 +520,12 @@ pub(super) fn run(stream: &mut UnixStream, request: &Request) -> u8 {
     let state = response
         .pointer("/answer/receipt/update/state")
         .and_then(Value::as_str);
-    let code = if response.get("err").is_some() || matches!(state, Some("failed" | "cancelled")) {
+    let code = if matches!(
+        response.pointer("/err/code").and_then(Value::as_str),
+        Some("transport" | "request_too_large")
+    ) {
+        2
+    } else if response.get("err").is_some() || matches!(state, Some("failed" | "cancelled")) {
         1
     } else if state == Some("succeeded") {
         0

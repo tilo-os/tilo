@@ -30,7 +30,7 @@ tilo-control history read --provider app-actions --id "$READ_ID" \
 tilo-control history diff --provider app-actions --id "$DIFF_ID" \
   --args-json '{"from":"saved"}'
 tilo-control history review --provider app-actions --id "$REVIEW_ID" \
-  --args-json '{"version":"saved","paths":["/title"]}' > review.json
+  --args-json '{"version":"saved","paths":["title"]}' > review.json
 tilo-control history restore --provider app-actions --id "$RESTORE_REVIEWED_ID" \
   --review-file review.json
 tilo-control history checkpoint --provider app-actions --id "$CHECKPOINT_ID" \
@@ -43,7 +43,12 @@ tilo-control history status --invocation-id 42
 and `checkpoint` invoke their corresponding published actions. Argument objects
 are strict: log accepts optional `last` (1–500); read optional `item`/`version`;
 diff requires `from`, accepts optional `to`; review requires `version` and a
-nonempty `paths` array; checkpoint requires `name`. Text must be nonempty.
+`paths` array of 1–256 entries, each at most 1024 UTF-8 bytes; checkpoint
+requires `name`. Paths are exact native root keys (`title`) or map/item identities
+(`cards/card-id`), not JSON Pointers (`/title`). Text must be nonempty.
+The entire serialized request, including action IDs and newline, must fit within
+64 KiB; oversized invocations are rejected locally before any invocation bytes
+are written.
 Restore accepts only a review file, not an arbitrary argument object.
 
 Successful operations output one JSON object containing `target`, `operation`,
@@ -56,7 +61,11 @@ admission and causal validation are authoritative. Checkpoint names are resolved
 by review once; restore never re-resolves them. Any later edit requires a new
 review. Pending-edit and stale-review errors are retained, not retried as writes.
 
-Receipts are followed via `actions_status` for up to 20 seconds. Exit status is
+Invocation/status and receipt following share one monotonic 20-second budget,
+starting before the initial request. Socket reads and writes use the remaining
+budget; a timeout, disconnect, malformed response or response larger than 16 MiB
+exits 2, including during receipt following. Discovery has its own 20-second
+transport budget. Local oversized requests also exit 2 (`request_too_large`). Exit status is
 0 for succeeded, 1 for refusal/failed/cancelled, 2 for usage/connection problems,
 and 3 for a still-pending job. Pending output retains `broker_invocation_id` for
 `history status`; failed/cancelled receipts and error details remain JSON.

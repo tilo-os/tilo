@@ -43,6 +43,15 @@ impl Fixture {
                 }
                 writeln!(stream, "{response}").unwrap();
             }
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut extra = String::new();
+            assert_eq!(
+                reader.read_line(&mut extra).unwrap(),
+                0,
+                "unexpected request: {extra}"
+            );
         });
         let output = Command::new(env!("CARGO_BIN_EXE_tilo-control"))
             .arg("--socket")
@@ -97,7 +106,7 @@ fn historical_read_diff_and_paged_exact_discovery_return_native_results() {
         (
             "diff",
             json!({"from":"saved","to":"now"}),
-            json!({"paths":["/title"],"from_heads":["e".repeat(64)]}),
+            json!({"paths":["title"],"from_heads":["e".repeat(64)]}),
         ),
         (
             "log",
@@ -132,6 +141,283 @@ fn pending_completion_keeps_job_identity_and_nonzero_exit() {
     let result = output(&result, 3);
     assert_eq!(result["answer"]["receipt"]["broker_invocation_id"], 42);
     assert_eq!(result["answer"]["receipt"]["update"]["state"], "running");
+}
+
+fn saved_review(review: &Value) -> Value {
+    let native = json!({"review":review});
+    json!({"target":{"application":"so.tilo.notes","room":"room-A","record":"record-A","resource":"root"},"operation":"review-restore","result":native,"response":receipt("succeeded",native)})
+}
+
+#[test]
+fn path_and_direct_argument_bounds_fail_before_connecting() {
+    for paths in [
+        json!([]),
+        json!(vec!["title"; 257]),
+        json!(["é".repeat(513)]),
+    ] {
+        let args = json!({"version":"saved","paths":paths}).to_string();
+        let result = Command::new(env!("CARGO_BIN_EXE_tilo-control"))
+            .args([
+                "history",
+                "review",
+                "--provider",
+                "app-actions",
+                "--id",
+                "review",
+                "--args-json",
+                &args,
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(result.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&result.stderr).contains("invalid review argument"));
+    }
+    let args = json!({"name":"x".repeat(65_536)}).to_string();
+    let result = Command::new(env!("CARGO_BIN_EXE_tilo-control"))
+        .args([
+            "history",
+            "checkpoint",
+            "--provider",
+            "app-actions",
+            "--id",
+            "checkpoint",
+            "--args-json",
+            &args,
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("request-line limit"));
+}
+
+#[test]
+fn oversized_review_invocation_including_discovered_id_is_not_written() {
+    let fixture = Fixture::new();
+    let mut args = vec!["history", "review"];
+    args.extend(TARGET);
+    args.extend(["--args-json", r#"{"version":"saved","paths":["title"]}"#]);
+    let result = fixture.run(
+        &args,
+        vec![listing(vec![row("review-restore", &"x".repeat(65_536))])],
+    );
+    assert_eq!(output(&result, 2)["err"]["code"], "request_too_large");
+}
+
+#[test]
+fn oversized_restore_wire_and_review_envelope_are_not_written() {
+    let fixture = Fixture::new();
+    let path = fixture.0.join("review.json");
+    let args = [
+        "history",
+        "restore",
+        "--provider",
+        "app-actions",
+        "--id",
+        "restore",
+        "--review-file",
+        path.to_str().unwrap(),
+    ];
+    let review = json!({"schema":1,"target_heads":["a".repeat(64)],"live_heads":["b".repeat(64)],"paths":vec!["x".repeat(700); 100]});
+    std::fs::write(&path, saved_review(&review).to_string()).unwrap();
+    let result = fixture.run(
+        &args,
+        vec![listing(vec![row("restore-reviewed", "restore")])],
+    );
+    assert_eq!(output(&result, 2)["err"]["code"], "request_too_large");
+    std::fs::write(&path, vec![b' '; 1_048_577]).unwrap();
+    let result = fixture.run(
+        &args,
+        vec![listing(vec![row("restore-reviewed", "restore")])],
+    );
+    assert_eq!(output(&result, 1)["err"]["code"], "review_file");
+}
+
+#[test]
+fn case_variant_duplicate_causal_heads_are_rejected_locally() {
+    let fixture = Fixture::new();
+    let path = fixture.0.join("review.json");
+    for field in ["target_heads", "live_heads"] {
+        let mut review = json!({"schema":1,"target_heads":["a".repeat(64)],"live_heads":["b".repeat(64)],"paths":["title"]});
+        review[field] = json!(["a".repeat(64), "A".repeat(64)]);
+        std::fs::write(&path, saved_review(&review).to_string()).unwrap();
+        let result = fixture.run(
+            &[
+                "history",
+                "restore",
+                "--provider",
+                "app-actions",
+                "--id",
+                "restore",
+                "--review-file",
+                path.to_str().unwrap(),
+            ],
+            vec![listing(vec![row("restore-reviewed", "restore")])],
+        );
+        assert_eq!(output(&result, 1)["err"]["code"], "review_file");
+    }
+}
+
+fn transport_run(
+    args: &[&str],
+    serve: impl FnOnce(std::os::unix::net::UnixStream) + Send + 'static,
+) -> Output {
+    let fixture = Fixture::new();
+    let socket = fixture.0.join("control.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = std::thread::spawn(move || serve(listener.accept().unwrap().0));
+    let output = Command::new(env!("CARGO_BIN_EXE_tilo-control"))
+        .arg("--socket")
+        .arg(&socket)
+        .args(args)
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    output
+}
+
+#[test]
+fn malformed_socket_response_exits_two_but_protocol_refusal_exits_one() {
+    let result = transport_run(
+        &["history", "status", "--invocation-id", "42"],
+        |mut stream| {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            writeln!(stream, "not JSON").unwrap();
+        },
+    );
+    assert_eq!(output(&result, 2)["err"]["code"], "transport");
+    let fixture = Fixture::new();
+    let refusal = json!({"err":{"code":"invalid_arguments","message":"invalid invocation"}});
+    let result = fixture.run(
+        &["history", "status", "--invocation-id", "42"],
+        vec![(json!({"op":"actions_status"}), refusal.clone())],
+    );
+    assert_eq!(output(&result, 1), refusal);
+}
+
+#[test]
+fn native_path_count_and_utf8_byte_boundaries_are_forwarded_unchanged() {
+    let fixture = Fixture::new();
+    for paths in [
+        json!(vec!["title"; 256]),
+        json!(["é".repeat(512), "cards/card-id"]),
+    ] {
+        let args = json!({"version":"saved","paths":paths});
+        let result = fixture.run(
+            &[
+                "history",
+                "review",
+                "--provider",
+                "app-actions",
+                "--id",
+                "review",
+                "--args-json",
+                &args.to_string(),
+            ],
+            vec![
+                listing(vec![row("review-restore", "review")]),
+                (
+                    json!({"op":"actions_invoke","args":args}),
+                    receipt("succeeded", json!({"paths":paths})),
+                ),
+            ],
+        );
+        assert_eq!(output(&result, 0)["result"]["paths"], paths);
+    }
+}
+
+#[test]
+fn initial_and_mid_operation_disconnects_exit_two() {
+    for replies in 0..=1 {
+        let result = transport_run(
+            &["history", "status", "--invocation-id", "42"],
+            move |mut stream| {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                for index in 0..=replies {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    assert_eq!(
+                        serde_json::from_str::<Value>(&line).unwrap()["op"],
+                        "actions_status"
+                    );
+                    if index < replies {
+                        writeln!(stream, "{}", receipt("running", Value::Null)).unwrap();
+                    }
+                }
+            },
+        );
+        assert_eq!(output(&result, 2)["err"]["code"], "transport");
+    }
+}
+
+#[test]
+fn status_timeout_uses_one_budget_including_initial_response() {
+    let started = std::time::Instant::now();
+    let result = transport_run(
+        &["history", "status", "--invocation-id", "42"],
+        |mut stream| {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let (_hold, wait) = std::sync::mpsc::channel::<()>();
+            assert!(
+                wait.recv_timeout(std::time::Duration::from_secs(2))
+                    .is_err()
+            );
+            writeln!(stream, "{}", receipt("running", Value::Null)).unwrap();
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            let wire: Value = serde_json::from_str(&line).unwrap();
+            assert!(wire["wait_ms"].as_u64().unwrap() <= 18_100);
+            assert!(
+                wait.recv_timeout(std::time::Duration::from_secs(2))
+                    .is_err()
+            );
+            // A partial response must not renew the completion deadline.
+            stream.write_all(b"{").unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(23)))
+                .unwrap();
+            line.clear();
+            assert_eq!(reader.read_line(&mut line).unwrap(), 0);
+        },
+    );
+    assert_eq!(output(&result, 2)["err"]["code"], "transport");
+    assert!(started.elapsed() >= std::time::Duration::from_secs(19));
+    assert!(started.elapsed() < std::time::Duration::from_secs(22));
+}
+
+#[test]
+fn invocation_timeout_without_initial_response_exits_two() {
+    let result = transport_run(
+        &[
+            "history",
+            "log",
+            "--provider",
+            "app-actions",
+            "--id",
+            "history",
+        ],
+        |mut stream| {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            writeln!(stream, "{}", listing(vec![row("history", "history")]).1).unwrap();
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&line).unwrap()["op"],
+                "actions_invoke"
+            );
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(23)))
+                .unwrap();
+            line.clear();
+            assert_eq!(reader.read_line(&mut line).unwrap(), 0);
+        },
+    );
+    assert_eq!(output(&result, 2)["err"]["code"], "transport");
 }
 
 const TARGET: &[&str] = &[
@@ -185,12 +471,12 @@ fn discovery_refuses_ambiguity_missing_and_incomplete_targets() {
 #[test]
 fn review_roundtrip_binds_target_and_preserves_full_heads_and_stale_error() {
     let fixture = Fixture::new();
-    let review = json!({"schema":1,"target_heads":["a".repeat(64)],"live_heads":["b".repeat(64)],"paths":["/title"]});
-    let native = json!({"review":review,"diff":{"paths":["/title"]}});
+    let review = json!({"schema":1,"target_heads":["a".repeat(64)],"live_heads":["b".repeat(64)],"paths":["title"]});
+    let native = json!({"review":review,"diff":{"paths":["title"]}});
     let mut args = vec!["history", "review"];
     args.extend(TARGET);
-    args.extend(["--args-json", r#"{"version":"saved","paths":["/title"]}"#]);
-    let result = fixture.run(&args, vec![listing(vec![row("review-restore","opaque-review")]), (json!({"op":"actions_invoke","provider":"app-actions","id":"opaque-review","args":{"version":"saved","paths":["/title"]}}),receipt("succeeded",native.clone()))]);
+    args.extend(["--args-json", r#"{"version":"saved","paths":["title"]}"#]);
+    let result = fixture.run(&args, vec![listing(vec![row("review-restore","opaque-review")]), (json!({"op":"actions_invoke","provider":"app-actions","id":"opaque-review","args":{"version":"saved","paths":["title"]}}),receipt("succeeded",native.clone()))]);
     let file = output(&result, 0);
     assert_eq!(file["result"], native);
     let path = fixture.0.join("review.json");
