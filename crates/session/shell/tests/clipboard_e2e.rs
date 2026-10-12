@@ -62,6 +62,12 @@ use wayland_protocols::xdg::shell::client::{
     xdg_toplevel::{self, XdgToplevel},
     xdg_wm_base::XdgWmBase,
 };
+use wayland_protocols_wlr::data_control::v1::client::{
+    zwlr_data_control_device_v1::{self, ZwlrDataControlDeviceV1},
+    zwlr_data_control_manager_v1::ZwlrDataControlManagerV1,
+    zwlr_data_control_offer_v1::{self, ZwlrDataControlOfferV1},
+    zwlr_data_control_source_v1::{self, ZwlrDataControlSourceV1},
+};
 
 /// The mime type Tilo offers text selections as. Must match
 /// `shell::compositor::selection::TEXT_MIME` — asserted below so a change on
@@ -110,12 +116,23 @@ fn dispatch_any(
     const PARK: Duration = Duration::from_millis(50);
     let mut guards = Vec::with_capacity(clients.len());
     let mut queued = false;
+    // Two clients can share one connection (one process, two windows). A read
+    // guard per queue would then deadlock: the first `read` waits for the
+    // second guard, held by this same thread. One guard per socket suffices;
+    // every queue is dispatched afterwards.
+    let mut sockets = Vec::with_capacity(clients.len());
     for client in clients.iter_mut() {
         client
             .queue
             .dispatch_pending(&mut client.state)
             .expect("dispatch queued client events");
         client.queue.flush().expect("flush client requests");
+        let socket = client.conn.backend().poll_fd().as_raw_fd();
+        if sockets.contains(&socket) {
+            guards.push(None);
+            continue;
+        }
+        sockets.push(socket);
         let guard = client.queue.prepare_read();
         queued |= guard.is_none();
         guards.push(guard);
@@ -966,6 +983,17 @@ struct ClientState {
     keyboard_repeat_info: Option<(i32, i32)>,
     /// Latest serial from any input event, for requests that need one.
     last_serial: u32,
+    /// Serial of the newest key *press* — what Electron and Chromium hand to
+    /// `set_selection` when Ctrl+C triggers a copy.
+    last_key_press_serial: Option<u32>,
+    /// wlr data-control (clipboard-manager protocol), bound on the privileged socket only.
+    control_manager: Option<ZwlrDataControlManagerV1>,
+    control_device: Option<ZwlrDataControlDeviceV1>,
+    /// The offer last announced as the clipboard / primary selection, with its mimes.
+    control_clipboard: Option<(ZwlrDataControlOfferV1, ControlMimes)>,
+    control_primary: Option<(ZwlrDataControlOfferV1, ControlMimes)>,
+    control_selection_events: usize,
+    control_pending_offer: Option<ZwlrDataControlOfferV1>,
     /// Set once the pointer entered this surface — the implicit grab `start_drag` needs.
     pointer_entered: bool,
     pointer_button_serial: Option<u32>,
@@ -1002,6 +1030,9 @@ struct ClientState {
     /// Set when the compositor told our source it was superseded.
     source_cancelled: bool,
 }
+
+/// Mime types one wlr data-control offer advertises.
+type ControlMimes = Arc<Mutex<Vec<String>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TouchTrace {
@@ -2831,6 +2862,9 @@ impl Dispatch<WlRegistry, ()> for ClientState {
             "wl_shm" => {
                 state.shm = Some(registry.bind(name, 1, qh, ()));
             }
+            "zwlr_data_control_manager_v1" => {
+                state.control_manager = Some(registry.bind(name, version.min(2), qh, ()));
+            }
             _ => {}
         }
     }
@@ -2914,6 +2948,9 @@ impl Dispatch<WlKeyboard, ()> for ClientState {
                     key_state,
                     wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed)
                 );
+                if pressed {
+                    state.last_key_press_serial = Some(serial);
+                }
                 state.keyboard_events.push((key, pressed));
             }
             wl_keyboard::Event::Modifiers { serial, .. } => state.last_serial = serial,
@@ -3212,6 +3249,80 @@ impl Dispatch<ZwpPrimarySelectionSourceV1, String> for ClientState {
     }
 }
 
+impl Dispatch<ZwlrDataControlDeviceV1, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &ZwlrDataControlDeviceV1,
+        event: zwlr_data_control_device_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_data_control_device_v1::Event::DataOffer { id } => {
+                state.control_pending_offer = Some(id);
+            }
+            zwlr_data_control_device_v1::Event::Selection { id } => {
+                state.control_selection_events += 1;
+                state.control_pending_offer = None;
+                state.control_clipboard = id.map(|offer| {
+                    let mimes = offer.data::<ControlMimes>().cloned().unwrap_or_default();
+                    (offer, mimes)
+                });
+            }
+            zwlr_data_control_device_v1::Event::PrimarySelection { id } => {
+                state.control_pending_offer = None;
+                state.control_primary = id.map(|offer| {
+                    let mimes = offer.data::<ControlMimes>().cloned().unwrap_or_default();
+                    (offer, mimes)
+                });
+            }
+            _ => {}
+        }
+    }
+
+    wayland_client::event_created_child!(ClientState, ZwlrDataControlDeviceV1, [
+        zwlr_data_control_device_v1::EVT_DATA_OFFER_OPCODE
+            => (ZwlrDataControlOfferV1, ControlMimes::default()),
+    ]);
+}
+
+impl Dispatch<ZwlrDataControlOfferV1, ControlMimes> for ClientState {
+    fn event(
+        _: &mut Self,
+        _: &ZwlrDataControlOfferV1,
+        event: zwlr_data_control_offer_v1::Event,
+        mimes: &ControlMimes,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwlr_data_control_offer_v1::Event::Offer { mime_type } = event {
+            mimes.lock().expect("control offer mimes").push(mime_type);
+        }
+    }
+}
+
+impl Dispatch<ZwlrDataControlSourceV1, String> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &ZwlrDataControlSourceV1,
+        event: zwlr_data_control_source_v1::Event,
+        served_text: &String,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_data_control_source_v1::Event::Send { mime_type, fd } => {
+                state.send_requests.push(mime_type);
+                write_and_close(fd, served_text);
+            }
+            zwlr_data_control_source_v1::Event::Cancelled => state.source_cancelled = true,
+            _ => {}
+        }
+    }
+}
+
+delegate_noop!(ClientState: ignore ZwlrDataControlManagerV1);
 delegate_noop!(ClientState: ignore WlCompositor);
 delegate_noop!(ClientState: ignore WlSurface);
 delegate_noop!(ClientState: ignore WlDataDeviceManager);
@@ -5617,4 +5728,313 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
         compositor.recent_log()
     );
     let _ = std::fs::remove_dir_all(&home);
+}
+
+// Realistic-client selection tests.
+//
+// Electron and Chromium never copy with whatever serial happens to be lying
+// around: they call `set_selection` with the serial of the key press (or
+// button press) that triggered the copy, and advertise several text aliases.
+// These tests drive that exact protocol pattern from plain protocol clients.
+
+/// What Chromium advertises for a plain-text copy.
+const ELECTRON_TEXT_MIMES: [&str; 3] = [TEXT_MIME, "text/plain", "text/html"];
+
+/// The copy key chord, sent through the compositor's real input path.
+fn press_ctrl_c(compositor: &Compositor, client: &mut TestClient) -> u32 {
+    client.clear_keyboard_trace();
+    client.state.last_key_press_serial = None;
+    for (op, key) in [("key_down", "Control"), ("key_down", "c")] {
+        let response = compositor.control(&serde_json::json!({ "op": op, "key": key }));
+        assert!(
+            response.get("ok").is_some(),
+            "{op} {key} refused: {response:?}"
+        );
+    }
+    client.wait_until(
+        |s| s.last_key_press_serial.is_some() && s.keyboard_events.len() >= 2,
+        "the focused client never received the Ctrl+C key press, so there is no serial to copy with",
+    );
+    let serial = client.state.last_key_press_serial.expect("key serial");
+    for (op, key) in [("key_up", "c"), ("key_up", "Control")] {
+        let response = compositor.control(&serde_json::json!({ "op": op, "key": key }));
+        assert!(
+            response.get("ok").is_some(),
+            "{op} {key} refused: {response:?}"
+        );
+    }
+    client.wait_for_keyboard_events(4);
+    serial
+}
+
+impl TestClient {
+    /// `wl_data_device.set_selection` with an explicit serial and several aliases.
+    fn copy_with_serial(&mut self, text: &str, serial: u32) {
+        let mgr = self.state.data_manager.clone().expect("data manager");
+        let device = self.data_device.clone().expect("data device");
+        let source = mgr.create_data_source(&self.qh, text.to_string());
+        for mime in ELECTRON_TEXT_MIMES {
+            source.offer(mime.to_string());
+        }
+        device.set_selection(Some(&source), serial);
+        self.roundtrip();
+    }
+
+    fn copy_primary_with_serial(&mut self, text: &str, serial: u32) {
+        let mgr = self.state.primary_manager.clone().expect("primary manager");
+        let device = self.primary_device.clone().expect("primary device");
+        let source = mgr.create_source(&self.qh, text.to_string());
+        for mime in ELECTRON_TEXT_MIMES {
+            source.offer(mime.to_string());
+        }
+        device.set_selection(Some(&source), serial);
+        self.roundtrip();
+    }
+
+    /// Bind wlr data-control on a privileged connection.
+    fn bind_data_control(&mut self) {
+        let manager = self
+            .state
+            .control_manager
+            .clone()
+            .expect("the privileged socket advertises zwlr_data_control_manager_v1");
+        let seat = self.state.seat.clone().expect("seat");
+        self.state.control_device = Some(manager.get_data_device(&seat, &self.qh, ()));
+        self.roundtrip();
+    }
+
+    fn control_read(&mut self, primary: bool, owner: &mut TestClient) -> String {
+        self.wait_until(
+            |s| {
+                let slot = if primary {
+                    &s.control_primary
+                } else {
+                    &s.control_clipboard
+                };
+                slot.as_ref()
+                    .is_some_and(|(_, m)| !m.lock().expect("mimes").is_empty())
+            },
+            "data-control never announced a selection",
+        );
+        let slot = if primary {
+            self.state.control_primary.clone()
+        } else {
+            self.state.control_clipboard.clone()
+        };
+        let (offer, _) = slot.expect("offer");
+        let (read_fd, write_fd) = make_pipe();
+        offer.receive(TEXT_MIME.to_string(), write_fd.as_fd_ref());
+        drop(write_fd);
+        self.conn.flush().expect("flush receive");
+        String::from_utf8(drain_bytes(read_fd, self, Some(owner))).expect("utf-8")
+    }
+}
+
+/// Electron/Chromium pattern: Ctrl+C reaches the client, which sets the
+/// selection with that key press's serial, then pastes into itself and into a
+/// second client.
+#[test]
+fn a_client_copying_with_its_ctrl_c_key_serial_pastes_into_itself_and_a_peer() {
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.electron-like");
+    app.map_window(&compositor);
+    let serial = press_ctrl_c(&compositor, &mut app);
+    app.copy_with_serial("copied with the key serial", serial);
+    app.copy_primary_with_serial("primary with the key serial", serial);
+    assert_eq!(
+        app.read_clipboard(None),
+        "copied with the key serial",
+        "the app could not paste its own copy"
+    );
+    assert_eq!(app.read_primary(None), "primary with the key serial");
+    let mut peer = TestClient::new(compositor.connect(), "org.tilo.test.electron-peer");
+    peer.map_window(&compositor);
+    assert_eq!(
+        peer.read_clipboard(Some(&mut app)),
+        "copied with the key serial",
+        "a second client could not paste the copy"
+    );
+    assert_eq!(
+        peer.read_primary(Some(&mut app)),
+        "primary with the key serial"
+    );
+}
+
+/// 1Password's shape: one Wayland connection (one process) with two toplevels
+/// under different app ids. Copy from either, paste in either, and in a
+/// separate client.
+#[test]
+fn two_windows_of_one_client_copy_and_paste_between_each_other() {
+    let compositor = Compositor::start();
+    let conn = compositor.connect();
+    let mut vault = TestClient::new(conn.clone(), "com.onepassword.OnePassword");
+    vault.map_window(&compositor);
+    let mut quick = TestClient::new(conn, "1password");
+    quick.map_window(&compositor);
+    let serial = press_ctrl_c(&compositor, &mut quick);
+    quick.copy_with_serial("from the second window", serial);
+    assert_eq!(quick.read_clipboard(None), "from the second window");
+    assert_eq!(
+        vault.read_clipboard(Some(&mut quick)),
+        "from the second window",
+        "the other window of the same process could not paste"
+    );
+    // Now copy from the window that is not the keyboard-focused surface's own
+    // toplevel; the process still owns keyboard focus.
+    let serial = vault
+        .state
+        .last_key_press_serial
+        .unwrap_or(vault.state.last_serial);
+    // The second window still holds the first copy's offer; drop it so the
+    // read below waits for the new selection instead of reading a stale one.
+    quick.state.clipboard_selection_seen = false;
+    quick.state.clipboard_offer = None;
+    quick.state.clipboard_offer_mimes.clear();
+    vault.copy_with_serial("from the first window", serial);
+    assert_eq!(
+        quick.read_clipboard(Some(&mut vault)),
+        "from the first window"
+    );
+    let mut peer = TestClient::new(compositor.connect(), "org.tilo.test.alacritty-peer");
+    peer.map_window(&compositor);
+    assert_eq!(
+        peer.read_clipboard(Some(&mut vault)),
+        "from the first window"
+    );
+}
+
+/// Focus is taken by compositor chrome (Quick Settings) and given back; the
+/// first copy after the focus returns uses the serial of a key routed in the
+/// new focus epoch.
+#[test]
+fn copy_works_after_chrome_took_and_returned_keyboard_focus() {
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.chrome-roundtrip");
+    app.map_window(&compositor);
+    let first = press_ctrl_c(&compositor, &mut app);
+    app.copy_with_serial("before chrome", first);
+    assert_eq!(app.read_clipboard(None), "before chrome");
+
+    compositor.modifiers(false, false, false, true);
+    compositor.key("q");
+    compositor.modifiers(false, false, false, false);
+    wait_for_overlay(
+        &compositor,
+        "quick_settings",
+        "Super+Q did not open Quick Settings",
+    );
+    app.wait_until(
+        |s| !s.keyboard_focused,
+        "chrome did not take keyboard focus",
+    );
+    compositor.key("Escape");
+    app.wait_until(|s| s.keyboard_focused, "focus never returned to the app");
+
+    let second = press_ctrl_c(&compositor, &mut app);
+    app.copy_with_serial("after chrome", second);
+    assert_eq!(app.read_clipboard(None), "after chrome");
+    let mut peer = TestClient::new(compositor.connect(), "org.tilo.test.chrome-roundtrip-peer");
+    peer.map_window(&compositor);
+    assert_eq!(peer.read_clipboard(Some(&mut app)), "after chrome");
+}
+
+/// Focus moves A -> B -> back to A (B closes). A's next copy must be accepted
+/// and reach a third client.
+#[test]
+fn copy_works_after_focus_moved_away_and_came_back() {
+    let compositor = Compositor::start();
+    let mut a = TestClient::new(compositor.connect(), "org.tilo.test.focus-a");
+    a.map_window(&compositor);
+    let serial = press_ctrl_c(&compositor, &mut a);
+    a.copy_with_serial("first from a", serial);
+    let mut b = TestClient::new(compositor.connect(), "org.tilo.test.focus-b");
+    b.map_window(&compositor);
+    assert_eq!(b.read_clipboard(Some(&mut a)), "first from a");
+    let serial = press_ctrl_c(&compositor, &mut b);
+    b.copy_with_serial("from b", serial);
+    assert_eq!(b.read_clipboard(None), "from b");
+    // Super+Left walks focus back to the first group.
+    compositor.modifiers(false, false, false, true);
+    compositor.key("ArrowLeft");
+    compositor.modifiers(false, false, false, false);
+    a.wait_until(|s| s.keyboard_focused, "focus never returned to a");
+    let serial = press_ctrl_c(&compositor, &mut a);
+    a.copy_with_serial("second from a", serial);
+    assert_eq!(a.read_clipboard(None), "second from a");
+    let mut c = TestClient::new(compositor.connect(), "org.tilo.test.focus-c");
+    c.map_window(&compositor);
+    assert_eq!(c.read_clipboard(Some(&mut a)), "second from a");
+}
+
+/// A clipboard manager (wlr data-control, privileged socket only) sees a
+/// client's copy and can set the selection a focused client pastes.
+#[test]
+fn wlr_data_control_sees_client_copies_and_sets_pasteable_selections() {
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.control-app");
+    app.map_window(&compositor);
+    let mut manager = TestClient::new(compositor.connect_privileged(), "org.tilo.test.manager");
+    manager.bind_data_control();
+    let serial = press_ctrl_c(&compositor, &mut app);
+    app.copy_with_serial("seen by the manager", serial);
+    app.copy_primary_with_serial("primary seen by the manager", serial);
+    assert_eq!(manager.control_read(false, &mut app), "seen by the manager");
+    assert_eq!(
+        manager.control_read(true, &mut app),
+        "primary seen by the manager"
+    );
+
+    let mgr = manager.state.control_manager.clone().expect("manager");
+    let device = manager.state.control_device.clone().expect("device");
+    let source = mgr.create_data_source(&manager.qh, "set by the manager".to_string());
+    source.offer(TEXT_MIME.to_string());
+    device.set_selection(Some(&source));
+    manager.roundtrip();
+    app.state.clipboard_selection_seen = false;
+    app.wait_until(
+        |s| s.clipboard_selection_seen && s.clipboard_offer_mimes.iter().any(|m| m == TEXT_MIME),
+        "the focused client was never offered the manager's selection",
+    );
+    assert_eq!(app.read_clipboard(Some(&mut manager)), "set by the manager");
+}
+
+/// An X11 program (via satellite) and a Wayland program trade the clipboard
+/// repeatedly, each side copying with its own focus, in both directions.
+#[test]
+fn x11_and_wayland_clients_trade_copies_in_both_directions() {
+    if !Path::new("/usr/bin/xwayland-satellite").is_file() {
+        eprintln!("SKIP x11 clipboard: xwayland-satellite is not installed");
+        return;
+    }
+    let compositor = Compositor::start_host_desktop();
+    let mut native = TestClient::new(compositor.connect(), "org.tilo.test.trade-native");
+    native.map_window(&compositor);
+    let serial = press_ctrl_c(&compositor, &mut native);
+    native.copy_with_serial("wayland one", serial);
+    assert_eq!(x11_paste(&compositor), "wayland one", "wayland -> x11");
+
+    let token = compositor.mint_host_launch_activation("org.example.x11-copier", "X11 copier");
+    let (conn, window) = x11_focused_window(&compositor, &mut native, &token);
+    let owner = serve_x11_clipboard(conn, window, "x11 two".to_string());
+    // A Wayland client that maps later (the terminal) pastes the X11 copy.
+    let mut terminal = TestClient::new(compositor.connect(), "org.tilo.test.trade-terminal");
+    terminal.map_window(&compositor);
+    assert_eq!(terminal.read_clipboard(None), "x11 two", "x11 -> wayland");
+    drop(owner);
+    // And Wayland copies again, replacing the X11 text, for X11 and Wayland.
+    let serial = press_ctrl_c(&compositor, &mut terminal);
+    terminal.copy_with_serial("wayland three", serial);
+    let end = Instant::now() + deadline();
+    loop {
+        terminal.pump();
+        if x11_paste(&compositor) == "wayland three" {
+            break;
+        }
+        assert!(
+            Instant::now() < end,
+            "the second Wayland copy never reached X11"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(terminal.read_clipboard(None), "wayland three");
 }
