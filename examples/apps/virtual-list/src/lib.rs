@@ -47,7 +47,10 @@ pub struct Feed {
 impl Feed {
     /// Open an activity.
     #[action]
-    pub fn open(&mut self, #[param("Stable activity id")] id: u64) -> Result<(), &'static str> {
+    pub fn open_activity(
+        &mut self,
+        #[param("Stable activity id")] id: u64,
+    ) -> Result<(), &'static str> {
         if !usize::try_from(id).is_ok_and(|index| index < ITEM_COUNT) {
             return Err("no such activity");
         }
@@ -193,7 +196,7 @@ impl ResourceApp for App {
                         let label = I18nManager::format("list-row", &[("id", (*key).into())]);
                         let open = actions.bind_invocation(
                             Button::new(&format!("open-{key}"), "list-open"),
-                            Feed::OPEN.with(*key),
+                            Feed::OPEN_ACTIVITY.with(*key),
                         );
                         Box::new(Container::new().with_height(height).with_child(Box::new(
                             ui::row![ui::column![Text::new(&label)].with_no_padding(), open,],

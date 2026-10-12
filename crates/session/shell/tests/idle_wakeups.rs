@@ -79,7 +79,36 @@ use tilo_identity_ceremony::IdentityRecord;
 /// that wake; TIL-756 counts per tick.) A ten-second window holds a
 /// minute boundary one run in six, so that is part of the spread: its top
 /// plus a half, 7.5/s.
-const IDLE_WAKEUP_BUDGET: f64 = 7.5;
+///
+/// That minute wake then grew: every one of the gate's 15 failures from run
+/// 94897 to 99577 (7.59–9.70/s, in the shell shard) held it. It re-stamped
+/// the device fabric's unchanged snapshot as a presence heartbeat and wrote
+/// three files, synced, on the frame thread (9–10 blocking switches, plus the
+/// state directory's watchers), and each of its ~20 settings reads woke the
+/// settings reader. Neither happens now while nobody can hear the heartbeat
+/// or the settings copy is unchanged, and the audio policy no longer polls
+/// for a `PipeWire` that is not running. Alone on a runner, main before the
+/// last two blocked 3.40–5.90/s (runs 100177–100181); with them, ten runs
+/// blocked 2.90–4.20/s (runs 100296–100305), of it 2.20–3.40/s the
+/// collaboration shovels' channel-key rounds early in the session and
+/// 0.50–0.60/s the filesystem authority worker retrying a publisher the
+/// headless session does not have. Their top plus a little under a half:
+/// 6/s.
+///
+/// Those were the last wakers. The channel service now tells a route whose
+/// room has no known steward when one is learned (and retries a channel it
+/// failed to open on its own backoff), so a route it answered waits for
+/// that push instead of asking on the timer; the authority worker waits for
+/// its publisher with a creation-only watch instead of retrying it. The
+/// publisher's spawn attempts had also woken `tilo-secrets-bus` 0.2/s (gone
+/// with the watch alone, runs 100711–100712). Ten runs on main before blocked
+/// 2.90–4.10/s (runs 100582–100591: shovels 1.40–2.10, identity client
+/// 0.70–1.20, authority worker 0.40–0.60, secrets bus 0.20); with both,
+/// 0.00–0.40/s (runs 100713–100722), the 0.40 the one window holding a
+/// minute repaint and nothing else. Its top plus a margin that still
+/// catches one thread waking once a second in the windows without a
+/// minute turn: 1/s.
+const IDLE_WAKEUP_BUDGET: f64 = 1.0;
 
 /// Most CPU the idle desktop's threads may use, in percent of one core over
 /// the window. The wakeup count leaves out preemptions, so this is what
@@ -87,18 +116,17 @@ const IDLE_WAKEUP_BUDGET: f64 = 7.5;
 /// same seven runs.
 const IDLE_CPU_BUDGET: f64 = 1.5;
 
-/// Most times per second one collaborating app's shovel
-/// (`ui-collab-shovel`) and the identity service's thread serving it
-/// (`tilo-identity-client`) may wake together. A route that holds no keys
-/// asks for them on a timer backing off from 1 s to 30 s, and is told when
-/// they change; asking once a second cost 5.3/s together (TIL-754, run
-/// 92445); after it the Terminal's measured 0.60–0.70/s in all seven runs.
-///
-/// The budget is per app with a shovel: before the session waited for its
-/// services, the restored Notes notebook never reached the broker, so only
-/// the Terminal had one. With both connected, CI measured 2.10/s for the two
-/// (PR #4197, run 94384).
-const KEY_ASK_BUDGET: f64 = 1.5;
+/// Most rounds of channel-key questions per second each in-process app with
+/// a collaboration shovel may start. A route asks when it is told its
+/// channel changed; it asks on a timer (backing off from 1 s to 30 s) only
+/// while nothing will tell it: a question the identity service refused, or
+/// a removal. The fixture's routes are answered and pushed, so the ten runs
+/// above started no round in the window, where the timer used to start up
+/// to three per shovel. One round per shovel per window leaves room for a
+/// pushed change; asking on the backoff timer again, or on a 1 s one (ten),
+/// is caught. Each shovel starts its own rounds: the restored Notes
+/// notebook and the Terminal both have one.
+const KEY_ROUND_BUDGET: f64 = 0.1;
 
 /// Most iterations per second the compositor's frame loop may make while
 /// idle, from its `paint-tick` lines. A loop that wakes on a deadline that
@@ -213,7 +241,9 @@ impl Desktop {
             .env("TILO_IDLE_BLANK_SECS", "0")
             // A `paint-tick:` line per loop iteration (see `LoopStats`).
             .env("TILO_PAINT_STATS", "ticks")
-            .env("RUST_LOG", "warn")
+            // Every round of channel-key questions is logged, so the gate counts
+            // the rounds the shovel starts, not how often contention woke it.
+            .env("RUST_LOG", "warn,tilo::collab::key_rounds=debug")
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
             .stdout(Stdio::piped())
@@ -513,12 +543,11 @@ impl LoopStats {
 
 /// How often the threads that ask for and answer a route's channel keys
 /// blocked, per second: the in-process apps' collaboration shovel and the
-/// identity service's per-client thread. Fails if the shovel is not there to
-/// observe: the Terminal opens a route, so a desktop without one did not
-/// measure what this bounds.
-/// The shovels' and identity clients' wakeups per second, and their budget:
-/// [`KEY_ASK_BUDGET`] for each app whose shovel ran.
-fn key_ask_wakeups(wakeups: &tilo_test_env::idle::Wakeups) -> (f64, f64) {
+/// identity service's per-client thread. Reported beside the rounds, as what
+/// they cost. Fails if the shovel is not there to observe: the Terminal
+/// opens a route, so a desktop without one did not measure what the rounds
+/// bound. Returns their wakeups per second and how many shovels ran.
+fn key_ask_wakeups(wakeups: &tilo_test_env::idle::Wakeups) -> (f64, usize) {
     // The kernel truncates thread names to 15 bytes.
     const SHOVEL: &str = "ui-collab-shove";
     const IDENTITY_CLIENT: &str = "tilo-identity-c";
@@ -532,16 +561,23 @@ fn key_ask_wakeups(wakeups: &tilo_test_env::idle::Wakeups) -> (f64, f64) {
         rows.iter().any(|row| row.thread == SHOVEL),
         "no collaboration shovel ran in the compositor, so the Terminal's route was not measured:\n{wakeups}"
     );
-    let shovels: usize = rows
+    let shovels = rows
         .iter()
         .filter(|row| row.thread == SHOVEL)
         .map(|row| row.threads)
         .sum();
-    let budget = KEY_ASK_BUDGET * f64::from(u32::try_from(shovels).unwrap_or(u32::MAX));
     (
         wakeups.rate(rows.iter().map(|row| row.voluntary).sum()),
-        budget,
+        shovels,
     )
+}
+
+/// The rounds of channel-key questions the desktop logged in `lines`.
+fn key_rounds(lines: &[(Instant, String)]) -> usize {
+    lines
+        .iter()
+        .filter(|(_, line)| line.contains("channel keys") && line.contains("collab: asking"))
+        .count()
 }
 
 /// Whether a process named `name` runs in the compositor's tree.
@@ -590,17 +626,37 @@ fn the_restored_notes_notebook_publishes_its_actions() {
         }));
         let published = reply["answer"]["actions"].as_array().is_some_and(|rows| {
             rows.iter()
-                .any(|row| row["application"] == "so.tilo.notes" && row["operation"] == "new-page")
+                .any(|row| row["application"] == "so.tilo.notes" && row["operation"] == "new-note")
         });
         if published {
             return;
         }
         assert!(
             Instant::now() < deadline,
-            "the restored Notes tab never published new-page: {reply}\nLog:\n{}",
+            "the restored Notes tab never published new-note: {reply}\nLog:\n{}",
             desktop.log_tail()
         );
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Leave `desktop` alone until its startup work is behind it.
+fn settle(desktop: &Desktop) {
+    // GStreamer builds its plugin registry once, in a child, into the fresh
+    // XDG cache; a real session keeps that cache, so it is startup work.
+    // Settle until a whole settle period passed without one.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        wait_until_gone(desktop, "gst-plugin-scan");
+        std::thread::sleep(SETTLE);
+        if !running(desktop, "gst-plugin-scan") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "gst-plugin-scan kept starting. Log:\n{}",
+            desktop.log_tail()
+        );
     }
 }
 
@@ -620,22 +676,7 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
     desktop.wait_for("the Terminal", |targets| {
         targets.iter().any(|name| name == "terminal")
     });
-    // GStreamer builds its plugin registry once, in a child, into the fresh
-    // XDG cache; a real session keeps that cache, so it is startup work.
-    // Settle until a whole settle period passed without one.
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        wait_until_gone(&desktop, "gst-plugin-scan");
-        std::thread::sleep(SETTLE);
-        if !running(&desktop, "gst-plugin-scan") {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "gst-plugin-scan kept starting. Log:\n{}",
-            desktop.log_tail()
-        );
-    }
+    settle(&desktop);
 
     let measured_from = Instant::now();
     let wall_from = SystemTime::now();
@@ -664,9 +705,13 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
         desktop.log_tail()
     );
 
-    let (key_asks, key_ask_budget) = key_ask_wakeups(&wakeups);
+    let (key_asks, shovels) = key_ask_wakeups(&wakeups);
+    let rounds = key_rounds(&in_window);
+    let rounds_per_second =
+        f64::from(u32::try_from(rounds).unwrap_or(u32::MAX)) / wakeups.window.as_secs_f64();
+    let round_budget = KEY_ROUND_BUDGET * f64::from(u32::try_from(shovels).unwrap_or(u32::MAX));
     let report = format!(
-        "{wakeups}\nblocked {:.2} times a second; the collaboration shovel and identity client {key_asks:.2}\ncompositor frame loop: {:.1} ticks/s ({} ticks, woken by: {}), {} frames painted (after: {}), {clock_turns} clock minute(s) turned; its paint-stats in the window:\n  {}",
+        "{wakeups}\nblocked {:.2} times a second; the collaboration shovel and identity client {key_asks:.2}, in {rounds} rounds of channel-key questions\ncompositor frame loop: {:.1} ticks/s ({} ticks, woken by: {}), {} frames painted (after: {}), {clock_turns} clock minute(s) turned; its paint-stats in the window:\n  {}",
         wakeups.blocking_per_second(),
         frame_loop.ticks_per_second(),
         frame_loop.ticks,
@@ -699,8 +744,8 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
         wakeups.total_cpu_percent(),
     );
     assert!(
-        key_asks <= key_ask_budget,
-        "the apps' collaboration shovels and the identity client woke {key_asks:.2} times a second, over {key_ask_budget}/s ({KEY_ASK_BUDGET}/s per app): is a route asking for its channel keys on a 1 s timer again?\n{report}",
+        rounds_per_second <= round_budget,
+        "the in-process apps asked for channel keys {rounds_per_second:.2} times a second, over {round_budget:.2}/s ({KEY_ROUND_BUDGET}/s for each of {shovels} shovels): is a route asking on a 1 s timer again?\n{report}",
     );
     assert!(
         frame_loop.ticks_per_second() <= LOOP_TICK_BUDGET,

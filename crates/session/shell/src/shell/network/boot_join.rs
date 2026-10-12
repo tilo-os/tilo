@@ -73,7 +73,12 @@ impl ShellNetwork {
             let now = tilo_clock::try_unix_now()
                 .ok_or_else(|| "the system clock is before the Unix epoch".to_owned())?;
             if tree.read().desktop.workspaces.iter().any(|workspace| {
-                workspace.room == target && workspace.may_administer_at(&person, now)
+                workspace.room == target
+                    && workspace.may_govern_at(
+                        &person,
+                        tilo_action_policy::roles::governance::GRANT,
+                        now,
+                    )
             }) {
                 return Ok(());
             }

@@ -5,7 +5,7 @@
 //! encrypted with MLS application messages but under per-epoch *content
 //! keys* derived from the MLS exporter ([`content`]), so every member —
 //! including one added later — can read the channel's whole history. The
-//! envelope's metadata (author, artifact, `op_class`, timestamp, seq) stays
+//! envelope's metadata (author, artifact, `kind`, timestamp, seq) stays
 //! cleartext so the broker routes by artifact and filters by op class
 //! without decrypting.
 //!

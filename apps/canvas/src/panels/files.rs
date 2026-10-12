@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
+use ui::tilo_resource::Invoke;
 
 use ui::framework::{Dispatcher, Live, Setting};
 use ui::portal::{FileFilter, PickRequest, PortalOutcome};
@@ -18,11 +19,10 @@ use ui::widget::{AppModel, EventCtx, ModelPath, Widget};
 use ui::winit::event::WindowEvent;
 use ui::{PresenceCtx, TextRenderer, Theme};
 
-use crate::actions::{CanvasAction, NewArtwork, OpenArtwork};
+use crate::actions::{NewArtwork, OpenArtwork};
 use crate::document::{self, ArtworkFile, EXTENSION, Recent, RecentArtworks};
 use crate::model::Artwork;
 use crate::panels::export::{self, Settings};
-use crate::resource::ArtworkResource;
 use crate::tools::{FileRequest, Sheet, Tools, ViewRequest};
 
 /// What a chooser was opened for.
@@ -42,8 +42,8 @@ pub struct FileDesk {
     content: Element,
     tools: Tools,
     recents: Setting<RecentArtworks>,
-    live: Live<ArtworkResource>,
-    dispatch: Dispatcher<ArtworkResource>,
+    live: Live<Artwork>,
+    dispatch: Dispatcher<Artwork>,
     chooser: Option<(Pending, Receiver<PortalOutcome>)>,
     text: Option<TextRenderer>,
 }
@@ -53,8 +53,8 @@ impl FileDesk {
         content: Element,
         tools: Tools,
         recents: Setting<RecentArtworks>,
-        live: Live<ArtworkResource>,
-        dispatch: Dispatcher<ArtworkResource>,
+        live: Live<Artwork>,
+        dispatch: Dispatcher<Artwork>,
     ) -> Self {
         Self {
             content,
@@ -120,7 +120,7 @@ impl FileDesk {
         match request {
             FileRequest::Open => {
                 let request =
-                    PickRequest::open(&lookup("canvas-open-title"), &lookup("canvas-open"))
+                    PickRequest::open(&lookup("canvas-open-title"), &lookup("canvas-command-open"))
                         .filter(
                             FileFilter::new(&lookup("canvas-filter-artwork"))
                                 .glob(&format!("*.{EXTENSION}"))
@@ -270,7 +270,7 @@ impl FileDesk {
             open_svg(path).map(|actions| (actions, None))
         } else {
             document::read(path).map(|artwork| {
-                let action = CanvasAction::OpenArtwork(OpenArtwork {
+                let action = Artwork::OPEN_ARTWORK.with(OpenArtwork {
                     file: String::from_utf8_lossy(&artwork.to_json()).into_owned(),
                 });
                 (vec![action], Some(artwork))
@@ -289,7 +289,7 @@ impl FileDesk {
         };
         self.dispatch.group(|| {
             for action in &actions {
-                self.dispatch.apply(action);
+                self.dispatch.submit(action.clone());
             }
         });
         self.tools.selection.set(Vec::new());
@@ -458,7 +458,7 @@ fn with_extension(path: PathBuf, extension: &str) -> PathBuf {
 }
 
 /// The SVG at `path` as a new artwork its size, with the SVG drawn on it.
-fn open_svg(path: &Path) -> Result<Vec<CanvasAction>, String> {
+fn open_svg(path: &Path) -> Result<Vec<Invoke<Artwork>>, String> {
     let markup = crate::svg::source(&path.display().to_string())?;
     let tree = usvg::Tree::from_str(&markup, &usvg::Options::default())
         .map_err(|error| format!("not an SVG this can read: {error}"))?;
@@ -467,7 +467,7 @@ fn open_svg(path: &Path) -> Result<Vec<CanvasAction>, String> {
     let title = path
         .file_stem()
         .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
-    let new = CanvasAction::NewArtwork(NewArtwork {
+    let new = Artwork::NEW_ARTWORK.with(NewArtwork {
         title: Some(title),
         width: Some(side(extent.width())),
         height: Some(side(extent.height())),
@@ -478,7 +478,7 @@ fn open_svg(path: &Path) -> Result<Vec<CanvasAction>, String> {
         svg: markup,
         ..crate::svg::ImportSvg::default()
     })?;
-    Ok(vec![new, CanvasAction::Draw(draw)])
+    Ok(vec![new, Artwork::DRAW.with(draw)])
 }
 
 impl ui::widget::Decorator for FileDesk {
@@ -573,15 +573,29 @@ mod tests {
     /// does not offer that file's name to write over.
     #[test]
     fn an_artwork_made_from_a_picture_is_exported_under_a_name_of_its_own() {
+        use base64::Engine as _;
         crate::locales::install();
+        // The window's content store, which the opened picture is kept in.
+        let window = ui::rt::wake::WakeScope::new();
+        ui::tilo_resource::content::register(
+            &window.handle(),
+            tilo_content::ContentStore::memory(),
+        );
+        let _entered = window.enter();
         let mut doc = ui::tilo_resource::Doc::new();
-        let open = CanvasAction::OpenPicture(crate::actions::Open {
-            src: "tilo.content:abc".into(),
-            pixels: [10, 10],
-            title: "labrador".into(),
+        let mut png = Vec::new();
+        image::RgbaImage::new(10, 10)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let open = Artwork::OPEN_PICTURE.with(crate::actions::Open {
+            path: format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(&png)
+            ),
+            title: Some("labrador".into()),
         });
-        ui::tilo_actions::Action::apply(&open, &mut doc).unwrap();
-        let art = crate::doc::read(&doc);
+        Artwork::apply_to(&mut doc, open);
+        let art = Artwork::from_doc(&doc).unwrap();
         assert_eq!(art.title, "labrador");
         let stem = export_stem(&art);
         assert_eq!(stem, "labrador edited");

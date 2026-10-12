@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use accounts::{CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem, SecretItemKind};
 use ui::widget::NavPane;
-use vello::kurbo::{Point, Rect, Vec2};
+use vello::kurbo::Rect;
 use zeroize::Zeroizing;
 
 use crate::actions::PasswordsEffect;
@@ -343,34 +343,6 @@ pub(crate) fn origins_match(item: &SecretItem, candidate: &str) -> bool {
             .is_some_and(|origin| item.origins.contains(origin))
 }
 
-/// What the painted item list laid out last frame, for hit-testing,
-/// scrolling and accessibility.
-pub(crate) struct ListState {
-    pub(crate) rect: Rect,
-    pub(crate) scroller: ui::widget::ScrollRegion,
-    /// Scroll the open item into view on the next paint.
-    pub(crate) reveal: bool,
-    /// Each row's rect and item.
-    pub(crate) rows: Vec<(Rect, SecretId)>,
-    /// The favorite toggle of each row that shows one: the favorites, and
-    /// the row under the pointer.
-    pub(crate) stars: Vec<(Rect, SecretId)>,
-    pub(crate) empty_action: Option<Rect>,
-}
-
-impl Default for ListState {
-    fn default() -> Self {
-        Self {
-            rect: Rect::ZERO,
-            scroller: ui::widget::ScrollRegion::vertical(),
-            reveal: true,
-            rows: Vec::new(),
-            stars: Vec::new(),
-            empty_action: None,
-        }
-    }
-}
-
 pub(crate) struct Core {
     /// The vault; `None` for the fixture captures show.
     pub(crate) model: Option<crate::PasswordsModel>,
@@ -414,8 +386,8 @@ pub(crate) struct Core {
     pub(crate) dialog: Option<Dialog>,
     /// A narrow window should bring this pane to the front.
     pub(crate) show_pane: Option<NavPane>,
-    pub(crate) list: ListState,
-    pub(crate) pointer: Point,
+    /// Scroll the open item into view when the list next shows.
+    pub(crate) reveal_open: bool,
     pub(crate) window: Rect,
     /// Bumped whenever the content page must be built again.
     pub(crate) page_revision: u64,
@@ -460,8 +432,7 @@ impl Core {
             backup_confirmation: Zeroizing::new(String::new()),
             dialog: None,
             show_pane: None,
-            list: ListState::default(),
-            pointer: Point::ZERO,
+            reveal_open: true,
             window: Rect::ZERO,
             page_revision: 0,
             list_revision: 0,
@@ -505,7 +476,7 @@ impl Core {
     pub(crate) fn extend_demo_for_scrolling(&mut self) {
         self.items.extend(crate::demo::more_items());
         self.items.sort_by_key(|item| item.title.to_lowercase());
-        self.list.reveal = true;
+        self.reveal_open = true;
         self.touch();
     }
 
@@ -602,7 +573,6 @@ impl Core {
     pub(crate) fn select_filter(&mut self, filter: VaultFilter) {
         self.filter = filter;
         self.screen = Screen::Vault;
-        self.list.scroller.set_offset(Vec2::ZERO);
         self.select_first_visible();
         self.show_pane = Some(NavPane::Overview);
         self.touch();
@@ -626,7 +596,7 @@ impl Core {
             self.selected = Some(id.clone());
             self.revealed = None;
         }
-        self.list.reveal = true;
+        self.reveal_open = true;
         self.show_pane = Some(NavPane::Content);
         self.touch();
         true
@@ -1112,7 +1082,7 @@ impl Core {
                 self.refresh();
                 self.close_editor();
                 self.show_pane = Some(NavPane::Content);
-                self.list.reveal = true;
+                self.reveal_open = true;
                 self.touch();
                 self.toast("Saved");
             }

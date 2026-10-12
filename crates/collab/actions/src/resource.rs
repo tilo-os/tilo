@@ -39,8 +39,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::action::{Action, ActionError, EncodedAction, ExecutionLocus, OperationKind};
 use crate::contract::{
-    ActionContract, Availability, ConfirmationPolicy, DiscoveryScope, ExecutionMode,
-    PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
+    ActionContract, ActionKind, ActionNeed, Availability, ConfirmationPolicy, ExecutionMode,
+    ResultSpec, RetryPolicy, RiskLevel,
 };
 use crate::door::ActionAddress;
 use crate::params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
@@ -73,7 +73,13 @@ pub enum ActionBindingError {
     ActionNotExported { resource: String, action: String },
     #[error(transparent)]
     InvalidArguments(#[from] ArgError),
+    /// The control's value does not make arguments of the action at all.
+    #[error("{0}")]
+    Unbindable(String),
 }
+
+type Arguments<I> =
+    Arc<dyn Fn(I) -> Result<serde_json::Map<String, serde_json::Value>, String> + Send + Sync>;
 
 /// Type-safe adapter from a control's input value to an exported action.
 ///
@@ -85,7 +91,7 @@ pub enum ActionBindingError {
 pub struct ActionBinding<I> {
     address: ActionAddress,
     spec: ActionSpec,
-    arguments: Arc<dyn Fn(I) -> serde_json::Map<String, serde_json::Value> + Send + Sync>,
+    arguments: Arguments<I>,
 }
 
 impl<I> ActionBinding<I> {
@@ -100,6 +106,25 @@ impl<I> ActionBinding<I> {
         resource: &Resource,
         spec: &ActionSpec,
         arguments: impl Fn(I) -> serde_json::Map<String, serde_json::Value> + Send + Sync + 'static,
+    ) -> Result<Self, ActionBindingError> {
+        Self::fallible(resource, spec, move |input| Ok(arguments(input)))
+    }
+
+    /// [`Self::new`] for an input that may not make arguments: a value that
+    /// does not serialize, a form that does not fit the parameters. Such an
+    /// input is refused when the control emits it, never sent empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionBindingError::ActionNotExported`] if `spec` is absent
+    /// from `resource`.
+    pub fn fallible(
+        resource: &Resource,
+        spec: &ActionSpec,
+        arguments: impl Fn(I) -> Result<serde_json::Map<String, serde_json::Value>, String>
+        + Send
+        + Sync
+        + 'static,
     ) -> Result<Self, ActionBindingError> {
         let exported = resource
             .actions
@@ -125,7 +150,7 @@ impl<I> ActionBinding<I> {
     /// Returns [`ActionBindingError::InvalidArguments`] if the mapped input
     /// violates the exported action's parameter contract.
     pub fn invoke(&self, input: I) -> Result<ControlInvocation, ActionBindingError> {
-        let arguments = (self.arguments)(input);
+        let arguments = (self.arguments)(input).map_err(ActionBindingError::Unbindable)?;
         if self.spec.deferred_invocation_type().is_some()
             || matches!(self.spec.input, ActionInput::Deferred { .. })
         {
@@ -196,9 +221,13 @@ impl ActionBinding<()> {
         if binding.spec.deferred_invocation_type().is_some()
             || matches!(binding.spec.input, ActionInput::Deferred { .. })
         {
-            binding.spec.validate_json(&(binding.arguments)(()))?;
+            binding
+                .spec
+                .validate_json(&(binding.arguments)(()).map_err(ActionBindingError::Unbindable)?)?;
         } else {
-            binding.spec.build_json(&(binding.arguments)(()))?;
+            binding
+                .spec
+                .build_json(&(binding.arguments)(()).map_err(ActionBindingError::Unbindable)?)?;
         }
         Ok(binding)
     }
@@ -796,24 +825,21 @@ pub struct ActionSpec {
     /// Classifies one invocation's bound arguments when the action's risk
     /// depends on them. See [`ActionSpec::with_risk`].
     risk_of: Option<RiskClassifier>,
-    /// Classifies what one invocation's bound arguments need the invoker to
-    /// be allowed. See [`ActionSpec::with_permission_of`].
-    permission_of: Option<PermissionClassifier>,
-    /// Names one invocation in history from the action it built. See
-    /// [`ActionSpec::with_history_label`].
-    history_label_of: Option<HistoryLabeler>,
+    /// Classifies what one invocation's bound arguments are, for the grants
+    /// deciding it. See [`ActionSpec::with_need_of`].
+    need_of: Option<NeedClassifier>,
     continuation_resolver: Option<ContinuationResolver>,
+    /// Whether the action carries any of its resource's other actions (a
+    /// generic edit, a group) rather than being a verb of its own. See
+    /// [`ActionSpec::carrying`].
+    carrier: bool,
 }
 
 /// Classifies the risk of one invocation from its bound arguments.
 pub type RiskClassifier = Arc<dyn Fn(&ActionArgs) -> RiskLevel + Send + Sync>;
 
-/// Classifies what one invocation needs the invoker to be allowed.
-pub type PermissionClassifier = Arc<dyn Fn(&ActionArgs) -> PermissionRequirement + Send + Sync>;
-
-/// Names one invocation in history from the encoded action it built, or
-/// declines with `None`.
-pub type HistoryLabeler = Arc<dyn Fn(&EncodedAction) -> Option<String> + Send + Sync>;
+/// Classifies what one invocation is from its bound arguments.
+pub type NeedClassifier = Arc<dyn Fn(&ActionArgs) -> ActionNeed + Send + Sync>;
 
 struct TypedActionSeed {
     id: String,
@@ -960,11 +986,7 @@ impl ActionSpec {
             locus,
             kind,
             operation_type: (kind != OperationKind::Document).then(|| type_id.clone()),
-            contract: if kind == OperationKind::View {
-                ActionContract::view()
-            } else {
-                ActionContract::default()
-            },
+            contract: ActionContract::for_operation(kind),
             input: ActionInput::Deferred {
                 type_id: type_id.clone(),
                 build,
@@ -975,9 +997,9 @@ impl ActionSpec {
                 deferred_type: Some(type_id),
             },
             risk_of: None,
-            permission_of: None,
-            history_label_of: None,
+            need_of: None,
             continuation_resolver: None,
+            carrier: false,
         }
     }
 
@@ -1015,9 +1037,9 @@ impl ActionSpec {
             params: Vec::new(),
             build: InvocationBuilder::Fixed(for_build),
             risk_of: None,
-            permission_of: None,
-            history_label_of: None,
+            need_of: None,
             continuation_resolver: None,
+            carrier: false,
         })
     }
 
@@ -1049,9 +1071,9 @@ impl ActionSpec {
             params: Vec::new(),
             build: InvocationBuilder::Fixed(for_build),
             risk_of: None,
-            permission_of: None,
-            history_label_of: None,
+            need_of: None,
             continuation_resolver: None,
+            carrier: false,
         }
     }
 
@@ -1099,9 +1121,9 @@ impl ActionSpec {
                 build,
             },
             risk_of: None,
-            permission_of: None,
-            history_label_of: None,
+            need_of: None,
             continuation_resolver: None,
+            carrier: false,
         }
     }
 
@@ -1132,18 +1154,14 @@ impl ActionSpec {
             locus: ExecutionLocus::ClientLocal,
             kind,
             operation_type: Some(type_id),
-            contract: if kind == OperationKind::View {
-                ActionContract::view()
-            } else {
-                ActionContract::default()
-            },
+            contract: ActionContract::for_operation(kind),
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
             build: InvocationBuilder::Fixed(for_build),
             risk_of: None,
-            permission_of: None,
-            history_label_of: None,
+            need_of: None,
             continuation_resolver: None,
+            carrier: false,
         })
     }
 
@@ -1171,11 +1189,7 @@ impl ActionSpec {
             locus: ExecutionLocus::ClientLocal,
             kind,
             operation_type: Some(type_id),
-            contract: if kind == OperationKind::View {
-                ActionContract::view()
-            } else {
-                ActionContract::default()
-            },
+            contract: ActionContract::for_operation(kind),
             params: vec![ActionParam::required_owned(
                 PROMPTED_PARAM,
                 ParamType::Text,
@@ -1192,9 +1206,9 @@ impl ActionSpec {
                 build,
             },
             risk_of: None,
-            permission_of: None,
-            history_label_of: None,
+            need_of: None,
             continuation_resolver: None,
+            carrier: false,
         }
     }
 
@@ -1285,11 +1299,7 @@ impl ActionSpec {
             locus: seed.locus,
             kind: seed.kind,
             operation_type: seed.operation_type,
-            contract: if seed.kind == OperationKind::View {
-                ActionContract::view()
-            } else {
-                ActionContract::default()
-            },
+            contract: ActionContract::for_operation(seed.kind),
             input,
             params: seed.params,
             build: InvocationBuilder::Dynamic {
@@ -1297,9 +1307,9 @@ impl ActionSpec {
                 deferred_type: None,
             },
             risk_of: None,
-            permission_of: None,
-            history_label_of: None,
+            need_of: None,
             continuation_resolver: None,
+            carrier: false,
         }
     }
 
@@ -1408,6 +1418,21 @@ impl ActionSpec {
         self.contract.is_programmatic()
     }
 
+    /// Declare that this action carries the resource's other actions (a
+    /// generic typed edit, a group of edits): history records the actions
+    /// it carried, never this one.
+    #[must_use]
+    pub fn carrying(mut self) -> Self {
+        self.carrier = true;
+        self
+    }
+
+    /// Whether this action carries the resource's other actions. See
+    /// [`Self::carrying`].
+    pub fn carries_actions(&self) -> bool {
+        self.carrier
+    }
+
     /// Classify each invocation's risk from its bound arguments, for an action
     /// whose consequence depends on them (a generic edit whose value may
     /// delete). Whenever the classified risk
@@ -1427,66 +1452,63 @@ impl ActionSpec {
         self
     }
 
-    /// Classify what each invocation needs the invoker to be allowed from
-    /// its bound arguments, for an action whose consequence depends on them
-    /// (a generic edit: a reply needs commenting, a deletion writing). The
-    /// declared [`ActionContract::permission`] stays the least any
-    /// invocation needs, which is what a host offers the action under;
-    /// every gate that admits an invocation asks
-    /// [`permission_for_json`](Self::permission_for_json) or
-    /// [`permission_for_argument`](Self::permission_for_argument) too.
+    /// Classify what each invocation is from its bound arguments, for an
+    /// action whose consequence depends on them (a generic edit: a reply
+    /// writes only the comments, a deletion changes the document). The
+    /// declared [`ActionContract::kind`] and [`ActionContract::field`] stay
+    /// the least any invocation is, which is what a host offers the action
+    /// under; every gate that admits an invocation asks
+    /// [`need_for`](Self::need_for) too.
     #[must_use]
-    pub fn with_permission_of(
+    pub fn with_need_of(
         mut self,
-        classify: impl Fn(&ActionArgs) -> PermissionRequirement + Send + Sync + 'static,
+        classify: impl Fn(&ActionArgs) -> ActionNeed + Send + Sync + 'static,
     ) -> Self {
-        self.permission_of = Some(Arc::new(classify));
+        self.need_of = Some(Arc::new(classify));
         self
     }
 
-    /// What one invocation with these bound arguments needs: the
-    /// classifier's verdict, else the declared permission.
-    pub fn permission_for_args(&self, args: &ActionArgs) -> PermissionRequirement {
-        self.permission_of
+    /// What one invocation with these bound arguments is: the classifier's
+    /// verdict, else the declared contract's.
+    pub fn need_for_args(&self, args: &ActionArgs) -> ActionNeed {
+        let mut need = self
+            .need_of
             .as_ref()
-            .map_or(self.contract.permission, |classify| classify(args))
+            .map_or_else(|| self.contract.need(), |classify| classify(args));
+        need.privileged |= self.risk_for(args) == RiskLevel::Privileged;
+        need
     }
 
-    /// [`permission_for_args`](Self::permission_for_args) for arguments that
-    /// arrived as JSON. Arguments that do not bind build no action, so they
-    /// need what the declaration says.
-    pub fn permission_for_json(
-        &self,
-        supplied: &serde_json::Map<String, serde_json::Value>,
-    ) -> PermissionRequirement {
-        if self.permission_of.is_none() {
-            return self.contract.permission;
-        }
-        ActionArgs::bind_json(&self.params, supplied).map_or(self.contract.permission, |args| {
-            self.permission_for_args(&args)
-        })
-    }
-
-    /// [`permission_for_args`](Self::permission_for_args) for the palette
-    /// and legacy text door: typed JSON behind
+    /// What one invocation is, by the value it carries: `json`, or the
+    /// palette's and legacy text door's `argument` (typed JSON behind
     /// [`ARGUMENTS_JSON_PREFIX`](crate::ARGUMENTS_JSON_PREFIX), one line of
-    /// text for the primary parameter, or nothing.
-    pub fn permission_for_argument(&self, argument: Option<&str>) -> PermissionRequirement {
-        if self.permission_of.is_none() {
-            return self.contract.permission;
+    /// text for the primary parameter, or nothing). Arguments that do not
+    /// bind build no action, so they are what the declaration says.
+    #[must_use]
+    pub fn need_for(
+        &self,
+        json: Option<&serde_json::Map<String, serde_json::Value>>,
+        argument: Option<&str>,
+    ) -> ActionNeed {
+        if self.need_of.is_none() {
+            return self.contract.need();
+        }
+        if let Some(json) = json {
+            return ActionArgs::bind_json(&self.params, json)
+                .map_or_else(|_| self.contract.need(), |args| self.need_for_args(&args));
         }
         if let Some(json) =
             argument.and_then(|text| text.strip_prefix(crate::ARGUMENTS_JSON_PREFIX))
         {
             return serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
-                .map_or(self.contract.permission, |arguments| {
-                    self.permission_for_json(&arguments)
-                });
+                .map_or_else(
+                    |_| self.contract.need(),
+                    |arguments| self.need_for(Some(&arguments), None),
+                );
         }
         let supplied = argument.map_or_else(Vec::new, |text| primary_argument(&self.params, text));
-        ActionArgs::bind(&self.params, supplied).map_or(self.contract.permission, |args| {
-            self.permission_for_args(&args)
-        })
+        ActionArgs::bind(&self.params, supplied)
+            .map_or_else(|_| self.contract.need(), |args| self.need_for_args(&args))
     }
 
     /// The risk of one invocation: the classifier's verdict for these
@@ -1495,30 +1517,6 @@ impl ActionSpec {
         self.risk_of
             .as_ref()
             .map_or(self.contract.risk, |classify| classify(args))
-    }
-
-    /// Name each invocation in history after the action it built rather
-    /// than after this spec, for an action that carries different edits (a
-    /// generic typed edit is "Remove marks" once and "Edit marks" the next
-    /// time). `None` falls back to [`label`](Self::label).
-    #[must_use]
-    pub fn with_history_label(
-        mut self,
-        label: impl Fn(&EncodedAction) -> Option<String> + Send + Sync + 'static,
-    ) -> Self {
-        self.history_label_of = Some(Arc::new(label));
-        self
-    }
-
-    /// What history calls one invocation that built `encoded`: the
-    /// [`with_history_label`](Self::with_history_label) name when there is
-    /// one, else the spec's [`label`](Self::label).
-    pub fn history_label(&self, encoded: &EncodedAction) -> String {
-        self.history_label_of
-            .as_ref()
-            .and_then(|label| label(encoded))
-            .filter(|label| !label.trim().is_empty())
-            .unwrap_or_else(|| self.label.clone())
     }
 
     /// The confirmation one invocation with these bound arguments needs: the
@@ -1584,9 +1582,26 @@ impl ActionSpec {
         self
     }
 
+    /// Set what the action is able to do. See [`ActionContract::kind`].
     #[must_use]
-    pub fn requiring(mut self, permission: PermissionRequirement) -> Self {
-        self.contract.permission = permission;
+    pub fn of_kind(mut self, kind: ActionKind) -> Self {
+        self.contract.kind = kind;
+        self
+    }
+
+    /// Set what the action is: its kind and the field it writes.
+    #[must_use]
+    pub fn with_need(mut self, need: ActionNeed) -> Self {
+        self.contract.kind = need.kind;
+        self.contract.field = need.field;
+        self
+    }
+
+    /// Place the action below the one field it writes. See
+    /// [`ActionContract::field`].
+    #[must_use]
+    pub fn below_field(mut self, field: impl Into<String>) -> Self {
+        self.contract.field = Some(field.into());
         self
     }
 
@@ -1611,12 +1626,6 @@ impl ActionSpec {
     #[must_use]
     pub fn returns(mut self, result: ResultSpec) -> Self {
         self.contract.result = result;
-        self
-    }
-
-    #[must_use]
-    pub fn launchable_when_closed(mut self) -> Self {
-        self.contract.discovery = DiscoveryScope::Launchable;
         self
     }
 
@@ -1680,6 +1689,28 @@ impl ActionSpec {
             },
         };
         self
+    }
+
+    /// This document action, carried out on another document than the one
+    /// its resource's host holds (the person's own record, a settings
+    /// section): published as an effect operation of `operation_type` whose
+    /// value is `wrap` of the encoded action, which the host answering
+    /// `operation_type` applies to that document. Parameters, kind,
+    /// permission, risk and confirmation stay this action's. An effect or
+    /// view operation is returned as it is.
+    #[must_use]
+    pub fn routed(
+        self,
+        operation_type: &str,
+        wrap: impl Fn(EncodedAction) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        if self.kind != OperationKind::Document {
+            return self;
+        }
+        let mut spec = self.rewrapped(operation_type, wrap);
+        spec.kind = OperationKind::Effect;
+        spec.operation_type = Some(operation_type.to_owned());
+        spec
     }
 
     /// What an invocation of this action must carry. Empty for the nullary

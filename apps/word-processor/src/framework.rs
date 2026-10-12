@@ -15,151 +15,17 @@
 
 use std::rc::Rc;
 
-use tilo_actions::{ActionParam, ParamType};
-use tilo_document::{RichText, RichTextAction, RichTextState};
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, LaunchInput, LiveRow, ResourceApp,
     ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
 use ui::record::RecordId;
-use ui::tilo_resource::{ActionDecl, Demand, Doc, Invoke, ModelError, Resource};
+use ui::tilo_resource::Invoke;
 use ui::widget::Element;
 
 use crate::WordProcessorWidget;
 use crate::effects::WordProcessorEffect;
-
-/// Rich text plus the images, tables and headings that document already holds.
-///
-/// The record kind stays `tilo.rich-text`. The editor's chrome (find, open,
-/// save) is the editor's [`crate::effects::WordProcessorEffect`]. Structural objects,
-/// notes, review, paragraph styles, and the page header and footer are
-/// [`Resource::children`], so a hosted palette does not rebuild them beside
-/// the document.
-pub struct Document;
-
-impl Resource for Document {
-    const KIND: &'static str = <RichText as Resource>::KIND;
-    const LABEL: &'static str = <RichText as Resource>::LABEL;
-    const ACTION_TYPE: &'static str = <RichText as Resource>::ACTION_TYPE;
-
-    type State = RichTextState;
-    type Action = RichTextAction;
-
-    fn read(doc: &Doc) -> Result<Self::State, ModelError> {
-        <RichText as Resource>::read(doc)
-    }
-
-    fn locate(state: &Self::State, obj: &automerge::ObjId) -> Option<ui::tilo_resource::Path> {
-        <RichText as Resource>::locate(state, obj)
-    }
-
-    fn lands(state: &Self::State, action: &Self::Action) -> Option<ui::tilo_resource::Place> {
-        <RichText as Resource>::lands(state, action)
-    }
-
-    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
-        <RichText as Resource>::initialize(doc)
-    }
-
-    fn refresh(
-        state: &mut Self::State,
-        doc: &Doc,
-        delta: &ui::tilo_resource::Delta,
-    ) -> Result<(), ModelError> {
-        <RichText as Resource>::refresh(state, doc, delta)
-    }
-
-    fn load(state: &mut Self::State, doc: &Doc, demand: &Demand) -> Result<(), ModelError> {
-        <RichText as Resource>::load(state, doc, demand)
-    }
-
-    fn coalesces(previous: &Self::Action, next: &Self::Action) -> bool {
-        <RichText as Resource>::coalesces(previous, next)
-    }
-
-    fn least_permission() -> ui::tilo_resource::PermissionRequirement {
-        <RichText as Resource>::least_permission()
-    }
-
-    fn permission(action: &Self::Action) -> ui::tilo_resource::PermissionRequirement {
-        <RichText as Resource>::permission(action)
-    }
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        <RichText as Resource>::register(registry);
-    }
-
-    fn action_schema() -> Option<serde_json::Value> {
-        <RichText as Resource>::action_schema()
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        let mut decls: Vec<ActionDecl<Self>> = <RichText as Resource>::declarations()
-            .into_iter()
-            .map(|decl| ActionDecl {
-                id: decl.id,
-                label: decl.label,
-                description: decl.description,
-                params: decl.params,
-                permission: decl.permission,
-                destructive: decl.destructive,
-                result: decl.result,
-                tags: decl.tags,
-                content: decl.content,
-                refines: decl.refines,
-                build: decl.build,
-            })
-            .collect();
-        decls.push(
-            ActionDecl::new(
-                "set-page-margins",
-                "Set page margins",
-                vec![
-                    ActionParam::required_owned("top", ParamType::Number, "Top margin in px"),
-                    ActionParam::required_owned("right", ParamType::Number, "Right margin in px"),
-                    ActionParam::required_owned("bottom", ParamType::Number, "Bottom margin in px"),
-                    ActionParam::required_owned("left", ParamType::Number, "Left margin in px"),
-                ],
-                |args, _| {
-                    let margin = |name: &str| {
-                        args.number(name)
-                            .ok_or_else(|| format!("missing {name} margin"))
-                    };
-                    Ok(RichTextAction::SetPageMargins {
-                        top: margin("top")?,
-                        right: margin("right")?,
-                        bottom: margin("bottom")?,
-                        left: margin("left")?,
-                    })
-                },
-            )
-            .describe("Set the four page margins, in pixels."),
-        );
-        decls
-    }
-
-    fn views(state: &Self::State) -> Vec<tilo_actions::ResourceViewSpec> {
-        <RichText as Resource>::views(state)
-    }
-
-    fn local_operations() -> Vec<tilo_actions::ActionSpec> {
-        let mut specs = <RichText as Resource>::local_operations();
-        specs.push(crate::semantic_read::action::spec());
-        specs
-    }
-
-    fn search(state: &Self::State) -> Vec<ui::tilo_resource::SearchEntry> {
-        <RichText as Resource>::search(state)
-    }
-
-    fn children(state: &Self::State) -> Vec<tilo_actions::Resource> {
-        crate::actions::structural_children(state)
-    }
-
-    fn bound_actions(state: &Self::State) -> Vec<tilo_actions::ActionSpec> {
-        crate::actions::toc_action(state).into_iter().collect()
-    }
-}
+pub use crate::model::Document;
 
 /// The import of the file `input` names, as one action.
 fn import(input: &LaunchInput<'_>) -> Vec<Invoke<Document>> {
@@ -172,7 +38,10 @@ fn import(input: &LaunchInput<'_>) -> Vec<Invoke<Document>> {
         .cloned()
         .unwrap_or_else(tilo_content::ContentStore::memory);
     match crate::import_action(file.bytes(), format, &content) {
-        Ok(action) => Invoke::apply(&action).into_iter().collect(),
+        // The file's text and the comments it brought, as one step.
+        Ok(action) => Invoke::edit(&crate::model::edit(&action))
+            .map(|import| vec![Invoke::group([import, Document::ADOPT_COMMENTS.invoke()])])
+            .unwrap_or_default(),
         Err(error) => {
             eprintln!("word-processor: could not open {}: {error}", file.name());
             Vec::new()
@@ -226,9 +95,11 @@ impl ResourceApp for WordProcessorApp {
     }
 
     /// The document's first heading, as the palette and history name it.
-    fn label(state: &RichTextState) -> String {
+    fn label(state: &Document) -> String {
         state
-            .headings()
+            .text()
+            .map(tilo_document::RichTextState::headings)
+            .unwrap_or_default()
             .into_iter()
             .map(|heading| heading.text.trim().to_owned())
             .find(|text| !text.is_empty())
@@ -251,13 +122,27 @@ impl ResourceApp for WordProcessorApp {
     /// writes it, unless the file changed since the record last read or
     /// wrote it: then it is read again, an edit Undo takes back.
     fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Document>> {
-        let (Some(file), Some(state)) = (input.file(), input.record::<RichTextState>()) else {
+        let (Some(file), Some(state)) = (input.file(), input.record::<Document>()) else {
             return Vec::new();
         };
-        if created || state.file_digest() == Some(tilo_content::hash_bytes(file.bytes()).as_str()) {
+        let digest = state
+            .text()
+            .and_then(tilo_document::RichTextState::file_digest);
+        if created || digest == Some(tilo_content::hash_bytes(file.bytes()).as_str()) {
             return Vec::new();
         }
         import(input)
+    }
+
+    /// The app's messages, history's sentences among them.
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::i18n::CATALOG)
+    }
+
+    /// The document's text a page at a time, for agents, scripts and
+    /// assistive tools.
+    fn local_operations() -> Vec<tilo_actions::ActionSpec> {
+        vec![crate::semantic_read::action::spec()]
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -279,12 +164,7 @@ impl ResourceApp for WordProcessorApp {
         };
         texts
             .iter()
-            .filter_map(|text| {
-                Invoke::apply(&RichTextAction::AppendParagraph {
-                    text: (*text).to_owned(),
-                })
-                .ok()
-            })
+            .map(|text| Document::APPEND_PARAGRAPH.with(*text))
             .collect()
     }
 }
@@ -292,12 +172,12 @@ impl ResourceApp for WordProcessorApp {
 impl ResourceSurface<Document, WordProcessorEffect> for WordProcessorWidget {
     /// The editor reads the live state where it needs it; a new state only
     /// asks for a redraw.
-    fn present(&mut self, state: &Rc<RichTextState>) {
+    fn present(&mut self, state: &Rc<Document>) {
         // An editor that has not drawn yet still has a caret, at the start
         // of the body, so edits bound to it (a table at the caret) can be
         // invoked before the first frame.
         if self.model().caret().block.is_empty()
-            && let Some(first) = state.body().id_at(0)
+            && let Some(first) = state.text().and_then(|text| text.body().id_at(0))
         {
             self.model_mut().set_caret(crate::word_processor::Caret {
                 block: first.to_owned(),
@@ -328,11 +208,6 @@ impl ResourceSurface<Document, WordProcessorEffect> for WordProcessorWidget {
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
-    }
-
-    /// Edits bound to the caret and selection of whoever invokes them.
-    fn bound_declarations(&self) -> Vec<ActionDecl<Document>> {
-        self.bound_edits()
     }
 
     /// The Find results of whoever invokes them, beneath the document.
@@ -378,10 +253,21 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .filter(|row| row["resource"] == "tilo.rich-text")
+            .filter(|row| row["resource"] == "word-processor.document")
             .filter_map(|row| row["action"].as_str())
             .collect();
-        for id in ["find", "open", "save", "save-as", "zoom-in", "move-caret"] {
+        for id in [
+            "find",
+            "open-document",
+            "save",
+            "save-as",
+            "zoom-in",
+            "move-caret",
+            "type-text",
+            "read-text",
+            "append-paragraph",
+            "field-edit",
+        ] {
             assert!(ids.contains(&id), "{id}: {ids:?}");
         }
     }
@@ -413,48 +299,25 @@ mod tests {
 
     #[test]
     fn page_margins_are_a_published_document_action() {
-        use ui::tilo_resource::Resource;
-        let decl = super::Document::declarations()
-            .into_iter()
-            .find(|decl| decl.id == "set-page-margins")
-            .expect("page margins are a document action");
-        let supplied = serde_json::json!({
-            "top": 72.0,
-            "right": 54.0,
-            "bottom": 72.0,
-            "left": 54.0
-        });
-        let supplied = supplied.as_object().expect("margin object");
-        let args = tilo_actions::ActionArgs::bind_json(decl.params.as_slice(), supplied)
-            .expect("margin arguments");
-        let action = (decl.build)(&args, 0).expect("the declaration builds an action");
-        let mut doc = automerge::AutoCommit::new();
-        <super::Document as Resource>::initialize(&mut doc).expect("document initializes");
-        ui::tilo_actions::Action::apply(&action, &mut doc).expect("margins apply");
-        let containers = tilo_doc::model::open(&doc, &automerge::ROOT).expect("document opens");
+        let mut replica = ui::tilo_resource::Replica::<super::Document>::new();
+        replica
+            .apply(
+                super::Document::SET_PAGE_MARGINS.with(crate::model::document::SetPageMargins {
+                    top: 72.0,
+                    right: 54.0,
+                    bottom: 72.0,
+                    left: 54.0,
+                }),
+            )
+            .expect("margins apply");
+        let containers = crate::model::open(replica.doc()).expect("document opens");
         assert_eq!(
-            tilo_doc::model::meta_str(&doc, &containers, "page_margin_top").as_deref(),
+            tilo_doc::model::meta_str(replica.doc(), &containers, "page_margin_top").as_deref(),
             Some("72")
         );
         assert_eq!(
-            tilo_doc::model::meta_str(&doc, &containers, "page_margin_right").as_deref(),
+            tilo_doc::model::meta_str(replica.doc(), &containers, "page_margin_right").as_deref(),
             Some("54")
         );
-    }
-
-    #[test]
-    fn read_text_is_published_with_the_document() {
-        use ui::tilo_resource::Resource;
-        let mut doc = automerge::AutoCommit::new();
-        <super::Document as Resource>::initialize(&mut doc).expect("document initializes");
-        let state = <super::Document as Resource>::read(&doc).expect("document reads");
-        let published =
-            ui::tilo_resource::publish::<super::Document>("tilo.rich-text", "Document", &state);
-        let read = published
-            .actions
-            .iter()
-            .find(|action| action.id == "read-text")
-            .expect("read-text is on the published document");
-        assert_eq!(read.kind, tilo_actions::OperationKind::Effect);
     }
 }

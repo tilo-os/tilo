@@ -158,7 +158,9 @@ class TiloVm:
 
     def restart_session(self, timeout: float = 60) -> None:
         """Restart the slot's session on its current generation and wait until its control
-        socket answers again: a fresh compositor, unlocked, with no windows open."""
+        socket answers again: a fresh compositor, unlocked, with no windows open. Counted in
+        `requested_restarts`, so the session-restart guard knows this ending was asked for."""
+        self.requested_restarts = getattr(self, "requested_restarts", 0) + 1
         self.run("slot", "restart", self.slot, timeout=300, slot=False)
 
         def answering():

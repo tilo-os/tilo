@@ -27,9 +27,10 @@ impl PublishedInvocationRequest {
     /// The invoker this request resolves for: the admitted actor plus the
     /// host-set participant.
     pub fn invoker(&self) -> tilo_actions::ActionInvoker {
-        tilo_actions::ActionInvoker {
-            actor: self.actor.clone(),
-            participant: self.participant.clone(),
+        let invoker = tilo_actions::ActionInvoker::actor(self.actor.clone());
+        match &self.participant {
+            Some(participant) => invoker.with_participant(participant.clone()),
+            None => invoker,
         }
     }
 
@@ -111,9 +112,9 @@ pub fn current_viewer() -> Option<tilo_actions::ParticipantId> {
 pub(crate) struct Continuation {
     pub(crate) invoker: tilo_actions::ActionInvoker,
     pub(crate) context: Option<tilo_actions::ActionContext>,
-    /// What the invoker was admitted for: the effect's own requirement for
-    /// its arguments, which the admitting host checked the invoker holds.
-    pub(crate) admitted: tilo_actions::PermissionRequirement,
+    /// What the invoker was admitted for: the effect's own kind, which the
+    /// admitting host checked the invoker may perform.
+    pub(crate) admitted: tilo_actions::ActionKind,
     /// Why an edit the effect submitted was refused: the effect then fails.
     pub(crate) refused: Option<tilo_actions::ActionFailure>,
     /// The edits it submitted that the host is still admitting, by request.
@@ -169,7 +170,7 @@ impl Continuation {
 }
 
 thread_local! {
-    static CONTINUATION_BOUNDS: std::cell::RefCell<Vec<tilo_actions::PermissionRequirement>> =
+    static CONTINUATION_BOUNDS: std::cell::RefCell<Vec<tilo_actions::ActionKind>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -178,7 +179,7 @@ thread_local! {
 #[must_use = "the bound applies only while the guard is alive"]
 pub(crate) struct ContinuationScope(());
 impl ContinuationScope {
-    pub(crate) fn enter(admitted: tilo_actions::PermissionRequirement) -> Self {
+    pub(crate) fn enter(admitted: tilo_actions::ActionKind) -> Self {
         CONTINUATION_BOUNDS.with_borrow_mut(|bounds| bounds.push(admitted));
         Self(())
     }
@@ -191,19 +192,19 @@ impl Drop for ContinuationScope {
     }
 }
 
-/// Refuse an edit that needs `needed` while applying an effect's edit for
-/// an invoker admitted for less: an effect never lends its invoker more
-/// than they hold.
+/// Refuse an edit of kind `needed` while applying an effect's edit for an
+/// invoker admitted for less (a read never lends a change, a change never an
+/// outside effect): an effect never lends its invoker more than they hold.
 ///
 /// # Errors
 /// [`tilo_actions::DoorError::Unavailable`] with code `permission_denied`.
 pub(crate) fn check_continuation(
     spec: &tilo_actions::ActionSpec,
-    needed: tilo_actions::PermissionRequirement,
+    needed: tilo_actions::ActionKind,
 ) -> Result<(), tilo_actions::DoorError> {
     let admitted = CONTINUATION_BOUNDS.with_borrow(|bounds| bounds.last().copied());
     match admitted {
-        Some(admitted) if !admitted.covers(needed) => Err(tilo_actions::DoorError::Unavailable {
+        Some(admitted) if admitted < needed => Err(tilo_actions::DoorError::Unavailable {
             code: "permission_denied".into(),
             reason: format!("the invoker may not {} here", spec.label.to_lowercase()),
         }),

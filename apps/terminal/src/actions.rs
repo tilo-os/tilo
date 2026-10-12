@@ -1,26 +1,16 @@
 //! The terminal's actions and effects.
 //!
 //! A terminal session is a record ([`Terminal`](crate::resource::Terminal)):
-//! what its process shows, the title the program set, where the session runs
-//! and the pane collaborators' presence is scoped to. The emulator parses the
-//! process's output onto its own screen, and after each batch the difference
-//! reaches the record as one [`Output`](crate::resource::TerminalAction::Output)
-//! action, so every collaborator and every past version sees the same screen.
-//! None of these actions is an undo step: they record what a process did,
-//! which no undo takes back.
+//! where the session runs, the relay session it re-attaches to and the pane
+//! collaborators' presence is scoped to. What the process prints stays on
+//! the device that runs it: the emulator's own screen, never the record's.
 //!
 //! Keystrokes are not actions: they travel straight to the process's stdin
 //! and change no document. Driving the process from the palette, an agent
 //! or a script — send text, run a command, interrupt it, paste — is an
-//! effect on the live session. Presentation (the scrollback offset, the
-//! selection, the find bar, the context menu) is view state of the widget.
-
-use ui::tilo_actions::ActionRegistry;
-
-/// Install the terminal session action decoder on the live launch path.
-pub fn register(registry: &mut ActionRegistry) {
-    <crate::resource::Terminal as ui::tilo_resource::Resource>::register(registry);
-}
+//! effect on the live session, and so is reading what it shows. Presentation
+//! (the scrollback offset, the selection, the find bar, the context menu) is
+//! view state of the widget.
 
 #[cfg(test)]
 mod tests {
@@ -151,13 +141,17 @@ mod tests {
     /// clipboard asks for confirmation from the palette, an agent or a script.
     #[test]
     fn effects_that_reach_the_process_or_clipboard_ask_for_confirmation() {
-        use ui::tilo_actions::{ConfirmationPolicy, OperationKind, PermissionRequirement};
+        use ui::tilo_actions::{ActionKind, ConfirmationPolicy, OperationKind};
         let specs = TerminalEffect::specs();
         assert!(specs.iter().all(|spec| spec.kind == OperationKind::Effect));
         for spec in &specs {
             let reads = matches!(
                 spec.id.as_str(),
-                "history-top" | "history-live" | "inspect-session" | "inspect-editor"
+                "history-top"
+                    | "history-live"
+                    | "inspect-session"
+                    | "read-screen"
+                    | "inspect-editor"
             );
             assert_eq!(
                 spec.contract.confirmation == ConfirmationPolicy::Confirm,
@@ -169,6 +163,7 @@ mod tests {
                 spec.id.as_str(),
                 "history-top"
                     | "inspect-session"
+                    | "read-screen"
                     | "inspect-editor"
                     | "history-live"
                     | "copy-visible"
@@ -177,7 +172,7 @@ mod tests {
                     | "open-link"
             );
             assert_eq!(
-                spec.contract.permission == PermissionRequirement::Read,
+                spec.contract.kind == ActionKind::Read,
                 views,
                 "`{}` permission",
                 spec.id
@@ -185,28 +180,11 @@ mod tests {
         }
     }
 
-    /// A reviewed command presses Enter exactly once, and reviewed input may
-    /// not smuggle control sequences or reach the PTY when refused.
+    /// Reviewed input may not smuggle control sequences or reach the PTY
+    /// when refused.
     #[test]
-    fn reviewed_input_is_bounded_and_presses_enter_exactly_once() {
+    fn reviewed_input_is_bounded() {
         let (mut widget, writes) = build_test_widget();
-        widget
-            .perform(TerminalEffect::Run {
-                command: "printf resource-run".into(),
-            })
-            .expect("run command");
-        assert_eq!(drain_writes(&writes), b"printf resource-run\r".to_vec());
-
-        for command in ["  ", "printf first\nprintf second", "printf x\x1b[200~"] {
-            assert!(
-                widget
-                    .perform(TerminalEffect::Run {
-                        command: command.into()
-                    })
-                    .is_err(),
-                "unsafe command must be refused: {command:?}"
-            );
-        }
         for text in [
             String::new(),
             "x".repeat(crate::inner::MAX_RESOURCE_SEND_BYTES + 1),
@@ -292,14 +270,7 @@ mod tests {
             .into_iter()
             .map(|status| format!("{status:?}"))
             .collect();
-        for id in [
-            "send",
-            "run",
-            "interrupt",
-            "clear",
-            "paste",
-            "paste-primary",
-        ] {
+        for id in ["send", "interrupt", "clear", "paste", "paste-primary"] {
             assert!(
                 unavailable
                     .iter()

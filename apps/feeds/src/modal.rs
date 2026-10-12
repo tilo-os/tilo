@@ -24,7 +24,7 @@ use crate::model::Id;
 
 /// What a feeds dialog is asking for, so the submit handler knows which
 /// mutation to run against the store and the document.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModalIntent {
     /// Add a new subscription from the typed address.
     AddSubscription,
@@ -32,8 +32,6 @@ pub enum ModalIntent {
     AddFolder,
     /// Rename an existing feed.
     RenameFeed { feed_id: Id },
-    /// Confirm unsubscribing from a feed. No text input.
-    Unsubscribe { feed_id: Id },
     /// Replace the selected article's comma-separated tags.
     EditArticleTags { article_id: Id },
 }
@@ -41,7 +39,7 @@ pub enum ModalIntent {
 impl ModalIntent {
     /// Whether this intent requires a non-empty field. Tag editing also owns
     /// a field, but an empty value deliberately means "remove all tags".
-    pub fn requires_input(self) -> bool {
+    pub fn requires_input(&self) -> bool {
         matches!(
             self,
             ModalIntent::AddSubscription | ModalIntent::AddFolder | ModalIntent::RenameFeed { .. }

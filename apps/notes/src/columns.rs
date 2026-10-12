@@ -14,12 +14,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
 use ui::Widget;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::TaffyTreeExt;
 
@@ -90,16 +87,6 @@ impl Widget for ColumnSlot {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         self.place.rect.set(self.rect);
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
 
     fn name(&self) -> &'static str {

@@ -87,7 +87,7 @@ fn drive(
 
 /// The paragraphs of a page in a dumped notebook, in no particular order.
 fn texts(page: &serde_json::Value) -> Vec<String> {
-    page["body"]["blocks"]
+    page["v"]["body"]["blocks"]
         .as_object()
         .unwrap()
         .values()
@@ -121,7 +121,10 @@ fn positional_markdown_imports_and_persists_without_synthetic_input() {
         &temp.path().join("second.json"),
     );
     assert_eq!(second["pages"].as_object().unwrap().len(), 2);
-    assert_eq!(second["pages"][old_id]["title"], old_page["title"]);
+    assert_eq!(
+        second["pages"][old_id]["v"]["title"],
+        old_page["v"]["title"]
+    );
     assert!(texts(&second["pages"][old_id]).contains(&"Keep this body.".to_owned()));
     let restored = run(&notebook, &host, None, &temp.path().join("restart.json"));
     assert_eq!(restored["pages"].as_object().unwrap().len(), 2);
@@ -129,7 +132,7 @@ fn positional_markdown_imports_and_persists_without_synthetic_input() {
         .as_object()
         .unwrap()
         .values()
-        .find(|page| page["title"] == "Grüße 日本語")
+        .find(|page| page["v"]["title"] == "Grüße 日本語")
         .unwrap();
     let mut body = texts(new_page);
     body.sort();

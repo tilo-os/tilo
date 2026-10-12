@@ -26,6 +26,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+use collab_types::CommitNamed as _;
 
 use tilo_ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
 use tilo_ui::offscreen::OffscreenRenderer;
@@ -293,6 +294,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         // Late-join handshake: A ships a full snapshot, B adopts it. This is
         // exactly the document snapshot path the App drives on join.
         a.send(CollabRequest::document_snapshot(a_doc.save()));
+        a_doc.commit_edit("fixture", "text");
         let _ = a_doc.save_incremental(); // re-baseline incremental after full save
 
         let mut b_doc = AutoCommit::new();
@@ -320,6 +322,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         );
 
         a_doc.splice_text(&a_text, 4, 0, "-EDIT").unwrap();
+        a_doc.commit_edit("fixture", "text");
         let delta = a_doc.save_incremental();
         assert!(!delta.is_empty(), "the edit must produce a delta");
         a.send(CollabRequest::document_incremental(delta));
@@ -467,6 +470,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         writer_doc.set_actor(automerge::ActorId::from(b"writer".as_slice()));
         let wt = text_obj(&writer_doc).unwrap();
         writer_doc.splice_text(&wt, 4, 0, "-WROTE").unwrap();
+        writer_doc.commit_edit("fixture", "text");
         let writer_delta = writer_doc.save_incremental();
         let writer_op = sign_delta(
             &writer_sk,
@@ -482,6 +486,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         viewer_doc.set_actor(automerge::ActorId::from(b"viewer".as_slice()));
         let vt = text_obj(&viewer_doc).unwrap();
         viewer_doc.splice_text(&vt, 4, 0, "-HACKED").unwrap();
+        viewer_doc.commit_edit("fixture", "text");
         let viewer_delta = viewer_doc.save_incremental();
         let viewer_op = sign_delta(
             &viewer_sk,
@@ -493,7 +498,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         );
 
         match validate_inbound_op(&viewer_op, &mut state) {
-            Err(ValidationError::RoleForbidsOpClass) => {}
+            Err(ValidationError::NotGranted(_)) => {}
             other => panic!("viewer without write cap must be rejected, got {other:?}"),
         }
         // ...so the peer doc and its render are untouched.
@@ -535,7 +540,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
 
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
-    Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp, ValidationError,
+    Ed25519PublicKey, OpKind, Role, RoleAttestation, Signature, SignedOp, ValidationError,
     generate_keypair, sign_event, sign_op, validate_inbound_op,
 };
 use ed25519_dalek::SigningKey;
@@ -583,7 +588,7 @@ fn sign_delta(
         artifact,
         author_pub,
         attestation_id,
-        OpClass::Splice,
+        OpKind::Change,
         SystemTime::UNIX_EPOCH
             .checked_add(StdDuration::from_secs(10))
             .unwrap(),

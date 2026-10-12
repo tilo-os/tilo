@@ -242,7 +242,7 @@ impl SpeedTestApp {
                 self.result = Some(result);
                 self.display_value = result.download;
                 self.phase = Phase::Complete;
-                cx.invoke(self.recorded(&result, &server));
+                cx.submit(self.recorded(&result, &server));
                 Ok(Effected::value(ui::serde_json::json!({
                     "ping_ms": result.ping,
                     "jitter_ms": result.jitter,

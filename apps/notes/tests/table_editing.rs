@@ -131,7 +131,7 @@ fn table_cell_editing_survives_echo_undo_and_reload() {
 
     eprintln!("phase escaped_cells_and_dash_values_survive_canonical_undo_and_reload");
     {
-        use notes::doc::NotesDoc;
+        use notes::read;
         let source = "| A | B |\n| --- | --- |\n| initial | other |";
         let mut f = Fixture::new(source);
         let target = f.target(0, 1, 0);
@@ -144,47 +144,41 @@ fn table_cell_editing_survives_echo_undo_and_reload() {
         assert_eq!(f.value(0, 1, 0), " a|b\nC\\D & <br> ");
 
         let mut state = ui::State::new();
-        notes::notebook::initialize_empty(&mut state.doc).unwrap();
+        notes::read::initialize(&mut state.doc);
         let page = uuid::Uuid::new_v4();
-        NotesDoc::upsert_page_meta(
+        crate::component_support::upsert_page(
             &mut state.doc,
             &notes::model::PageMeta {
                 id: page,
                 title: "Table".into(),
                 parent: None,
-                order: "a".into(),
             },
         );
-        NotesDoc::fill_page_body(
+        crate::component_support::apply_to(
             &mut state.doc,
-            page,
-            &[ui::widget::BlockContent {
-                kind: ui::widget::BlockKind::Table { visual: true },
-                ..ui::widget::BlockContent::paragraph("", source)
-            }],
+            &notes::actions::write_body_action(
+                page,
+                &[ui::widget::BlockContent {
+                    kind: ui::widget::BlockKind::Table { visual: true },
+                    ..ui::widget::BlockContent::paragraph("", source)
+                }],
+            ),
         )
         .unwrap();
         state.commit_action(None, None);
-        let id = NotesDoc::page_block_snapshots(&state.doc, page)[0]
-            .0
-            .clone();
+        let id = read::page_block_snapshots(&state.doc, page)[0].0.clone();
         let edited = f.editor.blocks()[0].text().to_owned();
         crate::component_support::replace_block_text(&mut state.doc, page, &id, &edited);
         state.commit_action(None, None);
-        let saved = NotesDoc::page_block_snapshots(&state.doc, page)[0]
-            .1
-            .clone();
+        let saved = read::page_block_snapshots(&state.doc, page)[0].1.clone();
         let reopened = automerge::AutoCommit::load(&state.doc.save()).unwrap();
-        assert_eq!(NotesDoc::page_block_snapshots(&reopened, page)[0].1, saved);
+        assert_eq!(read::page_block_snapshots(&reopened, page)[0].1, saved);
         let reopened_editor = Fixture::new(&saved);
         assert_eq!(reopened_editor.value(0, 1, 0), " a|b\nC\\D & <br> ");
         state.undo(None, None).unwrap();
-        assert_eq!(
-            NotesDoc::page_block_snapshots(&state.doc, page)[0].1,
-            source
-        );
+        assert_eq!(read::page_block_snapshots(&state.doc, page)[0].1, source);
         state.redo(None, None).unwrap();
-        assert_eq!(NotesDoc::page_block_snapshots(&state.doc, page)[0].1, saved);
+        assert_eq!(read::page_block_snapshots(&state.doc, page)[0].1, saved);
 
         let mut dash = Fixture::new("| Header |\n| --- |\n| value |");
         assert!(dash.action(&dash.target(0, 1, 0), Action::SetValue("---".into())));

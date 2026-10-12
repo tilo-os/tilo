@@ -167,7 +167,6 @@ mod tests {
     use automerge::{AutoCommit, ObjId, ReadDoc, transaction::Transactable};
     use std::{cell::RefCell, rc::Rc};
     use tilo_actions::{InvocationId, OperationKind};
-    use vello::kurbo::Point;
 
     struct MutableAdmission {
         calls: Rc<RefCell<Vec<InvocationId>>>,
@@ -177,9 +176,6 @@ mod tests {
         fn name(&self) -> &str {
             "MutableAdmission"
         }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
-        }
         fn build_layout(
             &mut self,
             tree: &mut TaffyTree<()>,
@@ -187,16 +183,6 @@ mod tests {
             _: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             tree.leaf_node(Style::default())
-        }
-        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
         }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &["mutable.effect"]

@@ -1,0 +1,252 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "video-player.library"
+label = "Video Player"
+version = 1
+
+[[resources.fields]]
+owner = "library"
+path = "playlists"
+stored = "collection"
+title = "Playlists"
+type = "Collection<Playlist>"
+
+[[resources.fields]]
+label = true
+owner = "playlist"
+path = "playlists.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "library"
+path = "items"
+stored = "collection"
+title = "Playlist items"
+type = "Collection<PlaylistItem>"
+
+[[resources.fields]]
+owner = "playlist-item"
+path = "items.*.playlist"
+readonly = true
+stored = "value"
+title = "Playlist"
+type = "Id"
+
+[[resources.fields]]
+owner = "playlist-item"
+path = "items.*.media_ref"
+readonly = true
+stored = "value"
+title = "Video"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "playlist-item"
+path = "items.*.title"
+stored = "value"
+title = "Title"
+type = "String"
+
+[[resources.fields]]
+owner = "library"
+path = "annotations"
+stored = "collection"
+title = "Annotations"
+type = "Collection<TimestampAnnotation>"
+
+[[resources.fields]]
+owner = "timestamp-annotation"
+path = "annotations.*.media_ref"
+readonly = true
+stored = "value"
+title = "Video"
+type = "String"
+
+[[resources.fields]]
+owner = "timestamp-annotation"
+path = "annotations.*.time_ms"
+stored = "value"
+title = "Time"
+type = "u64"
+
+[[resources.fields]]
+label = true
+owner = "timestamp-annotation"
+path = "annotations.*.text"
+stored = "value"
+title = "Note"
+type = "String"
+
+[[resources.fields]]
+owner = "library"
+path = "transports"
+readonly = true
+stored = "value"
+title = "Playback watched together, by video"
+type = "BTreeMap<String, SharedTransport>"
+
+[[resources.verbs]]
+description = "A playlist everyone in the room sees."
+id = "create-playlist"
+kind = "undoable"
+label = "Create shared playlist"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Its videos go with it."
+destructive = true
+id = "delete-playlist"
+kind = "undoable"
+label = "Delete playlist"
+
+[[resources.verbs.params]]
+name = "playlist"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "add-to-playlist"
+kind = "undoable"
+label = "Add media to playlist"
+
+[[resources.verbs.params]]
+name = "playlist"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "media_ref"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "title"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Adds a video to the shared Watch later playlist, making the playlist when there is none; a video already on it stays where it is."
+id = "add-to-watch-later"
+kind = "undoable"
+label = "Add to Watch later"
+
+[[resources.verbs.params]]
+name = "media_ref"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "title"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "A review note at a time in a shared video; without a note it is a bookmark."
+id = "add-annotation"
+kind = "undoable"
+label = "Add timestamp annotation"
+
+[[resources.verbs.params]]
+name = "media_ref"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "time_ms"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs.params]]
+name = "text"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+destructive = true
+id = "delete-annotation"
+kind = "undoable"
+label = "Delete annotation"
+
+[[resources.verbs.params]]
+name = "annotation"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Everyone watching the video follows. Not an undo step: playing, pausing and seeking are not edits. The library remembers the playback of the last few videos."
+id = "set-transport"
+kind = "undoable"
+label = "Say where playback stands"
+
+[[resources.verbs.params]]
+name = "media_ref"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "playing"
+required = true
+
+[resources.verbs.params.schema]
+type = "boolean"
+
+[[resources.verbs.params]]
+name = "position_ms"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs.params]]
+name = "rate"
+required = true
+
+[resources.verbs.params.schema]
+type = "number"
+
+[[resources.verbs.params]]
+name = "epoch_ms"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"

@@ -2189,16 +2189,6 @@ mod tests {
             self.clip.set(crate::widget::layout_clip());
         }
 
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
-        }
-
         fn name(&self) -> &'static str {
             "ClipSpy"
         }

@@ -94,13 +94,13 @@ mod tests {
                     room.to_string(),
                 ),
                 actions: [
-                    ("inspect", tilo_actions::PermissionRequirement::Read),
-                    ("edit", tilo_actions::PermissionRequirement::Write),
-                    ("apply", tilo_actions::PermissionRequirement::Admin),
+                    ("inspect", tilo_actions::ActionKind::Read),
+                    ("edit", tilo_actions::ActionKind::Undoable),
+                    ("apply", tilo_actions::ActionKind::Outside),
                 ]
                 .into_iter()
                 .map(
-                    |(id, permission)| crate::shell::collab_broker_capnp::PublishedAction {
+                    |(id, kind)| crate::shell::collab_broker_capnp::PublishedAction {
                         resource: "settings.display".into(),
                         semantic_identity: None,
                         action: id.into(),
@@ -111,7 +111,7 @@ mod tests {
                         operation_kind: tilo_actions::OperationKind::View,
                         params: vec![],
                         contract: tilo_actions::ActionContract {
-                            permission,
+                            kind,
                             ..tilo_actions::ActionContract::view()
                         },
                         input: crate::shell::collab_broker_capnp::PublishedInput::None,
@@ -206,14 +206,9 @@ mod tests {
         continuation.on_behalf_of = Some(tilo_actions::InvocationId::new());
         assert!(invoke(&caller, continuation).is_err());
         {
-            use collab_types::caps::{CapOverride, Principal, Subject, Verb};
             let mut current = tree.write();
             current.desktop.workspaces[0].set_owner("another-owner");
-            current.desktop.workspaces[0].grant_capability(CapOverride::membership(
-                Subject::Principal(Principal::Person(person.clone())),
-                room.to_string(),
-                Verb::Read,
-            ));
+            current.desktop.workspaces[0].admit(person.clone(), tilo_action_policy::Role::Viewer);
         }
         // A write publishes its own policy on the state writer; let that
         // land before this explicit publication so none arrives after it.
@@ -224,14 +219,7 @@ mod tests {
             "native identity does not elevate a Viewer"
         );
         assert!(invoke(&caller, request("apply")).is_err());
-        {
-            use collab_types::caps::{CapOverride, Principal, Subject, Verb};
-            tree.write().desktop.workspaces[0].grant_capability(CapOverride::membership(
-                Subject::Principal(Principal::Person(person.clone())),
-                room.to_string(),
-                Verb::Write,
-            ));
-        }
+        tree.write().desktop.workspaces[0].admit(person.clone(), tilo_action_policy::Role::Editor);
         // A write publishes its own policy on the state writer; let that
         // land before this explicit publication so none arrives after it.
         crate::shell::persist::wait_for_saves();
@@ -266,15 +254,14 @@ mod tests {
                 let _ = held.recv();
             },
         );
-        tree.write().desktop.workspaces[0].owner = None;
+        tree.write().desktop.workspaces[0].policy.owner = None;
         assert!(
             service.certificate(&room.to_string(), &person).is_err(),
             "unpublished policy changes revoke the captured native origin"
         );
         release.send(()).unwrap();
         crate::shell::persist::wait_for_saves();
-        tree.write().desktop.workspaces[0].owner = Some(person.clone());
-        crate::shell::persist::wait_for_saves();
+        tree.write().desktop.workspaces[0].set_owner(person.clone());
         // A write publishes its own policy on the state writer; let that
         // land before this explicit publication so none arrives after it.
         crate::shell::persist::wait_for_saves();

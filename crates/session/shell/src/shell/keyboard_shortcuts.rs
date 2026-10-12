@@ -29,7 +29,7 @@
 use serde_json::{Map, Value, json};
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig, ShortcutConfigError};
 use settings_store::keyboard_shortcuts::{ShortcutEntry, catalogue, fixed_shortcut};
-use tilo_actions::contract::{ActionContract, PermissionRequirement, ResultSpec, RetryPolicy};
+use tilo_actions::contract::{ActionContract, ActionKind, ResultSpec, RetryPolicy};
 use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::outcome::{ActionFailure, ActionOutput};
 use tilo_actions::params::{ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ParamType};
@@ -128,18 +128,18 @@ fn list_json(config: &ShortcutConfig) -> Value {
     })
 }
 
-fn contract(permission: PermissionRequirement, result: Value) -> ActionContract {
+fn contract(kind: ActionKind, result: Value) -> ActionContract {
     ActionContract {
-        permission,
+        kind,
         retry: RetryPolicy::Idempotent,
-        reversible: permission != PermissionRequirement::Read,
+        reversible: kind != ActionKind::Read,
         result: ResultSpec::Json { schema: result },
         tags: vec![
             "configuration".into(),
             "system-setting".into(),
             "keyboard-shortcuts".into(),
         ],
-        ..if permission == PermissionRequirement::Read {
+        ..if kind == ActionKind::Read {
             ActionContract::view()
         } else {
             ActionContract::default()
@@ -223,7 +223,7 @@ pub fn descriptors(
                 t("keyboard-shortcuts-list"),
                 t("keyboard-shortcuts-list-description"),
                 OperationKind::View,
-                contract(PermissionRequirement::Read, list_schema()),
+                contract(ActionKind::Read, list_schema()),
             ),
             None,
         ),
@@ -233,7 +233,7 @@ pub fn descriptors(
                 t("keyboard-shortcuts-reset-all"),
                 t("keyboard-shortcuts-reset-all-description"),
                 OperationKind::Effect,
-                contract(PermissionRequirement::Write, list_schema()),
+                contract(ActionKind::Undoable, list_schema()),
             ),
             None,
         ),
@@ -268,7 +268,7 @@ pub fn descriptors(
                         ],
                     ),
                     OperationKind::Effect,
-                    contract(PermissionRequirement::Write, entry_schema()),
+                    contract(ActionKind::Undoable, entry_schema()),
                 )
             },
             presentation.clone(),
@@ -285,7 +285,7 @@ pub fn descriptors(
                     ],
                 ),
                 OperationKind::Effect,
-                contract(PermissionRequirement::Write, entry_schema()),
+                contract(ActionKind::Undoable, entry_schema()),
             ),
             presentation,
         ));

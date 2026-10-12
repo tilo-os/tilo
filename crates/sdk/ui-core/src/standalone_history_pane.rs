@@ -370,7 +370,7 @@ mod tests {
         HistoryEntry {
             id: HistoryEntryId([id; 16]),
             author: HistoryAuthor::new("Alice", 120.0, "alice"),
-            op_class: collab_types::OpClass::Splice,
+            entry_kind: crate::widget::EntryKind::Text,
             artifact_kind: collab_types::ArtifactKind::Note,
             timestamp: crate::time::SystemTime::UNIX_EPOCH,
             summary: format!("Change {id}"),

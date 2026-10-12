@@ -58,18 +58,7 @@ fn action_rank(action: Action) -> u8 {
 }
 
 /// The queue controls write to and the app drains.
-#[derive(Clone, Default)]
-pub(crate) struct Intents(Rc<RefCell<Vec<Intent>>>);
-
-impl Intents {
-    pub(crate) fn push(&self, intent: Intent) {
-        self.0.borrow_mut().push(intent);
-    }
-
-    pub(crate) fn take(&self) -> Vec<Intent> {
-        std::mem::take(&mut *self.0.borrow_mut())
-    }
-}
+pub(crate) type Intents = ui::Intents<Intent>;
 
 /// What a switch on the page turns on or off.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -315,13 +304,12 @@ pub(crate) fn unavailable(detail: Option<&str>, intents: &Intents) -> Element {
         None => EmptyState::new("Firewall service unavailable")
             .with_message("Start firewalld, then try again. No rules were changed."),
     };
-    let intents = intents.clone();
     Box::new(
         state
             .with_icon(Icon::Shield)
             .with_action("Try again")
             .with_action_id("firewall.retry")
-            .on_effect(move || intents.push(Intent::Retry)),
+            .on_effect(intents.sender(Intent::Retry)),
     )
 }
 

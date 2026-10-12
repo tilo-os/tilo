@@ -1,0 +1,37 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "publisher.profile"
+label = "App Publisher"
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "publisher"
+path = "registry"
+stored = "value"
+title = "The registry the key publishes to"
+type = "String"
+
+[[resources.fields]]
+owner = "publisher"
+path = "domain"
+stored = "value"
+title = "A domain whose namespace to claim, such as `example.com`"
+type = "String"
+
+[[resources.fields]]
+owner = "publisher"
+path = "forge_account"
+stored = "value"
+title = "A forge account whose namespace to claim, such as `github:ada`"
+type = "String"
+
+[[resources.fields]]
+owner = "publisher"
+path = "contact"
+stored = "value"
+title = "How the registry's owner can reach you about the application"
+type = "String"

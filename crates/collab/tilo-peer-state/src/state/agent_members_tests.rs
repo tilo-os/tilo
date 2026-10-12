@@ -4,6 +4,7 @@
 //! governor withdraws it, while its history stays on the roster.
 
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use tilo_relay_protocol::agents::{AgentDelegation, AgentScope};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
@@ -66,7 +67,6 @@ fn delegation(
         AgentScope {
             rooms: vec![room.into()],
             apps: Vec::new(),
-            may_confirm: false,
         },
         ns(issued),
         ns(expires),
@@ -82,7 +82,7 @@ fn edit(writer: &mut StatePeer, key: &SigningKey, now: SystemTime) -> crate::Nei
     ));
     let before = doc.get_heads();
     doc.put(ROOT, "by agent", true).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "by agent");
     writer
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), key, now)
         .unwrap()
@@ -185,9 +185,32 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
             .unwrap()
             .metadata_changed
     );
-    let (role, _, acting_for) = member.permissions(device, now).unwrap();
-    assert_eq!(role, collab_types::Role::Editor);
-    assert_eq!(acting_for, hex::encode(person.verifying_key().to_bytes()));
+    let authority_of_agent = member.permissions(device, now).unwrap();
+    assert_eq!(authority_of_agent.role, collab_types::Role::Editor);
+    assert_eq!(
+        authority_of_agent.person,
+        hex::encode(person.verifying_key().to_bytes())
+    );
+    // Its person owns the room; the delegation bounds it to an Editor's
+    // grants: it changes the room's records, and governs nothing.
+    let room_node = tilo_action_policy::TreePath::room(&room);
+    let governance = tilo_action_policy::roles::governance_action(
+        &room,
+        tilo_action_policy::roles::governance::SET_ROLE,
+    );
+    assert!(authority_of_agent.allows(&room_node, tilo_action_policy::ActionKind::Undoable, now));
+    assert!(!authority_of_agent.allows(
+        &governance,
+        tilo_action_policy::roles::GOVERNANCE_KIND,
+        now
+    ));
+    assert!(
+        member
+            .permissions(other_device.verifying_key().to_bytes(), now)
+            .unwrap()
+            .allows(&governance, tilo_action_policy::roles::GOVERNANCE_KIND, now),
+        "the person's own device governs"
+    );
     let readers = member.governed_access(now).unwrap();
     assert!(readers.member_devices.contains(&device));
     assert_eq!(
@@ -249,7 +272,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     )
     .unwrap();
     assert_eq!(
-        restored.permissions(device, now).unwrap().0,
+        restored.permissions(device, now).unwrap().role,
         collab_types::Role::Editor
     );
     assert!(restored.permissions(device, after).is_err());
@@ -402,7 +425,7 @@ fn members_and_agents_never_trade_places() {
         governor
             .permissions(member_cert.device_public_key, now)
             .unwrap()
-            .0,
+            .role,
         collab_types::Role::Owner,
         "the person's own device keeps its role"
     );

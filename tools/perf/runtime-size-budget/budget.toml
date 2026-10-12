@@ -66,7 +66,10 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # libtilo_spotify_engine.so, which only Music loads (Release / apps 98251
 # against 98250): x86_64 170118536 -> 158774624 bytes, 5931008 -> 5533696
 # bytes dirtied per process, 9196 -> 8773 symbol relocations; aarch64
-# 154733808 -> 143671024, 5709824 -> 5308416, 9219 -> 8793.
+# 154733808 -> 143671024, 5709824 -> 5308416, 9219 -> 8793. Linking the
+# runtime with section garbage collection and without the proc-macro crates'
+# exports takes it lower again (Release / apps 97422, before the Spotify
+# engine: aarch64 152438520 bytes, x86_64 167700968).
 [runtime.x86_64]
 bytes = 160366592
 relocation_bytes = 327680

@@ -12,15 +12,13 @@ use fs_protocol::Ed25519PublicKey;
 use tilo_clock::try_unix_now_ns;
 use tilo_user_identity::{
     MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES, MAX_TRUSTED_IDENTITY_PROJECTION_BYTES,
-    MAX_TRUSTED_IDENTITY_PROJECTION_HUMANS, TrustedIdentityProjectionV1,
-    TrustedIdentityProjectionV2,
+    TrustedIdentityProjectionV1, TrustedIdentityProjectionV2,
 };
 
 pub const TRUSTED_IDENTITIES_ENV: &str = "TILO_TRUSTED_IDENTITIES";
 pub const DEFAULT_TRUSTED_IDENTITIES_PATH: &str =
     "/run/tilo/identity-projection/trusted-identities.json";
 pub const MAX_TRUSTED_IDENTITIES_BYTES: u64 = MAX_TRUSTED_IDENTITY_PROJECTION_BYTES;
-pub const MAX_TRUSTED_IDENTITIES: usize = MAX_TRUSTED_IDENTITY_PROJECTION_HUMANS;
 pub const MAX_IDENTITY_LABEL_BYTES: usize = MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

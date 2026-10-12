@@ -7,9 +7,9 @@
 
 use crate::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::widget::EntryKind;
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{ActorId, AutoCommit, ObjType, ROOT};
-use collab_types::OpClass;
 
 use super::*;
 use crate::permissions::UserId;
@@ -261,7 +261,7 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         assert_eq!(rows[1].summary, "+6 -0 chars", "\" world\"");
         assert_eq!(rows[2].summary, "+1 -0 chars", "\"!\"");
         for r in &rows {
-            assert_eq!(r.op_class, OpClass::Splice, "text edits are splices");
+            assert_eq!(r.entry_kind, EntryKind::Text, "text edits are splices");
         }
     }
     // phase: deletions_are_counted_and_a_removed_block_is_a_tombstone
@@ -310,10 +310,10 @@ fn rows_attribute_and_summarise_what_actually_changed() {
             rows[1].summary, "+0 -5 chars",
             "deleting \" this\" is five chars"
         );
-        assert_eq!(rows[1].op_class, OpClass::Splice);
+        assert_eq!(rows[1].entry_kind, EntryKind::Text);
         assert_eq!(
-            rows[2].op_class,
-            OpClass::Tombstone,
+            rows[2].entry_kind,
+            EntryKind::Delete,
             "a removed block is a delete"
         );
         assert_eq!(rows[2].summary, "-1 block");
@@ -337,12 +337,12 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         assert_eq!(entries.len(), 3, "three commits, three rows");
         assert_eq!(entries[0].summary, "+5 -0 chars");
         assert_eq!(entries[1].summary, "+6 -0 chars");
-        assert_eq!(entries[1].op_class, OpClass::Splice);
+        assert_eq!(entries[1].entry_kind, EntryKind::Text);
         assert_eq!(
             entries[2].summary, "Edited title",
             "a map put names the field it edited"
         );
-        assert_eq!(entries[2].op_class, OpClass::EditMeta);
+        assert_eq!(entries[2].entry_kind, EntryKind::Details);
         assert!(
             entries.iter().all(|e| e.author.name == "Alice"),
             "single-actor document, single author"
@@ -382,7 +382,6 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         let block = dm.insert_block(None, "paragraph");
         dm.splice_text(&block, 0, 0, "launch");
         let context = tilo_actions::ActionContext::for_resource(
-            "Edit",
             "notes.note:launch",
             "notes.note",
             "Launch brief",
@@ -801,11 +800,20 @@ fn an_action_context_names_its_change_before_any_field_fallback() {
     doc.put(ROOT, "title", "draft").unwrap();
     doc.commit();
     doc.put(ROOT, "title", "final").unwrap();
-    let context = tilo_actions::ActionContext::for_resource("Rename report", "r", "doc", "Report");
+    let context = tilo_actions::ActionContext::for_resource("r", "doc", "Report").with_described(
+        tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new("org.tilo.Reports", "doc", "finalize"),
+            [],
+        )),
+    );
     doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
     let entries = HistorySource::new().entries(&mut doc);
     let last = entries.last().unwrap();
-    assert_eq!(Some(last.summary.clone()), context.summary());
+    assert_eq!(
+        last.summary,
+        crate::history_source::sentence::sentence(&context)
+    );
+    assert_eq!(last.summary, "Finalize in Report");
     assert!(!last.summary.contains("title"), "{}", last.summary);
 }
 
@@ -919,6 +927,52 @@ fn a_package_primary_documents_genesis_is_left_out_of_a_feed_too() {
             .len(),
         1,
         "a document's first edit is not a genesis unless its store made it"
+    );
+}
+
+#[test]
+fn rows_tell_the_readers_changes_from_a_collaborators_and_an_agents() {
+    use crate::widget::history::AuthorRelation;
+    use tilo_actions::{ActionContext, ActionInvoker, ActorKind};
+    let mut doc = AutoCommit::new();
+    let step = |doc: &mut AutoCommit, key: &str, invoker: ActionInvoker| {
+        doc.put(ROOT, key, "x").unwrap();
+        let context = ActionContext::for_resource("r", "doc", "Report")
+            .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new("org.tilo.Reports", "doc", "edit"),
+                [],
+            )))
+            .with_invoker(invoker);
+        doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    };
+    step(&mut doc, "mine", ActionInvoker::actor("quinten"));
+    step(&mut doc, "theirs", ActionInvoker::actor("ada"));
+    step(
+        &mut doc,
+        "agents",
+        ActionInvoker::actor("agent:claude")
+            .with_kind(ActorKind::Agent)
+            .acting_for("quinten"),
+    );
+    let mut authors = AuthorDirectory::new();
+    authors.set_reader("quinten");
+    let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
+    let rows: Vec<(String, AuthorRelation)> = entries
+        .iter()
+        .rev()
+        .take(3)
+        .map(|entry| (entry.author.name.clone(), entry.author.relation))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (
+                "claude · Agent, for you".to_owned(),
+                AuthorRelation::Software
+            ),
+            ("ada".to_owned(), AuthorRelation::Person),
+            ("You".to_owned(), AuthorRelation::Reader),
+        ]
     );
 }
 

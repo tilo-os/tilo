@@ -17,7 +17,7 @@ use crate::app::{Core, Request, Requests, Shared};
 use crate::model::{FeedKind, Filter, Id, TagKey};
 
 /// The sidebar item id of a place.
-pub(crate) fn nav_id(filter: Filter) -> String {
+pub(crate) fn nav_id(filter: &Filter) -> String {
     match filter {
         Filter::All => "smart:all".into(),
         Filter::Unread => "smart:unread".into(),
@@ -77,22 +77,22 @@ impl Core {
         let store = &self.store;
         let smart = vec![
             // Unread, below, already counts what is new everywhere.
-            NavItem::new(nav_id(Filter::All), "All articles")
+            NavItem::new(nav_id(&Filter::All), "All articles")
                 .icon(Icon::Layers)
                 .without_actions(),
-            NavItem::new(nav_id(Filter::Unread), "Unread")
+            NavItem::new(nav_id(&Filter::Unread), "Unread")
                 .icon(Icon::Inbox)
                 .counted(store.total_unread())
                 .without_actions(),
-            NavItem::new(nav_id(Filter::Starred), "Starred")
+            NavItem::new(nav_id(&Filter::Starred), "Starred")
                 .icon(Icon::Star)
                 .counted(store.total_starred())
                 .without_actions(),
         ];
         let mut sections = vec![NavSection::untitled("library", smart)];
 
-        let feed_item = |id: Id, title: &str, kind: FeedKind| {
-            NavItem::new(nav_id(Filter::Feed(id)), title)
+        let feed_item = |id: &Id, title: &str, kind: FeedKind| {
+            NavItem::new(nav_id(&Filter::Feed(id.clone())), title)
                 .icon(feed_icon(kind))
                 .counted(store.unread_for_feed(id))
         };
@@ -105,11 +105,14 @@ impl Core {
                     .into_iter()
                     .map(|f| feed_item(f.id, &f.title, f.kind))
                     .collect();
-                let item = NavItem::new(nav_id(Filter::Folder(folder.id)), folder.name.clone())
-                    .icon(Icon::Folder)
-                    .counted(store.unread_for_folder(folder.id))
-                    .children(children)
-                    .without_actions();
+                let item = NavItem::new(
+                    nav_id(&Filter::Folder(folder.id.clone())),
+                    folder.name.clone(),
+                )
+                .icon(Icon::Folder)
+                .counted(store.unread_for_folder(folder.id))
+                .children(children)
+                .without_actions();
                 if folder.collapsed {
                     item
                 } else {
@@ -128,13 +131,13 @@ impl Core {
         }
 
         let tags: Vec<NavItem> = store
-            .tags_limited(crate::actions::MAX_CONTEXT_TAG_RESOURCES)
+            .tags_limited(crate::resource::MAX_TAG_PLACES)
             .into_iter()
             .map(|tag| {
                 let key = crate::model::tag_key(&tag);
-                NavItem::new(nav_id(Filter::Tag(key)), tag)
+                NavItem::new(nav_id(&Filter::Tag(key)), tag)
                     .icon(Icon::Tag)
-                    .counted(store.count_for(Filter::Tag(key)))
+                    .counted(store.count_for(&Filter::Tag(key)))
                     .without_actions()
             })
             .collect();
@@ -157,7 +160,7 @@ impl SidebarNav {
     pub(crate) fn new(core: &Shared, requests: &Requests) -> Self {
         let (sections, selected) = {
             let core = core.borrow();
-            (core.nav_sections(), nav_id(core.filter))
+            (core.nav_sections(), nav_id(&core.filter))
         };
         let list = {
             let show = Rc::clone(requests);
@@ -205,7 +208,7 @@ impl SidebarNav {
         let Ok(core) = self.core.try_borrow() else {
             return;
         };
-        let (sections, selected) = (core.nav_sections(), nav_id(core.filter));
+        let (sections, selected) = (core.nav_sections(), nav_id(&core.filter));
         drop(core);
         if sections != self.sections {
             self.list.set_sections(sections.clone());
@@ -228,10 +231,10 @@ impl SidebarNav {
             .store
             .feeds_in_folder(core.store.folders_sorted().first().map(|f| f.id))
             .first()
-            .map(|f| f.id)
+            .map(|f| f.id.clone())
             .and_then(|id| {
                 self.list
-                    .row_lift_rect(&nav_id(Filter::Feed(id)))
+                    .row_lift_rect(&nav_id(&Filter::Feed(id.clone())))
                     .map(|row| (id, row))
             });
     }

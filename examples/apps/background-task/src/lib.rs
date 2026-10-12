@@ -38,8 +38,10 @@ pub const MAX_LIMIT: u64 = 50_000_000;
 /// How many numbers the worker tests between cancellation checks.
 const CHUNK: u64 = 4096;
 
-/// What to compute. Stored, synced and undoable.
+/// What to compute. Stored, synced and undoable; the limit is edited at its
+/// path and kept in range by the model's check.
 #[derive(Model, Debug, Clone, PartialEq)]
+#[model(check = Search::valid)]
 pub struct Search {
     /// Count the primes below this number.
     pub limit: u64,
@@ -51,21 +53,23 @@ impl Default for Search {
     }
 }
 
-#[resource(kind = "example.prime-search", label = "Prime search")]
 impl Search {
-    /// Choose how far to search.
-    #[action]
-    pub fn set_limit(
-        &mut self,
-        #[param("Count the primes below this number")] limit: u64,
-    ) -> Result<(), &'static str> {
-        if !(2..=MAX_LIMIT).contains(&limit) {
-            return Err("the limit is 2 to 50,000,000");
+    /// What every change must leave true.
+    ///
+    /// # Errors
+    /// Refuses a limit out of range.
+    pub fn valid(&self) -> Result<(), Refusal> {
+        if !(2..=MAX_LIMIT).contains(&self.limit) {
+            return Err(Refusal::new("the limit is 2 to 50,000,000"));
         }
-        self.limit = limit;
         Ok(())
     }
 }
+
+/// The limit is its only state, edited at `Search::paths().limit`; the work
+/// is an effect, not a change of the document.
+#[resource(kind = "example.prime-search", label = "Prime search")]
+impl Search {}
 
 /// Whether `n` is prime, by trial division.
 #[must_use]
@@ -136,14 +140,15 @@ impl ResourceApp for App {
             reason = "the limit is at most MAX_LIMIT, far below 2^52"
         )]
         let limit = cx
-            .control(
+            .control_map(
                 |value| {
                     NumberInput::from_state(value)
                         .with_range(2.0, MAX_LIMIT as f64)
                         .with_step(100_000.0)
                 },
-                |search| search.limit as f64,
-                Search::SET_LIMIT.map(|limit: f64| {
+                cx.paths().limit,
+                |limit| *limit as f64,
+                |limit: f64| {
                     #[expect(
                         clippy::cast_possible_truncation,
                         clippy::cast_sign_loss,
@@ -151,7 +156,7 @@ impl ResourceApp for App {
                     )]
                     let limit = limit.round() as u64;
                     limit
-                }),
+                },
             )
             .with_id("limit-input");
 

@@ -29,7 +29,7 @@ fn temp_path(name: &str) -> PathBuf {
 /// HTML — the exact bytes the editor's HTML *export* would write.
 fn render_doc_to_html() -> String {
     let mut doc = automerge::AutoCommit::new();
-    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let c = word_processor::model::init(&mut doc).unwrap();
     let mut ids = tilo_doc::IdGen::new(doc.get_actor().to_hex_string());
     {
         let mut dm = tilo_doc::DocMut {

@@ -24,9 +24,10 @@
 use crate::num::i64_of_usize;
 use crate::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::widget::EntryKind;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjType, PatchAction, ReadDoc};
-use collab_types::{ArtifactKind, OpClass};
+use collab_types::ArtifactKind;
 use tilo_doc::snapshot::DocSnapshot;
 
 use crate::widget::history::{HistoryEntry, HistoryEntryId};
@@ -44,6 +45,7 @@ pub mod run_undo;
 pub mod runs;
 pub mod schema_ops;
 pub mod seen;
+pub mod sentence;
 pub mod steps;
 pub use authors::{
     AuthorDirectory, UNKNOWN_AUTHOR_NAME, actor_handle, agent_display_label, agent_principal_name,
@@ -53,7 +55,7 @@ pub use authors::{
 pub use compare::{CompareError, HistoryComparison, compare_entries};
 pub use detail::{HistoryResourceTarget, HistorySelectionDetail};
 pub use digest::{ActivityBrief, ActivityBriefAction, ActivityDigest};
-pub use facets::{HistoryFacetIndex, op_class_label};
+pub use facets::HistoryFacetIndex;
 pub use groups::{
     GROUPS_KEY, clear_name, close_range, is_group_marker, merge_named_ranges, move_named_boundary,
     name_range, read_named_ranges, split_named_range,
@@ -212,7 +214,6 @@ impl HistorySource {
 /// particular.
 fn genesis_context() -> tilo_actions::ActionContext {
     tilo_actions::ActionContext {
-        action_label: crate::i18n::I18nManager::lookup_plain("history-genesis"),
         facets: vec![crate::widget::history::genesis_facet()],
         ..tilo_actions::ActionContext::default()
     }
@@ -298,7 +299,7 @@ fn timestamp_from_ms(time_ms: i64) -> SystemTime {
 fn structural_summary(
     prev: &DocSnapshot,
     cur: &DocSnapshot,
-) -> (String, OpClass, Option<(usize, usize)>) {
+) -> (String, EntryKind, Option<(usize, usize)>) {
     let diff = tilo_doc::diff_snapshots(prev, cur);
 
     let mut inserted = 0usize;
@@ -355,50 +356,50 @@ fn structural_summary(
         } else {
             format!("+{comments} comments")
         };
-        return (s, OpClass::Comment, delta);
+        return (s, EntryKind::Comment, delta);
     }
     if pure_removal {
         return (
             plural_signed(negative_count(blocks_removed), "block"),
-            OpClass::Tombstone,
+            EntryKind::Delete,
             delta,
         );
     }
     if inserted > 0 || deleted > 0 {
         return (
             format!("+{inserted} -{deleted} chars"),
-            OpClass::Splice,
+            EntryKind::Text,
             delta,
         );
     }
     if blocks_added > 0 {
         return (
             plural_signed(i64_of_usize(blocks_added), "block"),
-            OpClass::Splice,
+            EntryKind::Text,
             delta,
         );
     }
     if blocks_removed > 0 {
         return (
             plural_signed(negative_count(blocks_removed), "block"),
-            OpClass::Tombstone,
+            EntryKind::Delete,
             delta,
         );
     }
     if pure_reorder {
-        return ("reordered".to_string(), OpClass::Move, delta);
+        return ("reordered".to_string(), EntryKind::Move, delta);
     }
     if formatting > 0 {
         return (
             plural(formatting, "formatting change"),
-            OpClass::EditMeta,
+            EntryKind::Details,
             delta,
         );
     }
     if props > 0 {
-        return (plural(props, "property"), OpClass::EditMeta, delta);
+        return (plural(props, "property"), EntryKind::Details, delta);
     }
-    (NO_VISIBLE_CHANGE.to_string(), OpClass::EditMeta, delta)
+    (NO_VISIBLE_CHANGE.to_string(), EntryKind::Details, delta)
 }
 
 /// Same set of top-level block ids but a different order — a move rather
@@ -432,12 +433,9 @@ pub fn change_summary(doc: &mut AutoCommit, from: &[ChangeHash], to: &[ChangeHas
     // which an undo control asking every frame cannot afford.
     if let [head] = to
         && !from.contains(head)
-        && let Some(summary) = doc
-            .get_change_meta_by_hash(head)
-            .and_then(|meta| meta.message.as_deref().map(str::to_owned))
-            .as_deref()
-            .and_then(tilo_actions::ActionContext::from_change_message)
-            .and_then(|context| context.summary())
+        && let Some(summary) = tilo_actions::entry_of(doc.committed_document(), *head)
+            .as_ref()
+            .and_then(sentence::step_summary)
     {
         return summary;
     }
@@ -452,7 +450,7 @@ fn patch_summary(
     before: &[ChangeHash],
     after: &[ChangeHash],
     paths: bool,
-) -> (String, OpClass, Option<(usize, usize)>) {
+) -> (String, EntryKind, Option<(usize, usize)>) {
     let patches = doc.diff(before, after);
     summarize_patches(doc, &patches, paths)
 }
@@ -463,11 +461,11 @@ fn summarize_patches(
     doc: &AutoCommit,
     patches: &[automerge::Patch],
     paths: bool,
-) -> (String, OpClass, Option<(usize, usize)>) {
+) -> (String, EntryKind, Option<(usize, usize)>) {
     // A change that only named a version or recorded a run reports as
     // nothing visible, so the caller drops the row.
     if groups::is_group_marker(patches) || runs::is_run_marker(patches) {
-        return (NO_VISIBLE_CHANGE.to_string(), OpClass::EditMeta, None);
+        return (NO_VISIBLE_CHANGE.to_string(), EntryKind::Details, None);
     }
     let mut inserted = 0usize;
     let mut text_deleted = 0usize;
@@ -515,21 +513,21 @@ fn summarize_patches(
     if inserted > 0 || text_deleted > 0 {
         return (
             format!("+{inserted} -{text_deleted} chars"),
-            OpClass::Splice,
+            EntryKind::Text,
             delta,
         );
     }
     if list_inserted > 0 {
         return (
             plural_signed(i64_of_usize(list_inserted), "item"),
-            OpClass::Splice,
+            EntryKind::Text,
             delta,
         );
     }
     if list_deleted > 0 {
         return (
             plural_signed(negative_count(list_deleted), "item"),
-            OpClass::Tombstone,
+            EntryKind::Delete,
             delta,
         );
     }
@@ -538,9 +536,9 @@ fn summarize_patches(
     {
         let removed = fields == 0;
         let class = if removed {
-            OpClass::Tombstone
+            EntryKind::Delete
         } else {
-            OpClass::EditMeta
+            EntryKind::Details
         };
         let label = if paths {
             edited_fields_label(first, rest.len(), removed)
@@ -550,12 +548,16 @@ fn summarize_patches(
         return (label, class, delta);
     }
     if fields > 0 {
-        return (plural(fields, "field"), OpClass::EditMeta, delta);
+        return (plural(fields, "field"), EntryKind::Details, delta);
     }
     if marks > 0 {
-        return (plural(marks, "formatting change"), OpClass::EditMeta, delta);
+        return (
+            plural(marks, "formatting change"),
+            EntryKind::Details,
+            delta,
+        );
     }
-    (NO_VISIBLE_CHANGE.to_string(), OpClass::EditMeta, delta)
+    (NO_VISIBLE_CHANGE.to_string(), EntryKind::Details, delta)
 }
 
 /// The dotted document path of the map entry `patch` writes, such as

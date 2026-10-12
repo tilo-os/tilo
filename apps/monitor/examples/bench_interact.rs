@@ -26,7 +26,7 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::event::{ElementState, WindowEvent};
 
 const DEFAULT_VIEWPORT: (u32, u32) = (1280, 800);
 
@@ -54,18 +54,10 @@ fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
 
 use ui::synthetic_input::cursor_moved;
 fn synth_click(state: ElementState) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state,
-        button: MouseButton::Left,
-    }
+    ui::synthetic_input::mouse_input(state, ui::winit::event::MouseButton::Left)
 }
 fn synth_wheel(dy: f32) -> WindowEvent {
-    WindowEvent::MouseWheel {
-        device_id: winit::event::DeviceId::dummy(),
-        delta: MouseScrollDelta::LineDelta(0.0, dy),
-        phase: TouchPhase::Moved,
-    }
+    ui::synthetic_input::mouse_wheel(0.0, dy)
 }
 
 enum BenchAction {

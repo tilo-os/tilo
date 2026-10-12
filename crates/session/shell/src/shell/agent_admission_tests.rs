@@ -153,7 +153,7 @@ fn the_person_names_which_agent_and_preset_a_client_is_admitted_as() {
         PromptChoice::Allow,
         Some(MemberChoice {
             agent: "  Scribe ".into(),
-            preset: Some(AgentAuthorityPreset::Operator),
+            preset: Some(AgentPreset::Operator),
         }),
     );
     consent.pump(&chrome);
@@ -166,10 +166,16 @@ fn the_person_names_which_agent_and_preset_a_client_is_admitted_as() {
     let workspace = tree.desktop.active_workspace().unwrap();
     assert!(
         workspace
-            .capabilities
+            .policy
+            .grants
             .iter()
-            .any(|cap| cap.id == "agent-member:scribe:operator"),
+            .any(|grant| grant.id.as_str() == "agent-member:scribe:operator"),
         "the membership is the ordinary admission grant"
+    );
+    assert_eq!(
+        workspace.agent_role_at("scribe", tilo_clock::unix_now()),
+        Some(crate::shell::state::CapRole::Editor),
+        "an operator changes the room"
     );
 }
 
@@ -212,9 +218,9 @@ fn a_remembered_client_is_asked_again_once_its_agent_is_removed() {
         let state = chrome.borrow();
         let mut tree = state.tree_mut();
         let workspace = tree.desktop.active_workspace_mut().unwrap();
-        workspace
-            .capabilities
-            .retain(|cap| !cap.id.starts_with("agent-member:claude-code"));
+        workspace.revoke_grants_matching(|grant| {
+            grant.id.as_str().starts_with("agent-member:claude-code")
+        });
     }
     assert!(agent_members(&chrome).is_empty());
     let mut again = ask(&sender, facts("/usr/bin/node"));
@@ -290,14 +296,23 @@ fn an_agent_is_never_shown_the_decisions_on_its_own_admission() {
     use crate::shell::search::ResourceKind;
     use crate::shell::search::action_api::{ActionVisibility, ResourceRef};
     use crate::shell::search::providers::permission_prompts::PROVIDER_ID;
-    use crate::shell::search::visibility::CapabilityVisibility;
+    use crate::shell::search::visibility::PolicyVisibility;
     let chrome = chrome_with_room();
+    // The most an admitted agent can hold: it may change the room and ask to
+    // reach outside it, and still never answers a prompt.
+    ensure_agent_member(
+        &chrome.borrow(),
+        &room(&chrome),
+        "claude-code",
+        AgentPreset::Operator,
+    )
+    .expect("the owner admits it");
     let state = chrome.borrow();
     let tree = state.tree();
     let workspace = tree.desktop.active_workspace().unwrap();
     let agent =
         crate::shell::state::Actor::agent("claude-code").in_room(workspace.room.to_string());
-    let visibility = CapabilityVisibility::new(workspace, agent);
+    let visibility = PolicyVisibility::new(workspace, agent);
     for decision in ["allow-once", "allow-session", "allow-always", "deny"] {
         assert!(!visibility.can_see(
             &ResourceRef::new(PROVIDER_ID, format!("{decision}@{}", uuid::Uuid::new_v4())),

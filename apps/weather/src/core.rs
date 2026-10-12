@@ -44,12 +44,12 @@ use ui::widget::{
     Scrollbar, Suggestion, SwipeAction, Widget,
 };
 
-use crate::actions::WeatherAction;
 use crate::icon;
 use crate::interaction::{EntryAction, PointerPress, swipe_commit_dx};
 use crate::model::{LocationId, SavedLocation, WeatherModel};
 use crate::net::{Request, RequestKind, Response};
 use crate::presentation::PlaceRowText;
+use ui::framework::Submit;
 mod detail;
 use crate::resource::Weather;
 use crate::units::Units;
@@ -364,16 +364,12 @@ impl Core {
         self.fixture_forecasts = Some(forecasts);
     }
 
-    /// Submit one saved-place edit, its actions one undo step. The model
-    /// already previews it; the document presents the result back, or the
-    /// stored state when the edit is refused.
-    fn submit(&self, actions: &[WeatherAction]) {
+    /// Submit one saved-place edit or verb. The model already previews it;
+    /// the document presents the result back, or the stored state when the
+    /// edit is refused.
+    fn submit(&self, submit: impl Submit<Weather>) {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.group(|| {
-                for action in actions {
-                    dispatcher.apply(action);
-                }
-            });
+            dispatcher.submit(submit);
         }
     }
 
@@ -851,11 +847,7 @@ impl Core {
             let Some(location) = self.model.selected_location().cloned() else {
                 return false;
             };
-            let id = location.id.to_string();
-            self.submit(&[
-                WeatherAction::AddLocation { location },
-                WeatherAction::SelectLocation { id },
-            ]);
+            self.submit(Weather::save(&location));
             self.scroll = 0.0;
             self.hourly_scroll_x = 0.0;
             self.refresh_selected();
@@ -884,7 +876,7 @@ impl Core {
             EntryAction::Delete => {
                 if let Some(id) = self.model.locations.get(index).map(|location| location.id) {
                     self.model.remove_location(index);
-                    self.submit(&[WeatherAction::RemoveLocation { id: id.to_string() }]);
+                    self.submit(Weather::REMOVE.with(Weather::item(id)));
                     true
                 } else {
                     false
@@ -893,10 +885,7 @@ impl Core {
             EntryAction::MoveToTop => {
                 let changed = self.model.move_location(index, 0);
                 if changed && let Some(location) = self.model.locations.first() {
-                    self.submit(&[WeatherAction::SetLocationRank {
-                        id: location.id.to_string(),
-                        rank: location.order_rank,
-                    }]);
+                    self.submit(Weather::MOVE_TO_TOP.with(Weather::item(location.id)));
                 }
                 changed
             }
@@ -1563,10 +1552,11 @@ impl Core {
                 // Commit the live insertion the controller tracked.
                 changed = self.model.move_location(from, to);
                 if changed && let Some(location) = self.model.locations.get(to) {
-                    self.submit(&[WeatherAction::SetLocationRank {
-                        id: location.id.to_string(),
-                        rank: location.order_rank,
-                    }]);
+                    self.submit(
+                        Weather::paths()
+                            .places
+                            .move_to(&Weather::item(location.id), to),
+                    );
                 }
             } else {
                 // Dropped in place (or never activated): no change.

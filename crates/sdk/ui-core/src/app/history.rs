@@ -179,13 +179,7 @@ impl App {
         }
         // Refresh may replace retained chrome. No raw map survives it.
         if self.history_focus.is_none() {
-            self.history_focus = unsafe {
-                crate::widget::layout::CompositionFocus::capture(
-                    self.focused_node,
-                    &self.layout.node_map,
-                    &self.bindings,
-                )
-            };
+            self.history_focus = self.capture_focus_identity();
         }
         self.layout.node_map.clear();
         self.bindings.clear();

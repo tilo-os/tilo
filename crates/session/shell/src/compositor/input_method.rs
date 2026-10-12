@@ -46,7 +46,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use settings_store::accessibility::OnScreenKeyboard;
 use settings_store::hardware::InputMethodEngine;
 
 /// The kind of trusted input method a private-display connection belongs to.
@@ -108,6 +107,28 @@ impl InputMethodOwner {
     }
 }
 
+/// When the person wants the on-screen keyboard: the stored
+/// `accessibility.on_screen_keyboard` preference.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OskPreference {
+    /// Follow the input hardware in use; see [`osk_wanted`].
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+impl OskPreference {
+    /// Parse the stored value. Anything unrecognised is the default.
+    pub fn from_setting(value: Option<&serde_json::Value>) -> Self {
+        match value.and_then(serde_json::Value::as_str) {
+            Some("always") => Self::Always,
+            Some("never") => Self::Never,
+            _ => Self::Auto,
+        }
+    }
+}
+
 /// The input facts [`osk_wanted`] reads in `auto`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OskInput {
@@ -133,11 +154,11 @@ impl OskInput {
 /// Whether the on-screen keyboard should run and own an otherwise idle seat:
 /// in `Auto`, whenever the hardware has a touchscreen or reports tablet mode,
 /// whether or not it is currently shown (see [`osk_wanted`]).
-pub fn osk_service_wanted(preference: OnScreenKeyboard, input: OskInput) -> bool {
+pub fn osk_service_wanted(preference: OskPreference, input: OskInput) -> bool {
     match preference {
-        OnScreenKeyboard::Always => true,
-        OnScreenKeyboard::Never => false,
-        OnScreenKeyboard::Auto => input.tablet_mode || input.touchscreen,
+        OskPreference::Always => true,
+        OskPreference::Never => false,
+        OskPreference::Auto => input.tablet_mode || input.touchscreen,
     }
 }
 
@@ -148,13 +169,11 @@ pub fn osk_service_wanted(preference: OnScreenKeyboard, input: OskInput) -> bool
 /// nothing before the first touch. A key press, pointer click, scroll, gesture
 /// or pen use hides it until the screen is touched again; pointer hover does
 /// not dismiss a touch-started keyboard.
-pub fn osk_wanted(preference: OnScreenKeyboard, input: OskInput) -> bool {
+pub fn osk_wanted(preference: OskPreference, input: OskInput) -> bool {
     match preference {
-        OnScreenKeyboard::Always => true,
-        OnScreenKeyboard::Never => false,
-        OnScreenKeyboard::Auto => {
-            input.tablet_mode || (input.touchscreen && input.touch_is_current)
-        }
+        OskPreference::Always => true,
+        OskPreference::Never => false,
+        OskPreference::Auto => input.tablet_mode || (input.touchscreen && input.touch_is_current),
     }
 }
 
@@ -342,7 +361,8 @@ mod tests {
 
     #[test]
     fn automatic_on_screen_keyboard_follows_touch_typing_and_tablet_mode() {
-        use OnScreenKeyboard::{Always, Auto, Never};
+        use OskPreference::{Always, Auto, Never};
+        use serde_json::json;
         // (preference, touchscreen, touch is current, tablet mode) → wanted
         let table = [
             ((Auto, false, false, false), false),
@@ -374,6 +394,18 @@ mod tests {
                     "{preference:?} {input:?}"
                 );
             }
+        }
+
+        // The stored preference defaults to automatic; the old boolean is
+        // not read.
+        for (stored, expected) in [
+            (None, Auto),
+            (Some(json!("auto")), Auto),
+            (Some(json!("always")), Always),
+            (Some(json!("never")), Never),
+            (Some(json!(true)), Auto),
+        ] {
+            assert_eq!(OskPreference::from_setting(stored.as_ref()), expected);
         }
 
         // Nothing shows it before the first touch; a key press or pointer

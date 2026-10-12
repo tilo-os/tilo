@@ -1,0 +1,49 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "example.notebook"
+label = "Notebook"
+version = 1
+
+[[resources.fields]]
+owner = "notebook"
+path = "sections"
+stored = "collection"
+title = "Sections"
+type = "Collection<Section>"
+
+[[resources.fields]]
+owner = "section"
+path = "sections.*.title"
+stored = "value"
+title = "Title"
+type = "String"
+
+[[resources.fields]]
+owner = "section"
+path = "sections.*.notes"
+stored = "value"
+title = "Notes"
+type = "String"
+
+[[resources.fields]]
+owner = "section"
+path = "sections.*.shared"
+stored = "value"
+title = "Shared"
+type = "bool"
+
+[[resources.verbs]]
+id = "share"
+kind = "undoable"
+label = "Share a section"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 /// The clock these fixtures run at, Unix seconds.
 const NOW: u64 = 1_800_000_000;
 
-use collab_types::caps::{ResourceRef, Verb};
+use collab_types::caps::{Access, Actor, CapDecision, ResourceRef};
 use tilo_desktop_model::*;
 
 #[test]
@@ -25,20 +25,25 @@ fn capability_grants_start_empty_and_round_trip() {
             Workspace::default(),
             Workspace::new(WorkspaceId::from(1), "Demo"),
         ] {
-            assert!(ws.capabilities.is_empty());
+            assert!(ws.sandbox.is_empty());
             assert!(ws.app_grants_snapshot_at(NOW).is_empty());
             assert!(!ws.has_app_grants_at(NOW));
             assert!(
-                !ws.may_administer_at(&"anyone".to_string(), NOW),
-                "a room with no owner has no administrators"
-            );
-            assert!(
-                !ws.allows_at(
-                    &ws.actor_for_app("org.gnome.gedit"),
-                    &ResourceRef::FsPath("/home/u/work".into()),
-                    Verb::Read,
+                !ws.may_govern_at(
+                    "anyone",
+                    tilo_action_policy::roles::governance::SETTINGS,
                     NOW
                 ),
+                "a room with no owner has no administrators"
+            );
+            assert_ne!(
+                ws.sandbox_decide_at(
+                    &Actor::app("org.gnome.gedit"),
+                    &ResourceRef::FsPath("/home/u/work".into()),
+                    Access::Read,
+                    NOW
+                ),
+                CapDecision::Allow,
                 "an app with no capability is denied"
             );
         }
@@ -81,35 +86,43 @@ fn capability_grants_start_empty_and_round_trip() {
         }));
 
         // And the decision function agrees after the round-trip.
-        let app = round.actor_for_app("org.gnome.gedit");
-        assert!(round.allows_at(
-            &app,
-            &ResourceRef::FsPath("/home/u/work/notes.txt".into()),
-            Verb::Write,
-            NOW
-        ));
-        assert!(
-            !round.allows_at(
+        let app = Actor::app("org.gnome.gedit");
+        assert_eq!(
+            round.sandbox_decide_at(
+                &app,
+                &ResourceRef::FsPath("/home/u/work/notes.txt".into()),
+                Access::Write,
+                NOW
+            ),
+            CapDecision::Allow
+        );
+        assert_ne!(
+            round.sandbox_decide_at(
                 &app,
                 &ResourceRef::FsPath("/home/u/secrets".into()),
-                Verb::Read,
+                Access::Read,
                 NOW
             ),
+            CapDecision::Allow,
             "a path outside the grant stays denied across serialisation"
         );
-        assert!(round.allows_at(
-            &app,
-            &ResourceRef::NetHost("github.com".into()),
-            Verb::Write,
-            NOW
-        ));
-        assert!(
-            !round.allows_at(
+        assert_eq!(
+            round.sandbox_decide_at(
                 &app,
-                &ResourceRef::NetHost("evil.example".into()),
-                Verb::Write,
+                &ResourceRef::NetHost("github.com".into()),
+                Access::Write,
                 NOW
             ),
+            CapDecision::Allow
+        );
+        assert_ne!(
+            round.sandbox_decide_at(
+                &app,
+                &ResourceRef::NetHost("evil.example".into()),
+                Access::Write,
+                NOW
+            ),
+            CapDecision::Allow,
             "and a host outside the allowlist stays denied"
         );
     }
@@ -179,41 +192,46 @@ fn app_kind_app_id_is_reverse_dns_or_the_verbatim_label() {
     }
 }
 
-/// What the broker re-checks at (TIL-707): the earliest expiry still ahead,
-/// over every workspace, and nothing for capabilities that never expire or
-/// already did.
+/// What the broker re-checks at: the earliest expiry still ahead, over every
+/// workspace, and nothing for grants that never expire or already did.
 #[test]
-fn the_next_capability_expiry_is_the_earliest_one_still_ahead() {
-    use collab_types::caps::{CapOverride, Effect, Scope, Subject};
+fn the_next_grant_expiry_is_the_earliest_one_still_ahead() {
+    use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
     const SOON: u64 = NOW + 5;
     const LATER: u64 = NOW + 60;
-    let member = |person: &str| {
-        CapOverride::new(
+    let member = |person: &str, until: Option<u64>| {
+        let grant = Grant::new(
+            format!("member-{person}"),
             Subject::person(person),
-            Scope::Workspace,
-            Effect::Grant,
-            Verb::Write,
-        )
+            TreePath::root(),
+            KindSet::ALL,
+            Answer::Allow,
+            Subject::person("owner"),
+        );
+        match until {
+            Some(at) => grant.with_lifetime(Lifetime::Until(at * 1000)),
+            None => grant,
+        }
     };
     let mut first = Workspace::new(WorkspaceId::from(1), "First");
-    first.capabilities.push(member("forever"));
-    assert_eq!(first.next_capability_expiry_after(NOW), None);
-    first.capabilities.push(member("past").with_expiry(NOW));
+    first.grant(member("forever", None));
+    assert_eq!(first.next_grant_expiry_after(NOW), None);
+    first.grant(member("past", Some(NOW)));
     assert_eq!(
-        first.next_capability_expiry_after(NOW),
+        first.next_grant_expiry_after(NOW),
         None,
         "a grant ending at `now` is already over"
     );
-    first.capabilities.push(member("later").with_expiry(LATER));
+    first.grant(member("later", Some(LATER)));
     let mut second = Workspace::new(WorkspaceId::from(2), "Second");
-    second.capabilities.push(member("sooner").with_expiry(SOON));
-    assert_eq!(first.next_capability_expiry_after(NOW), Some(LATER));
-    assert_eq!(second.next_capability_expiry_after(NOW), Some(SOON));
+    second.grant(member("sooner", Some(SOON)));
+    assert_eq!(first.next_grant_expiry_after(NOW), Some(LATER));
+    assert_eq!(second.next_grant_expiry_after(NOW), Some(SOON));
     let tree = DesktopTree {
         workspaces: vec![first, second],
         ..DesktopTree::default()
     };
-    assert_eq!(tree.next_capability_expiry_after(NOW), Some(SOON));
-    assert_eq!(tree.next_capability_expiry_after(SOON), Some(LATER));
-    assert_eq!(tree.next_capability_expiry_after(LATER), None);
+    assert_eq!(tree.next_grant_expiry_after(NOW), Some(SOON));
+    assert_eq!(tree.next_grant_expiry_after(SOON), Some(LATER));
+    assert_eq!(tree.next_grant_expiry_after(LATER), None);
 }

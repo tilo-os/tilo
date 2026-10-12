@@ -1,6 +1,6 @@
 use super::*;
 use automerge::{ReadDoc, transaction::Transactable};
-use collab_types::{Ed25519PublicKey, OpClass, SignedOp};
+use collab_types::{Ed25519PublicKey, OpKind, SignedOp};
 use tilo_user_identity::DeviceCapabilities;
 
 const APP: &str = "dev.tilo.notes";
@@ -98,7 +98,7 @@ fn signed_write(
         collab_types::document_artifact_id(APP, room, RECORD),
         Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
         collab_types::document_attestation_id(APP, room, RECORD),
-        OpClass::Splice,
+        OpKind::Change,
         now,
         u64::try_from(sequence).unwrap(),
     );

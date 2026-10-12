@@ -1,0 +1,657 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "code_editor.project"
+label = "Code Editor"
+version = 1
+
+[[resources.fields]]
+owner = "project"
+path = "files"
+stored = "collection"
+title = "Files"
+type = "Collection<Entry>"
+
+[[resources.fields]]
+owner = "entry"
+path = "files.*.kind"
+readonly = true
+stored = "value"
+title = "Kind"
+type = "EntryKind"
+
+[[resources.fields]]
+label = true
+owner = "entry"
+path = "files.*.name"
+readonly = true
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "entry"
+path = "files.*.parent"
+readonly = true
+stored = "value"
+title = "Folder"
+type = "Option<Id>"
+
+[[resources.fields]]
+owner = "entry"
+path = "files.*.language"
+stored = "value"
+title = "Language"
+type = "String"
+
+[[resources.fields]]
+owner = "project"
+path = "buffers"
+stored = "value"
+title = "Texts"
+type = "BTreeMap<String, Source>"
+
+[[resources.fields]]
+owner = "project"
+path = "terminal_panel"
+readonly = true
+stored = "record"
+title = "Terminal"
+type = "Option<Terminal>"
+
+[[resources.fields]]
+owner = "terminal"
+path = "terminal_panel.target"
+readonly = true
+stored = "value"
+title = "Where the session runs"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "terminal"
+path = "terminal_panel.relay_session"
+readonly = true
+stored = "value"
+title = "Relay session"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "terminal"
+path = "terminal_panel.pane"
+readonly = true
+stored = "value"
+title = "Pane"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "terminal"
+path = "terminal_panel.runs"
+readonly = true
+stored = "collection"
+title = "Runs"
+type = "Collection<Run>"
+
+[[resources.fields]]
+label = true
+owner = "run"
+path = "terminal_panel.runs.*.command"
+stored = "value"
+title = "Command"
+type = "Atom"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.cwd"
+stored = "value"
+title = "Working directory"
+type = "Atom"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.environment"
+stored = "value"
+title = "Where it ran: the session's encoded target"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.actor"
+stored = "value"
+title = "Who ran it: the person at the keyboard, or whoever asked with `run`"
+type = "Atom"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.for_person"
+stored = "value"
+title = "The person an agent ran it for"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.started_ms"
+stored = "value"
+title = "Started, in milliseconds since the Unix epoch"
+type = "i64"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.ended_ms"
+stored = "value"
+title = "Ended, in milliseconds since the Unix epoch"
+type = "i64"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.exit"
+stored = "value"
+title = "Exit status"
+type = "i32"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.output"
+stored = "value"
+title = "Everything it printed, escape sequences included"
+type = "Bytes"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.truncated"
+stored = "value"
+title = "It printed more than the output keeps"
+type = "bool"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.tool"
+stored = "value"
+title = "The tool whose parser read it"
+type = "Atom"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.items"
+stored = "value"
+title = "What its parsers found"
+type = "Vec<RunItem>"
+
+[[resources.fields]]
+owner = "terminal"
+path = "terminal_panel.requests"
+readonly = true
+stored = "value"
+title = "Commands asked to run"
+type = "Outbox<RunRequest, RunAnswer>"
+
+[[resources.fields]]
+owner = "project"
+path = "terminal_requests"
+readonly = true
+stored = "value"
+title = "Commands asked of the terminal"
+type = "Outbox<RunRequest, RunAnswer>"
+
+[[resources.verbs]]
+description = "A new file named `name` in the folder `folder` (the project's root when none), holding `text`."
+id = "new-file"
+kind = "undoable"
+label = "New file"
+
+[[resources.verbs.params]]
+name = "name"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "folder"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "text"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "A new folder named `name` in the folder `folder` (the project's root when none)."
+id = "new-folder"
+kind = "undoable"
+label = "New folder"
+
+[[resources.verbs.params]]
+name = "name"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "folder"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Give the file or folder another name, unique in its folder."
+id = "rename"
+kind = "undoable"
+label = "Rename"
+
+[[resources.verbs.params]]
+name = "entry"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Move the file or folder into the folder `folder` (the project's root when none), before `before` among its entries or after them all."
+id = "move-entry"
+kind = "undoable"
+label = "Move"
+
+[[resources.verbs.params]]
+name = "entry"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "folder"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "before"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Replace the file's whole text with `text`, written as the smallest change to the text it has, so a collaborator's typing elsewhere in the file stays."
+id = "replace-text"
+kind = "undoable"
+label = "Replace text"
+
+[[resources.verbs.params]]
+name = "file"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "text"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Delete the file and its text, or the folder once it is empty."
+destructive = true
+id = "delete"
+kind = "undoable"
+label = "Delete"
+
+[[resources.verbs.params]]
+name = "entry"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Record a file or folder of the project's folder on disk, the first time the editor reads it, under the id the editor gave it. An entry already recorded, or at a path a collaborator recorded under another id, is left as it is."
+id = "record-entry"
+kind = "undoable"
+label = "Record entry"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "kind"
+required = true
+
+[resources.verbs.params.schema]
+description = "What an entry of the project is."
+enum = [
+    "file",
+    "folder",
+]
+type = "string"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "folder"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "language"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Keep `text`, read from disk, as the text of `file` the first time the editor opens it. Text already there — a collaborator's or an earlier session's unsaved edits — is left as it is."
+id = "record-text"
+kind = "undoable"
+label = "Record text"
+
+[[resources.verbs.params]]
+name = "file"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "text"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Record where the embedded terminal's session runs."
+id = "record-target"
+kind = "undoable"
+label = "Record terminal target"
+
+[[resources.verbs.params]]
+name = "target"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Record the relay session the embedded terminal re-attaches to, or forget it."
+id = "record-relay-session"
+kind = "undoable"
+label = "Record terminal relay session"
+
+[[resources.verbs.params]]
+name = "session"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Scope presence to a new process's pane of the embedded terminal."
+id = "claim-pane"
+kind = "undoable"
+label = "Claim terminal pane"
+
+[[resources.verbs.params]]
+name = "pane"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Run a command line in the embedded terminal's session, and answer with the run once it ends."
+id = "run"
+kind = "outside"
+label = "Run in terminal"
+
+[[resources.verbs.params]]
+name = "command"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Run one of the embedded terminal's runs again."
+id = "rerun"
+kind = "outside"
+label = "Rerun in terminal"
+
+[[resources.verbs.params]]
+name = "run"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Run one test of one of the embedded terminal's runs again, the way its tool runs one test."
+id = "rerun-test"
+kind = "outside"
+label = "Rerun test in terminal"
+
+[[resources.verbs.params]]
+name = "run"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "test"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Record a run the embedded terminal's session ended."
+id = "record-run"
+kind = "undoable"
+label = "Record terminal run"
+
+[[resources.verbs.params]]
+name = "command"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "cwd"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "started_ms"
+required = true
+
+[resources.verbs.params.schema]
+type = "integer"
+
+[[resources.verbs.params]]
+name = "ended_ms"
+required = true
+
+[resources.verbs.params.schema]
+type = "integer"
+
+[[resources.verbs.params]]
+name = "exit"
+required = true
+
+[resources.verbs.params.schema]
+maximum = 2147483647
+minimum = -2147483648
+type = "integer"
+
+[[resources.verbs.params]]
+name = "output"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "output_len"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs.params]]
+name = "truncated"
+required = true
+
+[resources.verbs.params.schema]
+type = "boolean"
+
+[[resources.verbs.params]]
+name = "tool"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "items"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "One thing a parser found in a run's output: a diagnostic, a location, a link, a test, a changed file."
+required = [
+    "kind",
+    "text",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.code]
+description = "A diagnostic's code, a test's name, a change's status."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.column]
+maximum = 4294967295
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.kind]
+description = "What it is."
+enum = [
+    "error",
+    "warning",
+    "location",
+    "url",
+    "test-passed",
+    "test-failed",
+    "test-ignored",
+    "change",
+]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.line]
+maximum = 4294967295
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.path]
+description = "The file it is in, or the URL."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.text]
+description = "What the output says about it."
+type = "string"
+
+[[resources.verbs.params]]
+name = "request"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "run"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"

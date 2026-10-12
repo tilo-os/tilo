@@ -11,6 +11,7 @@
 //! [`ui::clock::local_now`] where the app needs "now".
 
 use chrono::{Datelike, Duration, NaiveDateTime, Timelike, Weekday};
+use ui::tilo_resource::{self, Model, Path, Refusal};
 
 /// What kind of thing a source is: drives its icon and its kind label.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -330,14 +331,80 @@ impl Destination {
     }
 }
 
-/// Retention policy (counts to keep per class). Lives in the CRDT so edits
-/// undo/redo and replicate; seeded from these defaults.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Retention policy (counts to keep per class). Lives in the document so
+/// edits undo/redo and replicate; each count is edited at its path
+/// (`Backups::paths().policy.daily.set(7)`) and is at most [`MAX_KEPT`].
+#[derive(Model, Clone, Copy, Debug, PartialEq, Eq)]
+#[model(check = RetentionPolicy::valid)]
 pub struct RetentionPolicy {
+    /// Hourly snapshots kept
     pub hourly: u32,
+    /// Daily snapshots kept
     pub daily: u32,
+    /// Weekly snapshots kept
     pub weekly: u32,
+    /// Monthly snapshots kept
     pub monthly: u32,
+}
+
+/// The most snapshots one retention class keeps.
+pub const MAX_KEPT: u32 = 999;
+
+/// One class of the retention policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PolicyField {
+    Hourly,
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+impl PolicyField {
+    pub const ALL: [PolicyField; 4] = [
+        PolicyField::Hourly,
+        PolicyField::Daily,
+        PolicyField::Weekly,
+        PolicyField::Monthly,
+    ];
+
+    /// The stable key control ids are built from.
+    pub fn key(self) -> &'static str {
+        match self {
+            PolicyField::Hourly => "hourly",
+            PolicyField::Daily => "daily",
+            PolicyField::Weekly => "weekly",
+            PolicyField::Monthly => "monthly",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PolicyField::Hourly => "Hourly",
+            PolicyField::Daily => "Daily",
+            PolicyField::Weekly => "Weekly",
+            PolicyField::Monthly => "Monthly",
+        }
+    }
+
+    /// The count this class keeps in `policy`.
+    pub fn of(self, policy: &RetentionPolicy) -> u32 {
+        match self {
+            PolicyField::Hourly => policy.hourly,
+            PolicyField::Daily => policy.daily,
+            PolicyField::Weekly => policy.weekly,
+            PolicyField::Monthly => policy.monthly,
+        }
+    }
+
+    /// The path of this class's count in a policy at `policy`.
+    pub fn path<R>(self, policy: &RetentionPolicyPaths<R>) -> Path<R, u32> {
+        match self {
+            PolicyField::Hourly => policy.hourly.clone(),
+            PolicyField::Daily => policy.daily.clone(),
+            PolicyField::Weekly => policy.weekly.clone(),
+            PolicyField::Monthly => policy.monthly.clone(),
+        }
+    }
 }
 
 impl Default for RetentionPolicy {
@@ -352,6 +419,19 @@ impl Default for RetentionPolicy {
 }
 
 impl RetentionPolicy {
+    /// No class keeps more than [`MAX_KEPT`] snapshots.
+    fn valid(&self) -> Result<(), Refusal> {
+        if PolicyField::ALL
+            .into_iter()
+            .any(|field| field.of(self) > MAX_KEPT)
+        {
+            return Err(Refusal::new(format!(
+                "a retention class keeps at most {MAX_KEPT} snapshots"
+            )));
+        }
+        Ok(())
+    }
+
     /// The most snapshots the policy keeps per source, pins aside.
     pub fn total(&self) -> u32 {
         self.hourly + self.daily + self.weekly + self.monthly

@@ -2,25 +2,64 @@
 //!
 //! [`ResourceRoot`](super::ResourceRoot) is one widget type for every app,
 //! compiled once in the shared runtime. What it does with the resource's own
-//! type — read its live state, publish its head and items, bind the edits
-//! views declared, answer `read` — goes through [`TypedRoot`], whose one
-//! implementation, [`Typed`], is the only root code compiled once per
-//! resource type in every app. Its methods are thin: each calls the
-//! resource's own function and hands back what does not name the type, the
-//! state as `&dyn Any`.
+//! type — read its live state, publish its head and children, bind the
+//! edits views declared, run its effects, answer `read` — goes through
+//! [`TypedRoot`], whose one implementation, [`Typed`], is the only root code
+//! compiled once per resource type in every app. Its methods are thin: each
+//! calls the resource's own function and hands back what does not name the
+//! type, the state as `&dyn Any`.
 
 use std::any::Any;
+use std::cell::Cell;
 use std::rc::Rc;
 
+use tilo_resource::items::{ChildrenParts, ItemAction, ItemChildVisitor, ItemCollection};
 use tilo_resource::{ActionDecl, ModelError, Resource, ScopeDecl, SearchEntry};
 use ui_core::automerge::AutoCommit;
-use ui_core::published::SharedResource;
+use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
 
 use super::super::dispatch::Dispatcher;
 use super::super::effect::Effects;
 use super::super::live::Live;
-use super::super::view::{Bindings, Updaters};
-use super::shared_tree::{ItemSource, SharedTree};
+use super::super::reactive::{Change, Updaters};
+use super::super::view::Bindings;
+
+/// What a root knows of its resource type without being generic over it:
+/// its constants, and the few functions over ids that only name its kind.
+#[derive(Clone, Copy)]
+pub(crate) struct ResourceType {
+    /// The type itself, which a root's hosted surfaces name.
+    pub(crate) id: std::any::TypeId,
+    /// [`Resource::KIND`].
+    pub(crate) kind: &'static str,
+    /// [`Resource::LABEL`].
+    pub(crate) label: &'static str,
+    /// [`Resource::READABLE`].
+    pub(crate) readable: bool,
+    /// [`Resource::local_operations`].
+    pub(crate) local_operations: fn() -> Vec<tilo_actions::ActionSpec>,
+    /// Whether a resource id names one of the resource's items.
+    pub(crate) item_of: fn(&str) -> bool,
+    /// [`tilo_resource::items::for_each_item_child`].
+    pub(crate) items: fn(&[ItemCollection], &[ItemAction], &mut ItemChildVisitor<'_>),
+    /// [`tilo_resource::items::item_child_id`].
+    pub(crate) item_id: fn(&ItemCollection, &tilo_resource::Id) -> String,
+}
+
+impl ResourceType {
+    pub(crate) fn of<R: Resource>() -> Self {
+        Self {
+            id: std::any::TypeId::of::<R>(),
+            kind: R::KIND,
+            label: R::LABEL,
+            readable: R::READABLE,
+            local_operations: R::local_operations,
+            item_of: |id| tilo_resource::items::item_of_resource::<R>(id).is_some(),
+            items: tilo_resource::items::for_each_item_child::<R>,
+            item_id: tilo_resource::items::item_child_id::<R>,
+        }
+    }
+}
 
 /// What a root does with its resource type. See the [module docs](self).
 ///
@@ -45,6 +84,9 @@ pub(crate) trait TypedRoot {
     /// Whether the live state is `doc`'s.
     fn follows(&self, doc: &AutoCommit) -> bool;
 
+    /// Why the record does not read as the resource, while it does not.
+    fn unreadable(&self) -> Option<String>;
+
     /// Present the stored state again to what previewed an edit.
     fn represent(&self);
 
@@ -54,11 +96,22 @@ pub(crate) trait TypedRoot {
     /// The document does not read as the resource.
     fn read(&self, doc: &AutoCommit) -> Result<Rc<dyn Any>, ModelError>;
 
-    /// Run the views' updaters over the live state.
-    fn run_updaters(&self);
+    /// Run the views' updaters over what changed since `followed`, the live
+    /// revision they last followed, and place the participants the change
+    /// landed.
+    fn follow_change(&self, doc: &AutoCommit, followed: &Cell<u64>);
 
-    /// Take up and finish the views' jobs.
-    fn poll_jobs(&self);
+    /// Drain the projections the live state at `revision` lists, and take
+    /// up the views' jobs.
+    fn drain(&self, revision: u64);
+
+    /// Note that `participant` applied `action`, where the resource lands
+    /// them.
+    fn note_applied(
+        &self,
+        participant: &tilo_actions::ParticipantId,
+        action: &tilo_actions::EncodedAction,
+    );
 
     /// [`Resource::publication_cache_epoch`] of `state`.
     fn cache_epoch(&self, state: &dyn Any) -> Option<String>;
@@ -66,34 +119,27 @@ pub(crate) trait TypedRoot {
     /// [`tilo_resource::publish_head`] of `state` at `id`, labelled `label`.
     fn head(&self, id: &str, label: &str, state: &dyn Any) -> tilo_actions::Resource;
 
-    /// The document-owned tree of `state` at `head` (its id and label),
-    /// sharing items through `tree`; `keep` when it is the live state's.
-    fn document_tree(
-        &self,
-        tree: &SharedTree,
-        head: (&str, &str),
-        state: &dyn Any,
-        keep: bool,
-    ) -> SharedResource;
+    /// [`Resource::children_parts`] of `state`.
+    fn children_parts(&self, state: &dyn Any) -> ChildrenParts;
 
     /// The edits the views bound over `state`, which surfaces add theirs to
     /// ([`SurfacePublication::bound_declarations`](super::super::surface::SurfacePublication::bound_declarations)).
     fn declarations(&self, state: &dyn Any) -> Box<dyn Any>;
 
-    /// `resource` with `declarations` (from [`Self::declarations`]) bound.
+    /// The ids of `declarations` (from [`Self::declarations`]).
+    fn declaration_ids(&self, declarations: &dyn Any) -> Vec<&'static str>;
+
+    /// No edits yet, which surfaces add theirs to
+    /// ([`SurfacePublication::row_declarations`](super::super::surface::SurfacePublication::row_declarations)).
+    fn no_declarations(&self) -> Box<dyn Any>;
+
+    /// `resource` with `declarations` (from [`Self::declarations`] or
+    /// [`Self::no_declarations`]) bound.
     fn bind(
         &self,
         resource: tilo_actions::Resource,
         declarations: Box<dyn Any>,
     ) -> tilo_actions::Resource;
-
-    /// No edits yet for each of `rows` rows, which surfaces add theirs to
-    /// ([`SurfacePublication::row_declarations`](super::super::surface::SurfacePublication::row_declarations)).
-    fn row_declarations(&self, rows: usize) -> Box<dyn Any>;
-
-    /// Bind to each of `rows` its edits in `declarations` (from
-    /// [`Self::row_declarations`]).
-    fn bind_rows(&self, rows: &mut [tilo_actions::Resource], declarations: Box<dyn Any>);
 
     /// [`Resource::read_content`].
     ///
@@ -106,8 +152,8 @@ pub(crate) trait TypedRoot {
         item: Option<&str>,
     ) -> Result<serde_json::Value, String>;
 
-    /// [`Resource::child`].
-    fn child(&self, state: &dyn Any, id: &str) -> Option<tilo_actions::Resource>;
+    /// [`tilo_resource::child_by_id`] of `state`.
+    fn child(&self, state: &dyn Any, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource>;
 
     /// [`Resource::answer`].
     fn answer(
@@ -117,10 +163,10 @@ pub(crate) trait TypedRoot {
         changes: &[ui_core::automerge::Patch],
     ) -> Option<serde_json::Value>;
 
-    /// [`Resource::search`].
+    /// [`Resource::search`] of `state`.
     fn search(&self, state: &dyn Any) -> Vec<SearchEntry>;
 
-    /// [`Resource::search_scopes`].
+    /// [`Resource::search_scopes`] of `state`.
     fn search_scopes(&self, state: &dyn Any) -> Vec<ScopeDecl>;
 
     /// Whether `next` continues `previous` ([`Resource::coalesces`]), and
@@ -132,15 +178,43 @@ pub(crate) trait TypedRoot {
         next: &tilo_actions::EncodedAction,
     ) -> (bool, bool);
 
+    /// The specs of the effects the views registered.
+    fn effect_specs(&self) -> Vec<tilo_actions::ActionSpec>;
+
+    /// The operation types of the effects the views registered.
+    fn effect_operations(&self) -> Vec<&'static str>;
+
+    /// Whether a view drains effects causally.
+    fn has_causal_drains(&self) -> bool;
+
+    /// Start the effect `op` invokes, when a view registered it.
+    ///
+    /// # Errors
+    /// The effect's refusal.
+    fn start_effect(
+        &self,
+        op: &ResourceOperation<'_>,
+    ) -> Result<Option<ResourceOperationStart>, String>;
+
+    /// Poll the effect job `invocation`.
+    fn poll_effect(
+        &self,
+        invocation: tilo_actions::InvocationId,
+        cancel: bool,
+    ) -> Option<tilo_actions::InvocationUpdate>;
+
+    /// Apply what finished effects settle.
+    fn apply_settlements(&self, edits: &mut ui_core::widget::Edits<'_>);
+
     /// Start the document effects of an applied `operation`.
     ///
     /// # Errors
     /// The effect's refusal.
     fn start_document_effects(
         &self,
-        operation: &ui_core::host_operation::ResourceOperation<'_>,
+        operation: &ResourceOperation<'_>,
         applied: &ui_core::widget::document_effects::AppliedDocument<'_>,
-    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String>;
+    ) -> Result<Option<ResourceOperationStart>, String>;
 }
 
 /// The handles of a root that name its resource type.
@@ -149,7 +223,7 @@ pub(crate) struct Typed<R: Resource> {
     pub(super) updaters: Updaters<R>,
     pub(crate) dispatch: Dispatcher<R>,
     pub(super) bindings: Bindings<R>,
-    pub(super) effects: Effects<R>,
+    pub(crate) effects: Effects<R>,
 }
 
 /// `state` as `R`'s. A root only ever hands its own type's state back, so
@@ -160,6 +234,24 @@ fn state_of<R: Resource>(state: &dyn Any) -> Option<&R::State> {
         tracing::error!(kind = R::KIND, "a root was handed another resource's state");
     }
     typed
+}
+
+/// The resource's own actions `encoded` applies: itself, or each member of
+/// a group of them, last landing last.
+fn own_actions<R: Resource>(encoded: &tilo_actions::EncodedAction) -> Vec<R::Action> {
+    if encoded.type_id == R::ACTION_TYPE {
+        return tilo_actions::decode_json(&encoded.payload)
+            .map(|action| vec![action])
+            .unwrap_or_default();
+    }
+    if encoded.type_id == tilo_resource::group::group_type::<R>() {
+        return tilo_actions::decode_json::<tilo_resource::ActionGroup<R::Action>>(
+            &encoded.payload,
+        )
+        .map(|group| group.actions)
+        .unwrap_or_default();
+    }
+    Vec::new()
 }
 
 impl<R: Resource> TypedRoot for Typed<R> {
@@ -183,6 +275,10 @@ impl<R: Resource> TypedRoot for Typed<R> {
         self.live.follows(doc)
     }
 
+    fn unreadable(&self) -> Option<String> {
+        self.live.unreadable().map(|unreadable| unreadable.reason)
+    }
+
     fn represent(&self) {
         self.live.represent();
     }
@@ -191,12 +287,36 @@ impl<R: Resource> TypedRoot for Typed<R> {
         R::read(doc).map(|state| Rc::new(state) as Rc<dyn Any>)
     }
 
-    fn run_updaters(&self) {
-        self.updaters.run(&self.live.get());
+    fn follow_change(&self, doc: &AutoCommit, followed: &Cell<u64>) {
+        // A surface may have synced the state itself after its own edit.
+        let revision = self.live.revision();
+        let change = self.live.take_change();
+        if revision != followed.get() || change.is_some() {
+            let _profile = tilo_resource::profiling::Phase::start("framework.updaters");
+            followed.set(revision);
+            let change = match &change {
+                Some(delta) => Change::Delta { delta, doc },
+                None => Change::Everything,
+            };
+            self.updaters.run(&self.live.get(), &change);
+        }
+        self.live.place_landings();
     }
 
-    fn poll_jobs(&self) {
+    fn drain(&self, revision: u64) {
+        self.live
+            .with(|state| self.effects.drain_projections(state, revision));
         self.effects.poll_jobs();
+    }
+
+    fn note_applied(
+        &self,
+        participant: &tilo_actions::ParticipantId,
+        action: &tilo_actions::EncodedAction,
+    ) {
+        for applied in own_actions::<R>(action) {
+            self.live.note_applied(participant.clone(), applied);
+        }
     }
 
     fn cache_epoch(&self, state: &dyn Any) -> Option<String> {
@@ -210,22 +330,15 @@ impl<R: Resource> TypedRoot for Typed<R> {
         }
     }
 
-    fn document_tree(
-        &self,
-        tree: &SharedTree,
-        (id, label): (&str, &str),
-        state: &dyn Any,
-        keep: bool,
-    ) -> SharedResource {
-        let Some(state) = state_of::<R>(state) else {
-            return SharedResource::from_resource(tilo_actions::Resource::new(id, R::KIND, label));
-        };
-        let head = tilo_resource::publish_head::<R>(id, label, state);
-        let items = ItemSource {
-            kind: R::KIND,
-            walk: tilo_resource::items::for_each_item_child::<R>,
-        };
-        tree.document_tree(head, R::children_parts(state), &items, keep)
+    fn children_parts(&self, state: &dyn Any) -> ChildrenParts {
+        match state_of::<R>(state) {
+            Some(state) => R::children_parts(state),
+            None => ChildrenParts {
+                others: Vec::new(),
+                items: Vec::new(),
+                item_actions: Vec::new(),
+            },
+        }
     }
 
     fn declarations(&self, state: &dyn Any) -> Box<dyn Any> {
@@ -233,6 +346,17 @@ impl<R: Resource> TypedRoot for Typed<R> {
             .map(|state| self.bindings.declarations(state))
             .unwrap_or_default();
         Box::new(declarations)
+    }
+
+    fn declaration_ids(&self, declarations: &dyn Any) -> Vec<&'static str> {
+        declarations
+            .downcast_ref::<Vec<ActionDecl<R>>>()
+            .map(|declarations| declarations.iter().map(|decl| decl.id).collect())
+            .unwrap_or_default()
+    }
+
+    fn no_declarations(&self) -> Box<dyn Any> {
+        Box::new(Vec::<ActionDecl<R>>::new())
     }
 
     fn bind(
@@ -248,24 +372,6 @@ impl<R: Resource> TypedRoot for Typed<R> {
         resource
     }
 
-    fn row_declarations(&self, rows: usize) -> Box<dyn Any> {
-        let mut declarations: Vec<Vec<ActionDecl<R>>> = Vec::new();
-        declarations.resize_with(rows, Vec::new);
-        Box::new(declarations)
-    }
-
-    fn bind_rows(&self, rows: &mut [tilo_actions::Resource], declarations: Box<dyn Any>) {
-        let Ok(declarations) = declarations.downcast::<Vec<Vec<ActionDecl<R>>>>() else {
-            return;
-        };
-        for (row, offered) in rows.iter_mut().zip(*declarations) {
-            for decl in offered {
-                let bound = std::mem::replace(row, tilo_actions::Resource::new("", "", ""));
-                *row = tilo_resource::bind_declaration(bound, &decl);
-            }
-        }
-    }
-
     fn read_content(
         &self,
         state: &dyn Any,
@@ -277,8 +383,8 @@ impl<R: Resource> TypedRoot for Typed<R> {
         R::read_content(state, doc, item)
     }
 
-    fn child(&self, state: &dyn Any, id: &str) -> Option<tilo_actions::Resource> {
-        R::child(state_of::<R>(state)?, id)
+    fn child(&self, state: &dyn Any, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        tilo_resource::child_by_id::<R>(state_of::<R>(state)?, doc, id)
     }
 
     fn answer(
@@ -308,12 +414,12 @@ impl<R: Resource> TypedRoot for Typed<R> {
         if next.type_id != R::ACTION_TYPE {
             return (false, false);
         }
-        let Ok(next) = serde_json::from_slice::<R::Action>(&next.payload) else {
+        let Ok(next) = tilo_actions::decode_json::<R::Action>(&next.payload) else {
             return (false, false);
         };
         let previous = previous
             .filter(|encoded| encoded.type_id == R::ACTION_TYPE)
-            .and_then(|encoded| serde_json::from_slice::<R::Action>(&encoded.payload).ok());
+            .and_then(|encoded| tilo_actions::decode_json::<R::Action>(&encoded.payload).ok());
         (
             previous
                 .as_ref()
@@ -322,11 +428,42 @@ impl<R: Resource> TypedRoot for Typed<R> {
         )
     }
 
+    fn effect_specs(&self) -> Vec<tilo_actions::ActionSpec> {
+        self.effects.specs()
+    }
+
+    fn effect_operations(&self) -> Vec<&'static str> {
+        self.effects.operations()
+    }
+
+    fn has_causal_drains(&self) -> bool {
+        self.effects.has_causal_drains()
+    }
+
+    fn start_effect(
+        &self,
+        op: &ResourceOperation<'_>,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        self.effects.start(op)
+    }
+
+    fn poll_effect(
+        &self,
+        invocation: tilo_actions::InvocationId,
+        cancel: bool,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        self.effects.poll(invocation, cancel)
+    }
+
+    fn apply_settlements(&self, edits: &mut ui_core::widget::Edits<'_>) {
+        self.effects.apply_settlements(edits);
+    }
+
     fn start_document_effects(
         &self,
-        operation: &ui_core::host_operation::ResourceOperation<'_>,
+        operation: &ResourceOperation<'_>,
         applied: &ui_core::widget::document_effects::AppliedDocument<'_>,
-    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
+    ) -> Result<Option<ResourceOperationStart>, String> {
         self.effects.start_document_effects(operation, applied)
     }
 }

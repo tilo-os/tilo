@@ -1,18 +1,23 @@
-//! Generator for `tests/fixtures/shell-proof`.
+//! Builds the shell-proof scenario the tests replay, at test time.
 //!
 //! Every identity is derived from a fixed seed in this file and every
-//! signature and timestamp is fixed, so the fixture never depends on keys
-//! outside the repository. The scenario is built only through the ordinary
-//! `StatePeer` publishing APIs and the relay's own `WorkspaceStore` retention,
-//! so it follows whatever those currently write.
+//! signature and timestamp is fixed. The scenario is built only through the
+//! ordinary `StatePeer` publishing APIs and the relay's own `WorkspaceStore`
+//! retention, so it follows whatever those currently write.
 //!
-//! `shell_proof_fixture_generator_builds_the_asserted_scenario` always rebuilds
-//! the scenario into a temporary directory. The ignored
-//! `regenerate_shell_proof_fixture` rewrites the checked-in files; see the
-//! fixture README for the command.
+//! Layout written by [`write`]: `frames/0000.postcard`… are the delivered
+//! `CoeditPayload` bodies (decode the wrapper before `NeighbourMsg`);
+//! `retained/` is the relay's retained directory after it took in every
+//! publication after generation 1 (`.delta` files are complete
+//! four-byte-length-prefixed `Envelope` frames with zero outer signatures, a
+//! trusted test import); `initial-peer.postcard` is the receiver's export
+//! after generation 1; `failure.json` names the governor, certificates, room
+//! and admission time, the frame count, the room-checkpoint frame and the
+//! superseded route.
 use super::*;
 use crate::{coedit::CoeditPayload, transport::Envelope};
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin, transport::Retention};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
@@ -81,7 +86,7 @@ fn edit(
     ));
     let heads = doc.get_heads();
     doc.put(ROOT, field, value).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", field);
     owner
         .publish_incremental(app, record, doc.save_after(&heads), key, now)
         .unwrap()
@@ -408,57 +413,4 @@ fn shell_proof_fixture_generator_builds_the_asserted_scenario() {
     write(&fixture, scratch.path());
     assert_eq!(fixture.frames.len(), 12);
     assert!(scratch.path().join("retained/v2").is_dir());
-}
-
-/// Rewrites `tests/fixtures/shell-proof`. Run it explicitly; see the fixture
-/// README.
-#[test]
-#[ignore = "rewrites the checked-in shell-proof fixture"]
-fn regenerate_shell_proof_fixture() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/shell-proof");
-    let scratch = tempfile::tempdir().unwrap();
-    write(&generate(), scratch.path());
-    for stale in ["frames", "retained"] {
-        let path = dir.join(stale);
-        if path.exists() {
-            fs::remove_dir_all(path).unwrap();
-        }
-    }
-    write_text_tree(scratch.path(), &dir);
-    println!("wrote the shell-proof fixture to {}", dir.display());
-}
-
-/// Explicit regeneration writes textual source, never raw binary fixtures.
-fn write_text_tree(from: &Path, to: &Path) {
-    fs::create_dir_all(to).unwrap();
-    for entry in fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        let path = entry.path();
-        if entry.file_type().unwrap().is_dir() {
-            write_text_tree(&path, &to.join(entry.file_name()));
-        } else if path
-            .extension()
-            .is_some_and(|extension| extension == "postcard" || extension == "delta")
-        {
-            let bytes = fs::read(&path).unwrap();
-            let text = bytes
-                .chunks(16)
-                .map(|chunk| {
-                    chunk
-                        .iter()
-                        .map(|byte| format!("{byte:02x}"))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                        + "\n"
-                })
-                .collect::<String>();
-            fs::write(
-                to.join(format!("{}.hex", entry.file_name().to_string_lossy())),
-                text,
-            )
-            .unwrap();
-        } else {
-            fs::copy(&path, to.join(entry.file_name())).unwrap();
-        }
-    }
 }

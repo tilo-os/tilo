@@ -1,9 +1,11 @@
 //! Scratchpad: one note, kept for you.
 //!
-//! The whole app is a resource (the note), one action (edit it) and a view.
-//! Storage, sync, collaboration, history, undo, permissions and the action
-//! palette come from the framework.
+//! The whole app is a model (the note) and a view whose editor is bound to
+//! the note's body: typing is the body's own field edit. Storage, sync,
+//! collaboration, history, undo, permissions and the action palette come from
+//! the framework.
 
+pub mod locales;
 mod native_probe;
 
 use std::cell::Cell;
@@ -14,17 +16,12 @@ use ui::prelude::*;
 /// The note.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Note {
+    /// Note text
     pub body: String,
 }
 
 #[resource(kind = "scratchpad.note", label = "Note")]
-impl Note {
-    /// Edit note.
-    #[action]
-    pub fn edit(&mut self, #[param("Note text")] text: String) {
-        self.body = text;
-    }
-}
+impl Note {}
 
 /// What the capture scenarios write.
 const SAMPLE_NOTE: &str = "Notes for Thursday\n\nPick up the printed tickets before noon. Ask Maria whether the \
@@ -52,13 +49,16 @@ impl ResourceApp for Scratchpad {
             Some("long-note") => [SAMPLE_NOTE; 8].join("\n\n"),
             _ => return Vec::new(),
         };
-        vec![Note::EDIT.with(text)]
+        Invoke::edit(&Note::paths().body.replace(text))
+            .into_iter()
+            .collect()
     }
 
     fn view(cx: &mut ViewCx<Note>) -> Element {
+        locales::install();
         let scroll = Rc::new(Cell::new((0.0, 0.0)));
         let editor = cx
-            .input(|note| note.body.clone(), Note::EDIT)
+            .input(cx.paths().body)
             .with_id("note-editor")
             .with_accessible_name("Note")
             .with_plain_chrome()

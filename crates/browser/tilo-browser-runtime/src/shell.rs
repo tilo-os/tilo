@@ -545,6 +545,13 @@ impl OverviewHost for PageOverview {
             &tilo_desktop::workspace_settings::NoAppDirectory,
         )
     }
+
+    fn node_label(&self, node: &tilo_action_policy::TreePath) -> String {
+        tilo_desktop::workspace_settings::node_phrase(
+            node,
+            &tilo_desktop::workspace_settings::NoAppDirectory,
+        )
+    }
 }
 
 fn workspace_is_empty(tree: &DesktopTree) -> bool {

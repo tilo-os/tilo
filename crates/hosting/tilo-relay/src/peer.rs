@@ -5406,6 +5406,17 @@ async fn handle_delta(
         }));
     };
     trace_native_publication("server_authorized", &env, None);
+    // The change itself must say what it does and stay inside what its app
+    // publishes, before the relay keeps or forwards it.
+    let standings = ws.lock().await.standings.clone();
+    if let Envelope::Delta { delta, .. } = &env
+        && let Some(reason) = crate::surfaces::refusal(delta, standings.as_deref())
+    {
+        // Neither kept nor forwarded. The session stays: one bad change
+        // is not a membership decision.
+        tracing::warn!(%reason, device = %hex::encode(peer.device_public_key), "refused a document change");
+        return Ok(None);
+    }
     let observed = match (&env, session.compactor) {
         (Envelope::Delta { delta, .. }, Some(_)) => crate::compaction::Compactor::observe(delta),
         _ => None,
@@ -6002,9 +6013,7 @@ async fn handle_presence(
                     Some(rooms) => rooms
                         .legacy_writer_role(authority.room(), peer.device_public_key)
                         .await
-                        .is_some_and(|role| {
-                            room_access::role_grants(role, collab_types::caps::Verb::Write)
-                        }),
+                        .is_some_and(room_access::role_writes),
                     None => false,
                 };
             }
@@ -10658,7 +10667,6 @@ mod private_transport_tests {
                 tilo_relay_protocol::agents::AgentScope {
                     rooms: vec![room.to_string()],
                     apps: Vec::new(),
-                    may_confirm: false,
                 },
                 1,
                 2,

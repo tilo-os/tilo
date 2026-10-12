@@ -5,9 +5,11 @@
 //! `LocalSet`, because capnp-rpc futures are `!Send`. The owner thread
 //! reaches it over a pair of bounded queues: [`CollabTransport::submit`]
 //! enqueues commands and [`CollabTransport::drain`] empties the event queue.
-//! Durable traffic fails the bridge closed on overload; only transient
-//! presence may be shed. Document mutations have their own budget and are
-//! deferred (`Busy`) or refused (`TooLarge`) without closing it. Joining,
+//! Overload never closes the bridge. Only transient presence is shed;
+//! other durable commands that do not fit wait in the owner's ordered spill
+//! (a newer action surface replaces an older one) until the shovel frees
+//! room. Document mutations have their own budget and are deferred (`Busy`)
+//! or refused (`TooLarge`). Joining,
 //! document signing and envelope verification all happen on the worker with
 //! the certified launcher (or host-supplied) identity.
 #![allow(
@@ -84,18 +86,6 @@ const HOST_IDENTITY_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(5);
 /// This deliberately caps commands, rather than bytes, because the protocol
 /// already bounds its payloads at each broker boundary.
 const SDK_COMMAND_QUEUE: usize = 256;
-/// The share of the outbound command queue document traffic never takes, as
-/// a divisor of its capacity. Documents are bounded by their own byte budget,
-/// so a flood of small edits could otherwise fill every slot, and the next
-/// control command (a publication barrier, a join, an invocation result)
-/// would find the queue full, which fails the whole bridge. Only documents
-/// are refused as busy; control commands always have these slots.
-const SDK_CONTROL_HEADROOM_DIVISOR: usize = 16;
-
-/// Slots of `tx` reserved for control commands.
-fn control_headroom<T>(tx: &tokio_mpsc::Sender<T>) -> usize {
-    tx.max_capacity() / SDK_CONTROL_HEADROOM_DIVISOR
-}
 /// Maximum number of shovel-to-UI events waiting behind a busy event loop.
 const SDK_EVENT_QUEUE: usize = 256;
 /// Aggregate retained payload budget for each cross-thread queue. This is
@@ -269,9 +259,10 @@ pub(super) fn flush_live_activity() {
 }
 
 /// Owned mpsc pair + shovel-thread handle for SDK mode. Both directions are
-/// bounded. Durable overflow makes the bridge unavailable rather than
-/// silently losing an action or invocation transition; a document change
-/// that does not fit is reported to its sender instead, never dropped.
+/// bounded. Durable overflow waits in the owner's spill rather than losing
+/// an action or invocation transition or disabling the bridge; a document
+/// change that does not fit is reported to its sender instead, never
+/// dropped.
 ///
 /// Dropping the manager drops `outbound_tx`; the shovel thread's
 /// `.recv()` then yields `None` and the thread exits. `_thread` is kept
@@ -301,6 +292,10 @@ pub(super) struct BrokerTransport {
     /// Whether [`wifi_continuity_command`] has been pointed at this
     /// transport; done once it has connected.
     wifi_bridge_registered: bool,
+    /// Durable commands the bounded queue had no room for, in submission
+    /// order. They wait here for the shovel to catch up instead of
+    /// disabling collaboration; see [`Self::enqueue`].
+    spill: std::collections::VecDeque<SdkCommand>,
     _thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -318,8 +313,75 @@ pub(crate) struct NativeHistoryInvocationFixture {
 }
 
 impl BrokerTransport {
-    fn enqueue(&self, command: SdkCommand) -> Result<(), TransportError> {
-        try_enqueue_sdk_command(&self.outbound_tx, command, &self.state)
+    /// Hand a command to the shovel. A full bounded queue is backpressure,
+    /// never a reason to disable collaboration: a durable command that does
+    /// not fit waits in [`Self::spill`] (in order, with a newer action
+    /// surface replacing an older one) and is sent as the shovel frees room.
+    /// Presence is shed and document changes report `Busy`, as before.
+    fn enqueue(&mut self, command: SdkCommand) -> Result<(), TransportError> {
+        self.flush_spill();
+        if !self.spill.is_empty() {
+            // Everything behind a parked command stays behind it.
+            if command.is_transient_presence() {
+                return Err(TransportError::Shed);
+            }
+            if command.document_len().is_some() {
+                self.state.command_bytes.arm_room_wake();
+                return Err(TransportError::Busy);
+            }
+            self.park(command);
+            return Ok(());
+        }
+        match admit_sdk_command(&self.outbound_tx, command, &self.state) {
+            Ok(()) => Ok(()),
+            Err(Refused {
+                command: Some(command),
+                ..
+            }) => {
+                self.park(command);
+                Ok(())
+            }
+            Err(refused) => Err(refused.error),
+        }
+    }
+
+    fn park(&mut self, command: SdkCommand) {
+        if let SdkCommand::Primary(CollabRequest::PublishActions { app_id, .. }) = &command
+            && let Some(older) = self.spill.iter_mut().find(|parked| {
+                matches!(parked, SdkCommand::Primary(CollabRequest::PublishActions { app_id: parked_app, .. })
+                    if parked_app == app_id)
+            })
+        {
+            // The surface is level-triggered: only the latest matters.
+            *older = command;
+        } else {
+            self.spill.push_back(command);
+        }
+        // Arm before the retry so a release racing it is never missed.
+        self.state.command_bytes.arm_room_wake();
+        self.flush_spill();
+    }
+
+    /// Move parked commands into the queue while it has room.
+    fn flush_spill(&mut self) {
+        while let Some(command) = self.spill.pop_front() {
+            match admit_sdk_command(&self.outbound_tx, command, &self.state) {
+                Ok(()) => {}
+                Err(Refused {
+                    command: Some(command),
+                    ..
+                }) => {
+                    self.spill.push_front(command);
+                    self.state.command_bytes.arm_room_wake();
+                    return;
+                }
+                Err(_) => {
+                    // The bridge is gone; nothing parked can be sent.
+                    self.spill.clear();
+                    return;
+                }
+            }
+        }
     }
 
     /// Route [`wifi_continuity_command`] through this transport.
@@ -403,6 +465,7 @@ impl CollabTransport for BrokerTransport {
     fn drain(&mut self, out: &mut Vec<CollabEvent>) {
         self.document_turns.clear();
         self.state.begin_poll();
+        self.flush_spill();
         if !self.wifi_bridge_registered
             && matches!(self.state.connect_phase(), ConnectPhase::Connected)
         {
@@ -509,7 +572,11 @@ impl CollabTransport for BrokerTransport {
     }
 
     fn document_publishable(&self, channel: Option<&str>) -> bool {
-        channel.is_some_and(|channel| self.state.document_reads.publishable(channel))
+        // Withdrawn health withdraws read readiness at once: the route's
+        // reader only clears its gate when it next wakes, and a route whose
+        // transport failed elsewhere (a refused commit) is not publishable.
+        self.state.is_healthy()
+            && channel.is_some_and(|channel| self.state.document_reads.publishable(channel))
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -1848,7 +1915,9 @@ fn bounded_rpc_diagnostic(error: &runtime_portal::NotAvailable) -> (&'static str
 }
 
 /// Non-blocking UI enqueue. Presence may be dropped when the finite queue is
-/// full; a durable command makes the whole bridge unavailable instead.
+/// full; a durable command that does not fit is refused as busy, and the
+/// owning transport parks it until room frees. Overload never disables the
+/// bridge.
 fn enqueue_sdk_command(
     tx: &tokio_mpsc::Sender<QueuedSdkCommand>,
     command: SdkCommand,
@@ -1857,18 +1926,43 @@ fn enqueue_sdk_command(
     try_enqueue_sdk_command(tx, command, state).is_ok()
 }
 
+/// Why a command was not queued, with the command itself when it is durable
+/// and may be retried.
+struct Refused {
+    error: TransportError,
+    command: Option<SdkCommand>,
+}
+
+impl Refused {
+    fn error(error: TransportError) -> Self {
+        Self {
+            error,
+            command: None,
+        }
+    }
+}
+
+fn try_enqueue_sdk_command(
+    tx: &tokio_mpsc::Sender<QueuedSdkCommand>,
+    command: SdkCommand,
+    state: &BridgeState,
+) -> Result<(), TransportError> {
+    admit_sdk_command(tx, command, state).map_err(|refused| refused.error)
+}
+
 /// Enqueue with an explicit outcome. Document mutations are checked against
 /// the transport limit here, before anything is queued, and use their own
 /// budget: a full budget is [`TransportError::Busy`] (retry later) and an
-/// over-limit change is [`TransportError::TooLarge`]. Neither disables
-/// collaboration. Other durable commands keep the fail-closed policy.
-fn try_enqueue_sdk_command(
+/// over-limit change is [`TransportError::TooLarge`]. Other durable commands
+/// are also `Busy` when the queue is full, and come back to the caller to
+/// retry. Only a queue whose receiver is gone closes the bridge.
+fn admit_sdk_command(
     tx: &tokio_mpsc::Sender<QueuedSdkCommand>,
     mut command: SdkCommand,
     state: &BridgeState,
-) -> Result<(), TransportError> {
+) -> Result<(), Refused> {
     if !state.is_healthy() {
-        return Err(TransportError::Closed);
+        return Err(Refused::error(TransportError::Closed));
     }
     if let Some(len) = command.document_len() {
         if let Err(collab_types::DocumentMutationEncodeError::TooLarge { actual, max }) =
@@ -1879,7 +1973,7 @@ fn try_enqueue_sdk_command(
                 limit = max,
                 "collab: document change exceeds the transfer limit; not sent"
             );
-            return Err(TransportError::TooLarge { actual, max });
+            return Err(Refused::error(TransportError::TooLarge { actual, max }));
         }
         command.shrink_document();
         let bytes = command_bytes(&command).unwrap_or(usize::MAX);
@@ -1895,15 +1989,8 @@ fn try_enqueue_sdk_command(
                 bytes = len,
                 "collab: document budget full; change will be retried"
             );
-            return Err(TransportError::Busy);
+            return Err(Refused::error(TransportError::Busy));
         };
-        if tx.capacity() <= control_headroom(tx) {
-            // Release before arming, or the reservation's own drop would
-            // spend the wake on a retry that finds the queue still full.
-            drop(reservation);
-            budget.arm_room_wake();
-            return Err(TransportError::Busy);
-        }
         return match tx.try_send(QueuedSdkCommand {
             command,
             _reservation: reservation,
@@ -1918,34 +2005,52 @@ fn try_enqueue_sdk_command(
                 if tx.capacity() > 0 {
                     state.owner_wake.notify_events();
                 }
-                Err(TransportError::Busy)
+                Err(Refused::error(TransportError::Busy))
             }
             Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
                 state.fail_closed("outbound command queue");
-                Err(TransportError::Closed)
+                Err(Refused::error(TransportError::Closed))
             }
         };
     }
     let transient = command.is_transient_presence();
-    let Some(reservation) = state.command_bytes.reserve(
-        command_bytes(&command).unwrap_or(usize::MAX),
+    let bytes = command_bytes(&command);
+    // A command alone above the budget is admitted into an empty one, so it
+    // can always make progress; a metering overflow is treated as that.
+    let Some(reservation) = state.command_bytes.reserve_sole(
+        bytes.unwrap_or(SDK_COMMAND_QUEUE_BYTES),
         SDK_COMMAND_QUEUE_BYTES,
     ) else {
         if transient {
-            return Err(TransportError::Shed);
+            return Err(Refused::error(TransportError::Shed));
         }
-        state.fail_closed("outbound command byte budget");
-        return Err(TransportError::Closed);
+        return Err(Refused {
+            error: TransportError::Busy,
+            command: Some(command),
+        });
     };
     match tx.try_send(QueuedSdkCommand {
         command,
         _reservation: reservation,
     }) {
         Ok(()) => Ok(()),
-        Err(tokio_mpsc::error::TrySendError::Full(_)) if transient => Err(TransportError::Shed),
-        Err(_) => {
+        Err(tokio_mpsc::error::TrySendError::Full(refused)) => {
+            if transient {
+                return Err(Refused::error(TransportError::Shed));
+            }
+            let QueuedSdkCommand {
+                command,
+                _reservation,
+            } = refused;
+            drop(_reservation);
+            Err(Refused {
+                error: TransportError::Busy,
+                command: Some(command),
+            })
+        }
+        Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
             state.fail_closed("outbound command queue");
-            Err(TransportError::Closed)
+            Err(Refused::error(TransportError::Closed))
         }
     }
 }
@@ -3336,6 +3441,7 @@ impl CollaborationManager {
             primary_deadline: None,
             worker_stopped: false,
             wifi_bridge_registered: false,
+            spill: std::collections::VecDeque::new(),
             _thread: Some(handle),
         };
         Ok((transport, init_rx))
@@ -3545,10 +3651,11 @@ fn run_shovel(
 /// when keys change (`channelKeysChanged`).
 const CHANNEL_KEY_REFRESH: Duration = Duration::from_secs(1);
 
-/// The longest a route waiting for keys goes unasked while nothing changes.
-/// Admission is pushed; this timer covers only what is not, such as a
-/// channel service that starts after the app or a steward this device learns
-/// of later.
+/// The longest a route waiting for keys goes unasked while nothing changes,
+/// when nothing tells it about a change: an identity service that refused or
+/// could not take its question, or a removal whose rejoin it asks for.
+/// Admission, a channel service starting after the app and a steward this
+/// device learns of later are all pushed (see `KeySchedule`).
 const CHANNEL_KEY_WAIT_LONGEST: Duration = Duration::from_secs(30);
 
 /// What makes an endpoint ask the identity service about a route's keys.
@@ -3598,7 +3705,19 @@ impl KeyRound {
 /// this device's trust and the person's role on every signature, so a stale
 /// key never publishes past the commit.
 ///
-/// A route waiting for keys is asked on a timer as well: after
+/// A route the channel service answered as waiting or unavailable is told
+/// as well when that answer may change: the service follows a member's
+/// access request to the steward's welcome, re-checks a room with no known
+/// steward whenever the workspace tree announces a change of its authority
+/// or governance, and retries a channel it failed to open on its own
+/// backoff, resolving the route's `channelKeysChanged` each time. So it is
+/// not asked on a timer either.
+///
+/// A route waiting for keys is asked on a timer only when nothing will tell
+/// it: its last question got no answer from the channel service (the
+/// identity service refused it or could not be reached, or it was never
+/// answered yet), or the service answered that this device was removed (a
+/// rejoin is asked for again on each question). It is asked after
 /// [`CHANNEL_KEY_REFRESH`], then backing off to [`CHANNEL_KEY_WAIT_LONGEST`]
 /// while nothing changes. An endpoint whose broker pushes nothing asks for
 /// every route every [`CHANNEL_KEY_REFRESH`], as before.
@@ -3623,10 +3742,11 @@ impl KeySchedule {
         }
     }
 
-    /// Whether the timer starts rounds: never while every route holds keys
-    /// and the broker pushes their changes.
-    fn timed(&self, awaiting: bool) -> bool {
-        !self.pushed || awaiting
+    /// Whether the timer starts rounds: never while the broker pushes
+    /// changes and no route waits for keys that nothing will tell it about
+    /// (`unpushed_wait`, see [`RouteKeys::asks_on_timer`]).
+    fn timed(&self, unpushed_wait: bool) -> bool {
+        !self.pushed || unpushed_wait
     }
 
     fn note(&mut self, signal: KeySignal) {
@@ -3688,13 +3808,14 @@ impl KeySchedule {
     }
 }
 
-/// Whether any route holds no keys yet and asks the identity service.
-fn any_route_awaiting_keys(routes: &std::collections::HashMap<String, SdkRoute>) -> bool {
+/// Whether any route holds no keys yet and nothing will tell it when that
+/// changes, so it is asked about on the timer.
+fn any_route_asking_on_timer(routes: &std::collections::HashMap<String, SdkRoute>) -> bool {
     routes.values().any(|route| {
         route
             .encryption
             .lock()
-            .is_ok_and(|keys| keys.awaiting_keys())
+            .is_ok_and(|keys| keys.asks_on_timer())
     })
 }
 
@@ -3752,6 +3873,7 @@ async fn drive_shovel(
         participant_kind,
         mut signer,
     } = identity;
+    let person = person_room_presentation(&presentation, &mut signer).await;
     let media_routes = native_media::Routes::default();
     let _media_worker = native_media::start(media_rx, media_routes.clone());
     // Every route of a certified endpoint is an encrypted channel whose keys
@@ -3785,7 +3907,7 @@ async fn drive_shovel(
     loop {
         let timed = asks_channel_keys
             && key_fetch.is_none()
-            && key_schedule.timed(any_route_awaiting_keys(&routes));
+            && key_schedule.timed(any_route_asking_on_timer(&routes));
         let queued = tokio::select! {
             queued = outbound_rx.recv() => queued,
             Some(signal) = key_signal_rx.recv() => {
@@ -3850,6 +3972,7 @@ async fn drive_shovel(
                             key_signals: &key_signals,
                             client: &client,
                             presentation: &presentation,
+                            person: person.as_ref(),
                             participant_handle: participant_handle.as_deref(),
                             participant_kind,
                             inbound_tx: &inbound_tx,
@@ -3915,6 +4038,7 @@ async fn drive_shovel(
                         key_signals: &key_signals,
                         client: &client,
                         presentation: &presentation,
+                        person: person.as_ref(),
                         participant_handle: participant_handle.as_deref(),
                         participant_kind,
                         inbound_tx: &inbound_tx,
@@ -3934,6 +4058,7 @@ async fn drive_shovel(
                         key_signals: &key_signals,
                         client: &client,
                         presentation: &presentation,
+                        person: person.as_ref(),
                         participant_handle: participant_handle.as_deref(),
                         participant_kind,
                         inbound_tx: &inbound_tx,
@@ -3998,6 +4123,7 @@ async fn drive_shovel(
                         key_signals: &key_signals,
                         client: &client,
                         presentation: &presentation,
+                        person: person.as_ref(),
                         participant_handle: participant_handle.as_deref(),
                         participant_kind,
                         inbound_tx: &inbound_tx,
@@ -4139,6 +4265,50 @@ async fn install_sdk_encryption(
     Ok(())
 }
 
+/// This device's join proof for its person's own room, as the identity
+/// service lends it to an app that keeps records of theirs there; `None`
+/// for any other app, or a connection without a certified identity.
+#[allow(
+    clippy::future_not_send,
+    reason = "the host identity transport is constructed and retained only on the shovel LocalSet"
+)]
+async fn person_room_presentation(
+    presentation: &[u8],
+    signer: &mut LocalSdkDocumentSigner,
+) -> Option<(String, Vec<u8>)> {
+    #[derive(serde::Deserialize)]
+    struct Root {
+        user_public_key: [u8; 32],
+    }
+    let launch = runtime_collab::CertifiedJoinIdentity::decode(presentation).ok()??;
+    let root: Root = serde_json::from_slice(&launch.device_certificate).ok()?;
+    let room = collab_types::person_room(&root.user_public_key).to_string();
+    if room == launch.workspace_id {
+        return None;
+    }
+    let proof = match signer {
+        LocalSdkDocumentSigner::Host(identity) => {
+            identity.sign_collaboration_join(&room).await.ok()?
+        }
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
+            let (identity, asked) = (std::sync::Arc::clone(identity), room.clone());
+            tokio::task::spawn_blocking(move || identity.sign_collaboration_join(&asked))
+                .await
+                .ok()?
+                .ok()?
+        }
+        LocalSdkDocumentSigner::Inherited(_) => return None,
+    };
+    let bytes = runtime_collab::CertifiedJoinIdentity {
+        workspace_id: room.clone(),
+        device_certificate: launch.device_certificate,
+        proof: proof.to_vec(),
+    }
+    .encode()
+    .ok()?;
+    Some((room, bytes))
+}
+
 #[derive(Clone, Copy)]
 struct SdkJoinContext<'a> {
     asks_channel_keys: bool,
@@ -4146,6 +4316,10 @@ struct SdkJoinContext<'a> {
     key_signals: &'a tokio_mpsc::UnboundedSender<KeySignal>,
     client: &'a runtime_collab::CollabClient,
     presentation: &'a [u8],
+    /// The person's own room and this device's join proof for it, when the
+    /// identity service lends one: what a route of a record of theirs
+    /// presents instead of the launch room's.
+    person: Option<&'a (String, Vec<u8>)>,
     participant_handle: Option<&'a str>,
     participant_kind: &'a str,
     inbound_tx: &'a InboundBridge,
@@ -4180,7 +4354,8 @@ async fn ensure_sdk_route(
         asks_channel_keys,
         key_signals,
         client,
-        presentation: identity_bytes,
+        presentation,
+        person,
         participant_handle,
         participant_kind,
         inbound_tx,
@@ -4190,6 +4365,10 @@ async fn ensure_sdk_route(
     if routes.contains_key(&channel_id) {
         return Ok(());
     }
+    let identity_bytes = match person {
+        Some((room, proof)) if *room == spec.cluster_id.to_string() => proof.as_slice(),
+        _ => presentation,
+    };
     let channel = match client
         .join_channel_as_kind(
             &channel_id,
@@ -5120,9 +5299,11 @@ async fn send_document_mutation(
             ));
         }
     };
+    let claims = origin_claims(&route.spec.app_id, &mutation);
     let count = frames.len();
     for (index, frame) in frames.into_iter().enumerate() {
-        if let Err(error) = send_document_frame(route, signer, frame, &inbound.state).await {
+        if let Err(error) = send_document_frame(route, signer, frame, &claims, &inbound.state).await
+        {
             if count > 1 {
                 tracing::warn!(
                     segment = index,
@@ -5134,6 +5315,69 @@ async fn send_document_mutation(
         }
     }
     Ok(())
+}
+
+/// The claims a mutation's op carries: what each of its changes is, read
+/// from the history entry the executor wrote into it. A change something
+/// other than the executor wrote cannot be claimed; its op then carries no
+/// claims, which a receiver deciding claims refuses.
+#[cfg_attr(
+    debug_assertions,
+    expect(
+        clippy::panic,
+        reason = "a debug build's check that every change this device makes is claimed"
+    )
+)]
+fn origin_claims(
+    app_id: &str,
+    mutation: &collab_types::DocumentMutation,
+) -> Vec<collab_types::ChangeClaim> {
+    let claims = collab_types::mutation_claims(mutation, collab_types::record_unit)
+        .map(|claims| with_footprints(app_id, claims));
+    claims.unwrap_or_else(|error| {
+        #[cfg(debug_assertions)]
+        if let collab_types::DocumentMutation::Incremental(bytes) = mutation
+            && collab_types::parse_changes(bytes).is_ok()
+            && let Err(unnamed) = collab_types::claim::named_changes(bytes)
+        {
+            panic!("a document change this device made names no action: {unnamed}");
+        }
+        tracing::warn!(%error, "collab: a document change carries no claim");
+        Vec::new()
+    })
+}
+
+/// `claims` naming as units what each action may write by the app's own
+/// surface: what a relay that cannot read a sealed change checks it against
+/// (devices that open it check what it really wrote).
+fn with_footprints(
+    app_id: &str,
+    mut claims: Vec<collab_types::ChangeClaim>,
+) -> Vec<collab_types::ChangeClaim> {
+    use collab_types::ReceiptSurface as _;
+    let Some(file) = crate::app_surface::bytes_of(app_id)
+        .and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())
+    else {
+        return claims;
+    };
+    for claim in &mut claims {
+        let kind = claim
+            .action
+            .members()
+            .into_iter()
+            .find_map(|action| match action {
+                collab_types::ClaimedAction::Verb { action, .. } => Some(action.kind.clone()),
+                collab_types::ClaimedAction::Edit { kind, .. } if !kind.is_empty() => {
+                    Some(kind.clone())
+                }
+                _ => None,
+            });
+        if let Some(resource) = file.resource(kind.as_deref()) {
+            let surface = collab_types::surface::KindSurface(resource.clone());
+            claim.units = surface.footprint(&claim.action);
+        }
+    }
+    claims
 }
 
 /// Encrypt, sign and send one typed document frame, or hold it on the
@@ -5149,16 +5393,17 @@ async fn send_document_frame(
     route: &SdkRoute,
     signer: &mut LocalSdkDocumentSigner,
     cleartext: Vec<u8>,
+    claims: &[collab_types::ChangeClaim],
     state: &BridgeState,
 ) -> Result<(), DocumentPublicationError> {
-    match try_send_frame(route, signer, cleartext.clone(), state).await {
+    match try_send_frame(route, signer, cleartext.clone(), claims, state).await {
         FrameSend::Sent | FrameSend::Held => Ok(()),
         FrameSend::Failed(error) => Err(error),
         FrameSend::Refused(refusal) => {
             if !refresh_route_keys(route, signer).await {
                 return Err(state.publication_failed("document commit RPC", refusal, true));
             }
-            match try_send_frame(route, signer, cleartext, state).await {
+            match try_send_frame(route, signer, cleartext, claims, state).await {
                 FrameSend::Sent | FrameSend::Held => Ok(()),
                 FrameSend::Failed(error) => Err(error),
                 FrameSend::Refused(refusal) => {
@@ -5178,13 +5423,14 @@ async fn try_send_frame(
     route: &SdkRoute,
     signer: &mut LocalSdkDocumentSigner,
     cleartext: Vec<u8>,
+    claims: &[collab_types::ChangeClaim],
     state: &BridgeState,
 ) -> FrameSend {
     let workspace_id = route.spec.cluster_id.to_string();
     let record_id = route.spec.record.as_deref().unwrap_or("");
     let artifact = collab_types::document_artifact_id(&route.spec.app_id, &workspace_id, record_id);
     let (payload, encryption_metadata) =
-        match prepare_document_payload(&route.encryption, artifact, cleartext) {
+        match prepare_document_payload(&route.encryption, artifact, cleartext, claims) {
             PreparedFrame::Ready(payload, metadata) => (payload, metadata),
             PreparedFrame::Held => return FrameSend::Held,
             PreparedFrame::Failed(reason) => {
@@ -5215,7 +5461,7 @@ async fn try_send_frame(
             artifact,
             author,
             attestation,
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             now,
             seq,
             metadata,
@@ -5225,11 +5471,17 @@ async fn try_send_frame(
             artifact,
             author,
             attestation,
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             now,
             seq,
         ),
     };
+    // Only a sealed op carries its changes' claims: a relay cannot read the
+    // changes, and a cleartext receiver reads each claim from its change.
+    if op.encryption.is_some() {
+        op = op.with_claims(claims.to_vec());
+    }
+    op = op.with_surface(crate::app_surface::hash_of(&route.spec.app_id));
     let unsigned_op = match postcard::to_stdvec(&op) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -5331,6 +5583,7 @@ fn prepare_document_payload(
     encryption: &SharedRouteKeys,
     artifact: collab_types::ArtifactId,
     cleartext: Vec<u8>,
+    claims: &[collab_types::ChangeClaim],
 ) -> PreparedFrame {
     let Ok(mut keys) = encryption.lock() else {
         return PreparedFrame::Failed("route key state lock poisoned".into());
@@ -5341,7 +5594,7 @@ fn prepare_document_payload(
             PreparedFrame::Ready(payload, metadata)
         }
         super::route_keys::Sealed::Hold => {
-            if keys.hold_outbound(cleartext) {
+            if keys.hold_outbound(cleartext, claims.to_vec()) {
                 PreparedFrame::Held
             } else {
                 PreparedFrame::Failed("too many edits waiting for channel access".into())
@@ -5410,33 +5663,49 @@ async fn refresh_route_keys(route: &SdkRoute, signer: &mut LocalSdkDocumentSigne
 }
 
 /// The keys the identity service answered, or, when it could not answer,
-/// that they are unavailable.
+/// that they are unavailable and the answer was not the channel service's.
 fn answered_keys(
     reply: Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>,
     generation: u64,
-) -> runtime_identity::wire::ChannelKeysReply {
-    reply.unwrap_or_else(|error| {
-        tracing::debug!(?error, "collab: identity service refused channel keys");
-        runtime_identity::wire::ChannelKeysReply {
-            access: runtime_identity::wire::ChannelAccess::Unavailable,
-            generation,
-            keys: None,
+) -> KeysAnswer {
+    match reply {
+        Ok(reply) => KeysAnswer {
+            reply,
+            answered: true,
+        },
+        Err(error) => {
+            tracing::debug!(?error, "collab: identity service refused channel keys");
+            KeysAnswer {
+                reply: runtime_identity::wire::ChannelKeysReply {
+                    access: runtime_identity::wire::ChannelAccess::Unavailable,
+                    generation,
+                    keys: None,
+                },
+                answered: false,
+            }
         }
-    })
+    }
+}
+
+/// One route's answer to a key question.
+struct KeysAnswer {
+    reply: runtime_identity::wire::ChannelKeysReply,
+    /// The channel service answered (rather than the identity service
+    /// refusing or failing): it then tells the route when this answer may
+    /// change, and the endpoint need not ask on a timer.
+    answered: bool,
 }
 
 /// Take the identity service's `reply` for `route`, asked at `generation`.
 /// Returns whether the route's state or keys changed.
-fn update_route_keys(
-    route: &SdkRoute,
-    reply: runtime_identity::wire::ChannelKeysReply,
-    generation: u64,
-) -> bool {
+fn update_route_keys(route: &SdkRoute, answer: KeysAnswer, generation: u64) -> bool {
     let Ok(mut keys) = route.encryption.lock() else {
         return false;
     };
     let state = keys.state();
+    let KeysAnswer { reply, answered } = answer;
     keys.update(reply.access, reply.generation, reply.keys.as_deref());
+    keys.set_answered(answered);
     keys.generation() != generation || keys.state() != state
 }
 
@@ -5464,7 +5733,7 @@ impl KeyQuery {
 
 /// The identity service's answers to one round of key questions: by route,
 /// with the generation each was asked at.
-type FetchedKeys = Vec<(String, u64, runtime_identity::wire::ChannelKeysReply)>;
+type FetchedKeys = Vec<(String, u64, KeysAnswer)>;
 
 /// A round of key questions in flight on a blocking thread.
 type KeyFetch = std::pin::Pin<Box<dyn std::future::Future<Output = FetchedKeys>>>;
@@ -5498,6 +5767,10 @@ async fn certified_channel_keys(
     .unwrap_or_default()
 }
 
+/// The log target of every round of key questions an endpoint starts: what
+/// tells an idle desktop that keeps asking from one that asks as it backs off.
+const KEY_ROUNDS: &str = "tilo::collab::key_rounds";
+
 /// Start a round of key questions for the routes `round` names. A certified
 /// service is asked off this thread and the round is
 /// returned to be awaited alongside the loop; a host's asynchronous service
@@ -5513,6 +5786,7 @@ async fn refresh_keys(
     round: &KeyRound,
 ) -> Option<KeyFetch> {
     let LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) = signer else {
+        tracing::debug!(target: KEY_ROUNDS, "collab: asking the host for channel keys");
         refresh_all_route_keys(routes, signer, inbound_tx, round).await;
         return None;
     };
@@ -5528,6 +5802,11 @@ async fn refresh_keys(
     if queries.is_empty() {
         return None;
     }
+    tracing::debug!(
+        target: KEY_ROUNDS,
+        routes = queries.len(),
+        "collab: asking the identity service for channel keys"
+    );
     Some(Box::pin(certified_channel_keys(
         std::sync::Arc::clone(identity),
         queries,
@@ -5624,8 +5903,8 @@ async fn deliver_waiting(
     {
         return false;
     }
-    for frame in outbound {
-        if send_document_frame(route, signer, frame, &inbound_tx.state)
+    for (frame, claims) in outbound {
+        if send_document_frame(route, signer, frame, &claims, &inbound_tx.state)
             .await
             .is_err()
         {
@@ -6836,6 +7115,14 @@ mod tests {
         committed_ack_reply: Option<runtime_collab::committed_document::Reply>,
         /// Refuse every committed Open, as a broker does for a revoked peer.
         committed_open_failure: Option<String>,
+        /// Hold committed-read `Await`s until this is notified, as a current
+        /// broker does until the read changes. Without it `Await` is refused,
+        /// as an older broker refuses a request it does not know.
+        committed_awaits: Option<Arc<tokio::sync::Notify>>,
+        /// End the next held `Await` though the read did not change, as a
+        /// broker does when an announced change leaves the reader's Open to
+        /// decide.
+        committed_await_stale: bool,
         /// Hold each next `join_channel` reply until its gate opens, as a
         /// starved broker does.
         join_gates: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
@@ -7403,9 +7690,54 @@ mod tests {
             mut results: channel_handle::CommittedDocumentResults,
         ) -> Promise<(), capnp::Error> {
             use runtime_collab::committed_document::{Reply, Request};
+            let decoded = params
+                .get()
+                .and_then(|params| params.get_request())
+                .and_then(|bytes| {
+                    Request::decode(bytes).map_err(|error| capnp::Error::failed(error.into()))
+                });
+            if let Ok(Request::Await { known_revision }) = decoded {
+                let held = {
+                    let mut captures = self.captures.lock().unwrap();
+                    captures
+                        .committed_reads
+                        .push(Request::Await { known_revision });
+                    captures.committed_awaits.clone()
+                };
+                let Some(change) = held else {
+                    return Promise::err(capnp::Error::failed(
+                        "invalid committed read request".into(),
+                    ));
+                };
+                let captures = self.captures.clone();
+                return Promise::from_future(async move {
+                    loop {
+                        let notified = change.notified();
+                        tokio::pin!(notified);
+                        notified.as_mut().enable();
+                        let current = {
+                            let mut captures = captures.lock().unwrap();
+                            let stale = std::mem::take(&mut captures.committed_await_stale);
+                            (!stale
+                                && captures.committed_open_failure.is_none()
+                                && captures.committed_history_fixture.is_some())
+                            .then(|| captures.committed_revision.unwrap_or([7; 32]))
+                        };
+                        if current.is_none() || current != known_revision {
+                            break;
+                        }
+                        notified.await;
+                    }
+                    results.get().set_reply(
+                        &Reply::Stale
+                            .encode()
+                            .map_err(|error| capnp::Error::failed(error.into()))?,
+                    );
+                    Ok(())
+                });
+            }
             let result = (|| {
-                let request = Request::decode(params.get()?.get_request()?)
-                    .map_err(|error| capnp::Error::failed(error.into()))?;
+                let request = decoded?;
                 let mut captures = self.captures.lock().unwrap();
                 captures.committed_reads.push(request.clone());
                 if matches!(request, Request::Open { .. })
@@ -7696,6 +8028,7 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
     struct FakeBroker {
         captures: SharedCaptures,
         op_backlog: Vec<(Vec<u8>, String)>,
@@ -7985,10 +8318,7 @@ mod tests {
                 requests_tx.send(requests).unwrap();
                 let broker = FakeBroker {
                     captures: broker_captures,
-                    op_backlog: vec![],
-                    presence_backlog: vec![],
-                    context_backlog: vec![],
-                    scrollback_response: None,
+                    ..FakeBroker::default()
                 };
                 let (client, server) = tokio::io::duplex(64 * 1024);
                 let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
@@ -8329,13 +8659,7 @@ mod tests {
                         .build()
                         .unwrap();
                     tokio::task::LocalSet::new().block_on(&runtime, async move {
-                        let broker = Rc::new(FakeBroker {
-                            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
-                            op_backlog: vec![],
-                            presence_backlog: vec![],
-                            context_backlog: vec![],
-                            scrollback_response: None,
-                        });
+                        let broker = Rc::new(FakeBroker::default());
                         let gate = HostJoinGate {
                             broker,
                             release: RefCell::new(delayed.then_some(wait)),
@@ -8387,13 +8711,7 @@ mod tests {
 
     #[test]
     fn session_owner_commit_sdk_failure_stops_queued_terminal() {
-        let broker = FakeBroker {
-            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
+        let broker = FakeBroker::default();
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
         captures.lock().unwrap().fail_document = true;
@@ -8426,13 +8744,7 @@ mod tests {
 
     #[test]
     fn session_owner_commit_sdk_terminal_failure_disconnects_before_next_request() {
-        let broker = FakeBroker {
-            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
+        let broker = FakeBroker::default();
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
         captures.lock().unwrap().fail_terminal = true;
@@ -8481,10 +8793,7 @@ mod tests {
         }
         let broker = FakeBroker {
             captures,
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let cluster_id = Uuid::new_v4();
@@ -8577,37 +8886,129 @@ mod tests {
         thread.join().unwrap();
     }
 
-    /// Small edits are bounded by count, not bytes: once they stop being
-    /// admitted the queue must still have room for control commands, which
-    /// fail the bridge when it is full.
-    #[test]
-    fn small_edits_leave_queue_room_for_control_commands() {
-        let (tx, rx) = tokio_mpsc::channel(SDK_COMMAND_QUEUE);
-        let state = BridgeState::new();
-        let mut admitted = 0;
-        let refusal = loop {
-            let command = SdkCommand::Primary(CollabRequest::document_incremental(vec![0; 1]));
-            match try_enqueue_sdk_command(&tx, command, &state) {
-                Ok(()) => admitted += 1,
-                Err(error) => break error,
-            }
+    fn parking_transport(
+        capacity: usize,
+    ) -> (BrokerTransport, tokio_mpsc::Receiver<QueuedSdkCommand>) {
+        let (outbound_tx, outbound_rx) = tokio_mpsc::channel(capacity);
+        let (_, inbound_rx) = tokio_mpsc::channel(1);
+        let (action_directory_tx, action_directory_rx) = mpsc::sync_channel(1);
+        let transport = BrokerTransport {
+            outbound_tx,
+            media: None,
+            inbound_rx,
+            document_turns: Vec::new(),
+            state: BridgeState::new(),
+            action_directory_rx,
+            action_directory_tx,
+            pending_primary: None,
+            primary_deadline: None,
+            worker_stopped: false,
+            wifi_bridge_registered: false,
+            spill: std::collections::VecDeque::new(),
+            _thread: None,
         };
-        assert_eq!(refusal, TransportError::Busy);
-        let headroom = control_headroom(&tx);
-        assert!(headroom > 0);
-        assert_eq!(admitted, SDK_COMMAND_QUEUE - headroom);
-        assert_eq!(rx.len(), admitted);
-        for _ in 0..headroom {
+        (transport, outbound_rx)
+    }
+
+    /// A burst of durable commands, more than the queue holds by count and
+    /// by bytes, waits for the shovel instead of disabling collaboration,
+    /// and reaches it in submission order.
+    #[test]
+    fn a_durable_burst_waits_for_the_shovel_instead_of_disabling_collaboration() {
+        let (mut transport, mut shovel) = parking_transport(4);
+        let total = 100;
+        for n in 0..total {
+            // One megabyte each: the burst is far past the byte budget too.
+            let command = TransportCommand::Primary(CollabRequest::ReportHandoff {
+                app_id: format!("app-{n}"),
+                message: vec![0; 1024 * 1024],
+            });
+            assert_eq!(transport.submit(command), Ok(()), "command {n} was refused");
             assert!(
-                enqueue_sdk_command(
-                    &tx,
-                    SdkCommand::Primary(CollabRequest::RequestDocumentSnapshot),
-                    &state
-                ),
-                "a full document queue must not refuse a control command"
+                transport.state.is_healthy(),
+                "command {n} disabled the bridge"
             );
         }
-        assert!(state.is_healthy());
+        assert!(!transport.spill.is_empty(), "the queue really was full");
+        assert!(matches!(transport.status(), TransportStatus::Connecting));
+
+        let mut seen = Vec::new();
+        let mut events = Vec::new();
+        while seen.len() < total {
+            let mut moved = false;
+            while let Ok(queued) = shovel.try_recv() {
+                let SdkCommand::Primary(CollabRequest::ReportHandoff { app_id, .. }) =
+                    queued.command
+                else {
+                    panic!("unexpected command");
+                };
+                seen.push(app_id);
+                moved = true;
+            }
+            // The owner's drain is what refills the queue after a wake.
+            transport.drain(&mut events);
+            assert!(moved || !transport.spill.is_empty() || seen.len() == total);
+        }
+        let expected = (0..total).map(|n| format!("app-{n}")).collect::<Vec<_>>();
+        assert_eq!(seen, expected);
+        assert!(transport.state.is_healthy());
+    }
+
+    /// A single command larger than the whole outbound byte budget (a merged
+    /// notebook's action surface is megabytes) is admitted when the budget is
+    /// empty and the commands behind it wait, rather than being refused as an
+    /// overload that disables collaboration.
+    #[test]
+    fn a_command_larger_than_the_whole_budget_is_admitted_alone() {
+        let (mut transport, mut shovel) = parking_transport(8);
+        let huge = || {
+            TransportCommand::Primary(CollabRequest::ReportHandoff {
+                app_id: "notes".into(),
+                message: vec![0; SDK_COMMAND_QUEUE_BYTES + 1024 * 1024],
+            })
+        };
+        assert_eq!(transport.submit(huge()), Ok(()));
+        assert_eq!(transport.submit(huge()), Ok(()), "the next one waits");
+        assert_eq!(transport.spill.len(), 1);
+        assert!(transport.state.is_healthy());
+        assert!(shovel.try_recv().is_ok());
+        let mut events = Vec::new();
+        transport.drain(&mut events);
+        assert!(transport.spill.is_empty());
+        assert!(shovel.try_recv().is_ok());
+        assert!(transport.state.is_healthy());
+    }
+
+    /// Commands behind a parked one stay behind it, and a newer action surface
+    /// replaces an older one still waiting: it is level-triggered, so a burst
+    /// of republications is one parked surface, not a queue of large ones.
+    #[test]
+    fn parked_surfaces_coalesce_and_document_changes_wait_behind_parked_commands() {
+        let (mut transport, mut shovel) = parking_transport(1);
+        let surface = || {
+            TransportCommand::Primary(CollabRequest::PublishActions {
+                app_id: "notes".into(),
+                actions: Vec::new(),
+            })
+        };
+        assert_eq!(transport.submit(surface()), Ok(()));
+        for _ in 0..500 {
+            assert_eq!(transport.submit(surface()), Ok(()));
+        }
+        assert_eq!(transport.spill.len(), 1, "surfaces coalesce while parked");
+        assert_eq!(
+            transport.submit(TransportCommand::Primary(
+                CollabRequest::document_incremental(b"edit".to_vec())
+            )),
+            Err(TransportError::Busy),
+            "a document change never overtakes a parked command"
+        );
+        assert!(transport.state.is_healthy());
+        assert!(shovel.try_recv().is_ok());
+        let mut events = Vec::new();
+        transport.drain(&mut events);
+        assert!(transport.spill.is_empty());
+        assert!(shovel.try_recv().is_ok());
     }
 
     #[cfg(unix)]
@@ -8711,6 +9112,136 @@ mod tests {
         }
     }
 
+    /// A certified identity whose channel service answers every route with
+    /// `access`, or that refuses every question (`None`).
+    #[cfg(unix)]
+    struct AnsweringIdentity {
+        asked: Arc<std::sync::atomic::AtomicUsize>,
+        access: Option<runtime_identity::wire::ChannelAccess>,
+    }
+
+    #[cfg(unix)]
+    impl SdkCertifiedIdentity for AnsweringIdentity {
+        fn channel_keys(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            generation: u64,
+        ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>
+        {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            self.access
+                .map(|access| runtime_identity::wire::ChannelKeysReply {
+                    access,
+                    generation,
+                    keys: None,
+                })
+                .ok_or(runtime_portal::NotAvailable::ServiceFdMissing)
+        }
+        fn device_certificate(&self) -> Option<&[u8]> {
+            Some(b"fixture")
+        }
+        fn signing_public_key(&self) -> [u8; 32] {
+            [5; 32]
+        }
+        fn sign_collaboration_join(
+            &self,
+            _: &str,
+        ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+            Ok([7; 64])
+        }
+        fn sign_collaboration_op(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &[u8],
+        ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+            Ok([9; 64])
+        }
+    }
+
+    /// How many more times than at joining an endpoint on a pushing broker
+    /// asked about its one route over three refresh intervals, when the
+    /// identity service answers `access` (or refuses, `None`). A pushed
+    /// change must still make it ask afterwards.
+    #[cfg(unix)]
+    fn asks_while_waiting(access: Option<runtime_identity::wire::ChannelAccess>) -> usize {
+        let changes = Arc::new(tokio::sync::watch::Sender::new(0_u64));
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                key_changes: Some(Arc::clone(&changes)),
+                ..Captures::default()
+            })),
+            ..FakeBroker::default()
+        };
+        let (fd, _captures, thread) = stand_up_fake_broker(broker);
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sdk = CollaborationManager::spawn_sdk(
+            SdkConnectSource::Fd(fd),
+            Some(SdkJoinIdentity {
+                presentation: Vec::new(),
+                participant_kind: "person",
+                signer: SdkDocumentSigner::Certified(Arc::new(AnsweringIdentity {
+                    asked: Arc::clone(&asked),
+                    access,
+                })),
+            }),
+        )
+        .unwrap();
+        let mut manager = CollaborationManager::disabled();
+        manager.backend = Backend::Transport(Box::new(sdk));
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: "so.tilo.test".into(),
+            cluster_id: Uuid::new_v4(),
+            record: None,
+            record_kind: None,
+            handle: None,
+        }));
+        manager.await_primary_route().unwrap();
+        tilo_test_env::wait_until("the route's endpoint to ask for its channel keys", || {
+            asked.load(std::sync::atomic::Ordering::Acquire) > 0
+        });
+        let joined = asked.load(std::sync::atomic::Ordering::Acquire);
+        // The waiting route's timer asks after 1 s and 2 s more.
+        std::thread::sleep(CHANNEL_KEY_REFRESH * 3 + Duration::from_millis(500));
+        let timed = asked.load(std::sync::atomic::Ordering::Acquire) - joined;
+        let before_change = asked.load(std::sync::atomic::Ordering::Acquire);
+        changes.send_replace(9);
+        tilo_test_env::wait_until("the endpoint to ask after its channel changed", || {
+            asked.load(std::sync::atomic::Ordering::Acquire) > before_change
+        });
+        drop(manager);
+        thread.join().unwrap();
+        timed
+    }
+
+    /// A route the channel service answered as waiting, or as unavailable
+    /// (no steward known yet), is told when that changes: it is not asked
+    /// about on a timer while the broker pushes, and a pushed change asks.
+    #[test]
+    #[cfg(unix)]
+    fn a_route_the_channel_service_answered_waits_for_its_push() {
+        use runtime_identity::wire::ChannelAccess;
+        for access in [ChannelAccess::Waiting, ChannelAccess::Unavailable] {
+            let timed = asks_while_waiting(Some(access));
+            assert_eq!(timed, 0, "{access:?}: a pushed route was asked on a timer");
+        }
+    }
+
+    /// What nothing pushes is still asked on the timer: a question the
+    /// identity service refused, and a removal, whose rejoin each question
+    /// asks for again.
+    #[test]
+    #[cfg(unix)]
+    fn a_refused_question_or_a_removal_is_still_asked_on_the_timer() {
+        for access in [None, Some(runtime_identity::wire::ChannelAccess::Removed)] {
+            let timed = asks_while_waiting(access);
+            assert!(timed >= 2, "{access:?}: asked {timed} times on the timer");
+        }
+    }
+
     /// How often a certified endpoint asked for channel keys after joining a
     /// route the broker serves as committed (`committed`: within a few refresh
     /// intervals) or as an ordinary op stream (once it has asked at all).
@@ -8722,10 +9253,7 @@ mod tests {
         };
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(captures)),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, _captures, thread) = stand_up_fake_broker(broker);
         let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -8862,7 +9390,7 @@ mod tests {
             artifact,
             collab_types::Ed25519PublicKey::from_bytes([3; 32]),
             collab_types::AttestationId::new(),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             crate::time::SystemTime::UNIX_EPOCH,
             1,
             metadata,
@@ -8873,9 +9401,7 @@ mod tests {
                 ..Captures::default()
             })),
             op_backlog: vec![(postcard::to_stdvec(&op).unwrap(), "peer".to_owned())],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, _captures, thread) = stand_up_fake_broker(broker);
         let released = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
@@ -8948,10 +9474,7 @@ mod tests {
                 key_changes: changes,
                 ..Captures::default()
             })),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, _captures, thread) = stand_up_fake_broker(broker);
         let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -9077,13 +9600,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn document_publication_certified_signing_refusal_never_reports_success() {
-        let broker = FakeBroker {
-            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
+        let broker = FakeBroker::default();
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let sdk = CollaborationManager::spawn_sdk(
             SdkConnectSource::Fd(fd),
@@ -9158,10 +9675,7 @@ mod tests {
             });
         let broker = FakeBroker {
             captures,
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
@@ -9225,10 +9739,7 @@ mod tests {
             });
         let broker = FakeBroker {
             captures,
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
@@ -9283,10 +9794,7 @@ mod tests {
             });
         let broker = FakeBroker {
             captures,
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, _, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
@@ -9329,6 +9837,7 @@ mod tests {
             primary_deadline: None,
             worker_stopped: false,
             wifi_bridge_registered: false,
+            spill: std::collections::VecDeque::new(),
             _thread: None,
         }));
         let earlier = manager.begin_document_publication_barrier().unwrap();
@@ -9468,10 +9977,7 @@ mod tests {
         captures.lock().unwrap().media_gates.push_back(unmute_wait);
         let (fd, captures, worker) = stand_up_fake_broker(FakeBroker {
             captures,
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         });
         let mut manager =
             CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.chat", Uuid::new_v4());
@@ -9536,10 +10042,7 @@ mod tests {
             });
         let (fd, captures, worker) = stand_up_fake_broker(FakeBroker {
             captures,
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         });
         let mut manager =
             CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.chat", Uuid::new_v4());
@@ -9588,10 +10091,7 @@ mod tests {
         }
         let (fd, captures, worker) = stand_up_fake_broker(FakeBroker {
             captures,
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         });
         let cluster_id = Uuid::new_v4();
         let mut manager =
@@ -9672,10 +10172,7 @@ mod tests {
                     }));
                     let broker: collab_service::Client = capnp_rpc::new_client(FakeBroker {
                         captures: captures.clone(),
-                        op_backlog: vec![],
-                        presence_backlog: vec![],
-                        context_backlog: vec![],
-                        scrollback_response: None,
+                        ..FakeBroker::default()
                     });
                     let channel = runtime_collab::CollabClient::from_raw(broker)
                         .join_channel("fixture-admitted-route", b"fixture")
@@ -9757,10 +10254,7 @@ mod tests {
                     captures.lock().unwrap().media_gates.push_back(gate);
                     let broker: collab_service::Client = capnp_rpc::new_client(FakeBroker {
                         captures: captures.clone(),
-                        op_backlog: vec![],
-                        presence_backlog: vec![],
-                        context_backlog: vec![],
-                        scrollback_response: None,
+                        ..FakeBroker::default()
                     });
                     let channel = runtime_collab::CollabClient::from_raw(broker)
                         .join_channel("fixture-admitted-route", b"fixture")
@@ -9927,10 +10421,7 @@ mod tests {
         }));
         let broker = FakeBroker {
             captures,
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let refresh_captures = captures.clone();
@@ -9983,10 +10474,7 @@ mod tests {
                 committed_history_fixture: Some(history),
                 ..Captures::default()
             })),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, _thread) = stand_up_fake_broker(broker);
         let replace = captures.clone();
@@ -10025,10 +10513,7 @@ mod tests {
         };
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(initial)),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, _thread) = stand_up_fake_broker(broker);
         (
@@ -10049,10 +10534,7 @@ mod tests {
                 committed_recheck_gate: Some(gate),
                 ..Captures::default()
             })),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, _thread) = stand_up_fake_broker(broker);
         (
@@ -10081,10 +10563,7 @@ mod tests {
         let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
         let broker = FakeBroker {
             captures: captures.clone(),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, _, _thread) = stand_up_fake_broker(broker);
         let manager =
@@ -10108,13 +10587,7 @@ mod tests {
 
     #[cfg(unix)]
     pub(super) fn connected_manager_for(app: &str, room: Uuid) -> CollaborationManager {
-        let broker = FakeBroker {
-            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
+        let broker = FakeBroker::default();
         let (fd, _, _thread) = stand_up_fake_broker(broker);
         CollaborationManager::from_sdk_fd_for_test(fd, app, room)
     }
@@ -10139,11 +10612,50 @@ mod tests {
         }
     }
 
+    /// Names the one test a re-executed test binary runs in its own process.
+    const OWN_PROCESS_TEST: &str = "TILO_UI_OWN_PROCESS_TEST";
+
+    /// Whether the calling test `name` (in this module) runs its body here:
+    /// only in a process that runs nothing else.
+    ///
+    /// An app's settings and live-activity channels are process-wide — one
+    /// app, one collaboration manager per process — and flush through the
+    /// transport that connected last (`SETTINGS_COMMAND_BRIDGE`). Any other
+    /// test's manager connecting in the same process takes over that route,
+    /// and the change it carries never reaches this test's broker. So the
+    /// test re-executes this binary for itself alone, as nextest's process
+    /// per test would, and here only checks that the child ran it and passed.
+    fn in_own_process(name: &str) -> bool {
+        let module = module_path!()
+            .split_once("::")
+            .map_or(module_path!(), |(_, path)| path);
+        let test = format!("{module}::{name}");
+        if std::env::var(OWN_PROCESS_TEST).is_ok_and(|own| own == test) {
+            return true;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+            .env(OWN_PROCESS_TEST, &test)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("test result: ok. 1 passed;"),
+            "{test} in its own process: {}\n{stdout}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        false
+    }
+
     #[cfg(unix)]
     #[test]
     fn an_apps_settings_reach_the_shells_records_and_follow_them() {
         use settings_store::{SessionPaths, SessionSettings, SettingsSource};
         const APP: &str = "so.tilo.monitor";
+        if !in_own_process("an_apps_settings_reach_the_shells_records_and_follow_them") {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let records = Arc::new(
             SessionSettings::open(SessionPaths::beside(dir.path().join("settings.json"))).unwrap(),
@@ -10164,10 +10676,7 @@ mod tests {
         };
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(captures)),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, _, _thread) = stand_up_fake_broker(broker);
         super::super::channel_settings::install(APP);
@@ -10222,6 +10731,9 @@ mod tests {
     #[test]
     fn an_apps_live_activity_reaches_the_shell_and_its_controls_come_back() {
         const APP: &str = "so.tilo.clocks";
+        if !in_own_process("an_apps_live_activity_reaches_the_shell_and_its_controls_come_back") {
+            return;
+        }
         let board = Arc::new(runtime_collab::LiveActivities::default());
         let captures = Captures {
             live_activities: Some((APP.to_owned(), Arc::clone(&board))),
@@ -10229,10 +10741,7 @@ mod tests {
         };
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(captures)),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, _, _thread) = stand_up_fake_broker(broker);
         // Shown before the channel joins: the join sends it.
@@ -10267,13 +10776,7 @@ mod tests {
         crate::wake::WakeScope,
         mpsc::Receiver<()>,
     ) {
-        let broker = FakeBroker {
-            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
+        let broker = FakeBroker::default();
         let (fd, _, _thread) = stand_up_fake_broker(broker);
         let (scope, wakes) = wake_channel();
         let manager = {
@@ -10309,7 +10812,7 @@ mod tests {
     }
 
     #[test]
-    fn bridge_backpressure_sheds_presence_and_fails_closed_for_results() {
+    fn bridge_backpressure_sheds_presence_and_defers_results() {
         // Case `saturated_outbound_bridge_sheds_only_presence_then_fails_closed`.
         {
             let (tx, mut rx) = tokio_mpsc::channel(1);
@@ -10362,9 +10865,12 @@ mod tests {
                     SdkCommand::Primary(CollabRequest::RequestDocumentSnapshot),
                     &state
                 ),
-                "a durable control overflow must be observable as a disconnected bridge"
+                "a durable control overflow is refused as busy, to be parked by the transport"
             );
-            assert!(!state.is_healthy());
+            assert!(
+                state.is_healthy(),
+                "overload must never disable collaboration"
+            );
             assert!(
                 rx.try_recv().is_ok() && rx.try_recv().is_err(),
                 "the bounded queue retains only its admitted durable command"
@@ -10774,13 +11280,7 @@ mod tests {
 
         // Case `a_background_connection_becomes_ready_and_wakes_the_owner`.
         {
-            let broker = FakeBroker {
-                captures: Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            };
+            let broker = FakeBroker::default();
             let (fd, captures, _thread) = stand_up_fake_broker(broker);
             let (scope, wakes) = wake_channel();
             let entry = scope.enter();
@@ -10818,13 +11318,7 @@ mod tests {
 
         // Case `explicit_test_join_forwards_its_identity_presentation`.
         {
-            let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            };
+            let broker = FakeBroker::default();
             let (fd, captures, _th) = stand_up_fake_broker(broker);
             let cluster = Uuid::new_v4();
             let presentation = b"certified-test-presentation".to_vec();
@@ -10845,13 +11339,7 @@ mod tests {
 
         // Case `first_frame_publishes_actions_without_input`.
         {
-            let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            };
+            let broker = FakeBroker::default();
             let (fd, captures, _thread) = stand_up_fake_broker(broker);
             let app_id = crate::collaboration::local_app_id();
             let manager = CollaborationManager::from_sdk_fd_for_test(fd, &app_id, Uuid::new_v4());
@@ -10881,13 +11369,7 @@ mod tests {
 
         // Case `a_refused_action_publication_is_republished`.
         {
-            let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            };
+            let broker = FakeBroker::default();
             let (fd, captures, _thread) = stand_up_fake_broker(broker);
             captures.lock().unwrap().refuse_action_publications = 1;
             let app_id = crate::collaboration::local_app_id();
@@ -10987,13 +11469,7 @@ mod tests {
     fn sdk_transport_forwards_signed_documents_and_presence() {
         // Case `hello_joins_channel_and_send_forwards_signed_op`.
         {
-            let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            };
+            let broker = FakeBroker::default();
             let (fd, captures, _th) = stand_up_fake_broker(broker);
             let cluster = Uuid::new_v4();
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", cluster);
@@ -11014,7 +11490,7 @@ mod tests {
                 collab_types::ArtifactId::new(),
                 collab_types::Ed25519PublicKey::from_bytes([1u8; 32]),
                 collab_types::AttestationId::new(),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 crate::time::SystemTime::UNIX_EPOCH,
                 1,
             );
@@ -11034,13 +11510,7 @@ mod tests {
         // Case `owned_route_raw_documents_use_typed_signed_sdk_transport`.
         {
             use automerge::transaction::Transactable;
-            let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            };
+            let broker = FakeBroker::default();
             let (fd, captures, _thread) = stand_up_fake_broker(broker);
             let workspace = Uuid::new_v4();
             let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "shell", workspace);
@@ -11051,7 +11521,7 @@ mod tests {
             let heads = document.base_heads();
             let snapshot = document.save();
             document.put(automerge::ROOT, "body", "after").unwrap();
-            document.commit();
+            collab_types::CommitNamed::commit_edit(&mut document, "fixture", "body");
             let delta = document.save_after(&heads);
             // The route refuses documents until it is joined and its document
             // mode is resolved; the first refused attempt starts that join.
@@ -11110,13 +11580,7 @@ mod tests {
         // what lets an owner end its session without discarding a change still
         // in transit.
         {
-            let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            };
+            let broker = FakeBroker::default();
             let (fd, captures, _thread) = stand_up_fake_broker(broker);
             let mut manager =
                 CollaborationManager::from_sdk_fd_for_test(fd, "shell", Uuid::new_v4());
@@ -11140,13 +11604,7 @@ mod tests {
         // a pointer publishes keyed, like a caret, rather than through
         // `publish_cursor(x, y)`, which has nowhere to put one.
         {
-            let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            };
+            let broker = FakeBroker::default();
             let (fd, captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
             tilo_test_env::wait_until("join_channel must be observed", || {
@@ -11250,7 +11708,7 @@ mod tests {
                 .sign_op(
                     b"last unique operation".to_vec(),
                     artifact,
-                    collab_types::OpClass::Splice,
+                    collab_types::OpKind::Change,
                 )
                 .expect("the final unique sequence remains valid");
             assert_eq!(final_op.seq, u64::MAX);
@@ -11259,7 +11717,7 @@ mod tests {
             let exhausted = identity.sign_op(
                 b"must not reuse zero".to_vec(),
                 artifact,
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
             );
             assert!(matches!(exhausted, Err(SignedSendError::SequenceExhausted)));
             assert_eq!(identity.seq, u64::MAX, "failure is non-mutating");
@@ -11274,7 +11732,7 @@ mod tests {
                 collab_types::ArtifactId::new(),
                 collab_types::Ed25519PublicKey::from_bytes([3_u8; 32]),
                 collab_types::AttestationId::new(),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 crate::time::SystemTime::UNIX_EPOCH,
                 43,
             );
@@ -11310,7 +11768,7 @@ mod tests {
                 .unwrap();
             let alice_endpoint = group_route_keys(alice);
             let PreparedFrame::Ready(ciphertext, metadata) =
-                prepare_document_payload(&alice_endpoint, artifact, plaintext.clone())
+                prepare_document_payload(&alice_endpoint, artifact, plaintext.clone(), &[])
             else {
                 panic!("a provisioned endpoint seals at once");
             };
@@ -11326,7 +11784,7 @@ mod tests {
                     artifact,
                     collab_types::Ed25519PublicKey::from_bytes([9; 32]),
                     collab_types::AttestationId::new(),
-                    collab_types::OpClass::Splice,
+                    collab_types::OpKind::Change,
                     crate::time::SystemTime::UNIX_EPOCH,
                     1,
                     metadata,
@@ -11347,7 +11805,7 @@ mod tests {
                 artifact,
                 collab_types::Ed25519PublicKey::from_bytes([9; 32]),
                 collab_types::AttestationId::new(),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 crate::time::SystemTime::UNIX_EPOCH,
                 2,
             );
@@ -11467,7 +11925,7 @@ mod tests {
                         artifact,
                         collab_types::Ed25519PublicKey::from_bytes([3; 32]),
                         collab_types::AttestationId::new(),
-                        collab_types::OpClass::Splice,
+                        collab_types::OpKind::Change,
                         crate::time::SystemTime::UNIX_EPOCH,
                         seq,
                         metadata,
@@ -11487,16 +11945,13 @@ mod tests {
             drop(alice);
 
             let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
                 scrollback_response: Some(SeedScrollback {
                     ops: history,
                     earliest_seq: 1,
                     latest_seq: 20,
                     done: true,
                 }),
+                ..FakeBroker::default()
             };
             let (fd, captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, app_id, cluster);
@@ -11559,7 +12014,7 @@ mod tests {
                 collab_types::ArtifactId::new(),
                 collab_types::Ed25519PublicKey::from_bytes([2u8; 32]),
                 collab_types::AttestationId::new(),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 crate::time::SystemTime::UNIX_EPOCH,
                 42,
             );
@@ -11567,11 +12022,8 @@ mod tests {
             let op_bytes = postcard::to_stdvec(&op).unwrap();
 
             let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
                 op_backlog: vec![(op_bytes, "peer-bob".to_owned())],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
+                ..FakeBroker::default()
             };
             let (fd, _captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
@@ -11604,9 +12056,6 @@ mod tests {
         // Case `context_stream_translates_to_context_event`.
         {
             let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
                 context_backlog: vec![SeedContext {
                     collaborators: vec![
                         ("alice".to_owned(), "Alice".to_owned(), 0x00FF_8000),
@@ -11614,7 +12063,7 @@ mod tests {
                     ],
                     permissions: vec!["edit".to_owned(), "share".to_owned()],
                 }],
-                scrollback_response: None,
+                ..FakeBroker::default()
             };
             let (fd, _captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
@@ -11688,11 +12137,8 @@ mod tests {
                 },
             ];
             let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
                 presence_backlog,
-                context_backlog: vec![],
-                scrollback_response: None,
+                ..FakeBroker::default()
             };
             let (fd, _captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
@@ -11763,7 +12209,7 @@ mod tests {
                 collab_types::ArtifactId::new(),
                 collab_types::Ed25519PublicKey::from_bytes([3u8; 32]),
                 collab_types::AttestationId::new(),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 crate::time::SystemTime::UNIX_EPOCH,
                 5,
             );
@@ -11776,11 +12222,8 @@ mod tests {
                 done: true,
             };
             let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
                 scrollback_response: Some(seed),
+                ..FakeBroker::default()
             };
             let (fd, captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
@@ -12058,10 +12501,7 @@ mod tests {
         };
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(captures)),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, worker) = stand_up_fake_broker(broker);
         let sdk = CollaborationManager::spawn_sdk(
@@ -12158,10 +12598,7 @@ mod tests {
                 action_catalogue_fixture: Some(vec![snapshot]),
                 ..Captures::default()
             })),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, worker) = stand_up_fake_broker(broker);
         let sdk = CollaborationManager::spawn_sdk(
@@ -12254,10 +12691,7 @@ mod tests {
         };
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(captures)),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, _thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.test", cluster);
@@ -12327,10 +12761,7 @@ mod tests {
         };
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(captures)),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, _thread) = stand_up_fake_broker(broker);
         let definition = runner_probe_definition();

@@ -1222,7 +1222,6 @@ struct JsDelegation {
     device: String,
     rooms: Vec<String>,
     apps: Vec<String>,
-    may_confirm: bool,
     expires_at_ns: u64,
 }
 
@@ -1261,7 +1260,6 @@ pub fn verify_agent_delegation(
         device: hex::encode(delegation.agent_device_public_key),
         rooms: delegation.scope.rooms,
         apps: delegation.scope.apps,
-        may_confirm: delegation.scope.may_confirm,
         expires_at_ns: delegation.expires_at_ns,
     })
     .map_err(js_error)

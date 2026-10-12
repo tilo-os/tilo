@@ -2,15 +2,16 @@
 //! pages, and the notebooks Notes kept per window before are brought into
 //! it exactly once.
 
-use crate::framework_support::{add_note, body, notes};
-use notes::actions::NotesAction;
-use notes::actions::{TagData, append_page_action, new_page_action, write_body_action};
+use crate::framework_support::{add_note, body, notes, shown};
+use notes::actions::{
+    create_page_action, new_tag_action, set_tag_assignment_action, write_body_action,
+};
 use notes::{MainPanel, NotesShell, PageId};
 use ui::framework::testing::{TestApp, window_record};
 use ui::record::RecordId;
 
 fn titles(app: &TestApp<NotesShell>) -> Vec<String> {
-    app.state()
+    shown(app)
         .pages()
         .iter()
         .map(|page| page.title.clone())
@@ -43,9 +44,9 @@ fn the_room_notebook_adopts_each_window_notebook_exactly_once() {
     let first = window_record::<NotesShell>(
         0x41,
         &[
-            append_page_action(inbox, None, "Inbox"),
+            create_page_action(inbox, None, "Inbox"),
             write_body_action(inbox, &blocks("Call the dentist")),
-            new_page_action(child, Some(inbox), "a".into(), "Errands"),
+            create_page_action(child, Some(inbox), "Errands"),
             write_body_action(child, &blocks("- milk\n- bread")),
         ],
     )
@@ -53,15 +54,10 @@ fn the_room_notebook_adopts_each_window_notebook_exactly_once() {
     let second = window_record::<NotesShell>(
         0x42,
         &[
-            append_page_action(ideas, None, "Ideas"),
+            create_page_action(ideas, None, "Ideas"),
             write_body_action(ideas, &blocks("A **bold** idea")),
-            NotesAction::CreateAndAssignTag {
-                page: ideas.to_string(),
-                tag: TagData {
-                    id: tag.to_string(),
-                    name: "later".into(),
-                },
-            },
+            new_tag_action(tag, "later"),
+            set_tag_assignment_action(ideas, tag, true),
         ],
     )
     .unwrap();
@@ -72,20 +68,20 @@ fn the_room_notebook_adopts_each_window_notebook_exactly_once() {
     assert!(app.record().is_package_primary());
 
     // Every page, in record order, with its tree, body and tag.
-    let roots = app
-        .state()
+    let state = shown(&app);
+    let roots = state
         .children_of(None)
         .iter()
         .map(|page| page.id)
         .collect::<Vec<_>>();
     assert_eq!(roots, [inbox, ideas]);
-    assert_eq!(app.state().pages().len(), 3);
-    assert_eq!(app.state().get(child).unwrap().parent, Some(inbox));
+    assert_eq!(state.pages().len(), 3);
+    assert_eq!(state.get(child).unwrap().parent, Some(inbox));
     assert_eq!(body(&app, inbox), ["Call the dentist"]);
     assert_eq!(body(&app, child), ["milk", "bread"]);
     assert_eq!(body(&app, ideas), ["A bold idea"]);
     assert_eq!(
-        app.state()
+        state
             .tags_for_page(ideas)
             .iter()
             .map(|tag| tag.name.clone())
@@ -93,17 +89,11 @@ fn the_room_notebook_adopts_each_window_notebook_exactly_once() {
         ["later"]
     );
 
-    // Adopting again adds nothing.
-    let again = notes::adopt::adoption_action(&app.window_records()).unwrap();
-    let mut copy = app.read_document(Clone::clone);
-    tilo_actions::Action::apply(&again, &mut copy).unwrap();
-    assert_eq!(notes::doc::NotesDoc::list_pages(&copy).len(), 3);
-
-    // Nor does opening Notes again, in this window or another.
+    // Opening Notes again, in this window or another, adopts nothing more.
     let app = app.reopen().unwrap();
-    assert_eq!(app.state().pages().len(), 3);
+    assert_eq!(shown(&app).pages().len(), 3);
     let app = app.another_window().unwrap();
-    assert_eq!(app.state().pages().len(), 3);
+    assert_eq!(shown(&app).pages().len(), 3);
 
     // The per-window records are still there, untouched.
     let windows = app.window_records();

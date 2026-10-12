@@ -1277,11 +1277,11 @@ impl TextInput {
     /// Keyboard input, paste, accessibility edits, and committed IME text
     /// notify once with the complete new value. IME preedit, cursor movement,
     /// selection changes, [`Self::set_text`], and CRDT synchronization do not.
+    /// It runs beside a bound action ([`Self::on_action`]), in either order of
+    /// registration.
     #[must_use]
     pub fn on_change(mut self, callback: impl FnMut(&str) + 'static) -> Self {
-        if self.action.is_none() {
-            self.on_change = Some(Box::new(callback));
-        }
+        self.on_change = Some(Box::new(callback));
         self.last_notified_text.clone_from(&self.text);
         self
     }
@@ -1291,7 +1291,6 @@ impl TextInput {
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
-        self.on_change = None;
         self
     }
 
@@ -1307,9 +1306,7 @@ impl TextInput {
         } else {
             self.publish_local_state();
         }
-        if self.action.is_none()
-            && let Some(callback) = self.on_change.as_mut()
-        {
+        if let Some(callback) = self.on_change.as_mut() {
             callback(&self.text);
         }
     }
@@ -3221,8 +3218,8 @@ impl TextInput {
     }
 
     #[must_use]
-    pub fn with_placeholder(mut self, hint: &str) -> Self {
-        self.placeholder = hint.to_string();
+    pub fn with_placeholder(mut self, hint: impl Into<crate::i18n::LabelKey>) -> Self {
+        self.placeholder = hint.into().into();
         self
     }
 
@@ -4808,6 +4805,11 @@ fn paint_field_chrome(
                 crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
             ),
         )
+    } else if theme.colors_are_forced() {
+        // Accessibility deliberately collapses surface levels. Keep the
+        // declared contrast edge instead of deriving a decorative hairline;
+        // disabled fields keep this edge under the existing group opacity.
+        (1.0, colors.border_standard)
     } else {
         (1.0, crate::surface::edge_on(rest))
     };

@@ -2,21 +2,29 @@
 //!
 //! Everything here is plain Rust + serde — no rendering, no IO, no CRDT
 //! plumbing. The workspace (collections, environments, history, the request
-//! currently being edited) is stored in the resource's document by
-//! [`crate::doc`], which is what makes it collaborative; these are the values
-//! it reads into. Credentials are the exception: a request's auth secret and
-//! a secret variable's value stay on the device ([`Auth::secret`],
-//! [`KeyValue::secret`]) and the document holds the rest.
+//! currently being edited) is stored as the record in [`crate::record`],
+//! which is what makes it collaborative; these are the values the window
+//! works on, projected from it. Credentials are the exception: a request's
+//! auth secret and a secret variable's value stay on the device
+//! ([`Auth::secret`], [`KeyValue::secret`]) and the record holds the rest.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Model};
 use uuid::Uuid;
 
-/// Identifier for a saved request, a collection, or an environment.
-pub type Id = Uuid;
+/// Identifier for a saved request, a collection, an environment or a sent
+/// request: its item in the record.
+pub type Id = ui::tilo_resource::Id;
+
+/// A fresh id for a value the window makes before the record has it.
+pub fn fresh_id() -> Id {
+    Id::from_raw(Uuid::new_v4().to_string())
+}
 
 /// HTTP verb. Ordered the way the method dropdown presents them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HttpMethod {
+    #[default]
     Get,
     Post,
     Put,
@@ -188,8 +196,9 @@ impl Auth {
 }
 
 /// How the request body is encoded. The Body tab switches between these.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BodyMode {
+    #[default]
     None,
     Json,
     Form,
@@ -287,7 +296,7 @@ impl Request {
     /// A fresh empty GET request.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: fresh_id(),
             name: name.into(),
             method: HttpMethod::Get,
             url: String::new(),
@@ -320,7 +329,7 @@ pub struct Collection {
 impl Collection {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: fresh_id(),
             name: name.into(),
             requests: Vec::new(),
             expanded: true,
@@ -341,7 +350,7 @@ pub struct Environment {
 impl Environment {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: fresh_id(),
             name: name.into(),
             variables: Vec::new(),
         }
@@ -357,8 +366,6 @@ pub struct HistoryEntry {
     pub status: u16,
     /// Round-trip time in milliseconds.
     pub duration_ms: u64,
-    /// Wall-clock label, e.g. "2m ago" — precomputed at record time.
-    pub when: String,
 }
 
 /// The outcome of a sent request, rendered by the response viewer.
