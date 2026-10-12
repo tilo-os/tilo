@@ -7417,11 +7417,10 @@ mod tests {
         frame.relayout();
         let probes = (0..2)
             .map(|index| {
-                assert!(frame.host_mut().focus_window_on_strip(
-                    strip,
-                    groups[index],
-                    tabs[index][0]
-                ));
+                frame
+                    .host_mut()
+                    .focus_window_on_strip(strip, groups[index], tabs[index][0]);
+                assert_eq!(frame.chrome().active_tab_id(), Some(tabs[index][0]));
                 live_hosted_terminal_probe(&mut frame)
             })
             .collect::<Vec<_>>();
@@ -7449,7 +7448,10 @@ mod tests {
                     vec![expected]
                 );
                 assert!(
-                    probes[1 - index].try_recv().is_err(),
+                    matches!(
+                        probes[1 - index].try_recv(),
+                        Err(std::sync::mpsc::TryRecvError::Empty)
+                    ),
                     "inactive Terminal must receive no bytes"
                 );
             }
@@ -7466,7 +7468,10 @@ mod tests {
                 Some(crate::shell::overlay_host::dictation_layer::Request::Cancel(None))
             ));
             assert!(
-                probes.iter().all(|probe| probe.try_recv().is_err()),
+                probes.iter().all(|probe| matches!(
+                    probe.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Empty)
+                )),
                 "consent must reach neither PTY"
             );
             // Acknowledge the observed cancellation as the frontend does.
@@ -7484,6 +7489,62 @@ mod tests {
             frame.relayout();
             finish_hosted_terminal_probe(&mut frame);
         }
+    }
+
+    #[test]
+    fn native_terminal_missing_active_owner_refuses_the_typing_fast_path() {
+        let (mut tree, strip, groups, tabs) = axis_a11y_tree();
+        let workspace = tree.desktop.active_workspace_mut().unwrap();
+        workspace.strips[0].window_groups.truncate(1);
+        workspace.strips[0].window_groups[0].tabs.truncate(1);
+        workspace.strips[0].window_groups[0].tabs[0].tile =
+            crate::shell::state::TileContent::AppPlaceholder {
+                kind: crate::shell::state::AppKind::Terminal,
+                label: "Terminal".into(),
+            };
+        let mut frame = FrameBuilder::with_tree(tree, (1280, 900));
+        frame.relayout();
+        frame
+            .host_mut()
+            .focus_window_on_strip(strip, groups[0], tabs[0][0]);
+        assert_eq!(frame.chrome().active_tab_id(), Some(tabs[0][0]));
+        let probe = live_hosted_terminal_probe(&mut frame);
+        let active = frame
+            .chrome
+            .borrow_mut()
+            .tree_mut()
+            .desktop
+            .active_group
+            .remove(&strip)
+            .unwrap();
+        assert!(
+            frame.host.active_app_host().is_none(),
+            "a live row cannot stand in for a missing active owner"
+        );
+        assert!(frame.active_terminal_node().is_none());
+        let mut document = AutoCommit::new();
+        let mut focus = None;
+        for key in [NamedKey::Space, NamedKey::Enter] {
+            assert!(!frame.offer_terminal_typing(
+                &key_press(Key::Named(key)),
+                &Modifiers::default(),
+                &mut ui::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+                &mut focus
+            ));
+            assert!(
+                matches!(probe.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+                "the observable live PTY must receive no bytes"
+            );
+        }
+        frame
+            .chrome
+            .borrow_mut()
+            .tree_mut()
+            .desktop
+            .active_group
+            .insert(strip, active);
+        finish_hosted_terminal_probe(&mut frame);
     }
 
     #[test]
