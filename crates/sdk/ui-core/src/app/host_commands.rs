@@ -314,7 +314,7 @@ impl App {
         StandaloneHistory::open(
             target,
             &context,
-            crate::history_source::AuthorDirectory::new(),
+            crate::history_source::AuthorDirectory::with_room_agents(),
         )
         .map(|history| history.rows().to_vec())
         .unwrap_or_default()

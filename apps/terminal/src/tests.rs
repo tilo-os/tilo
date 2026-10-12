@@ -280,7 +280,6 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
     // Case `a_session_that_marks_its_runs_opens_and_keeps_the_key`.
     {
         use std::io::BufRead as _;
-        use std::os::fd::AsRawFd;
 
         // The supervisor's reply byte for byte as `ServeResponse::Session`
         // serialises it for a bash session whose request named a key (ush's
@@ -298,9 +297,10 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
                 .openpty(PtySize::default())
                 .unwrap();
             runtime_portal::fd_transport::send_with_fd(
-                supervisor_end.as_raw_fd(),
+                &supervisor_end,
                 REPLY,
-                pair.master.as_raw_fd().unwrap(),
+                // SAFETY: `pair` owns the master and outlives this call.
+                unsafe { std::os::fd::BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
             )
             .unwrap();
             (request, supervisor_end, pair)
@@ -381,7 +381,6 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
     // Case `hosted_services_discover_and_use_a_healthy_ush_socket`.
     {
         use std::io::{BufRead, BufReader};
-        use std::os::fd::AsRawFd;
 
         let runtime = tempfile::tempdir().unwrap();
         let listener = private_ush_listener(runtime.path());
@@ -400,9 +399,10 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
                 .openpty(portable_pty::PtySize::default())
                 .unwrap();
             runtime_portal::fd_transport::send_with_fd(
-                stream.as_raw_fd(),
+                &stream,
                 b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\"}\n",
-                pair.master.as_raw_fd().unwrap(),
+                // SAFETY: `pair` owns the master and outlives this call.
+                unsafe { std::os::fd::BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
             )
             .unwrap();
         });
