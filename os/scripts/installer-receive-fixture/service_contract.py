@@ -45,7 +45,7 @@ def unique(pairs):
 
 
 def decode(raw):
-    require(type(raw) is bytes and 0 < len(raw) <= 4096, 'service request exceeds bound')
+    require(type(raw) is bytes and 0 < len(raw) <= 16 * 1024, 'service request exceeds bound')
     value = json.loads(raw, object_pairs_hook=unique)
     require(type(value) is dict and set(value) == KEYS and type(value['schema']) is int
             and value['schema'] == 2 and type(value['required_protocol']) is int

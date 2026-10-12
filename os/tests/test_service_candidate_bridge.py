@@ -39,7 +39,22 @@ class ServiceCandidateBridge(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'duplicate'):
             contract.decode(b'{"schema":2,"schema":2}')
         with self.assertRaisesRegex(RuntimeError, 'bound'):
-            contract.decode(b' ' * 4097)
+            contract.decode(b' ' * (16 * 1024 + 1))
+
+    def test_measured_receiving_closure_uses_the_producer_request_bound(self):
+        spec = importlib.util.spec_from_file_location(
+            'request_producer', ROOT / 'os/scripts/service-consumer-capability.py')
+        producer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(producer)
+        value = request()
+        value['receiving_dependencies'] = {
+            path: 'ab' * 32 for path in producer.RECEIVING_DEPENDENCIES
+        }
+        value['sdk_runtime_version'] = 'v' * 256
+        value['cef_runtime_version'] = 'v' * 247 + '-chromium'
+        encoded = json.dumps(value).encode()
+        self.assertLessEqual(len(encoded), 16 * 1024)
+        self.assertEqual(contract.decode(encoded), value)
 
     def test_candidate_scope_never_contains_consumer_completion(self):
         scope = contract.candidate_scope({'request': request(), 'subjects': {}})

@@ -465,7 +465,7 @@ def main():
     service_admission = None
     if args.service_session_qualification:
         import service_contract
-        raw = sys.stdin.buffer.read(4097)
+        raw = sys.stdin.buffer.read(16 * 1024 + 1)
         # No source/physical work begins before actual artifact admission.
         evidence_info = args.evidence.lstat()
         if (not stat.S_ISDIR(evidence_info.st_mode) or evidence_info.st_uid != 0
