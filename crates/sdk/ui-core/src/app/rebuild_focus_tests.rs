@@ -69,15 +69,6 @@ impl Widget for RebuildHarness {
             }
         }
     }
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _tr: &mut TextRenderer,
-        _theme: &Theme,
-        _p: &PresenceCtx,
-    ) {
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         self.children.iter().map(Box::as_ref).collect()
     }

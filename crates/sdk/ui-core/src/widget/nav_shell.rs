@@ -1176,28 +1176,12 @@ impl Widget for InertPart {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
 
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "NavShellInert"
     }
 
     fn is_layout_dirty(&self) -> bool {
         false
-    }
-
-    fn get_rect(&self) -> Rect {
-        Rect::ZERO
     }
 }
 

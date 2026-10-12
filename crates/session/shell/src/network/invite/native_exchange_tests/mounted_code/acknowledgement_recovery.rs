@@ -113,6 +113,20 @@ impl NativeDocumentReads for Reads {
         self.gate.captured(&read);
         Ok(read)
     }
+    fn unchanged(
+        &self,
+        context: &NativeDocumentReadContext,
+        revision: Option<[u8; 32]>,
+    ) -> Result<Option<bool>, String> {
+        self.inner.unchanged(context, revision)
+    }
+    fn next_change(
+        &self,
+        context: &NativeDocumentReadContext,
+        after: u64,
+    ) -> Result<Option<u64>, String> {
+        self.inner.next_change(context, after)
+    }
     fn initialize_application(
         &self,
         context: &NativeDocumentReadContext,

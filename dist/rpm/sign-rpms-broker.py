@@ -72,6 +72,13 @@ def trusted_broker(path, env):
             raise ValueError('broker and parents must be root-owned and not writable by others')
 
 
+def protected_fingerprint(env):
+    expected = env.get('TILO_RPM_SIGNING_FINGERPRINT', '').upper()
+    if not re.fullmatch(r'(?:[A-F0-9]{40}|[A-F0-9]{64})', expected):
+        raise ValueError('full independently pinned OpenPGP fingerprint required')
+    return expected
+
+
 def request_for(directory, env):
     if any(env.get(name) for name in ('TILO_RPM_SIGNING_KEY_B64', 'TILO_RPM_SIGNING_KEY_ID')):
         raise ValueError('private-key environment is forbidden')
@@ -91,9 +98,7 @@ def request_for(directory, env):
     run_id, attempt = env['GITHUB_RUN_ID'], env['GITHUB_RUN_ATTEMPT']
     if not all(re.fullmatch(r'[1-9][0-9]*', x) for x in (run_id, attempt)):
         raise ValueError('invalid run identity')
-    expected = env['TILO_RPM_SIGNING_FINGERPRINT'].upper()
-    if not re.fullmatch(r'(?:[A-F0-9]{40}|[A-F0-9]{64})', expected):
-        raise ValueError('full independently pinned OpenPGP fingerprint required')
+    expected = protected_fingerprint(env)
     files = sorted(directory.glob('*.rpm'))
     suffix = 'x86_64' if arch == 'amd64' else 'aarch64'
     names = {}
@@ -163,14 +168,18 @@ def verify_response(request, request_path, response, work):
             raise ValueError('broker changed package header or payload')
         checked = run('rpmkeys', '--dbpath', str(rpmdb), '--checksig', '--verbose', str(file))
         signatures = re.findall(r'Signature, key ID ([a-fA-F0-9]+): OK', checked)
-        if not signatures or re.search(r'NOT OK|NOKEY|BAD', checked):
+        full_fingerprints = re.findall(r'signature, key fingerprint: ([a-fA-F0-9]+): OK', checked)
+        if not (signatures or full_fingerprints) or re.search(r'NOT OK|NOKEY|BAD', checked):
             raise ValueError('RPM signature was not verified')
         if not all(len(key_id) >= 8 and any(f.lower().endswith(key_id.lower()) for f in fingerprints) for key_id in signatures):
             raise ValueError('RPM signed by an unexpected key')
+        if not all(len(f) in (40, 64) and f.upper() in fingerprints for f in full_fingerprints):
+            raise ValueError('RPM signed by an unexpected full fingerprint')
     return receipt
 
 
 def verify_published(directory, arch, version, env):
+    protected = protected_fingerprint(env)
     request_path = directory / f'tilo-rpm-signing-request-{arch}.json'
     receipt_path = directory / f'tilo-rpm-signing-receipt-{arch}.json'
     for path in (request_path, receipt_path):
@@ -179,7 +188,7 @@ def verify_published(directory, arch, version, env):
             raise ValueError('unbounded published broker metadata')
     request, receipt = (json.loads(path.read_text()) for path in (request_path, receipt_path))
     expected = (directory / 'tilo-rpm-signing-key.fingerprint').read_text().strip()
-    if env.get('TILO_RPM_SIGNING_FINGERPRINT', expected).upper() != expected:
+    if protected != expected:
         raise ValueError('published fingerprint differs from protected pin')
     required = {'schema', 'repository', 'repository_id', 'ref', 'sha', 'run_id',
                 'run_attempt', 'arch', 'artifact', 'fingerprint', 'rpms'}

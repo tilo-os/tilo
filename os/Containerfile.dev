@@ -189,6 +189,7 @@ COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_u
 COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py
 COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs
 COPY tools/test-assets.py /build/tools/test-assets.py
+COPY tools/ci/measure.sh /build/tools/ci/measure.sh
 
 # ---- Dev binaries -----------------------------------------------------------
 # Compiled in the dev image's own toolchain, the same one in-VM builds use.
@@ -272,7 +273,7 @@ RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/bin/sccache,target=/
     && printf 'dev image build: cargo build --release %s\n' "$DEV_CARGO_ARGS" \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_DEV_RUST_LTO" \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
-       cargo build --release ${DEV_CARGO_ARGS} \
+       bash tools/ci/measure.sh "dev cargo" -- cargo build --release ${DEV_CARGO_ARGS} \
     && printf 'TILO_BUILD_TIMING phase=dev-cargo elapsed_seconds=%s freshness=%s\n' "$(( $(date +%s) - started ))" "$TILO_CARGO_FRESHNESS" \
     && if [ "$TILO_CARGO_FRESHNESS" = content ]; then \
          sh os/scripts/cargo-freshness.sh --built /build/target/.tilo-built-sources; \

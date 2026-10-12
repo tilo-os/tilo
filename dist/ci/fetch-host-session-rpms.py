@@ -109,6 +109,9 @@ def fetch(run_id, commit, output):
                 "artifact": artifact["name"], "artifact_id": artifact["id"],
                 "archive_sha256": digest.hexdigest(), "rpms": sorted(packages),
                 "artifacts": packages,
+                "artifact_purpose": "host-session-acceptance-only",
+                "release_signing_claim": "none",
+                "signature_verification": "not-performed-by-this-source-report",
             }, indent=1) + "\n")
     except BaseException:
         shutil.rmtree(output)
