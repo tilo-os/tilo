@@ -513,7 +513,7 @@ a thread blocked again), above `IDLE_CPU_BUDGET` percent of a core, or if the
 compositor painted while nobody touched it. It also holds the in-process apps'
 collaboration shovel and the identity service's client thread to
 `KEY_ASK_BUDGET` together, so a route asking for its channel keys on a 1 s
-timer again (TIL-754) fails by name.
+timer again fails by name.
 
 ```bash
 cargo test --locked -p shell --test it idle_wakeups:: -- --nocapture
@@ -540,7 +540,7 @@ bar's clock repaint when a minute turns in the window. It counts the
 compositor's `paint-tick` lines (`TILO_PAINT_STATS=ticks`), one per loop
 iteration with what woke it, read inside the window: a 2-second `paint-stats`
 summary counts every tick since the previous one, so the first one printed in
-the window can carry startup's ticks (TIL-756). Pull requests run it whenever
+the window can carry startup's ticks. Pull requests run it whenever
 `shell` changes; the scheduled lane (`kpis=wakeups`) runs it with a 60 s window
 (`TILO_IDLE_WAKEUP_WINDOW_SECS`) and records `wakeups.*`. When a change
 removes a waker, lower `IDLE_WAKEUP_BUDGET` in the same pull request to the new
@@ -559,7 +559,7 @@ other tests, and preemptions grow with that load. `Wakeups::blocking_per_second`
 counts only voluntary switches, one per wakeup. Both gates in
 `idle_quiet_tests`, the lone desktop and the converged pair, use it, each
 together with a CPU bound that catches a thread spinning without blocking
-(TIL-749, TIL-752).
+.
 
 ## Idle memory
 

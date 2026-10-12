@@ -1,4 +1,4 @@
-//! Give the shared memory a software GPU freed back to the kernel (TIL-731).
+//! Give the shared memory a software GPU freed back to the kernel.
 //!
 //! Mesa's lavapipe, the Vulkan driver that renders on the CPU, backs every
 //! ordinary `VkDeviceMemory` with a range of one memfd per device, named
