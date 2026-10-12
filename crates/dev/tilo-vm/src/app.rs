@@ -53,6 +53,7 @@ mod forwarded_port_tests;
 mod kernel;
 mod reach;
 mod scenario;
+mod userspace;
 
 #[derive(Debug, Clone, Copy)]
 struct ForeignRect {
@@ -4088,10 +4089,10 @@ impl App {
         let slot = self.slot_name(slot)?;
         self.receipt.set("slot", &slot);
         self.receipt.set("component", &component);
-        if let Some(profile) = profile {
-            check_profile(profile, &component, from)?;
-            self.receipt.set("profile", profile);
+        if component == "userspace" {
+            return self.swap_userspace(&slot, from, builder, profile);
         }
+        self.record_swap_profile(profile, &component, from)?;
         if let Some(app) = component.strip_prefix("app:") {
             return self.swap_app(&slot, app, from, builder);
         }
@@ -4174,6 +4175,19 @@ impl App {
             "tilo-vm logs",
             "tilo-vm rollback",
         ]))
+    }
+
+    fn record_swap_profile(
+        &mut self,
+        profile: Option<&str>,
+        component: &str,
+        from: &str,
+    ) -> Result<(), CliError> {
+        if let Some(profile) = profile {
+            check_profile(profile, component, from)?;
+            self.receipt.set("profile", profile);
+        }
+        Ok(())
     }
 
     fn cohort_inputs(
@@ -8131,6 +8145,7 @@ mod tests {
             seat: None,
             outputs: Vec::new(),
             parity: None,
+            session_identity: None,
         }
     }
 

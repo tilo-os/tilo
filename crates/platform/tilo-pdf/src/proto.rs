@@ -19,7 +19,7 @@
 #[cfg(unix)]
 use std::io;
 #[cfg(unix)]
-use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{BorrowedFd, OwnedFd};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 
@@ -219,11 +219,7 @@ impl Channel {
     ///
     /// Socket failures.
     pub fn send_fd(&self, fd: BorrowedFd<'_>) -> io::Result<()> {
-        runtime_portal::fd_transport::send_with_fd(
-            self.stream.as_raw_fd(),
-            FD_MARKER,
-            fd.as_raw_fd(),
-        )
+        runtime_portal::fd_transport::send_with_fd(&self.stream, FD_MARKER, fd)
     }
 
     /// # Errors
@@ -231,8 +227,7 @@ impl Channel {
     /// Socket failures, or a message that is not exactly one descriptor
     /// marker.
     pub fn recv_fd(&self) -> io::Result<OwnedFd> {
-        let (payload, fd) =
-            runtime_portal::fd_transport::recv_with_owned_fd(self.stream.as_raw_fd())?;
+        let (payload, fd) = runtime_portal::fd_transport::recv_with_fd(&self.stream)?;
         match fd {
             Some(fd) if payload == FD_MARKER => Ok(fd),
             _ if payload.is_empty() => Err(io::Error::new(

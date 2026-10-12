@@ -66,6 +66,8 @@ tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 word-processor = { path = "../../../apps/word-processor" }
 settings = { path = "../../../apps/settings" }
+store = { path = "../../../apps/store" }
+app-framework = { package = "tilo-app", path = "../../sdk/tilo-app" }
 ed25519-dalek.workspace = true
 tilo-automerge.workspace = true
 tilo-automerge-isolate.workspace = true

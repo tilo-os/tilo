@@ -624,6 +624,11 @@ impl App {
             // The same pump already reconciled custody for its document drain.
             self.publish_action_surface_after_refresh();
         }
+        // Before-action diagnostics use the existing launcher-owned startup
+        // checkpoint, never a published resource or a document mutation.
+        if crate::host::environment().diagnostics.presentation_profile {
+            tilo_startup_metrics::checkpoint_native_admission(self.native_admission_snapshot());
+        }
         (any, directory)
     }
 
