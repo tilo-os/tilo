@@ -1,8 +1,7 @@
 //! Private enrolled transport. Live kernel custody is never reconstructed from JSON.
 use super::{
-    AdmittedJoinIdentity, Arc, AsyncMutex, CapRole, CapnpBrokerState, CapnpChannelHandle,
-    CrdtRoute, HashMap, LocalHostWorkerScope, Ordering, PendingWorker, Promise, Rc, WorkerBinding,
-    mpsc,
+    AdmittedJoinIdentity, Arc, AsyncMutex, CapnpBrokerState, CapnpChannelHandle, CrdtRoute,
+    HashMap, LocalHostWorkerScope, Ordering, PendingWorker, Promise, Rc, WorkerBinding, mpsc,
 };
 use launcher::managed::{AdmittedManagedConnection, ManagedLaunchScope, VerifiedManagedProcess};
 use runtime_collab::{EnrolledTaskAcceptance, EnrolledTaskEnvelope, TaskRunUpdate};
@@ -349,10 +348,7 @@ fn current(state: &CapnpBrokerState, scope: uuid::Uuid) -> Result<Connection, St
         .find(|w| w.room.to_string() == facts.binding.room)
         .ok_or("enrolled workspace absent")?;
     let now = state.policy_now_ns()? / 1_000_000_000;
-    if workspace
-        .role_of_agent_in_room_at(&facts.binding.agent, &connection.route.cluster_id, now)
-        .is_none_or(|r| r == CapRole::Denied)
-    {
+    if workspace.agent_role_at(&facts.binding.agent, now).is_none() {
         return Err("enrolled Agent membership revoked".into());
     }
     drop(tree);
@@ -406,11 +402,7 @@ pub(super) fn revalidate(
         .ok_or("workspace absent")?;
     let mut identity = admitted.clone();
     identity.role = workspace
-        .role_of_agent_in_room_at(
-            &facts.binding.agent,
-            &route.cluster_id,
-            state.policy_now_ns()? / 1_000_000_000,
-        )
+        .agent_role_at(&facts.binding.agent, state.policy_now_ns()? / 1_000_000_000)
         .ok_or("Agent absent")?;
     Ok(identity)
 }
