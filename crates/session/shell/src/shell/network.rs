@@ -10,6 +10,7 @@ mod display_input_tests;
 mod display_observation_refresh_tests;
 mod display_observations;
 mod governor_actions;
+mod home_peer_reader;
 mod hosted_topology;
 #[cfg(test)]
 mod idle_quiet_tests;
@@ -656,13 +657,9 @@ struct RegisteredHomePeer {
     expectation: crate::network::actor::HomePeerExpectation,
 }
 
-fn registered_home_peer_addrs(
-    local_user: Option<[u8; 32]>,
-    relay_workspace_ids: &std::collections::BTreeSet<u64>,
-) -> Result<Vec<RegisteredHomePeer>, String> {
-    let Some(local_user) = local_user else {
-        return Ok(Vec::new());
-    };
+/// The registrations in the home-peer registry, read from disk. Not for the
+/// compositor's loop: [`HomePeerInputs`] reads it on a worker.
+fn read_home_peer_registry() -> Result<Vec<tilo_relay_protocol::HomePeerRegistration>, String> {
     let path = home_peer_registry_path();
     let metadata = match std::fs::metadata(&path) {
         Ok(metadata) => metadata,
@@ -673,16 +670,38 @@ fn registered_home_peer_addrs(
         tracing::warn!(path = %path.display(), "home-peer registry exceeds its bounded schema");
         return Err("home-peer registry exceeds its bounded schema".into());
     }
-    let registrations: Vec<tilo_relay_protocol::HomePeerRegistration> =
-        match std::fs::read(&path).ok().and_then(|bytes| {
-            serde_json::from_slice::<Vec<tilo_relay_protocol::HomePeerRegistration>>(&bytes).ok()
-        }) {
-            Some(registrations) if registrations.len() <= MAX_HOME_PEERS => registrations,
-            _ => {
-                tracing::warn!(path = %path.display(), "home-peer registry is invalid");
-                return Err("home-peer registry is invalid".into());
-            }
-        };
+    match std::fs::read(&path).ok().and_then(|bytes| {
+        serde_json::from_slice::<Vec<tilo_relay_protocol::HomePeerRegistration>>(&bytes).ok()
+    }) {
+        Some(registrations) if registrations.len() <= MAX_HOME_PEERS => Ok(registrations),
+        _ => {
+            tracing::warn!(path = %path.display(), "home-peer registry is invalid");
+            Err("home-peer registry is invalid".into())
+        }
+    }
+}
+
+fn registered_home_peer_addrs(
+    local_user: Option<[u8; 32]>,
+    relay_workspace_ids: &std::collections::BTreeSet<u64>,
+) -> Result<Vec<RegisteredHomePeer>, String> {
+    let Some(local_user) = local_user else {
+        return Ok(Vec::new());
+    };
+    Ok(home_peers_from_registrations(
+        read_home_peer_registry()?,
+        local_user,
+        relay_workspace_ids,
+    ))
+}
+
+/// The dialable home peers among `registrations`: those of `local_user` that
+/// serve one of `relay_workspace_ids`.
+fn home_peers_from_registrations(
+    registrations: Vec<tilo_relay_protocol::HomePeerRegistration>,
+    local_user: [u8; 32],
+    relay_workspace_ids: &std::collections::BTreeSet<u64>,
+) -> Vec<RegisteredHomePeer> {
     let mut addrs = Vec::new();
     for registration in registrations {
         if registration.label.is_empty()
@@ -727,7 +746,36 @@ fn registered_home_peer_addrs(
     }
     addrs.sort_by_key(|host| host.addr.id.to_string());
     addrs.dedup_by_key(|host| host.addr.id);
-    Ok(addrs)
+    addrs
+}
+
+/// What the periodic home-peer refresh reads from disk.
+struct HomePeerInputs {
+    /// Rooms an enrollment delivered (`personal-rooms.json`).
+    enrolled_rooms: Vec<RoomId>,
+    /// Enrolled device keys, this device included.
+    direct_devices: Vec<[u8; 32]>,
+    registrations: Result<Vec<tilo_relay_protocol::HomePeerRegistration>, String>,
+}
+
+impl HomePeerInputs {
+    /// Read the files. Waits for the disk: the compositor's loop never calls
+    /// this, its reader thread does.
+    fn read() -> Self {
+        let peers = personal_device_peer_path();
+        Self {
+            enrolled_rooms: personal_room_ids(&peers.with_file_name("personal-rooms.json")),
+            direct_devices: read_personal_device_peers(&peers),
+            registrations: read_home_peer_registry(),
+        }
+    }
+
+    /// [`Self::read`] after the state writer has written what this process
+    /// queued, so the refresh sees the rooms export it just made.
+    fn read_after_pending_writes() -> Self {
+        crate::shell::durable_writer::global().flush();
+        Self::read()
+    }
 }
 
 /// Device endpoint ids this machine should dial directly.
@@ -1265,6 +1313,8 @@ pub struct ShellNetwork {
     /// When [`Self::note_session_reachability`] last told the relays what
     /// the session has recorded. `None` until the first tick.
     session_reach_checked: Mutex<Option<std::time::Instant>>,
+    /// Reads the files the refresh needs, off the compositor thread.
+    home_peer_reader: home_peer_reader::HomePeerReader<HomePeerInputs>,
     /// When [`Self::kick_periodic_sync`] last did its local upkeep. `None`
     /// until the first tick.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
@@ -1883,6 +1933,9 @@ impl ShellNetwork {
             personal_device_peers: Mutex::default(),
             last_home_peer_refresh: Mutex::new(None),
             session_reach_checked: Mutex::new(None),
+            home_peer_reader: home_peer_reader::HomePeerReader::spawn(
+                HomePeerInputs::read_after_pending_writes,
+            ),
             last_sync_kick: Mutex::new(None),
             next_sync_pull: Mutex::new(None),
             peers_joined: std::sync::atomic::AtomicU64::new(0),
@@ -3673,7 +3726,10 @@ impl ShellNetwork {
     /// the compatibility/control topic. Rooms accepted later are joined by
     /// `Self::publish_message`.
     pub fn join_default_workspace(&self) -> bool {
-        self.adopt_enrolled_rooms();
+        // Startup, once: the first refresh may not have been read yet.
+        self.adopt_enrolled_rooms(&personal_room_ids(
+            &personal_device_peer_path().with_file_name("personal-rooms.json"),
+        ));
         self.export_personal_rooms();
         let mut topics = vec![DEFAULT_WS_TOPIC];
         if let Ok(replica) = self.replica.lock() {
@@ -3689,11 +3745,8 @@ impl ShellNetwork {
         }
     }
 
-    fn adopt_enrolled_rooms(&self) {
-        let path = personal_device_peer_path().with_file_name("personal-rooms.json");
-        // Read the file before taking the tree's write lock: the frame
-        // painter reads the same tree.
-        let rooms = personal_room_ids(&path);
+    /// Join the rooms an enrollment delivered to this device's tree.
+    fn adopt_enrolled_rooms(&self, rooms: &[RoomId]) {
         if rooms.is_empty() {
             return;
         }
@@ -3702,7 +3755,7 @@ impl ShellNetwork {
         };
         let mut tree = replica.tree.write();
         for room in rooms {
-            tree.join_enrolled_room(room);
+            tree.join_enrolled_room(*room);
         }
     }
 
@@ -3767,19 +3820,32 @@ impl ShellNetwork {
             .is_ok()
     }
 
-    /// Reload newly approved same-identity home peers. This is safe to call
-    /// from the frame loop: it reads a bounded local registry, queues dials
-    /// with `try_send`, and never waits for relay discovery or a connection.
+    /// Reload newly approved same-identity home peers, reading the files here
+    /// and waiting for the disk. The compositor's loop does not call this: its
+    /// refresh reads them on a worker ([`Self::refresh_home_peer_hosts_periodically`]).
     pub fn refresh_home_peer_hosts(&self) -> bool {
+        self.apply_home_peer_inputs(&HomePeerInputs::read())
+    }
+
+    /// Apply what the reader published, if it published anything. Reads and
+    /// writes no file: it queues dials with `try_send` and never waits for
+    /// relay discovery or a connection.
+    fn apply_published_home_peers(&self) {
+        if let Some(inputs) = self.home_peer_reader.take() {
+            let _ = self.apply_home_peer_inputs(&inputs);
+        }
+    }
+
+    fn apply_home_peer_inputs(&self, inputs: &HomePeerInputs) -> bool {
         // An enrollment can deliver rooms after this session started. Adopt
         // them and join their topics, or a request sent to this device on
         // such a room never arrives.
-        self.adopt_enrolled_rooms();
+        self.adopt_enrolled_rooms(&inputs.enrolled_rooms);
         let mut changed = self.join_room_topics();
         // Direct peers are how a setup machine reaches the device it
         // enrolled, with or without a relay. A missing or malformed relay
         // registry must not skip them.
-        changed |= self.dial_direct_peers();
+        changed |= self.dial_direct_peers(&inputs.direct_devices);
         let mut relay_workspace_ids = self
             .replica
             .lock()
@@ -3789,9 +3855,13 @@ impl ShellNetwork {
         if let Some(user) = self.personal_continuity_user {
             relay_workspace_ids.insert(personal_continuity_topic_id(&user));
         }
-        let Ok(desired) =
-            registered_home_peer_addrs(self.personal_continuity_user, &relay_workspace_ids)
-        else {
+        let desired = match self.personal_continuity_user {
+            None => Ok(Vec::new()),
+            Some(user) => inputs.registrations.clone().map(|registrations| {
+                home_peers_from_registrations(registrations, user, &relay_workspace_ids)
+            }),
+        };
+        let Ok(desired) = desired else {
             // Preserve existing routes for availability, but fail closed for
             // secrets when current enrollment authority cannot be proven.
             self.update_registered_home_device_ids(std::collections::HashSet::clear);
@@ -3880,8 +3950,8 @@ impl ShellNetwork {
     }
 
     /// Dial enrolled devices this session has not reached yet.
-    fn dial_direct_peers(&self) -> bool {
-        let direct = self.enrolled_personal_devices(Some(*self.local_peer_id.as_bytes()));
+    fn dial_direct_peers(&self, enrolled: &[[u8; 32]]) -> bool {
+        let direct = enrolled_endpoints(enrolled, Some(*self.local_peer_id.as_bytes()));
         let Ok(connected) = self.dialed_direct_peers.lock() else {
             return false;
         };
@@ -3909,7 +3979,8 @@ impl ShellNetwork {
         }
         *last = Some(now);
         drop(last);
-        let _ = self.refresh_home_peer_hosts();
+        // The files are read by the worker; `tick` applies what it publishes.
+        self.home_peer_reader.request();
     }
 
     /// The current iroh address published in an invite. It contains the
@@ -6155,6 +6226,7 @@ impl ShellNetwork {
         self.kick_periodic_sync();
         self.reconcile_personal_workspaces();
         self.refresh_home_peer_hosts_periodically();
+        self.apply_published_home_peers();
         self.finish_shared_rooms();
         self.live_keepalive();
         // Hold the lock for the whole drain so a concurrent frame-tick
@@ -7842,6 +7914,9 @@ pub(crate) fn shell_network_for_test(
         personal_device_peers: Mutex::default(),
         last_home_peer_refresh: Mutex::new(None),
         session_reach_checked: Mutex::new(None),
+        home_peer_reader: home_peer_reader::HomePeerReader::spawn(
+            HomePeerInputs::read_after_pending_writes,
+        ),
         last_sync_kick: Mutex::new(None),
         next_sync_pull: Mutex::new(None),
         peers_joined: std::sync::atomic::AtomicU64::new(0),
@@ -8325,6 +8400,69 @@ mod tests {
                 |command| matches!(command, NetCmd::Connect { addr } if *addr.id.as_bytes() == device)
             ),
             "an invalid relay registry must not skip the enrolled device"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_periodic_refresh_applies_what_the_reader_published() {
+        // Same inputs as the blocking refresh above, through the loop's path:
+        // a request, then an apply once the worker has read the files.
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"not-json").unwrap();
+        let device = [0x23_u8; 32];
+        std::fs::write(
+            dir.path().join("personal-device-peers.json"),
+            serde_json::to_vec(&vec![hex::encode(device)]).unwrap(),
+        )
+        .unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        env.set("XDG_STATE_HOME", dir.path().join("state"));
+        let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
+        net.refresh_home_peer_hosts_periodically();
+        let mut dialed = false;
+        tilo_test_env::wait_until("the enrolled device to be dialed", || {
+            net.apply_published_home_peers();
+            dialed |= std::iter::from_fn(|| commands.try_recv().ok()).any(
+                |command| matches!(command, NetCmd::Connect { addr } if *addr.id.as_bytes() == device),
+            );
+            dialed
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_loops_home_peer_refresh_does_not_wait_for_the_registry() {
+        // The registry is a pipe nobody writes: opening it for reading waits
+        // for a writer, as a read waits for a busy disk. The loop's calls must
+        // return anyway; only the reader thread waits.
+        let dir = tempfile::tempdir().expect("temp");
+        let registry = dir.path().join("home-peers.json");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&registry)
+                .status()
+                .expect("mkfifo")
+                .success()
+        );
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
+        env.set("XDG_STATE_HOME", dir.path().join("state"));
+        let (net, _commands) = personal_continuity_network_for_test([0x44; 32]);
+        for _ in 0..20 {
+            net.refresh_home_peer_hosts_periodically();
+            net.apply_published_home_peers();
+        }
+        net.tick();
+        // Let the reader finish, so its thread does not outlive the test.
+        drop(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&registry)
+                .expect("open the pipe"),
         );
     }
 
