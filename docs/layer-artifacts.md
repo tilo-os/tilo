@@ -5,6 +5,19 @@ streams. It never builds, invokes Cargo metadata, selects a builder, pulls a CI
 image, or falls back to an installed layer. Acceptance runs it from the exact
 source checkout that produced the artifacts.
 
+Before it reads a byte of the cohort it checks that checkout: the commit HEAD
+names (`git rev-parse --verify HEAD`, as build provenance and the harness read
+it) must equal `--source`, or it refuses and names the checkout, the commit it
+found and the one requested. Resolving HEAD does not open the commit object, so
+an unprivileged user's worktree of a root-owned CI clone, whose shared object
+store it may not read, still answers; when HEAD cannot be read at all the
+refusal carries git's own words.
+
+The CLI that runs it need not be the source's own. vm-acceptance builds the
+consumer from the workflow's checkout and runs it in the ref's checkout: the
+code under test does not verify its own artifacts, and a branch that predates
+a consumer fix can still be tested. The ref's own tilo-vm remains the packer.
+
 ```sh
 tilo-vm --json swap-artifact apps+runtime --slot acceptance \
   --receipt /tmp/layers/manifest.json \
