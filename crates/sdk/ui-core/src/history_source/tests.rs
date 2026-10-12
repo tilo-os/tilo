@@ -976,6 +976,91 @@ fn rows_tell_the_readers_changes_from_a_collaborators_and_an_agents() {
     );
 }
 
+/// An agent's change is the agent's, on behalf of its person: by the
+/// invoker its entry records, and by its own key when it writes as itself.
+/// The row names both and carries them as data.
+#[test]
+fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
+    use crate::widget::history::{AuthorRelation, HistoryAttribution};
+    use tilo_actions::{ActionContext, ActionInvoker, ActorKind};
+    // Through the action surface: the host stamps the authenticated agent
+    // and the person it acted for on the change.
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "title", "x").unwrap();
+    let context = ActionContext::for_resource("r", "doc", "Report")
+        .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new("org.tilo.Reports", "doc", "edit"),
+            [],
+        )))
+        .with_invoker(
+            ActionInvoker::actor("agent:claude")
+                .with_kind(ActorKind::Agent)
+                .acting_for("ada"),
+        );
+    doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    let mut authors = AuthorDirectory::new();
+    authors.set_reader("ada");
+    let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
+    let author = &entries.last().unwrap().author;
+    assert_eq!(author.name, "claude · Agent, for ada");
+    assert_eq!(author.relation, AuthorRelation::Software);
+    assert_eq!(
+        author.attribution,
+        Some(HistoryAttribution {
+            actor: "agent:claude".into(),
+            kind: ActorKind::Agent,
+            actor_name: "claude".into(),
+            on_behalf_of: Some("ada".into()),
+            on_behalf_of_name: Some("ada".into()),
+        })
+    );
+
+    // As itself: a delegated agent signs with its own device key, which the
+    // directory knows as the agent of its person, in its own colour.
+    let device = [7_u8; 32];
+    let person = hex::encode([9_u8; 32]);
+    let mut doc = AutoCommit::new();
+    doc.set_actor(ActorId::from(device.as_slice()));
+    doc.put(ROOT, "title", "y").unwrap();
+    doc.commit();
+    let mut authors = AuthorDirectory::new();
+    authors.set_reader("ada");
+    authors.register_person(&person, HistoryAuthor::new("Ada", 0.0, "ada00000"));
+    authors.register_agent(
+        &hex::encode(device),
+        HistoryAgent {
+            principal: "agent:scribe".into(),
+            label: "Scribe".into(),
+            rgb: (10, 20, 30),
+            person: person.clone(),
+        },
+    );
+    let entries = HistorySource::new()
+        .with_authors(authors.clone())
+        .entries(&mut doc);
+    let author = &entries.last().unwrap().author;
+    assert_eq!(author.name, "Scribe · Agent, for Ada");
+    assert_eq!(author.relation, AuthorRelation::Software);
+    assert_eq!(author.rgb(), (10, 20, 30), "the agent's presence colour");
+    assert_eq!(
+        author.attribution,
+        Some(HistoryAttribution {
+            actor: "agent:scribe".into(),
+            kind: ActorKind::Agent,
+            actor_name: "Scribe".into(),
+            on_behalf_of: Some(person.clone()),
+            on_behalf_of_name: Some("Ada".into()),
+        })
+    );
+    // The person reading it sees it was done for them.
+    authors.set_reader(person);
+    let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
+    assert_eq!(
+        entries.last().unwrap().author.name,
+        "Scribe · Agent, for you"
+    );
+}
+
 // N. A long-lived reader reads each change once and says what a fresh read says
 
 /// What `entries_since` says and how many changes it read doing so.

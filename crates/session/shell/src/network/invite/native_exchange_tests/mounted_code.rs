@@ -7,6 +7,8 @@ use sha2::{Digest as _, Sha256};
 
 #[path = "mounted_code/acknowledgement_recovery.rs"]
 mod acknowledgement_recovery;
+#[path = "mounted_code/active_reads.rs"]
+mod active_reads;
 #[path = "mounted_code/blocked_read.rs"]
 mod blocked_read;
 #[path = "mounted_code/idle_reads.rs"]
@@ -70,6 +72,10 @@ pub(super) enum Journey {
     AcknowledgementRecovery,
     IdleReads,
     IdleReadsAnnounced,
+    /// A collaborator edits a shared document of this many lines.
+    ActiveReads {
+        lines: usize,
+    },
 }
 
 pub(super) struct Context<'a> {
@@ -166,6 +172,7 @@ struct Mounted {
     actor: tokio::task::JoinHandle<()>,
     acknowledgement_gate: Option<Arc<acknowledgement_recovery::Gate>>,
     idle_reads: Option<Arc<idle_reads::Counter>>,
+    active_reads: Option<Arc<active_reads::Meter>>,
 }
 
 impl Mounted {
@@ -174,13 +181,14 @@ impl Mounted {
         profile: &std::path::Path,
         acknowledgement_gate: Option<Arc<acknowledgement_recovery::Gate>>,
     ) -> Self {
-        Self::new_observed(device, profile, acknowledgement_gate, None).await
+        Self::new_observed(device, profile, acknowledgement_gate, None, None).await
     }
     async fn new_observed(
         device: &Device,
         profile: &std::path::Path,
         acknowledgement_gate: Option<Arc<acknowledgement_recovery::Gate>>,
         idle_reads: Option<Arc<idle_reads::Counter>>,
+        active_reads: Option<Arc<active_reads::Meter>>,
     ) -> Self {
         let (commands, actor) = Actor::spawn_reporting_addrs(
             device.endpoint.clone(),
@@ -224,7 +232,8 @@ impl Mounted {
             acknowledgement_gate
                 .as_ref()
                 .map(acknowledgement_recovery::Gate::wrapper)
-                .or_else(|| idle_reads.as_ref().map(idle_reads::Counter::wrapper)),
+                .or_else(|| idle_reads.as_ref().map(idle_reads::Counter::wrapper))
+                .or_else(|| active_reads.as_ref().map(active_reads::Meter::wrapper)),
         );
         Self {
             code,
@@ -232,6 +241,7 @@ impl Mounted {
             actor,
             acknowledgement_gate,
             idle_reads,
+            active_reads,
         }
     }
 
@@ -287,6 +297,7 @@ impl Mounted {
             actor,
             acknowledgement_gate: _,
             idle_reads: _,
+            active_reads: _,
         } = self;
         drop(code);
         async move {
@@ -336,6 +347,8 @@ async fn finish_journey(
             matches!(context.journey, Journey::IdleReadsAnnounced),
         )
         .await;
+    } else if let Journey::ActiveReads { lines } = context.journey {
+        active_reads::run(first, &mut mounted[0], lines).await;
     } else {
         edit_and_converge(context, authority, owner, refreshes, mounted).await;
     }
@@ -376,6 +389,7 @@ pub(super) async fn run(
                 Journey::IdleReads | Journey::IdleReadsAnnounced
             )
             .then(idle_reads::Counter::new),
+            matches!(context.journey, Journey::ActiveReads { .. }).then(active_reads::Meter::new),
         )
         .await,
         Mounted::new_with_acknowledgement_gate(

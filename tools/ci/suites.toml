@@ -433,6 +433,7 @@ suites = [
   "scripts/vm-acceptance/test_device_fidelity.py",
   "scripts/vm-acceptance/test_session_restart.py",
   "scripts/vm-acceptance/test_ui.py",
+  "scripts/vm-acceptance/test_vm_actions.py",
 ]
 
 [[group]]
@@ -446,6 +447,8 @@ inputs = [
   # and the WORKSPACE-SWITCH parser equal to the compositor's line.
   "crates/system/fs/tests/performance_gate.rs",
   "crates/session/shell/src/compositor/switch_latency.rs",
+  # ... the FILES-NAME-INDEX parser equal to the Files search test's line,
+  "crates/session/shell/src/shell/search/providers/files.rs",
   # ... and the hosting-load KPI ids equal to the relay load bench's.
   "crates/hosting/tilo-relay/examples/relay_load/main.rs",
   # scripts/perf/render_bench_test.py keeps the parsed lines equal to the harnesses'.
@@ -778,7 +781,6 @@ inputs = [
   "crates/system/fs-native/",
   "crates/system/fs/",
   "crates/system/power/",
-  "crates/system/private-fs/",
   "crates/system/sandbox-core/",
   "crates/system/secret-vault/",
   "crates/system/settings-store/",

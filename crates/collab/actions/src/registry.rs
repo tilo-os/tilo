@@ -89,7 +89,10 @@ impl ActionRegistry {
             .decoders
             .get(&encoded.type_id)
             .ok_or_else(|| ActionError::UnknownType(encoded.type_id.clone()))?;
-        decoder(&encoded.payload)
+        decoder(&crate::group_form::readable(
+            &encoded.type_id,
+            &encoded.payload,
+        ))
     }
 
     /// Read the large parts of recorded actions from `read` (the device's
@@ -136,11 +139,35 @@ impl ActionRegistry {
 ///
 /// # Errors
 /// Why the bytes are not a `T`.
+#[inline]
 pub fn decode_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, serde_json::Error> {
-    T::deserialize(json_value(bytes)?)
+    decode_payload("", bytes)
 }
 
+/// A `T` from the payload of an action of type `type_id`, like
+/// [`decode_json`]: a group written with what its members share once
+/// ([`crate::group_form`]) reads as the list of them.
+///
+/// # Errors
+/// Why the payload is not a `T`.
+pub fn decode_payload<T: DeserializeOwned>(
+    type_id: &str,
+    payload: &[u8],
+) -> Result<T, serde_json::Error> {
+    T::deserialize(payload_value(type_id, payload)?)
+}
+
+/// The JSON value of the payload of an action of type `type_id`, a group's
+/// as the list of its members; [`decode_json`] passes no type, so its bytes
+/// read as they are. One function for both keeps every app to one import.
 #[inline(never)]
-fn json_value(bytes: &[u8]) -> Result<serde_json::Value, serde_json::Error> {
-    serde_json::from_slice(bytes)
+fn payload_value(type_id: &str, payload: &[u8]) -> Result<serde_json::Value, serde_json::Error> {
+    match serde_json::from_slice(payload)? {
+        serde_json::Value::Object(shared) if crate::group_form::is_group(type_id) => {
+            crate::group_form::members_of(shared)
+                .map(serde_json::Value::Array)
+                .map_err(<serde_json::Error as serde::de::Error>::custom)
+        }
+        value => Ok(value),
+    }
 }

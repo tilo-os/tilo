@@ -97,10 +97,13 @@ fn lands<R: Resource>(doc: &Doc, action: &EncodedAction) -> Option<Place> {
     let action: R::Action = if action.type_id == R::ACTION_TYPE {
         tilo_actions::decode_json(&action.payload).ok()?
     } else if action.type_id == crate::group::group_type::<R>() {
-        tilo_actions::decode_json::<crate::group::ActionGroup<R::Action>>(&action.payload)
-            .ok()?
-            .actions
-            .pop()?
+        tilo_actions::decode_payload::<crate::group::ActionGroup<R::Action>>(
+            &action.type_id,
+            &action.payload,
+        )
+        .ok()?
+        .actions
+        .pop()?
     } else {
         return None;
     };

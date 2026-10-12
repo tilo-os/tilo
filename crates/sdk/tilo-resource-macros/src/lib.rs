@@ -425,75 +425,13 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     fn paths_at<__R>(path: #krate::Path<__R, Self>) -> #krate::Path<__R, Self> {
                         path
                     }
-                    #[inline]
-                    fn to_json(&self) -> #krate::__private::serde_json::Value {
-                        #table::Run(Self::TABLE).to_json(self)
-                    }
-                    #[inline]
-                    fn from_json(
-                        value: &#krate::__private::serde_json::Value,
-                    ) -> ::core::result::Result<Self, #krate::ModelError> {
-                        #table::Run(Self::TABLE).from_json(value)
-                    }
-                    #[inline]
-                    fn edit(
-                        doc: &mut #krate::Doc,
-                        slot: #krate::Slot<'_>,
-                        path: &[#krate::Segment],
-                        op: &#krate::EditOp,
-                        cx: &mut #krate::ActionCx,
-                    ) -> ::core::result::Result<(), #krate::ModelError> {
-                        #table::Run(Self::TABLE).edit(doc, slot, path, op, cx)
-                    }
-                    #[inline]
-                    fn diff<__E>(
-                        &self,
-                        after: &Self,
-                        path: &[#krate::Segment],
-                        out: &mut ::std::vec::Vec<#krate::Edit<__E>>,
-                    ) {
-                        #table::Run(Self::TABLE).diff(self, after, path, out);
-                    }
-                    #[inline]
-                    fn load(
-                        doc: &#krate::Doc,
-                        value: &#krate::__private::Value<'_>,
-                        id: &#krate::__private::ObjId,
-                    ) -> ::core::result::Result<Self, #krate::ModelError> {
-                        #table::Run(Self::TABLE).load(doc, value, id)
-                    }
+                    #krate::__table_functions!();
                     fn value_schema() -> #krate::__private::serde_json::Value {
                         #table::unit_schema(Self::__UNIT.names)
                     }
                     #[inline]
                     fn missing() -> ::core::result::Result<Self, #krate::ModelError> {
                         #table::Run(Self::TABLE).missing()
-                    }
-                    #[inline]
-                    fn store(
-                        &self,
-                        doc: &mut #krate::Doc,
-                        slot: #krate::Slot<'_>,
-                    ) -> ::core::result::Result<(), #krate::ModelError> {
-                        #table::Run(Self::TABLE).store(self, doc, slot)
-                    }
-                    #[inline]
-                    fn collect_text(&self, out: &mut ::std::vec::Vec<::std::string::String>) {
-                        #table::Run(Self::TABLE).collect_text(self, out);
-                    }
-                    #[inline]
-                    fn stores_as(&self, before: &Self) -> bool {
-                        #table::Run(Self::TABLE).stores_as(self, before)
-                    }
-                    #[inline]
-                    fn refresh(
-                        &mut self,
-                        doc: &#krate::Doc,
-                        value: &#krate::__private::Value<'_>,
-                        id: &#krate::__private::ObjId,
-                        delta: &#krate::Delta,
-                    ) -> ::core::result::Result<(), #krate::ModelError> {
-                        #table::Run(Self::TABLE).refresh(self, doc, value, id, delta)
                     }
                 }
             })

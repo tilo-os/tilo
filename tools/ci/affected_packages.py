@@ -236,13 +236,13 @@ MAX_TEST_SHARDS = 4
 # balanced shards instead of lengthening one of them.
 DEDICATED_TEST_WEIGHT = 1_000
 # Suites whose tests fsync heavily: fs's durability, checked-restore and
-# release-matrix tests over real FUSE (with fs-native and private-fs), and the
+# release-matrix tests over real FUSE (with fs-native), and the
 # host suites that commit a durable Store, owner journal or relay journal on
 # every step. On one runner their fsyncs queue behind each other until the host
 # suites' handshake bounds expire, so test shards keep them apart whenever
 # there is more than one shard.
 TEST_SHARD_APART = (
-    frozenset({"tilo-fs", "fs-native", "private-fs"}),
+    frozenset({"tilo-fs", "fs-native"}),
     frozenset({
         "tilo-action-broker",
         "tilo-peer-state",

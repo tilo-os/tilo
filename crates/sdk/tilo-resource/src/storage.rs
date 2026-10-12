@@ -14,7 +14,7 @@ use crate::delta::Delta;
 use crate::model::LocatedAt as _;
 use crate::model::{Doc, Model, ModelError, Slot, edit_whole, read_key, refresh_key, write_key};
 use crate::path::{EditOp, Segment, Settable};
-use crate::table::{MapEntries, ModelOps, ModelTable, Run};
+use crate::table::{MapEntries, ModelOps, ModelTable};
 use std::any::Any;
 
 /// Nothing: a value that stores nothing, for the members of a container that
@@ -219,56 +219,9 @@ impl<T: Model> Model for Set<T> {
     // Run by one set of functions for every set, over `T`'s table.
     const TABLE: &'static ModelTable = &SetOf::<T>::TABLE;
     crate::model::leaf_paths!();
-    #[inline]
-    fn to_json(&self) -> serde_json::Value {
-        Run(Self::TABLE).to_json(self)
-    }
-    #[inline]
-    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
-        Run(Self::TABLE).from_json(value)
-    }
-    #[inline]
-    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
-        Run(Self::TABLE).load(doc, value, id)
-    }
+    crate::__table_functions!();
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::new())
-    }
-    #[inline]
-    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        Run(Self::TABLE).store(self, doc, slot)
-    }
-    #[inline]
-    fn refresh(
-        &mut self,
-        doc: &Doc,
-        value: &Value<'_>,
-        id: &ObjId,
-        delta: &Delta,
-    ) -> Result<(), ModelError> {
-        Run(Self::TABLE).refresh(self, doc, value, id, delta)
-    }
-    #[inline]
-    fn edit(
-        doc: &mut Doc,
-        slot: Slot<'_>,
-        path: &[Segment],
-        op: &EditOp,
-        cx: &mut ActionCx,
-    ) -> Result<(), ModelError> {
-        Run(Self::TABLE).edit(doc, slot, path, op, cx)
-    }
-    #[inline]
-    fn check(&self) -> Result<(), Refusal> {
-        Run(Self::TABLE).check(self)
-    }
-    #[inline]
-    fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
-        Run(Self::TABLE).diff(self, after, path, out);
-    }
-    #[inline]
-    fn collect_text(&self, out: &mut Vec<String>) {
-        Run(Self::TABLE).collect_text(self, out);
     }
 }
 
@@ -355,6 +308,7 @@ fn staged_element(
 
 /// The functions of every [`Set`]: each element a key of a map.
 pub static SET_OPS: ModelOps = ModelOps {
+    without_absent: crate::shape::kept_whole,
     to_json: |table, value| {
         let mut out = Vec::new();
         if let Some(set) = table.set()

@@ -15,9 +15,10 @@ use crate::entry::{ActionItem, Described, Did, PathStep};
 use crate::interaction::ActorKind;
 use crate::key::ActionKind;
 
-/// Prefix used when an entry is embedded in an Automerge change message.
+/// Prefix used when an entry is embedded in an Automerge change message,
+/// followed by the entry in its compact form ([`crate::compact`]).
 /// Ordinary application-authored commit messages remain untouched.
-pub const CHANGE_MESSAGE_PREFIX: &str = "tilo.entry/2 ";
+pub const CHANGE_MESSAGE_PREFIX: &str = "tilo.entry/3 ";
 
 /// Prefix of a change message that continues its writer's open gesture
 /// (the next keystroke of a word): `tilo.cont/1 <gesture> <path> <payload>`.
@@ -401,9 +402,9 @@ impl ActionContext {
         if self == &Self::default() {
             return None;
         }
-        serde_json::to_string(&wire::Entry::of(self))
+        serde_json::to_value(wire::Entry::of(self))
             .ok()
-            .map(|json| format!("{CHANGE_MESSAGE_PREFIX}{json}"))
+            .map(|entry| format!("{CHANGE_MESSAGE_PREFIX}{}", crate::compact::encode(&entry)))
     }
 
     /// Read an entry from a change message. Unknown and malformed messages
@@ -411,10 +412,22 @@ impl ActionContext {
     /// continuation is no entry on its own: read it with
     /// [`continued`](Self::continued) from its gesture's first entry.
     pub fn from_change_message(message: &str) -> Option<Self> {
-        let json = message.strip_prefix(CHANGE_MESSAGE_PREFIX)?;
-        serde_json::from_str::<wire::Entry>(json)
+        serde_json::from_value::<wire::Entry>(entry_value(message)?)
             .ok()
             .map(wire::Entry::into_context)
+    }
+
+    /// Read only what an entry says about who made its change, in which run
+    /// and step, and what kind of change it is (its group, invoker, gesture,
+    /// kind and change kind; everything else left default): what an index
+    /// over a long history keeps of every change, read without decoding
+    /// what the change did. `None` where [`from_change_message`](Self::from_change_message)
+    /// reads no entry.
+    pub fn head_of_change_message(message: &str) -> Option<Self> {
+        let entry = crate::compact::json_of(message.strip_prefix(CHANGE_MESSAGE_PREFIX)?)?;
+        serde_json::from_slice::<wire::Head>(&entry)
+            .ok()
+            .map(wire::Head::into_context)
     }
 
     /// This entry, written as the continuation of `first` (its writer's
@@ -492,6 +505,14 @@ impl ActionContext {
     }
 }
 
+/// A change message's entry as a JSON value. Entries are read through a value,
+/// not straight from their text, so every reader of entries shares one set of
+/// compiled field readers.
+fn entry_value(message: &str) -> Option<serde_json::Value> {
+    let entry = crate::compact::json_of(message.strip_prefix(CHANGE_MESSAGE_PREFIX)?)?;
+    serde_json::from_slice(&entry).ok()
+}
+
 /// The entry as a change message carries it: every field of
 /// [`ActionContext`] under a short key, the resource and item as arrays, an
 /// action with its JSON payload inline, and what a reader derives again
@@ -547,6 +568,51 @@ mod wire {
         gesture: Option<String>,
         #[serde(rename = "c", skip_serializing_if = "ChangeKind::is_content")]
         change: ChangeKind,
+    }
+
+    /// The fields of an [`Entry`] an index keeps of every change, each left
+    /// as its text until read; the rest are skipped unread.
+    #[derive(Default, Deserialize)]
+    #[serde(default)]
+    pub(super) struct Head<'a> {
+        #[serde(rename = "k", borrow)]
+        kind: Option<&'a serde_json::value::RawValue>,
+        #[serde(rename = "gr", borrow)]
+        group: Option<&'a serde_json::value::RawValue>,
+        #[serde(rename = "by", borrow)]
+        invoker: Option<&'a serde_json::value::RawValue>,
+        /// Only whether the entry carries an action: then it is undoable
+        /// unless it says otherwise.
+        #[serde(rename = "a", borrow)]
+        action: Option<&'a serde_json::value::RawValue>,
+        #[serde(rename = "g", borrow)]
+        gesture: Option<&'a serde_json::value::RawValue>,
+        #[serde(rename = "c", borrow)]
+        change: Option<&'a serde_json::value::RawValue>,
+    }
+
+    /// A field read through a JSON value, as whole entries are read, so the
+    /// field readers are compiled once.
+    fn field<T: serde::de::DeserializeOwned>(
+        raw: Option<&serde_json::value::RawValue>,
+    ) -> Option<T> {
+        let value = serde_json::from_slice::<serde_json::Value>(raw?.get().as_bytes()).ok()?;
+        serde_json::from_value(value).ok()
+    }
+
+    impl Head<'_> {
+        pub(super) fn into_context(self) -> ActionContext {
+            ActionContext {
+                kind: field(self.kind).or_else(|| self.action.map(|_| ActionKind::Undoable)),
+                group: field(self.group),
+                invoker: field(self.invoker),
+                gesture: field::<String>(self.gesture)
+                    .and_then(|gesture| uuid::Uuid::try_parse(&gesture).ok())
+                    .map(crate::ActionId),
+                change: field(self.change).unwrap_or_default(),
+                ..ActionContext::default()
+            }
+        }
     }
 
     /// An encoded action: its type and its payload, inline as JSON when it
@@ -749,10 +815,15 @@ mod wire {
         fn path_of(stamped: &serde_json::Value) -> Option<Vec<PathStep>> {
             serde_json::from_value(stamped.get("op")?.get("args")?.get("path")?.clone()).ok()
         }
-        let value: serde_json::Value = serde_json::from_slice(&action?.payload).ok()?;
-        let paths: Vec<Option<Vec<PathStep>>> = match &value {
-            serde_json::Value::Array(members) => members.iter().map(path_of).collect(),
-            single => vec![path_of(single)],
+        let action = action?;
+        let value: serde_json::Value = serde_json::from_slice(&action.payload).ok()?;
+        let paths: Vec<Option<Vec<PathStep>>> = if crate::group_form::is_group(&action.type_id) {
+            crate::group_form::members(value)?
+                .iter()
+                .map(path_of)
+                .collect()
+        } else {
+            vec![path_of(&value)]
         };
         let fits = match what {
             Did::Edit(_) => paths.len() == 1,
@@ -872,6 +943,10 @@ mod wire {
     impl Entry {
         pub(super) fn of(context: &ActionContext) -> Self {
             let undoable = context.action.is_some() && context.kind == Some(ActionKind::Undoable);
+            let paths = context
+                .what
+                .as_ref()
+                .and_then(|what| action_paths(context.action.as_ref(), what));
             Self {
                 app: (context.app != inferred(context.action.as_ref()))
                     .then(|| App::of(context.app.clone())),
@@ -883,13 +958,11 @@ mod wire {
                 shared_path: context
                     .what
                     .as_ref()
-                    .filter(|what| action_paths(context.action.as_ref(), what).is_none())
+                    .filter(|_| paths.is_none())
                     .and_then(shared_path),
-                what: context.what.as_ref().map(|what| {
-                    match action_paths(context.action.as_ref(), what) {
-                        Some(paths) => paths_from_action(what, &paths),
-                        None => without_shared_path(trimmed(what)),
-                    }
+                what: context.what.as_ref().map(|what| match &paths {
+                    Some(paths) => paths_from_action(what, paths),
+                    None => without_shared_path(trimmed(what)),
                 }),
                 kind: context.kind.filter(|_| !undoable),
                 purpose: context.purpose.clone(),
@@ -916,9 +989,15 @@ mod wire {
                 resource: resource.clone(),
                 item: self.item.map(|item| item.into_item(resource.as_ref())),
                 what: self.what.map(|what| {
-                    match (&self.shared_path, action_paths(action.as_ref(), &what)) {
-                        (None, Some(paths)) => filled(paths_given_back(what, &paths)),
-                        (shared, _) => filled(with_shared_path(what, shared.as_deref())),
+                    // A shared path is written only when the action does not say it.
+                    let paths = self
+                        .shared_path
+                        .is_none()
+                        .then(|| action_paths(action.as_ref(), &what))
+                        .flatten();
+                    match paths {
+                        Some(paths) => filled(paths_given_back(what, &paths)),
+                        None => filled(with_shared_path(what, self.shared_path.as_deref())),
                     }
                 }),
                 kind: self
@@ -1280,6 +1359,12 @@ mod tests {
         assert_eq!(read, bare);
     }
 
+    /// The entry `message` carries, as JSON text.
+    fn written(message: &str) -> String {
+        let entry = message.strip_prefix(CHANGE_MESSAGE_PREFIX).unwrap();
+        crate::compact::decode(entry).unwrap()
+    }
+
     #[test]
     fn a_group_writes_what_its_members_share_once() {
         let path = vec![
@@ -1304,7 +1389,7 @@ mod tests {
         let message = entry.change_message().unwrap();
         assert!(!message.contains("distinct"), "{message}");
         assert_eq!(
-            message.matches("\"cells\"").count(),
+            written(&message).matches("\"cells\"").count(),
             3,
             "the path once: {message}"
         );
@@ -1341,9 +1426,13 @@ mod tests {
         entry.kind = Some(ActionKind::Undoable);
         let message = entry.change_message().unwrap();
         assert_eq!(
-            message.matches("\"pages\"").count(),
+            written(&message).matches("\"pages\"").count(),
             1,
             "the path once: {message}"
+        );
+        assert!(
+            message.len() * 10 < written(&message).len() * 7,
+            "the compact form is well under the JSON one: {message}"
         );
         let read = ActionContext::from_change_message(&message).unwrap();
         assert_eq!(read, entry);
@@ -1384,8 +1473,7 @@ mod tests {
     fn defaults_are_not_written() {
         let context = ActionContext::for_resource("r", "k", "l");
         let message = context.change_message().unwrap();
-        let json: serde_json::Value =
-            serde_json::from_str(message.strip_prefix(CHANGE_MESSAGE_PREFIX).unwrap()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&written(&message)).unwrap();
         let written: Vec<&str> = json
             .as_object()
             .unwrap()

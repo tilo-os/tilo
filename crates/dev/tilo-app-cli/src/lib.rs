@@ -5155,7 +5155,6 @@ impl ScenarioSuitePlan {
                 .env("XDG_CACHE_HOME", state.path().join("cache"))
                 .env_remove("TILO_PACKAGE_ID")
                 .env_remove("TILO_WORKSPACE_ID")
-                .env_remove("QUICK_CLUSTER_ID")
                 .status()
                 .with_context(|| format!("starting scenario {:?}", case.name))?;
             if status.success() {

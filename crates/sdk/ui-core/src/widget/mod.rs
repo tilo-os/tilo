@@ -79,7 +79,6 @@ pub enum ControlBindingKind {
     /// through the normal action door; useful for custom-painted controls and
     /// process-local editing state that does not belong in document history.
     SemanticAction(String),
-    LegacyDocumentPath(String),
     LegacyCallback,
 }
 
@@ -3230,8 +3229,9 @@ pub mod history_scrubber;
 pub mod name_field;
 pub use activity_timeline::ActivityTimeline;
 pub use history::{
-    AuthorRelation, EntryKind, HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId,
-    HistoryFilter, RedactionDisplay, format_relative_time, hue_to_rgb,
+    AuthorRelation, EntryKind, HistoryAttribution, HistoryAuthor, HistoryClassification,
+    HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay, format_relative_time,
+    hue_to_rgb,
 };
 pub use history_scrubber::HistoryScrubber;
 // The artifact vocabulary a `HistoryEntry` is written in. Re-exported so a

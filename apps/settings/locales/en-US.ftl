@@ -2176,43 +2176,43 @@ settings-appearance-prefs-forced-colors = { $new ->
     [true] Forced theme colours onto content
    *[false] Stopped forcing theme colours onto content
 }
-settings-accessibility-prefs-large-cursor = { $new ->
+settings-accessibility-settings-large-cursor = { $new ->
     [true] Turned on the large cursor
    *[false] Turned off the large cursor
 }
-settings-accessibility-prefs-sticky-keys = { $new ->
+settings-accessibility-settings-sticky-keys = { $new ->
     [true] Turned on sticky keys
    *[false] Turned off sticky keys
 }
-settings-accessibility-prefs-slow-keys = { $new ->
+settings-accessibility-settings-slow-keys = { $new ->
     [true] Turned on slow keys
    *[false] Turned off slow keys
 }
-settings-accessibility-prefs-bounce-keys = { $new ->
+settings-accessibility-settings-bounce-keys = { $new ->
     [true] Turned on bounce keys
    *[false] Turned off bounce keys
 }
-settings-accessibility-prefs-bounce-keys-alert = { $new ->
+settings-accessibility-settings-bounce-keys-alert = { $new ->
     [true] Turned on the bounce keys alert
    *[false] Turned off the bounce keys alert
 }
-settings-accessibility-prefs-mouse-keys = { $new ->
+settings-accessibility-settings-mouse-keys = { $new ->
     [true] Turned on mouse keys
    *[false] Turned off mouse keys
 }
-settings-accessibility-prefs-visual-alerts = { $new ->
+settings-accessibility-settings-visual-alerts = { $new ->
     [true] Turned on visual alerts
    *[false] Turned off visual alerts
 }
-settings-accessibility-prefs-cursor-crosshair = { $new ->
+settings-accessibility-settings-cursor-crosshair = { $new ->
     [true] Turned on the pointer crosshair
    *[false] Turned off the pointer crosshair
 }
-settings-accessibility-prefs-thick-text-caret = { $new ->
+settings-accessibility-settings-thick-text-caret = { $new ->
     [true] Turned on the thick text cursor
    *[false] Turned off the thick text cursor
 }
-settings-accessibility-prefs-switch-control = { $new ->
+settings-accessibility-settings-switch-control = { $new ->
     [true] Turned on switch control
    *[false] Turned off switch control
 }
@@ -2372,14 +2372,14 @@ settings-appearance-prefs-sunset = Set night to begin at { $new }
 settings-appearance-prefs-wallpaper-scope = Changed which workspaces a new wallpaper covers
 settings-appearance-prefs-wallpaper-target = Changed where a new wallpaper shows
 settings-appearance-prefs-distinct-letters = Changed how similar letters are told apart
-settings-accessibility-prefs-cursor-size = Set the cursor size to { $new }
-settings-accessibility-prefs-on-screen-keyboard = Changed when the on-screen keyboard shows
-settings-accessibility-prefs-bounce-keys-delay-ms = Changed the bounce keys delay
-settings-accessibility-prefs-color-filter = Changed the colour filter
-settings-accessibility-prefs-magnifier-zoom = Set the magnifier to { $new }×
-settings-accessibility-prefs-magnifier-view = Changed how the magnifier shows the screen
-settings-accessibility-prefs-switch-key-pair = Changed the switch control keys
-settings-accessibility-prefs-switch-scan-ms = Changed the switch control scan
+settings-accessibility-settings-cursor-size = Set the cursor size to { $new }
+settings-accessibility-settings-on-screen-keyboard = Changed when the on-screen keyboard shows
+settings-accessibility-settings-bounce-keys-delay-ms = Changed the bounce keys delay
+settings-accessibility-settings-color-filter = Changed the colour filter
+settings-accessibility-settings-magnifier-zoom = Set the magnifier to { $new }×
+settings-accessibility-settings-magnifier-view = Changed how the magnifier shows the screen
+settings-accessibility-settings-switch-key-pair = Changed the switch control keys
+settings-accessibility-settings-switch-scan-ms = Changed the switch control scan
 settings-input-prefs-touchpad-natural-scroll = Changed the touchpad scroll direction
 settings-input-prefs-mouse-natural-scroll = Changed the mouse scroll direction
 settings-input-prefs-pointer-speed = Changed the pointer speed

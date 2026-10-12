@@ -122,6 +122,7 @@ macro_rules! read_through_json_value {
 }
 
 pub mod action;
+pub mod compact;
 pub mod content;
 pub mod context;
 pub mod contract;
@@ -130,6 +131,7 @@ pub mod entry;
 pub mod envelope;
 pub mod executor;
 pub mod framework;
+pub mod group_form;
 pub mod interaction;
 pub mod key;
 pub mod optimistic;
@@ -189,7 +191,7 @@ pub use params::{
     PLACE_ANNOTATION, ParamType, place_schema, validate_json_schema,
 };
 pub use protocol::{ContractViolation, validate_surface, validate_surface_contracts};
-pub use registry::{ActionRegistry, DecodePayload, decode_json};
+pub use registry::{ActionRegistry, DecodePayload, decode_json, decode_payload};
 #[allow(
     deprecated,
     reason = "existing app impls still name this trait until they publish through tilo_resource"

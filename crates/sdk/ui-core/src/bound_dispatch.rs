@@ -1406,20 +1406,20 @@ pub(crate) fn discover_cached_bound_resources(
                 // The snapshot this one replaces: its controls' derivation
                 // and its filter token carry over, so what the two forests
                 // share is neither filtered nor surveyed again (TIL-766).
-                let (filter_token, controls) = cache
+                let (filter_token, controls, last) = cache
                     .0
                     .borrow()
                     .iter()
                     .find(|entry| entry.snapshot.binding.same_component(binding))
                     .map_or_else(
-                        || (crate::published::fresh_token(), Rc::default()),
+                        || (crate::published::fresh_token(), Rc::default(), None),
                         |entry| {
-                            let token = if entry.permissions == permissions {
-                                entry.filter_token
+                            let (token, last) = if entry.permissions == permissions {
+                                (entry.filter_token, entry.snapshot.shared_forest().cloned())
                             } else {
-                                crate::published::fresh_token()
+                                (crate::published::fresh_token(), None)
                             };
-                            (token, Rc::clone(&entry.snapshot.controls))
+                            (token, Rc::clone(&entry.snapshot.controls), last)
                         },
                     );
                 let resources: Rc<[SharedResource]> = binding
@@ -1428,7 +1428,16 @@ pub(crate) fn discover_cached_bound_resources(
                         owned(widget, doc, binding, &mut resources, &mut Vec::new(), true);
                         resources
                             .iter()
-                            .filter_map(|resource| filter_shared(binding, filter_token, resource))
+                            .filter_map(|resource| {
+                                // A root rebuilt as it was takes the last one's
+                                // filtering: its actions are not asked about again.
+                                if let Some(last) = last.as_ref().and_then(|last| {
+                                    last.iter().find(|last| last.id() == resource.id())
+                                }) {
+                                    inherit_filtered(binding, filter_token, last, resource);
+                                }
+                                filter_shared(binding, filter_token, resource)
+                            })
                             .collect()
                     })
                     .map_err(|error| format!("{error:?}"))?;
@@ -1522,6 +1531,32 @@ pub(crate) fn filter_shared(
         Filtered::Same => Some(resource.clone()),
         Filtered::Pruned => None,
         Filtered::Kept(kept) => Some(kept),
+    }
+}
+
+/// Let `next` take `last`'s filtering under `token` when every action of
+/// `last` was permitted and `next` offers the same (a root head rebuilt as
+/// it was for a new publication): only its children are filtered, each
+/// from what it kept, and nobody is asked about its actions again.
+fn inherit_filtered(
+    binding: &CallbackBinding,
+    token: u64,
+    last: &SharedResource,
+    next: &SharedResource,
+) {
+    use crate::published::Filtered;
+    if next.filtered(token).is_some()
+        || !matches!(last.filtered(token), Some(Filtered::Same))
+        || !same_offer(last, next)
+        || (next.head().actions.is_empty() && next.children().is_empty())
+    {
+        return;
+    }
+    if matches!(
+        filter_shared_children(binding, token, next.children()),
+        Filtered::Same
+    ) {
+        next.remember_filtered(token, Filtered::Same);
     }
 }
 
