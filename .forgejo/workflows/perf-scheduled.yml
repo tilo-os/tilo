@@ -249,6 +249,26 @@ jobs:
             --env-json perf/env.json --out perf/agent.jsonl --log perf/compositor.log
           cat perf/agent.jsonl
 
+      # Pipelined invokes (apps/agent, `pipelined_task_benchmark`): the
+      # agent's own task loop, a scripted model and a broker whose
+      # applications take 100 ms per step, one three-step plan on three
+      # records run as the model marks it (independent) and unmarked (in
+      # order). Whole task wall time; it draws nothing.
+      - name: Measure pipelined agent invokes
+        run: |
+          set -euo pipefail
+          python3 tools/perf/record.py env --profile release --renderer none \
+            --virtualization kvm --runner runner > perf/env-pipeline.json
+          TILO_AGENT_PIPELINE_REPS=30 TILO_AGENT_PIPELINE_SAMPLES="$PWD/perf/pipeline" \
+            bash scripts/ci-run.sh "pipelined agent invokes" -- \
+            cargo test --locked --release -p agent --lib pipelined_task_benchmark -- --nocapture
+          for plan in pipelined sequential; do
+            python3 tools/perf/record.py emit --kpi "agent.task.${plan}.wall" --unit ms \
+              --samples-file "perf/pipeline/${plan}.txt" --env-json perf/env-pipeline.json \
+              --meta steps=3 --meta step_ms=100 >> perf/agent.jsonl
+          done
+          tail -n 2 perf/agent.jsonl
+
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
