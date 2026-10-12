@@ -215,7 +215,7 @@ def package_flow(door, spec, local):
     installed = [row for row in inventory if row.get("package_id") == spec["app"]]
     require(len(installed) == 1 and installed[0]["version"] == spec["version"],
             "canonical installed inventory differs from reviewed version")
-    door.call("open", {"app": spec["app"]})
+    door.call("open-app", {"app": spec["app"]})
     require(wait_until(lambda: windows(door.vm.state(), spec["app"]), 60),
             "imported app never mapped")
     return {"route": "trusted-local" if local else "catalogue", "app": spec["app"], "root": spec["root"],

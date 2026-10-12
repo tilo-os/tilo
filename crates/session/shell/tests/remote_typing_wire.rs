@@ -13,11 +13,12 @@
 )]
 
 use std::os::unix::net::UnixStream;
+use std::sync::Arc;
 
 use shell::network::{Denial, InputEvent, ShellView, StreamingShare};
 use vello::kurbo::Rect;
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
-use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, PhysicalKey};
@@ -1016,8 +1017,11 @@ fn native_window_provenance_requires_current_authenticated_surface_record_and_li
         h.state.native_window_provenance_json()["windows"],
         serde_json::json!([])
     );
-    assert!(shell::shell::test_control::Command::StateDump.admin_permitted());
-    assert!(!shell::shell::test_control::Command::StateDump.agent_permitted());
+    let dump = shell::shell::test_control::Command::StateDump {
+        include_history: false,
+    };
+    assert!(dump.admin_permitted());
+    assert!(!dump.agent_permitted());
 }
 
 fn record_window_for_provenance(h: &Harness, id: u64, instance: u64) -> serde_json::Value {

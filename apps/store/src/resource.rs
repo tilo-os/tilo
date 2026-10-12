@@ -849,7 +849,7 @@ mod tests {
             .unwrap()
             .actions
             .into_iter()
-            .find(|action| action.id == "open")
+            .find(|action| action.id == "open-app")
             .unwrap()
             .contract;
         assert!(matches!(
