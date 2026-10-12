@@ -26,7 +26,7 @@ You give Tilo a manifest and a payload. In return:
   one writable directory and a fixed system read profile, and everything
   beyond that is a capability the user grants at runtime. Network egress is
   the one thing the manifest still scopes.
-- Your app can run on **stock Linux** too. The `runtime` SDK is graceful-
+- Your app can run on **stock Linux** too. The runtime crates are graceful-
   degradation-first: every service call returns `Result<T, NotAvailable>`
   and never panics, so the same binary is shippable as a Flatpak.
 - The **runtime is a separate bundle**. Your `.tapp` carries your code and
