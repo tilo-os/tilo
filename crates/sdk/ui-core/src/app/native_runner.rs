@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "linux")]
 mod linux_header;
 mod private_text_input;
+#[cfg(target_os = "linux")]
+mod startup_window;
 
 #[cfg(not(target_os = "android"))]
 type PrimaryA11yAdapter = accesskit_winit::Adapter;
@@ -637,18 +639,120 @@ fn takes_window_icon(event_loop: &ActiveEventLoop) -> bool {
         .is_ok_and(|display| matches!(display.as_raw(), RawDisplayHandle::Wayland(_)))
 }
 
+/// The Wayland application id (X11 `WM_CLASS`) of the primary window: the
+/// app's own (`explicit`, an input surface's), else its package's. See
+/// `resolve_app_id`: a shared id collapses per-app compositor lookups.
+fn primary_window_app_id(explicit: Option<&str>) -> String {
+    let package_id = std::env::var("TILO_PACKAGE_ID").ok();
+    resolve_app_id(
+        explicit.or(package_id.as_deref()),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .as_deref(),
+    )
+}
+
+/// How the primary window is made, whether by `resumed` or before the app
+/// is constructed (`startup_window`).
+fn primary_window_attributes(
+    title: String,
+    icon: Option<winit::window::Icon>,
+    app_id: &str,
+) -> winit::window::WindowAttributes {
+    let window_attributes = Window::default_attributes()
+        .with_title(title)
+        .with_window_icon(icon)
+        // Draggable title bar on compositors with no server-side
+        // decorations (e.g. GNOME/mutter); explicit though it's the
+        // winit default, so the intent is unmistakable.
+        .with_decorations(true)
+        .with_visible(false)
+        .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
+    // Optional profiling placement keeps concurrent benchmark windows from
+    // completely occluding one another. Platform window managers may ignore it.
+    let window_attributes = match std::env::var("TILO_PROFILE_WINDOW_POSITION")
+        .ok()
+        .and_then(|value| crate::profiling::profile_window_position(&value))
+    {
+        Some((x, y)) => window_attributes.with_position(winit::dpi::LogicalPosition::new(x, y)),
+        None => window_attributes,
+    };
+    // Benchmarks can keep their own windows above unrelated desktop apps.
+    // This does not change normal application window ordering.
+    let window_attributes = if std::env::var("TILO_PROFILE_WINDOW_FRONT").as_deref() == Ok("1") {
+        window_attributes.with_window_level(winit::window::WindowLevel::AlwaysOnTop)
+    } else {
+        window_attributes
+    };
+    #[cfg(target_os = "linux")]
+    let window_attributes = {
+        use winit::platform::wayland::WindowAttributesExtWayland;
+        window_attributes.with_name(app_id, "")
+    };
+    #[cfg(not(target_os = "linux"))]
+    let _ = app_id;
+    window_attributes
+}
+
 fn create_window_render(
     window: &Arc<Window>,
     transparent: bool,
     proxy: EventLoopProxy<UserEvent>,
 ) -> Result<RenderThreadHandle, String> {
-    create_window_render_prepared(window, transparent, None, proxy)
+    create_window_render_prepared(window, transparent, None, None, proxy)
 }
 
 pub(crate) use crate::render_thread::PreparedRenderer;
 
+/// Something the launch made for the primary window before the app was
+/// constructed (`startup_window`), judged against what the app wants.
+#[derive(Debug, PartialEq, Eq)]
+enum Early<T> {
+    /// It was made for exactly this: use it.
+    Kept(T),
+    /// It was made for another window (an input surface announces its own
+    /// app id): never use it, make the real one.
+    Discarded,
+    /// Nothing was made early.
+    Absent,
+}
+
+/// `early` made under `made_for`, kept only when that is `wanted`.
+fn early_for<K: PartialEq, T>(early: Option<(K, T)>, wanted: &K) -> Early<T> {
+    match early {
+        Some((made_for, thing)) if made_for == *wanted => Early::Kept(thing),
+        Some(_) => Early::Discarded,
+        None => Early::Absent,
+    }
+}
+
+/// A window's surface the renderer preparation made and configured.
+pub(crate) struct PreparedSurface {
+    window: WindowId,
+    surface: vello::util::RenderSurface<'static>,
+}
+
+/// What the renderer preparation hands the first redraw.
 #[cfg(any(windows, target_os = "linux"))]
-pub(crate) type RendererPreparation = mpsc::Receiver<Result<PreparedRenderer, String>>;
+pub(crate) struct StartupRender {
+    prepared: PreparedRenderer,
+    /// The early window's surface, when the launch made one in time
+    /// (`startup_window`).
+    surface: Option<PreparedSurface>,
+}
+
+/// The renderer preparation started at process start, and on Linux the
+/// event loop and window the launch made before constructing the app.
+#[cfg(any(windows, target_os = "linux"))]
+pub(crate) struct RendererPreparation {
+    result: mpsc::Receiver<Result<StartupRender, String>>,
+    /// Hands the preparation the window to make a surface for. Dropped
+    /// unsent when there is none, which lets it finish without one.
+    window_offer: Option<mpsc::Sender<Arc<Window>>>,
+    #[cfg(target_os = "linux")]
+    early: startup_window::EarlyWindow,
+}
 
 /// Start only for a real native launch, before loading app state and fonts.
 /// This owns no window/surface and can safely finish if construction fails:
@@ -671,6 +775,18 @@ pub(crate) fn prepare_native_renderer() -> Option<RendererPreparation> {
         return None;
     }
     let (sender, receiver) = mpsc::channel();
+    // Only a Linux launch makes its window early (`startup_window`); the
+    // preparation elsewhere never waits for one.
+    #[cfg(target_os = "linux")]
+    let (window_offer, window_wanted) = {
+        let (offer, wanted) = mpsc::channel::<Arc<Window>>();
+        (Some(offer), Some(wanted))
+    };
+    #[cfg(not(target_os = "linux"))]
+    let (window_offer, window_wanted): (
+        Option<mpsc::Sender<Arc<Window>>>,
+        Option<mpsc::Receiver<Arc<Window>>>,
+    ) = (None, None);
     match std::thread::Builder::new()
         .name("native-render-prepare".into())
         .spawn(move || {
@@ -685,15 +801,27 @@ pub(crate) fn prepare_native_renderer() -> Option<RendererPreparation> {
                     .ok_or_else(|| "prepared drawing device index out of range".to_string())?;
                 let renderer = create_native_renderer(device)?;
                 tilo_startup_metrics::mark("native-render-prepare-done");
-                Ok(PreparedRenderer {
+                let mut prepared = PreparedRenderer {
                     context,
                     device_id,
                     renderer,
-                })
+                };
+                // The early window, once the launch made it (or `Err` at
+                // once when it made none): its surface is made and
+                // configured here while the app constructs.
+                let surface = window_wanted
+                    .and_then(|wanted| wanted.recv().ok())
+                    .and_then(|window| prepare_window_surface(&mut prepared, window));
+                Ok(StartupRender { prepared, surface })
             };
             let _ = sender.send(prepare());
         }) {
-        Ok(_) => Some(receiver),
+        Ok(_) => Some(RendererPreparation {
+            result: receiver,
+            window_offer,
+            #[cfg(target_os = "linux")]
+            early: startup_window::EarlyWindow::default(),
+        }),
         Err(error) => {
             tracing::warn!(%error, "could not prepare renderer in parallel");
             None
@@ -701,23 +829,54 @@ pub(crate) fn prepare_native_renderer() -> Option<RendererPreparation> {
     }
 }
 
-fn create_window_render_prepared(
-    window: &Arc<Window>,
-    transparent: bool,
-    prepared: Option<PreparedRenderer>,
-    proxy: EventLoopProxy<UserEvent>,
-) -> Result<RenderThreadHandle, String> {
-    tilo_startup_metrics::mark("window-render-context-start");
-    let size = window.inner_size();
-    let (mut render_cx, prepared_renderer) = match prepared {
-        Some(prepared) => (
-            prepared.context,
-            Some((prepared.device_id, prepared.renderer)),
-        ),
-        None => (RenderContext::new(), None),
+#[cfg(any(windows, target_os = "linux"))]
+/// The surface of the window the launch made early, configured, on the
+/// renderer preparation's thread. The renderer is rebuilt when the surface
+/// can be presented only from another device. `None` leaves the surface to
+/// the first redraw, as without an early window.
+fn prepare_window_surface(
+    prepared: &mut PreparedRenderer,
+    window: Arc<Window>,
+) -> Option<PreparedSurface> {
+    let id = window.id();
+    let surface = match window_surface(&mut prepared.context, window, false) {
+        Ok(surface) => surface,
+        Err(error) => {
+            tracing::warn!(%error, "could not prepare the window's surface; the first redraw makes it");
+            return None;
+        }
     };
+    if surface.dev_id != prepared.device_id {
+        let device = prepared.context.devices.get(surface.dev_id)?;
+        tilo_startup_metrics::mark("native-render-prepare-discarded");
+        match create_native_renderer(device) {
+            Ok(renderer) => {
+                prepared.renderer = renderer;
+                prepared.device_id = surface.dev_id;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not prepare a renderer for the window's device");
+                return None;
+            }
+        }
+    }
+    tilo_startup_metrics::mark("native-render-prepare-surface-done");
+    Some(PreparedSurface {
+        window: id,
+        surface,
+    })
+}
+
+/// A configured surface for `window` on a device of `render_cx` that can
+/// present to it, sized to the window now.
+fn window_surface(
+    render_cx: &mut RenderContext,
+    window: Arc<Window>,
+    transparent: bool,
+) -> Result<vello::util::RenderSurface<'static>, String> {
+    let size = window.inner_size();
     let mut surface = pollster::block_on(render_cx.create_surface_unconfigured(
-        window.clone(),
+        window,
         size.width.max(1),
         size.height.max(1),
         vello::wgpu::PresentMode::AutoVsync,
@@ -752,6 +911,43 @@ fn create_window_render_prepared(
         return Err(format!("could not configure the drawing surface: {err}"));
     }
     tilo_startup_metrics::mark("window-surface-validation-scope-done");
+    Ok(surface)
+}
+
+fn create_window_render_prepared(
+    window: &Arc<Window>,
+    transparent: bool,
+    prepared: Option<PreparedRenderer>,
+    prepared_surface: Option<PreparedSurface>,
+    proxy: EventLoopProxy<UserEvent>,
+) -> Result<RenderThreadHandle, String> {
+    tilo_startup_metrics::mark("window-render-context-start");
+    let (mut render_cx, prepared_renderer) = match prepared {
+        Some(prepared) => (
+            prepared.context,
+            Some((prepared.device_id, prepared.renderer)),
+        ),
+        None => (RenderContext::new(), None),
+    };
+    let prepared_surface = prepared_surface.map(|prepared| (prepared.window, prepared.surface));
+    let surface = match early_for(prepared_surface, &window.id()) {
+        Early::Kept(surface) => {
+            tilo_startup_metrics::mark("window-surface-prepared");
+            surface
+        }
+        early => {
+            if matches!(early, Early::Discarded) {
+                // Made for an early window this app did not keep; already
+                // dropped, before a surface is made for this one.
+                tilo_startup_metrics::mark("window-surface-prepared-discarded");
+            }
+            window_surface(&mut render_cx, window.clone(), transparent)?
+        }
+    };
+    let device_handle = render_cx
+        .devices
+        .get(surface.dev_id)
+        .ok_or_else(|| "render device index out of range".to_string())?;
     // create_surface checks presentation support and selects another device
     // if necessary. Never use pipelines built for a different device.
     let renderer = match prepared_renderer {
@@ -832,11 +1028,14 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
         pipelines.keep_until_built();
     }
     // A frame that draws a backdrop blur renders with vello even on a
-    // software adapter. Build at once, on the init threads and default-path
-    // pipelines first, so such a first frame waits on a build well under way
-    // instead of compiling each pipeline it dispatches alone. A frame the
-    // CPU rasterizes waits on nothing.
-    if software {
+    // software adapter. When this app's first frame did last time, build at
+    // once, on the init threads and default-path pipelines first, so that
+    // frame waits on a build well under way instead of compiling each
+    // pipeline it dispatches alone. A first frame the CPU rasterizes waits on
+    // nothing, so its app constructs without LLVM compiling beside it; its
+    // render worker starts the build with the first frame that draws a
+    // backdrop, or after the first present.
+    if software && crate::pipeline_cache::first_frame_backdrop::expected() {
         renderer.start_deferred_pipelines(device, crate::pipeline_cache::persist_unsaved);
     }
     #[cfg(all(windows, feature = "dx12-shader-cache"))]
@@ -1006,6 +1205,7 @@ impl AppHandler {
                 window,
                 false,
                 Some(retained),
+                None,
                 self.a11y_proxy.clone(),
             ) {
                 Ok(render) => {
@@ -1018,14 +1218,20 @@ impl AppHandler {
             }
         }
         #[cfg(any(windows, target_os = "linux"))]
-        if let Some(preparation) = self.app.startup_renderer.take() {
+        if let Some(mut preparation) = self.app.startup_renderer.take() {
+            // Normally long gone: the preparation must not wait for a window
+            // the launch will no longer offer.
+            drop(preparation.window_offer.take());
             // How long the first redraw still waits on the preparation.
-            match tilo_startup_metrics::span("native-render-prepare-wait", || preparation.recv()) {
-                Ok(Ok(prepared)) => {
+            match tilo_startup_metrics::span("native-render-prepare-wait", || {
+                preparation.result.recv()
+            }) {
+                Ok(Ok(startup)) => {
                     self.render = Some(create_window_render_prepared(
                         window,
                         false,
-                        Some(prepared),
+                        Some(startup.prepared),
+                        startup.surface,
                         self.a11y_proxy.clone(),
                     )?);
                     return Ok(());
@@ -2986,55 +3192,48 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         } else {
             None
         };
-        let window_attributes = Window::default_attributes()
-            .with_title(title)
-            .with_window_icon(icon.clone())
-            // Draggable title bar on compositors with no server-side
-            // decorations (e.g. GNOME/mutter); explicit though it's the
-            // winit default, so the intent is unmistakable.
-            .with_decorations(true)
-            .with_visible(false)
-            .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
-        // Optional profiling placement keeps concurrent benchmark windows from
-        // completely occluding one another. Platform window managers may ignore it.
-        let window_attributes = match std::env::var("TILO_PROFILE_WINDOW_POSITION")
-            .ok()
-            .and_then(|value| crate::profiling::profile_window_position(&value))
-        {
-            Some((x, y)) => window_attributes.with_position(winit::dpi::LogicalPosition::new(x, y)),
-            None => window_attributes,
-        };
-        // Benchmarks can keep their own windows above unrelated desktop apps.
-        // This does not change normal application window ordering.
-        let window_attributes = if std::env::var("TILO_PROFILE_WINDOW_FRONT").as_deref() == Ok("1")
-        {
-            window_attributes.with_window_level(winit::window::WindowLevel::AlwaysOnTop)
-        } else {
-            window_attributes
-        };
-        // See `resolve_app_id`: a shared id collapses per-app compositor
-        // lookups.
+        let app_id = primary_window_app_id(self.app.window.app_id.as_deref());
+        // The window the launch made before constructing the app, when it
+        // announces the id this app's window must have. Its surface may
+        // already be configured on the renderer-preparation thread.
         #[cfg(target_os = "linux")]
-        let window_attributes = {
-            use winit::platform::wayland::WindowAttributesExtWayland;
-            let package_id = std::env::var("TILO_PACKAGE_ID").ok();
-            let app_id = resolve_app_id(
-                self.app.window.app_id.as_deref().or(package_id.as_deref()),
-                std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                    .as_deref(),
-            );
-            window_attributes.with_name(app_id, "")
+        let early = match early_for(
+            self.app
+                .startup_renderer
+                .as_mut()
+                .and_then(RendererPreparation::take_window)
+                .map(|(window, early_id)| (early_id, window)),
+            &app_id,
+        ) {
+            Early::Kept(window) => {
+                tilo_startup_metrics::mark("startup-window-adopted");
+                window.set_title(&title);
+                Some(window)
+            }
+            Early::Discarded => {
+                // An input surface announces its own id: its window is made
+                // below, and `init_render` discards the early surface.
+                tilo_startup_metrics::mark("startup-window-discarded");
+                None
+            }
+            Early::Absent => None,
         };
-        // `resumed` is a winit `ApplicationHandler` callback returning `()`,
-        // so a `create_window` failure (compositor gone) has nowhere to
-        // propagate to; there is no window to run without it either way.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "fixed () trait signature; window-creation failure at startup is unrecoverable"
-        )]
-        let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+        #[cfg(not(target_os = "linux"))]
+        let early: Option<Arc<Window>> = None;
+        let window = match early {
+            Some(window) => window,
+            None => {
+                let window_attributes = primary_window_attributes(title, icon.clone(), &app_id);
+                // `resumed` is a winit `ApplicationHandler` callback returning `()`,
+                // so a `create_window` failure (compositor gone) has nowhere to
+                // propagate to; there is no window to run without it either way.
+                #[allow(
+                    clippy::unwrap_used,
+                    reason = "fixed () trait signature; window-creation failure at startup is unrecoverable"
+                )]
+                Arc::new(event_loop.create_window(window_attributes).unwrap())
+            }
+        };
         #[cfg(target_os = "macos")]
         {
             use winit::platform::macos::ActiveEventLoopExtMacOS;
@@ -3987,7 +4186,18 @@ impl App {
                     .clone(),
             );
         }
-        let event_loop = event_loop_builder.build().unwrap();
+        // The launch may have built it already, to make the window early.
+        #[cfg(target_os = "linux")]
+        let early = self
+            .startup_renderer
+            .as_mut()
+            .and_then(RendererPreparation::take_event_loop);
+        #[cfg(not(target_os = "linux"))]
+        let early: Option<EventLoop<UserEvent>> = None;
+        let event_loop = match early {
+            Some(event_loop) => event_loop,
+            None => event_loop_builder.build().unwrap(),
+        };
         tilo_host_search::forward_to_runtime();
         let proxy = event_loop.create_proxy();
         super::install_dev_session_stop(proxy.clone());
@@ -4205,5 +4415,38 @@ mod deadline_present_tests {
         // the first flag at the call site (keeps clippy's bool limit).
         assert!(present_after_deadline_sync(false, true));
         assert!(present_after_deadline_sync(true, false));
+    }
+}
+
+#[cfg(test)]
+mod early_window_tests {
+    use super::{Early, early_for};
+
+    #[test]
+    fn an_early_window_is_kept_only_for_the_app_id_it_announces() {
+        let made = Some(("so.tilo.notes".to_string(), "window"));
+        assert_eq!(
+            early_for(made.clone(), &"so.tilo.notes".to_string()),
+            Early::Kept("window")
+        );
+        // An input surface announces its own id, never the package's: the
+        // early window must not become its window.
+        assert_eq!(
+            early_for(made, &"so.tilo.keyboard".to_string()),
+            Early::Discarded
+        );
+        assert_eq!(
+            early_for(None::<(String, &str)>, &"so.tilo.notes".to_string()),
+            Early::Absent
+        );
+    }
+
+    #[test]
+    fn a_prepared_surface_is_used_only_by_the_window_it_was_made_for() {
+        assert_eq!(
+            early_for(Some((7_u64, "surface")), &7),
+            Early::Kept("surface")
+        );
+        assert_eq!(early_for(Some((7_u64, "surface")), &8), Early::Discarded);
     }
 }
