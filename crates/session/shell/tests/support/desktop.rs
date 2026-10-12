@@ -178,7 +178,7 @@ impl Desktop {
             .env("TILO_TEST_CONTROL", &control)
             .env("TILO_LOCK_TEST_PASSWORD", UNLOCK_PASSWORD)
             .env("TILO_HEADLESS_SIZE", format!("{}x{}", size.0, size.1))
-            .env("RUST_LOG", "warn")
+            .env("RUST_LOG", "warn,tilo::shortcut=info,tilo::workspace=info")
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
             .stdout(Stdio::piped())
@@ -208,6 +208,21 @@ impl Desktop {
             Arc::clone(&desktop.watch),
         ));
         desktop
+    }
+
+    /// A connection to the compositor's public Wayland socket.
+    pub fn connect_wayland(&self) -> UnixStream {
+        UnixStream::connect(&self.wayland_socket).expect("connect to the Wayland socket")
+    }
+
+    /// Stop the heartbeat monitor. Its pings wake the main loop every 50 ms,
+    /// which would hide a loop that sleeps with work pending; a test of exactly
+    /// that runs without it.
+    pub fn stop_monitor(&mut self) {
+        self.watch.stop.store(true, Ordering::Relaxed);
+        if let Some(monitor) = self.monitor.take() {
+            let _ = monitor.join();
+        }
     }
 
     /// The wayland socket's file name, as `WAYLAND_DISPLAY` takes it.
@@ -321,6 +336,12 @@ impl Desktop {
             Duration::from_micros(self.watch.worst_latency_us.load(Ordering::Relaxed)),
             self.recent_log(40)
         );
+    }
+
+    /// Every compositor thread's state and backtrace, or why there is none.
+    pub fn thread_dump(&self) -> String {
+        self.liveness_threads()
+            .unwrap_or_else(|e| format!("(no thread dump: {e})"))
     }
 
     fn liveness_threads(&self) -> Result<String, String> {
@@ -439,6 +460,27 @@ impl Desktop {
             .unwrap_or_else(|| panic!("windows answered {reply}"))
     }
 
+    /// The named widget rectangles, `(name, [x, y, w, h])`.
+    #[track_caller]
+    pub fn targets(&self) -> Vec<(String, [f64; 4])> {
+        let reply = self.ok(&json!({"op": "list_targets"}));
+        reply
+            .get("targets")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.get("name")?.as_str()?.to_string();
+                let rect = entry.get("rect")?.as_array()?;
+                let mut out = [0.0; 4];
+                for (slot, value) in out.iter_mut().zip(rect) {
+                    *slot = value.as_f64()?;
+                }
+                Some((name, out))
+            })
+            .collect()
+    }
+
     /// The tracked foreign (Wayland) surfaces.
     #[track_caller]
     pub fn foreign_frames(&self) -> Vec<Value> {
@@ -449,6 +491,26 @@ impl Desktop {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// The name of the workspace that is showing, from the live tree.
+    #[track_caller]
+    pub fn active_workspace(&self) -> String {
+        let reply = self.ok(&json!({"op": "state_dump"}));
+        let tree = reply
+            .get("state")
+            .and_then(|s| s.get("workspace_tree"))
+            .unwrap_or_else(|| panic!("state_dump had no workspace_tree: {reply}"));
+        let active = tree.get("active");
+        tree.get("workspaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|ws| ws.get("id") == active)
+            .and_then(|ws| ws.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
     }
 
     /// `chrome` of a state dump: what the shell's own UI is doing.
@@ -599,7 +661,15 @@ impl Drop for Desktop {
         self.watch.stop.store(true, Ordering::Relaxed);
         // For investigations: keep everything the compositor said.
         if let Some(path) = std::env::var_os("TILO_SMOKE_COMPOSITOR_LOG") {
-            let _ = std::fs::write(path, self.recent_log(usize::MAX));
+            let mut named = path.clone();
+            named.push(format!(
+                ".{}",
+                self.runtime_dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ));
+            let _ = std::fs::write(named, self.recent_log(usize::MAX));
         }
         if std::thread::panicking() {
             let _ = writeln!(
@@ -622,33 +692,17 @@ impl Drop for Desktop {
 /// The password the compositor accepts to unlock (it stands in for PAM).
 pub const UNLOCK_PASSWORD: &str = "correct-horse-battery";
 
-/// Note why the heartbeat monitor gave up: the stall every wait reports.
-fn record_stall(watch: &Watch, reason: String) {
-    if let Ok(mut stall) = watch.stall.lock() {
-        *stall = Some(reason);
-    }
-}
-
-/// The top frames of the main thread's stack, without file locations.
-fn main_stack_top(threads: &[shell::compositor::liveness::ThreadReport]) -> String {
-    let main = threads.first().map_or("", |t| t.backtrace.as_str());
-    let top: Vec<&str> = main
-        .lines()
-        .filter(|l| !l.contains(" at "))
-        .take(14)
-        .collect();
-    top.join("\n")
-}
-
 fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("heartbeat-monitor".into())
         .spawn(move || {
             let Ok(stream) = UnixStream::connect(&liveness) else {
-                record_stall(
-                    &watch,
-                    format!("the liveness socket {} cannot be reached", liveness.display()),
-                );
+                if let Ok(mut stall) = watch.stall.lock() {
+                    *stall = Some(format!(
+                        "the liveness socket {} cannot be reached",
+                        liveness.display()
+                    ));
+                }
                 return;
             };
             let budget = u64::try_from(HEARTBEAT_BUDGET.as_millis()).unwrap_or(500);
@@ -661,8 +715,8 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                 return;
             };
             let mut reader = BufReader::new(stream);
-            let request = format!("{{\"op\":\"heartbeat\",\"budget_ms\":{budget}}}\n");
             while !watch.stop.load(Ordering::Relaxed) {
+                let request = format!("{{\"op\":\"heartbeat\",\"budget_ms\":{budget}}}\n");
                 if writer.write_all(request.as_bytes()).is_err() {
                     return;
                 }
@@ -677,15 +731,23 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                 if let Ok(Answer::Stalled {
                     budget_ms,
                     main_thread_cpu_ms,
+                    main_thread_starved_ms,
                     threads,
                     ..
                 }) = &answer
-                    && *main_thread_cpu_ms >= budget_ms / 4
+                    && answer.as_ref().is_ok_and(Answer::stalled_but_working)
                 {
+                    let main = threads.first().map_or("", |t| t.backtrace.as_str());
+                    let top: Vec<&str> = main
+                        .lines()
+                        .filter(|l| !l.contains(" at "))
+                        .take(14)
+                        .collect();
                     if let Ok(mut jank) = watch.jank.lock() {
                         jank.push(format!(
-                            "main loop busy for over {budget_ms} ms ({main_thread_cpu_ms} ms CPU):\n{}",
-                            main_stack_top(threads)
+                            "main loop slow for over {budget_ms} ms ({main_thread_cpu_ms} ms CPU, \
+                             {main_thread_starved_ms} ms waiting for a core):\n{}",
+                            top.join("\n")
                         ));
                     }
                     // Keep asking: it still working is fine, its turning blocked
@@ -693,6 +755,7 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                     // a spin.
                     let mut waited = HEARTBEAT_BUDGET;
                     while waited < BUSY_LIMIT {
+                        let request = format!("{{\"op\":\"heartbeat\",\"budget_ms\":{budget}}}\n");
                         if writer.write_all(request.as_bytes()).is_err() {
                             return;
                         }
@@ -704,16 +767,18 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                         if let Ok(Answer::Stalled { threads, .. }) = &answer
                             && let Ok(mut jank) = watch.jank.lock()
                         {
+                            let main = threads.first().map_or("", |t| t.backtrace.as_str());
+                            let top: Vec<&str> = main
+                                .lines()
+                                .filter(|l| !l.contains(" at "))
+                                .take(14)
+                                .collect();
                             jank.push(format!(
                                 "  ... still busy {waited:?} in:\n{}",
-                                main_stack_top(threads)
+                                top.join("\n")
                             ));
                         }
-                        let still_working = matches!(
-                            &answer,
-                            Ok(Answer::Stalled { main_thread_cpu_ms, budget_ms, .. })
-                                if *main_thread_cpu_ms >= budget_ms / 4
-                        );
+                        let still_working = answer.as_ref().is_ok_and(Answer::stalled_but_working);
                         if !still_working {
                             break;
                         }
@@ -729,18 +794,21 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                         watch.worst_latency_us.fetch_max(micros, Ordering::Relaxed);
                     }
                     Ok(stalled @ Answer::Stalled { .. }) => {
-                        record_stall(&watch, render(&stalled));
+                        if let Ok(mut stall) = watch.stall.lock() {
+                            *stall = Some(render(&stalled));
+                        }
                         return;
                     }
                     Ok(other) => {
-                        record_stall(&watch, format!("unexpected liveness answer: {other:?}"));
+                        if let Ok(mut stall) = watch.stall.lock() {
+                            *stall = Some(format!("unexpected liveness answer: {other:?}"));
+                        }
                         return;
                     }
                     Err(e) => {
-                        record_stall(
-                            &watch,
-                            format!("unreadable liveness answer ({e}): {line}"),
-                        );
+                        if let Ok(mut stall) = watch.stall.lock() {
+                            *stall = Some(format!("unreadable liveness answer ({e}): {line}"));
+                        }
                         return;
                     }
                 }
@@ -858,65 +926,28 @@ fn seed_identity(runtime_dir: &Path) -> PathBuf {
     runtime_dir.join("identity-root")
 }
 
-/// CPU and memory pressure from inside the test process, for as long as it
-/// lives: busy threads that compete with the compositor for cores, and a
-/// resident working set that is rewritten continuously so the kernel keeps
-/// faulting and reclaiming pages. Timing bugs that need a slow moment (a launch
-/// that races its window, a wait with no wake) show up far more often under it.
+/// CPU and memory pressure from a process of its own (`pressure_fixture`), for
+/// as long as this lives: busy threads that compete with the compositor for
+/// cores, and a resident working set rewritten continuously so the kernel keeps
+/// faulting and reclaiming pages. It runs at the lowest priority, as a build
+/// does beside a desktop session, and is a separate process so it does not
+/// share the test's own scheduling. Timing bugs that need a slow moment (a
+/// launch that races its window, a wait with no wake) show up far more often
+/// under it.
 pub struct Pressure {
-    stop: Arc<AtomicBool>,
-    threads: Vec<std::thread::JoinHandle<()>>,
+    child: Child,
 }
 
 impl Pressure {
     /// `busy` spinning threads and a `bytes`-sized rewritten working set.
     pub fn start(busy: usize, bytes: usize) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let mut threads = Vec::new();
-        for n in 0..busy {
-            let stop = Arc::clone(&stop);
-            threads.push(
-                std::thread::Builder::new()
-                    .name(format!("pressure-cpu-{n}"))
-                    .spawn(move || {
-                        let mut x = 0x9E37_79B9_7F4A_7C15_u64 ^ u64::try_from(n).unwrap_or(0);
-                        while !stop.load(Ordering::Relaxed) {
-                            for _ in 0..50_000 {
-                                x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-                            }
-                            std::hint::black_box(x);
-                        }
-                    })
-                    .expect("start a busy thread"),
-            );
-        }
-        if bytes > 0 {
-            let stop = Arc::clone(&stop);
-            threads.push(
-                std::thread::Builder::new()
-                    .name("pressure-memory".into())
-                    .spawn(move || {
-                        const CHUNK: usize = 32 << 20;
-                        let mut chunks: Vec<Vec<u8>> = (0..bytes.div_ceil(CHUNK))
-                            .map(|_| vec![1_u8; CHUNK])
-                            .collect();
-                        let mut turn = 0_usize;
-                        while !stop.load(Ordering::Relaxed) {
-                            let index = turn.checked_rem(chunks.len()).unwrap_or(0);
-                            // Rewrite one chunk through every page, then give
-                            // it back and fault a fresh one in.
-                            for page in chunks[index].chunks_mut(4096) {
-                                page[0] = page[0].wrapping_add(1);
-                            }
-                            chunks[index] = vec![u8::try_from(turn % 251).unwrap_or(0); CHUNK];
-                            turn = turn.wrapping_add(1);
-                            std::thread::sleep(Duration::from_millis(5));
-                        }
-                    })
-                    .expect("start the memory thread"),
-            );
-        }
-        Self { stop, threads }
+        let child = Command::new(env!("CARGO_BIN_EXE_pressure_fixture"))
+            .arg(busy.to_string())
+            .arg(bytes.to_string())
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("start the pressure process");
+        Self { child }
     }
 
     /// Pressure sized to this machine: a busy thread per core and a quarter of
@@ -939,9 +970,7 @@ impl Pressure {
 
 impl Drop for Pressure {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        for thread in self.threads.drain(..) {
-            let _ = thread.join();
-        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }

@@ -175,6 +175,11 @@ pub struct WorkspaceTreeWriteGuard<'a> {
     generation: &'a AtomicU64,
     policy: &'a parking_lot::Mutex<PolicySnapshot>,
     holder: &'a parking_lot::Mutex<Option<Holder>>,
+    /// The workspace showing when the guard was taken, and where it was taken:
+    /// a write that moves the desktop to another workspace is logged with
+    /// its writer, since the active workspace has several.
+    active_on_entry: tilo_desktop_model::WorkspaceId,
+    taken_at: &'static Location<'static>,
 }
 
 impl WorkspaceTreeHandle {
@@ -244,6 +249,8 @@ impl WorkspaceTreeHandle {
             since: Instant::now(),
         });
         WorkspaceTreeWriteGuard {
+            active_on_entry: guard.desktop.active,
+            taken_at: at,
             guard,
             generation: &self.0.generation,
             policy: &self.0.policy,
@@ -343,6 +350,15 @@ impl std::ops::DerefMut for WorkspaceTreeWriteGuard<'_> {
 impl Drop for WorkspaceTreeWriteGuard<'_> {
     fn drop(&mut self) {
         // Runs before `guard` releases the lock.
+        if self.guard.desktop.active != self.active_on_entry {
+            tracing::info!(
+                target: "tilo::workspace",
+                before = ?self.active_on_entry,
+                after = ?self.guard.desktop.active,
+                writer = %self.taken_at,
+                "the active workspace changed"
+            );
+        }
         self.generation.fetch_add(1, Ordering::Release);
         *self.holder.lock() = None;
         // Rosters, roles, grants and the devices a room admitted live here:

@@ -27,7 +27,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use shell::shell::state::{DesktopTree, Tab, WindowGroup, WindowWidth, WorkspaceTree};
 
-use crate::support::desktop::{Client, Desktop, Pressure, UNLOCK_PASSWORD};
+use crate::support::desktop::{Desktop, Pressure, UNLOCK_PASSWORD};
 
 const SCREEN: (i32, i32) = (1280, 800);
 
@@ -124,6 +124,7 @@ fn sweep(desktop: &Desktop) {
     ] {
         desktop.pointer_move(x, y);
     }
+    close_overlays(desktop);
 }
 
 /// Into a window, across it and out of it onto the desktop, repeatedly: the
@@ -142,69 +143,56 @@ fn cross(desktop: &Desktop, rect: [f64; 4]) {
     }
 }
 
+fn clients_report(clients: &[crate::support::desktop::Client]) -> String {
+    clients
+        .iter()
+        .enumerate()
+        .map(|(n, c)| format!("client {n}:\n{}", c.output()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The pointer's visit to a corner or edge opens what lives there (the overview
+/// at the top left, quick settings at the top right), and the next click lands
+/// on it. A person moves on; so does the scenario, closing whatever the sweep
+/// opened before it clicks anything.
+#[track_caller]
+fn close_overlays(desktop: &Desktop) {
+    const OVERLAYS: [&str; 4] = ["overview", "quick_settings", "ws_settings", "collaborators"];
+    let open = |desktop: &Desktop| {
+        let chrome = desktop.chrome();
+        OVERLAYS
+            .iter()
+            .any(|name| chrome["overlays"][name].as_bool() == Some(true))
+    };
+    for _ in 0..4 {
+        if !open(desktop) {
+            return;
+        }
+        eprintln!(
+            "[desktop-smoke] closing overlays at {}: {}",
+            std::panic::Location::caller(),
+            desktop.chrome()["overlays"]
+        );
+        desktop.key("Escape");
+        desktop.pause(Duration::from_millis(100));
+    }
+    desktop.wait_for("the corner overlays to close", || !open(desktop));
+}
+
+/// A click as a person makes it: on the desktop, not on whatever the pointer's
+/// last visit left open.
+#[track_caller]
+fn click(desktop: &Desktop, x: f64, y: f64) {
+    close_overlays(desktop);
+    desktop.click_at(x, y);
+}
+
 fn window_count(desktop: &Desktop) -> usize {
     desktop.windows().len()
 }
 
-/// Click `client`'s window at `rect`, wait for the seat to hand it the
-/// keyboard, type into it and wait for its keys to arrive.
-fn type_into_client(desktop: &Desktop, client: &Client, rect: [f64; 4]) {
-    let (cx, cy) = centre(rect);
-    desktop.click_at(cx, cy);
-    // Keys go to whoever holds keyboard focus when they arrive: wait for
-    // the compositor's seat to say the click gave it to this client. The
-    // client's own enter/leave events trail the seat and can still show
-    // the focus it held before another window took it.
-    let surface = desktop
-        .foreign_frames()
-        .iter()
-        .find(|frame| rect_of(frame) == Some(rect))
-        .and_then(|frame| frame.get("surface_id").and_then(Value::as_u64))
-        .expect("the clicked rectangle is a tracked client surface");
-    desktop.wait_for_with(
-        "the click to give the client keyboard focus",
-        || {
-            format!(
-                "{}\nseat focus: {:?}\nthe client reported:\n{}",
-                client.fate(),
-                desktop.chrome().get("seat_focus"),
-                client.output()
-            )
-        },
-        || {
-            desktop
-                .chrome()
-                .get("seat_focus")
-                .and_then(|seat| seat.get("keyboard"))
-                .and_then(|keyboard| keyboard.get("surface"))
-                .and_then(Value::as_u64)
-                == Some(surface)
-        },
-    );
-    desktop.wait_for("the client to hold keyboard focus", || {
-        client.count("EVENT:KEYBOARD ENTER") > client.count("EVENT:KEYBOARD LEAVE")
-    });
-    let before = client.count("EVENT:KEY PRESS");
-    desktop.type_text("smoke");
-    let wanted = before.saturating_add(5);
-    desktop.wait_for_with(
-        "the client to receive its keys",
-        || {
-            // Who holds the keyboard when the keys fail to arrive: the
-            // client may have lost it to another surface after the click.
-            let seat = desktop.chrome().get("seat_focus").cloned();
-            format!(
-                "{}\nseat focus: {seat:?}\nforeign frames: {:?}\nthe client reported:\n{}",
-                client.fate(),
-                desktop.foreign_frames(),
-                client.output()
-            )
-        },
-        || client.count("EVENT:KEY PRESS") >= wanted,
-    );
-}
-
-fn scenario(desktop: &Desktop, max_idle_cpu: f64) {
+fn scenario(desktop: &Desktop) {
     // Restored: the tree the compositor was started on is what it shows.
     let restored = desktop.windows();
     let titles: Vec<&str> = restored
@@ -251,16 +239,82 @@ fn scenario(desktop: &Desktop, max_idle_cpu: f64) {
     }
 
     // Typing into each window: the Wayland clients see their keys.
-    for (client, rect) in clients.iter().zip(&rects) {
-        type_into_client(desktop, client, *rect);
+    for rect in &rects {
+        let (cx, cy) = centre(*rect);
+        // Which client is at this rectangle is not known up front: the
+        // compositor lists its windows in no order of ours. The click says: the
+        // client under the pointer is the one that reports it.
+        let clicks: Vec<usize> = clients.iter().map(|c| c.count("EVENT:CLICK")).collect();
+        click(desktop, cx, cy);
+        let mut hit = None;
+        desktop.wait_for_with(
+            "a client to report the click",
+            || {
+                format!(
+                    "clicked at {:?}; clients reported:\n{}",
+                    (cx, cy),
+                    clients_report(&clients)
+                )
+            },
+            || {
+                hit = clients
+                    .iter()
+                    .zip(&clicks)
+                    .position(|(c, before)| c.count("EVENT:CLICK") > *before);
+                hit.is_some()
+            },
+        );
+        let client = &clients[hit.expect("a client reported the click")];
+        // Keys go to whoever holds keyboard focus when they arrive: wait for
+        // the client to have been told it holds it.
+        desktop.wait_for_with(
+            "the clicked client to be told it holds keyboard focus",
+            || {
+                format!(
+                    "{}\nseat focus: {:?}\nclients reported:\n{}",
+                    client.fate(),
+                    desktop.chrome().get("seat_focus"),
+                    clients_report(&clients)
+                )
+            },
+            || client.count("EVENT:KEYBOARD ENTER") > client.count("EVENT:KEYBOARD LEAVE"),
+        );
+        let before = client.count("EVENT:KEY PRESS");
+        desktop.type_text("smoke");
+        let wanted = before.saturating_add(5);
+        desktop.wait_for_with(
+            "the client to receive its keys",
+            || {
+                format!(
+                    "{}\nseat focus: {:?}\nclients reported:\n{}",
+                    client.fate(),
+                    desktop.chrome().get("seat_focus"),
+                    clients_report(&clients)
+                )
+            },
+            || client.count("EVENT:KEY PRESS") >= wanted,
+        );
     }
-    // ... and the in-process apps take theirs.
-    let (w, h) = (f64::from(SCREEN.0), f64::from(SCREEN.1));
-    for x in [w * 0.1, w * 0.3, w * 0.5] {
-        desktop.click_at(x, h * 0.5);
+    // ... and the in-process apps take theirs, wherever they are laid out: the
+    // screen's left edge is the workspace wheel, and a click there opens the
+    // overview.
+    let apps: Vec<[f64; 4]> = desktop
+        .targets()
+        .into_iter()
+        .filter(|(name, rect)| name.starts_with("so.tilo.") && rect[2] > 50.0 && rect[3] > 50.0)
+        .map(|(_, rect)| rect)
+        .collect();
+    assert!(
+        !apps.is_empty(),
+        "the session has Tilo app windows on screen"
+    );
+    for rect in apps {
+        let (cx, cy) = centre(rect);
+        click(desktop, cx, cy);
         desktop.type_text("hello");
         desktop.key("Enter");
     }
+    close_overlays(desktop);
 
     // Resize and maximize.
     for permille in [260, 340, 220] {
@@ -284,9 +338,20 @@ fn scenario(desktop: &Desktop, max_idle_cpu: f64) {
     desktop.key("Escape");
 
     // Workspaces.
+    // Away and back, as a person pressing the keys would.
     desktop.invoke_action("actions", "workspace.next");
+    desktop.wait_for_with(
+        "the next workspace to show",
+        || format!("showing {:?}", desktop.active_workspace()),
+        || desktop.active_workspace() != "Smoke desktop",
+    );
     sweep_edges(desktop);
     desktop.invoke_action("actions", "workspace.previous");
+    desktop.wait_for_with(
+        "FINDING: workspace.previous to bring the first workspace back",
+        || format!("showing {:?}", desktop.active_workspace()),
+        || desktop.active_workspace() == "Smoke desktop",
+    );
 
     // Lock, move the pointer over the lock screen, unlock.
     desktop.invoke_action("session", "lock");
@@ -306,17 +371,30 @@ fn scenario(desktop: &Desktop, max_idle_cpu: f64) {
     // tiles are laid out again by the frame after the unlock, so ask for them
     // to be painted rather than reading them in the same instant.
     sweep_edges(desktop);
-    desktop.wait_for("both clients to be painted again after the unlock", || {
-        painted_clients(desktop).len() == 2
-    });
+    desktop.wait_for_with(
+        "both clients to be painted again after the unlock",
+        || {
+            format!(
+                "foreign frames: {:?}\nlocked: {:?}\n{}",
+                desktop.foreign_frames(),
+                desktop.chrome().get("session_locked"),
+                desktop.thread_dump()
+            )
+        },
+        || painted_clients(desktop).len() == 2,
+    );
+}
 
-    // Left alone, the desktop is idle. A widget that reports a wake deadline
-    // nothing can satisfy makes the loop pump every app on every pass: the
-    // Files app did, while its nearby-transfer snapshot went unanswered.
-    desktop.pause(Duration::from_secs(1));
+/// Left alone, the desktop is idle. A widget that reports a wake deadline
+/// nothing can satisfy makes the loop pump every app on every pass: the Files
+/// app did, while its nearby-transfer snapshot went unanswered. Measured on a
+/// machine nothing else is loading, after the backlog the scenario left has
+/// drained.
+fn assert_idle(desktop: &Desktop) {
+    desktop.pause(Duration::from_secs(2));
     let share = desktop.idle_cpu_share(Duration::from_secs(2));
     assert!(
-        share < max_idle_cpu,
+        share < 0.25,
         "an untouched desktop used {:.0}% of a core; it is spinning on a wake deadline that \
          never clears",
         share * 100.0
@@ -339,10 +417,14 @@ fn sweep_edges(desktop: &Desktop) {
     ] {
         desktop.pointer_move(x, y);
     }
+    close_overlays(desktop);
 }
 
-fn run(desktop: &Desktop, max_idle_cpu: f64) {
-    scenario(desktop, max_idle_cpu);
+fn run(desktop: &Desktop, pressure: Option<Pressure>) {
+    scenario(desktop);
+    // The pressure ends with the scenario: idleness is judged without it.
+    drop(pressure);
+    assert_idle(desktop);
     let (beats, worst) = desktop.heartbeat_summary();
     eprintln!(
         "[desktop-smoke] {beats} heartbeats acknowledged; the slowest wake took {worst:?} \
@@ -358,13 +440,189 @@ fn run(desktop: &Desktop, max_idle_cpu: f64) {
 #[test]
 fn desktop_smoke_keeps_the_main_loop_turning() {
     let desktop = Desktop::start(SCREEN, &smoke_tree());
-    run(&desktop, 0.25);
+    run(&desktop, None);
 }
 
 #[test]
 fn desktop_smoke_under_cpu_and_memory_pressure() {
     let desktop = Desktop::start(SCREEN, &smoke_tree());
-    let _pressure = Pressure::for_this_machine();
-    // Starved of CPU the loop uses less, never more, than when quiet.
-    run(&desktop, 0.25);
+    run(&desktop, Some(Pressure::for_this_machine()));
+}
+
+// The compositor serves each Wayland client a bounded number of requests per
+// loop pass, so one chatty client cannot hold the loop. The remainder is
+// decoded work that no file descriptor reports any more: the loop must come
+// back for it by itself.
+mod burst {
+    use std::time::{Duration, Instant};
+
+    use wayland_client::protocol::{
+        wl_callback, wl_compositor::WlCompositor, wl_surface::WlSurface,
+    };
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+
+    use super::{SCREEN, smoke_tree};
+    use crate::support::desktop::Desktop;
+    use crate::support::wayland::{Globals as _, test_client};
+
+    #[derive(Default)]
+    struct Burst {
+        globals: Vec<(u32, String, u32)>,
+        synced: bool,
+    }
+    test_client!(Burst: registry);
+    delegate_noop!(Burst: ignore WlCompositor);
+    delegate_noop!(Burst: ignore WlSurface);
+
+    impl Dispatch<wl_callback::WlCallback, ()> for Burst {
+        fn event(
+            state: &mut Self,
+            _: &wl_callback::WlCallback,
+            event: wl_callback::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if matches!(event, wl_callback::Event::Done { .. }) {
+                state.synced = true;
+            }
+        }
+    }
+
+    /// More requests than one pass serves, in a single write, then silence:
+    /// the answer to the `sync` at the end must still arrive.
+    #[test]
+    fn a_burst_past_the_per_client_bound_is_answered_without_further_input() {
+        let mut desktop = Desktop::start(SCREEN, &smoke_tree());
+        // Nothing may wake the loop but the burst itself.
+        desktop.stop_monitor();
+        let conn = Connection::from_socket(desktop.connect_wayland()).expect("connect");
+        let mut queue = conn.new_event_queue::<Burst>();
+        let qh = queue.handle();
+        let registry = conn.display().get_registry(&qh, ());
+        let mut client = Burst::default();
+        queue.roundtrip(&mut client).expect("learn the globals");
+        let (name, version) = client.global("wl_compositor", 4).expect("a compositor");
+        let compositor: WlCompositor = registry.bind(name, version, &qh, ());
+        let surface = compositor.create_surface(&qh, ());
+        queue.roundtrip(&mut client).expect("create the surface");
+
+        // Past the bound several times over; one write, so one socket read
+        // decodes more than the bound.
+        for n in 0..640_i32 {
+            surface.damage(0, 0, 1_i32.saturating_add(n % 7), 1);
+        }
+        let _sync = conn.display().sync(&qh, ());
+        conn.flush().expect("send the burst");
+
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .unwrap_or_else(Instant::now);
+        while !client.synced {
+            queue.dispatch_pending(&mut client).expect("dispatch");
+            if client.synced {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the compositor never answered the sync behind a {}-request burst: it slept \
+                 with decoded requests pending\n{}",
+                640,
+                desktop.thread_dump()
+            );
+            if let Some(guard) = queue.prepare_read() {
+                let mut fd = libc::pollfd {
+                    fd: std::os::fd::AsRawFd::as_raw_fd(&guard.connection_fd()),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: one initialised pollfd, live for the call.
+                unsafe { libc::poll(&raw mut fd, 1, 50) };
+                let _ = guard.read();
+            }
+        }
+    }
+}
+
+// Windows must come back after the session unlocks: a screen that unlocks onto
+// blank windows is a desktop the person cannot use. One lock cycle failed to
+// bring the clients back about one run in fifteen, so this repeats it.
+mod lock_cycle {
+    use std::path::Path;
+    use std::time::Duration;
+
+    use serde_json::json;
+
+    use super::{CLIENT, CLIENT_APP_ID, SCREEN, UNLOCK_PASSWORD, painted_clients, smoke_tree};
+    use crate::support::desktop::Desktop;
+
+    #[test]
+    fn clients_are_painted_again_after_every_unlock() {
+        let desktop = Desktop::start(SCREEN, &smoke_tree());
+        let _clients: Vec<_> = (0..2)
+            .map(|_| {
+                desktop.ok(&json!({"op": "place_next_window", "app_id": CLIENT_APP_ID}));
+                desktop.spawn_client(Path::new(CLIENT))
+            })
+            .collect();
+        desktop.wait_for("both Wayland clients to paint", || {
+            painted_clients(&desktop).len() == 2
+        });
+        desktop.ok(&json!({"op": "set_group_width", "permille": 190}));
+        for cycle in 0..25 {
+            desktop.invoke_action("session", "lock");
+            desktop.wait_for("the session to lock", || {
+                desktop.chrome()["session_locked"].as_bool() == Some(true)
+            });
+            desktop.type_text(UNLOCK_PASSWORD);
+            desktop.key("Enter");
+            desktop.wait_for("the session to unlock", || {
+                desktop.chrome()["session_locked"].as_bool() == Some(false)
+            });
+            desktop.wait_for_with(
+                &format!("both clients to be painted again after unlock {cycle}"),
+                || {
+                    format!(
+                        "foreign frames: {:?}\nstate: {:?}\n{}",
+                        desktop.foreign_frames(),
+                        desktop.chrome().get("session_locked"),
+                        desktop.thread_dump()
+                    )
+                },
+                || painted_clients(&desktop).len() == 2,
+            );
+            desktop.pause(Duration::from_millis(100));
+        }
+    }
+}
+
+// Switching workspaces away and back must always come back.
+mod workspace_cycle {
+    use super::{SCREEN, smoke_tree};
+    use crate::support::desktop::Desktop;
+
+    #[test]
+    fn next_then_previous_returns_to_the_first_workspace_every_time() {
+        let desktop = Desktop::start(SCREEN, &smoke_tree());
+        // As the scenario does first: open the palette, search, close it.
+        desktop.chord_ctrl("k");
+        desktop.pause(std::time::Duration::from_millis(200));
+        desktop.type_text("notes");
+        desktop.pause(std::time::Duration::from_millis(400));
+        desktop.key("Escape");
+        for cycle in 0..40 {
+            desktop.invoke_action("actions", "workspace.next");
+            desktop.wait_for_with(
+                &format!("the next workspace to show (cycle {cycle})"),
+                || format!("showing {:?}", desktop.active_workspace()),
+                || desktop.active_workspace() != "Smoke desktop",
+            );
+            desktop.invoke_action("actions", "workspace.previous");
+            desktop.wait_for_with(
+                &format!("the first workspace to show again (cycle {cycle})"),
+                || format!("showing {:?}", desktop.active_workspace()),
+                || desktop.active_workspace() == "Smoke desktop",
+            );
+        }
+    }
 }

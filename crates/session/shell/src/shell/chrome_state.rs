@@ -1186,7 +1186,15 @@ impl ChromeState {
 
     /// Run `action` as if its chord had been pressed once, on the overlay
     /// host's next update.
+    #[track_caller]
     pub fn request_shortcut_action(&mut self, action: settings_store::hardware::ShortcutAction) {
+        tracing::info!(
+            target: "tilo::shortcut",
+            ?action,
+            queued = self.shortcut_action_requests.len(),
+            from = %std::panic::Location::caller(),
+            "shortcut action requested"
+        );
         self.shortcut_action_requests.push(action);
         self.bump();
     }
@@ -2454,6 +2462,7 @@ impl ChromeState {
                 _ => false,
             }
         };
+        tracing::info!(target: "tilo::shortcut", dir, changed, "workspace switch");
         if changed {
             self.bump();
         }
