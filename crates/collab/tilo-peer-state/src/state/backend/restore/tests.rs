@@ -164,7 +164,10 @@ pub(in crate::state) fn media_fixture() -> (StatePeer, SigningKey, SystemTime) {
     .unwrap();
     let mut chat = AutoCommit::new();
     let channels = chat.put_object(ROOT, "channels", ObjType::Map).unwrap();
-    let voice = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
+    let voice = {
+        let entry = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
+        chat.put_object(&entry, "v", ObjType::Map).unwrap()
+    };
     chat.put(&voice, "kind", "voice").unwrap();
     chat.put(&voice, "workspace", "home").unwrap();
     peer.install_seed(
@@ -238,7 +241,10 @@ fn complete_bounded_restore_validates_present_media_and_exact_chat_without_requi
     let mut chat = AutoCommit::load(&durable.base.documents[0].bytes).unwrap();
     let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
     chat.delete(&channels, "voice").unwrap();
-    let voice = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
+    let voice = {
+        let entry = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
+        chat.put_object(&entry, "v", ObjType::Map).unwrap()
+    };
     chat.put(&voice, "kind", "voice").unwrap();
     chat.put(&voice, "workspace", "home").unwrap();
     durable.base.documents[0].bytes = chat.save();

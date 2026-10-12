@@ -126,9 +126,9 @@
     "src/openvino/whisper-openvino-encoder.cpp": "b35faa2d9d1baa762feda901605b194e14c8222d7e4a7f5d01c9a883114cc5af",
     "src/openvino/whisper-openvino-encoder.h": "30debb67a2ba5972d0bfecc5ab35827d67c4e38b5485dbb6bb00af9f64e4404c",
     "src/whisper-arch.h": "f35cf51d54c4df7e1c504ba8ef3f06012ba483459ddf2a5cba533deb7b85c239",
-    "src/whisper.cpp": "d1e041704c12e20b8eb9596632db3b3b31046348dbb0e493f8a5ab8edd5f4376"
+    "src/whisper.cpp": "258d289718e8deb83f19f97c973e8c1f211e04fec069a678e8b81d2d0e2e153c"
   },
-  "selection": "CPU engine and build inputs only; no carried source files modified",
+  "selection": "CPU engine and build inputs; carried source modifications are declared in local_patches",
   "omitted_backend_directories": [
     "ggml/src/ggml-blas",
     "ggml/src/ggml-cann",
@@ -144,5 +144,13 @@
     "ggml/src/ggml-webgpu",
     "ggml/src/ggml-zdnn",
     "ggml/src/ggml-zendnn"
+  ],
+  "local_patches": [
+    {
+      "path": "src/whisper.cpp",
+      "upstream_sha256": "d1e041704c12e20b8eb9596632db3b3b31046348dbb0e493f8a5ab8edd5f4376",
+      "patched_sha256": "258d289718e8deb83f19f97c973e8c1f211e04fec069a678e8b81d2d0e2e153c",
+      "purpose": "Reuse automatic-language encoder only within the same full-context call. Propagate abort polls into CPU graph operations, including automatic-language detection. A private Tilo entry point permits encoder reuse with its pure lock-free stop poll; the public API retains its callback-free reuse guard. Final inference uses fresh state and no abort callback. Acoustic graph execution failures return false rather than successful uncomputed probabilities."
+    }
   ]
 }

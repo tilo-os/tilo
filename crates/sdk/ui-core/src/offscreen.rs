@@ -651,6 +651,8 @@ pub struct OffscreenRenderer {
     backdrop: Option<Arc<crate::backdrop::BackdropFrame>>,
     /// Built with the first frame that has a backdrop.
     backdrop_blur: Option<crate::backdrop::BackdropBlur>,
+    /// Scratch space for scroll copies within the target.
+    copy_scratch: crate::scroll_copy::CopyScratch,
 }
 
 impl OffscreenRenderer {
@@ -1109,6 +1111,7 @@ impl OffscreenRenderer {
             target_valid: false,
             backdrop: None,
             backdrop_blur: None,
+            copy_scratch: crate::scroll_copy::CopyScratch::default(),
         })
     }
 
@@ -1524,6 +1527,57 @@ impl OffscreenRenderer {
     ) -> u64 {
         let mut timing = None;
         self.render_damage_regions_gpu_wait_inner(scene, bg, damage, &mut timing)
+    }
+
+    /// [`Self::render_damage_regions_gpu_wait`] after moving pixels within
+    /// the retained target by `copies`, in order, as a window presents a
+    /// scroll ([`crate::scroll_copy`]). With no valid target, or a copy that
+    /// would leave it, the frame renders whole.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the same conditions as [`Self::render_damage_gpu_wait`].
+    #[allow(
+        clippy::expect_used,
+        clippy::significant_drop_tightening,
+        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
+    )]
+    pub fn render_copies_and_damage_gpu_wait(
+        &mut self,
+        scene: &Scene,
+        bg: Color,
+        copies: &[crate::scroll_copy::DeviceCopy],
+        damage: &[Rect],
+    ) -> u64 {
+        if !copies.is_empty() {
+            let (device, queue) = {
+                let ctx = self.context.lock().expect("shared RenderContext poisoned");
+                let handle = ctx.devices.get(self.dev_id).expect(
+                    "this renderer's device entry is missing from the shared RenderContext",
+                );
+                (handle.device.clone(), handle.queue.clone())
+            };
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("offscreen scroll copies"),
+            });
+            if !self.target_valid
+                || !crate::scroll_copy::encode_copies(
+                    &device,
+                    &mut encoder,
+                    &self.texture,
+                    &mut self.copy_scratch,
+                    copies,
+                )
+            {
+                let mut timing = None;
+                return self.render_gpu_wait_count(scene, bg, &mut timing);
+            }
+            queue.submit([encoder.finish()]);
+        }
+        if damage.is_empty() {
+            return 0;
+        }
+        self.render_damage_regions_gpu_wait(scene, bg, damage)
     }
 
     /// Profile the existing damage render without adding GPU work or readback.

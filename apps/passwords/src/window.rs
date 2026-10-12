@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use ui::num::u32_of_usize;
 
 use accounts::{SecretId, SecretItemKind};
 use ui::icons::Icon;
@@ -59,10 +60,6 @@ fn filter_icon(filter: VaultFilter) -> Icon {
     }
 }
 
-fn count(n: usize) -> u32 {
-    u32::try_from(n).unwrap_or(u32::MAX)
-}
-
 impl Core {
     fn nav_sections(&self) -> Vec<NavSection> {
         let vault = VaultFilter::ALL
@@ -72,7 +69,7 @@ impl Core {
                     .icon(filter_icon(filter));
                 match self.count(filter) {
                     0 => item,
-                    n => item.count(count(n)),
+                    n => item.count(u32_of_usize(n)),
                 }
             })
             .collect();
@@ -82,7 +79,7 @@ impl Core {
             .len()
             .saturating_add(self.app_proposals.len());
         if access_count > 0 {
-            access = access.count(count(access_count));
+            access = access.count(u32_of_usize(access_count));
         }
         vec![
             NavSection::new("vault", "Vault", vault),
@@ -231,6 +228,25 @@ impl PasswordsSurface {
     /// The fixture vault, for tests and captures.
     pub fn demo() -> Self {
         Self::with_core(Core::demo())
+    }
+
+    /// What a search hit or an agent's `open` runs: show the vault item
+    /// its anchor names, as clicking its row does; refused for an item the
+    /// vault does not hold.
+    pub(crate) fn opener(&self) -> impl FnMut(&str) -> Result<(), &'static str> + 'static {
+        let core = Rc::clone(&self.core);
+        let requests = Rc::clone(&self.requests);
+        move |anchor| {
+            let id = anchor
+                .strip_prefix(crate::actions::ITEM_PREFIX)
+                .map(|id| SecretId(id.to_owned()))
+                .ok_or("not an item of the vault")?;
+            if core.borrow().item(&id).is_none() {
+                return Err("the vault holds no such item");
+            }
+            requests.borrow_mut().push(Request::Open(id));
+            Ok(())
+        }
     }
 
     #[cfg(test)]
@@ -496,16 +512,9 @@ impl ui::widget::Decorator for PasswordsSurface {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        match event {
-            WindowEvent::Focused(false) => {
-                // A reveal is only for the actively attended window.
-                self.core.borrow_mut().hide_revealed();
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.core.borrow_mut().pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-            }
-            _ => {}
+        if matches!(event, WindowEvent::Focused(false)) {
+            // A reveal is only for the actively attended window.
+            self.core.borrow_mut().hide_revealed();
         }
         Widget::handle_event(&mut self.shell, event, ctx);
         if !*ctx.handled && self.handle_shortcut(event, ctx) {

@@ -473,20 +473,6 @@ impl TileHost {
             }
         }
     }
-    /// Install a legacy tile's declared presentation against its settled actual
-    /// store/checkout/lifetime. No outer State or invented component is used.
-    /// # Errors
-    /// Refuses missing, stale or foreign document custody and invalid scope metadata.
-    /// Exact live component token for this retained history owner.
-    pub fn document_history_target(&self) -> Option<String> {
-        self.history.as_ref()?;
-        let TileContent::App(app) = &self.content else {
-            return None;
-        };
-        let binding = app.callback_binding()?;
-        let _entry = binding.enter().ok()?;
-        Some(binding.lifetime_id.to_string())
-    }
     /// Inactive retained tiles have no nodes in the current Taffy tree.
     pub(crate) fn discard_layout_nodes(&mut self) {
         self.live_callback_node = None;
@@ -2352,12 +2338,14 @@ impl Widget for TileHost {
                         Some(&author),
                         None,
                         crate::undo::get_state(app.as_ref()),
+                        None,
                     ),
                     UndoStep::Redo => history.redo_as(
                         doc,
                         Some(&author),
                         None,
                         crate::undo::get_state(app.as_ref()),
+                        None,
                     ),
                 }
                 .map(|entry| {
@@ -3011,21 +2999,8 @@ mod tests {
     use super::*;
     use crate::time::Duration;
 
-    /// Test fixtures below deal only in small, non-negative pixel
-    /// coordinates (well under `u32::MAX`), so these narrowing casts
-    /// can't truncate or flip sign in practice — the lint can't see that
-    /// through the float math or fixture constants.
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "test fixture coordinates are small non-negative constants"
-    )]
-    fn px(v: f64) -> u32 {
-        v as u32
-    }
-
-    /// See [`px`]: the millisecond durations used in these tests are
-    /// small positive compile-time constants.
+    /// The millisecond durations used in these tests are small positive
+    /// compile-time constants.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -3071,7 +3046,10 @@ mod tests {
             // A point inside the tile's bounding box but outside its rounded
             // silhouette: one pixel in from the box corner, well inside the
             // corner arc's cut.
-            let (cx, cy) = (px(rect.x0) + 2, px(rect.y0) + 2);
+            let (cx, cy) = (
+                crate::num::u32_of_f64(rect.x0) + 2,
+                crate::num::u32_of_f64(rect.y0) + 2,
+            );
             assert!(
                 radius > 8.0,
                 "test assumes a visibly rounded card; radii.tile is {radius}",
@@ -3095,7 +3073,7 @@ mod tests {
             // One pixel out from the boundary is the frame's edge: it must be
             // neither the app (flood escaped its clip) nor bare desktop (no
             // edge there at all).
-            let edge_x = px(rect.x0) - 1;
+            let edge_x = crate::num::u32_of_f64(rect.x0) - 1;
             let (er, eg, eb, _) = OffscreenRenderer::sample(&rgba, w, edge_x, 100);
             assert!(
                 (er, eg, eb) != (0xFF, 0x00, 0x00),
@@ -3110,7 +3088,7 @@ mod tests {
 
             // ...and the first pixel *inside* the boundary is the app's, whole.
             // The frame stops at the silhouette.
-            let inside_x = px(rect.x0);
+            let inside_x = crate::num::u32_of_f64(rect.x0);
             let (nr, ng, nb, _) = OffscreenRenderer::sample(&rgba, w, inside_x, 100);
             assert_eq!(
                 (nr, ng, nb),
@@ -3158,10 +3136,10 @@ mod tests {
                 // Both vertical edges at mid-height, and the horizontal edges at
                 // mid-width: the first pixel inside the silhouette on every side.
                 let probes = [
-                    ("left", px(rect.x0), 100u32),
-                    ("right", px(rect.x1) - 1, 100u32),
-                    ("top", 100u32, px(rect.y0)),
-                    ("bottom", 100u32, px(rect.y1) - 1),
+                    ("left", crate::num::u32_of_f64(rect.x0), 100u32),
+                    ("right", crate::num::u32_of_f64(rect.x1) - 1, 100u32),
+                    ("top", 100u32, crate::num::u32_of_f64(rect.y0)),
+                    ("bottom", 100u32, crate::num::u32_of_f64(rect.y1) - 1),
                 ];
                 for (side, px, py) in probes {
                     let (sr, sg, sb, _) = OffscreenRenderer::sample(&rgba, w, px, py);
@@ -3226,7 +3204,7 @@ mod tests {
 
                 // Mid-span of the top edge: the band the stroke occupies sits
                 // just outside the card boundary.
-                let (sample_x, sample_y) = (100u32, px(rect.y0) - 1);
+                let (sample_x, sample_y) = (100u32, crate::num::u32_of_f64(rect.y0) - 1);
                 let (lr, lg, lb, _) = OffscreenRenderer::sample(&lit, width, sample_x, sample_y);
                 assert_eq!(
                     (lr, lg, lb),
@@ -3244,7 +3222,10 @@ mod tests {
                 // have painted. The ambient shadow legitimately darkens this
                 // pixel, so the claim is only that focus colour isn't there,
                 // not that it's untouched.
-                let (corner_x, corner_y) = (px(rect.x0) - 2, px(rect.y0) - 2);
+                let (corner_x, corner_y) = (
+                    crate::num::u32_of_f64(rect.x0) - 2,
+                    crate::num::u32_of_f64(rect.y0) - 2,
+                );
                 for (label, buf) in [("focused", &lit), ("unfocused", &dark)] {
                     let (sr, sg, sb, _) = OffscreenRenderer::sample(buf, width, corner_x, corner_y);
                     assert_ne!(
@@ -3311,21 +3292,8 @@ mod tests {
         ) -> NodeId {
             taffy.widget_leaf(Style::default(), node_map, self)
         }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-        fn draw(
-            &mut self,
-            _s: &mut Scene,
-            _t: Affine,
-            _tr: &mut TextRenderer,
-            _th: &Theme,
-            _p: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "Scribe"
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
         fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
             Some(
@@ -3404,21 +3372,8 @@ mod tests {
         ) -> NodeId {
             taffy.widget_leaf(Style::default(), node_map, self)
         }
-        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _tr: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "FloatingProbe"
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
     }
 
@@ -3798,19 +3753,6 @@ mod tests {
             nodes.insert(node, self as *mut dyn Widget);
             node
         }
-        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
-        }
     }
 
     impl crate::history_mode::capability::DocumentHistory for DeclaredHistoryProbe {
@@ -4133,7 +4075,7 @@ mod tests {
                 "the app is never handed a record of another kind"
             );
             let driver =
-                crate::headless::Driver::new(crate::State::new(), Box::new(host), (400, 240));
+                crate::headless::FrameHarness::new(crate::State::new(), Box::new(host), (400, 240));
             let inspection = driver.inspection();
             assert!(inspection_has_semantic(
                 &inspection.root,
@@ -4212,24 +4154,11 @@ mod tests {
         ) -> NodeId {
             taffy.widget_leaf(Style::default(), node_map, self)
         }
-        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _tr: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
-        }
         fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
             self.0.set(self.0.get().checked_add(1).unwrap());
         }
         fn name(&self) -> &'static str {
             "EventProbe"
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
     }
 
@@ -4263,21 +4192,8 @@ mod tests {
                 .push(super::super::panic_scope::current());
             taffy.widget_leaf(Style::default(), node_map, self)
         }
-        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _tr: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "ScopeProbe"
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
     }
 
@@ -4531,7 +4447,6 @@ mod tests {
         ) -> NodeId {
             taffy.widget_leaf(Style::default(), node_map, self)
         }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
             &mut self,
             scene: &mut Scene,
@@ -4585,7 +4500,6 @@ mod tests {
         ) -> NodeId {
             taffy.widget_leaf(Style::default(), node_map, self)
         }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
             &mut self,
             scene: &mut Scene,
@@ -4646,7 +4560,6 @@ mod tests {
         ) -> NodeId {
             taffy.leaf_node(Style::default())
         }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
             &mut self,
             scene: &mut Scene,
@@ -4708,7 +4621,6 @@ mod tests {
         ) -> NodeId {
             taffy.leaf_node(Style::default())
         }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
             &mut self,
             _scene: &mut Scene,
@@ -5045,7 +4957,7 @@ mod tests {
     }
 
     /// Native Shell dispatches directly into TileHost: unlike App and the
-    /// headless Driver, it does not pre-observe embedded History pointers.
+    /// headless `FrameHarness`, it does not pre-observe embedded History pointers.
     #[test]
     fn live_body_pointer_edges_follow_motion_out_of_history_toolbar() {
         use taffy::prelude::TaffyMaxContent;
@@ -5216,8 +5128,10 @@ mod tests {
                 let mut scene = Scene::new();
                 host.draw_edge(&mut scene, Affine::scale(2.0), &theme, radius);
                 let rgba = renderer.render(&scene, ground);
-                for y in 0..px((top + radius) * 2.0) {
-                    for x in px((right - radius) * 2.0)..px(right * 2.0) {
+                for y in 0..crate::num::u32_of_f64((top + radius) * 2.0) {
+                    for x in crate::num::u32_of_f64((right - radius) * 2.0)
+                        ..crate::num::u32_of_f64(right * 2.0)
+                    {
                         let dx = (f64::from(x) + 0.5) / 2.0 - (right - radius);
                         let dy = (f64::from(y) + 0.5) / 2.0 - (top + radius);
                         if dx * dx + dy * dy > (radius + 1.0).powi(2) {

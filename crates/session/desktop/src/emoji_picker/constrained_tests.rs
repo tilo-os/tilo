@@ -85,7 +85,7 @@ fn wrapped_tones_navigate_by_spatial_row_and_keep_the_named_target() {
     let mut picker = painted(viewport, &Theme::dark());
     assert!(picker.open_tones(picker.selected));
     let tones = picker.tones.as_ref().expect("tone chooser");
-    let columns = usize_from_f64(
+    let columns = ui::num::usize_of_f64(
         (picker.geometry.card.width() - 2.0 * f64::from(picker.spacing.s1)) / picker.geometry.cell,
     )
     .max(1);

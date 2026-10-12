@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use tilo_clock::unix_now;
 use ui::time::{Duration, Instant, SystemTime};
 
 use tilo_relay_protocol::config::CheckpointPrefixRecovery;
@@ -26,8 +25,8 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    StatusTone, caption, card, card_with_action, cards, choice_row_described, error_caption, rows,
-    semantic_status_pill, setting_row_described, value_row,
+    StatusTone, caption, card, card_with_action, cards, error_caption, rows, semantic_status_pill,
+    setting_row_described, value_row,
 };
 use settings_store::roaming_provenance::{Origin, RoamingProvenance};
 
@@ -250,16 +249,6 @@ pub enum DeviceMeshEffect {
         workspace: u64,
         on: bool,
     },
-    /// Allow continuing activities between the person's devices.
-    #[effect(idempotent)]
-    SetContinuity { on: bool },
-    /// Allow one kind of continuity: clipboard, notifications, media…
-    #[effect(idempotent)]
-    SetContinuityFacet {
-        #[param("The kind, by its key")]
-        facet: String,
-        on: bool,
-    },
     /// Look for a new home server nearby, then approve the one found.
     #[effect(label = "Pair home server")]
     PairHomeServer,
@@ -468,7 +457,6 @@ pub struct DeviceMeshModel {
     /// holding them.
     continuity: ContinuityPrivacy,
     continuity_settings: Followed<ContinuityPrivacy>,
-    continuity_status: Option<String>,
     /// The name typed for each home server, by node id.
     peer_names: HashMap<String, Arc<Mutex<String>>>,
     roaming_provenance_path: Option<PathBuf>,
@@ -918,7 +906,6 @@ impl DeviceMeshModel {
             personal_device_error: read.personal_device_error,
             continuity,
             continuity_settings,
-            continuity_status: None,
             peer_names: HashMap::new(),
             roaming_provenance_path: read.roaming_provenance_path,
             roaming_provenance_stamp,
@@ -954,19 +941,6 @@ impl DeviceMeshModel {
         pane
     }
 
-    fn save_continuity(&mut self) {
-        let continuity = self.continuity.clone();
-        self.continuity_status = match self
-            .continuity_settings
-            .settings()
-            .update(|stored| *stored = continuity)
-        {
-            Ok(_) => None,
-            Err(error) => Some(format!("Continuity choices were not saved: {error}")),
-        };
-        self.continuity_settings.refresh();
-    }
-
     fn common_replication(&self) -> ReplicationIntent {
         self.config
             .workspaces
@@ -977,10 +951,6 @@ impl DeviceMeshModel {
     }
 
     /// Carry out `effect`.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one arm per effect, each a short configuration change"
-    )]
     fn apply(&mut self, effect: &DeviceMeshEffect) -> Result<(), String> {
         let configured = match effect {
             DeviceMeshEffect::SetDeviceRole { role } => {
@@ -1041,22 +1011,6 @@ impl DeviceMeshModel {
                     self.config.remove_workspace(id);
                 }
                 true
-            }
-            DeviceMeshEffect::SetContinuity { on } => {
-                self.continuity.enabled = *on;
-                self.continuity.record(None, *on, unix_now());
-                self.save_continuity();
-                false
-            }
-            DeviceMeshEffect::SetContinuityFacet { facet, on } => {
-                let capability = Capability::ALL
-                    .into_iter()
-                    .find(|capability| capability.key() == facet)
-                    .ok_or_else(|| "unsupported Continuity capability".to_string())?;
-                self.continuity.set_allowed(capability, *on);
-                self.continuity.record(Some(capability), *on, unix_now());
-                self.save_continuity();
-                false
             }
             DeviceMeshEffect::PairHomeServer => {
                 self.approve_enrollment(PairingTarget::HomePeer);
@@ -1236,7 +1190,7 @@ impl DeviceMeshModel {
                 .cx
                 .bind(replication, effect(DeviceMeshEffect::SET_REPLICATION));
             let repl_desc = replication_description(&self.common_replication());
-            continuation_rows.push(choice_row_described(
+            continuation_rows.push(setting_row_described(
                 &files,
                 &repl_desc,
                 Box::new(replication),
@@ -1256,7 +1210,7 @@ impl DeviceMeshModel {
 
         let this_device = t("mesh-this-device");
         let this_device_desc = t("mesh-this-device-desc");
-        let mut availability_rows = vec![choice_row_described(
+        let mut availability_rows = vec![setting_row_described(
             &this_device,
             &this_device_desc,
             Box::new(role),
@@ -1465,18 +1419,16 @@ impl DeviceMeshModel {
                 )
             },
         );
-        let continuity_toggle = self.cx.bind(
-            Toggle::from_state(&ui::LocalState::new(self.continuity.enabled))
-                .with_id(CONTINUITY_ENABLED_KEY),
-            effect(DeviceMeshEffect::SET_CONTINUITY),
-        );
-        let allow = t("mesh-allow-continuity");
-        let allow_desc = t("mesh-allow-continuity-desc");
-        let mut privacy_rows = vec![setting_row_described(
-            &allow,
-            &allow_desc,
-            Box::new(continuity_toggle),
-        )];
+        let mut privacy_rows = vec![
+            self.cx
+                .row(t("mesh-allow-continuity"))
+                .described(t("mesh-allow-continuity-desc"))
+                .id(CONTINUITY_ENABLED_KEY)
+                .toggle_verb(
+                    &ui::LocalState::new(self.continuity.enabled),
+                    ContinuityPrivacy::ALLOW_CONTINUITY,
+                ),
+        ];
         for capability in Capability::ALL {
             let key = continuity_key(capability);
             let desc = capability.description();
@@ -1494,19 +1446,19 @@ impl DeviceMeshModel {
                 t_args("mesh-facet-off", &[("desc", desc.into())])
             };
             let facet = capability.key().to_owned();
-            let toggle = self.cx.bind(
-                Toggle::from_state(&ui::LocalState::new(self.continuity.allowed(capability)))
-                    .with_id(&key),
-                effect(DeviceMeshEffect::SET_CONTINUITY_FACET)
-                    .map(move |on: bool| (facet.clone(), on)),
+            privacy_rows.push(
+                self.cx
+                    .row(capability.label())
+                    .described(status)
+                    .id(key)
+                    .toggle_verb(
+                        &ui::LocalState::new(self.continuity.allowed(capability)),
+                        ContinuityPrivacy::ALLOW_CAPABILITY
+                            .map(move |on: bool| (facet.clone(), on)),
+                    ),
             );
-            let cap_label = capability.label();
-            privacy_rows.push(setting_row_described(&cap_label, &status, Box::new(toggle)));
         }
         privacy_rows.push(caption(&t("mesh-privacy-stay")));
-        if let Some(status) = &self.continuity_status {
-            privacy_rows.push(caption(status));
-        }
 
         let current_target_label = t("mesh-current-target");
         let source_label = t("mesh-source");
@@ -1647,53 +1599,36 @@ impl DeviceMeshModel {
             sections.push(card_with_action(&peer.label, remove, rows(peer_rows)));
         }
         if shows_advanced_services(self.config.device_role) {
-            let services_title = t("mesh-services-title");
-            let svc_relay = t("mesh-svc-relay");
-            let svc_relay_desc = t("mesh-svc-relay-desc");
-            let svc_remote = t("mesh-svc-remote");
-            let svc_remote_desc = t("mesh-svc-remote-desc");
-            let svc_apps = t("mesh-svc-apps");
-            let svc_apps_desc = t("mesh-svc-apps-desc");
-            let svc_jobs = t("mesh-svc-jobs");
-            let svc_jobs_desc = t("mesh-svc-jobs-desc");
             sections.push(card(
-                &services_title,
+                &t("mesh-services-title"),
                 rows(vec![
-                    setting_row_described(
-                        &svc_relay,
-                        &svc_relay_desc,
-                        Box::new(self.service_toggle(
-                            "inbound_relay",
-                            "device_mesh.inbound_relay",
-                            self.config.services.inbound_relay,
-                        )),
+                    self.service_row(
+                        "mesh-svc-relay",
+                        "mesh-svc-relay-desc",
+                        "inbound_relay",
+                        "device_mesh.inbound_relay",
+                        self.config.services.inbound_relay,
                     ),
-                    setting_row_described(
-                        &svc_remote,
-                        &svc_remote_desc,
-                        Box::new(self.service_toggle(
-                            "remote_control_relay",
-                            "device_mesh.remote_relay",
-                            self.config.services.remote_control_relay,
-                        )),
+                    self.service_row(
+                        "mesh-svc-remote",
+                        "mesh-svc-remote-desc",
+                        "remote_control_relay",
+                        "device_mesh.remote_relay",
+                        self.config.services.remote_control_relay,
                     ),
-                    setting_row_described(
-                        &svc_apps,
-                        &svc_apps_desc,
-                        Box::new(self.service_toggle(
-                            "app_serving",
-                            "device_mesh.app_serving",
-                            self.config.services.app_serving,
-                        )),
+                    self.service_row(
+                        "mesh-svc-apps",
+                        "mesh-svc-apps-desc",
+                        "app_serving",
+                        "device_mesh.app_serving",
+                        self.config.services.app_serving,
                     ),
-                    setting_row_described(
-                        &svc_jobs,
-                        &svc_jobs_desc,
-                        Box::new(self.service_toggle(
-                            "compute",
-                            "device_mesh.compute",
-                            self.config.services.compute,
-                        )),
+                    self.service_row(
+                        "mesh-svc-jobs",
+                        "mesh-svc-jobs-desc",
+                        "compute",
+                        "device_mesh.compute",
+                        self.config.services.compute,
                     ),
                 ]),
             ));
@@ -1702,12 +1637,24 @@ impl DeviceMeshModel {
         cards(sections)
     }
 
-    fn service_toggle(&self, service: &'static str, id: &str, on: bool) -> Toggle {
-        self.cx.bind(
-            Toggle::from_state(&ui::LocalState::new(on)).with_id(id),
-            effect(DeviceMeshEffect::SET_DEVICE_SERVICE)
-                .map(move |on: bool| (service.to_owned(), on)),
-        )
+    /// The row switching the mesh service `service` of this device.
+    fn service_row(
+        &self,
+        label: &str,
+        description: &str,
+        service: &'static str,
+        id: &str,
+        on: bool,
+    ) -> crate::widgets::El {
+        self.cx
+            .row(t(label))
+            .described(t(description))
+            .id(id)
+            .toggle_effect(
+                &ui::LocalState::new(on),
+                effect(DeviceMeshEffect::SET_DEVICE_SERVICE)
+                    .map(move |on: bool| (service.to_owned(), on)),
+            )
     }
 
     fn persist(&mut self) {
@@ -2216,7 +2163,7 @@ mod tests {
                 schema_version: SCHEMA_VERSION,
                 generated_unix_ms: 1,
                 settings: vec![SettingResolution {
-                    key: "tilo.appearance.theme".into(),
+                    key: "tilo.appearance.mode".into(),
                     winner: origin("b", "Laptop", 8),
                     alternatives: vec![origin("a", "Desktop", 7)],
                 }],
@@ -2233,7 +2180,7 @@ mod tests {
                 summaries,
                 vec![
                     (
-                        "tilo.appearance.theme".into(),
+                        "tilo.appearance.mode".into(),
                         "Resolved to Laptop at revision 8; differs from Desktop".into()
                     ),
                     (
@@ -2265,17 +2212,33 @@ mod tests {
 
         // Case `continuity_edits_persist_locally_and_append_redacted_audit_rows`.
         {
-            let dir = tempfile::tempdir().unwrap();
-            let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-            pane.apply(&DeviceMeshEffect::SetContinuity { on: true })
-                .unwrap();
-            pane.apply(&DeviceMeshEffect::SetContinuityFacet {
-                facet: "clipboard".into(),
-                on: true,
-            })
+            use crate::host::testing::{CONTINUITY, invoke_section};
+            let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+            invoke_section(
+                &mut app,
+                CONTINUITY,
+                "allow-continuity",
+                serde_json::json!({ "on": true }),
+            )
             .unwrap();
+            invoke_section(
+                &mut app,
+                CONTINUITY,
+                "allow-capability",
+                serde_json::json!({ "capability": "clipboard", "on": true }),
+            )
+            .unwrap();
+            assert!(
+                invoke_section(
+                    &mut app,
+                    CONTINUITY,
+                    "allow-capability",
+                    serde_json::json!({ "capability": "telepathy", "on": true }),
+                )
+                .is_err()
+            );
 
-            let saved = pane.cx.settings::<ContinuityPrivacy>().get();
+            let saved = app.settings::<ContinuityPrivacy>().get();
             assert!(saved.enabled);
             assert!(saved.effective(Capability::Clipboard));
             assert_eq!(saved.audit.len(), 2);

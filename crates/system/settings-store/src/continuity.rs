@@ -28,10 +28,6 @@ pub enum SettingScope {
     Derived,
 }
 
-/// Backwards-compatible name for consumers that only ask the continuity
-/// question. New code should use [`SettingScope`].
-pub type ContinuityClass = SettingScope;
-
 /// One reviewed leaf in the shared settings schema.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ContinuityPolicy {
@@ -75,7 +71,6 @@ policies! {
         "tilo.accessibility.switch_scan_ms",
         "tilo.accessibility.screen_reader_rate",
         "tilo.accessibility.screen_reader_voice",
-        "tilo.appearance.theme",
         "tilo.appearance.mode",
         "tilo.appearance.dark_theme",
         "tilo.appearance.light_theme",
@@ -109,7 +104,6 @@ policies! {
         "tilo.notifications.show_badges",
         "tilo.notifications.focus",
         "tilo.notifications.per_app",
-        "tilo.input.natural_scroll",
         "tilo.input.touchpad_natural_scroll",
         "tilo.input.mouse_natural_scroll",
         "tilo.input.tap_to_click",
@@ -421,11 +415,11 @@ mod tests {
                 "tilo.continuity.typed_gamepad",
                 "tilo.continuity.app_continuations",
             ] {
-                assert_eq!(classify(key), Some(ContinuityClass::DeviceLocal), "{key}");
+                assert_eq!(classify(key), Some(SettingScope::DeviceLocal), "{key}");
             }
             assert_eq!(
                 classify("tilo.continuity.audit"),
-                Some(ContinuityClass::Derived)
+                Some(SettingScope::Derived)
             );
         }
         // Phase `unknown_settings_fail_closed`.

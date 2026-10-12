@@ -156,12 +156,11 @@ def keyboard_layout(ctx, res):
     expect(typed == "z", f"with de:nodeadkeys the physical Y key typed {typed!r}, not 'z'")
 
 
-@check("B07", AREA, "Keyboard layout import: GNOME de+nodeadkeys and compose:ralt become the session's layout")
-def keyboard_import(ctx, res):
-    # firstboot imports the host's GNOME input settings only in host-desktop install mode
-    # (Tilo installed on an existing GNOME system); a Tilo OS session never runs it.
-    raise Unobservable("the GNOME input import runs only when Tilo is installed on a GNOME host "
-                       "(host-desktop mode); a Tilo OS VM cannot exercise it: verify it on the local install")
+# The GNOME keyboard import is not checked here: the session imports the host's GNOME
+# input settings only in host-desktop mode (`--host-desktop-session`, which only the
+# packaged tilo-session-runner passes), so a Tilo OS session never runs it. The
+# host-desktop VM test (dist/session/vm-e2e, H05) seeds GNOME de+nodeadkeys and
+# compose:ralt and requires the session to import them.
 
 
 @check("B05", AREA, "Display arrangement: mirror and extend apply, and revert restores")

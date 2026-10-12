@@ -1,15 +1,8 @@
 //! The shared **system-preferences store** — durable per-user device and
 //! session preferences the Settings panes own.
 //!
-//! # Why this exists
-//!
-//! Several Settings controls express a *preference* the rest of the system
-//! reads (system sounds, night-light, pointer behaviour, update policy)
-//! rather than an immediate hardware side-effect. Before this store those
-//! toggles wrote an ephemeral CRDT key that nothing read and nothing
-//! persisted — the control looked live but its value evaporated when the
-//! window closed. This store gives them a real home on disk, exactly the
-//! way the locale is a section of the same document.
+//! Preferences the rest of the system reads (system sounds, night light,
+//! pointer behaviour, update policy), one typed section each.
 //!
 //! # The file (a format contract, not a crate dependency)
 //!
@@ -28,7 +21,7 @@
 //!   "locale":  { … },                       // owned by region.rs
 //!   "audio":   { "system_sounds": { "enabled": true, "volume": 0.7, … } },
 //!   "display": { "auto_brightness": false, "night_light": false },
-//!   "input":   { "natural_scroll": false, "tap_to_click": true,
+//!   "input":   { "touchpad_natural_scroll": true, "tap_to_click": true,
 //!                "pointer_speed": 0.5, "key_repeat": 0.5,
 //!                "keyboard_layout": "us" },
 //!   "updates": { "auto": true, "last_checked": "Never" },
@@ -48,16 +41,18 @@
 //!
 //! # Non-destructive writes
 //!
-//! [`SystemPrefs::save`] is a **merge** write: it reads the current file,
-//! overwrites only the sections this store owns, and preserves every other
-//! key (including `locale`). So a pane that changes one preference never
-//! clobbers another pane's — or the region store's — section.
+//! Each section is stored on its own and keeps every key it does not name,
+//! so a pane that changes one preference never clobbers another pane's — or
+//! the region store's, or the compositor's — keys.
 
 use serde::{Deserialize, Serialize};
+use settings_store::screen_reader::ScreenReaderVoice;
+use ui::tilo_resource;
 
 /// Remembered default audio devices, persistent transforms and which system
 /// events make a sound.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(check = AudioPrefs::valid)]
 pub struct AudioPrefs {
     /// "System sounds": master switch, volume, theme and per-event choices.
     /// The compositor plays them; see [`settings_store::system_sounds`].
@@ -65,9 +60,11 @@ pub struct AudioPrefs {
     pub system_sounds: settings_store::system_sounds::SystemSoundPrefs,
     /// Label of the last chosen default sink (output device), if any.
     #[serde(default)]
+    #[model(readonly)]
     pub output_device: Option<String>,
     /// Label of the last chosen default source (input device), if any.
     #[serde(default)]
+    #[model(readonly)]
     pub input_device: Option<String>,
     /// Persistent left/right balance in UI space (`0` left, `0.5` centre,
     /// `1` right). The compositor session, not this pane, owns actuation.
@@ -76,10 +73,12 @@ pub struct AudioPrefs {
     /// Persistent accessibility mono transform. A compositor-session owner
     /// keeps the bounded virtual sink alive across Settings navigation.
     #[serde(default)]
+    #[model(readonly)]
     pub mono_output: bool,
     /// Give calls an echo-cancelled microphone. The compositor session owns
     /// the `PipeWire` client that provides it.
     #[serde(default = "default_true")]
+    #[model(readonly)]
     pub echo_cancellation: bool,
 }
 
@@ -101,8 +100,10 @@ impl Default for AudioPrefs {
 }
 
 /// Display comfort preferences applied by the compositor's output layer.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(check = DisplayPrefs::valid)]
 pub struct DisplayPrefs {
+    #[model(readonly)]
     pub auto_brightness: bool,
     pub night_light: bool,
     /// Target correlated colour temperature used by the compositor's
@@ -145,7 +146,8 @@ impl Default for DisplayPrefs {
 
 /// Pointer + keyboard behaviour the compositor's libinput/xkb configuration
 /// reads at session start.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(check = InputPrefs::valid)]
 #[serde(default)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -153,10 +155,8 @@ impl Default for DisplayPrefs {
               independently meaningful serialized setting, not a related toggle group"
 )]
 pub struct InputPrefs {
-    /// Compatibility fallback for pre per-device input documents.
-    pub natural_scroll: bool,
-    pub touchpad_natural_scroll: Option<bool>,
-    pub mouse_natural_scroll: Option<bool>,
+    pub touchpad_natural_scroll: bool,
+    pub mouse_natural_scroll: bool,
     pub tap_to_click: bool,
     /// 0.0..=1.0 pointer acceleration.
     pub pointer_speed: f64,
@@ -165,9 +165,12 @@ pub struct InputPrefs {
     /// 0.0..=1.0 key-repeat rate.
     pub key_repeat: f64,
     /// Exact host-imported repeat pair. A Tilo slider selection clears both.
+    #[model(readonly)]
     pub key_repeat_delay_ms: Option<u32>,
+    #[model(readonly)]
     pub key_repeat_rate_hz: Option<u32>,
     /// xkb layout code, e.g. `"us"`, `"de"`.
+    #[model(readonly)]
     pub keyboard_layout: String,
     pub tap_drag: bool,
     /// Keep a tap-and-drag going after the finger lifts, until the next tap.
@@ -191,39 +194,46 @@ pub struct InputPrefs {
     /// Scroll-distance multiplier for wheels and touchpads.
     pub scroll_speed: f64,
     /// XKB compose option (`ralt`, `menu`, …), or none.
+    #[model(readonly)]
     pub compose_key: Option<String>,
     /// What Caps Lock does (`ctrl`, `escape`, `backspace`), or none for
     /// Caps Lock itself.
+    #[model(readonly)]
     pub caps_lock: Option<String>,
     /// Ordered XKB layouts. `keyboard_layout` remains the active first item
     /// for backward compatibility with old sessions.
+    #[model(readonly)]
     pub keyboard_layouts: Vec<String>,
     /// Explicit physical model; no hardware detection is implied.
+    #[model(readonly)]
     pub keyboard_model: String,
     #[serde(deserialize_with = "settings_store::keyboard_sources::lenient_profiles")]
+    #[model(readonly)]
     pub keyboard_assignments:
         std::collections::BTreeMap<String, settings_store::keyboard_sources::KeyboardProfile>,
     /// Layout being inspected without changing the active input source.
+    #[model(readonly)]
     pub keyboard_preview: Option<String>,
     /// Inspect the higher native XKB levels without changing typed input.
+    #[model(readonly)]
     pub keyboard_preview_extra_levels: bool,
     /// Ordered native level inspected without changing the live seat.
+    #[model(readonly)]
     pub keyboard_preview_level: usize,
     /// Explicit physical position inspected; never follows or records key presses.
+    #[model(readonly)]
     pub keyboard_inspected_key: String,
     /// Per-tablet mapping, pressure and buttons, keyed by device identity.
     #[serde(deserialize_with = "settings_store::hardware::lenient_tablets")]
+    #[model(readonly)]
     pub tablets: std::collections::BTreeMap<String, settings_store::hardware::TabletConfig>,
 }
 
 impl Default for InputPrefs {
     fn default() -> Self {
         Self {
-            natural_scroll: false,
-            touchpad_natural_scroll: Some(
-                settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
-            ),
-            mouse_natural_scroll: Some(settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL),
+            touchpad_natural_scroll: settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
+            mouse_natural_scroll: settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL,
             tap_to_click: true,
             pointer_speed: 0.5,
             touchpad_pointer_speed: None,
@@ -264,33 +274,24 @@ impl ui::storage::SettingsSchema for InputPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("input");
 }
 
+#[ui::tilo_resource::resource(kind = "settings.input", label = "Input")]
 impl InputPrefs {
-    /// Decode the input object while preserving the pre-split global scrolling
-    /// preference. A missing document receives the independent touchpad and
-    /// mouse defaults shared with the compositor.
-    fn from_json_value(value: &serde_json::Value) -> Option<Self> {
-        let section = value.as_object()?;
-        let mut input: InputPrefs = serde_json::from_value(value.clone()).ok()?;
-        let legacy_natural_scroll = section
-            .get("natural_scroll")
-            .and_then(serde_json::Value::as_bool);
-        input.natural_scroll = legacy_natural_scroll.unwrap_or(false);
-        input.touchpad_natural_scroll = section
-            .get("touchpad_natural_scroll")
-            .and_then(serde_json::Value::as_bool)
-            .or(legacy_natural_scroll)
-            .or(Some(
-                settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
-            ));
-        input.mouse_natural_scroll = section
-            .get("mouse_natural_scroll")
-            .and_then(serde_json::Value::as_bool)
-            .or(legacy_natural_scroll)
-            .or(Some(settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL));
-        input.scroll_speed = settings_store::hardware::clamp_scroll_speed(input.scroll_speed);
-        Some(input)
+    /// Set how fast held keys repeat, from slow (0) to fast (1); an exact
+    /// delay and rate taken from another system no longer apply.
+    #[action]
+    pub fn set_key_repeat(
+        &mut self,
+        #[param("From 0 (slow) to 1 (fast)")] rate: f64,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        within(rate, 0.0..=1.0, "the key repeat")?;
+        self.key_repeat = rate;
+        self.key_repeat_delay_ms = None;
+        self.key_repeat_rate_hz = None;
+        Ok(())
     }
+}
 
+impl InputPrefs {
     /// Reconcile the legacy active layout with the ordered source list using
     /// the same validation and bounds the compositor enforces.
     pub fn rich_input(&self) -> settings_store::hardware::RichInputConfig {
@@ -298,7 +299,6 @@ impl InputPrefs {
             pointer_speed: self.pointer_speed,
             touchpad_pointer_speed: self.touchpad_pointer_speed,
             mouse_pointer_speed: self.mouse_pointer_speed,
-            natural_scroll: self.natural_scroll,
             touchpad_natural_scroll: self.touchpad_natural_scroll,
             mouse_natural_scroll: self.mouse_natural_scroll,
             tap_to_click: self.tap_to_click,
@@ -342,7 +342,7 @@ impl InputPrefs {
 /// battery). Serialises to the lowercase labels the compositor's power policy
 /// parses (`"suspend"` / `"lock"` / `"ignore"`) — the on-disk JSON is the
 /// contract shared with `tilo-power-mgmt`, not a code dependency.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[serde(rename_all = "lowercase")]
 pub enum PowerActionPref {
     Suspend,
@@ -357,16 +357,6 @@ impl PowerActionPref {
             PowerActionPref::Suspend => "Suspend",
             PowerActionPref::Lock => "Lock screen",
             PowerActionPref::Ignore => "Do nothing",
-        }
-    }
-
-    /// Inverse of [`Self::display`].
-    pub fn from_display(s: &str) -> Option<Self> {
-        match s {
-            "Suspend" => Some(PowerActionPref::Suspend),
-            "Lock screen" => Some(PowerActionPref::Lock),
-            "Do nothing" => Some(PowerActionPref::Ignore),
-            _ => None,
         }
     }
 }
@@ -404,7 +394,8 @@ fn default_critical_action() -> PowerActionPref {
 /// (`powerprofilesctl`), not stored here. Every field added after the initial
 /// two carries `#[serde(default)]` so a config written before it existed still
 /// loads. The keys mirror `tilo_power_mgmt::config`'s reader exactly.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(check = PowerPrefs::valid)]
 pub struct PowerPrefs {
     /// Master toggle for idle-suspend. `false` disables it regardless of
     /// [`Self::suspend_minutes`].
@@ -450,6 +441,9 @@ impl ui::storage::SettingsSchema for PowerPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("power");
 }
 
+#[ui::tilo_resource::resource(kind = "settings.power", label = "Power")]
+impl PowerPrefs {}
+
 impl Default for PowerPrefs {
     fn default() -> Self {
         Self {
@@ -470,10 +464,12 @@ impl Default for PowerPrefs {
 }
 
 /// System-update policy the update timer/service reads.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
 pub struct UpdatePrefs {
+    #[model(readonly)]
     pub auto: bool,
     /// Human-readable timestamp of the last successful check, or `"Never"`.
+    #[model(readonly)]
     pub last_checked: String,
 }
 
@@ -481,6 +477,9 @@ pub struct UpdatePrefs {
 impl ui::storage::SettingsSchema for UpdatePrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("updates");
 }
+
+#[ui::tilo_resource::resource(kind = "settings.updates", label = "Updates")]
+impl UpdatePrefs {}
 
 impl Default for UpdatePrefs {
     fn default() -> Self {
@@ -496,16 +495,21 @@ impl Default for UpdatePrefs {
 /// (see [`AppearancePrefs::THEMES`]); `high_contrast` overrides the palette
 /// with the WCAG-AAA high-contrast track; `reduce_motion` and `text_scale`
 /// fold in the accessibility comforts. The compositor reads this section the
+/// A theme document Theme Studio wrote, kept as it is.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CustomTheme(pub serde_json::Value);
+
+tilo_resource::json_model!(CustomTheme);
+
 /// same way it reads the display/input comfort sections.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent appearance switch, not one combined state"
 )]
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(check = AppearancePrefs::valid)]
 pub struct AppearancePrefs {
-    /// Legacy preset selector retained for imported settings and the published `SetTheme` action.
-    #[serde(default = "default_legacy_theme")]
-    pub theme: String,
     /// `"light"`, `"dark"` or `"automatic"` (light by day, dark by night).
     #[serde(default = "default_mode")]
     pub mode: String,
@@ -518,7 +522,8 @@ pub struct AppearancePrefs {
     /// The theme documents a `custom:<id>` names. Theme Studio writes them;
     /// Settings keeps them intact and resolves them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub custom_themes: Vec<serde_json::Value>,
+    #[model(readonly)]
+    pub custom_themes: Vec<CustomTheme>,
     /// Spacing density over whichever theme is shown: one of
     /// [`ui::theme::ThemeDensity`]'s `COMPACT`, `REGULAR` and `ROOMY`.
     #[serde(default = "default_density")]
@@ -565,6 +570,7 @@ pub struct AppearancePrefs {
     /// Palette and pins shipped with the OS image.
     /// Absent on a settings file written before the layer existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[model(readonly)]
     pub distribution_defaults: Option<ui::theme::DistributionDefaults>,
     /// Force theme tokens onto content surfaces, with high contrast.
     #[serde(default)]
@@ -624,13 +630,9 @@ fn default_ui_scale() -> f64 {
     1.0
 }
 
-fn default_legacy_theme() -> String {
-    "Light".into()
-}
 impl Default for AppearancePrefs {
     fn default() -> Self {
         Self {
-            theme: default_legacy_theme(),
             mode: default_mode(),
             dark_theme: default_dark_theme(),
             light_theme: default_light_theme(),
@@ -653,23 +655,6 @@ impl Default for AppearancePrefs {
     }
 }
 
-/// The three appearance modes, as `(stored value, label key)`.
-pub const MODES: [(&str, &str); 3] = [
-    ("light", "settings-appearance-mode-light"),
-    ("dark", "settings-appearance-mode-dark"),
-    ("automatic", "settings-appearance-mode-automatic"),
-];
-
-/// One theme a mode can show: its stored reference and the name a person
-/// reads.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ThemeChoice {
-    /// A preset id or `custom:<id>`.
-    pub reference: String,
-    /// The theme's name.
-    pub name: String,
-}
-
 impl AppearancePrefs {
     /// The settings document these preferences describe, in the shape the
     /// theme layers read.
@@ -678,51 +663,15 @@ impl AppearancePrefs {
         if let Some(section) = appearance.as_object_mut() {
             section.insert(
                 ui::theme::CUSTOM_THEMES_KEY.into(),
-                serde_json::Value::Array(self.custom_themes.clone()),
+                serde_json::Value::Array(
+                    self.custom_themes
+                        .iter()
+                        .map(|theme| theme.0.clone())
+                        .collect(),
+                ),
             );
         }
         serde_json::json!({ "appearance": appearance })
-    }
-
-    /// The themes `dark` (or light) mode can show: the presets of that
-    /// polarity and the person's own themes of it, in display order.
-    pub fn theme_choices(&self, dark: bool) -> Vec<ThemeChoice> {
-        let mut choices: Vec<ThemeChoice> = ui::theme::Preset::ALL
-            .iter()
-            .filter(|preset| {
-                !matches!(
-                    preset,
-                    ui::theme::Preset::HighContrast | ui::theme::Preset::HighContrastLight
-                ) && preset.document().is_dark() == dark
-            })
-            .map(|preset| ThemeChoice {
-                reference: preset.id().to_string(),
-                name: preset.name().to_string(),
-            })
-            .collect();
-        for value in &self.custom_themes {
-            let Ok(document) = serde_json::from_value::<ui::theme::ThemeDocument>(value.clone())
-            else {
-                continue;
-            };
-            if document.validate().is_ok() && document.is_dark() == dark {
-                choices.push(ThemeChoice {
-                    reference: format!("custom:{}", document.id),
-                    name: document.name,
-                });
-            }
-        }
-        choices
-    }
-
-    /// The name a stored theme reference shows as, or the reference itself
-    /// when this build does not know it.
-    pub fn theme_name(&self, reference: &str) -> String {
-        [true, false]
-            .into_iter()
-            .flat_map(|dark| self.theme_choices(dark))
-            .find(|choice| choice.reference == reference)
-            .map_or_else(|| reference.to_string(), |choice| choice.name)
     }
 
     /// The day/night schedule these preferences describe, at the system time
@@ -740,14 +689,7 @@ impl AppearancePrefs {
 
     /// The theme document the current mode shows, with the density over it.
     pub fn user_document(&self) -> Option<ui::theme::ThemeDocument> {
-        // Import the former preset field without discarding new paired-theme data.
-        // Typed SetTheme keeps both forms in agreement; older settings have only
-        // the preset and therefore still need this conversion when read.
-        let mut imported = self.clone();
-        if self.theme != default_legacy_theme() {
-            imported.choose_legacy_theme(self.theme.clone());
-        }
-        ui::theme::user_document(&imported.settings_value(), ui::theme::local_moment())
+        ui::theme::user_document(&self.settings_value(), ui::theme::local_moment())
     }
 
     fn layers(&self, accessibility: ui::theme::AccessibilityLayer) -> ui::theme::ThemeLayerStack {
@@ -778,23 +720,6 @@ impl AppearancePrefs {
         }))
     }
 
-    /// Whether similar letters are set apart everywhere: the person's
-    /// choice, else what the theme's typeface does.
-    pub fn distinct_letters_effective(&self) -> bool {
-        self.distinct_letters
-            .unwrap_or_else(|| self.distinct_letters_by_face())
-    }
-
-    /// What the theme the mode shows does with no choice made: on with
-    /// Hyperlegible, off otherwise.
-    pub fn distinct_letters_by_face(&self) -> bool {
-        let unset = Self {
-            distinct_letters: None,
-            ..self.clone()
-        };
-        unset.resolve_theme().tokens.typography.distinct_letters
-    }
-
     /// The chosen theme before the accessibility comforts.
     pub fn base_theme(&self) -> ui::Theme {
         ui::theme::resolve_theme_layers(&self.layers(ui::theme::AccessibilityLayer::default()))
@@ -803,6 +728,28 @@ impl AppearancePrefs {
 
 impl ui::storage::SettingsSchema for AppearancePrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("appearance");
+}
+
+#[ui::tilo_resource::resource(kind = "settings.appearance", label = "Appearance")]
+impl AppearancePrefs {
+    /// Set the theme every app draws with; Automatic is light by day and
+    /// dark by night.
+    #[action(id = "choose-theme")]
+    pub fn pick_theme(
+        &mut self,
+        #[param(
+            "The theme: Automatic, Dark, Light, Dark graphite, Dark cool or Dark soft"
+        )]
+        theme: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        if !Self::THEMES.contains(&theme.as_str()) {
+            return Err(ui::tilo_resource::Refusal::new(format!(
+                "`{theme}` is not a theme"
+            )));
+        }
+        self.choose_theme(&theme);
+        Ok(())
+    }
 }
 
 impl AppearancePrefs {
@@ -814,10 +761,12 @@ impl AppearancePrefs {
         "Dark cool",
         "Dark soft",
     ];
-    pub fn choose_legacy_theme(&mut self, name: String) {
+    /// Show `name` from [`Self::THEMES`]: Automatic, or a preset that becomes
+    /// the theme of its own mode.
+    pub fn choose_theme(&mut self, name: &str) {
         if settings_store::day_schedule::is_automatic(&name.to_ascii_lowercase()) {
             self.mode = "automatic".into();
-        } else if let Some(preset) = ui::theme::Preset::find(&name) {
+        } else if let Some(preset) = ui::theme::Preset::find(name) {
             let doc = preset.document();
             self.mode = if doc.palette.dark { "dark" } else { "light" }.into();
             if doc.palette.dark {
@@ -826,30 +775,19 @@ impl AppearancePrefs {
                 self.light_theme = preset.id().into();
             }
         }
-        self.theme = name;
     }
-}
-/// Overwrite `known`'s fields in the `section` object, keeping any other key
-/// in it. A non-object section is replaced by an empty one first.
-fn merge_fields(section: &mut serde_json::Value, known: &serde_json::Value) {
-    if !section.is_object() {
-        *section = serde_json::json!({});
-    }
-    if let (Some(target), Some(fields)) = (section.as_object_mut(), known.as_object()) {
-        for (key, value) in fields {
-            target.insert(key.clone(), value.clone());
-        }
-    }
-}
 
-/// Map a theme preset name to its [`ui::Theme`] constructor, defaulting to the
-/// dark theme for an unrecognised name so a stray value never leaves the UI
-/// unthemed.
-pub fn theme_by_name(name: &str) -> ui::Theme {
-    if name.starts_with("custom:") {
-        ui::Theme::configured()
-    } else {
-        ui::Theme::named(name).unwrap_or_else(ui::Theme::dark)
+    /// The [`Self::THEMES`] entry the stored mode and themes amount to; a
+    /// custom theme reads as its id.
+    pub fn theme_choice(&self) -> String {
+        let id = match self.mode.as_str() {
+            mode if settings_store::day_schedule::is_automatic(mode) => {
+                return "Automatic".into();
+            }
+            "light" => &self.light_theme,
+            _ => &self.dark_theme,
+        };
+        ui::theme::Preset::find(id).map_or_else(|| id.clone(), |preset| preset.name().into())
     }
 }
 
@@ -857,7 +795,8 @@ pub fn theme_by_name(name: &str) -> ui::Theme {
 /// when it decides whether to raise a banner, reveal its contents, sound it,
 /// or mirror it to the lock screen. Every field carries `#[serde(default)]`
 /// so a config written before this section existed still loads.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(check = NotificationPrefs::valid)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "flat user-facing preferences record loaded from settings.json; each bool is an \
@@ -907,6 +846,27 @@ impl ui::storage::SettingsSchema for NotificationPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("notifications");
 }
 
+#[ui::tilo_resource::resource(kind = "settings.notifications", label = "Notifications")]
+impl NotificationPrefs {
+    /// Mute one app's notifications for a while, counted from when the
+    /// action was made, or unmute it.
+    #[action(label = "Mute an app")]
+    pub fn mute_app(
+        &mut self,
+        cx: &mut ui::tilo_resource::ActionCx,
+        #[param("The app's id")] app: String,
+        #[param("For how long: Not muted, For 1 hour, For 8 hours or For 24 hours")]
+        duration: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let seconds = crate::panes::notifications::mute_seconds(&duration).ok_or_else(|| {
+            ui::tilo_resource::Refusal::new(format!("`{duration}` is not offered"))
+        })?;
+        let until = (seconds > 0).then(|| (cx.now_ms() / 1000).saturating_add(seconds));
+        self.per_app.entry(app).or_default().muted_until = until;
+        Ok(())
+    }
+}
+
 impl Default for NotificationPrefs {
     fn default() -> Self {
         Self {
@@ -929,7 +889,8 @@ impl Default for NotificationPrefs {
 /// carries the pointer, typing, hearing, and screen-reader assists that do
 /// not belong to the theme. Every field is `#[serde(default)]` so older
 /// configs load.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(check = AccessibilityPrefs::valid)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "flat user-facing preferences record loaded from settings.json; each bool is an \
@@ -944,6 +905,7 @@ pub struct AccessibilityPrefs {
     pub cursor_size: u32,
     /// Run the AT-SPI screen reader.
     #[serde(default)]
+    #[model(readonly)]
     pub screen_reader: bool,
     /// When the on-screen keyboard runs: automatically on touch-only use,
     /// always, or never.
@@ -997,9 +959,11 @@ pub struct AccessibilityPrefs {
     pub switch_scan_ms: u16,
     /// Normalised screen-reader speech rate, where 100 is engine default.
     #[serde(default = "default_screen_reader_rate")]
+    #[model(readonly)]
     pub screen_reader_rate: u16,
     /// Backend-neutral voice/language preset.
     #[serde(default)]
+    #[model(readonly)]
     pub screen_reader_voice: ScreenReaderVoice,
     /// Personal recognition language; selecting it never grants microphone access.
     #[serde(default)]
@@ -1009,7 +973,9 @@ pub struct AccessibilityPrefs {
     pub dictation_literal: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ColorFilter {
     #[default]
@@ -1046,7 +1012,9 @@ impl ColorFilter {
 /// When the compositor runs the on-screen keyboard. `Auto` follows the
 /// hardware in use: a touchscreen with no physical typing since the last
 /// touch, or a convertible folded into tablet mode.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum OnScreenKeyboard {
     #[default]
@@ -1076,19 +1044,9 @@ impl OnScreenKeyboard {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ScreenReaderVoice {
-    #[default]
-    System,
-    EnglishUs,
-    EnglishGb,
-    German,
-    French,
-    Spanish,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SwitchKeyPair {
     #[default]
@@ -1116,54 +1074,6 @@ impl SwitchKeyPair {
     }
 }
 
-impl ScreenReaderVoice {
-    pub const OPTIONS: &'static [&'static str] = &[
-        "System voice",
-        "English (US)",
-        "English (UK)",
-        "German",
-        "French",
-        "Spanish",
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::System => "System voice",
-            Self::EnglishUs => "English (US)",
-            Self::EnglishGb => "English (UK)",
-            Self::German => "German",
-            Self::French => "French",
-            Self::Spanish => "Spanish",
-        }
-    }
-
-    pub fn backend_id(self) -> &'static str {
-        match self {
-            Self::System => "",
-            Self::EnglishUs => "en-us",
-            Self::EnglishGb => "en-gb",
-            Self::German => "de",
-            Self::French => "fr",
-            Self::Spanish => "es",
-        }
-    }
-
-    pub fn from_label(label: &str) -> Option<Self> {
-        const VARIANTS: [ScreenReaderVoice; 6] = [
-            ScreenReaderVoice::System,
-            ScreenReaderVoice::EnglishUs,
-            ScreenReaderVoice::EnglishGb,
-            ScreenReaderVoice::German,
-            ScreenReaderVoice::French,
-            ScreenReaderVoice::Spanish,
-        ];
-        Self::OPTIONS
-            .iter()
-            .position(|item| *item == label)
-            .and_then(|i| VARIANTS.get(i).copied())
-    }
-}
-
 fn default_cursor_size() -> u32 {
     24
 }
@@ -1177,7 +1087,7 @@ fn default_magnifier_zoom() -> u8 {
 }
 
 fn default_screen_reader_rate() -> u16 {
-    100
+    settings_store::screen_reader::DEFAULT_RATE
 }
 
 impl Default for AccessibilityPrefs {
@@ -1215,6 +1125,9 @@ impl Default for AccessibilityPrefs {
 impl ui::storage::SettingsSchema for AccessibilityPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("accessibility");
 }
+
+#[ui::tilo_resource::resource(kind = "settings.accessibility", label = "Accessibility")]
+impl AccessibilityPrefs {}
 
 impl AccessibilityPrefs {
     /// The offered bounce-keys windows as `(display label, milliseconds)`.
@@ -1266,150 +1179,6 @@ impl AccessibilityPrefs {
             .iter()
             .find(|(l, _)| *l == label)
             .map(|(_, s)| *s)
-    }
-}
-
-/// The preference sections this store owns. Loaded from and merged
-/// back into the shared `settings.json`.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct SystemPrefs {
-    pub audio: AudioPrefs,
-    pub display: DisplayPrefs,
-    pub input: InputPrefs,
-    pub power: PowerPrefs,
-    pub updates: UpdatePrefs,
-    pub appearance: AppearancePrefs,
-    pub notifications: NotificationPrefs,
-    pub accessibility: AccessibilityPrefs,
-}
-
-impl SystemPrefs {
-    /// Parse each section from a JSON document, falling back to that
-    /// section's default when it is missing or malformed. Never fails.
-    pub fn from_json(text: &str) -> Self {
-        let root: serde_json::Value = serde_json::from_str(text).unwrap_or(serde_json::Value::Null);
-        let section = |key: &str| root.get(key).cloned();
-        let mut prefs = Self {
-            audio: section("audio")
-                .and_then(|v| serde_json::from_value(v).ok())
-                .unwrap_or_default(),
-            display: section("display")
-                .and_then(|v| serde_json::from_value(v).ok())
-                .unwrap_or_default(),
-            input: section("input")
-                .and_then(|value| InputPrefs::from_json_value(&value))
-                .unwrap_or_default(),
-            power: section("power")
-                .and_then(|v| serde_json::from_value(v).ok())
-                .unwrap_or_default(),
-            updates: section("updates")
-                .and_then(|v| serde_json::from_value(v).ok())
-                .unwrap_or_default(),
-            appearance: section("appearance")
-                .and_then(|v| serde_json::from_value(v).ok())
-                .unwrap_or_default(),
-            notifications: section("notifications")
-                .and_then(|v| serde_json::from_value(v).ok())
-                .unwrap_or_default(),
-            accessibility: section("accessibility")
-                .and_then(|v| serde_json::from_value(v).ok())
-                .unwrap_or_default(),
-        };
-        // `serde(default)` fills a missing multi-source field with `["us"]`.
-        // For an old document whose only field is `keyboard_layout: "de"`,
-        // that would invent an unwanted second source. Clear the synthetic
-        // list before normalisation when the key genuinely was absent.
-        let has_sources = root
-            .get("input")
-            .and_then(serde_json::Value::as_object)
-            .is_some_and(|input| input.contains_key("keyboard_layouts"));
-        if !has_sources {
-            prefs.input.keyboard_layouts.clear();
-        }
-        prefs.input.normalise_keyboard_sources();
-        prefs
-    }
-
-    /// Serialize to pretty JSON, **merging** into `existing` so foreign
-    /// keys (notably `locale`) survive. The known `appearance` and
-    /// `accessibility` fields are merged one level deeper: Theme Studio keeps
-    /// its nested editable artifact in `appearance`, and the compositor keeps
-    /// the magnifier toggle's remembered zoom in `accessibility`, and neither
-    /// may be destroyed when Settings writes its own fields.
-    pub fn to_json_merged(&self, existing: &str) -> String {
-        let mut obj = serde_json::from_str::<serde_json::Value>(existing)
-            .ok()
-            .and_then(|root| root.as_object().cloned())
-            .unwrap_or_default();
-        obj.insert("version".into(), serde_json::json!(1));
-        obj.insert(
-            "audio".into(),
-            serde_json::to_value(&self.audio).unwrap_or_default(),
-        );
-        obj.insert(
-            "display".into(),
-            serde_json::to_value(self.display).unwrap_or_default(),
-        );
-        obj.insert(
-            "input".into(),
-            serde_json::to_value(&self.input).unwrap_or_default(),
-        );
-        obj.insert(
-            "power".into(),
-            serde_json::to_value(self.power).unwrap_or_default(),
-        );
-        obj.insert(
-            "updates".into(),
-            serde_json::to_value(&self.updates).unwrap_or_default(),
-        );
-        let appearance = obj
-            .entry("appearance")
-            .or_insert_with(|| serde_json::json!({}));
-        let known = serde_json::to_value(&self.appearance).unwrap_or_default();
-        merge_fields(appearance, &known);
-        obj.insert(
-            "notifications".into(),
-            serde_json::to_value(&self.notifications).unwrap_or_default(),
-        );
-        let accessibility = obj
-            .entry("accessibility")
-            .or_insert_with(|| serde_json::json!({}));
-        merge_fields(
-            accessibility,
-            &serde_json::to_value(self.accessibility).unwrap_or_default(),
-        );
-        serde_json::to_string_pretty(&serde_json::Value::Object(obj))
-            .unwrap_or_else(|_| "{}".into())
-    }
-
-    /// Load from the shared settings path. Returns section defaults when the
-    /// file is absent or unreadable.
-    pub fn load() -> Self {
-        let Some(path) = settings_store::settings_path() else {
-            return Self::default();
-        };
-        match std::fs::read_to_string(&path) {
-            Ok(text) => Self::from_json(&text),
-            Err(_) => Self::default(),
-        }
-    }
-
-    /// Persist to the shared settings path, preserving foreign keys. Creates
-    /// the `tilo` config directory if needed. Returns the path written.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no config directory can be resolved (no `HOME` or
-    /// `XDG_CONFIG_HOME`), if the `tilo` config directory cannot be created,
-    /// or if the settings file cannot be written.
-    pub fn save(&self) -> std::io::Result<std::path::PathBuf> {
-        let path = settings_store::settings_path()
-            .ok_or_else(|| std::io::Error::other("no config dir"))?;
-        settings_store::update_document_at(&path, |doc| {
-            let existing = serde_json::Value::Object(std::mem::take(doc)).to_string();
-            *doc = settings_store::parse(&self.to_json_merged(&existing));
-        })?;
-        Ok(path)
     }
 }
 
@@ -1480,16 +1249,56 @@ pub(crate) mod test_env {
 mod tests {
     use super::*;
 
+    use ui::storage::SettingsSchema;
+
+    /// The settings file at `path` after storing `value` as its section, as
+    /// the panes and the door store it.
+    fn store<T: SettingsSchema>(path: &std::path::Path, value: &T) -> serde_json::Value {
+        crate::host::PaneCx::in_file(path.to_owned())
+            .settings::<T>()
+            .set(value)
+            .unwrap();
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    /// The settings file holding `existing` after storing `value` as its
+    /// section.
+    fn stored<T: SettingsSchema>(existing: &str, value: &T) -> serde_json::Value {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, existing).unwrap();
+        store(&path, value)
+    }
+
+    /// Section `T` as read from a settings file holding `text`.
+    fn read<T: SettingsSchema>(text: &str) -> T {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, text).unwrap();
+        crate::host::PaneCx::in_file(path).settings::<T>().get()
+    }
+
+    /// `value` stored and read back.
+    fn round_trip<T: SettingsSchema>(value: &T) -> T {
+        read(&stored("{}", value).to_string())
+    }
+
     /// Every default is sensible and every owned leaf has a continuity policy.
     #[test]
     fn prefs_defaults_are_sensible_and_classified() {
-        let region = serde_json::json!({
-            "locale": tilo_locale::Locale::default(),
-            "default_apps": crate::panes::personal_apps::DefaultApps::default(),
-        })
-        .to_string();
-        let document = SystemPrefs::default().to_json_merged(&region);
-        let parsed = settings_store::parse(&document);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        store(&path, &AudioPrefs::default());
+        store(&path, &DisplayPrefs::default());
+        store(&path, &InputPrefs::default());
+        store(&path, &PowerPrefs::default());
+        store(&path, &UpdatePrefs::default());
+        store(&path, &AppearancePrefs::default());
+        store(&path, &NotificationPrefs::default());
+        store(&path, &AccessibilityPrefs::default());
+        store(&path, &tilo_locale::Locale::default());
+        let document = store(&path, &crate::panes::personal_apps::DefaultApps::default());
+        let parsed = settings_store::parse(&document.to_string());
         let missing = settings_store::continuity::unclassified_leaves(&parsed);
         assert!(
             missing.is_empty(),
@@ -1497,17 +1306,19 @@ mod tests {
              {missing:?}"
         );
 
-        let p = SystemPrefs::default();
-        assert!(p.audio.system_sounds.enabled);
-        assert!(!p.display.night_light);
-        assert!(p.input.tap_to_click);
-        assert_eq!(p.input.touchpad_natural_scroll, Some(true));
-        assert_eq!(p.input.mouse_natural_scroll, Some(false));
-        assert_eq!(p.input.keyboard_layout, "us");
-        assert!(p.power.auto_suspend);
-        assert_eq!(p.power.blank_minutes, 10);
-        assert_eq!(p.power.lock_minutes, 5);
-        assert_eq!(p.updates.last_checked, "Never");
+        assert!(AudioPrefs::default().system_sounds.enabled);
+        assert!(!DisplayPrefs::default().night_light);
+        let input = InputPrefs::default();
+        assert!(input.tap_to_click);
+        assert!(input.touchpad_natural_scroll);
+        assert!(!input.mouse_natural_scroll);
+        assert_eq!(input.keyboard_layout, "us");
+        let power = PowerPrefs::default();
+        assert!(power.auto_suspend);
+        assert_eq!(power.blank_minutes, 10);
+        assert_eq!(power.lock_minutes, 5);
+        let updates = UpdatePrefs::default();
+        assert_eq!(updates.last_checked, "Never");
 
         let n = NotificationPrefs::default();
         assert!(!n.do_not_disturb, "notifications on by default");
@@ -1533,35 +1344,36 @@ mod tests {
     #[test]
     fn keyboard_filters_and_touchpad_choices_round_trip_through_json() {
         use settings_store::hardware::{TouchpadClickMethod, TouchpadScrollMethod};
-        let mut p = SystemPrefs::default();
-        assert_eq!(p.accessibility.bounce_keys_delay_ms, 300);
-        p.accessibility.bounce_keys = true;
-        p.accessibility.bounce_keys_delay_ms = 500;
-        p.accessibility.bounce_keys_alert = true;
-        p.accessibility.mouse_keys = true;
-        p.input.touchpad_click_method = TouchpadClickMethod::Clickfinger;
-        p.input.touchpad_scroll_method = TouchpadScrollMethod::Edge;
-        p.input.scroll_speed = 2.0;
-        let json = p.to_json_merged("");
-        let back = SystemPrefs::from_json(&json);
-        assert_eq!(back.accessibility, p.accessibility);
+        let mut access = AccessibilityPrefs::default();
+        assert_eq!(access.bounce_keys_delay_ms, 300);
+        access.bounce_keys = true;
+        access.bounce_keys_delay_ms = 500;
+        access.bounce_keys_alert = true;
+        access.mouse_keys = true;
+        let mut input = InputPrefs {
+            touchpad_click_method: TouchpadClickMethod::Clickfinger,
+            touchpad_scroll_method: TouchpadScrollMethod::Edge,
+            scroll_speed: 2.0,
+            ..InputPrefs::default()
+        };
+        assert_eq!(round_trip(&access), access);
+        input = round_trip(&input);
         assert_eq!(
-            back.input.touchpad_click_method,
+            input.touchpad_click_method,
             TouchpadClickMethod::Clickfinger
         );
-        assert_eq!(
-            back.input.touchpad_scroll_method,
-            TouchpadScrollMethod::Edge
-        );
-        assert_eq!(back.input.scroll_speed, 2.0);
+        assert_eq!(input.touchpad_scroll_method, TouchpadScrollMethod::Edge);
+        assert_eq!(input.scroll_speed, 2.0);
 
         // The compositor reads the same document.
-        let root: serde_json::Value = serde_json::from_str(&json).unwrap();
-        let input = root["input"].as_object().unwrap();
-        let rich = settings_store::hardware::RichInputConfig::from_section(input);
+        let root = stored("{}", &input);
+        let rich = settings_store::hardware::RichInputConfig::from_section(
+            root["input"].as_object().unwrap(),
+        );
         assert_eq!(rich.touchpad_click_method, TouchpadClickMethod::Clickfinger);
         assert_eq!(rich.touchpad_scroll_method, TouchpadScrollMethod::Edge);
         assert_eq!(rich.scroll_speed, 2.0);
+        let root = stored("{}", &access);
         assert_eq!(root["accessibility"]["bounce_keys_delay_ms"], 500);
         assert_eq!(root["accessibility"]["mouse_keys"], true);
     }
@@ -1571,29 +1383,34 @@ mod tests {
         use settings_store::hardware::{
             TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY, TOUCHPAD_ENABLED_KEY,
         };
-        let defaults = SystemPrefs::default();
-        assert!(defaults.input.touchpad_enabled);
-        assert!(!defaults.input.touchpad_disabled_on_external_mouse);
+        let defaults = InputPrefs::default();
+        assert!(defaults.touchpad_enabled);
+        assert!(!defaults.touchpad_disabled_on_external_mouse);
 
-        let mut p = SystemPrefs::default();
-        p.input.touchpad_enabled = false;
-        p.input.touchpad_disabled_on_external_mouse = true;
-        let json = p.to_json_merged("");
-        let back = SystemPrefs::from_json(&json);
-        assert!(!back.input.touchpad_enabled);
-        assert!(back.input.touchpad_disabled_on_external_mouse);
+        let input = InputPrefs {
+            touchpad_enabled: false,
+            touchpad_disabled_on_external_mouse: true,
+            ..InputPrefs::default()
+        };
+        let back = round_trip(&input);
+        assert!(!back.touchpad_enabled);
+        assert!(back.touchpad_disabled_on_external_mouse);
 
         // The touchpad key and the compositor read these exact keys.
-        let root: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let root = stored("{}", &input);
         assert_eq!(root["input"][TOUCHPAD_ENABLED_KEY], false);
         assert_eq!(root["input"][TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY], true);
 
         // A key press that switched the touchpad off survives an unrelated
         // Settings save instead of being overwritten with the default.
-        let pressed = SystemPrefs::from_json(r#"{"input":{"touchpad_enabled":false}}"#);
-        assert!(!pressed.input.touchpad_enabled);
-        let saved: serde_json::Value = serde_json::from_str(&pressed.to_json_merged("")).unwrap();
-        assert_eq!(saved["input"][TOUCHPAD_ENABLED_KEY], false);
+        let pressed = r#"{"input":{"touchpad_enabled":false}}"#;
+        let mut input = read::<InputPrefs>(pressed);
+        assert!(!input.touchpad_enabled);
+        input.tap_to_click = !input.tap_to_click;
+        assert_eq!(
+            stored(pressed, &input)["input"][TOUCHPAD_ENABLED_KEY],
+            false
+        );
     }
 
     #[test]
@@ -1606,124 +1423,122 @@ mod tests {
 
     #[test]
     fn prefs_round_trip_through_json() {
-        let mut p = SystemPrefs::default();
-        p.audio.system_sounds.enabled = false;
-        p.audio.system_sounds.theme = Some("ocean".into());
-        p.audio.system_sounds.events.error = false;
-        p.display.night_light = true;
-        p.input.pointer_speed = 0.9;
-        p.input.keyboard_layout = "de".into();
-        p.input.keyboard_layouts = vec!["de".into()];
-        p.power.auto_suspend = false;
-        p.power.blank_minutes = 30;
-        p.power.lock_minutes = 0;
-        p.updates.auto = false;
-        p.updates.last_checked = "today".into();
-        p.appearance.theme = "Nord".into();
-        p.appearance.high_contrast = true;
-        p.appearance.reduce_motion = true;
-        p.appearance.text_scale = 1.25;
-        p.appearance.ui_scale = 1.15;
-        p.notifications.do_not_disturb = true;
-        p.notifications.show_previews = false;
-        p.accessibility.large_cursor = true;
-        p.accessibility.cursor_size = 48;
-        p.accessibility.screen_reader = true;
-        assert_eq!(SystemPrefs::from_json(&p.to_json_merged("")), p);
-
-        // Keyboard source order and the active source survive.
-        let mut prefs = SystemPrefs::default();
-        prefs.input.keyboard_layouts = vec!["us".into(), "de:nodeadkeys".into()];
-        prefs.input.keyboard_layout = "de:nodeadkeys".into();
-        let back = SystemPrefs::from_json(&prefs.to_json_merged(""));
-        assert_eq!(back.input.keyboard_layouts, prefs.input.keyboard_layouts);
-        assert_eq!(back.input.keyboard_layout, prefs.input.keyboard_layout);
-
-        for a in [
-            PowerActionPref::Suspend,
-            PowerActionPref::Lock,
-            PowerActionPref::Ignore,
-        ] {
-            assert_eq!(PowerActionPref::from_display(a.display()), Some(a), "{a:?}");
-        }
-        assert_eq!(PowerActionPref::from_display("bogus"), None);
+        let mut audio = AudioPrefs::default();
+        audio.system_sounds.enabled = false;
+        audio.system_sounds.theme = Some("ocean".into());
+        audio.system_sounds.events.error = false;
+        assert_eq!(round_trip(&audio), audio);
+        let display = DisplayPrefs {
+            night_light: true,
+            ..DisplayPrefs::default()
+        };
+        assert_eq!(round_trip(&display), display);
+        let input = InputPrefs {
+            pointer_speed: 0.9,
+            keyboard_layout: "de:nodeadkeys".into(),
+            keyboard_layouts: vec!["us".into(), "de:nodeadkeys".into()],
+            ..InputPrefs::default()
+        };
+        assert_eq!(
+            round_trip(&input),
+            input,
+            "source order and the active source survive"
+        );
+        let power = PowerPrefs {
+            auto_suspend: false,
+            blank_minutes: 30,
+            lock_minutes: 0,
+            ..PowerPrefs::default()
+        };
+        assert_eq!(round_trip(&power), power);
+        let updates = UpdatePrefs {
+            auto: false,
+            ..UpdatePrefs::default()
+        };
+        assert_eq!(round_trip(&updates), updates);
+        let mut appearance = AppearancePrefs {
+            high_contrast: true,
+            reduce_motion: true,
+            text_scale: 1.25,
+            ui_scale: 1.15,
+            ..AppearancePrefs::default()
+        };
+        appearance.choose_theme("Dark soft");
+        assert_eq!(round_trip(&appearance), appearance);
+        let notifications = NotificationPrefs {
+            do_not_disturb: true,
+            show_previews: false,
+            ..NotificationPrefs::default()
+        };
+        assert_eq!(round_trip(&notifications), notifications);
+        let access = AccessibilityPrefs {
+            large_cursor: true,
+            cursor_size: 48,
+            screen_reader: true,
+            ..AccessibilityPrefs::default()
+        };
+        assert_eq!(round_trip(&access), access);
     }
 
-    /// Old, partial, malformed or missing documents load with defaults for
-    /// whatever they lack, and never lose the sections that did parse.
+    /// Partial, malformed or missing sections load with defaults for
+    /// whatever they lack, and never lose the keys that did parse.
     #[test]
-    fn legacy_and_malformed_documents_load_with_defaults() {
-        assert_eq!(SystemPrefs::from_json(""), SystemPrefs::default());
-        assert_eq!(SystemPrefs::from_json("garbage {"), SystemPrefs::default());
-        // An old config without the notifications section loads as defaults.
+    fn partial_and_malformed_documents_load_with_defaults() {
+        assert_eq!(read::<InputPrefs>(""), InputPrefs::default());
+        assert_eq!(read::<InputPrefs>("garbage {"), InputPrefs::default());
         assert_eq!(
-            SystemPrefs::from_json("{}").notifications,
+            read::<NotificationPrefs>("{}"),
             NotificationPrefs::default()
         );
 
-        // An old single keyboard layout migrates without inventing `us`.
-        let prefs = SystemPrefs::from_json(r#"{"input":{"keyboard_layout":"de"}}"#);
-        assert_eq!(prefs.input.keyboard_layout, "de");
-        assert_eq!(prefs.input.keyboard_layouts, ["de"]);
+        let input = read::<InputPrefs>(r#"{"input":{}}"#);
+        assert!(input.touchpad_natural_scroll);
+        assert!(!input.mouse_natural_scroll);
 
-        // Scroll defaults are per device, but a legacy global value applies to both.
-        let empty = SystemPrefs::from_json(r#"{"input":{}}"#);
-        assert_eq!(empty.input.touchpad_natural_scroll, Some(true));
-        assert_eq!(empty.input.mouse_natural_scroll, Some(false));
-        let legacy = SystemPrefs::from_json(r#"{"input":{"natural_scroll":false}}"#);
-        assert_eq!(legacy.input.touchpad_natural_scroll, Some(false));
-        assert_eq!(legacy.input.mouse_natural_scroll, Some(false));
+        // A section without a newer field loads with it defaulted.
+        let p = read::<AppearancePrefs>(
+            r#"{"appearance":{"mode":"dark","high_contrast":false,"reduce_motion":false,"text_scale":1.15}}"#,
+        );
+        assert_eq!(p.ui_scale, 1.0, "missing ui_scale defaults to neutral");
+        assert_eq!(p.text_scale, 1.15);
 
-        // A settings file written before ui_scale existed must load with the
-        // field defaulted to 1.0 rather than failing the appearance section.
-        let p = SystemPrefs::from_json(
-            r#"{"appearance":{"theme":"Nord","high_contrast":false,"reduce_motion":false,"text_scale":1.15}}"#,
-        );
-        assert_eq!(p.appearance.theme, "Nord", "the section still parses");
-        assert_eq!(
-            p.appearance.ui_scale, 1.0,
-            "missing ui_scale defaults to neutral"
-        );
-        assert_eq!(p.appearance.text_scale, 1.15);
-
-        // A garbage `input` section falls back to defaults rather than
-        // throwing away the whole document.
-        let p = SystemPrefs::from_json(
-            r#"{"input":"not-an-object","audio":{"system_sounds":{"enabled":false}}}"#,
-        );
-        assert_eq!(p.input, InputPrefs::default());
+        // A garbage `input` section reads as defaults while the valid audio
+        // section beside it still parses.
+        let document = r#"{"input":"not-an-object","audio":{"system_sounds":{"enabled":false}}}"#;
+        assert_eq!(read::<InputPrefs>(document), InputPrefs::default());
         assert!(
-            !p.audio.system_sounds.enabled,
+            !read::<AudioPrefs>(document).system_sounds.enabled,
             "the valid audio section still parsed"
         );
 
-        // A config written before the power behaviour fields existed: only the
-        // original two keys. It must load with the new fields defaulted.
-        let p = SystemPrefs::from_json(r#"{"power":{"auto_suspend":false,"blank_minutes":15}}"#);
-        assert!(!p.power.auto_suspend);
-        assert_eq!(p.power.blank_minutes, 15);
-        assert_eq!(p.power.lock_minutes, 5);
-        assert_eq!(p.power.suspend_minutes, 15);
-        assert_eq!(p.power.lid_close_action, PowerActionPref::Suspend);
-        assert_eq!(p.power.critical_action, PowerActionPref::Suspend);
+        // Only some power keys: the rest read as their defaults.
+        let p = read::<PowerPrefs>(r#"{"power":{"auto_suspend":false,"blank_minutes":15}}"#);
+        assert!(!p.auto_suspend);
+        assert_eq!(p.blank_minutes, 15);
+        assert_eq!(p.lock_minutes, 5);
+        assert_eq!(p.suspend_minutes, 15);
+        assert_eq!(p.lid_close_action, PowerActionPref::Suspend);
+        assert_eq!(p.critical_action, PowerActionPref::Suspend);
     }
 
     #[test]
     fn appearance_prefs_resolve_to_real_themes() {
         let p = AppearancePrefs::default();
-        assert_eq!(p.theme, "Light");
+        assert_eq!(p.theme_choice(), "Light");
         assert!(!p.high_contrast);
         assert_eq!(p.text_scale, 1.0);
 
-        let prefs =
-            |theme: &str, high_contrast, reduce_motion, text_scale, ui_scale| AppearancePrefs {
-                theme: theme.into(),
+        let prefs = |theme: &str, high_contrast, reduce_motion, text_scale, ui_scale| {
+            let mut prefs = AppearancePrefs {
                 high_contrast,
                 reduce_motion,
                 text_scale,
                 ui_scale,
                 ..AppearancePrefs::default()
             };
+            prefs.choose_theme(theme);
+            prefs
+        };
         // (case, prefs, resolved name, text scale, reduced motion)
         let cases = [
             (
@@ -1756,13 +1571,12 @@ mod tests {
             assert_eq!(theme.reduce_motion, reduce_motion, "case {case}");
         }
 
-        assert_eq!(theme_by_name("not-a-theme").name, "Dark");
-        // Every advertised preset maps to a distinct real constructor.
+        // Every advertised preset maps to a distinct real theme.
         for name in AppearancePrefs::THEMES
             .iter()
             .filter(|name| !settings_store::day_schedule::is_automatic(&name.to_ascii_lowercase()))
         {
-            let t = theme_by_name(name);
+            let t = ui::Theme::named(name).expect("an advertised preset");
             assert_eq!(&t.name, name, "{name} must resolve to its own theme");
         }
 
@@ -1802,59 +1616,42 @@ mod tests {
         );
     }
 
-    /// Writing one section never clobbers the region store's locale, a theme
-    /// studio artifact, or another app's section.
+    /// Storing one section never clobbers the region store's locale, a theme
+    /// studio artifact, the compositor's own keys or another app's section.
     #[test]
-    fn prefs_merges_preserve_foreign_sections() {
-        type MergeCase<'a> = (&'a str, String, fn(&mut SystemPrefs), &'a [&'a str]);
+    fn storing_a_section_preserves_foreign_keys() {
         let locale = r#""locale":{"currency":"EUR","date_format":"EU","time_format":"H12","measurement":"Imperial"}"#;
-        let with_weather = format!(r#"{{"version":1,{locale},"weather":{{"city":"Delft"}}}}"#);
-        // (case, existing document, edit, substrings the output must contain)
-        let cases: [MergeCase<'_>; 3] = [
-            (
-                "notifications and accessibility",
-                r#"{"version":1,"locale":{"currency":"EUR"},"weather":{"city":"Delft"}}"#.into(),
-                |p| {
-                    p.notifications.do_not_disturb = true;
-                    p.accessibility.screen_reader = true;
-                },
-                &[
-                    "\"do_not_disturb\": true",
-                    "\"screen_reader\": true",
-                    "\"currency\": \"EUR\"",
-                    "Delft",
-                ],
-            ),
-            (
-                "appearance keeps the locale",
-                format!(r#"{{"version":1,{locale}}}"#),
-                |p| p.appearance.theme = "Gruvbox".into(),
-                &["\"theme\": \"Gruvbox\"", "\"currency\": \"EUR\""],
-            ),
-            (
-                "display keeps locale and foreign keys",
-                with_weather,
-                |p| p.display.night_light = true,
-                &["\"night_light\": true", "\"currency\": \"EUR\"", "Delft"],
-            ),
-        ];
-        for (case, existing, edit, must_contain) in cases {
-            let mut p = SystemPrefs::default();
-            edit(&mut p);
-            let out = p.to_json_merged(&existing);
-            for want in must_contain {
-                assert!(out.contains(want), "case {case}: {want} missing from {out}");
-            }
-        }
+        let existing = format!(r#"{{"version":1,{locale},"weather":{{"city":"Delft"}}}}"#);
+        let notifications = NotificationPrefs {
+            do_not_disturb: true,
+            ..NotificationPrefs::default()
+        };
+        let out = stored(&existing, &notifications);
+        assert_eq!(out["notifications"]["do_not_disturb"], true);
+        assert_eq!(out["locale"]["currency"], "EUR");
+        assert_eq!(out["weather"]["city"], "Delft");
+        let display = DisplayPrefs {
+            night_light: true,
+            ..DisplayPrefs::default()
+        };
+        let out = stored(&existing, &display);
+        assert_eq!(out["display"]["night_light"], true);
+        assert_eq!(out["locale"]["currency"], "EUR");
 
         let existing = r#"{"appearance":{"theme":"Dark","studio":{"id":"sunset","theme":{"accent":[251,146,60]}}}}"#;
-        let mut p = SystemPrefs::from_json(existing);
-        p.appearance.text_scale = 1.25;
-        let out = p.to_json_merged(existing);
-        let root: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(root["appearance"]["studio"]["id"], "sunset");
-        assert_eq!(root["appearance"]["studio"]["theme"]["accent"][0], 251);
-        assert_eq!(root["appearance"]["text_scale"], 1.25);
+        let mut appearance = read::<AppearancePrefs>(existing);
+        appearance.text_scale = 1.25;
+        let out = stored(existing, &appearance);
+        assert_eq!(out["appearance"]["studio"]["id"], "sunset");
+        assert_eq!(out["appearance"]["studio"]["theme"]["accent"][0], 251);
+        assert_eq!(out["appearance"]["text_scale"], 1.25);
+
+        let existing = r#"{"accessibility":{"magnifier_zoom":1,"magnifier_last_zoom":4}}"#;
+        let mut access = read::<AccessibilityPrefs>(existing);
+        access.sticky_keys = true;
+        let out = stored(existing, &access);
+        assert_eq!(out["accessibility"]["magnifier_last_zoom"], 4);
+        assert_eq!(out["accessibility"]["sticky_keys"], true);
     }
 
     /// The `power` section serialises to exactly the keys and lowercase action
@@ -1864,20 +1661,20 @@ mod tests {
     /// this test — or that one — fails.
     #[test]
     fn power_section_matches_the_compositor_contract() {
-        let mut p = SystemPrefs::default();
-        p.power.auto_suspend = true;
-        p.power.suspend_minutes = 20;
-        p.power.blank_minutes = 5;
-        p.power.lock_minutes = 10;
-        p.power.lid_close_action = PowerActionPref::Lock;
-        p.power.power_key_action = PowerActionPref::Ignore;
-        p.power.low_battery_percent = 18;
-        p.power.critical_battery_percent = 6;
-        p.power.critical_action = PowerActionPref::Suspend;
-
-        let json = p.to_json_merged("");
-        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        let power = &v["power"];
+        let power = PowerPrefs {
+            auto_suspend: true,
+            suspend_minutes: 20,
+            blank_minutes: 5,
+            lock_minutes: 10,
+            lid_close_action: PowerActionPref::Lock,
+            power_key_action: PowerActionPref::Ignore,
+            low_battery_percent: 18,
+            critical_battery_percent: 6,
+            critical_action: PowerActionPref::Suspend,
+            ..PowerPrefs::default()
+        };
+        let root = stored("{}", &power);
+        let power = &root["power"];
         assert_eq!(power["auto_suspend"], serde_json::json!(true));
         assert_eq!(power["suspend_minutes"], serde_json::json!(20));
         assert_eq!(power["blank_minutes"], serde_json::json!(5));
@@ -1889,15 +1686,200 @@ mod tests {
         assert_eq!(power["low_battery_percent"], serde_json::json!(18));
         assert_eq!(power["critical_battery_percent"], serde_json::json!(6));
     }
+}
 
-    #[test]
-    fn merge_preserves_the_compositors_accessibility_keys() {
-        let existing = r#"{"accessibility":{"magnifier_zoom":1,"magnifier_last_zoom":4}}"#;
-        let mut p = SystemPrefs::from_json(existing);
-        p.accessibility.sticky_keys = true;
-        let out = p.to_json_merged(existing);
-        let root: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(root["accessibility"]["magnifier_last_zoom"], 4);
-        assert_eq!(root["accessibility"]["sticky_keys"], true);
+/// Refused unless `value` is a finite number within `range`, naming `what`.
+fn within(
+    value: f64,
+    range: std::ops::RangeInclusive<f64>,
+    what: &str,
+) -> Result<(), ui::tilo_resource::Refusal> {
+    if value.is_finite() && range.contains(&value) {
+        Ok(())
+    } else {
+        Err(ui::tilo_resource::Refusal::new(format!(
+            "{what} is between {} and {}",
+            range.start(),
+            range.end()
+        )))
+    }
+}
+
+/// Refused unless `value` is one of `known`, naming `what`.
+fn one_of(value: &str, known: &[&str], what: &str) -> Result<(), ui::tilo_resource::Refusal> {
+    if known.contains(&value) {
+        Ok(())
+    } else {
+        Err(ui::tilo_resource::Refusal::new(format!(
+            "{what} is one of {}",
+            known.join(", ")
+        )))
+    }
+}
+
+/// Refused unless `time` is a time of day, `HH:MM`.
+fn time_of_day(time: &str, what: &str) -> Result<(), ui::tilo_resource::Refusal> {
+    settings_store::day_schedule::parse_hhmm(time)
+        .map(drop)
+        .ok_or_else(|| ui::tilo_resource::Refusal::new(format!("{what} is a time of day, HH:MM")))
+}
+
+const MINUTES_PER_DAY: f64 = 24.0 * 60.0;
+
+impl AppearancePrefs {
+    /// What the appearance section holds, however it was changed.
+    fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
+        within(self.ui_scale, 0.5..=3.0, "the interface scale")?;
+        within(self.text_scale, 0.5..=3.0, "the text scale")?;
+        within(self.density, 0.5..=2.0, "the density")?;
+        one_of(
+            &self.schedule,
+            &["sun", "custom"],
+            "the day and night schedule",
+        )?;
+        time_of_day(&self.sunrise, "the start of day")?;
+        time_of_day(&self.sunset, "the start of night")?;
+        one_of(
+            &self.wallpaper_scope,
+            &crate::panes::appearance::WALLPAPER_SCOPES.map(|(_, value)| value),
+            "where a new wallpaper applies",
+        )?;
+        one_of(
+            &self.wallpaper_target,
+            &crate::panes::appearance::WALLPAPER_TARGETS.map(|(_, value)| value),
+            "where a new wallpaper shows",
+        )
+    }
+}
+
+impl AccessibilityPrefs {
+    /// What the accessibility section holds, however it was changed.
+    fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
+        within(f64::from(self.cursor_size), 16.0..=256.0, "the cursor size")?;
+        within(
+            f64::from(self.bounce_keys_delay_ms),
+            0.0..=5_000.0,
+            "the bounce keys delay",
+        )?;
+        within(
+            f64::from(self.magnifier_zoom),
+            1.0..=16.0,
+            "the magnifier zoom",
+        )?;
+        within(
+            f64::from(self.switch_scan_ms),
+            0.0..=10_000.0,
+            "the switch scan interval",
+        )?;
+        within(
+            f64::from(self.screen_reader_rate),
+            0.0..=1_000.0,
+            "the speech rate",
+        )
+    }
+}
+
+impl NotificationPrefs {
+    /// What the notification section holds, however it was changed.
+    fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
+        within(
+            f64::from(self.focus.start_minute),
+            0.0..=MINUTES_PER_DAY - 1.0,
+            "the start of focus",
+        )?;
+        within(
+            f64::from(self.focus.end_minute),
+            0.0..=MINUTES_PER_DAY - 1.0,
+            "the end of focus",
+        )?;
+        within(
+            f64::from(self.focus.weekdays),
+            0.0..=127.0,
+            "the focus days",
+        )?;
+        match self
+            .per_app
+            .keys()
+            .find(|app| !crate::panes::notifications::valid_app_id(app))
+        {
+            Some(app) => Err(ui::tilo_resource::Refusal::new(format!(
+                "`{app}` is not an app id"
+            ))),
+            None => Ok(()),
+        }
+    }
+}
+
+impl PowerPrefs {
+    /// What the power section holds, however it was changed.
+    fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
+        for (minutes, what) in [
+            (self.suspend_minutes, "the suspend delay"),
+            (self.saver_suspend_minutes, "the power saver suspend delay"),
+            (self.balanced_suspend_minutes, "the balanced suspend delay"),
+            (
+                self.performance_suspend_minutes,
+                "the performance suspend delay",
+            ),
+            (self.blank_minutes, "the blank delay"),
+            (self.lock_minutes, "the lock delay"),
+        ] {
+            within(f64::from(minutes), 0.0..=MINUTES_PER_DAY, what)?;
+        }
+        within(
+            f64::from(self.low_battery_percent),
+            0.0..=100.0,
+            "the low battery level",
+        )?;
+        within(
+            f64::from(self.critical_battery_percent),
+            0.0..=f64::from(self.low_battery_percent),
+            "the critical battery level",
+        )
+    }
+}
+
+impl DisplayPrefs {
+    /// What the display section holds, however it was changed.
+    fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
+        within(self.scale, 0.5..=4.0, "the display scale")?;
+        within(
+            f64::from(self.night_light_temperature),
+            1_000.0..=10_000.0,
+            "the night light temperature",
+        )
+    }
+}
+
+impl AudioPrefs {
+    /// What the sound section holds, however it was changed.
+    fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
+        within(f64::from(self.balance), 0.0..=1.0, "the balance")?;
+        within(
+            self.system_sounds.volume,
+            0.0..=1.0,
+            "the system sound volume",
+        )
+    }
+}
+
+impl InputPrefs {
+    /// What the input section holds, however it was changed.
+    fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
+        for (speed, what) in [
+            (Some(self.pointer_speed), "the pointer speed"),
+            (self.touchpad_pointer_speed, "the touchpad pointer speed"),
+            (self.mouse_pointer_speed, "the mouse pointer speed"),
+            (Some(self.key_repeat), "the key repeat"),
+        ] {
+            if let Some(speed) = speed {
+                within(speed, 0.0..=1.0, what)?;
+            }
+        }
+        within(
+            self.scroll_speed,
+            settings_store::hardware::SCROLL_SPEED_MIN..=settings_store::hardware::SCROLL_SPEED_MAX,
+            "the scroll speed",
+        )
     }
 }

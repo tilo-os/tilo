@@ -1,7 +1,11 @@
 //! What a person keeps in Clocks: the cities they compare, their alarms,
 //! their timers and the stopwatch. It is the app's resource, so it follows
 //! them to every device and every edit is an action: the palette, an agent
-//! or a script sets an alarm exactly as the buttons do.
+//! or a script sets an alarm exactly as the buttons do. Names, alarm times
+//! and repeat days are field edits at their paths; everything that runs
+//! against the clock (turning an alarm on, starting and pausing timers and
+//! the stopwatch) is a verb, which reads the action's own time, and the
+//! instants those verbs keep are read-only to field edits.
 //!
 //! Running clocks are stored as absolute instants (when a timer ends, when
 //! the stopwatch started), taken from the action's own time, so a timer
@@ -16,33 +20,51 @@ use ui::prelude::*;
 
 /// A city whose time is shown beside the local one.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
+#[model(check = WorldClock::valid)]
 pub struct WorldClock {
+    /// City
+    #[model(label)]
     pub city: String,
     /// The IANA time zone, such as `Asia/Tokyo`.
+    #[model(readonly)]
     pub timezone: Atom,
 }
 
 /// An alarm at a time of day, once or on chosen weekdays.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
+#[model(check = Alarm::valid)]
 pub struct Alarm {
+    /// Label
+    #[model(label)]
     pub label: String,
+    /// Hour
     pub hour: u8,
+    /// Minute
     pub minute: u8,
     /// The weekdays it repeats on, Monday as bit 0; none rings once.
     pub repeat: u8,
+    /// On: turning it on is a verb, which notes when.
+    #[model(readonly)]
     pub enabled: bool,
     /// When it was last turned on, so a deadline from before that (a device
     /// that was closed while it was turned off and on again) never rings.
+    #[model(readonly)]
     pub enabled_at_ms: i64,
 }
 
 /// A countdown. Running while `ends_at_ms` lies ahead; finished once it has
 /// passed; paused while `paused_remaining_ms` holds what is left.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
+#[model(check = Timer::valid)]
 pub struct Timer {
+    /// Label
+    #[model(label)]
     pub label: String,
+    #[model(readonly)]
     pub duration_ms: u64,
+    #[model(readonly)]
     pub ends_at_ms: Option<i64>,
+    #[model(readonly)]
     pub paused_remaining_ms: Option<u64>,
 }
 
@@ -61,11 +83,65 @@ pub struct Clocks {
     pub world_clocks: Collection<WorldClock>,
     pub alarms: Collection<Alarm>,
     pub timers: Collection<Timer>,
+    /// Only its verbs run the stopwatch.
+    #[model(readonly)]
     pub stopwatch: Stopwatch,
 }
 
+/// A label shows on one line: it is not blank and at most 80 characters.
+fn valid_label(label: &str) -> Result<(), Refusal> {
+    if label.trim().is_empty() || label.chars().count() > 80 {
+        return Err(Refusal::from("a label has 1 to 80 characters"));
+    }
+    Ok(())
+}
+
+impl WorldClock {
+    fn valid(&self) -> Result<(), Refusal> {
+        valid_label(&self.city)?;
+        if self.timezone.0.parse::<chrono_tz::Tz>().is_err() {
+            return Err(Refusal::new(format!(
+                "`{}` is not a time zone",
+                self.timezone.0
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl Timer {
+    fn valid(&self) -> Result<(), Refusal> {
+        valid_label(&self.label)
+    }
+}
+
+impl Alarm {
+    /// A time of day from 00:00 to 23:59, repeating on weekdays only.
+    fn valid(&self) -> Result<(), Refusal> {
+        valid_label(&self.label)?;
+        if self.hour > 23 || self.minute > 59 {
+            return Err(Refusal::from("an alarm needs a time from 00:00 to 23:59"));
+        }
+        if self.repeat > 0x7f {
+            return Err(Refusal::from("an alarm repeats on weekdays only"));
+        }
+        Ok(())
+    }
+}
+
 /// A weekday an alarm repeats on.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    ui::tilo_resource::JsonSchema,
+)]
 pub enum WeekdayKey {
     Mon,
     Tue,
@@ -235,9 +311,6 @@ impl Clocks {
         #[param("City name")] city: String,
         #[param("IANA time zone, such as Asia/Tokyo")] timezone: String,
     ) -> Result<(), Refusal> {
-        if timezone.parse::<chrono_tz::Tz>().is_err() {
-            return Err(Refusal::new(format!("`{timezone}` is not a time zone")));
-        }
         // A city already shown stays where it is.
         if self
             .world_clocks
@@ -258,7 +331,7 @@ impl Clocks {
     }
 
     /// Remove city.
-    #[action]
+    #[action(item = world_clocks)]
     pub fn remove_world_clock(&mut self, world_clock: Id) -> Result<(), Refusal> {
         self.world_clocks
             .remove(&world_clock)
@@ -276,9 +349,6 @@ impl Clocks {
         #[param("Minute, 0 to 59")] minute: u8,
         #[param("Weekdays it repeats on (Mon … Sun); none rings once")] weekdays: Vec<WeekdayKey>,
     ) -> Result<(), Refusal> {
-        if hour > 23 || minute > 59 {
-            return Err(Refusal::from("an alarm needs a time from 00:00 to 23:59"));
-        }
         let now = cx.now_ms();
         self.alarms.push(
             cx.id(),
@@ -295,7 +365,7 @@ impl Clocks {
     }
 
     /// Turn an alarm on or off.
-    #[action]
+    #[action(item = alarms)]
     pub fn set_alarm_enabled(
         &mut self,
         cx: &mut ActionCx,
@@ -312,7 +382,7 @@ impl Clocks {
     }
 
     /// Remove alarm.
-    #[action]
+    #[action(item = alarms)]
     pub fn remove_alarm(&mut self, alarm: Id) -> Result<(), Refusal> {
         self.alarms
             .remove(&alarm)
@@ -345,7 +415,7 @@ impl Clocks {
     }
 
     /// Pause timer.
-    #[action]
+    #[action(item = timers)]
     pub fn pause_timer(&mut self, cx: &mut ActionCx, timer: Id) -> Result<(), Refusal> {
         let now = instant(cx.now_ms());
         let timer = timer_mut(self, &timer)?;
@@ -357,7 +427,7 @@ impl Clocks {
     }
 
     /// Resume timer. A finished timer starts over.
-    #[action]
+    #[action(item = timers)]
     pub fn resume_timer(&mut self, cx: &mut ActionCx, timer: Id) -> Result<(), Refusal> {
         let now_ms = cx.now_ms();
         let timer = timer_mut(self, &timer)?;
@@ -373,7 +443,7 @@ impl Clocks {
     }
 
     /// Add one minute.
-    #[action]
+    #[action(item = timers)]
     pub fn add_minute(&mut self, cx: &mut ActionCx, timer: Id) -> Result<(), Refusal> {
         let now_ms = cx.now_ms();
         let timer = timer_mut(self, &timer)?;
@@ -385,7 +455,7 @@ impl Clocks {
     }
 
     /// Remove timer.
-    #[action]
+    #[action(item = timers)]
     pub fn remove_timer(&mut self, timer: Id) -> Result<(), Refusal> {
         self.timers
             .remove(&timer)

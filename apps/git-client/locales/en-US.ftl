@@ -180,3 +180,8 @@ git-worktree-host-required = Worktree creation requires a live repository.
 git-worktree-running = Creating worktree…
 git-worktree-read-failed = Could not read working directories
 git-worktree-read-error = Could not read working directories: { $error }
+
+## History of the record
+
+git-client-git-client-repository = Opened the repository { $new }
+git-client-record-repository = Recorded the repository's branches and history

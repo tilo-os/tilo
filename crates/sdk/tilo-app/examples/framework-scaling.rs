@@ -40,6 +40,21 @@
 //! cargo run --release -p tilo-app --features test-support \
 //!     --example framework-scaling -- 5000,50000 open
 //! ```
+//!
+//! A second argument `scroll` measures only scrolling: the live window's
+//! list scrolled down 120 frames of 40 px (and of 40.5 px, part of a device
+//! pixel), the pointer resting over it, each frame presented on an
+//! offscreen GPU target as a window presents it, with and without copying
+//! what a scroll keeps on screen (`ui::scroll_copy`): pixels repainted and
+//! copied per frame, frames repainted whole, CPU and GPU time per frame. The
+//! last frame must equal a full render, or the run fails. Each run also
+//! prints a `FRAMEWORK-SCROLL` line for `tools/perf/adapters.py
+//! framework-scroll` (`render.framework_scroll.*` KPIs):
+//!
+//! ```text
+//! cargo run --release -p tilo-app --features test-support \
+//!     --example framework-scaling -- 5000 scroll
+//! ```
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
@@ -50,7 +65,7 @@ use tilo_app::prelude::*;
 use tilo_app::tilo_resource::profiling::observe;
 use tilo_app::time::Instant;
 use tilo_app::winit::dpi::{PhysicalPosition, PhysicalSize};
-use tilo_app::winit::event::DeviceId;
+use tilo_app::winit::event::{DeviceId, WindowEvent};
 use tilo_app::winit::window::CursorIcon;
 
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
@@ -59,7 +74,6 @@ static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
         "en-US",
         "scaling-draft = Next task\nscaling-done = Completed\n",
     )],
-    "scaling-draft",
 );
 
 /// The system allocator, counting allocations and the bytes held.
@@ -121,12 +135,6 @@ pub struct Checklist {
 
 #[resource(kind = "example.framework-scaling", label = "Checklist")]
 impl Checklist {
-    /// Set the next task's title.
-    #[action]
-    pub fn draft(&mut self, title: String) {
-        self.draft = title;
-    }
-
     /// Add `count` tasks at once.
     #[action]
     pub fn seed(&mut self, cx: &mut ActionCx, count: u32) {
@@ -139,16 +147,6 @@ impl Checklist {
                 },
             );
         }
-    }
-
-    /// Mark a task completed or open.
-    ///
-    /// # Errors
-    /// Refuses a task that no longer exists.
-    #[action]
-    pub fn set_done(&mut self, task: &Id, done: bool) -> Result<(), &'static str> {
-        self.tasks.get_mut(task).ok_or("gone")?.done = done;
-        Ok(())
     }
 }
 
@@ -171,22 +169,17 @@ impl ResourceApp for Scaling {
     }
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
-        let draft = cx
-            .input(|list| list.draft.clone(), Checklist::DRAFT)
-            .with_id("draft");
+        let draft = cx.input(Checklist::paths().draft).with_id("draft");
         let rows = cx.each(
             |list| &list.tasks,
             |row| {
-                let Some(id) = row.item().cloned() else {
+                if row.item().is_none() {
                     return Box::new(Column::new()) as Element;
-                };
+                }
+                let done = row.paths().done;
                 Box::new(tilo_app::row![
                     row.text(|task| task.title.clone()),
-                    row.checkbox(
-                        "scaling-done",
-                        |task| task.done,
-                        Checklist::SET_DONE.map(move |done| (id.clone(), done))
-                    ),
+                    row.checkbox("scaling-done", done),
                 ]) as Element
             },
         );
@@ -382,7 +375,7 @@ fn pointer_moves(app: &mut tilo_app::App) -> (f64, usize) {
 /// at rest, then the accessibility tree the host's walk reads.
 fn host_frame(app: &mut tilo_app::App) {
     for _ in 0..3 {
-        let mut scene = Scene::new();
+        let mut scene = tilo_app::advanced::Scene::new();
         if !app.surface_frame(&Surface, &mut scene) || !app.unsettled() {
             break;
         }
@@ -488,14 +481,261 @@ fn keystrokes(app: &mut tilo_app::App) -> Result<Keystrokes, String> {
     })
 }
 
+/// Logical pixels one continuous scroll frame moves the list, as a
+/// touchpad's two-finger scroll does at 60 Hz.
+const SCROLL_STEP: f64 = 40.0;
+
+/// Scroll frames timed per size.
+const SCROLL_FRAMES: u32 = 120;
+
+/// What scrolling the live window costs per frame.
+struct Scrolling {
+    /// Frames the window drew.
+    frames: usize,
+    /// Of those, frames that repainted the window whole, and the first
+    /// reason one gave.
+    whole: usize,
+    why: Option<&'static str>,
+    /// Pixels each frame repaints, p50 and largest.
+    pixels_p50: f64,
+    pixels_max: f64,
+    /// Pixels each frame copies from where the last frame had them, p50.
+    copied_p50: f64,
+    /// p50 of one scroll frame on the CPU: the wheel event and the frame.
+    cpu_ms: f64,
+    /// p50 of rasterizing each frame as it is presented (only where it
+    /// changed over the frame before), and of rasterizing it whole, on the
+    /// GPU, waiting for completion. `None` without a GPU.
+    gpu_ms: Option<(f64, f64)>,
+    /// Pixels of the last presented frame that differ from a full render
+    /// beyond anti-aliasing noise.
+    differing: usize,
+}
+
+/// The pixels `rects` cover in a window of `size`, each counted once.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "rects are clamped to the window before becoming pixel indices"
+)]
+fn covered(rects: &[Rect], size: PhysicalSize<u32>) -> f64 {
+    let window = Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
+    let mut rows = vec![vec![false; size.width as usize]; size.height as usize];
+    for rect in rects {
+        let rect = rect.intersect(window).expand();
+        let (x0, x1) = (rect.x0 as usize, rect.x1 as usize);
+        for row in rows
+            .iter_mut()
+            .take(rect.y1 as usize)
+            .skip(rect.y0 as usize)
+        {
+            if let Some(cells) = row.get_mut(x0..x1) {
+                cells.fill(true);
+            }
+        }
+    }
+    rows.iter().flatten().filter(|cell| **cell).count() as f64
+}
+
+/// Scroll the live window down [`SCROLL_FRAMES`] frames of `step` logical
+/// pixels each, the pointer over the list, through the host's input and
+/// frame path ([`tilo_app::App::surface_input`],
+/// [`tilo_app::App::surface_frame_with_damage`]), and present each frame on
+/// an offscreen GPU target as a window does: only where it changed, after
+/// copying what a scroll keeps on screen when `copying`
+/// ([`tilo_app::scroll_copy`]).
+#[allow(
+    clippy::too_many_lines,
+    reason = "one measured scroll loop: input, frame, damage, presentation and its parity check"
+)]
+fn scrolling(app: &mut tilo_app::App, step: f64, copying: bool) -> Scrolling {
+    use tilo_app::app::{AppSurface, SurfaceDamage};
+    use tilo_app::offscreen::OffscreenRenderer;
+    use tilo_app::winit::event::{MouseScrollDelta, TouchPhase};
+    let size = Surface.inner_size();
+    let background = app.theme.tokens.colors.surfaces.content;
+    let mut damage = if copying {
+        SurfaceDamage::copying()
+    } else {
+        SurfaceDamage::default()
+    };
+    app.init_layout();
+    let mut scene = tilo_app::advanced::Scene::new();
+    app.surface_input(
+        &Surface,
+        WindowEvent::CursorMoved {
+            device_id: DeviceId::dummy(),
+            position: PhysicalPosition::new(640.0, 500.0),
+        },
+        false,
+    );
+    for _ in 0..5 {
+        scene.reset();
+        app.surface_frame_with_damage(&Surface, &mut scene, &mut damage);
+    }
+    let _ = damage.take();
+    let mut gpu = OffscreenRenderer::try_new(size.width, size.height)
+        .ok()
+        .zip(OffscreenRenderer::try_new(size.width, size.height).ok());
+    if let Some((presented, _)) = gpu.as_mut() {
+        let _ = presented.render(&scene, background);
+    }
+    let whole_window = f64::from(size.width) * f64::from(size.height);
+    let mut result = Scrolling {
+        frames: 0,
+        whole: 0,
+        why: None,
+        pixels_p50: 0.0,
+        pixels_max: 0.0,
+        copied_p50: 0.0,
+        cpu_ms: 0.0,
+        gpu_ms: None,
+        differing: 0,
+    };
+    let (mut pixels, mut copied, mut cpu, mut gpu_presented, mut gpu_full) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for _ in 0..SCROLL_FRAMES {
+        let start = Instant::now();
+        app.surface_input(
+            &Surface,
+            WindowEvent::MouseWheel {
+                device_id: DeviceId::dummy(),
+                delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -step)),
+                phase: TouchPhase::Moved,
+            },
+            false,
+        );
+        scene.reset();
+        app.surface_frame_with_damage(&Surface, &mut scene, &mut damage);
+        cpu.push(millis(start));
+        result.frames = result.frames.saturating_add(1);
+        let presented_frame = damage.take_copying();
+        pixels.push(presented_frame.as_ref().map_or_else(
+            || {
+                result.whole = result.whole.saturating_add(1);
+                result.why = result.why.or_else(|| damage.repainted());
+                whole_window
+            },
+            |(_, rects)| covered(rects, size),
+        ));
+        copied.push(presented_frame.as_ref().map_or(0.0, |(copies, _)| {
+            copies
+                .iter()
+                .map(|copy| f64::from(copy.width) * f64::from(copy.height))
+                .fold(0.0, |sum, pixels| sum + pixels)
+        }));
+        if let Some((presented, full)) = gpu.as_mut() {
+            let start = Instant::now();
+            match &presented_frame {
+                Some((moves, rects)) => {
+                    let _ = presented
+                        .render_copies_and_damage_gpu_wait(&scene, background, moves, rects);
+                }
+                None => presented.render_gpu_wait(&scene, background),
+            }
+            gpu_presented.push(millis(start));
+            let start = Instant::now();
+            full.render_gpu_wait(&scene, background);
+            gpu_full.push(millis(start));
+        }
+    }
+    if let Some((presented, full)) = gpu.as_mut() {
+        let expected = full.render(&scene, background);
+        let actual = presented.readback_current();
+        result.differing = OffscreenRenderer::pixels_differing_beyond_aa(&actual, &expected);
+        result.gpu_ms = Some((median(gpu_presented), median(gpu_full)));
+    }
+    result.pixels_max = pixels.iter().copied().fold(0.0, f64::max);
+    result.pixels_p50 = median(pixels);
+    result.copied_p50 = median(copied);
+    result.cpu_ms = median(cpu);
+    result
+}
+
+/// The `scroll` mode: what one frame of continuous scrolling costs, at a
+/// whole and at a fractional step.
+fn scroll_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "tasks  step  copies  frames  whole  repainted px p50  max  copied px p50  \
+         cpu frame p50  gpu presented p50  gpu full p50  differing px  \
+         first whole-window reason"
+    );
+    let mut lines = Vec::new();
+    // Whether any run had no GPU to present on, and the most pixels a run
+    // presented that a full render does not have.
+    let mut checked: Option<(bool, usize)> = None;
+    for &tasks in sizes {
+        TASKS.store(tasks, Ordering::Relaxed);
+        for (step, copying) in [
+            (SCROLL_STEP, false),
+            (SCROLL_STEP, true),
+            (SCROLL_STEP + 0.5, true),
+        ] {
+            let s = drive_live_window::<Scaling, _>(|app| scrolling(app, step, copying))?;
+            let (missing_gpu, differing) = checked.unwrap_or_default();
+            checked = Some((
+                missing_gpu || s.gpu_ms.is_none(),
+                differing.max(s.differing),
+            ));
+            let (gpu_presented, gpu_full) = s.gpu_ms.map_or_else(
+                || ("n/a".to_owned(), "n/a".to_owned()),
+                |(presented, full)| (format!("{presented:.3} ms"), format!("{full:.3} ms")),
+            );
+            let copies = if copying { "yes" } else { "no" };
+            println!(
+                "{tasks:>5}  {step:>4}  {copies:>6}  {:>6}  {:>5}  {:>16.0}  {:>7.0}  \
+                 {:>13.0}  {:>10.3} ms  {gpu_presented:>17}  {gpu_full:>12}  {:>12}  {}",
+                s.frames,
+                s.whole,
+                s.pixels_p50,
+                s.pixels_max,
+                s.copied_p50,
+                s.cpu_ms,
+                s.differing,
+                s.why.unwrap_or("-"),
+            );
+            // For tools/perf/adapters.py.
+            lines.push(format!(
+                "FRAMEWORK-SCROLL tasks={tasks} step={step} copying={copying} \
+                 pixels_p50={:.0} pixels_max={:.0} copied_p50={:.0} whole={} frames={} \
+                 cpu_ms={:.3} gpu_ms={:.3} gpu_full_ms={:.3} differing={}",
+                s.pixels_p50,
+                s.pixels_max,
+                s.copied_p50,
+                s.whole,
+                s.frames,
+                s.cpu_ms,
+                s.gpu_ms.map_or(0.0, |(presented, _)| presented),
+                s.gpu_ms.map_or(0.0, |(_, full)| full),
+                s.differing
+            ));
+        }
+    }
+    println!();
+    for line in lines {
+        println!("{line}");
+    }
+    // A scroll whose presented pixels cannot be checked, or differ from a
+    // full render, is no measurement.
+    if checked.is_some_and(|(missing_gpu, differing)| missing_gpu || differing > 0) {
+        return Err("scroll frames were not presented as a full render shows them".into());
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let open_only = std::env::args().nth(2).is_some_and(|mode| mode == "open");
+    let mode = std::env::args().nth(2);
+    let open_only = mode.as_deref() == Some("open");
     let sizes = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "10,250,1000,10000".into())
         .split(',')
         .map(|size| size.trim().parse::<u32>())
         .collect::<Result<Vec<_>, _>>()?;
+    if mode.as_deref() == Some("scroll") {
+        return scroll_mode(&sizes);
+    }
     if std::env::var_os("TILO_SCALING_KEYSTROKES").is_some() {
         println!(
             "tasks  keystroke→frame p50  p99  release→frame p50  \

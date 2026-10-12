@@ -66,6 +66,14 @@ impl Rooms {
         let mut document = automerge::AutoCommit::load(&bytes)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         let result = change(&mut document)?;
+        // The governor writes the record directly: an edit of the whole
+        // record, named as such.
+        if automerge::transaction::Transactable::pending_ops(&document) != 0 {
+            document.commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+            );
+        }
         let changes = document.save_after(&heads);
         if changes.len() > 64 * 1024 {
             return Err(CollaborationError::new(
@@ -133,26 +141,31 @@ impl Rooms {
             return Ok(false);
         }
         // The factory is the app's own code: it runs in a confined app
-        // worker, and its genesis is admitted here before it is signed.
-        let source = ConfinedReplica::open(
-            catalogue,
-            app,
-            room,
-            &hex::encode(governor.user_public_key),
-            false,
-            Seed::New,
-        )
-        .map_err(|error| CollaborationError::new(error.to_string()))?;
-        if source.record() != "@tilo:package-primary" {
-            return Err(CollaborationError::new(
-                "factory primary route differs from its declaration",
-            ));
-        }
-        let Ok(Some(collab_types::DocumentMutation::Snapshot(genesis))) = source.take_mutation()
-        else {
-            return Err(CollaborationError::new(
-                "factory did not produce a genesis snapshot",
-            ));
+        // worker, held only while its genesis is taken and admitted here
+        // before it is signed.
+        let genesis = {
+            let source = ConfinedReplica::open(
+                catalogue,
+                app,
+                room,
+                &hex::encode(governor.user_public_key),
+                false,
+                Seed::New,
+            )
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
+            if source.record() != "@tilo:package-primary" {
+                return Err(CollaborationError::new(
+                    "factory primary route differs from its declaration",
+                ));
+            }
+            let Ok(Some(collab_types::DocumentMutation::Snapshot(genesis))) =
+                source.take_mutation()
+            else {
+                return Err(CollaborationError::new(
+                    "factory did not produce a genesis snapshot",
+                ));
+            };
+            genesis
         };
         if genesis.is_empty() || genesis.len() > 64 * 1024 {
             return Err(CollaborationError::new(

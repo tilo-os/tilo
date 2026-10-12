@@ -18,8 +18,10 @@
 //! [`media::audio_watch::DEBOUNCE`], the settings file watch reports
 //! preference changes, and between them the worker blocks with no timer: an
 //! idle desktop neither shells `pw-dump` nor re-reads settings. Only when
-//! `PipeWire` cannot be watched does it fall back to polling — slower, but
-//! still observing, never blind.
+//! `PipeWire` runs but cannot be watched does it fall back to polling —
+//! slower, but still observing, never blind. When `PipeWire` is not running
+//! at all there is nothing to poll: the worker waits, again with no timer,
+//! for its socket to appear.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -87,6 +89,8 @@ enum PolicyEvent {
     WatchLost,
     /// The settings file changed.
     SettingsChanged,
+    /// `PipeWire`'s socket appeared or went away.
+    DaemonChanged,
     Stop,
 }
 
@@ -117,6 +121,12 @@ trait PolicyEnv {
     /// (Re)start the native graph watch; `false` when `PipeWire` cannot be
     /// watched.
     fn watch_graph(&mut self) -> bool;
+    /// Watch for `PipeWire`'s socket appearing or going away
+    /// ([`PolicyEvent::DaemonChanged`]); `false` when it cannot be watched.
+    /// Starting it again keeps the running watch.
+    fn watch_daemon(&mut self) -> bool;
+    /// Whether `PipeWire`'s socket exists.
+    fn daemon_running(&mut self) -> bool;
     /// Start the settings file watch; `false` when it cannot run.
     fn watch_settings(&mut self) -> bool;
 }
@@ -128,6 +138,10 @@ enum Observation {
     /// `PipeWire` could not be watched: poll `pw-dump` instead, enumerating
     /// on every poll.
     Polling { stable_polls: u8 },
+    /// `PipeWire` is not running: its socket does not exist, so neither a
+    /// watch nor `pw-dump` could see a graph. The socket's watch wakes the
+    /// worker when it appears; nothing else does.
+    Absent,
 }
 
 struct PolicyWorker {
@@ -154,21 +168,35 @@ impl PolicyWorker {
         };
         // A running watch sends the baseline itself.
         if !env.watch_graph() {
-            tracing::warn!(
-                target: "tilo::audio_policy",
-                "PipeWire cannot be watched; polling the audio graph instead"
-            );
-            worker.observation = Observation::Polling { stable_polls: 0 };
+            worker.observation = Self::unwatched(env);
+            if worker.observation == (Observation::Polling { stable_polls: 0 }) {
+                tracing::warn!(
+                    target: "tilo::audio_policy",
+                    "PipeWire cannot be watched; polling the audio graph instead"
+                );
+            }
             worker.observe(env);
         }
         worker
+    }
+
+    /// How to observe a graph the native watch cannot: wait for a
+    /// `PipeWire` that is not running to start, or poll one that runs. The
+    /// socket's watch starts before its existence is checked, so a daemon
+    /// starting in between is still heard.
+    fn unwatched(env: &mut impl PolicyEnv) -> Observation {
+        if env.watch_daemon() && !env.daemon_running() {
+            Observation::Absent
+        } else {
+            Observation::Polling { stable_polls: 0 }
+        }
     }
 
     /// How long to wait for an event before acting anyway. `None` — block
     /// until an event — whenever the graph is watched and no retry is due.
     fn next_wake(&self, now: Instant, retry: Option<Instant>) -> Option<Duration> {
         let poll = match self.observation {
-            Observation::Watching => None,
+            Observation::Watching | Observation::Absent => None,
             Observation::Polling { stable_polls } => Some(poll_interval(stable_polls)),
         };
         // A retry already past was attempted; the next change retries again.
@@ -188,10 +216,15 @@ impl PolicyWorker {
                 if self.observation == Observation::Watching {
                     tracing::warn!(
                         target: "tilo::audio_policy",
-                        "lost the PipeWire watch; polling the audio graph until it is back"
+                        "lost the PipeWire watch; observing the audio graph another way until it is back"
                     );
-                    self.observation = Observation::Polling { stable_polls: 0 };
+                    self.observation = Self::unwatched(env);
                     self.observe(env);
+                }
+            }
+            Wake::Event(PolicyEvent::DaemonChanged) => {
+                if self.observation != Observation::Watching {
+                    self.watch_again(env);
                 }
             }
             Wake::Event(PolicyEvent::SettingsChanged) => {
@@ -203,17 +236,28 @@ impl PolicyWorker {
             }
             Wake::Event(PolicyEvent::Stop) => {}
             Wake::Timeout => match self.observation {
-                Observation::Polling { .. } if env.watch_graph() => {
-                    tracing::info!(
-                        target: "tilo::audio_policy",
-                        "watching the PipeWire audio graph again"
-                    );
-                    self.observation = Observation::Watching;
-                }
-                Observation::Polling { .. } => self.observe(env),
-                Observation::Watching => self.reconcile(env),
+                Observation::Polling { .. } => self.watch_again(env),
+                Observation::Watching | Observation::Absent => self.reconcile(env),
             },
         }
+    }
+
+    /// Without the native watch: start it if `PipeWire` lets it, else read
+    /// the graph if `PipeWire` runs, else wait for it to start.
+    fn watch_again(&mut self, env: &mut impl PolicyEnv) {
+        if env.watch_graph() {
+            tracing::info!(
+                target: "tilo::audio_policy",
+                "watching the PipeWire audio graph again"
+            );
+            self.observation = Observation::Watching;
+            return;
+        }
+        match (self.observation, Self::unwatched(env)) {
+            (Observation::Polling { .. }, Observation::Polling { .. }) => {}
+            (_, unwatched) => self.observation = unwatched,
+        }
+        self.observe(env);
     }
 
     /// Read the graph and act on what changed since the last reading.
@@ -300,6 +344,7 @@ fn run(env: &mut impl PolicyEnv, events: &Receiver<PolicyEvent>) {
 struct LiveEnv {
     graph_watch: Option<AudioGraphWatch>,
     settings_watch: Option<settings_store::watch::SettingsWatch>,
+    daemon_watch: Option<settings_store::watch::SettingsWatch>,
     events: Sender<PolicyEvent>,
     device_sounds: Sender<SystemSoundEvent>,
     policy: PersistentAudioPolicy,
@@ -351,6 +396,30 @@ impl PolicyEnv for LiveEnv {
         self.graph_watch.is_some()
     }
 
+    fn watch_daemon(&mut self) -> bool {
+        if self.daemon_watch.is_some() {
+            return true;
+        }
+        let Some(socket) = pipewire_socket() else {
+            return false;
+        };
+        let events = self.events.clone();
+        // A file watch on the socket's directory, reporting only events that
+        // name the socket: what the settings file's watch is.
+        self.daemon_watch = settings_store::watch::watch_settings_at(&socket, move || {
+            let _ = events.send(PolicyEvent::DaemonChanged);
+        })
+        .inspect_err(
+            |error| tracing::debug!(target: "tilo::audio_policy", %error, "PipeWire socket watch"),
+        )
+        .ok();
+        self.daemon_watch.is_some()
+    }
+
+    fn daemon_running(&mut self) -> bool {
+        pipewire_socket().is_some_and(|socket| socket.exists())
+    }
+
     fn watch_settings(&mut self) -> bool {
         let events = self.events.clone();
         self.settings_watch = settings_store::watch::watch_settings(move || {
@@ -366,6 +435,20 @@ impl PolicyEnv for LiveEnv {
         .ok();
         self.settings_watch.is_some()
     }
+}
+
+/// Where a `PipeWire` client connects: `PIPEWIRE_REMOTE` (`pipewire-0`
+/// unless set), in `PIPEWIRE_RUNTIME_DIR` or else `XDG_RUNTIME_DIR` unless
+/// it is a path of its own.
+fn pipewire_socket() -> Option<std::path::PathBuf> {
+    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    let remote =
+        std::path::PathBuf::from(set("PIPEWIRE_REMOTE").unwrap_or_else(|| "pipewire-0".into()));
+    if remote.is_absolute() {
+        return Some(remote);
+    }
+    let directory = set("PIPEWIRE_RUNTIME_DIR").or_else(|| set("XDG_RUNTIME_DIR"))?;
+    Some(std::path::PathBuf::from(directory).join(remote))
 }
 
 #[derive(Debug)]
@@ -393,6 +476,7 @@ impl SessionAudioPolicyOwner {
                 let mut env = LiveEnv {
                     graph_watch: None,
                     settings_watch: None,
+                    daemon_watch: None,
                     events: worker_events,
                     device_sounds: device_tx,
                     policy: PersistentAudioPolicy::new(Arc::new(RealAudioRuntime)),
@@ -694,6 +778,15 @@ mod tests {
         );
     }
 
+    /// Whether the fake `PipeWire`'s socket exists, and whether it can be
+    /// watched for.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum FakeDaemon {
+        Running,
+        Stopped,
+        StoppedUnwatchable,
+    }
+
     /// The worker's world without `PipeWire`: each enumeration returns the
     /// next scripted graph (then keeps returning the last one), and every
     /// side effect is counted.
@@ -703,6 +796,7 @@ mod tests {
         preferences: PersistentAudioPreferences,
         graph_watchable: bool,
         settings_watchable: bool,
+        daemon: FakeDaemon,
         enumerations: usize,
         preference_loads: usize,
         pauses: usize,
@@ -718,6 +812,7 @@ mod tests {
                 preferences: PersistentAudioPreferences::default(),
                 graph_watchable: true,
                 settings_watchable: true,
+                daemon: FakeDaemon::Running,
                 enumerations: 0,
                 preference_loads: 0,
                 pauses: 0,
@@ -762,6 +857,12 @@ mod tests {
         }
         fn watch_settings(&mut self) -> bool {
             self.settings_watchable
+        }
+        fn watch_daemon(&mut self) -> bool {
+            self.daemon != FakeDaemon::StoppedUnwatchable
+        }
+        fn daemon_running(&mut self) -> bool {
+            self.daemon == FakeDaemon::Running
         }
     }
 
@@ -876,6 +977,51 @@ mod tests {
         worker.handle(Wake::Timeout, &mut env);
         assert_eq!(worker.next_wake(now, None), None, "watching again");
         assert_eq!(env.enumerations, before, "the watch sends the baseline");
+    }
+
+    /// With no `PipeWire` running there is no graph to poll: the worker
+    /// sleeps with no timer until the socket's watch says it started (an
+    /// idle desktop without it polled every 8 s, 0.4 wakeups/s).
+    #[test]
+    fn without_a_running_pipewire_the_worker_waits_for_its_socket() {
+        let mut env = FakeEnv::new([AudioGraph::default(), laptop(false)]);
+        env.graph_watchable = false;
+        env.daemon = FakeDaemon::Stopped;
+        let mut worker = PolicyWorker::start(&mut env);
+        let now = Instant::now();
+        assert_eq!(worker.next_wake(now, None), None, "no timer");
+        assert_eq!(env.enumerations, 1, "the empty baseline");
+
+        // Started, but not yet answering: poll it until it does.
+        env.daemon = FakeDaemon::Running;
+        worker.handle(Wake::Event(PolicyEvent::DaemonChanged), &mut env);
+        assert_eq!(worker.next_wake(now, None), Some(POLL_INTERVAL));
+        assert_eq!(env.enumerations, 2, "a running daemon is read at once");
+
+        env.graph_watchable = true;
+        let before = env.enumerations;
+        worker.handle(Wake::Timeout, &mut env);
+        assert_eq!(worker.next_wake(now, None), None, "watching");
+        assert_eq!(env.enumerations, before, "the watch sends the baseline");
+
+        // It stops: the lost watch waits for it again, still with no timer.
+        env.graph_watchable = false;
+        env.daemon = FakeDaemon::Stopped;
+        worker.handle(Wake::Event(PolicyEvent::WatchLost), &mut env);
+        assert_eq!(worker.next_wake(now, None), None);
+        env.daemon = FakeDaemon::Running;
+        env.graph_watchable = true;
+        worker.handle(Wake::Event(PolicyEvent::DaemonChanged), &mut env);
+        assert_eq!(worker.observation, Observation::Watching);
+    }
+
+    #[test]
+    fn a_pipewire_socket_that_cannot_be_watched_is_polled_for() {
+        let mut env = FakeEnv::new([laptop(true)]);
+        env.graph_watchable = false;
+        env.daemon = FakeDaemon::StoppedUnwatchable;
+        let worker = PolicyWorker::start(&mut env);
+        assert_eq!(worker.next_wake(Instant::now(), None), Some(POLL_INTERVAL));
     }
 
     #[test]

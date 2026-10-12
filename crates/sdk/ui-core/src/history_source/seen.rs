@@ -63,7 +63,8 @@ impl HistorySeenFrontier {
 mod tests {
     use crate::time::{Duration, SystemTime};
 
-    use collab_types::{ArtifactKind, OpClass};
+    use crate::widget::EntryKind;
+    use collab_types::ArtifactKind;
 
     use super::*;
     use crate::widget::HistoryAuthor;
@@ -72,7 +73,7 @@ mod tests {
         HistoryEntry {
             id: HistoryEntryId([id; 16]),
             author: HistoryAuthor::new("Ada", 0.0, "ada"),
-            op_class: OpClass::EditMeta,
+            entry_kind: EntryKind::Details,
             artifact_kind: ArtifactKind::File,
             timestamp: SystemTime::UNIX_EPOCH
                 .checked_add(Duration::from_secs(timestamp))

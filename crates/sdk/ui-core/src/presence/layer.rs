@@ -150,6 +150,12 @@ impl PresenceLayer {
         &self.next
     }
 
+    /// Whether the layer on screen or this frame's paints anything over the
+    /// widgets.
+    pub fn paints(&self) -> bool {
+        !self.shown.encoding().draw_tags.is_empty() || !self.next.encoding().draw_tags.is_empty()
+    }
+
     /// Damage, in the layer's scene coordinates, between the layer on
     /// screen and this frame's: the old and new bounds of every part that
     /// changed. `None` when that cannot be proven (no frame shown yet, a

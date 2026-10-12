@@ -2373,7 +2373,7 @@ impl OnboardingView {
         let path = TextInput::from_state(&self.connect_path)
             .with_id("onboarding.connect.path.field")
             .with_accessible_name(t("onboarding-connect-file"))
-            .with_placeholder(&t("onboarding-connect-file-placeholder"));
+            .with_placeholder(t("onboarding-connect-file-placeholder"));
         let passphrase = secret_input(
             "onboarding.connect.passphrase.field",
             &self.connect_passphrase,
@@ -3267,8 +3267,14 @@ impl Widget for OnboardingView {
                 self.nearby = None;
                 self.nearby_code = None;
                 self.flow.complete_connected(identity);
-                self.identity_ready_page = false;
-                let _ = self.persist_progress(PersistedStage::IdentityReady);
+                // A joined device holds the identity's public record and a
+                // member certificate; its root key stays on the device that
+                // approved the join. There is nothing here to back up, and
+                // losing this device loses no identity, so first use ends on
+                // the ready screen instead of the backup step. The journal
+                // records the hand-off first, so a restart resumes there.
+                self.identity_ready_page = self.persist_progress(PersistedStage::ReadyToEnter);
+                self.codec_page = self.identity_ready_page && self.codec_step_offered;
                 self.error = None;
                 self.nearby_status = Some(t("onboarding-nearby-connected"));
                 self.invalidation.structure();
@@ -4134,6 +4140,81 @@ mod tests {
         assert!(
             !names.contains(&t("onboarding-connect-failed")),
             "a refused commit is not reported generically: {names:?}"
+        );
+    }
+
+    #[test]
+    fn a_joined_identity_ends_first_use_on_the_ready_screen() {
+        // A device that joined from a nearby one holds a public record and a
+        // member certificate; the root key never leaves the approving device.
+        // Its first use ends where the person can enter the desktop, not on a
+        // backup step warning that losing this device loses the identity.
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let identity_dir = dir.path().join("identity");
+        std::fs::create_dir(&identity_dir).expect("identity dir");
+        std::fs::set_permissions(&identity_dir, std::fs::Permissions::from_mode(0o700))
+            .expect("private identity dir");
+        let record = identity_dir.join("identity-joined.json");
+        std::fs::write(
+            &record,
+            runtime_identity::public_member_record("Member", [1, 2, 3], [7; 32]).expect("record"),
+        )
+        .expect("write record");
+        std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600))
+            .expect("private record");
+        let status = identity_dir.join(".nearby-enrollment-status.json");
+        let complete = serde_json::json!({
+            "state": "complete",
+            "verification_code": "123456",
+            "identity": hex::encode([7; 32]),
+            "record_path": record,
+        });
+        let mut helper = Command::new("sh");
+        helper
+            .args(["-c", r#"printf '%s' "$2" > "$1"; exec sleep 30"#, "helper"])
+            .arg(&status)
+            .arg(complete.to_string());
+        let (mut view, _) = view();
+        view.identity_dir = Some(identity_dir.clone());
+        view.flow.begin_existing();
+        view.flow.choose_nearby();
+        view.nearby = Some(
+            crate::onboarding_nearby::NearbyPairing::spawn(
+                helper,
+                &identity_dir,
+                &status,
+                Duration::from_secs(600),
+            )
+            .expect("spawn helper"),
+        );
+        view.nearby_status_path = Some(status);
+        let doc = AutoCommit::new();
+        let deadline = tilo_test_env::hang_deadline();
+        while view.nearby.is_some() {
+            assert!(Instant::now() < deadline, "the join never arrived");
+            std::thread::sleep(Duration::from_millis(20));
+            view.sync(&doc, &automerge::ROOT);
+        }
+
+        assert_eq!(view.flow.screen(), Screen::Done);
+        assert_eq!(view.error(), None);
+        assert_eq!(
+            load_progress(&identity_dir).expect("load progress"),
+            Some(PersistedStage::ReadyToEnter),
+            "a restart resumes at the ready screen"
+        );
+        let composition = view.build_composition(&Theme::dark(), PANEL_MAX_HEIGHT);
+        let mut names = Vec::new();
+        accessible_names(&*composition, &mut names);
+        assert!(
+            names.contains(&t("onboarding-done-title")),
+            "the joined device ends on the ready screen: {names:?}"
+        );
+        assert!(
+            accessibility_for_id(&*composition, "onboarding.backup.skip-acknowledged.box")
+                .is_none(),
+            "a joined device is not asked to back up an identity it does not hold"
         );
     }
 

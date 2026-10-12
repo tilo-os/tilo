@@ -130,11 +130,7 @@ impl MailApp {
             .into_iter()
             .map(|choice| {
                 let mut entry = SearchEntry::new(choice.label(), choice.email.clone())
-                    .anchored(choice.id())
-                    .invoking(ui::tilo_actions::ActionAddress::new(
-                        choice.id(),
-                        MailEffect::PREPARE_CONTACT_DRAFT.id,
-                    ));
+                    .opening(choice.id(), &choice.effect());
                 entry.within = Some("mail.contacts".into());
                 entry
             })
@@ -346,7 +342,7 @@ mod tests {
             mail.effect_on(&selected.id(), &selected.effect()).is_err(),
             "selection requires review"
         );
-        assert!(mail.read_document(|doc| crate::doc::MailDoc::load_draft(doc).to.is_empty()));
+        assert!(mail.read_document(|doc| crate::resource::TestMail::load_draft(doc).to.is_empty()));
         assert!(
             mail.effect_confirmed(&selected.effect()).is_err(),
             "row choices cannot be invoked as an unbound root action"
@@ -363,14 +359,14 @@ mod tests {
             Some(selected.person.as_str())
         );
         mail.settle();
-        let draft = mail.read_document(crate::doc::MailDoc::load_draft);
+        let draft = mail.read_document(crate::resource::TestMail::load_draft);
         assert_eq!(draft.to, "Alex@example.test");
         assert_eq!(
             draft.sender.as_ref().unwrap().account,
             "personal@example.test"
         );
         assert!(
-            mail.read_document(|doc| crate::doc::MailDoc::outbox(doc).is_empty()),
+            mail.read_document(|doc| crate::resource::TestMail::outbox(doc).is_empty()),
             "preparing a draft never sends mail"
         );
         assert!(
@@ -398,7 +394,10 @@ mod tests {
                 .is_err(),
             "an existing composition is never overwritten"
         );
-        assert_eq!(mail.read_document(crate::doc::MailDoc::load_draft), draft);
+        assert_eq!(
+            mail.read_document(crate::resource::TestMail::load_draft),
+            draft
+        );
         assert_sender_guard(&mut mail, &draft);
     }
 
@@ -413,7 +412,7 @@ mod tests {
         mail.surface_mut::<MailApp>()
             .send_compose(&mut ui::widget::Edits::lend(&mut delivery_doc));
         assert!(
-            crate::doc::MailDoc::outbox(&delivery_doc).is_empty(),
+            crate::resource::TestMail::outbox(&delivery_doc).is_empty(),
             "the production send path refuses a changed sender"
         );
         assert_eq!(
@@ -575,8 +574,8 @@ mod tests {
             mail.effect_on_confirmed(&selected.id(), &selected.effect())
                 .is_err()
         );
-        assert!(mail.read_document(|doc| crate::doc::MailDoc::load_draft(doc).to.is_empty()));
-        assert!(mail.read_document(|doc| crate::doc::MailDoc::outbox(doc).is_empty()));
+        assert!(mail.read_document(|doc| crate::resource::TestMail::load_draft(doc).to.is_empty()));
+        assert!(mail.read_document(|doc| crate::resource::TestMail::outbox(doc).is_empty()));
     }
 
     #[test]
@@ -587,14 +586,21 @@ mod tests {
             bcc: "existing@example.test".into(),
             ..Draft::default()
         };
-        mail.invoke(Invoke::apply(&crate::actions::save_draft_action(&existing)).unwrap())
-            .unwrap();
+        let before = mail.state().draft;
+        for edit in crate::resource::Mail::paths()
+            .draft
+            .path()
+            .edits(&before, &before.saved(&existing))
+        {
+            mail.invoke(Invoke::edit(&edit).unwrap()).unwrap();
+        }
         assert!(
             mail.effect_on_confirmed(&choice.id(), &choice.effect())
                 .is_err()
         );
         assert_eq!(
-            mail.read_document(crate::doc::MailDoc::load_draft).bcc,
+            mail.read_document(crate::resource::TestMail::load_draft)
+                .bcc,
             existing.bcc
         );
         let mut compose = crate::compose::ComposeWindow::new(crate::model::ComposeFormat::Text);
@@ -607,11 +613,14 @@ mod tests {
             ..Draft::default()
         };
         compose.open_with_draft(&draft);
-        let mut doc = automerge::AutoCommit::new();
+        let mut doc = crate::resource::TestMail::doc();
         let saved = compose.to_draft(&mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(saved.sender, draft.sender);
-        crate::doc::MailDoc::store_draft(&mut doc, &saved);
-        assert_eq!(crate::doc::MailDoc::load_draft(&doc).sender, draft.sender);
+        crate::resource::TestMail::store_draft(&mut doc, &saved);
+        assert_eq!(
+            crate::resource::TestMail::load_draft(&doc).sender,
+            draft.sender
+        );
         compose.open_blank();
         assert!(
             compose
@@ -619,8 +628,8 @@ mod tests {
                 .sender
                 .is_none()
         );
-        crate::doc::MailDoc::clear_draft(&mut doc);
-        assert!(crate::doc::MailDoc::load_draft(&doc).sender.is_none());
+        crate::resource::TestMail::clear_draft(&mut doc);
+        assert!(crate::resource::TestMail::load_draft(&doc).sender.is_none());
     }
 }
 

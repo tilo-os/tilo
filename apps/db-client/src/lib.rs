@@ -14,12 +14,11 @@
 //! - [`engine_mysql`] — the MySQL/MariaDB driver: introspection + execution.
 //! - [`worker`]    — the background thread that owns the live engine and runs
 //!   every blocking connect/introspect/query off the UI thread.
-//! - [`actions`]   — the [`actions::DbAction`] CRUD of the saved-connection list
-//!   and saved queries, and the SQL buffer's edits (collaborative doc state).
-//! - [`resource`]  — the workspace resource and the framework app over it.
+//! - [`record`]    — the shared workspace: saved connections and queries and
+//!   the SQL buffer, a typed model.
+//! - [`resource`]  — the workspace's verbs, effects and the framework app.
 //! - [`sample`]    — the bundled offline sample database.
 //! - [`session`]   — runtime view state (connections, schema, results).
-//! - [`doc`]       — the CRDT-backed SQL buffer + saved-connection list.
 //! - [`link`]      — the model the controller publishes and the intents the
 //!   views answer with.
 //! - [`navigator`] — the sidebar: connections and tables.
@@ -49,10 +48,8 @@
     )
 )]
 
-pub mod actions;
 pub mod app;
 pub mod connect_modal;
-pub mod doc;
 pub mod engine;
 pub mod engine_mysql;
 pub mod engine_pg;
@@ -60,6 +57,7 @@ pub mod link;
 pub mod model;
 pub mod navigator;
 pub mod query;
+pub mod record;
 pub mod resource;
 pub mod results;
 pub mod sample;
@@ -70,4 +68,4 @@ pub mod worker;
 pub mod workspace;
 
 pub use app::DbClientApp;
-pub use resource::{DbClient, DbClientShell};
+pub use resource::{DbClientShell, LOCALES, Workspace};

@@ -27,11 +27,11 @@
 //! [`ShellNetwork::peer_labels`] — a frame's own `user` field is never
 //! trusted, since a peer naming itself could name anybody.
 
-use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use ui::num::f32_of_f64;
 
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::{PresenceCtx, PresenceKey};
@@ -290,10 +290,15 @@ fn fold_typed_presence(
     let changed = !updates.is_empty();
     for (user, key, payload) in updates {
         if let PresencePayload::Interaction(update) = payload {
-            let kind = update.actor.kind;
+            // The broker and the network's ingress deliver an actor they
+            // vouch for under its own id; anything else is its sender.
+            let actor = if update.actor.id == user {
+                update.actor.clone()
+            } else {
+                tilo_actions::InteractionActor::new(user, update.actor.kind)
+            };
             let sequence = update.sequence;
-            let update = (*update)
-                .normalized_by_broker(tilo_actions::InteractionActor { id: user, kind }, sequence);
+            let update = (*update).normalized_by_broker(actor, sequence);
             let _ = presence.observe_interaction(update);
         } else if matches!(payload, PresencePayload::Left) && matches!(key, PresenceKey::Tab { .. })
         {
@@ -957,17 +962,6 @@ fn handles_seen_in(presence: &PresenceCtx, room: &str) -> std::collections::BTre
 /// frames identify their sender by.
 pub type PeerLabels = std::collections::BTreeMap<u64, String>;
 
-/// Narrows a placed cursor coordinate (this device's scene space) to the
-/// `f32` [`PresencePayload::Pointer`] takes. Screen coordinates never
-/// approach a magnitude where this loses meaningful precision.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "desktop pixel coordinates stay well within f32's precision"
-)]
-fn cursor_coord_to_f32(v: f64) -> f32 {
-    v as f32
-}
-
 /// Every peer pointer received and not yet superseded, by presence id
 /// (`peer@<handle>`): the room it was sent in, where it is anchored, and
 /// when it was last heard. Kept after it goes quiet — somebody who pointed
@@ -1056,7 +1050,7 @@ pub fn place_pointers(
             continue;
         };
         let key = PresenceKey::Workspace { id: room.clone() };
-        let at = (cursor_coord_to_f32(x), cursor_coord_to_f32(y));
+        let at = (f32_of_f64(x), f32_of_f64(y));
         let placed = presence
             .pointers
             .get(&key)
@@ -1158,7 +1152,8 @@ mod tests {
             sequence: 1,
             actor: tilo_actions::InteractionActor {
                 id: actor.to_string(),
-                kind: tilo_actions::InteractionActorKind::Person,
+                kind: tilo_actions::ActorKind::Person,
+                for_person: None,
             },
             phase: tilo_actions::InteractionPhase::Applying,
             action: tilo_actions::InteractionAction {
@@ -1174,6 +1169,46 @@ mod tests {
             anchor: tilo_actions::InteractionAnchor::Resource,
             group: None,
         }))
+    }
+
+    /// An actor the broker or the network's ingress vouched for arrives
+    /// under its own id and keeps whom it acts for; one that names someone
+    /// other than its sender does not.
+    #[test]
+    fn a_vouched_agent_keeps_whom_it_acts_for() {
+        let resource = PresenceKey::Resource {
+            app: "org.tilo.Writer".into(),
+            id: "report:q3".into(),
+            kind: "document".into(),
+        };
+        let agent = |for_person: &str| {
+            let PresencePayload::Interaction(mut update) = interaction("agent:claude") else {
+                unreachable!("interaction() builds an interaction")
+            };
+            update.actor =
+                tilo_actions::InteractionActor::new("agent:claude", tilo_actions::ActorKind::Agent)
+                    .acting_for(for_person);
+            PresencePayload::Interaction(update)
+        };
+        let mut presence = PresenceCtx::default();
+        assert!(fold_typed_presence(
+            vec![
+                ("agent:claude".into(), resource.clone(), agent("ada")),
+                ("peer@9".into(), resource, agent("bob")),
+            ],
+            &mut presence,
+        ));
+        let visible = presence.visible_interactions(Instant::now());
+        let claude = visible
+            .iter()
+            .find(|update| update.actor.id == "agent:claude")
+            .expect("the vouched agent");
+        assert_eq!(claude.actor.for_person.as_deref(), Some("ada"));
+        let forged = visible
+            .iter()
+            .find(|update| update.actor.id == "peer@9")
+            .expect("attributed to its sender");
+        assert_eq!(forged.actor.for_person, None);
     }
 
     #[test]
@@ -2037,25 +2072,25 @@ mod tests {
         a_session_that_names_nobody_is_labelled_with_its_handle();
     }
 
-    /// A workspace `owner` owns, whose room admits `member` with `verb` —
-    /// the membership capability invite redemption writes, keyed by the
-    /// person's key hex.
+    /// A workspace `owner` owns, whose room admits `member` as `role` —
+    /// the membership invite redemption writes, keyed by the person's key
+    /// hex.
     fn room_admitting(
         owner: &str,
         member: &str,
-        verb: collab_types::Verb,
+        role: crate::shell::state::CapRole,
     ) -> crate::shell::state::Workspace {
         use crate::shell::state::{Workspace, WorkspaceId};
         let mut ws = Workspace::new(WorkspaceId(1), "Design review");
-        ws.room = crate::shell::state::RoomId::new();
+        ws.set_room(crate::shell::state::RoomId::new());
         ws.set_owner(owner.to_string());
-        ws.grant_as(
-            &owner.to_string(),
-            collab_types::CapOverride::membership(
-                collab_types::Subject::person(member),
-                ws.room.to_string(),
-                verb,
-            ),
+        ws.govern_as_at(
+            owner,
+            tilo_action_policy::Change::AddMember {
+                person: member.to_owned(),
+                role,
+            },
+            tilo_clock::unix_now(),
         )
         .expect("the owner admits the member");
         ws
@@ -2072,7 +2107,7 @@ mod tests {
         // invited as an editor; the room calls him "Bob" and his
         // certified device belongs to his key. The chip is the policy's.
         {
-            let ws = room_admitting("ada", &bob, collab_types::Verb::Write);
+            let ws = room_admitting("ada", &bob, CapRole::Editor);
             let labels = PeerLabels::from([(handle, "Bob".to_string())]);
             let principals = std::collections::BTreeMap::from([(handle, bob.clone())]);
             let rows = room_roster(&ws, &labels, &arrived, 1, &principals);
@@ -2089,7 +2124,7 @@ mod tests {
         // A certified device is asked about by its person only: a label
         // that happens to read as the owner's id lends it nothing.
         {
-            let ws = room_admitting("ada", &bob, collab_types::Verb::Read);
+            let ws = room_admitting("ada", &bob, CapRole::Viewer);
             let labels = PeerLabels::from([(handle, "ada".to_string())]);
             let principals = std::collections::BTreeMap::from([(handle, bob.clone())]);
             let rows = room_roster(&ws, &labels, &arrived, 1, &principals);
@@ -2104,7 +2139,7 @@ mod tests {
         // The inviter labels its own endpoint with its user id and has no
         // certified device in the room; that row keeps the owner chip.
         {
-            let ws = room_admitting("ada", &bob, collab_types::Verb::Write);
+            let ws = room_admitting("ada", &bob, CapRole::Editor);
             let labels = PeerLabels::from([(handle, "ada".to_string())]);
             let rows = room_roster(
                 &ws,
@@ -2122,7 +2157,7 @@ mod tests {
 
         // Phase `a_certified_person_without_membership_has_no_chip`.
         {
-            let ws = room_admitting("ada", "someone-else", collab_types::Verb::Write);
+            let ws = room_admitting("ada", "someone-else", CapRole::Editor);
             let labels = PeerLabels::from([(handle, "Bob".to_string())]);
             let principals = std::collections::BTreeMap::from([(handle, bob)]);
             let rows = room_roster(&ws, &labels, &arrived, 1, &principals);
@@ -2698,7 +2733,7 @@ mod two_sessions {
         let strip = StripId(77);
         let ws_id = WorkspaceId(7);
         let mut ws = Workspace::new(ws_id, "Desk");
-        ws.room = room;
+        ws.set_room(room);
         ws.strips = vec![Strip {
             id: strip,
             name: "Main".into(),

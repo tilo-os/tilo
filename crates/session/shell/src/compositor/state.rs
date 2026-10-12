@@ -438,15 +438,11 @@ pub(crate) use crate::shell::floating::*;
 /// (1.0=100%, …); the compositor follows the same document through its live
 /// settings snapshot. An absent or out-of-range value falls back to `1.0`.
 pub fn display_scale_from(document: &serde_json::Map<String, serde_json::Value>) -> f64 {
-    match document
-        .get("display")
-        .and_then(|d| d.get("scale"))
-        .and_then(serde_json::Value::as_f64)
-    {
-        // Clamp to the Settings control's range (100%-200%, with margin) so an out-of-band value can't wedge the UI.
-        Some(scale) if (0.5..=3.0).contains(&scale) => scale,
-        _ => 1.0,
-    }
+    document
+        .get(settings_store::hardware::DISPLAY_SECTION)
+        .and_then(serde_json::Value::as_object)
+        .and_then(settings_store::display_scale::user_scale)
+        .unwrap_or(1.0)
 }
 
 /// Bridges the `ext_session_lock_v1` protocol handler (running inside the

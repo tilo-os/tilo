@@ -229,3 +229,19 @@ chip-flow-completed = Completed simulation
 chip-flow-expected-refusal = Expected refusal; no completed result
 
 chip-open-invalid = This file is not a supported Chip Design report. No report was imported.
+
+## History: what each change to the project did
+
+chip-design-import-report = Imported an analytical storage report
+chip-design-remove-report = Removed an analytical storage report
+chip-design-import-verification = Imported a hardware verification receipt
+chip-design-remove-verification = Removed a hardware verification receipt
+chip-design-add-node = Added the operator { $node }
+chip-design-set-shape = Reshaped the operator { $node }
+chip-design-remove-node = Removed the operator { $node }
+chip-design-connect = Connected { $from_node } to { $to_node }
+chip-design-disconnect = Disconnected the { $port } input of { $node }
+chip-design-operator-node-x = Moved an operator
+chip-design-operator-node-y = Moved an operator
+chip-design-operator-node-output-width = Changed the matrix output width of an operator
+chip-design-project-nodes = Changed the operators

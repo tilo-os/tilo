@@ -312,7 +312,6 @@ mod tests {
             output: Some(Binding::Input("file".into())),
             grant: Vec::new(),
             triggers: Vec::new(),
-            consents: Vec::new(),
             saved_by: Some(owner.clone()),
         };
         let mut plain = on_file.clone();
@@ -320,7 +319,7 @@ mod tests {
         plain.name = "Tidy".into();
         plain.inputs.clear();
         plain.output = None;
-        workspace.owner = Some(owner);
+        workspace.set_owner(owner);
         workspace.shortcuts = vec![on_file, plain];
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);

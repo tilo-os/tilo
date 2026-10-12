@@ -29,10 +29,6 @@
 //! matching keyboard/toolbar path dispatches for the same view.
 
 use automerge::AutoCommit;
-use tilo_actions::{
-    Action, ActionArgs, ActionParam, ActionSpec, ContextRequirement, DoorError, EncodedAction,
-    ExecutionLocus, ParamType, Resource,
-};
 #[cfg(test)]
 use ui::widget::Edits;
 
@@ -41,35 +37,11 @@ use tilo_document::{BodyOrder, ClipAttr};
 use super::participant::{FindState, ParticipantView, PendingCaret, ViewPoint};
 use super::{
     MAX_ACTION_TEXT_CHARS, MAX_RESOURCE_SEARCH_HITS, MarkVal, RegionKind, RichTextAction,
-    SearchTarget, SelectionTarget, Span, WpResourceCtx, apply_named_style_action, continuation,
-    encode, paste_fragment_action, replace_selection_action, set_mark_action,
-    set_paragraph_style_action, splice_text_action, split_block_action, valid_hyperlink_target,
+    SearchTarget, SelectionTarget, Span, WpResourceCtx, apply_named_style_action,
+    paste_fragment_action, replace_selection_action, set_mark_action, set_paragraph_style_action,
+    splice_text_action, split_block_action, valid_hyperlink_target,
 };
 use crate::word_processor::ClipBlock;
-
-/// Stable root operation ids published on `word-processor.document` for the
-/// primitives below. Agents and the palette address editing by these ids, so
-/// they must not change.
-pub mod op {
-    pub const TYPE_TEXT: &str = "type-text";
-    pub const NEW_PARAGRAPH: &str = "new-paragraph";
-    /// Not `delete`: `immediate_spec` marks any id containing "delete" as
-    /// destructive, and Backspace is not a confirmed operation.
-    pub const DELETE: &str = "erase-text";
-    pub const TOGGLE_MARK: &str = "toggle-mark";
-    pub const SET_MARK: &str = "set-format";
-    pub const CLEAR_MARK: &str = "clear-mark";
-    pub const SET_PARAGRAPH_STYLE: &str = "set-paragraph-style";
-    pub const APPLY_NAMED_STYLE: &str = "apply-named-style";
-    pub const PASTE: &str = "paste";
-    pub const APPLY_SPELLING_SUGGESTION: &str = "apply-spelling-suggestion";
-    pub const MOVE_CARET: &str = "move-caret";
-    pub const SELECT_RANGE: &str = "select-range";
-    pub const SELECT_BLOCK: &str = "select-block";
-    pub const SELECT_ALL: &str = "select-all";
-    /// Not `find`: that root id already opens the Find bar (View, no query).
-    pub const FIND: &str = "find-text";
-}
 
 /// Most characters one `erase-text` may remove without a selection
 /// (an unattended caller cannot wipe a document one large delete at a time).
@@ -103,8 +75,8 @@ impl std::fmt::Display for EditingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotYetImplemented(op) => write!(f, "{op} is not yet implemented"),
-            Self::NoCaret => f.write_str("no caret in this document"),
-            Self::NeedsSelection => f.write_str("this needs a selection"),
+            Self::NoCaret => f.write_str("needs-caret: Place the caret in the document first"),
+            Self::NeedsSelection => f.write_str("needs-selection: Select some text first"),
             Self::Invalid(reason) => write!(f, "invalid arguments: {reason}"),
         }
     }
@@ -245,8 +217,7 @@ impl<'a> RegionDoc<'a> {
         body: Option<&'a BodyOrder>,
         region: RegionKind,
     ) -> Result<Self, EditingError> {
-        let containers =
-            tilo_doc::model::open(doc, &automerge::ROOT).map_err(|_| EditingError::NoCaret)?;
+        let containers = crate::model::open(doc).map_err(|_| EditingError::NoCaret)?;
         Ok(Self {
             doc,
             containers,
@@ -1204,7 +1175,7 @@ impl AppendTarget {
             pending: None,
             ..view.clone()
         };
-        let end = tilo_doc::model::open(doc, &automerge::ROOT)
+        let end = crate::model::open(doc)
             .ok()
             .and_then(|c| match body {
                 Some(body) => body
@@ -1427,8 +1398,7 @@ pub fn find(view: &ParticipantView, doc: &AutoCommit, query: &str) -> EditResult
         next.find = FindState::default();
         return Ok((Vec::new(), next));
     }
-    let containers =
-        tilo_doc::model::open(doc, &automerge::ROOT).map_err(|_| EditingError::NoCaret)?;
+    let containers = crate::model::open(doc).map_err(|_| EditingError::NoCaret)?;
     let blocks = tilo_doc::model::materialize(doc, &containers).blocks;
     next.find = FindState::new(query, literal_matches(&blocks, query));
     if let Some(first) = next.find.hits.first().cloned() {
@@ -1579,558 +1549,230 @@ fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> 
 }
 
 // ---------------------------------------------------------------------------
-// Published root operations
+// Edits the published edit effects take at a participant's caret
 // ---------------------------------------------------------------------------
 
-fn invalid(reason: impl Into<String>) -> EncodedAction {
-    EncodedAction {
-        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-        payload: reason.into().into_bytes(),
-    }
-}
-
-/// One envelope, or a refusal naming why the invocation built nothing.
-fn single(result: EditResult, nothing: &str) -> EncodedAction {
-    match result {
-        Ok((actions, next)) => match actions.as_slice() {
-            [action] => {
-                // The invoking participant's next view (a no-op outside a
-                // participant invocation); the widget adopts it once the
-                // document changed, so Enter/join/paste land its caret.
-                crate::widget::note_participant_outcome(&next);
-                encode(action)
-            }
-            [] => invalid(nothing),
-            _ => invalid("this edit needs more than one step here; collapse the selection first"),
-        },
-        Err(error) => invalid(error.to_string()),
-    }
-}
-
-fn locus() -> ExecutionLocus {
-    // Every text/formatting envelope is a client-local document write.
-    splice_text_action(RegionKind::Body, "", 0, 0, "").locus()
-}
-
-fn usize_arg(args: &ActionArgs, name: &str) -> Option<usize> {
-    args.integer(name)
-        .and_then(|value| usize::try_from(value).ok())
-}
-
-/// Refusal of an operation replacing more than [`LARGE_REMOVAL_CHARS`]
-/// through a published operation. The contract is the same for every
-/// participant (the catalogue schema must not depend on a view), so a large
-/// replacement is refused at build time rather than made confirmable; the
+/// Refusal of an edit replacing more than [`LARGE_REMOVAL_CHARS`] through a
+/// published edit effect. The contract is the same for every participant,
+/// so a large replacement is refused rather than made confirmable; the
 /// keyboard path is not affected.
-pub(super) const LARGE_REFUSAL: &str =
+pub const LARGE_REFUSAL: &str =
     "large-removal: this replaces more than 2048 characters; select less or erase in steps";
 
-/// The encoded refusal of an unmet context precondition, e.g.
-/// `needs-selection: Select some text first`.
-pub(super) fn refused(requirement: ContextRequirement) -> EncodedAction {
-    match requirement.refusal() {
-        DoorError::Unavailable { code, reason } => invalid(format!("{code}: {reason}")),
-        other => invalid(format!("{}: {other:?}", requirement.refusal_code())),
-    }
-}
-
-/// Whether replacing this context's selection removes more than
+/// Whether replacing `view`'s selection removes more than
 /// [`LARGE_REMOVAL_CHARS`].
-pub(super) fn large_selection(
-    ctx: &WpResourceCtx,
-    doc: &AutoCommit,
-    body: Option<&BodyOrder>,
-) -> bool {
-    ctx.selection.is_some()
-        && resolve_in(&ParticipantView::from_ctx(ctx), doc, body)
-            .is_ok_and(|r| r.removed_chars() > LARGE_REMOVAL_CHARS)
+pub fn large_selection(view: &ParticipantView, doc: &AutoCommit) -> bool {
+    resolve(view, doc)
+        .is_ok_and(|r| r.selection.is_some() && r.removed_chars() > LARGE_REMOVAL_CHARS)
 }
 
-/// Publish the editing primitives as root operations of `root`
-/// (`word-processor.document`) for the participant whose context is `ctx`.
-/// Document operations encode positional envelopes; the view operations are
-/// published by [`super::view_ops::add_operations`]. `body` is the kept order
-/// of `doc`'s body when the caller has one: building the tree then reads only
-/// the blocks around the caret, never the whole body.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the published editing-operation table: one independent spec per operation"
-)]
-pub(super) fn add_operations(
-    root: &mut Resource,
-    ctx: &WpResourceCtx,
+/// Set formatting on the selection whatever it has now: a toggle mark
+/// (`strong`, `em`, …) `on` or off, or a valued mark (`font`, `size`,
+/// `color`, `highlight`) to `value`.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] for an unknown mark, a missing `on` or
+/// `value`, no caret, or a toggle mark without a selection to format.
+pub fn set_format(
+    view: &ParticipantView,
     doc: &AutoCommit,
-    body: Option<&BodyOrder>,
-) {
-    let view = ParticipantView::from_ctx(ctx);
-    // Every participant's tree and the catalogue schema carry the same
-    // operations with the same contracts; only the build closures differ.
-    // Without a resolvable caret they refuse with `needs-caret`.
-    let r = resolve_in(&view, doc, body).ok();
-    let domain = continuation::view(
-        ctx.region,
-        &view.caret,
-        view.anchor.as_ref().map(|anchor| (anchor, &view.caret)),
-    );
-    let large = r
-        .as_ref()
-        .is_some_and(|r| r.selection.is_some() && r.removed_chars() > LARGE_REMOVAL_CHARS);
-    let guard = |spec: ActionSpec| spec.reversible().requires(ContextRequirement::Caret);
-    let publish = |root: &mut Resource, spec: ActionSpec, handler: &'static str| {
-        let spec = continuation::pure(spec, handler, domain.clone());
-        if let Some(existing) = root.actions.iter_mut().find(|action| action.id == spec.id) {
-            *existing = spec;
-        } else {
-            root.actions.push(spec);
+    name: &str,
+    on: Option<bool>,
+    value: Option<&str>,
+) -> EditResult {
+    let r = resolve(view, doc)?;
+    let target = MarkTarget::new(&r);
+    if let Some(mark) = InlineMark::from_name(name) {
+        let on = on.ok_or_else(|| {
+            EditingError::Invalid("on is required: true sets the mark, false removes it".into())
+        })?;
+        let outcome = target.turn(mark, on);
+        if outcome.0.is_empty() {
+            return Err(EditingError::NeedsSelection);
         }
-    };
-
-    let typing = r.as_ref().map(TypeTarget::new);
-    let has_selection = typing
-        .as_ref()
-        .is_some_and(|typing| typing.selection.is_some());
-    publish(
-        root,
-        guard(
-            ActionSpec::typed(
-                op::TYPE_TEXT,
-                "Type text",
-                "Text to type at the caret",
-                locus(),
-                vec![ActionParam::required_owned(
-                    "text",
-                    ParamType::Text,
-                    "Text typed at the caret, replacing the selection (empty only erases a selection)",
-                )],
-                move |args: &ActionArgs| {
-                    let Some(typing) = &typing else {
-                        return refused(ContextRequirement::Caret);
-                    };
-                    if large {
-                        return invalid(LARGE_REFUSAL);
-                    }
-                    let text = args.text("text").unwrap_or_default();
-                    if text.chars().count() > MAX_ACTION_TEXT_CHARS {
-                        return invalid("text is too long");
-                    }
-                    if text.is_empty() && typing.selection.is_none() {
-                        return invalid("text must be non-empty without a selection");
-                    }
-                    single(Ok(typing.build(text)), "nothing to type")
-                },
-            )
-            .with_description(
-                "Type text at your caret like the keyboard: it replaces your selection, and your caret moves past it. Repeat to keep typing.",
-            )
-            .incremental_self(),
-        ),
-        "type-text.v1",
-    );
-
-    // Both shapes take no input and share one contract.
-    let paragraph_edit = new_paragraph_in(&view, doc, body);
-    let paragraph = match (
-        &r,
-        paragraph_edit
-            .as_ref()
-            .map(|(actions, _)| actions.as_slice()),
-    ) {
-        (Some(_), Ok([action])) => ActionSpec::immediate_encoded(
-            op::NEW_PARAGRAPH,
-            "New paragraph",
-            locus(),
-            encode(action),
-        ),
-        // Refusal shapes declare the registered envelope type and refuse only
-        // when invoked. A zero-parameter `typed` spec would carry the
-        // unregistered invalid-arguments sentinel as its immediate envelope,
-        // which fails contract validation and drops Writer's whole published
-        // surface (the participant-host schema always has a selection).
-        (Some(_), _) => ActionSpec::deferred(
-            op::NEW_PARAGRAPH,
-            "New paragraph",
-            locus(),
-            super::WORD_PROCESSOR_ACTION_TYPE,
-            || invalid("collapse the selection first (type-text replaces it)"),
-        ),
-        (None, _) => ActionSpec::deferred(
-            op::NEW_PARAGRAPH,
-            "New paragraph",
-            locus(),
-            super::WORD_PROCESSOR_ACTION_TYPE,
-            || refused(ContextRequirement::Caret),
-        ),
-    };
-    publish(
-        root,
-        guard(paragraph.with_description(
-            "Press Enter at your caret: split the paragraph (an empty list item becomes a paragraph)",
-        )),
-        "new-paragraph.v1",
-    );
-
-    let erase = r.as_ref().map(|r| EraseTarget::new(r, None));
-    publish(
-        root,
-        guard(
-            ActionSpec::typed(
-                op::DELETE,
-                "Erase text",
-                "Characters to erase",
-                locus(),
-                vec![
-                    ActionParam::optional_owned(
-                        "direction",
-                        ParamType::Text,
-                        "backward (Backspace, default) or forward (Delete)",
-                    )
-                    .with_choices(["backward", "forward"]),
-                    ActionParam::optional_owned(
-                        "count",
-                        ParamType::Integer,
-                        "Characters to erase (default 1); a paragraph break counts as one",
-                    )
-                    .with_schema(serde_json::json!({"minimum": 1, "maximum": MAX_ERASE_COUNT})),
-                ],
-                move |args: &ActionArgs| {
-                    let Some(erase) = &erase else {
-                        return refused(ContextRequirement::Caret);
-                    };
-                    if large {
-                        return invalid(LARGE_REFUSAL);
-                    }
-                    let direction = match args.text("direction") {
-                        None | Some("backward") => DeleteDirection::Backward,
-                        Some("forward") => DeleteDirection::Forward,
-                        Some(_) => return invalid("direction is backward or forward"),
-                    };
-                    let count = match args.get("count") {
-                        None => 1,
-                        Some(_) => match usize_arg(args, "count") {
-                            Some(count) => count,
-                            None => return invalid("count must be a positive integer"),
-                        },
-                    };
-                    single(erase.build(direction, count), "nothing to erase")
-                },
-            )
-            .with_description("Backspace/Delete at your caret, or erase your selection"),
-        ),
-        "erase-text.v1",
-    );
-
-    let marks = r.as_ref().map(MarkTarget::new);
-    let toggles = marks.clone();
-    publish(
-        root,
-        guard(
-            ActionSpec::typed(
-                op::TOGGLE_MARK,
-                "Toggle formatting",
-                "strong, em, underline, strike, super or sub",
-                locus(),
-                vec![
-                    ActionParam::required_owned(
-                        "mark",
-                        ParamType::Text,
-                        "The inline mark to toggle",
-                    )
-                    .with_choices(InlineMark::ALL.map(InlineMark::name)),
-                ],
-                move |args: &ActionArgs| {
-                    let Some(mark) = args.text("mark").and_then(InlineMark::from_name) else {
-                        return invalid("unknown mark");
-                    };
-                    let Some(toggles) = &toggles else {
-                        return refused(ContextRequirement::Caret);
-                    };
-                    match toggles.toggle(mark) {
-                        (actions, _) if actions.is_empty() => {
-                            refused(ContextRequirement::Selection)
-                        }
-                        outcome => single(Ok(outcome), "nothing to format"),
-                    }
-                },
-            )
-            .with_description(
-                "Flip bold/italic/underline/strike on your selection, off where it covers all of it (super/sub also the caret paragraph); set-mark with on sets it without flipping",
-            ),
-        ),
-        "toggle-mark.v1",
-    );
-
-    let setter = marks.clone();
-    publish(
-        root,
-        guard(
-            ActionSpec::typed(
-                op::SET_MARK,
-                "Set text format",
-                "strong, em, underline, strike, super or sub with on; font, size, color or highlight with value",
-                locus(),
-                vec![
-                    ActionParam::required_owned("name", ParamType::Text, "The inline mark")
-                        .with_choices(InlineMark::ALL.map(InlineMark::name).into_iter().chain(VALUED_MARKS)),
-                    ActionParam::optional_owned(
-                        "on",
-                        ParamType::Boolean,
-                        "strong, em, underline, strike, super, sub: true sets it, false removes it",
-                    ),
-                    ActionParam::optional_owned(
-                        "value",
-                        ParamType::Text,
-                        "font: sans|serif|mono; size: points 6-200; color/highlight: #rrggbb",
-                    ),
-                ],
-                move |args: &ActionArgs| {
-                    let Some(setter) = &setter else {
-                        return refused(ContextRequirement::Caret);
-                    };
-                    let name = args.text("name").unwrap_or_default();
-                    if let Some(mark) = InlineMark::from_name(name) {
-                        let Some(on) = args.boolean("on") else {
-                            return invalid("on is required: true sets the mark, false removes it");
-                        };
-                        return match setter.turn(mark, on) {
-                            (actions, _) if actions.is_empty() => {
-                                refused(ContextRequirement::Selection)
-                            }
-                            outcome => single(Ok(outcome), "nothing to format"),
-                        };
-                    }
-                    match mark_value(name, args.text("value").unwrap_or_default()) {
-                        Ok(value) => single(Ok(setter.set(name, Some(value))), "nothing to format"),
-                        Err(reason) => invalid(reason),
-                    }
-                },
-            )
-            .with_description(
-                "Set formatting on your selection whatever it has now: bold/italic/underline/strike on or off, or font, size, colour or highlight (super/sub and valued marks also the caret paragraph)",
-            ),
-        ),
-        "set-format.v1",
-    );
-
-    publish(
-        root,
-        guard(
-            ActionSpec::typed(
-                op::CLEAR_MARK,
-                "Clear text format",
-                "mark name",
-                locus(),
-                vec![
-                    ActionParam::required_owned(
-                        "name",
-                        ParamType::Text,
-                        "The inline mark to remove",
-                    )
-                    .with_choices(
-                        VALUED_MARKS
-                            .into_iter()
-                            .chain(InlineMark::ALL.map(InlineMark::name)),
-                    ),
-                ],
-                move |args: &ActionArgs| {
-                    let name = args.text("name").unwrap_or_default();
-                    if !VALUED_MARKS.contains(&name) && InlineMark::from_name(name).is_none() {
-                        return invalid("unknown mark");
-                    }
-                    let Some(marks) = &marks else {
-                        return refused(ContextRequirement::Caret);
-                    };
-                    single(Ok(marks.set(name, None)), "nothing to clear")
-                },
-            )
-            .with_description(
-                "Remove one inline format from your selection, or the caret paragraph",
-            ),
-        ),
-        "clear-mark.v1",
-    );
-
-    let styles = r.as_ref().map(StyleTarget::new);
-    let paragraph_styles = styles.clone();
-    publish(
-        root,
-        guard(ActionSpec::typed(
-            op::SET_PARAGRAPH_STYLE,
-            "Set paragraph style",
-            "paragraph, heading or list_item",
-            locus(),
-            vec![
-                ActionParam::required_owned("kind", ParamType::Text, "Paragraph kind")
-                    .with_choices(["paragraph", "heading", "list_item"]),
-                ActionParam::optional_owned("level", ParamType::Integer, "Heading level 1-6")
-                    .with_schema(serde_json::json!({"minimum": 1, "maximum": 6})),
-                ActionParam::optional_owned(
-                    "ordered",
-                    ParamType::Boolean,
-                    "Numbered (true) or bulleted (false) list",
-                ),
-            ],
-            move |args: &ActionArgs| {
-                let kind = args.text("kind").unwrap_or_default();
-                if !matches!(kind, "paragraph" | "heading" | "list_item") {
-                    return invalid("kind is paragraph, heading or list_item");
-                }
-                let level = args.integer("level");
-                if level.is_some_and(|level| !(1..=6).contains(&level)) {
-                    return invalid("level is 1-6");
-                }
-                let style = ParagraphStyle {
-                    kind: kind.to_owned(),
-                    level,
-                    ordered: args.boolean("ordered"),
-                };
-                let Some(paragraph_styles) = &paragraph_styles else {
-                    return refused(ContextRequirement::Caret);
-                };
-                single(Ok(paragraph_styles.paragraph(&style)), "no paragraph to style")
-            },
-        )
-        .with_description("Make your selected paragraphs (or the caret paragraph) a heading, list or body paragraph")),
-        "set-paragraph-style.v1",
-    );
-
-    publish(
-        root,
-        guard(
-            ActionSpec::typed(
-                op::APPLY_NAMED_STYLE,
-                "Apply style",
-                "style id (body, heading1-3, quote, list, or a custom style)",
-                locus(),
-                vec![
-                    ActionParam::required_owned("style", ParamType::Text, "Named style id")
-                        .with_schema(serde_json::json!({"minLength": 1, "maxLength": 128})),
-                ],
-                move |args: &ActionArgs| {
-                    let style = args.text("style").unwrap_or_default();
-                    let safe = !style.is_empty()
-                        && style.len() <= 128
-                        && style.bytes().all(|byte| {
-                            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
-                        });
-                    if !safe {
-                        return invalid("style is a style id");
-                    }
-                    let Some(styles) = &styles else {
-                        return refused(ContextRequirement::Caret);
-                    };
-                    single(Ok(styles.named(style)), "no paragraph to style")
-                },
-            )
-            .with_description(
-                "Apply a named style to your selected paragraphs, or the caret paragraph",
-            ),
-        ),
-        "apply-named-style.v1",
-    );
-
-    let pasting = r.as_ref().map(PasteTarget::new);
-    publish(
-        root,
-        guard(
-            ActionSpec::typed(
-                op::PASTE,
-                "Paste",
-                "Text to paste",
-                locus(),
-                vec![
-                    ActionParam::optional_owned(
-                        "text",
-                        ParamType::Text,
-                        "Plain text; each line becomes a paragraph",
-                    ),
-                    ActionParam::optional_owned(
-                        "markdown",
-                        ParamType::Text,
-                        "Markdown pasted with its formatting",
-                    ),
-                ],
-                move |args: &ActionArgs| {
-                    let Some(pasting) = &pasting else {
-                        return refused(ContextRequirement::Caret);
-                    };
-                    if large {
-                        return invalid(LARGE_REFUSAL);
-                    }
-                    let content = match (args.text("text"), args.text("markdown")) {
-                        (Some(text), None) => PasteContent::Text(text.to_owned()),
-                        (None, Some(markdown)) => PasteContent::Markdown(markdown.to_owned()),
-                        _ => return invalid("give exactly one of text or markdown"),
-                    };
-                    let empty = matches!(&content, PasteContent::Text(t) | PasteContent::Markdown(t) if t.is_empty());
-                    if empty && !has_selection {
-                        return invalid("nothing to paste");
-                    }
-                    match clip_blocks(&content) {
-                        Ok(blocks) => single(Ok(pasting.build(blocks)), "nothing to paste"),
-                        Err(error) => invalid(error.to_string()),
-                    }
-                },
-            )
-            .with_description("Paste text or Markdown (headings, lists, pipe tables) at your caret, replacing your selection"),
-        ),
-        "paste.v1",
-    );
-
-    publish(
-        root,
-        ActionSpec::typed(
-            op::APPLY_SPELLING_SUGGESTION,
-            "Apply spelling suggestion",
-            "replacement word",
-            locus(),
-            vec![
-                ActionParam::required_owned("block", ParamType::Text, "Body block of the word"),
-                ActionParam::required_owned("start", ParamType::Integer, "Word start (characters)")
-                    .with_schema(serde_json::json!({"minimum": 0})),
-                ActionParam::required_owned("end", ParamType::Integer, "Word end (characters)")
-                    .with_schema(serde_json::json!({"minimum": 1})),
-                ActionParam::required_owned(
-                    "replacement",
-                    ParamType::Text,
-                    "The suggested spelling",
-                ),
-            ],
-            move |args: &ActionArgs| {
-                let (Some(start), Some(end)) = (usize_arg(args, "start"), usize_arg(args, "end"))
-                else {
-                    return invalid("start and end are character offsets");
-                };
-                match suggestion_action(
-                    args.text("block").unwrap_or_default(),
-                    start,
-                    end,
-                    args.text("replacement").unwrap_or_default(),
-                ) {
-                    Ok(action) => encode(&action),
-                    Err(error) => invalid(error.to_string()),
-                }
-            },
-        )
-        .with_description("Replace a misspelled word with a suggestion")
-        .reversible(),
-        "apply-spelling-suggestion.v1",
-    );
-}
-
-/// Declare that `text` may arrive in parts through repeated invocations of
-/// the same operation (the caret advances past each part): the agent streams
-/// long text as repeated `type-text`. Static, so the schema stays
-/// view-independent.
-trait IncrementalSelf {
-    fn incremental_self(self) -> Self;
-}
-
-impl IncrementalSelf for ActionSpec {
-    fn incremental_self(mut self) -> Self {
-        let tag = format!("{}text:{}", super::INCREMENTAL_TEXT_TAG, self.id);
-        self.contract.tags.push(tag);
-        self
+        return Ok(outcome);
     }
+    let value = mark_value(name, value.unwrap_or_default())
+        .map_err(|reason| EditingError::Invalid(reason.into()))?;
+    Ok(target.set(name, Some(value)))
+}
+
+/// Remove one inline format, valued or toggled, from the selection or the
+/// caret paragraph.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] for an unknown mark or no caret.
+pub fn clear_format(view: &ParticipantView, doc: &AutoCommit, name: &str) -> EditResult {
+    if !VALUED_MARKS.contains(&name) && InlineMark::from_name(name).is_none() {
+        return Err(EditingError::Invalid("unknown mark".into()));
+    }
+    clear_mark(view, doc, name)
+}
+
+/// The caret context of `view`, refusing a view without a caret in `doc`.
+fn context(view: &ParticipantView, doc: &AutoCommit) -> Result<WpResourceCtx, EditingError> {
+    view.ctx(doc).ok_or(EditingError::NoCaret)
+}
+
+/// Align the caret paragraph `left`, `center`, `right` or `justify`.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] for another alignment or no caret.
+pub fn align(view: &ParticipantView, doc: &AutoCommit, align: &str) -> EditResult {
+    if !matches!(align, "left" | "center" | "right" | "justify") {
+        return Err(EditingError::Invalid(
+            "align is left, center, right or justify".into(),
+        ));
+    }
+    let ctx = context(view, doc)?;
+    Ok((
+        vec![super::set_block_attr_action(
+            ctx.region,
+            ctx.target_blocks,
+            "align",
+            super::AttrVal::Str(align.to_owned()),
+        )],
+        view.clone(),
+    ))
+}
+
+/// Insert an empty table of `rows` by `columns` after the caret paragraph.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] for no caret or a size outside Writer's
+/// limits.
+pub fn insert_table_here(
+    view: &ParticipantView,
+    doc: &AutoCommit,
+    rows: usize,
+    columns: usize,
+) -> EditResult {
+    if rows == 0
+        || columns == 0
+        || rows > super::MAX_TABLE_DIMENSION
+        || columns > super::MAX_TABLE_DIMENSION
+    {
+        return Err(EditingError::Invalid(format!(
+            "a table has 1 to {} rows and columns",
+            super::MAX_TABLE_DIMENSION
+        )));
+    }
+    let ctx = context(view, doc)?;
+    Ok((
+        vec![super::insert_table_action(&ctx.caret_block, rows, columns)],
+        view.clone(),
+    ))
+}
+
+/// Start a new page at the caret.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] for no caret.
+pub fn insert_page_break(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
+    let ctx = context(view, doc)?;
+    Ok((
+        vec![super::insert_page_break_action(
+            &ctx.caret_block,
+            ctx.caret_offset,
+        )],
+        view.clone(),
+    ))
+}
+
+/// Link the selected text to `target`: a web address, a mail address or a
+/// `#bookmark` in the document.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] for an unsafe target, no caret or no
+/// selection.
+pub fn set_hyperlink(view: &ParticipantView, doc: &AutoCommit, target: &str) -> EditResult {
+    let target = target.trim();
+    if !valid_hyperlink_target(target) {
+        return Err(EditingError::Invalid(
+            "hyperlink target must use https:, mailto:, or #bookmark".into(),
+        ));
+    }
+    let ctx = context(view, doc)?;
+    if ctx.format_spans.is_empty() {
+        return Err(EditingError::NeedsSelection);
+    }
+    Ok((
+        vec![super::set_hyperlink_action(
+            ctx.region,
+            ctx.format_spans,
+            target,
+        )],
+        view.clone(),
+    ))
+}
+
+/// Replace the selection with `text` (empty deletes it); the caret lands
+/// after the text.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] for no caret or no selection.
+pub fn replace_selection(view: &ParticipantView, doc: &AutoCommit, text: &str) -> EditResult {
+    let r = resolve(view, doc)?;
+    if r.selection.is_none() {
+        return Err(EditingError::NeedsSelection);
+    }
+    Ok(TypeTarget::new(&r).build(text))
+}
+
+/// The one-paragraph range a comment on the selection is about.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] outside the body, without a selection, or
+/// for a selection across paragraphs.
+pub fn comment_range(view: &ParticipantView, doc: &AutoCommit) -> Result<Span, EditingError> {
+    let ctx = context(view, doc)?;
+    let selection = ctx.selection.ok_or(EditingError::NeedsSelection)?;
+    if ctx.region != RegionKind::Body
+        || selection.start_block != selection.end_block
+        || selection.start >= selection.end
+    {
+        return Err(EditingError::Invalid(
+            "a comment is about text within one body paragraph".into(),
+        ));
+    }
+    Ok(Span {
+        block: selection.start_block,
+        start: selection.start,
+        end: selection.end,
+    })
+}
+
+/// Place the image `hash`, kept in `content`, at the caret.
+///
+/// # Errors
+///
+/// Returns an [`EditingError`] for content not on this machine or no caret.
+pub fn place_image(
+    view: &ParticipantView,
+    doc: &AutoCommit,
+    content: &tilo_content::ContentStore,
+    hash: &str,
+) -> EditResult {
+    let bytes = content.read(hash).ok_or_else(|| {
+        EditingError::Invalid(format!("content `{hash}` is not available on this machine"))
+    })?;
+    let ctx = context(view, doc)?;
+    Ok((
+        vec![super::insert_image_action(
+            &ctx.caret_block,
+            ctx.caret_offset,
+            super::ImageInput::of(hash.to_owned(), &bytes),
+        )],
+        view.clone(),
+    ))
 }
 
 const VALUED_MARKS: [&str; 4] = ["font", "size", "color", "highlight"];
@@ -2162,12 +1804,47 @@ fn mark_value(name: &str, value: &str) -> Result<MarkVal, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::{
-        ActionSpec, WORD_PROCESSOR_ACTION_TYPE, published_for, view_ops::ViewOperation,
-    };
+    use crate::actions::{published_for, view_ops::ViewOperation};
+    use crate::effects::WordProcessorEffect;
     use crate::word_processor::{Caret, WordProcessor};
-    use tilo_actions::{ConfirmationPolicy, LocalTransport, OperationKind};
+    use tilo_actions::{
+        ActionSpec, ConfirmationPolicy, ContextRequirement, EncodedAction, LocalTransport,
+        OperationKind, Resource,
+    };
+    use ui::tilo_resource::Effect as _;
     use ui::widget::Widget as _;
+
+    /// The published ids of the edit and view effects.
+    mod op {
+        use crate::effects::WordProcessorEffect as E;
+        pub const TYPE_TEXT: &str = E::TYPE_TEXT.id;
+        pub const NEW_PARAGRAPH: &str = E::NEW_PARAGRAPH.id;
+        pub const DELETE: &str = E::ERASE_TEXT.id;
+        pub const TOGGLE_MARK: &str = E::TOGGLE_MARK.id;
+        pub const SET_MARK: &str = E::SET_FORMAT.id;
+        pub const CLEAR_MARK: &str = E::CLEAR_FORMAT.id;
+        pub const SET_PARAGRAPH_STYLE: &str = E::SET_PARAGRAPH_STYLE.id;
+        pub const APPLY_NAMED_STYLE: &str = E::APPLY_NAMED_STYLE.id;
+        pub const PASTE: &str = E::PASTE.id;
+        pub const MOVE_CARET: &str = E::MOVE_CARET.id;
+        pub const SELECT_RANGE: &str = E::SELECT_RANGE.id;
+        pub const SELECT_BLOCK: &str = E::SELECT_BLOCK.id;
+        pub const SELECT_ALL: &str = E::SELECT_ALL.id;
+        pub const FIND: &str = E::FIND_TEXT.id;
+    }
+
+    /// A body edit as the document's action on the wire.
+    fn encode(action: &RichTextAction) -> EncodedAction {
+        crate::model::encoded(action)
+    }
+
+    /// The refusal an edit effect answers with.
+    fn invalid(reason: impl Into<String>) -> EncodedAction {
+        EncodedAction {
+            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+            payload: reason.into().into_bytes(),
+        }
+    }
 
     // ---- fixtures ----------------------------------------------------------
 
@@ -2188,12 +1865,12 @@ mod tests {
     }
 
     fn order(doc: &AutoCommit) -> Vec<String> {
-        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        let c = crate::model::open(doc).unwrap();
         tilo_doc::model::blocks_in_order(doc, &c)
     }
 
     fn texts(doc: &AutoCommit) -> Vec<String> {
-        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        let c = crate::model::open(doc).unwrap();
         tilo_doc::model::materialize(doc, &c)
             .blocks
             .into_iter()
@@ -2203,7 +1880,8 @@ mod tests {
 
     fn apply(doc: &mut AutoCommit, action: &RichTextAction) {
         let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(doc, action, encode(action), &mut tx).unwrap();
+        tilo_actions::dispatch(doc, &crate::model::action(action), encode(action), &mut tx)
+            .unwrap();
     }
 
     fn apply_all(doc: &mut AutoCommit, actions: &[RichTextAction]) {
@@ -2273,6 +1951,9 @@ mod tests {
             .clone()
     }
 
+    /// What invoking the published effect `id` with `args` at `view` submits:
+    /// its one body edit, the effect itself for a view effect, or the
+    /// refusal.
     fn invoke(
         view: &ParticipantView,
         doc: &AutoCommit,
@@ -2282,7 +1963,22 @@ mod tests {
         let serde_json::Value::Object(args) = args else {
             panic!("operation arguments are a JSON object");
         };
-        spec(&root(view, doc), id).build_json(&args).unwrap()
+        let effect = match WordProcessorEffect::decode(id, &args) {
+            Ok(effect) => effect,
+            Err(error) => return invalid(error),
+        };
+        let Some(built) = effect.edit(view, doc, &tilo_content::ContentStore::memory()) else {
+            return spec(&root(view, doc), id).build_json(&args).unwrap();
+        };
+        match built {
+            Ok((actions, _)) => match actions.as_slice() {
+                [action] => encode(action),
+                [] => invalid("nothing to change here"),
+                _ => invalid("this edit needs more than one step here"),
+            },
+            Err(EditingError::Invalid(reason)) => invalid(reason),
+            Err(error) => invalid(error.to_string()),
+        }
     }
 
     // ---- the widget's current envelope builders, verbatim over the model ----
@@ -2293,7 +1989,7 @@ mod tests {
     // being switched over to call them.
 
     fn body_block(doc: &AutoCommit, id: &str) -> Option<tilo_doc::snapshot::BlockView> {
-        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        let c = crate::model::open(doc).unwrap();
         tilo_doc::model::materialize(doc, &c)
             .blocks
             .into_iter()
@@ -2840,13 +2536,11 @@ mod tests {
                 let paragraph = spec(&root(&view, doc), op::NEW_PARAGRAPH);
                 let collapsed = spec(&root(&at(&ids[0], 0), doc), op::NEW_PARAGRAPH);
                 assert_eq!(paragraph.contract, collapsed.contract);
-                // Deferred refusal: nothing registered is encoded.
-                let refused =
-                    spec(&root(&view, doc), op::NEW_PARAGRAPH).build_json(&serde_json::Map::new());
-                assert!(
-                    refused.as_ref().is_err()
-                        || refused.is_ok_and(|encoded| encoded.type_id
-                            == tilo_actions::resource::INVALID_ARGUMENTS_TYPE)
+                // With a selection Enter refuses: nothing is encoded.
+                let refused = invoke(&view, doc, op::NEW_PARAGRAPH, serde_json::json!({}));
+                assert_eq!(
+                    refused.type_id,
+                    tilo_actions::resource::INVALID_ARGUMENTS_TYPE
                 );
             }
             if view.selection(doc).is_some() {
@@ -2865,6 +2559,8 @@ mod tests {
     fn root_operations_have_the_published_kinds_and_contracts() {
         let (state, _, ids) = writer(&["alpha"]);
         let root = root(&at(&ids[0], 2), &state.doc);
+        // Edits at the invoker's caret: views of that participant that
+        // submit a body edit as theirs, checked at the door like any edit.
         for id in [
             op::TYPE_TEXT,
             op::NEW_PARAGRAPH,
@@ -2875,34 +2571,6 @@ mod tests {
             op::SET_PARAGRAPH_STYLE,
             op::APPLY_NAMED_STYLE,
             op::PASTE,
-            op::APPLY_SPELLING_SUGGESTION,
-        ] {
-            let spec = spec(&root, id);
-            assert_eq!(spec.kind, OperationKind::Document, "{id}");
-            assert!(spec.contract.reversible, "{id}");
-            assert!(
-                matches!(spec.contract.confirmation, ConfirmationPolicy::None),
-                "{id}"
-            );
-            let caret = id != op::APPLY_SPELLING_SUGGESTION;
-            assert_eq!(
-                spec.contract.requirements(),
-                if caret {
-                    vec![ContextRequirement::Caret]
-                } else {
-                    vec![]
-                },
-                "{id}"
-            );
-            assert!(spec.contract.validate_declaration().is_empty(), "{id}");
-            assert!(
-                spec.params()
-                    .iter()
-                    .all(|p| p.validate_declaration().is_empty()),
-                "{id}"
-            );
-        }
-        for id in [
             op::MOVE_CARET,
             op::SELECT_RANGE,
             op::SELECT_BLOCK,
@@ -2912,6 +2580,10 @@ mod tests {
             let spec = spec(&root, id);
             assert_eq!(spec.kind, OperationKind::View, "{id}");
             assert!(spec.contract.is_participant_view(), "{id}");
+            assert!(
+                matches!(spec.contract.confirmation, ConfirmationPolicy::None),
+                "{id}"
+            );
             assert!(spec.contract.requirements().is_empty(), "{id}");
             assert!(spec.contract.validate_declaration().is_empty(), "{id}");
             assert!(
@@ -2921,9 +2593,10 @@ mod tests {
                 "{id}"
             );
         }
-        // The old ids keep their meaning: `find` still just opens the bar.
+        // `find` still just opens the bar.
         assert_eq!(spec(&root, "find").kind, OperationKind::View);
         assert!(spec(&root, "find").params().is_empty());
+        let _ = ContextRequirement::Caret;
     }
 
     // ---- views, settling and streaming -------------------------------------
@@ -2957,8 +2630,7 @@ mod tests {
                     id: &str,
                     args: serde_json::Value| {
             let encoded = invoke(agent, doc, id, args.clone());
-            if encoded.type_id == WORD_PROCESSOR_ACTION_TYPE {
-                let action: RichTextAction = serde_json::from_slice(&encoded.payload).unwrap();
+            if let Some(action) = crate::model::decoded(&encoded) {
                 // The view the invoker's host keeps: the primitive's result.
                 let (actions, next) = match id {
                     op::NEW_PARAGRAPH => new_paragraph(agent, doc).unwrap(),
@@ -3075,7 +2747,10 @@ mod tests {
             op::DELETE,
             serde_json::json!({"count": 1}),
         );
-        assert_eq!(refused.type_id, WORD_PROCESSOR_ACTION_TYPE);
+        assert_eq!(
+            refused.type_id,
+            <crate::model::Document as ui::tilo_resource::Resource>::ACTION_TYPE
+        );
         let edge = invoke(
             &at(&ids[0], 0),
             &state.doc,
@@ -3083,9 +2758,13 @@ mod tests {
             serde_json::json!({}),
         );
         assert_eq!(edge.type_id, tilo_actions::resource::INVALID_ARGUMENTS_TYPE);
-        let spec = spec(&root(&at(&ids[0], 1), &state.doc), op::DELETE);
-        let over = serde_json::json!({"count": MAX_ERASE_COUNT + 1});
-        assert!(spec.build_json(over.as_object().unwrap()).is_err());
+        let over = invoke(
+            &at(&ids[0], 1),
+            &state.doc,
+            op::DELETE,
+            serde_json::json!({"count": MAX_ERASE_COUNT + 1}),
+        );
+        assert_eq!(over.type_id, tilo_actions::resource::INVALID_ARGUMENTS_TYPE);
     }
 
     #[test]
@@ -3319,7 +2998,7 @@ mod tests {
             .unwrap();
             apply_all(&mut state.doc, &actions);
         }
-        let c = tilo_doc::model::open(&state.doc, &automerge::ROOT).unwrap();
+        let c = crate::model::open(&state.doc).unwrap();
         let blocks = tilo_doc::model::materialize(&state.doc, &c).blocks;
         let rows: Vec<_> = blocks
             .iter()
@@ -3376,13 +3055,6 @@ mod tests {
             vec![splice_text_action(RegionKind::Body, &ids[0], 0, 3, "then")]
         );
         assert_eq!(next.caret.offset, 8);
-        let published = invoke(
-            &view,
-            &state.doc,
-            op::APPLY_SPELLING_SUGGESTION,
-            serde_json::json!({"block": ids[0], "start": 0, "end": 3, "replacement": "then"}),
-        );
-        assert_eq!(published, encode(&actions[0]));
         apply_all(&mut state.doc, &actions);
         assert_eq!(texts(&state.doc), ["then cat sat"]);
         assert!(apply_spelling_suggestion(&view, &state.doc, &ids[0], 0, 99, "x").is_err());
@@ -3552,24 +3224,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn type_text_declares_self_continuation_for_streaming() {
-        let (state, _, ids) = writer(&["alpha"]);
-        let spec = spec(&root(&at(&ids[0], 1), &state.doc), op::TYPE_TEXT);
-        assert!(
-            spec.contract
-                .tags
-                .contains(&"tilo.incremental-text:text:type-text".to_owned())
-        );
-        assert!(spec.contract.validate_declaration().is_empty());
-    }
-
     /// Keystroke primitives inside one block must not scan the region: on a
     /// long document they cost about what they cost on a short one.
     #[test]
     fn in_block_keystrokes_do_not_scan_the_whole_document() {
         let mut doc = AutoCommit::new();
-        let containers = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+        let containers = crate::model::init(&mut doc).unwrap();
         let mut next_ids = tilo_doc::model::seeded_id_gen(&doc, &containers);
         let mut ids = Vec::new();
         {
@@ -3598,7 +3258,7 @@ mod tests {
         let local = started.elapsed();
         let started = ui::time::now();
         for _ in 0..20 {
-            let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+            let c = crate::model::open(doc).unwrap();
             std::hint::black_box(tilo_doc::model::region_blocks_in_order(
                 doc,
                 &c,
@@ -3620,18 +3280,11 @@ mod tests {
             let (actions, _) = append_paragraph(&view, &whole.doc, full).unwrap();
             apply_all(&mut whole.doc, &actions);
             // The same text streamed: first part appended, the rest typed at
-            // the caret the append leaves, through the published operations.
+            // the caret the append leaves, through the published edit effect.
             let (mut streamed, _, ids) = writer(seed);
             let mut agent = at(&ids[0], 0);
             let (first, rest) = full.split_at(20);
-            let encoded = invoke(
-                &agent,
-                &streamed.doc,
-                "append-paragraph",
-                serde_json::json!({"text": first}),
-            );
             let (actions, next) = append_paragraph(&agent, &streamed.doc, first).unwrap();
-            assert_eq!(encoded, encode(&actions[0]));
             apply_all(&mut streamed.doc, &actions);
             agent = next.settle(&streamed.doc);
             for chunk in rest.as_bytes().chunks(16) {
@@ -3652,12 +3305,5 @@ mod tests {
             let last = order(&streamed.doc).pop().unwrap();
             assert_eq!(agent.caret, ViewPoint::new(&last, full.chars().count()));
         }
-        let (state, _, ids) = writer(&["x"]);
-        let spec = spec(&root(&at(&ids[0], 0), &state.doc), "append-paragraph");
-        assert!(
-            spec.contract
-                .tags
-                .contains(&"tilo.incremental-text:text:type-text".to_owned())
-        );
     }
 }

@@ -5,6 +5,7 @@
 //! No demotion once a block is a heading. Promotion only fires on an
 //! *empty* paragraph, matching the slash-menu convention.
 
+use crate::num::f32_of_f64;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -3390,6 +3391,17 @@ impl BlockEditor {
         painted
     }
 
+    /// Where the drag handle the pointer's block shows was painted, if any:
+    /// it follows the pointer, not the text, so a host that copies a scroll
+    /// of the text repaints it where it is and where it was.
+    pub fn hover_handle(&self) -> Option<Rect> {
+        if self.block_drag.is_some() {
+            return None;
+        }
+        self.hovered_block()
+            .and_then(|index| self.block_drag_handle_rect(index))
+    }
+
     fn hovered_block(&self) -> Option<usize> {
         (0..self.blocks.len()).find_map(|index| {
             let line = self.block_paint_rect(index)?;
@@ -6268,14 +6280,6 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "text layout accepts f32 widths; these values are finite viewport-sized geometry, so f64 precision beyond f32 subpixels is immaterial"
-)]
-fn text_layout_width(width: f64) -> f32 {
-    width as f32
-}
-
 /// See [`translated`]: `Affine * Point` is the same plain f64 math.
 #[allow(
     clippy::arithmetic_side_effects,
@@ -6575,7 +6579,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
             rect.x0 + 58.0 * scale,
             rect.y0 + 18.0 * scale,
         ),
-        Some(text_layout_width((rect.width() - 76.0 * scale).max(1.0))),
+        Some(f32_of_f64((rect.width() - 76.0 * scale).max(1.0))),
         &TextStyle::new(16.0).with_weight(crate::text_render::TextWeight::Medium),
     );
     ctx.text_renderer.draw_text(
@@ -6588,7 +6592,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
             rect.x0 + 58.0 * scale,
             rect.y0 + 42.0 * scale,
         ),
-        Some(text_layout_width((rect.width() - 76.0 * scale).max(1.0))),
+        Some(f32_of_f64((rect.width() - 76.0 * scale).max(1.0))),
     );
 }
 
@@ -7157,18 +7161,6 @@ impl Widget for BlockStackLeaf {
     /// children, so its dirtiness alone would leave this leaf's cached size.
     fn layout_needs_measure(&self) -> bool {
         self.editor().is_some_and(Widget::layout_needs_measure)
-    }
-
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
 
     fn name(&self) -> &'static str {

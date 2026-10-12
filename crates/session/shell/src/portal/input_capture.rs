@@ -120,81 +120,27 @@ impl EisTransport {
 #[derive(Clone, Debug)]
 enum PortalSignal {
     Activated {
-        #[cfg_attr(
-            not(target_os = "linux"),
-            expect(
-                dead_code,
-                reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-            )
-        )]
         session: String,
-        #[cfg_attr(
-            not(target_os = "linux"),
-            expect(
-                dead_code,
-                reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-            )
-        )]
         activation_id: u32,
-        #[cfg_attr(
-            not(target_os = "linux"),
-            expect(
-                dead_code,
-                reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-            )
-        )]
         cursor: (f64, f64),
         barrier_id: u32,
     },
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     Deactivated {
         session: String,
         activation_id: u32,
         cursor: (f64, f64),
     },
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
-    Disabled { session: String },
+    Disabled {
+        session: String,
+    },
     ZonesChanged {
-        #[cfg_attr(
-            not(target_os = "linux"),
-            expect(
-                dead_code,
-                reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-            )
-        )]
         session: String,
     },
 }
 #[derive(Clone)]
 struct CaptureSession {
     owner: String,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     app_id: String,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     caller: PortalCaller,
     started: bool,
     enabled: bool,
@@ -202,13 +148,6 @@ struct CaptureSession {
     /// Requested through Clipboard before Start. Access itself is live only
     /// while `active` has been armed by a barrier.
     clipboard_requested: bool,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     capabilities: u32,
     zone_set: u32,
     barriers: Vec<PointerBarrier>,

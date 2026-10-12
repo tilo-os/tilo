@@ -296,22 +296,11 @@ fn actual_delivery_holder_uses_verified_metadata_and_ignores_document_heads() {
 
 #[test]
 fn actual_delivery_holder_preserves_policy_errors_before_current_route_denial() {
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
-    for malformed in [false, true] {
+    {
         let (mut peer, key, _, mut device, now) = crate::admission_tests::seeded();
         let mut room = peer.admitted_room().unwrap().clone();
-        let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
-        let bytes = if malformed {
-            b"not-json".to_vec()
-        } else {
-            serde_json::to_vec(&CapOverride::grant(
-                Subject::Role(collab_types::Role::Editor),
-                Scope::App("unsupported.app".into()),
-                Verb::Read,
-            ))
-            .unwrap()
-        };
-        room.put(&caps, "extra", bytes).unwrap();
+        let caps = room.get(ROOT, "grants").unwrap().unwrap().1;
+        room.put(&caps, "extra", b"not-json".to_vec()).unwrap();
         let changes = room
             .get_changes(&[])
             .iter()
@@ -331,14 +320,7 @@ fn actual_delivery_holder_preserves_policy_errors_before_current_route_denial() 
             .delivery_policy_unqualified(37, peer.authority(), &device, now)
             .err()
             .unwrap();
-        assert_eq!(
-            legacy,
-            if malformed {
-                PeerDeliveryPolicyError::Unavailable
-            } else {
-                PeerDeliveryPolicyError::UnsupportedPolicy
-            }
-        );
+        assert_eq!(legacy, PeerDeliveryPolicyError::Unavailable);
         let native = restore_bounded(&peer, now, &PeerLimits::default());
         let read = native.read();
         ROUTE_CHECKS.with(|n| n.set(0));
@@ -350,25 +332,35 @@ fn actual_delivery_holder_preserves_policy_errors_before_current_route_denial() 
 
 #[test]
 fn file_and_action_grants_to_apps_leave_the_delivery_policy_available() {
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+    use collab_types::caps::{Access, CapOverride, Scope, Subject};
     let (mut peer, key, _, device, now) = crate::admission_tests::seeded();
     let mut room = peer.admitted_room().unwrap().clone();
-    let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
+    let sandbox = room
+        .put_object(ROOT, "sandbox", automerge::ObjType::Map)
+        .unwrap();
     let grant = CapOverride::grant(
         Subject::app("so.tilo.notes"),
         Scope::FsPath("/data/out".into()),
-        Verb::Write,
+        Access::Write,
     );
-    room.put(&caps, "profile:files", serde_json::to_vec(&grant).unwrap())
-        .unwrap();
-    let action = CapOverride::grant(
-        Subject::app("so.tilo.notes"),
-        Scope::Action {
-            app: "so.tilo.word-processor".into(),
-            resource: "word-processor.document".into(),
-            action: "read-text".into(),
-        },
-        Verb::Write,
+    room.put(
+        &sandbox,
+        "profile:files",
+        serde_json::to_vec(&grant).unwrap(),
+    )
+    .unwrap();
+    let caps = room.get(ROOT, "grants").unwrap().unwrap().1;
+    let action = tilo_action_policy::Grant::new(
+        "app-action",
+        tilo_action_policy::Subject::app("so.tilo.notes"),
+        tilo_action_policy::TreePath::room(peer.room())
+            .app("so.tilo.word-processor")
+            .kind("word-processor.document")
+            .any(tilo_action_policy::Level::Resource)
+            .action("read-text"),
+        tilo_action_policy::KindSet::READ,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Subject::person("owner"),
     );
     room.put(&caps, "app-action", serde_json::to_vec(&action).unwrap())
         .unwrap();

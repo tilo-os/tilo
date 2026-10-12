@@ -19,7 +19,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use tilo_actions::{
     Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, OperationKind,
-    PermissionRequirement, Resource,
+    Resource,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +171,10 @@ struct CounterCard {
     /// submits an edit.
     bump_after_ping: bool,
     follow_ups: Vec<crate::widget::controls::AttributedControlInvocation>,
+    /// On the next settle, replace the button with a new one, carrying its
+    /// pending activation over, as a surface closing its own dialog does.
+    replace_on_settle: std::rc::Rc<std::cell::Cell<bool>>,
+    replaced: bool,
 }
 
 fn counter_resource(destructive: bool) -> Resource {
@@ -178,9 +182,7 @@ fn counter_resource(destructive: bool) -> Resource {
 }
 
 fn counter_resource_with_reset(destructive: bool, reset_visible: bool) -> Resource {
-    let bump = ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump)
-        .unwrap()
-        .requiring(PermissionRequirement::Write);
+    let bump = ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump).unwrap();
     let bump = if destructive {
         bump.destructive()
     } else {
@@ -195,8 +197,7 @@ fn counter_resource_with_reset(destructive: bool, reset_visible: bool) -> Resour
                 COUNTER_TYPE,
                 &CounterAction::HostBump,
             )
-            .unwrap()
-            .requiring(PermissionRequirement::Write),
+            .unwrap(),
         )
         .with_action(
             ActionSpec::operation(
@@ -233,9 +234,7 @@ fn counter_resource_with_reset(destructive: bool, reset_visible: bool) -> Resour
         ));
     if reset_visible {
         resource.with_action(
-            ActionSpec::immediate("reset", "Reset", COUNTER_TYPE, &CounterAction::Reset)
-                .unwrap()
-                .requiring(PermissionRequirement::Write),
+            ActionSpec::immediate("reset", "Reset", COUNTER_TYPE, &CounterAction::Reset).unwrap(),
         )
     } else {
         resource
@@ -264,6 +263,8 @@ impl CounterCard {
             resource_result: None,
             bump_after_ping: false,
             follow_ups: vec![],
+            replace_on_settle: std::rc::Rc::default(),
+            replaced: false,
         }
     }
 
@@ -294,6 +295,8 @@ impl CounterCard {
             resource_result: None,
             bump_after_ping: false,
             follow_ups: vec![],
+            replace_on_settle: std::rc::Rc::default(),
+            replaced: false,
         }
     }
 
@@ -325,7 +328,7 @@ impl CounterCard {
                 )
                 .unwrap()
                 .with_contract(tilo_actions::ActionContract {
-                    permission: PermissionRequirement::Read,
+                    kind: tilo_actions::ActionKind::Read,
                     ..tilo_actions::ActionContract::default()
                 }),
             );
@@ -360,6 +363,17 @@ impl Widget for CounterCard {
         self.button.sync(s, p);
     }
     fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, p: &automerge::ObjId) {
+        if self.replace_on_settle.replace(false) {
+            if let Some(invocation) =
+                crate::widget::controls::take_control_invocation(&mut self.button)
+            {
+                self.follow_ups.push((invocation, None));
+            }
+            let resource = counter_resource(self.destructive);
+            let binding = tilo_actions::ActionBinding::unit_for(&resource, "bump").unwrap();
+            self.button = Button::new("bump-replacement", "Bump").on_action(binding);
+            self.replaced = true;
+        }
         self.button.settle(edits, p);
         let mut actions = crate::action_host::ActionHost::new();
         for scope in std::mem::take(&mut self.scoped_jobs) {
@@ -404,16 +418,6 @@ impl Widget for CounterCard {
         let kid = self.button.build_layout(taffy, theme, node_map);
         taffy.widget_node(taffy::Style::default(), &[kid], node_map, self)
     }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         vec![&self.button]
     }
@@ -423,8 +427,8 @@ impl Widget for CounterCard {
     fn name(&self) -> &'static str {
         "CounterCard"
     }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.replaced)
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE, ASYNC_COUNTER_TYPE]
@@ -666,9 +670,7 @@ fn published_delivery_on_disabled_transport_refuses_before_document_handler() {
 
 fn lazy_resource(id: &str) -> Resource {
     Resource::new(id, id, "Lazy counter").with_action(
-        ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump)
-            .unwrap()
-            .requiring(PermissionRequirement::Write),
+        ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump).unwrap(),
     )
 }
 
@@ -798,9 +800,8 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
     // Case `lazy_resource_fallback_respects_local_permissions`.
     {
         let mut app = lazy_app(lazy_resource("test.lazy"));
-        app.set_permission_ctx(PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(None, "restricted"),
-            Vec::new(),
+        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+            "restricted",
         ));
 
         let address = tilo_actions::ActionAddress::new("test.lazy", "bump");
@@ -925,9 +926,8 @@ fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
         let pointer = app.layout.node_map[&node];
         assert!(unsafe { (*pointer).is_enabled() });
 
-        app.set_permission_ctx(PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(None, "restricted"),
-            Vec::new(),
+        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+            "restricted",
         ));
         assert!(!unsafe { (*pointer).is_enabled() });
         assert!(!unsafe {
@@ -957,6 +957,14 @@ fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
         assert_eq!(counter(&app), 0);
         assert!(app.state.peek_last_undo().is_none());
         assert!(app.action_palette().is_some(), "confirmation UI is open");
+        // The person confirms in the host's own dialog: the action applies.
+        assert_eq!(
+            app.asking().map(|(_, text)| text).as_deref(),
+            Some("CONFIRM")
+        );
+        assert!(app.confirm_asked().is_some());
+        assert!(app.asking().is_none(), "answered once");
+        assert_eq!(counter(&app), 1, "the confirmed destructive action applied");
     }
 
     // Case `confirmed_control_preserves_captured_arguments_through_palette_dispatch`.
@@ -1045,7 +1053,10 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             .message()
             .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
             .expect("the action commit retained semantic provenance");
-        assert_eq!(context.action_label, "Bump");
+        assert!(
+            matches!(&context.what, Some(tilo_actions::Did::Verb(_))),
+            "the action records what it did: {context:?}"
+        );
         assert_eq!(
             context
                 .resource
@@ -1059,10 +1070,8 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert_eq!(context.app, ambient.app);
         assert_eq!(context.source_invocation, Some(admitted_invocation));
         assert_eq!(
-            app.state
-                .peek_last_undo()
-                .and_then(|entry| entry.author.as_ref()),
-            Some(&crate::permissions::UserId("agent:Scribe".into())),
+            app.state.peek_last_undo().and_then(|entry| entry.author),
+            Some(crate::permissions::UserId("agent:Scribe".into())),
             "undo attribution and durable history use the same actor"
         );
     }
@@ -1211,12 +1220,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             assert!(app.state.peek_last_undo().is_none());
         }
         app.state.doc.put(ROOT, "draft", "finished").unwrap();
-        let context = tilo_actions::ActionContext::for_resource(
-            "Finish draft",
-            "test.draft",
-            "note",
-            "Draft",
-        );
+        let context = tilo_actions::ActionContext::for_resource("test.draft", "note", "Draft");
         assert!(app.state.commit_action_authored_with_context(
             None,
             None,
@@ -1229,7 +1233,13 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             .message()
             .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
             .unwrap();
-        assert_eq!(context.action_label, "Finish draft");
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.label.as_str()),
+            Some("Draft")
+        );
     }
 
     // Case `host_required_document_action_runs_only_after_broker_admission`.
@@ -1250,10 +1260,8 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert!(admitted.is_ok(), "the authoritative broker admitted it");
         assert_eq!(counter(&app), 1);
         assert_eq!(
-            app.state
-                .peek_last_undo()
-                .and_then(|entry| entry.author.as_ref()),
-            Some(&crate::permissions::UserId("agent:Scribe".into()))
+            app.state.peek_last_undo().and_then(|entry| entry.author),
+            Some(crate::permissions::UserId("agent:Scribe".into()))
         );
     }
 
@@ -1438,9 +1446,9 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
             };
             assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
             observed.enqueue("run");
-            *binding.permissions.borrow_mut() = PermissionContext::from_capabilities(
-                collab_types::caps::Actor::person(Some(collab_types::role::Role::Viewer), "reader"),
-                Vec::new(),
+            *binding.permissions.borrow_mut() = crate::permissions::PermissionContext::member(
+                "reader",
+                collab_types::role::Role::Viewer,
             );
             let before = owner
                 .records
@@ -1513,9 +1521,9 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
         let (probe, observed) = Probe::new(false);
         let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
         observed.enqueue("run");
-        let readonly = PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(Some(collab_types::role::Role::Viewer), "reader"),
-            Vec::new(),
+        let readonly = crate::permissions::PermissionContext::member(
+            "reader",
+            collab_types::role::Role::Viewer,
         );
         host.set_permission_ctx(readonly);
         let before = host.state.doc.base_heads();
@@ -1929,10 +1937,8 @@ fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
     );
     assert_eq!(counter(&app), 1, "the effect's edit was applied");
     assert_eq!(
-        app.state
-            .peek_last_undo()
-            .and_then(|entry| entry.author.as_ref()),
-        Some(&crate::permissions::UserId("agent:Scribe".into())),
+        app.state.peek_last_undo().and_then(|entry| entry.author),
+        Some(crate::permissions::UserId("agent:Scribe".into())),
         "by the effect's invoker, not the person at the device"
     );
     assert!(
@@ -1962,10 +1968,8 @@ fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
     .expect("the local person bumps");
     assert_eq!(counter(&app), 2);
     assert_eq!(
-        app.state
-            .peek_last_undo()
-            .and_then(|entry| entry.author.as_ref()),
-        Some(&crate::permissions::UserId(local))
+        app.state.peek_last_undo().and_then(|entry| entry.author),
+        Some(crate::permissions::UserId(local))
     );
 }
 
@@ -2356,3 +2360,29 @@ fn a_needle_finds_an_action_by_its_parameters() {
 #[cfg(all(target_os = "linux", feature = "native"))]
 #[path = "native_pty_wake_tests.rs"]
 mod native_pty_wake_tests;
+
+/// A settle that replaces the focused control and, in the same frame,
+/// dispatches its destructive action: the confirmation that opens finds
+/// where focus returns in the live tree, never through the layout's
+/// pointer to the control that was replaced.
+#[test]
+fn a_control_replaced_while_its_destructive_action_asks_is_not_followed() {
+    let card = CounterCard::with_destructive(true);
+    let replace = std::rc::Rc::clone(&card.replace_on_settle);
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(card));
+    app.action_registry_mut()
+        .register::<CounterAction>(COUNTER_TYPE);
+    app.init_layout();
+    let button = app.focusable_order[0];
+    app.set_focused_node(Some(button));
+    activate_bound_button(&mut app);
+    replace.set(true);
+    assert!(app.sync_model(true));
+    assert!(app.action_palette().is_some(), "the host asks to confirm");
+    assert_eq!(counter(&app), 0, "nothing ran unconfirmed");
+    assert!(
+        app.actions.ordinary_palette_return_focus.is_none(),
+        "focus returns to no control: the focused one was replaced, and its \
+         replacement was never focused"
+    );
+}

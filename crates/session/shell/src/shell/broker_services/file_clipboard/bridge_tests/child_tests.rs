@@ -163,17 +163,22 @@ async fn child_journey(info: &ChildInfo) {
             b"actual sandboxed source"
         );
         assert_eq!(source.exists(), !cut);
-        assert!(matches!(
-            b.compensate(Command::Undo { operation })
-                .await
-                .expect("sandboxed native Undo"),
-            Reply::Settled {
-                completed: 1,
-                error: None,
-                undone: true,
-                ..
-            }
-        ));
+        let undone = b
+            .compensate(Command::Undo { operation })
+            .await
+            .expect("sandboxed native Undo");
+        assert!(
+            matches!(
+                undone,
+                Reply::Settled {
+                    completed: 1,
+                    error: None,
+                    undone: true,
+                    ..
+                }
+            ),
+            "sandboxed native Undo settled as {undone:?}"
+        );
         assert_eq!(
             fs::read(&source).expect("source remains or is restored"),
             b"actual sandboxed source"
@@ -247,7 +252,7 @@ fn start_child(fixture: &Fixture, protected_path: PathBuf) {
     .expect("the actual Files manifest");
     let plan = launcher::capabilities::CapabilityPlan::for_app(
         APP,
-        &fixture.tree.read().workspaces[0].capabilities,
+        &fixture.tree.read().workspaces[0].sandbox,
         None,
     );
     assert_eq!(plan.rw_paths, vec![fixture.directory.path().to_path_buf()]);

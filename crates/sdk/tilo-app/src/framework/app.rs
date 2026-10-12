@@ -13,7 +13,7 @@ use ui_core::application::{
 use ui_core::history_mode::checked_files::FileHistorySource;
 use ui_core::i18n::EmbeddedCatalog;
 use ui_core::launch::LaunchError;
-use ui_core::permissions::{LivePermissions, PermissionScope, Verb};
+use ui_core::permissions::{ActionKind, LivePermissions, PermissionScope};
 use ui_core::record::{RecordId, RecordKind};
 use ui_core::storage::AppStorage;
 use ui_core::widget::{Element, IconDescriptor};
@@ -28,7 +28,7 @@ use {
     },
     ui_core::headless::FrameHarness,
     ui_core::launch::{LaunchArgs, LaunchSpec},
-    ui_core::permissions::{Actor, PermissionContext, Role, UserId},
+    ui_core::permissions::{PermissionContext, Role, UserId},
     ui_core::record::RecordCheckout,
 };
 
@@ -86,19 +86,17 @@ pub trait ResourceApp: 'static {
     /// (`--purpose number` or `--purpose=number`): how this window runs
     /// rather than what it opens. [`Self::launch`] reads them from its
     /// [`LaunchInput::option`], views and surfaces from
-    /// [`ViewCx::launch_option`] and
-    /// [`SurfaceCx::launch_option`](super::SurfaceCx::launch_option).
+    /// [`RecordEnv::launch_option`](super::RecordEnv::launch_option).
     const OPTIONS: &'static [&'static str] = &[];
     /// The app's own switches, which take no value (`--debug-hit-areas`):
-    /// [`LaunchInput::flag`], [`ViewCx::launch_flag`],
-    /// [`SurfaceCx::launch_flag`](super::SurfaceCx::launch_flag).
+    /// [`LaunchInput::flag`], [`RecordEnv::launch_flag`](super::RecordEnv::launch_flag).
     const FLAGS: &'static [&'static str] = &[];
     /// Whether the app opens private windows (`--private`): a window on a
     /// profile of its own that is thrown away with the process — its record,
     /// settings and files never reach the person's — and that attaches to
     /// no runtime, so nothing it shows syncs or is shared. It holds none of
-    /// the person's own records ([`ViewCx::person`] answers `None`), and its
-    /// view tells with [`ViewCx::is_private`].
+    /// the person's own records ([`RecordEnv::person`](super::RecordEnv::person) answers `None`), and its
+    /// view tells with [`RecordEnv::is_private`](super::RecordEnv::is_private).
     const PRIVATE_WINDOWS: bool = false;
     /// The history of a file of the mounted filesystem the app shows (the
     /// file selected in a file manager), a History scope beside the
@@ -258,6 +256,21 @@ pub trait ResourceApp: 'static {
         let _ = cx;
         Vec::new()
     }
+
+    /// The records the app keeps besides the one it shows: the person's own
+    /// records and the settings sections that are resource models. Each is
+    /// opened with the window and published beside the app's resource, so
+    /// the palette and agents change it whether or not a view has shown it,
+    /// and `tilo-app surface` commits its surface with the app's.
+    ///
+    /// ```ignore
+    /// fn records(records: &mut Records<'_>) {
+    ///     records.person::<WatchHistory>().settings::<Playback>();
+    /// }
+    /// ```
+    fn records(records: &mut super::Records<'_>) {
+        let _ = records;
+    }
 }
 
 /// The History scope of [`ResourceApp::FILE_HISTORY`]: the files of the
@@ -285,7 +298,7 @@ pub struct SeedCx<'a> {
 
 impl SeedCx<'_> {
     /// Who is creating the record: the id their views read as
-    /// [`ViewCx::me`] and the seed's actions read as their author.
+    /// [`RecordEnv::me`](super::RecordEnv::me) and the seed's actions read as their author.
     pub fn me(&self) -> &str {
         self.me
     }
@@ -347,24 +360,22 @@ struct DefinitionKey<A>(std::marker::PhantomData<A>);
 pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
     leaked(TypeId::of::<DefinitionKey<A>>(), || {
         super::kinds::register::<A>();
-        definition_of(hooks::<A>(), create::<A>)
+        ui_core::app_surface::register_kind(<A::Resource as Resource>::KIND, A::ID);
+        definition_of::<A>()
     })
 }
 
-fn definition_of(
-    app: &'static AppHooks,
-    create: ui_core::application::ComponentFactory,
-) -> ApplicationDefinition {
+fn definition_of<A: ResourceApp>() -> ApplicationDefinition {
     ApplicationDefinition {
-        app_id: app.id,
-        title: app.title,
-        icon: icon(app),
-        record_kind: RecordKind::new(app.kind),
+        app_id: A::ID,
+        title: A::TITLE,
+        icon: icon(hooks::<A>()),
+        record_kind: RecordKind::new(<A::Resource as Resource>::KIND),
         required: vec![],
         optional: vec![],
-        opens: app.opens,
-        room_record: app.room_record,
-        create,
+        opens: A::OPENS,
+        room_record: A::ROOM_RECORD,
+        create: create::<A>,
     }
 }
 
@@ -376,18 +387,17 @@ fn icon(app: &AppHooks) -> IconDescriptor {
     )
 }
 
-/// What the framework's launch path reads of an app: its constants, and
-/// the few functions that name its types. The path itself takes this table
-/// rather than the app's type, so it is compiled once in the shared runtime;
-/// each app compiles only the functions the table points to.
+/// What the launch path, the window and History read of an app: its
+/// constants, and shims over the parts that need its types. One table per
+/// app; everything that reads it is compiled once for every app.
 pub(crate) struct AppHooks {
-    id: &'static str,
-    title: &'static str,
+    pub(crate) id: &'static str,
+    pub(crate) title: &'static str,
     icon: Option<&'static str>,
     /// [`Resource::KIND`] of the app's resource.
-    kind: &'static str,
-    opens: &'static [&'static str],
-    room_record: bool,
+    pub(crate) kind: &'static str,
+    /// [`Resource::LABEL`] of the app's resource.
+    label: &'static str,
     behaviour: ComponentBehaviour,
     document_history: bool,
     file_history: Option<FileHistory>,
@@ -401,16 +411,16 @@ pub(crate) struct AppHooks {
     definition: fn() -> &'static ApplicationDefinition,
     launch_record: fn(&LaunchInput<'_>) -> Option<RecordId>,
     local_operations: fn() -> Vec<tilo_actions::ActionSpec>,
+    declarations: fn() -> Rc<[tilo_resource::Declaration]>,
     /// Initialize a record the launch created: the resource's own
     /// initialization, the launch's genesis and the creator's seed.
     new_record: NewRecord,
     /// The capture's run, from the app's fixture.
     prepare_capture: fn(&mut HostContext, Option<&str>) -> Result<Run, LaunchError>,
-    /// Read the record `context` opened and build the root over it.
-    open_root: fn(&mut HostContext, Editing) -> Result<ResourceRoot, LaunchError>,
-    /// Take the launch's actions on the root built for it.
-    launch: fn(&ResourceRoot, bool, bool),
-    action_registry: fn() -> tilo_actions::ActionRegistry,
+    /// Read the record `context` opened, build the root over it and take
+    /// the launch's actions on it; or why the record does not read.
+    open: OpenRoot,
+    pub(crate) action_registry: fn() -> tilo_actions::ActionRegistry,
     history: fn() -> &'static ui_core::history_mode::HistoryDefinition,
     file_history_witness: fn() -> &'static ui_core::history_mode::HistoryDefinition,
 }
@@ -423,6 +433,15 @@ type NewRecord = fn(
     &[ui_core::application::LaunchOption],
 ) -> Result<(), LaunchError>;
 
+/// [`AppHooks::open`]: the context, who edits, whether it is a capture and
+/// whether the launch created the record.
+type OpenRoot = fn(
+    &mut HostContext,
+    Editing,
+    bool,
+    bool,
+) -> Result<Result<Box<dyn ui_core::widget::AppWidget>, String>, LaunchError>;
+
 struct Hooks<A>(std::marker::PhantomData<A>);
 
 impl<A: ResourceApp> Hooks<A> {
@@ -431,8 +450,7 @@ impl<A: ResourceApp> Hooks<A> {
         title: A::TITLE,
         icon: A::ICON,
         kind: <A::Resource as Resource>::KIND,
-        opens: A::OPENS,
-        room_record: A::ROOM_RECORD,
+        label: <A::Resource as Resource>::LABEL,
         behaviour: A::BEHAVIOUR,
         document_history: A::DOCUMENT_HISTORY,
         file_history: A::FILE_HISTORY,
@@ -446,10 +464,10 @@ impl<A: ResourceApp> Hooks<A> {
         definition: definition::<A>,
         launch_record: A::launch_record,
         local_operations: A::local_operations,
+        declarations: declarations_of::<A::Resource>,
         new_record: new_record::<A>,
         prepare_capture: prepare_capture::<A>,
-        open_root: open_root::<A>,
-        launch: launch_actions::<A>,
+        open: open_root::<A>,
         action_registry: action_registry::<A>,
         history: super::preview::history_definition::<A>,
         file_history_witness: super::preview::file_history_witness::<A>,
@@ -459,6 +477,10 @@ impl<A: ResourceApp> Hooks<A> {
 /// `A`'s [`AppHooks`].
 pub(crate) fn hooks<A: ResourceApp>() -> &'static AppHooks {
     &Hooks::<A>::HOOKS
+}
+
+fn declarations_of<R: Resource>() -> Rc<[tilo_resource::Declaration]> {
+    tilo_resource::vocabulary::<R>().declarations()
 }
 
 /// Who may edit the resource a root shows, and what it is built for.
@@ -493,7 +515,7 @@ impl RootShell {
         storage: AppStorage,
         hosted: super::settings::Hosted,
     ) -> Self {
-        let scope = PermissionScope::app(app.id, Verb::Write);
+        let scope = PermissionScope::app(app.id, ActionKind::Undoable);
         let (permissions, read_only, me, run) = match editing {
             Editing::Live {
                 permissions,
@@ -523,26 +545,6 @@ impl RootShell {
     fn runs_effects(&self) -> bool {
         self.permissions.is_some() && self.run.mode.is_live()
     }
-
-    /// `root` following the participant, with the app's presentation and
-    /// its History, and whether it draws past versions: a live root of a
-    /// resource that keeps document history does.
-    fn finish(
-        app: &AppHooks,
-        root: ResourceRoot,
-        permissions: Option<LivePermissions>,
-        scope: PermissionScope,
-    ) -> (ResourceRoot, bool) {
-        let live = permissions.is_some();
-        let root = root
-            .following(permissions, scope)
-            .with_presentation((app.local_operations)());
-        if app.document_history {
-            (root, live)
-        } else {
-            (root.without_history(), false)
-        }
-    }
 }
 
 /// Build the framework root for a resource state: the live handle, the
@@ -554,6 +556,10 @@ pub(crate) fn build_root<A: ResourceApp>(
     hosted: super::settings::Hosted,
 ) -> ResourceRoot {
     let app = hooks::<A>();
+    // History names this app's fields by their titles.
+    if let Some(shape) = <A::Resource as Resource>::shape() {
+        ui_core::history_source::sentence::learn_field_titles(&shape);
+    }
     let shell = RootShell::new(app, editing, storage, hosted);
     let runs_effects = shell.runs_effects();
     let RootShell {
@@ -568,36 +574,66 @@ pub(crate) fn build_root<A: ResourceApp>(
     let published = tilo_resource::publish::<A::Resource>(app.kind, &label, reader.state());
     let live = Live::new(reader);
     let alive = Rc::new(());
-    let dispatch = Dispatcher::new(A::ID, app.kind, read_only, me.as_deref());
+    let dispatch = Dispatcher::new(app.id, app.kind, read_only, me.as_deref());
     let dispatch = if permissions.is_none() {
         dispatch.past()
     } else {
         dispatch
     };
+    // A window someone uses opens the records the app keeps beside its own,
+    // so they are published before any view shows them.
+    if permissions.is_some() {
+        A::records(&mut super::Records::new(&storage));
+    }
     let effects = runs_effects.then(|| Effects::live(dispatch.clone(), live.clone()));
     let mut cx = ViewCx::root(live, &alive, dispatch, published, run, storage);
     if let Some(effects) = effects {
-        cx.effects = effects;
+        cx.env.effects = effects;
     }
     let content = A::view(&mut cx);
-    let root = ResourceRoot::new(app.title, icon(app), label, cx, alive, content);
-    let (root, draws_past) = RootShell::finish(app, root, permissions, scope);
-    if draws_past {
+    let live = permissions.is_some();
+    let root = ResourceRoot::new(app.title, icon(app), label, cx, alive, content)
+        .following(permissions, scope)
+        .with_presentation((app.local_operations)());
+    if !app.document_history {
+        return root.without_history();
+    }
+    if live {
         #[cfg(not(target_family = "wasm"))]
-        return root.drawing_past(super::preview::drawing::draw_past::<A>);
+        return root.drawing_past(super::preview::draw_past::<A>);
     }
     root
 }
+
 /// The decoders of every edit `A`'s document takes: its resource's actions
 /// and History's restores.
 pub(crate) fn action_registry<A: ResourceApp>() -> tilo_actions::ActionRegistry {
     let mut registry =
         tilo_actions::ActionRegistry::with(tilo_resource::group::register::<A::Resource>);
-    registry.register_decoder(
-        super::history::EDIT_TYPE,
-        super::history::decode_resource_edit::<A::Resource>,
-    );
     registry
+        .register::<super::history::ResourceHistoryEdit<A::Resource>>(super::history::EDIT_TYPE);
+    registry
+}
+
+/// The actions `invokes` build at `now_ms`, groups expanded; or the first
+/// refusal.
+fn built_actions<R: Resource>(
+    invokes: &[Invoke<R>],
+    now_ms: i64,
+) -> Result<Vec<R::Action>, String> {
+    let mut actions = Vec::new();
+    for invoke in invokes {
+        if let Some(refusal) = invoke.refusal() {
+            return Err(refusal.to_owned());
+        }
+        if invoke.is_group() {
+            actions
+                .extend(tilo_resource::group::build_group::<R>(&invoke.arguments, now_ms)?.actions);
+        } else {
+            actions.push(invoke.build(now_ms)?);
+        }
+    }
+    Ok(actions)
 }
 
 /// Apply a new record's [`ResourceApp::seed`] through the replayable
@@ -608,35 +644,33 @@ pub(crate) fn apply_seed<A: ResourceApp>(
     author: &str,
     seed: &[Invoke<A::Resource>],
 ) -> Result<(), String> {
-    let now_ms = tilo_resource::origin_now_ms();
-    let mut actions = Vec::new();
-    for invoke in seed {
-        if invoke.is_group() {
-            actions.extend(
-                tilo_resource::group::build_group::<A::Resource>(&invoke.arguments, now_ms)?
-                    .actions,
-            );
-        } else {
-            actions.push(invoke.build(now_ms)?);
-        }
-    }
+    let actions = built_actions(seed, tilo_resource::origin_now_ms())?;
+    let encoded = actions
+        .iter()
+        .map(|action| tilo_resource::encode::<A::Resource>(action).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let actions: Vec<&dyn tilo_actions::Action> = actions
+        .iter()
+        .map(|action| action as &dyn tilo_actions::Action)
+        .collect();
+    apply_seed_actions(hooks::<A>(), doc, author, &actions, encoded)
+}
+
+/// [`apply_seed`] once the seed is built and encoded.
+fn apply_seed_actions(
+    app: &AppHooks,
+    doc: &mut tilo_resource::Doc,
+    author: &str,
+    actions: &[&dyn tilo_actions::Action],
+    encoded: Vec<tilo_actions::EncodedAction>,
+) -> Result<(), String> {
     let writer = ui_core::history_source::authors::device_actor(author, doc.get_actor());
-    for action in &actions {
-        let encoded = tilo_resource::encode::<A::Resource>(action).map_err(|e| e.to_string())?;
-        let label = tilo_resource::action_label::<A::Resource>(action).unwrap_or_else(|| {
-            tilo_actions::ActionContext::for_action("", "", action).action_label
-        });
-        let context = tilo_actions::ActionContext::for_resource(
-            label,
-            <A::Resource as Resource>::KIND,
-            <A::Resource as Resource>::KIND,
-            <A::Resource as Resource>::LABEL,
-        )
-        .with_app(A::ID, A::TITLE)
-        .with_invoker(tilo_actions::ActionInvoker::actor(author))
-        .with_change(tilo_actions::ChangeKind::External)
-        .with_args_from_payload(&encoded.payload);
-        tilo_actions::apply_local_with_context(doc, action, encoded, Some(&writer), context)
+    for (action, encoded) in actions.iter().zip(encoded) {
+        let context = tilo_actions::ActionContext::for_resource(app.kind, app.kind, app.label)
+            .with_app(app.id, app.title)
+            .with_invoker(tilo_actions::ActionInvoker::actor(author))
+            .with_change(tilo_actions::ChangeKind::External);
+        tilo_actions::apply_local_with_context(doc, *action, encoded, Some(&writer), context)
             .map_err(|error| format!("seeding the new record failed: {error}"))?;
     }
     Ok(())
@@ -645,33 +679,14 @@ pub(crate) fn apply_seed<A: ResourceApp>(
 /// Write a launch's [`ResourceApp::genesis`] into the record's genesis:
 /// built at time zero and applied as the genesis writes everything, so every
 /// device that creates the record writes the same change.
-fn write_genesis<A: ResourceApp>(
+fn write_genesis<R: Resource>(
     doc: &mut tilo_resource::Doc,
-    genesis: &[Invoke<A::Resource>],
+    genesis: &[Invoke<R>],
 ) -> Result<(), String> {
-    for invoke in genesis {
-        let actions = if invoke.is_group() {
-            tilo_resource::group::build_group::<A::Resource>(&invoke.arguments, 0)?.actions
-        } else {
-            vec![invoke.build(0)?]
-        };
-        for action in &actions {
-            tilo_actions::Action::apply(action, doc).map_err(|error| error.to_string())?;
-        }
+    for action in &built_actions(genesis, 0)? {
+        tilo_actions::Action::apply(action, doc).map_err(|error| error.to_string())?;
     }
     Ok(())
-}
-
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "the toolkit's ComponentFactory signature passes the target owned"
-)]
-fn create<A: ResourceApp>(
-    context: HostContext,
-    target: LaunchTarget,
-    _restore: RestoreInput,
-) -> Result<AppComponent, LaunchError> {
-    create_component(hooks::<A>(), context, &target)
 }
 
 /// Initialize a record a launch of `A` created: the resource's own
@@ -699,7 +714,7 @@ fn new_record<A: ResourceApp>(
         context,
         &mut |doc| {
             <A::Resource as Resource>::initialize(doc).map_err(|error| error.to_string())?;
-            write_genesis::<A>(doc, &genesis)
+            write_genesis(doc, &genesis)
         },
         &mut |doc| apply_seed::<A>(doc, &author, &seed),
     )
@@ -710,7 +725,7 @@ type RecordWrite<'a> = &'a mut dyn FnMut(&mut tilo_resource::Doc) -> Result<(), 
 
 /// Initialize the new record `context` opened: `genesis` into its genesis,
 /// then `seed`. Not generic over the app, so the record store's
-/// initialization is compiled once in the shared runtime.
+/// initialization is compiled once.
 fn initialize_record(
     context: &mut HostContext,
     genesis: RecordWrite<'_>,
@@ -721,21 +736,65 @@ fn initialize_record(
         .map_err(LaunchError::Record)
 }
 
-/// Read the record `context` opened as `A`'s resource and build its root.
+/// Bring an older record up to the resource's storage version; what it
+/// answers when it cannot. Only an older document is written to: opening
+/// another view of a current record must not commit what one already open
+/// has pending.
+fn migrate_older(
+    context: &HostContext,
+    version: u32,
+    migrate: &mut dyn FnMut(&mut tilo_resource::Doc) -> Result<bool, String>,
+) -> Result<Result<(), String>, LaunchError> {
+    let stored = context
+        .read_record(tilo_resource::evolution::stored_version)
+        .map_err(LaunchError::Record)?;
+    Ok(if stored < version {
+        context.migrate_record(|doc| migrate(doc)).map(drop)
+    } else {
+        Ok(())
+    })
+}
+
+/// Read the record `context` opened as `A`'s resource, once an older
+/// document is brought up to the app's storage version, build its root and
+/// take the launch's actions ([`ResourceApp::launch`]) on it; `created`
+/// when the launch created the record. Or why it does not read, which the
+/// window shows instead of the view.
+///
+/// A capture launched on nothing is staged by its scenario alone: what a
+/// launch on nothing takes reads from this device (a library, the last
+/// folder), which a screenshot must not depend on. A capture launched on a
+/// file takes that file, as the command line does.
 fn open_root<A: ResourceApp>(
     context: &mut HostContext,
     editing: Editing,
-) -> Result<ResourceRoot, LaunchError> {
-    let reader = context
-        .read_record(Reader::<A::Resource>::read)
-        .map_err(LaunchError::Record)?
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
-    Ok(build_root::<A>(
-        reader,
-        editing,
-        context.storage(),
-        hosted(context),
-    ))
+    capture: bool,
+    created: bool,
+) -> Result<Result<Box<dyn ui_core::widget::AppWidget>, String>, LaunchError> {
+    let migrated = migrate_older(context, <A::Resource as Resource>::VERSION, &mut |doc| {
+        tilo_resource::evolution::migrate::<A::Resource>(doc).map_err(|error| error.to_string())
+    })?;
+    let read = context
+        .read_record(|doc| {
+            Reader::<A::Resource>::read(doc)
+                .map_err(|error| tilo_resource::Unreadable::of::<A::Resource>(doc, &error).reason)
+        })
+        .map_err(LaunchError::Record)?;
+    let reader = match migrated.and(read) {
+        Ok(reader) => reader,
+        Err(reason) => return Ok(Err(reason)),
+    };
+    let root = build_root::<A>(reader, editing, context.storage(), hosted(context));
+    if let Some(typed) = root.typed::<A::Resource>() {
+        let record = typed.live.get();
+        let launch = root.launch().with_record(&*record);
+        if !capture || !launch.is_empty() {
+            for invoke in A::launch(&launch, created) {
+                typed.dispatch.submit(invoke);
+            }
+        }
+    }
+    Ok(Ok(root.into_widget()))
 }
 
 /// What a window's root keeps of the person and the device.
@@ -750,23 +809,30 @@ fn hosted(context: &HostContext) -> super::settings::Hosted {
     }
 }
 
-/// Take the actions a launch of `A` takes ([`ResourceApp::launch`]) on
-/// `root`; `created` when the launch created the record. A capture launched
-/// on nothing is staged by its scenario alone: what a launch on nothing
-/// takes reads from this device (a library, the last folder), which a
-/// screenshot must not depend on. A capture launched on a file takes that
-/// file, as the command line does.
-fn launch_actions<A: ResourceApp>(root: &ResourceRoot, capture: bool, created: bool) {
-    let Some(typed) = root.typed::<A::Resource>() else {
-        return;
-    };
-    let record = typed.live.get();
-    let launch = root.launch().with_record(&*record);
-    if !capture || !launch.is_empty() {
-        for invoke in A::launch(&launch, created) {
-            typed.dispatch.invoke(invoke);
-        }
-    }
+/// The window of a record that does not read as the app's resource.
+fn unopened(app: &AppHooks, context: HostContext, reason: String) -> AppComponent {
+    let unopened = super::root::Unopened::new(
+        app.title,
+        icon(app),
+        (app.kind, app.label),
+        &(app.declarations)(),
+        reason,
+    );
+    let mut component = AppComponent::new(context, unopened.boxed(), (app.action_registry)());
+    component.set_behaviour(app.behaviour);
+    component
+}
+
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the toolkit's ComponentFactory signature passes the target owned"
+)]
+fn create<A: ResourceApp>(
+    context: HostContext,
+    target: LaunchTarget,
+    _restore: RestoreInput,
+) -> Result<AppComponent, LaunchError> {
+    create_component(hooks::<A>(), context, &target)
 }
 
 /// [`create`] of the app `app` describes.
@@ -821,16 +887,16 @@ fn create_component(
         );
     let permissions = context.live_permissions();
     let me = context.author().0.clone();
-    let root = (app.open_root)(
-        &mut context,
-        Editing::Live {
-            permissions,
-            me,
-            run,
-        },
-    )?;
-    (app.launch)(&root, capture, created);
-    let mut component = AppComponent::new(context, Box::new(root), (app.action_registry)());
+    let editing = Editing::Live {
+        permissions,
+        me,
+        run,
+    };
+    let root = match (app.open)(&mut context, editing, capture, created)? {
+        Ok(root) => root,
+        Err(reason) => return Ok(unopened(app, context, reason)),
+    };
+    let mut component = AppComponent::new(context, root, (app.action_registry)());
     component.set_behaviour(app.behaviour);
     if app.document_history {
         let history = (app.history)();
@@ -842,6 +908,7 @@ fn create_component(
     }
     Ok(component)
 }
+
 /// Join the content store the host lent a window to its record's route:
 /// content the record references and this device lacks is asked of the
 /// route, and content the app stores reaches the record's other readers.
@@ -927,10 +994,7 @@ pub(crate) fn data_dir_host(
 /// The permissions of `author` holding `role`, shared with the host so a
 /// later role change reaches the running app.
 pub(crate) fn role_permissions(author: &str, role: Role) -> Rc<RefCell<PermissionContext>> {
-    Rc::new(RefCell::new(PermissionContext::from_capabilities(
-        Actor::person(Some(role), author),
-        vec![],
-    )))
+    Rc::new(RefCell::new(PermissionContext::member(author, role)))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -972,19 +1036,20 @@ fn prepare_app<A: ResourceApp>(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
-    prepare_app_with(hooks::<A>(), definition, args)
+    prepare_hooked(hooks::<A>(), definition, args)
 }
 
 /// [`prepare_app`] of the app `app` describes.
 #[cfg(tilo_native_runner)]
-fn prepare_app_with(
+fn prepare_hooked(
     app: &AppHooks,
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
-    let arguments = args.positionals();
+    let (record, arguments) = record_argument(args.positionals());
     let options = launch_options(app, args);
-    let named = (app.launch_record)(&LaunchInput::new(arguments, None).with_options(&options));
+    let named = record
+        .or_else(|| (app.launch_record)(&LaunchInput::new(arguments, None).with_options(&options)));
     let private = app.private_windows && args.has(PRIVATE_FLAG);
     let mut prepared = prepare_named(definition, args, named, private)?;
     hand_launch(definition, arguments, &mut prepared)?;
@@ -1016,7 +1081,7 @@ fn process_handoff() -> Option<ui_core::application::PlaybackHandoff> {
     })
 }
 
-/// The options of the app's own that `args` named, in declaration order.
+/// The options of `A`'s own that `args` named, in declaration order.
 #[cfg(tilo_native_runner)]
 fn launch_options(app: &AppHooks, args: &LaunchArgs) -> Vec<ui_core::application::LaunchOption> {
     let options = app.options.iter().filter_map(|&name| {
@@ -1143,7 +1208,40 @@ fn prepare_definition(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
-    prepare_named(definition, args, None, false)
+    let (record, _) = record_argument(args.positionals());
+    prepare_named(definition, args, record, false)
+}
+
+/// The record a launch names with a first argument
+/// `tilo-record:<id>` ([`RecordId::uri`]), as the session launches an app to
+/// run an action on one of its records, and the arguments after it.
+#[cfg(tilo_native_runner)]
+fn record_argument(arguments: &[String]) -> (Option<RecordId>, &[String]) {
+    match arguments.split_first() {
+        Some((first, rest)) => match RecordId::from_uri(first) {
+            Some(record) => (Some(record), rest),
+            None => (None, arguments),
+        },
+        None => (None, arguments),
+    }
+}
+
+#[cfg(all(test, tilo_native_runner))]
+mod record_argument_tests {
+    use super::*;
+
+    #[test]
+    fn a_record_uri_names_the_record_and_is_not_handed_to_the_app() {
+        let record = RecordId::minted();
+        let arguments = vec![record.uri(), "--then".to_owned()];
+        let (named, rest) = record_argument(&arguments);
+        assert_eq!(named, Some(record));
+        assert_eq!(rest, ["--then".to_owned()]);
+
+        let plain = vec!["notes.md".to_owned()];
+        assert_eq!(record_argument(&plain), (None, plain.as_slice()));
+        assert_eq!(record_argument(&[]), (None, [].as_slice()));
+    }
 }
 
 #[cfg(tilo_native_runner)]
@@ -1362,6 +1460,23 @@ pub fn definition_launch_spec(definition: &'static ApplicationDefinition) -> Lau
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub fn run<A: ResourceApp>() {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().skip(1).any(|arg| arg == SURFACE_FLAG) {
+        let code = match serde_json::to_string_pretty(&super::testing::surface_report::<A>()) {
+            Ok(report) => {
+                println!("{report}");
+                0
+            }
+            Err(error) => {
+                eprintln!("Error: {error}");
+                1
+            }
+        };
+        #[allow(
+            clippy::exit,
+            reason = "the surface report is the whole run of the binary"
+        )]
+        std::process::exit(code);
+    }
     if let Some(code) = run_helper::<A>(&args) {
         #[allow(
             clippy::exit,
@@ -1371,6 +1486,11 @@ pub fn run<A: ResourceApp>() {
     }
     crate::launch::run_or_exit(&launch_spec::<A>());
 }
+
+/// The flag that makes an app's binary print its
+/// [`surface_report`](super::testing::surface_report)
+/// instead of running: what `tilo-app surface` and `tilo-app check` read.
+pub const SURFACE_FLAG: &str = "--surface";
 
 /// Run the first of `A`'s [helpers](ResourceApp::helpers) that `args` is
 /// for, answering the exit code the process ends with; `None` when the

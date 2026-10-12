@@ -12,6 +12,7 @@
 //! API is [`PageSidebar::begin_frame`] / `render` / pointer-
 //! event methods; the [`Widget`] impl is a thin shim for the e2e harness.
 
+use crate::num::f64_of_usize;
 use std::collections::HashMap;
 
 use taffy::{NodeId, Style, TaffyTree};
@@ -19,7 +20,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{BlendMode, Fill};
 
-use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -198,13 +198,6 @@ impl Default for RailMetrics {
 /// it again.
 fn label_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Caption)
-}
-
-/// Widens a row/action count to `f64` for layout math, through `u32` (exact
-/// in `f64`) with a saturating fallback rather than an `as` cast — a page
-/// rail never approaches `u32::MAX` rows.
-fn count_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 /// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
@@ -475,7 +468,7 @@ impl PageSidebar {
         let content_h = if count == 0 {
             0.0
         } else {
-            count_f64(count) * self.thumb_h + (count_f64(count) - 1.0) * self.m.gap
+            f64_of_usize(count) * self.thumb_h + (f64_of_usize(count) - 1.0) * self.m.gap
         };
         let view_h = (self.list_vp.height() - 2.0 * self.m.pad).max(0.0);
         self.max_scroll = (content_h - view_h).max(0.0);
@@ -508,7 +501,7 @@ impl PageSidebar {
     /// The un-shifted screen rect of thumbnail `i` this frame.
     fn thumb_rect(&self, i: usize) -> Rect {
         let x0 = self.list_vp.x0 + self.m.pad + self.m.num_gutter;
-        let top = self.list_top - self.scroll + count_f64(i) * (self.thumb_h + self.m.gap);
+        let top = self.list_top - self.scroll + f64_of_usize(i) * (self.thumb_h + self.m.gap);
         Rect::new(x0, top, x0 + self.thumb_w, top + self.thumb_h)
     }
 
@@ -522,7 +515,7 @@ impl PageSidebar {
         if self.count == 0 {
             return;
         }
-        let top = count_f64(i) * (self.thumb_h + self.m.gap);
+        let top = f64_of_usize(i) * (self.thumb_h + self.m.gap);
         let bottom = top + self.thumb_h;
         let view_h = (self.list_vp.height() - 2.0 * self.m.pad).max(0.0);
         if top < self.scroll {
@@ -655,7 +648,7 @@ impl PageSidebar {
         actions.push(MenuAction::Delete);
 
         // Height: one separator sits before Delete.
-        let h = count_f64(actions.len()) * self.m.menu_row_h
+        let h = f64_of_usize(actions.len()) * self.m.menu_row_h
             + self.m.menu_sep_h
             + 2.0 * self.m.menu_pad;
         let x0 =
@@ -1096,16 +1089,6 @@ impl Widget for PageSidebar {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         taffy.widget_leaf(Style::default(), node_map, self)
-    }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
     fn name(&self) -> &'static str {
         "PageSidebar"

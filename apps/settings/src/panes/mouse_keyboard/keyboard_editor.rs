@@ -3,6 +3,7 @@
 use super::*;
 use settings_store::keyboard_sources::{ALL, KeyboardProfile, OSK, SourceOptions};
 use ui::reorder::DropPlacement;
+use ui::tilo_resource;
 use ui::widget::{ListRow, VirtualList};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -667,17 +668,17 @@ impl MouseKeyboardPane {
         let selected = self.selected_source();
         let mut content = Vec::new();
         if self.scopes.len() > 1 {
-            content.push(choice_row(
+            content.push(setting_row(
                 &t("input-keyboard-scope"),
-                Box::new(
+                Box::new(self.cx.bind(
                     id_dropdown(
                         self.scopes.clone(),
                         &self.editor.get().scope,
                         "input.keyboard.scope",
                         &t("input-keyboard-scope"),
-                    )
-                    .bound(&self.cx, effect(InputEffect::SELECT_KEYBOARD_SCOPE)),
-                ),
+                    ),
+                    effect(InputEffect::SELECT_KEYBOARD_SCOPE),
+                )),
             ));
             if self.editor.get().scope == ALL {
                 content.push(caption(&t("input-scope-inheritance")));
@@ -774,9 +775,9 @@ impl MouseKeyboardPane {
     fn selected_source_options(&self, source: &str) -> Vec<El> {
         let input = self.preview_input(source);
         vec![
-            choice_row(
+            setting_row(
                 &t("input-map-model"),
-                Box::new(
+                Box::new(self.cx.bind(
                     id_dropdown(
                         vec![
                             ("pc104".into(), t("input-map-ansi")),
@@ -787,51 +788,29 @@ impl MouseKeyboardPane {
                         &input.keyboard_model,
                         "input.map.model",
                         &t("input-map-model"),
-                    )
-                    .bound(&self.cx, effect(InputEffect::SET_KEYBOARD_MODEL)),
-                ),
+                    ),
+                    effect(InputEffect::SET_KEYBOARD_MODEL),
+                )),
             ),
-            choice_row(
-                &t("input-compose-key"),
-                Box::new(
-                    Dropdown::from_state(
-                        compose_options(),
-                        &ui::LocalState::new(compose_shown(compose_english(
-                            input.compose_key.as_deref(),
-                        ))),
-                    )
-                    .bound(
-                        &self.cx,
-                        effect(InputEffect::SET_COMPOSE_KEY).map(|shown: String| {
-                            compose_from_label(&shown)
-                                .and_then(StoredKeyChoice::as_stored)
-                                .unwrap_or(COMPOSE_DISABLED)
-                                .to_owned()
-                        }),
-                    )
-                    .with_id("input.compose_key"),
-                ),
+            self.cx.row(t("input-compose-key")).choice_effect(
+                compose_options(),
+                &ui::LocalState::new(compose_shown(compose_english(input.compose_key.as_deref()))),
+                effect(InputEffect::SET_COMPOSE_KEY).map(|shown: String| {
+                    compose_from_label(&shown)
+                        .and_then(StoredKeyChoice::as_stored)
+                        .unwrap_or(COMPOSE_DISABLED)
+                        .to_owned()
+                }),
             ),
-            choice_row(
-                &t("input-caps-lock-key"),
-                Box::new(
-                    Dropdown::from_state(
-                        caps_lock_options(),
-                        &ui::LocalState::new(caps_lock_shown(caps_lock_label(
-                            input.caps_lock.as_deref(),
-                        ))),
-                    )
-                    .bound(
-                        &self.cx,
-                        effect(InputEffect::SET_CAPS_LOCK).map(|shown: String| {
-                            caps_lock_from_label(&shown)
-                                .and_then(StoredKeyChoice::as_stored)
-                                .unwrap_or(CAPS_LOCK_UNCHANGED)
-                                .to_owned()
-                        }),
-                    )
-                    .with_id("input.caps_lock"),
-                ),
+            self.cx.row(t("input-caps-lock-key")).choice_effect(
+                caps_lock_options(),
+                &ui::LocalState::new(caps_lock_shown(caps_lock_label(input.caps_lock.as_deref()))),
+                effect(InputEffect::SET_CAPS_LOCK).map(|shown: String| {
+                    caps_lock_from_label(&shown)
+                        .and_then(StoredKeyChoice::as_stored)
+                        .unwrap_or(CAPS_LOCK_UNCHANGED)
+                        .to_owned()
+                }),
             ),
         ]
     }
@@ -871,17 +850,17 @@ impl MouseKeyboardPane {
             .into_iter()
             .map(|entry| (entry.id, entry.label))
             .collect();
-        content.push(choice_row(
+        content.push(setting_row(
             &t("input-sources-choose"),
-            Box::new(
+            Box::new(self.cx.bind(
                 id_dropdown(
                     choices,
                     self.editor.get().pending.as_deref().unwrap_or(""),
                     "input.source.add_picker",
                     &t("input-sources-choose"),
-                )
-                .bound(&self.cx, effect(InputEffect::CHOOSE_SOURCE_TO_ADD)),
-            ),
+                ),
+                effect(InputEffect::CHOOSE_SOURCE_TO_ADD),
+            )),
         ));
         if let Some(source) = self.editor.get().pending {
             content.extend(self.selected_source_preview(&source));
@@ -901,10 +880,12 @@ impl MouseKeyboardPane {
     }
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize, ui::tilo_resource::Model)]
 #[serde(default)]
-struct OskSourceSettings {
+pub struct OskSourceSettings {
+    #[model(readonly)]
     layout: String,
+    #[model(readonly)]
     layouts: Vec<String>,
 }
 
@@ -920,6 +901,9 @@ impl Default for OskSourceSettings {
 impl ui::storage::SettingsSchema for OskSourceSettings {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
 }
+
+#[ui::tilo_resource::resource(kind = "settings.osk-sources", label = "On-screen keyboard layouts")]
+impl OskSourceSettings {}
 
 fn osk_profile(document: &ui::storage::SettingsDocument) -> KeyboardProfile {
     let stored = ui::storage::Settings::<OskSourceSettings>::for_app("so.tilo.osk")
@@ -1019,9 +1003,12 @@ mod tests {
         })
         .unwrap();
         app.harness().resize(viewport).unwrap();
-        let address = crate::effects::open_pane_address(crate::categories::Category::MouseKeyboard);
-        app.call_on(&address.resource, &address.action, serde_json::json!({}))
-            .unwrap();
+        let address = crate::categories::Category::MouseKeyboard;
+        app.effect_on(
+            &crate::effects::pane_row_id(address),
+            &crate::effects::open_pane(address),
+        )
+        .unwrap();
         app.settle();
         app
     }

@@ -28,7 +28,7 @@ use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::theme::Theme;
 use ui::tilo_resource;
-use ui::widget::{AppModel, Dropdown, ModelPath, Toggle, Widget};
+use ui::widget::{AppModel, ModelPath, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -38,7 +38,7 @@ use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{caption, card, choice_row, error_row, rows, setting_row, value_row};
+use crate::widgets::{caption, card, error_row, rows, setting_row, value_row};
 use tilo_locale::Locale;
 use ui::clock::TimeStyle;
 use ui::i18n::ArgValue;
@@ -607,6 +607,8 @@ pub trait Clock: Send + Sync {
     ///
     /// Why the zone list could not be read.
     fn zones(&self) -> Result<Vec<String>, String>;
+    /// The time and the date now, formatted, or why each could not be read.
+    fn now(&self, h24: bool) -> (String, String);
     /// # Errors
     ///
     /// The underlying `timedatectl set-ntp` failure text when automatic time
@@ -638,6 +640,16 @@ impl Clock for SystemClock {
         os_actions::list_timezones()
     }
 
+    fn now(&self, h24: bool) -> (String, String) {
+        // The toolkit's clock, which every clock display follows.
+        let moment = ui::clock::local_now();
+        let style = if h24 { TimeStyle::H24 } else { TimeStyle::H12 };
+        (
+            style.format(&moment),
+            moment.format("%A, %-d %B %Y").to_string(),
+        )
+    }
+
     fn set_ntp(&self, enabled: bool) -> Result<(), String> {
         os_actions::set_ntp(enabled)
     }
@@ -647,7 +659,7 @@ impl Clock for SystemClock {
     }
 }
 
-/// The clock a capture shows: a fixed zone, which the
+/// The clock a capture shows: a fixed time in a fixed zone, which the
 /// effects change in memory only.
 pub struct SampleClock {
     status: Mutex<os_actions::TimeSyncStatus>,
@@ -695,6 +707,11 @@ impl Clock for SampleClock {
         .to_vec())
     }
 
+    fn now(&self, h24: bool) -> (String, String) {
+        let time = if h24 { "14:05" } else { "2:05 PM" };
+        (time.to_owned(), "Wednesday 15 March 2023".to_owned())
+    }
+
     fn set_ntp(&self, enabled: bool) -> Result<(), String> {
         self.status
             .lock()
@@ -725,9 +742,6 @@ pub enum TimeDateEffect {
         #[param("An IANA time zone, such as `Europe/Amsterdam`")]
         zone: String,
     },
-    /// Show times on a 24-hour clock, or a 12-hour one.
-    #[effect(idempotent, label = "Use a 24-hour clock")]
-    SetTwentyFourHourClock { on: bool },
 }
 
 /// What the Time & Date area keeps for the window: the device's clock, and
@@ -758,17 +772,15 @@ impl TimeDateArea {
 
 /// Answer `effect`. Device changes run off the UI thread: timedated may ask
 /// for authorisation.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "every area of Settings answers its effects with one signature"
+)]
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: TimeDateEffect,
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
-    if let TimeDateEffect::SetTwentyFourHourClock { on } = effect {
-        let style = if on { TimeStyle::H24 } else { TimeStyle::H12 };
-        return app
-            .host()
-            .update(|locale: &mut Locale| locale.time_format = style);
-    }
     let clock = Arc::clone(&app.time_date().clock);
     Ok(cx.thread(
         move |_| match effect {
@@ -786,7 +798,6 @@ pub(crate) fn answer(
                     .set_timezone(&zone)
                     .map_err(|error| format!("time zone could not be changed: {error}"))
             }
-            TimeDateEffect::SetTwentyFourHourClock { .. } => Ok(()),
         },
         |app: &mut SettingsApp, outcome: Result<(), String>, _| {
             let area = app.time_date();
@@ -896,15 +907,9 @@ impl TimeDatePane {
                 &t("time-auto"),
                 &t_args("time-status-error", &[("error", error.as_str().into())]),
             ),
-            (None, automatic) => setting_row(
-                &t("time-auto"),
-                Box::new(
-                    self.cx.bind(
-                        Toggle::from_state(&LocalState::new(automatic.unwrap_or(false)))
-                            .with_id("time.auto"),
-                        effect(TimeDateEffect::SET_AUTOMATIC_TIME),
-                    ),
-                ),
+            (None, automatic) => self.cx.row(t("time-auto")).id("time.auto").toggle_effect(
+                &LocalState::new(automatic.unwrap_or(false)),
+                effect(TimeDateEffect::SET_AUTOMATIC_TIME),
             ),
         }
     }
@@ -916,39 +921,22 @@ impl TimeDatePane {
                 &t("time-timezone"),
                 &t_args("time-zones-error", &[("error", error.as_str().into())]),
             ),
-            None => choice_row(
-                &t("time-timezone"),
-                Box::new(
-                    self.cx.bind(
-                        Dropdown::from_state(
-                            self.timezones.clone(),
-                            &LocalState::new(self.timezone.clone()),
-                        )
-                        .with_id("time.timezone")
-                        .with_placeholder(&if self.timezone_unknown {
-                            t("time-zone-unread")
-                        } else {
-                            self.timezone.clone()
-                        }),
-                        effect(TimeDateEffect::SET_TIME_ZONE),
-                    ),
+            None => self
+                .cx
+                .row(t("time-timezone"))
+                .id("time.timezone")
+                .choice_effect(
+                    self.timezones.clone(),
+                    &LocalState::new(self.timezone.clone()),
+                    effect(TimeDateEffect::SET_TIME_ZONE),
                 ),
-            ),
         }
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let style = if self.h24 {
-            TimeStyle::H24
-        } else {
-            TimeStyle::H12
-        };
-        let moment = ui::clock::local_now();
-        let now = value_row(&t("time-current-time"), &style.format(&moment));
-        let today = value_row(
-            &t("time-current-date"),
-            &moment.format("%A, %-d %B %Y").to_string(),
-        );
+        let (now, today) = self.clock.now(self.h24);
+        let now = value_row(&t("time-current-time"), &now);
+        let today = value_row(&t("time-current-date"), &today);
         let auto_row = self.auto_row();
         let zone_row = self.zone_row();
 
@@ -988,9 +976,10 @@ impl TimeDatePane {
                 auto_row,
                 setting_row(
                     &t("time-24h"),
-                    Box::new(self.cx.bind(
+                    Box::new(self.cx.bind_field_with(
                         Toggle::from_state(&LocalState::new(self.h24)).with_id("time.h24"),
-                        effect(TimeDateEffect::SET_TWENTY_FOUR_HOUR_CLOCK),
+                        Locale::paths().time_format,
+                        |on: bool| Ok(if on { TimeStyle::H24 } else { TimeStyle::H12 }),
                     )),
                 ),
                 zone_row,
@@ -1214,6 +1203,9 @@ mod tests {
         fn zones(&self) -> Result<Vec<String>, String> {
             Err("timedatectl not installed".into())
         }
+        fn now(&self, _: bool) -> (String, String) {
+            ("14:05".into(), "Wednesday 15 March 2023".into())
+        }
         fn set_ntp(&self, _: bool) -> Result<(), String> {
             Err("timedatectl not installed".into())
         }
@@ -1283,14 +1275,10 @@ mod tests {
             .is_err()
         );
 
-        app.effect(&SettingsEffect::from(
-            TimeDateEffect::SetTwentyFourHourClock { on: false },
-        ))
-        .expect("the clock format is the locale's");
+        crate::host::testing::edit_field(&mut app, "settings.locale", "time_format", "H12")
+            .expect("the clock format is the locale's");
         assert_eq!(app.settings::<Locale>().get().time_format, TimeStyle::H12);
-        let before = TimeStyle::H12.format(&ui::clock::local_now());
         let frame = app.harness().inspection_json().unwrap();
-        let after = TimeStyle::H12.format(&ui::clock::local_now());
-        assert!(frame.contains(&before) || frame.contains(&after), "{frame}");
+        assert!(frame.contains("2:05 PM"), "{frame}");
     }
 }

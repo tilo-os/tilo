@@ -69,8 +69,7 @@ fn content(art: &canvas::Artwork) -> serde_json::Value {
 fn an_agent_saves_starts_over_and_opens_the_artwork_again() {
     let mut app = TestApp::<App>::new().unwrap();
     for action in canvas::sample::landscape() {
-        app.invoke(ui::prelude::Invoke::apply(&action).unwrap())
-            .unwrap();
+        app.invoke(action).unwrap();
     }
     app.call("set-artwork", serde_json::json!({"title": "Valley"}))
         .unwrap();
@@ -193,9 +192,7 @@ fn a_person_opens_a_recent_artwork_from_the_welcome() {
     {
         let mut painter = TestApp::<App>::new().unwrap();
         for action in canvas::sample::landscape() {
-            painter
-                .invoke(ui::prelude::Invoke::apply(&action).unwrap())
-                .unwrap();
+            painter.invoke(action).unwrap();
         }
         painter
             .call(
@@ -218,6 +215,7 @@ fn a_person_opens_a_recent_artwork_from_the_welcome() {
             });
         })
         .unwrap();
+    let before = app.versions().len();
     app.harness().key("Shift");
     app.harness().click_named("canvas-recent-1").unwrap();
     app.harness().key("Shift");
@@ -226,7 +224,7 @@ fn a_person_opens_a_recent_artwork_from_the_welcome() {
         painted.marks.len(),
         "the recent artwork opened"
     );
-    assert_eq!(app.versions().len(), 2, "opening is one step");
+    assert_eq!(app.versions().len(), before + 1, "opening is one step");
 }
 
 #[test]
@@ -259,9 +257,7 @@ fn an_artwork_file_opens_from_files_as_its_own_record() {
     {
         let mut painter = TestApp::<App>::new().unwrap();
         for action in canvas::sample::landscape() {
-            painter
-                .invoke(ui::prelude::Invoke::apply(&action).unwrap())
-                .unwrap();
+            painter.invoke(action).unwrap();
         }
         painter
             .call(
@@ -273,7 +269,15 @@ fn an_artwork_file_opens_from_files_as_its_own_record() {
     let painted = canvas::document::read(&path).unwrap();
     let opened = TestApp::<App>::launched(&[&path.display().to_string()]).unwrap();
     assert_eq!(opened.state().marks.len(), painted.marks.len());
-    assert_eq!(opened.versions().len(), 2, "opening the file is one step");
+    assert_eq!(
+        opened
+            .versions()
+            .iter()
+            .filter(|version| version.context.is_some())
+            .count(),
+        1,
+        "opening the file is one step"
+    );
 
     // Handed over by Files' "open with", into the window's artwork.
     let (file, _receipt) = ui::application::OpenFile::new(
@@ -307,7 +311,7 @@ fn folders_keep_paint_order_and_round_trip_through_history_and_saved_artwork() {
         before.layers.iter().map(|l| &l.order).collect::<Vec<_>>()
     );
     let diff = app
-        .call("diff", json!({"from":"before folder"}))
+        .call("compare-versions", json!({"from":"before folder"}))
         .unwrap()
         .unwrap();
     assert_eq!(diff["layers"]["changed"]["hut"], json!(["group"]));

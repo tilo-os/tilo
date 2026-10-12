@@ -4,9 +4,9 @@
 //!
 //! Every field is a toolkit control in a [`Form`]: names are [`TextInput`]s,
 //! the catalog choices are [`Dropdown`]s that filter while open. Each edit is
-//! reported to the wizard as a [`Command::Profile`], which dispatches the
-//! matching [`ImagerAction`] — one undo boundary, replicated to collaborators
-//! and byte-identical to what the Ctrl+K palette would dispatch. The form
+//! reported to the wizard as a [`Command::Profile`], which submits the field
+//! edit at the profile's path — one undo boundary, replicated to
+//! collaborators and the same edit the palette or an agent would make. The form
 //! holds no profile of its own: it is composed from an [`InstallProfile`]
 //! snapshot, so the document stays authoritative. Secrets stay off the host
 //! and are collected only on the target machine (HIG §3).
@@ -16,9 +16,9 @@ use std::rc::Rc;
 use ui::local_state::LocalState;
 use ui::widget::{Dropdown, Field, Form, FormSection, TextInput};
 
-use crate::actions::ImagerAction;
 use crate::app::{Command, Commands};
 use crate::model::{Filesystem, InstallProfile, installer_locales};
+use crate::resource::Imager;
 
 const KEYBOARDS: &[(&str, &str)] = &[
     ("English (US)", "us"),
@@ -155,19 +155,28 @@ pub(crate) fn profile_value(field: CzField, value: &str) -> Option<String> {
     }
 }
 
-/// The [`ImagerAction`] that sets `f` to `value`. The single source of truth
-/// shared with the Ctrl+K field specs in [`crate::actions`].
-pub(crate) fn field_action(f: CzField, value: String) -> ImagerAction {
-    match f {
-        CzField::Hostname => ImagerAction::SetHostname { value },
-        CzField::FullName => ImagerAction::SetFullName { value },
-        CzField::Username => ImagerAction::SetUsername { value },
-        CzField::Locale => ImagerAction::SetLocale { value },
-        CzField::Timezone => ImagerAction::SetTimezone { value },
-        CzField::Keyboard => ImagerAction::SetKeyboard { value },
-        CzField::Filesystem => ImagerAction::SetFilesystem {
-            filesystem: Filesystem::from_key(&value).unwrap_or_default(),
-        },
+/// The text path of `field` in the profile; `None` for the filesystem,
+/// which is a choice.
+fn text_path(field: CzField) -> Option<ui::tilo_resource::Path<Imager, String>> {
+    let profile = Imager::paths().profile;
+    Some(match field {
+        CzField::Hostname => profile.hostname,
+        CzField::FullName => profile.user.full_name,
+        CzField::Username => profile.user.username,
+        CzField::Locale => profile.locale,
+        CzField::Timezone => profile.timezone,
+        CzField::Keyboard => profile.keyboard,
+        CzField::Filesystem => return None,
+    })
+}
+
+/// The field edit that sets `field` to the normalized `value`; `None` for
+/// a filesystem the installer does not know.
+pub(crate) fn field_edit(field: CzField, value: String) -> Option<ui::tilo_resource::Edit<Imager>> {
+    match text_path(field) {
+        Some(path) => Some(path.replace(value)),
+        None => Filesystem::from_key(&value)
+            .map(|filesystem| Imager::paths().profile.filesystem.set(filesystem)),
     }
 }
 
@@ -175,17 +184,14 @@ fn text_field(
     profile: &InstallProfile,
     field: CzField,
     commands: &Commands,
-    actions: Option<&ui::framework::Actions<crate::resource::Imager>>,
+    actions: Option<&ui::framework::Actions<Imager>>,
 ) -> Field {
     let sink = Rc::clone(commands);
     let input = TextInput::local()
         .with_id(&field.id())
         .with_initial_value(&shown_value(profile, field));
-    let input = if let Some(binding) = actions.and_then(|actions| {
-        actions.binding(ui::tilo_resource::ActionRef::<
-            crate::resource::Imager,
-            String,
-        >::new(field.key(), &["value"]))
+    let input = if let Some(binding) = actions.zip(text_path(field)).and_then(|(actions, path)| {
+        actions.edit_binding(path, |path, value: String| path.replace(value))
     }) {
         input.on_action(binding)
     } else {
@@ -242,7 +248,7 @@ fn choice_field(
 pub(crate) fn form(
     profile: &InstallProfile,
     commands: &Commands,
-    actions: Option<&ui::framework::Actions<crate::resource::Imager>>,
+    actions: Option<&ui::framework::Actions<Imager>>,
     timezone_open: bool,
 ) -> Form {
     let keyboards = KEYBOARDS

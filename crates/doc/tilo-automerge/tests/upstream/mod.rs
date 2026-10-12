@@ -1,8 +1,19 @@
 //! The reference the apply tests hold the fork to: crates.io automerge
 //! 0.12.0, fed the same bytes in the same deliveries.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
 use automerge::{AutoCommit, LoadOptions, TextEncoding};
 use tilo_automerge::ApplyIncoming;
+
+/// A base document, the changes actors made on top of it, and the
+/// hand-built changes among them that no Automerge makes, kept apart for
+/// [`refuses_only_what_upstream_corrupts`].
+pub struct History {
+    pub base: Vec<u8>,
+    pub changes: Vec<Vec<u8>>,
+    pub forged: Vec<Vec<u8>>,
+}
 
 /// xorshift64*: a reproducible stream per seed.
 pub struct Rng(pub u64);
@@ -130,4 +141,171 @@ pub fn agrees_with_upstream(seed: u64, base: &[u8], changes: &[Vec<u8>], replica
         theirs.save_nocompress(),
         "seed {seed}: final document, uncompressed"
     );
+}
+
+/// `sound` and `sound_upstream`, for the fork and for crates.io automerge
+/// 0.12.0. The saved document loads. Its change log, replayed into a new
+/// document in one batch, as a peer that joins later receives it, makes the
+/// same document; and so does it one change at a time, the change whose
+/// hash is `first` as early as its dependencies allow, each change offered
+/// again while it is refused, as sync offers a peer what it lacks. And a
+/// change that writes after the last key of each of its maps, where it
+/// follows every op of that map, applies.
+macro_rules! soundness {
+    ($name:ident, $am:ident, $apply:ident) => {
+        pub fn $name(saved: &[u8], first: [u8; 32]) -> bool {
+            use std::collections::{HashMap, HashSet};
+            use $am::transaction::Transactable as _;
+            use $am::{AutoCommit, ObjType, ROOT, ReadDoc as _, Value};
+            catch_unwind(AssertUnwindSafe(|| {
+                let Ok(mut doc) = AutoCommit::load(saved) else {
+                    return false;
+                };
+                let same = |joined: &mut AutoCommit, doc: &mut AutoCommit| {
+                    joined.get_heads() == doc.get_heads()
+                        && joined.document().hydrate(None) == doc.document().hydrate(None)
+                };
+                let log = doc.get_changes(&[]);
+                let mut joined = AutoCommit::new();
+                let mut replayed =
+                    joined.$apply(log.clone()).is_ok() && same(&mut joined, &mut doc);
+
+                let index: HashMap<[u8; 32], usize> = log
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| (c.hash().0, i))
+                    .collect();
+                let mut early = HashSet::new();
+                let mut stack: Vec<usize> = index.get(&first).copied().into_iter().collect();
+                while let Some(i) = stack.pop() {
+                    if early.insert(i) {
+                        stack.extend(log[i].deps().iter().filter_map(|d| index.get(&d.0)));
+                    }
+                }
+                let (mut pending, rest): (Vec<_>, Vec<_>) = log
+                    .into_iter()
+                    .enumerate()
+                    .partition(|(i, _)| early.contains(i));
+                pending.extend(rest);
+                let mut joined = AutoCommit::new();
+                while replayed && !pending.is_empty() {
+                    let taken = (0..pending.len()).find(|&i| {
+                        let change = &pending[i].1;
+                        change
+                            .deps()
+                            .iter()
+                            .all(|d| joined.get_change_by_hash(d).is_some())
+                            && joined.$apply([change.clone()]).is_ok()
+                    });
+                    replayed = taken.map(|i| pending.remove(i)).is_some();
+                }
+                replayed &= same(&mut joined, &mut doc);
+
+                let (mut objects, mut maps) = (vec![ROOT], Vec::new());
+                while let Some(obj) = objects.pop() {
+                    let children = match doc.object_type(&obj) {
+                        Ok(ObjType::Map) => {
+                            maps.push(obj.clone());
+                            let keys = doc.keys(&obj).collect::<Vec<_>>();
+                            keys.into_iter()
+                                .filter_map(|key| doc.get(&obj, key).ok().flatten())
+                                .collect::<Vec<_>>()
+                        }
+                        _ => (0..doc.length(&obj))
+                            .filter_map(|i| doc.get(&obj, i).ok().flatten())
+                            .collect(),
+                    };
+                    for (value, id) in children {
+                        if let Value::Object(_) = value {
+                            objects.push(id);
+                        }
+                    }
+                }
+                let mut writer = doc.fork();
+                for map in &maps {
+                    writer.put(map, "\u{10ffff}", 0).unwrap();
+                }
+                writer.commit();
+                let written = writer.get_changes(&doc.get_heads());
+                replayed && doc.$apply(written).is_ok()
+            }))
+            .unwrap_or(false)
+        }
+    };
+}
+
+soundness!(sound, automerge, apply_incoming);
+#[expect(
+    clippy::disallowed_methods,
+    reason = "upstream automerge is the reference here, called as it ships"
+)]
+mod upstream_soundness {
+    use super::{AssertUnwindSafe, catch_unwind};
+    soundness!(sound_upstream, upstream_automerge, apply_changes);
+}
+use upstream_soundness::sound_upstream;
+
+/// Feeds a history's changes on top of its base to the fork and to crates.io
+/// automerge 0.12.0, then each of its forged changes on its own. The fork
+/// either takes a forged change as upstream does, into a document that is
+/// [`sound`], or refuses it and keeps its document byte for byte, where
+/// upstream panics or takes it into a document that is not. Returns how
+/// many the fork refused.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "upstream automerge is the reference here, called as it ships"
+)]
+pub fn refuses_only_what_upstream_corrupts(seed: u64, history: &History) -> usize {
+    let History {
+        base,
+        changes,
+        forged,
+    } = history;
+    let all = changes.concat();
+    let mut ours = AutoCommit::load(base).unwrap();
+    ours.load_incoming(&all).unwrap();
+    let mut theirs = upstream_automerge::AutoCommit::load(base).unwrap();
+    theirs.load_incremental(&all).unwrap();
+    let before = ours.save();
+    assert_eq!(
+        before,
+        theirs.save(),
+        "seed {seed}: document before the forged changes"
+    );
+    let mut refused = 0;
+    for (n, change) in forged.iter().enumerate() {
+        let parsed = automerge::Change::try_from(change.as_slice()).unwrap();
+        let (hash, decoded) = (parsed.hash().0, parsed.decode());
+        let mut taken = ours.clone();
+        let mut upstream = theirs.clone();
+        let upstream_took = catch_unwind(AssertUnwindSafe(|| {
+            upstream.load_incremental(change).map_err(|e| e.to_string())
+        }));
+        match taken.load_incoming(change) {
+            Ok(ops) => {
+                let saved = taken.save();
+                assert!(
+                    sound(&saved, hash),
+                    "seed {seed}: took {decoded:?} into an unsound document"
+                );
+                // Where upstream panics, the fork applies what upstream
+                // could not; elsewhere it applies the same.
+                if let Ok(upstream_took) = upstream_took {
+                    assert_eq!(upstream_took, Ok(ops), "seed {seed}: forged {n}");
+                    assert_eq!(saved, upstream.save(), "seed {seed}: forged {n}");
+                }
+            }
+            Err(error) => {
+                refused += 1;
+                assert_eq!(taken.save(), before, "seed {seed}: forged {n} left a trace");
+                let upstream_sound =
+                    matches!(upstream_took, Ok(Ok(_))) && sound_upstream(&upstream.save(), hash);
+                assert!(
+                    !upstream_sound,
+                    "seed {seed}: refused ({error}) {decoded:?}, which upstream takes soundly"
+                );
+            }
+        }
+    }
+    refused
 }

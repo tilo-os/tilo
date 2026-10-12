@@ -162,10 +162,10 @@ fn annotation_cards_keep_rows_and_targets_clear() {
     {
         let (mut app, mut tr, theme) = measured_app(800.0, 600.0, 1.0);
         seed_annotations(&mut app);
-        app.sheet_charts.push(crate::doc::ChartSnapshot {
+        app.sheet_charts.push(crate::workbook::ChartSnapshot {
             id: "c2".into(),
             title: "Monthly total".into(),
-            kind: crate::doc::ChartKind::Line,
+            kind: crate::workbook::ChartKind::Line,
             start: (1, 6),
             end: (3, 6),
         });
@@ -225,14 +225,14 @@ fn annotation_cards_keep_rows_and_targets_clear() {
 
 /// A comment thread and a chart on the sheet, as the document would supply.
 fn seed_annotations(app: &mut SheetsApp) {
-    app.sheet_charts = vec![crate::doc::ChartSnapshot {
+    app.sheet_charts = vec![crate::workbook::ChartSnapshot {
         id: "c1".into(),
         title: "Q1 spend by category".into(),
-        kind: crate::doc::ChartKind::Column,
+        kind: crate::workbook::ChartKind::Column,
         start: (4, 1),
         end: (4, 5),
     }];
-    app.sheet_comments = vec![crate::doc::CommentThread {
+    app.sheet_comments = vec![crate::workbook::CommentThread {
         id: "t1".into(),
         start: (1, 1),
         end: (4, 1),

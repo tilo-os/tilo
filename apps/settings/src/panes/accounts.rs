@@ -2218,6 +2218,7 @@ fn finish_or_recover(account_root: &AccountRoot, operation: &str) -> Result<(), 
 mod tests {
     use super::*;
     use crate::accounts::sample_directory;
+    use crate::host::testing::{count_named, labels_of};
     use std::collections::HashMap;
     use taffy::{NodeId, TaffyTree};
     use ui::Theme;
@@ -2312,25 +2313,6 @@ mod tests {
         }
     }
 
-    fn count_named(w: &dyn Widget, name: &str) -> usize {
-        let mut n = usize::from(w.name() == name);
-        for c in w.children() {
-            n += count_named(c, name);
-        }
-        n
-    }
-
-    fn button_labels(w: &dyn Widget, labels: &mut Vec<String>) {
-        if w.name() == "Button"
-            && let Some(label) = w.accessibility().and_then(|node| node.name)
-        {
-            labels.push(label);
-        }
-        for c in w.children() {
-            button_labels(c, labels);
-        }
-    }
-
     fn access_nodes(w: &dyn Widget, nodes: &mut Vec<ui::a11y::AccessNode>) {
         if let Some(node) = w.accessibility() {
             nodes.push(node);
@@ -2391,7 +2373,7 @@ mod tests {
             let pane = AccountsPane::from_dir_in(root, sample_directory(), false);
             let composed = lay_out(&pane);
             let mut labels = Vec::new();
-            button_labels(composed.as_ref(), &mut labels);
+            labels_of(composed.as_ref(), "Button", &mut labels);
             assert_eq!(
                 labels
                     .iter()
@@ -2740,7 +2722,7 @@ mod tests {
             let pane = pane.with_cloud_mounts(CloudMounts::known(vec![mount(&files, paused)]));
             let composed = lay_out(&pane);
             let mut labels = Vec::new();
-            button_labels(composed.as_ref(), &mut labels);
+            labels_of(composed.as_ref(), "Button", &mut labels);
             let profile = tempfile::tempdir().unwrap();
             let cx = PaneCx::in_file(profile.path().join("settings.json"));
             let area = AccountsArea::new(&cx).with_account_root(root);

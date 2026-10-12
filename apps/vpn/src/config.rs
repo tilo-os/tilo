@@ -235,49 +235,6 @@ impl CommandPlan {
     }
 }
 
-/// Which backend tool a connection drives. Live connections use
-/// `NetworkManager`: it owns credentials, routing, DNS and polkit policy,
-/// and is also the source queried by shell quick settings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Backend {
-    /// `wg-quick up/down <name>` (`WireGuard` native).
-    WgQuick,
-    /// `openvpn --config <path>` (`OpenVPN` native).
-    OpenVpnCli,
-    /// `nmcli connection up/down <name>` (`NetworkManager`).
-    NetworkManager,
-}
-
-/// Plan the command to bring `conn` up using `backend`.
-///
-/// Production exclusively uses `NetworkManager`. The legacy enum variants are
-/// retained for backwards-compatible plan tests but execution rejects them.
-pub fn connect_plan(conn: &Connection, backend: Backend) -> CommandPlan {
-    match backend {
-        Backend::WgQuick => {
-            let target = iface_name(conn);
-            CommandPlan {
-                program: "wg-quick".into(),
-                args: vec!["up".into(), target],
-                summary: format!("Bring up WireGuard tunnel '{}'", conn.name),
-            }
-        }
-        Backend::OpenVpnCli => {
-            let cfg = format!("/etc/openvpn/{}.ovpn", conn.name);
-            CommandPlan {
-                program: "openvpn".into(),
-                args: vec!["--config".into(), cfg, "--daemon".into()],
-                summary: format!("Start OpenVPN tunnel '{}'", conn.name),
-            }
-        }
-        Backend::NetworkManager => CommandPlan {
-            program: "nmcli".into(),
-            args: vec!["connection".into(), "up".into(), conn.name.clone()],
-            summary: format!("Activate '{}' via NetworkManager", conn.name),
-        },
-    }
-}
-
 /// Plan a production `NetworkManager` operation against the local profile UUID,
 /// never against the mutable collaborative label.
 pub fn connect_local_plan(conn: &Connection, uuid: &str) -> CommandPlan {
@@ -285,35 +242,6 @@ pub fn connect_local_plan(conn: &Connection, uuid: &str) -> CommandPlan {
         program: "nmcli".into(),
         args: vec!["connection".into(), "up".into(), "uuid".into(), uuid.into()],
         summary: format!("Activate '{}' via NetworkManager", conn.name),
-    }
-}
-
-/// Plan the command to tear `conn` down using `backend`.
-pub fn disconnect_plan(conn: &Connection, backend: Backend) -> CommandPlan {
-    match backend {
-        Backend::WgQuick => {
-            let target = iface_name(conn);
-            CommandPlan {
-                program: "wg-quick".into(),
-                args: vec!["down".into(), target],
-                summary: format!("Tear down WireGuard tunnel '{}'", conn.name),
-            }
-        }
-        Backend::OpenVpnCli => {
-            // Match the specific config path (or the tunnel name) so we only
-            // kill *this* tunnel's daemon, never every openvpn on the box.
-            let needle = format!("{}.ovpn", conn.name);
-            CommandPlan {
-                program: "pkill".into(),
-                args: vec!["-f".into(), needle],
-                summary: format!("Stop OpenVPN tunnel '{}'", conn.name),
-            }
-        }
-        Backend::NetworkManager => CommandPlan {
-            program: "nmcli".into(),
-            args: vec!["connection".into(), "down".into(), conn.name.clone()],
-            summary: format!("Deactivate '{}' via NetworkManager", conn.name),
-        },
     }
 }
 
@@ -365,11 +293,6 @@ fn sanitize_iface(s: &str) -> String {
     let mut joined = cleaned.split_whitespace().collect::<Vec<_>>().join("-");
     joined.truncate(15);
     joined.trim_matches('-').to_string()
-}
-
-/// Default backend choice for a protocol.
-pub fn default_backend(_kind: ConnKind) -> Backend {
-    Backend::NetworkManager
 }
 
 /// Production uses the narrow live backend directly. Unit tests stay
@@ -489,18 +412,11 @@ dhcp-option DNS 172.20.4.1
     #[test]
     #[serial_test::serial(vpn_env)]
     fn command_plans_are_sanitised_and_guarded() {
-        // Case `command_plans_use_iface_without_imported_config`.
+        // Case `iface_name_without_imported_config`.
         {
-            // No imported config → the interface name is the sanitised tunnel
-            // name, and wg-quick resolves it against /etc/wireguard.
+            // No imported config → the interface name is the sanitised tunnel name.
             let c = Connection::new("Home", ConnKind::WireGuard);
             assert_eq!(iface_name(&c), "home");
-            let up = connect_plan(&c, Backend::WgQuick);
-            assert_eq!(up.display(), "wg-quick up home");
-            let down = disconnect_plan(&c, Backend::WgQuick);
-            assert_eq!(down.display(), "wg-quick down home");
-            let nm = connect_plan(&c, Backend::NetworkManager);
-            assert_eq!(nm.display(), "nmcli connection up Home");
         }
         // Case `iface_name_is_sanitised_and_bounded`.
         {

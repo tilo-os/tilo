@@ -78,7 +78,15 @@ pub struct Checkbox {
     label_style: TextStyle,
     /// A labelled box as wide as its content instead of its row.
     intrinsic: bool,
+    /// What the last presented frame painted, and what the frame being drawn
+    /// paints: the checkbox needs a redraw only when they differ.
+    painted: Option<Painted>,
+    drawing: Option<Painted>,
 }
+
+/// What a checkbox's paint depends on besides its place and the theme:
+/// checked, hovered, focused, enabled, and the catalogue its label reads.
+type Painted = (bool, bool, bool, bool, u64);
 
 impl Checkbox {
     pub fn new(_id: &str, on_toggle_path: &str) -> Self {
@@ -101,7 +109,19 @@ impl Checkbox {
             label: None,
             label_style: crate::tokens::typography::stock().style(crate::tokens::TextRole::Body),
             intrinsic: false,
+            painted: None,
+            drawing: None,
         }
+    }
+
+    fn painted_now(&self) -> Painted {
+        (
+            self.control.is_checked,
+            self.control.is_hovered,
+            self.control.is_focused,
+            self.control.effectively_enabled(),
+            crate::i18n::I18nManager::revision(),
+        )
     }
 
     bool_control_api!();
@@ -332,6 +352,7 @@ impl Widget for Checkbox {
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
+        self.drawing = Some(self.painted_now());
         let target = f64::from(self.control.interaction.minimum_target());
         let visual_center = if self.label.is_some() {
             Point::new(
@@ -375,6 +396,19 @@ impl Widget for Checkbox {
 
     fn name(&self) -> &'static str {
         "Checkbox"
+    }
+
+    /// A checkbox repaints when what it paints changed since the frame on
+    /// screen, not on every frame: a long list of them does not repaint
+    /// whole for a scroll or a keystroke elsewhere.
+    fn needs_redraw(&self) -> bool {
+        self.painted != Some(self.painted_now())
+    }
+
+    fn mark_drawn(&mut self) {
+        if let Some(drawing) = self.drawing.take() {
+            self.painted = Some(drawing);
+        }
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -893,7 +927,8 @@ mod tests {
                 .with_label("Remember me")
                 .intrinsic_width(),
         ));
-        let app = crate::headless::Driver::new(crate::State::new(), Box::new(row), (900, 200));
+        let app =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(row), (900, 200));
         let rect = *app.targets().get("hug").expect("checkbox");
         assert!(
             rect.width() < 300.0,

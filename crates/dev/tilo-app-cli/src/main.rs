@@ -67,6 +67,9 @@ enum Command {
     Check(CheckArgs),
     /// Prove the production root satisfies the live Tilo-native contract.
     Certify(CertifyArgs),
+    /// Write the app's public surface (its verbs and stored fields) to
+    /// `surface.toml`, which `check` and CI compare with the code.
+    Surface(SurfaceArgs),
     /// Run an app from any path inside it: natively after a structural
     /// preflight, or with `--target` for Linux, macOS or the web.
     #[command(after_long_help = TARGET_EXAMPLES)]
@@ -469,7 +472,8 @@ Examples:
 
 #[derive(clap::Args)]
 struct LintScope {
-    /// Run only the lints (currently `portability`); nothing is built or run.
+    /// Run only the lints (`portability` and the app contract); nothing is
+    /// built or run.
     #[arg(long)]
     lint: bool,
 
@@ -524,6 +528,17 @@ struct CheckArgs {
     /// Arguments forwarded to the Cargo test harness. Write them after `--`.
     #[arg(last = true, allow_hyphen_values = true)]
     forwarded: Vec<OsString>,
+}
+
+#[derive(clap::Args)]
+struct SurfaceArgs {
+    /// App directory or a file/directory inside it. Defaults to the current directory.
+    path: Option<PathBuf>,
+
+    /// Write the surface from a report the app's binary printed for
+    /// `--surface` (on another machine, a CI artifact) instead of building it.
+    #[arg(long)]
+    report: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -1173,6 +1188,7 @@ fn main() -> ExitCode {
         Command::Setup(args) => run_setup(&args),
         Command::Check(args) => run_check(args),
         Command::Certify(args) => run_certify(args),
+        Command::Surface(args) => run_surface(args),
         Command::Run(args) => run_run(args),
         Command::Build(args) => run_build(args),
         Command::BundleMacos(args) => run_bundle_macos(&args),
@@ -1279,6 +1295,7 @@ impl Command {
             Self::Setup(_) => "setup",
             Self::Check(_) => "check",
             Self::Certify(_) => "certify",
+            Self::Surface(_) => "surface",
             Self::Run(_) => "run",
             Self::Build(_) => "build",
             Self::BundleMacos(_) => "bundle-macos",
@@ -2081,6 +2098,16 @@ fn dev_profile(release: bool, profile: Option<String>) -> Option<String> {
     }
 }
 
+/// What `build --platform web` asks of the web build; `--release` is the
+/// optimized module a page streams, not the debug one.
+fn web_build_request(args: BuildArgs) -> tilo_app_cli::web::WebBuildRequest {
+    tilo_app_cli::web::WebBuildRequest {
+        output: args.output,
+        app_only: args.app_only,
+        release: args.options.release,
+    }
+}
+
 fn run_platform_build(path: &Path, args: BuildArgs) -> Result<Value> {
     let (platform, arch) = args.platform.or_target(args.target).resolve()?;
     if platform == tilo_app_cli::PackagePlatform::Android {
@@ -2092,13 +2119,7 @@ fn run_platform_build(path: &Path, args: BuildArgs) -> Result<Value> {
     if args.profile.is_some() || args.static_link {
         anyhow::bail!("--profile and --static are for a native build");
     }
-    let build = tilo_app_cli::web::build_web(
-        path,
-        &tilo_app_cli::web::WebBuildRequest {
-            output: args.output,
-            app_only: args.app_only,
-        },
-    )?;
+    let build = tilo_app_cli::web::build_web(path, &web_build_request(args))?;
     eprintln!(
         "[tilo-app] built {} for the web in {:.1} s: {} ({}, module {} bytes)",
         build.app_id,
@@ -2350,6 +2371,7 @@ fn run_check(args: CheckArgs) -> Result<Value> {
             json!({"stages": stages}),
         ));
     }
+    check_contract(&path, &mut stages)?;
     if args.lints.lint {
         return Ok(json!({"stages": stages}));
     }
@@ -2376,7 +2398,7 @@ fn run_check(args: CheckArgs) -> Result<Value> {
     } else {
         println!("[check] Rust formatting");
     }
-    let tool_stages: [CheckStage<'_>; 4] = [
+    let tool_stages: [CheckStage<'_>; 5] = [
         ("format", "Rust formatting", &|| quality.format.execute()),
         ("clippy", "app-local Clippy", &|| quality.clippy.execute()),
         (
@@ -2384,6 +2406,7 @@ fn run_check(args: CheckArgs) -> Result<Value> {
             "Rust tests and generated accessibility contract",
             &|| quality.test.execute(),
         ),
+        ("surface", "public surface", &|| check_surface(&path)),
         ("certify", "Tilo-native runtime certification", &|| {
             certify_one(&path)
         }),
@@ -2425,6 +2448,51 @@ fn run_check(args: CheckArgs) -> Result<Value> {
     }
     println!("All app checks passed");
     Ok(json!({"stages": stages}))
+}
+
+/// The surface stage of `check`: the app's binary reports its surface and
+/// the controls its view binds, compared with the committed `surface.toml`.
+fn check_surface(path: &Path) -> Result<()> {
+    match tilo_app_cli::surface::check_app(path, None, tilo_app_cli::contract::Level::Error)? {
+        None => {
+            println!("the app runs no framework resource, so it reports no surface");
+            Ok(())
+        }
+        Some(report) => {
+            print!("{}", report.render());
+            anyhow::ensure!(report.passed(), "the public surface check failed");
+            Ok(())
+        }
+    }
+}
+
+/// `tilo-app surface`: commit the app's public surface.
+fn run_surface(args: SurfaceArgs) -> Result<Value> {
+    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+    let (file, report) = tilo_app_cli::surface::write_app(&path, args.report.as_deref())?;
+    println!("Wrote {}", file.display());
+    for unbound in &report.unbound {
+        println!("warning: {unbound}");
+    }
+    Ok(json!({"file": file, "resources": report.resources.len(), "unbound": report.unbound}))
+}
+
+/// The app contract stage of `check`: verb determinism, label keys and
+/// complete translations.
+fn check_contract(path: &Path, stages: &mut Vec<Value>) -> Result<()> {
+    println!("[check] {}", tilo_app_cli::contract::CHECK);
+    let contract = tilo_app_cli::contract::check_app(path)?;
+    print!("{}", contract.render());
+    stages.push(
+        json!({"stage": "contract", "passed": contract.passed(), "report": contract.to_json()}),
+    );
+    if !contract.passed() {
+        return Err(failed(
+            format!("{} failed", tilo_app_cli::contract::CHECK),
+            json!({"stages": stages}),
+        ));
+    }
+    Ok(())
 }
 
 fn check_runtime_fonts(stages: &mut Vec<Value>) -> Result<()> {
@@ -2548,12 +2616,28 @@ fn lint_workspace(start: &Path) -> Result<Value> {
         println!("{}", report.render());
         failures.push(app.display().to_string());
     }
-    let summary = json!({"apps": reports});
+    let mut contracts = Vec::new();
+    for app in &apps {
+        let report = tilo_app_cli::contract::check_app(app)?;
+        contracts.push(json!({"app": app, "findings": report.to_json()}));
+        if report.passed() {
+            continue;
+        }
+        println!(
+            "[check] {} in {}",
+            tilo_app_cli::contract::CHECK,
+            app.display()
+        );
+        print!("{}", report.render());
+        failures.push(app.display().to_string());
+    }
+    let summary = json!({"apps": reports, "contracts": contracts});
     if !failures.is_empty() {
         return Err(failed(
             format!(
-                "lint `{}` failed for {} of {} app(s): {}",
+                "lint `{}` or the {} failed for {} of {} app(s): {}",
                 tilo_app_cli::portability::LINT,
+                tilo_app_cli::contract::CHECK,
                 failures.len(),
                 apps.len(),
                 failures.join(", ")
@@ -2562,11 +2646,33 @@ fn lint_workspace(start: &Path) -> Result<Value> {
         ));
     }
     println!(
-        "lint `{}` passed for {} app(s)",
+        "lint `{}` and the {} passed for {} app(s)",
         tilo_app_cli::portability::LINT,
+        tilo_app_cli::contract::CHECK,
         apps.len()
     );
     Ok(summary)
+}
+
+/// The surface contract of an app certified with the workspace: what its
+/// built binary reports against its committed `surface.toml`. An app that
+/// has not committed one yet is told so without failing.
+fn certify_surface(app: &Path, executable: &Path) -> Result<()> {
+    let Some(findings) = tilo_app_cli::surface::check_app(
+        app,
+        Some(executable),
+        tilo_app_cli::contract::Level::Warning,
+    )?
+    else {
+        return Ok(());
+    };
+    print!("{}", findings.render());
+    anyhow::ensure!(
+        findings.passed(),
+        "{} failed its public surface check",
+        app.display()
+    );
+    Ok(())
 }
 
 fn certify_one(path: &Path) -> Result<()> {
@@ -2731,6 +2837,7 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
             "{} production root failed Tilo-native certification",
             app.display()
         );
+        certify_surface(app, executable)?;
         if let Some(root) = responsive_root.as_deref() {
             let app_name = app.file_name().unwrap_or_default();
             for run in responsive_acceptance_runs(&root.join(app_name)) {
@@ -3754,6 +3861,24 @@ mod tests {
                 Some("release")
             );
             assert!(dev(&["--release", "--profile", "dev"]).is_err());
+        }
+
+        // Phase: a_web_build_honours_release.
+        {
+            let web = |args: &[&str]| {
+                let cli = Cli::try_parse_from(
+                    ["tilo-app", "build", "--platform", "web"]
+                        .iter()
+                        .chain(args),
+                )
+                .expect("web build CLI");
+                let Command::Build(build) = cli.command else {
+                    panic!("expected build command");
+                };
+                web_build_request(build).release
+            };
+            assert!(web(&["--release"]));
+            assert!(!web(&[]));
         }
 
         // Phase: every_build_command_takes_platform_and_arch.

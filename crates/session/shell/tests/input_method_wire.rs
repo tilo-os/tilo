@@ -935,8 +935,8 @@ fn assert_native_field_selection_and_undo(transcript: &str) {
     fixture
         .driver
         .invoke_action(
-            &tilo_actions::ActionAddress::new("notes.notebook", "new-page"),
-            serde_json::json!({"value": "Dictation"})
+            &tilo_actions::ActionAddress::new("notes.notebook", "new-note"),
+            serde_json::json!({"title": "Dictation"})
                 .as_object()
                 .unwrap(),
             false,
@@ -946,14 +946,14 @@ fn assert_native_field_selection_and_undo(transcript: &str) {
     let page = fixture
         .records
         .read(&fixture.checkout.id, |doc| {
-            notes::doc::NotesDoc::list_pages(doc).first().unwrap().id
+            notes::read::list_pages(doc).first().unwrap().id
         })
         .unwrap();
     fixture
         .driver
         .invoke_action(
-            &tilo_actions::ActionAddress::new(notes::actions::page_resource_id(page), "open"),
-            &serde_json::Map::new(),
+            &tilo_actions::ActionAddress::new("notes.notebook", "open-note"),
+            serde_json::json!({ "page": page }).as_object().unwrap(),
             false,
             None,
         )
@@ -1026,7 +1026,7 @@ fn assert_native_field_selection_and_undo(transcript: &str) {
 }
 
 struct NativeNotes {
-    driver: ui::headless::Driver,
+    driver: ui::headless::FrameHarness,
     records: ui::record::RecordStore,
     checkout: ui::record::RecordCheckout,
     _owners: ui::record::RecordOwners,
@@ -1036,7 +1036,7 @@ impl NativeNotes {
     fn new() -> Self {
         use std::{cell::RefCell, rc::Rc};
         use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
-        use ui::permissions::{Actor, PermissionContext, Role, UserId};
+        use ui::permissions::{PermissionContext, Role, UserId};
         let temp = tempfile::tempdir().unwrap();
         let state_root = temp.path().join("state");
         let mut owners = ui::record::RecordOwners::new(state_root.clone());
@@ -1056,9 +1056,9 @@ impl NativeNotes {
                 ),
                 device_id: "fixture-device".into(),
                 instance_id: 11,
-                permissions: Rc::new(RefCell::new(PermissionContext::from_capabilities(
-                    Actor::person(Some(Role::Owner), "dictation-wire-author"),
-                    vec![],
+                permissions: Rc::new(RefCell::new(PermissionContext::member(
+                    "dictation-wire-author",
+                    Role::Owner,
                 ))),
                 author: UserId("dictation-wire-author".into()),
                 action_context: tilo_actions::ActionContext::default(),
@@ -1074,7 +1074,7 @@ impl NativeNotes {
             ui::font_catalog::checkout_root(),
             "en-US",
         );
-        let mut driver = ui::headless::Driver::from_component(
+        let mut driver = ui::headless::FrameHarness::from_component(
             component,
             (1000, 700),
             ui::application::ComponentRunnerInputs {
@@ -1099,8 +1099,8 @@ impl NativeNotes {
         }
         self.records
             .read(&self.checkout.id, |doc| {
-                notes::notebook::validate(doc).unwrap();
-                let blocks = notes::doc::NotesDoc::page_block_snapshots(doc, page);
+                notes::read::validate(doc).unwrap();
+                let blocks = notes::read::page_block_snapshots(doc, page);
                 let actual = blocks
                     .iter()
                     .map(|(_, body)| body.as_str())
@@ -1113,8 +1113,8 @@ impl NativeNotes {
     fn assert_body(&self, page: notes::PageId, expected: &str) {
         self.records
             .read(&self.checkout.id, |doc| {
-                notes::notebook::validate(doc).unwrap();
-                let blocks = notes::doc::NotesDoc::page_block_snapshots(doc, page);
+                notes::read::validate(doc).unwrap();
+                let blocks = notes::read::page_block_snapshots(doc, page);
                 assert_eq!(blocks.len(), 1);
                 assert_eq!(blocks.first().unwrap().1, expected);
             })

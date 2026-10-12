@@ -81,7 +81,7 @@ PY
     echo "collection runtime tilo-runtime/$runtime_version is missing bundle.toml" >&2
     exit 1
 }
-"$bin_dir/tilo-runtime-bundle" verify "$collection_runtime/$runtime_version" >/dev/null
+"$bin_dir/tilo-runtime-bundle" verify "$collection_runtime/$runtime_version" --require-signature >/dev/null
 
 mkdir -p "$stage/usr/share/tilo-apps" "$stage/usr/lib" "$stage/etc/tilo"
 cp -a "$collection_runtime" "$stage/usr/lib/tilo-runtime"
@@ -141,6 +141,18 @@ rm -- "$store/registry.toml"
 # The payload trees are materialised; the system store is read-only and never
 # installs again, so its content store, staging and writer lock do not ship.
 rm -rf -- "$store/content" "$store/tmp" "$store/.lock"
+# Each install above held the runtime collector off by sharing .gc.lock in the
+# runtime root it resolved against (runtime-bundle's gc.rs), which created the
+# file. Collection, its lock and its leases belong to the per-user root only:
+# nothing locks or writes the read-only system root, so none of its state
+# ships. Anything else hidden there is unexplained and fails the package.
+runtime_root=$stage/usr/lib/tilo-runtime
+rm -f -- "$runtime_root/.gc.lock"
+runtime_state=$(find "$runtime_root" -mindepth 1 -maxdepth 1 -name '.*' -print)
+[[ -z $runtime_state ]] || {
+    echo "collector state left in the packaged runtime root: $runtime_state" >&2
+    exit 1
+}
 
 # The collection's baked runtime and official Store runtimes have separate
 # signers. Ship both pins, as the OS image does, so ordinary Store updates do

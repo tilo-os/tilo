@@ -1,0 +1,27 @@
+[package]
+name = "tilo-history"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Renders Tilo history entries as sentences in the reader's language."
+
+# History entries are data (`tilo_actions::ActionContext`). This crate turns
+# one into a sentence for a person, in the reader's locale, from the app's
+# Fluent catalogue by convention and from the framework's own messages when
+# the app has none.
+
+[dependencies]
+fluent.workspace = true
+serde_json.workspace = true
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+unic-langid.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

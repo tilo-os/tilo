@@ -1084,9 +1084,9 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     let definition = definition(config.app.as_deref())?;
     let store = crate::storage::load(&config.profile, &config.device, &hydrated)?;
     let dyn_store: Rc<dyn durable_store::DurableStore> = store.clone();
-    let permissions = Rc::new(RefCell::new(PermissionContext::from_capabilities(
-        collab_types::caps::Actor::person(Some(collab_types::role::Role::Owner), config.author()),
-        Vec::new(),
+    let permissions = Rc::new(RefCell::new(PermissionContext::member(
+        config.author(),
+        collab_types::role::Role::Owner,
     )));
     let Presentation {
         root,
@@ -1292,13 +1292,19 @@ async fn shared_gpu(
         .devices
         .get(surface.dev_id)
         .ok_or("WebGPU device missing")?;
-    let mut renderer = vello::Renderer::new(
+    // Asynchronous pipeline creation: the browser compiles vello's pipelines
+    // in parallel off its GPU process's main thread. Created synchronously
+    // they hold that thread for the whole compile (seconds each under a
+    // software rasteriser), and a page waiting on the GPU process (one tearing
+    // down its previous WebGPU context, a frame, a screenshot) waits with it.
+    let mut renderer = vello::Renderer::new_async(
         &handle.device,
         vello::RendererOptions {
             antialiasing_support: vello::AaSupport::area_only(),
             ..Default::default()
         },
     )
+    .await
     .map_err(|e| e.to_string())?;
     if caps == SurfaceCaps::CONSERVATIVE {
         renderer.set_bump_budget_limit(CONSERVATIVE_BUMP_BUDGET_BYTES);
@@ -2481,22 +2487,6 @@ pub fn desktop_apply_tree(id: u64, tree: &str) -> Result<(), JsValue> {
         m.pending = true;
         m.window.request_redraw();
         Ok(())
-    })
-}
-
-/// The desktop's current tree as `DesktopTree` JSON, for peers; `None` for
-/// a single-application mount.
-///
-/// # Errors
-///
-/// Rejects a closed mount or a failure to serialize the tree.
-#[wasm_bindgen]
-pub fn desktop_tree(id: u64) -> Result<Option<String>, JsValue> {
-    with_mount(id, |m| {
-        m.desktop
-            .as_ref()
-            .map(|d| d.handle.read(serde_json::to_string).map_err(error))
-            .transpose()
     })
 }
 

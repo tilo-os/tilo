@@ -1,0 +1,161 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "tube.library"
+label = "Tube"
+version = 1
+
+[[resources.fields]]
+owner = "library"
+path = "likes"
+stored = "value"
+title = "Liked videos"
+type = "Set<String>"
+
+[[resources.fields]]
+owner = "library"
+path = "queue"
+stored = "value"
+title = "Shared watch queue"
+type = "Set<String>"
+
+[[resources.fields]]
+owner = "library"
+path = "subscriptions"
+stored = "value"
+title = "Subscribed creators"
+type = "Set<String>"
+
+[[resources.fields]]
+owner = "library"
+path = "comment_likes"
+stored = "value"
+title = "Liked comments"
+type = "Set<String>"
+
+[[resources.fields]]
+owner = "library"
+path = "replies"
+stored = "collection"
+title = "Replies to comments"
+type = "Collection<Reply>"
+
+[[resources.fields]]
+owner = "reply"
+path = "replies.*.comment"
+readonly = true
+stored = "value"
+title = "Comment"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "reply"
+path = "replies.*.text"
+readonly = true
+stored = "value"
+title = "Reply"
+type = "String"
+
+[[resources.verbs]]
+description = "Visible to everyone sharing this library. The same reply twice to one comment is kept once, so a retried reply is not posted again."
+id = "reply-to-comment"
+kind = "undoable"
+label = "Reply to a comment"
+
+[[resources.verbs.params]]
+name = "comment"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "text"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "retract"
+kind = "undoable"
+label = "Retract a reply"
+
+[[resources.verbs.params]]
+name = "reply"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources]]
+kind = "tube.watch-history"
+label = "Watch history"
+person = true
+version = 1
+
+[[resources.fields]]
+owner = "watch-history"
+path = "watched"
+stored = "value"
+title = "Watched"
+type = "BTreeMap<String, u64>"
+
+[[resources.verbs]]
+id = "record"
+kind = "undoable"
+label = "The video was watched at `at_ms`: it moves to the front"
+
+[[resources.verbs.params]]
+name = "video"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "at_ms"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "watched there; one already in the history keeps its place."
+id = "import"
+kind = "undoable"
+label = "Videos another device watched: each takes its place by when it was"
+
+[[resources.verbs.params]]
+name = "watched"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+maxItems = 2
+minItems = 2
+type = "array"
+
+[[resources.verbs]]
+id = "forget"
+kind = "undoable"
+label = "Remove from history"
+
+[[resources.verbs.params]]
+name = "video"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "clear"
+kind = "undoable"
+label = "Clear watch history"
+params = []

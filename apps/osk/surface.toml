@@ -1,0 +1,96 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+fields = []
+kind = "osk.keyboard"
+label = "On-screen keyboard"
+verbs = []
+version = 1
+
+[[resources]]
+kind = "osk.learned"
+label = "What the keyboard learned"
+person = true
+version = 1
+
+[[resources.fields]]
+owner = "learned"
+path = "transitions"
+readonly = true
+stored = "value"
+title = "Per language: the previous word (empty at a start) → a word committed"
+type = "BTreeMap<String, BTreeMap<String, BTreeMap<String, Counter>>>"
+
+[[resources.fields]]
+owner = "learned"
+path = "kept"
+readonly = true
+stored = "value"
+title = "Words kept as typed when the keyboard corrected them"
+type = "Set<String>"
+
+[[resources.fields]]
+owner = "learned"
+path = "touch"
+readonly = true
+stored = "value"
+title = "Where the person tends to hit each letter, by the letter"
+type = "BTreeMap<String, KeyOffset>"
+
+[[resources.verbs]]
+description = "takes it back."
+id = "learn"
+kind = "undoable"
+label = "Remember what typing taught. Learning comes from use, so no undo"
+
+[[resources.verbs.params]]
+name = "lesson"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "What typing taught the keyboard since it last saved."
+required = [
+    "language",
+    "transitions",
+    "kept",
+    "touch",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.kept]
+description = "Words kept as typed."
+type = "array"
+
+[resources.verbs.params.schema.properties.kept.items]
+type = "string"
+
+[resources.verbs.params.schema.properties.language]
+description = "The language the transitions are in."
+type = "string"
+
+[resources.verbs.params.schema.properties.touch]
+description = "Where each letter tends to be hit now."
+type = "array"
+
+[resources.verbs.params.schema.properties.touch.items]
+maxItems = 2
+minItems = 2
+type = "array"
+
+[resources.verbs.params.schema.properties.transitions]
+description = "Words committed, each after the previous word (empty at a start)."
+type = "array"
+
+[resources.verbs.params.schema.properties.transitions.items]
+maxItems = 2
+minItems = 2
+type = "array"
+
+[[resources.verbs]]
+id = "forget"
+kind = "undoable"
+label = "Forget everything learned"
+params = []

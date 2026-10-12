@@ -24,14 +24,10 @@ use ui::framework::testing::TestApp;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
-use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::event::WindowEvent;
 
 fn wheel(lines: f32) -> WindowEvent {
-    WindowEvent::MouseWheel {
-        device_id: winit::event::DeviceId::dummy(),
-        delta: MouseScrollDelta::LineDelta(0.0, lines),
-        phase: TouchPhase::Moved,
-    }
+    ui::synthetic_input::mouse_wheel(0.0, lines)
 }
 
 /// A tall body so the panel content overflows any short viewport.
@@ -407,18 +403,11 @@ fn scroll_control(app: &mut TestApp<NotesShell>) -> ui::a11y::AccessNode {
 }
 
 fn pointer(point: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-    }
+    ui::synthetic_input::cursor_moved(point.x, point.y)
 }
 
 fn mouse(state: winit::event::ElementState) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state,
-        button: winit::event::MouseButton::Left,
-    }
+    ui::synthetic_input::mouse_input(state, ui::winit::event::MouseButton::Left)
 }
 
 #[test]

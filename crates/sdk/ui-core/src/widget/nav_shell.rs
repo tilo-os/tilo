@@ -50,6 +50,8 @@
 //! host next builds the tree, never in the middle of the event, so the host
 //! never holds a widget the shell has dropped.
 
+use crate::num::f32_of_f64;
+use crate::num::f64_of_usize;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -783,8 +785,8 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     }
     stack.push(NavPane::Content);
     let front = stack_index(&stack, inputs.pane);
-    let pos = inputs.push_pos.map_or(index_f64(front), |pos| {
-        pos.clamp(0.0, index_f64(stack.len().saturating_sub(1)))
+    let pos = inputs.push_pos.map_or(f64_of_usize(front), |pos| {
+        pos.clamp(0.0, f64_of_usize(stack.len().saturating_sub(1)))
     });
     g.stack = if stack.len() > 1 {
         stack.clone()
@@ -817,7 +819,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     let region_w = region.width();
     let screen_x = |pane: NavPane| -> f64 {
         let i = stack_index(&stack, pane);
-        (index_f64(i) - pos) * w
+        (f64_of_usize(i) - pos) * w
     };
     // Sidebar.
     let mut sidebar_body = Rect::ZERO;
@@ -1120,24 +1122,12 @@ fn stack_index(stack: &[NavPane], pane: NavPane) -> usize {
         .unwrap_or(stack.len().saturating_sub(1))
 }
 
-fn index_f64(i: usize) -> f64 {
-    f64::from(u32::try_from(i).unwrap_or(u32::MAX))
-}
-
 #[allow(
     clippy::cast_possible_truncation,
     reason = "a reveal is clamped to 0..=1, always well within f32 range"
 )]
 fn unit_f32(v: f64) -> f32 {
     v.clamp(0.0, 1.0) as f32
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "on-screen layout extents fit f32 exactly at every UI scale"
-)]
-fn to_f32(v: f64) -> f32 {
-    v as f32
 }
 
 /// The shell's buttons report presses here.
@@ -1186,28 +1176,12 @@ impl Widget for InertPart {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
 
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "NavShellInert"
     }
 
     fn is_layout_dirty(&self) -> bool {
         false
-    }
-
-    fn get_rect(&self) -> Rect {
-        Rect::ZERO
     }
 }
 
@@ -2141,7 +2115,7 @@ impl NavShell {
             let stack = &self.geometry.stack;
             let from = inputs
                 .push_pos
-                .unwrap_or_else(|| index_f64(stack_index(stack, inputs.pane)));
+                .unwrap_or_else(|| f64_of_usize(stack_index(stack, inputs.pane)));
             inputs.pane = pane;
             inputs.push_from = Some(from);
             inputs.push_progress = 0.0;
@@ -2661,7 +2635,7 @@ impl NavShell {
                 inputs.push_pos = None;
                 inputs.push_progress = 1.0;
             } else {
-                let target = index_f64(stack_index(&stack, inputs.pane));
+                let target = f64_of_usize(stack_index(&stack, inputs.pane));
                 if reduce || base.as_secs_f64() <= 0.0 {
                     inputs.push_progress = 1.0;
                 } else if inputs.push_progress < 1.0 {
@@ -3099,7 +3073,7 @@ fn measure(
         return Ok(natural);
     }
     let proposal = Size {
-        width: MeasureConstraint::AtMost(to_f32(bound)),
+        width: MeasureConstraint::AtMost(f32_of_f64(bound)),
         height: MeasureConstraint::Intrinsic,
     };
     let measured = ManualContext::measure(ctx, index, proposal)?.size;
@@ -3175,7 +3149,7 @@ fn place_header(
         if widths.is_empty() {
             0.0
         } else {
-            widths.iter().sum::<f64>() + gap * index_f64(widths.len().saturating_sub(1))
+            widths.iter().sum::<f64>() + gap * f64_of_usize(widths.len().saturating_sub(1))
         }
     };
     let reserve = run(&compact);

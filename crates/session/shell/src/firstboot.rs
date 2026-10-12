@@ -479,12 +479,11 @@ mod tests {
             assert_eq!(host_pointer_speed(1.0), 1.0);
             assert_eq!(host_pointer_speed(4.0), 1.0);
         }
-        // Phase `host_input_migration_splits_legacy_scroll_and_is_idempotent`.
+        // Phase `host_input_migration_imports_per_device_scroll_and_is_idempotent`.
         {
-            let legacy =
-                serde_json::Map::from_iter([("natural_scroll".into(), serde_json::json!(true))]);
+            let existing = serde_json::Map::new();
             let updates =
-                host_input_migration_updates(&legacy, |schema, key| match (schema, key) {
+                host_input_migration_updates(&existing, |schema, key| match (schema, key) {
                     ("org.gnome.desktop.peripherals.touchpad", "natural-scroll") => {
                         Some("true".into())
                     }
@@ -506,7 +505,7 @@ mod tests {
                 Some(&serde_json::json!(HOST_INPUT_MIGRATION_VERSION))
             );
 
-            let mut migrated = legacy;
+            let mut migrated = existing;
             migrated.extend(updates);
             assert!(
                 host_input_migration_updates(&migrated, |_, _| panic!("must not read twice"))

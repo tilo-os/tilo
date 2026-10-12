@@ -306,7 +306,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
         let renderer = tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap();
         CAPTURES.with_borrow_mut(Vec::clear);
         TASKS.with_borrow_mut(Vec::clear);
-        let mut driver = tilo_ui::headless::Driver::new_with_controlled_inputs(
+        let mut driver = tilo_ui::headless::FrameHarness::new_with_controlled_inputs(
             state,
             Box::new(Column::new().push(Box::new(TileHost::from_component(component)))),
             (400, 300),
@@ -801,7 +801,7 @@ impl Widget for Root {
     ) {
         assert!(
             presence.permits(&tilo_ui::permissions::PermissionScope::workspace(
-                tilo_ui::permissions::Verb::Write
+                tilo_ui::permissions::ActionKind::Undoable
             )) == EXPECTED_WRITE.get(),
             "draw received outer authority"
         );
@@ -1145,7 +1145,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
             "en-US",
         );
         let replace = std::rc::Rc::new(Cell::new(false));
-        let mut driver = tilo_ui::headless::Driver::new_with_controlled_inputs(
+        let mut driver = tilo_ui::headless::FrameHarness::new_with_controlled_inputs(
             tilo_ui::State::new(),
             Box::new(ReplacingHost(
                 TileHost::from_component(component),
@@ -1415,7 +1415,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
         );
         assert!(
             CAPTURES.with_borrow(|c| c.iter().any(|(_, label, _)| *label == "draw-permissions")),
-            "ordinary Driver paint did not reach the permission-aware root"
+            "ordinary FrameHarness paint did not reach the permission-aware root"
         );
         *permissions.borrow_mut() = tilo_ui::permissions::PermissionContext::permissive();
         EXPECTED_WRITE.set(true);
@@ -1743,7 +1743,7 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
                     .err()
                     .unwrap()
             } else {
-                tilo_ui::headless::Driver::from_component(
+                tilo_ui::headless::FrameHarness::from_component(
                     parent,
                     (320, 180),
                     crate::support::application::runner_inputs(),
@@ -2022,12 +2022,15 @@ impl Widget for SameNameUnregisteredWrapper {
     }
 }
 
-fn controlled_driver(root: Box<dyn Widget>, viewport: (u32, u32)) -> tilo_ui::headless::Driver {
+fn controlled_driver(
+    root: Box<dyn Widget>,
+    viewport: (u32, u32),
+) -> tilo_ui::headless::FrameHarness {
     let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
         tilo_ui::font_catalog::checkout_root(),
         "en-US",
     );
-    tilo_ui::headless::Driver::new_with_controlled_inputs(
+    tilo_ui::headless::FrameHarness::new_with_controlled_inputs(
         tilo_ui::State::new(),
         root,
         viewport,
@@ -2314,13 +2317,12 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
 #[test]
 fn bound_resources_list_and_look_up_what_the_component_permissions_admit() {
     use crate::support::application::action_probe_factory;
-    use tilo_ui::permissions::{Actor, PermissionContext, Role};
+    use tilo_ui::permissions::{PermissionContext, Role};
     let host = ProbeHost::new();
     let definition = definition(action_probe_factory);
     let driver = |instance, role| {
         let permissions = std::rc::Rc::new(std::cell::RefCell::new(
-            PermissionContext::from_capabilities(Actor::person(Some(role), "probe-author"), vec![])
-                .at_unix_time(100),
+            PermissionContext::member("probe-author", role).at_unix_time(100),
         ));
         let context = host
             .prepare_with_permissions(&definition, instance, &LaunchTarget::New, permissions)
@@ -2384,12 +2386,9 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
         let host = ProbeHost::new();
         let definition = definition(action_probe_factory);
         let permissions = std::rc::Rc::new(std::cell::RefCell::new(
-            tilo_ui::permissions::PermissionContext::from_capabilities(
-                tilo_ui::permissions::Actor::person(
-                    Some(tilo_ui::permissions::Role::Owner),
-                    "probe-author",
-                ),
-                vec![],
+            tilo_ui::permissions::PermissionContext::member(
+                "probe-author",
+                tilo_ui::permissions::Role::Owner,
             )
             .at_unix_time(100),
         ));
@@ -2432,10 +2431,10 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
         assert!(observed[0].borrow().is_empty());
         assert_eq!(*observed[1].borrow(), vec!["View"]);
         host.records
-            .read_history(&checkout.id, |_, history| {
+            .read_history(&checkout.id, |doc, history| {
                 assert!(
                     history
-                        .next_undo_in(&crate::support::application::author(), 12)
+                        .next_undo_in(doc, &crate::support::application::author(), 12)
                         .is_none()
                 );
             })
@@ -2447,12 +2446,16 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
             .with_history(&checkout.id, |doc, history| {
                 let author = crate::support::application::author();
                 assert_eq!(
-                    history.next_undo_in(&author, 11).unwrap().author.as_ref(),
+                    history
+                        .next_undo_in(doc, &author, 11)
+                        .unwrap()
+                        .author
+                        .as_ref(),
                     Some(&author)
                 );
-                assert!(history.next_undo_in(&author, 12).is_none());
-                history.undo_in(doc, &author, 11, None, None).unwrap();
-                assert!(history.next_undo_in(&author, 11).is_none());
+                assert!(history.next_undo_in(doc, &author, 12).is_none());
+                history.undo_in(doc, &author, 11, None, None, None).unwrap();
+                assert!(history.next_undo_in(doc, &author, 11).is_none());
                 assert_eq!(
                     doc.get(automerge::ROOT, "body")
                         .unwrap()
@@ -2498,13 +2501,14 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
             for instance in 11..13 {
                 let allowed = instance < 11_u64.saturating_add(authorized);
                 let permissions = std::rc::Rc::new(std::cell::RefCell::new(
-                    tilo_ui::permissions::PermissionContext::from_capabilities(
-                        tilo_ui::permissions::Actor::person(
-                            allowed.then_some(tilo_ui::permissions::Role::Owner),
+                    if allowed {
+                        tilo_ui::permissions::PermissionContext::member(
                             "probe-author",
-                        ),
-                        vec![],
-                    )
+                            tilo_ui::permissions::Role::Owner,
+                        )
+                    } else {
+                        tilo_ui::permissions::PermissionContext::stranger("probe-author")
+                    }
                     .at_unix_time(100),
                 ));
                 let component = definition
@@ -2559,6 +2563,7 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
                         assert_eq!(
                             history
                                 .next_undo_in(
+                                    doc,
                                     &author(),
                                     11_u64.saturating_add(u64::try_from(index).unwrap())
                                 )

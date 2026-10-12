@@ -30,7 +30,7 @@ impl Mover<'_> {
             .map_err(|_| "clipboard journal unavailable".into())
     }
     fn check(&self) -> Result<Receipt, String> {
-        self.context.authorize(Permission::Write)?;
+        self.context.authorize(Permission::Undoable)?;
         let receipt = self.snapshot()?;
         receipt.destination.open(self.tree, self.context)?;
         if receipt.cut {

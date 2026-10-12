@@ -19,7 +19,7 @@ async fn approved_check_rpc_requires_exact_retained_target_and_accepted_id() {
             });
             descriptor.operation_kind = tilo_actions::OperationKind::Effect;
             descriptor.contract = tilo_actions::ActionContract {
-                permission: tilo_actions::PermissionRequirement::Write,
+                kind: tilo_actions::ActionKind::Undoable,
                 result: tilo_actions::ResultSpec::Job,
                 execution: tilo_actions::ExecutionMode::Background { cancellable: true },
                 ..Default::default()
@@ -149,7 +149,13 @@ async fn approved_check_rpc_native_target_requires_live_launcher_connection() {
         fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
             Vec::new()
         }
-        fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+        fn launch(
+            &self,
+            _: &str,
+            _: &tilo_desktop_model::Workspace,
+            _: Option<&str>,
+            _: &crate::services::LaunchPlace,
+        ) -> Result<(), String> {
             Err("fixture never launches applications".into())
         }
         fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
@@ -185,7 +191,7 @@ async fn approved_check_rpc_native_target_requires_live_launcher_connection() {
             descriptor.semantic_identity = Some(runtime_collab::ExportedResourceSemanticIdentity { kind: descriptor.resource_kind.clone(), key: descriptor.resource.clone() });
         descriptor.operation_kind = tilo_actions::OperationKind::Effect;
         descriptor.contract = tilo_actions::ActionContract {
-            permission: tilo_actions::PermissionRequirement::Write,
+            kind: tilo_actions::ActionKind::Undoable,
             execution: tilo_actions::ExecutionMode::Background { cancellable: true },
             result: tilo_actions::ResultSpec::Job,
             ..Default::default()

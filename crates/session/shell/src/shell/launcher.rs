@@ -31,7 +31,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::shell::state::{CapOverride, RoomId, Subject, Workspace};
+use crate::shell::state::{RoomId, Workspace};
+use collab_types::caps::LaunchGrants;
 use notify::Watcher as _;
 use os_actions::{TOOL_CONTEXT_ENV, ToolIntent};
 
@@ -495,9 +496,23 @@ pub(crate) fn note_native_writer_retiring(mut pid: u32) {
     }
 }
 
+/// How long the launch worker sleeps between looks at a retiring writer's
+/// launcher, in case its exit came without a wake-up.
+const RETIREMENT_RECHECK: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Wait on the launch worker, before spawning a replacement. Surface
 /// disappearance is not process exit: a native app may still checkpoint its
 /// canonical record. Never remove its lock or race a second writer into it.
+///
+/// The wait ends when the retiring launcher has exited, which the kernel
+/// proves: its pid no longer names a process with the start time it was
+/// registered with. The launcher outlives its sandbox, so the writer inside
+/// has exited too. Unregistering the launch is not that proof and can come
+/// much later or never: the launch worker does it only once every holder of
+/// the launcher's stderr has closed it, and a descendant that outlives the
+/// launcher (or a launch worker that never got there) would otherwise hold
+/// every later open of the app for `timeout` and then refuse it, for the
+/// rest of the session.
 fn wait_for_retiring_app(
     package_id: &str,
     command: &LaunchCommand,
@@ -510,7 +525,11 @@ fn wait_for_retiring_app(
     let mut processes = LAUNCHED_PROCESSES
         .lock()
         .map_err(|_| crate::shell::i18n::t("shell-launch-registry-unavailable"))?;
-    let retiring = |processes: &HashMap<u32, LaunchedProcess>| {
+    let retiring = |processes: &mut HashMap<u32, LaunchedProcess>| {
+        processes.retain(|pid, process| {
+            !process.retiring
+                || proc_stat(*pid).is_some_and(|(_, start)| start == process.start_time)
+        });
         processes.values().any(|process| {
             process.confined
                 && process.retiring
@@ -518,19 +537,25 @@ fn wait_for_retiring_app(
                 && process.workspace_id.as_deref() == Some(identity.workspace_id.as_str())
         })
     };
-    if retiring(&processes) {
+    if retiring(&mut processes) {
         eprintln!(
             "app-writer-retirement-wait: package={package_id} room={}",
             identity.workspace_id
         );
     }
-    while retiring(&processes) {
+    while retiring(&mut processes) {
         let remaining = timeout
             .checked_sub(started.elapsed())
             .filter(|remaining| !remaining.is_zero())
-            .ok_or_else(|| crate::shell::i18n::t("shell-launch-writer-still-closing"))?;
+            .ok_or_else(|| {
+                eprintln!(
+                    "app-writer-retirement-timeout: package={package_id} room={} after={:?}",
+                    identity.workspace_id, timeout
+                );
+                crate::shell::i18n::t("shell-launch-writer-still-closing")
+            })?;
         let (next, _) = LAUNCH_RETIREMENT_CHANGED
-            .wait_timeout(processes, remaining)
+            .wait_timeout(processes, remaining.min(RETIREMENT_RECHECK))
             .map_err(|_| crate::shell::i18n::t("shell-launch-registry-unavailable"))?;
         processes = next;
     }
@@ -1316,7 +1341,10 @@ static APP_CACHE_WATCH: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
 /// Capabilities of the workspace apps are being launched into, published
 /// by [`set_workspace_capabilities`] or [`launch_in_workspace`]. Empty is
 /// the safe default: an app launched before publish gets manifest-only.
-static WORKSPACE_CAPABILITIES: Mutex<Vec<CapOverride>> = Mutex::new(Vec::new());
+static WORKSPACE_CAPABILITIES: Mutex<LaunchGrants> = Mutex::new(LaunchGrants {
+    authors: Vec::new(),
+    sandbox: Vec::new(),
+});
 /// Resume bytes waiting for the user-directed launch of one dormant tab.
 pub type ContinuationResumePayload = Option<(u16, Vec<u8>)>;
 pub type StagedContinuationResume = (ContinuationResumePayload, u64);
@@ -1404,32 +1432,25 @@ pub fn wayland_socket() -> Option<PathBuf> {
     lock(&WAYLAND_SOCKET).clone()
 }
 
-/// Publish the capability list of the workspace apps launch into. Call
-/// whenever the active workspace or its capabilities change — a grant
-/// only reaches the next launch if republished. The whole list is
-/// published; [`launch`] and the launcher each filter their own slice.
-pub fn set_workspace_capabilities(capabilities: Vec<CapOverride>) {
-    *lock(&WORKSPACE_CAPABILITIES) = capabilities;
+/// Publish what launches into the workspace hand their apps
+/// ([`Workspace::launch_grants`]). Call whenever the active workspace or its
+/// grants change — a grant only reaches the next launch if republished. The
+/// whole set is published; [`launch`] hands each app its own slice.
+pub fn set_workspace_capabilities(grants: LaunchGrants) {
+    *lock(&WORKSPACE_CAPABILITIES) = grants;
 }
 
 /// Drop the published capability list. Subsequent launches get manifest
 /// permissions only.
 pub fn clear_workspace_capabilities() {
-    set_workspace_capabilities(Vec::new());
+    set_workspace_capabilities(LaunchGrants::default());
 }
 
-/// The capabilities published for `app_id`, filtered by subject — a
-/// capability naming a person, room, or other app never reaches this
-/// app's file. Restrictions travel too: filtering them out here would
-/// silently widen the sandbox, since the launcher's decision function
-/// needs to be able to *narrow* a grant.
-pub fn capabilities_for_app(app_id: &str) -> Vec<CapOverride> {
-    let want = Subject::app(app_id);
-    lock(&WORKSPACE_CAPABILITIES)
-        .iter()
-        .filter(|c| c.subject == want)
-        .cloned()
-        .collect()
+/// What the published grants hand `app_id` ([`LaunchGrants::for_app`]): a
+/// capability naming a person, room, or other app never reaches this app's
+/// file.
+pub fn capabilities_for_app(app_id: &str) -> LaunchGrants {
+    lock(&WORKSPACE_CAPABILITIES).for_app(app_id)
 }
 
 /// Where a launch's capability file lives: `<runtime>/tilo/capabilities/`,
@@ -1533,12 +1554,11 @@ fn attach_trusted_identities_projection(
     Ok(())
 }
 
-/// Write `capabilities` where `tilo-launcher --capabilities` will read
-/// them. Each launch owns a private immutable snapshot until its supervisor
+/// Write `grants` where `tilo-launcher --capabilities` will read them. Each launch owns a private immutable snapshot until its supervisor
 /// drops the file. `Ok(None)` means no file or flag: manifest permissions alone.
 fn write_capabilities_file(
     package_id: &str,
-    capabilities: &[CapOverride],
+    grants: &LaunchGrants,
 ) -> std::io::Result<Option<tempfile::NamedTempFile>> {
     // Create at 0600 rather than writing and chmod-ing after: the window
     // between the two is exactly when another process could open it.
@@ -1552,7 +1572,7 @@ fn write_capabilities_file(
             format!("refusing to write a capability file for package id {package_id:?}"),
         ));
     }
-    if capabilities.is_empty() {
+    if grants.is_empty() {
         return Ok(None);
     }
     {
@@ -1562,7 +1582,7 @@ fn write_capabilities_file(
             .mode(0o700)
             .create(capabilities_dir())?;
     }
-    let json = serde_json::to_vec(capabilities).map_err(|e| {
+    let json = serde_json::to_vec(grants).map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("serialising capabilities: {e}"),
@@ -2215,6 +2235,7 @@ fn build_launch_command_for(
         uri,
     } = *extras;
     let application_creation = original_application_creation(app);
+    register_signed_surface(app);
     let mut args = vec![
         "run".to_string(),
         "--manifest".to_string(),
@@ -2300,6 +2321,25 @@ fn build_launch_command_for(
         }),
         portal_workspace_id: None,
         managed_agent_id: None,
+    }
+}
+
+/// Run the package `app` with the surface its signed package ships, so the
+/// records of the person's it declares there are kept in their room as a
+/// built-in app's are. A package whose surface no longer matches its
+/// signature declares none.
+fn register_signed_surface(app: &InstalledApp) {
+    let Some(installed) = package_store::find_installed(&app.package_id)
+        .ok()
+        .flatten()
+    else {
+        return;
+    };
+    if installed.manifest_path != app.manifest_path || installed.payload_root != app.payload_root {
+        return;
+    }
+    if let Some(surface) = package_store::integrity::signed_surface(&installed) {
+        tilo_action_broker::register_package_surface(&app.package_id, &surface);
     }
 }
 
@@ -2418,9 +2458,10 @@ pub fn launch_workspace_agent(
     workspace: &Workspace,
 ) -> Result<InstalledApp, LaunchError> {
     let agent_id = agent_id.trim();
-    if workspace
-        .role_of_agent(agent_id)
-        .is_none_or(|role| role == crate::shell::state::CapRole::Denied)
+    if !workspace
+        .agent_members()
+        .iter()
+        .any(|(agent, _)| agent == agent_id)
     {
         return Err(LaunchError::AgentNotAdmitted {
             agent_id: agent_id.to_string(),
@@ -2752,7 +2793,7 @@ fn execute_installed(
     uri: Option<&str>,
     tool_intent: Option<&ToolIntent>,
     media_handoff: Option<MediaHandoffLaunch>,
-    capability_snapshot: Option<Vec<CapOverride>>,
+    capability_snapshot: Option<LaunchGrants>,
 ) -> Result<InstalledApp, LaunchError> {
     execute_installed_inner(
         app,
@@ -2767,14 +2808,14 @@ fn execute_installed(
 
 fn stage_launch_capabilities(
     app_id: &str,
-    capabilities: &[CapOverride],
+    grants: &LaunchGrants,
 ) -> Option<tempfile::NamedTempFile> {
-    match write_capabilities_file(app_id, capabilities) {
+    match write_capabilities_file(app_id, grants) {
         Ok(path) => path,
         Err(error) => {
             eprintln!(
                 "[launch {app_id}] could not stage {} capabilities ({error}); starting with manifest permissions only",
-                capabilities.len()
+                grants.sandbox.len()
             );
             None
         }
@@ -2785,15 +2826,15 @@ fn attach_sandbox_authority(
     app: &InstalledApp,
     room: RoomId,
     command: &mut LaunchCommand,
-    capabilities: Vec<CapOverride>,
+    grants: LaunchGrants,
     file: Option<tempfile::NamedTempFile>,
 ) -> Result<Option<action_authority::Lease>, LaunchError> {
-    let applied = if file.is_some() {
-        capabilities
+    let requires_supervision = file.is_some();
+    let applied = if requires_supervision {
+        grants.sandbox
     } else {
         Vec::new()
     };
-    let requires_supervision = !applied.is_empty();
     match action_authority::attach_optional(app, room, command) {
         Some(lease) => Ok(Some(lease.with_sandbox_capabilities(applied, file))),
         None if requires_supervision => Err(LaunchError::RegistryUnreadable {
@@ -2810,7 +2851,7 @@ fn execute_installed_inner(
     uri: Option<&str>,
     context: LaunchContext<'_>,
     media_handoff: Option<MediaHandoffLaunch>,
-    capability_snapshot: Option<Vec<CapOverride>>,
+    capability_snapshot: Option<LaunchGrants>,
 ) -> Result<InstalledApp, LaunchError> {
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launch preflight begin");
     tilo_startup_metrics::launch_phase(&app.package_id, "preflight");
@@ -2820,7 +2861,10 @@ fn execute_installed_inner(
 
     // A failure to write the capability file is not a launch failure —
     // the app starts with manifest-only permissions, the safe direction.
-    let capabilities = capability_snapshot.unwrap_or_else(|| capabilities_for_app(&app.package_id));
+    let capabilities = capability_snapshot.map_or_else(
+        || capabilities_for_app(&app.package_id),
+        |grants| grants.for_app(&app.package_id),
+    );
     let capabilities_file = stage_launch_capabilities(&app.package_id, &capabilities);
     let identity_path = crate::identity_registry::selected_identity_path(&room.to_string())
         .map_err(|error| LaunchError::IdentityUnavailable {
@@ -2968,9 +3012,8 @@ pub fn queue_launch_target_in_workspace(
     workspace: &Workspace,
     uri: Option<String>,
 ) -> Result<(), LaunchError> {
-    let room = workspace.room;
-    let workspace = workspace.clone();
-    queue_prepared_launch(app, room, move || Ok(workspace), uri)
+    let grants = workspace.launch_grants(tilo_clock::unix_now());
+    queue_prepared_launch(app, workspace.room, move || Ok(grants), uri)
 }
 
 /// A retained host notification resolves its verified package on the same
@@ -2997,11 +3040,7 @@ pub(crate) fn queue_package_target_in_workspace(
                         package_id: package_id.clone(),
                     });
                 }
-                let capabilities = workspace
-                    .capabilities
-                    .into_iter()
-                    .filter(|capability| capability.subject == Subject::app(&package_id))
-                    .collect();
+                let grants = workspace.launch_grants(tilo_clock::unix_now());
                 execute_installed(
                     app,
                     workspace.room,
@@ -3009,7 +3048,7 @@ pub(crate) fn queue_package_target_in_workspace(
                     Some(&uri),
                     None,
                     None,
-                    Some(capabilities),
+                    Some(grants),
                 )
             });
             if let Err(error) = outcome {
@@ -3067,7 +3106,7 @@ pub(crate) fn queue_native_authoring_launch(
         app,
         room,
         move || {
-            let prepare = || -> Result<Workspace, String> {
+            let prepare = || -> Result<LaunchGrants, String> {
                 let (_, certificate) =
                     tilo_identity_host::broker::trusted_current_device(&room.to_string())
                         .map_err(|error| error.to_string())?;
@@ -3081,7 +3120,7 @@ pub(crate) fn queue_native_authoring_launch(
                 let access = native_app_open_access(&owner, room, &certificate, &package)?;
                 if access != NativeAppOpenAccess::Delegate {
                     return Ok(native_launch_capabilities(
-                        native_launch_workspace(&tree, room)?,
+                        &native_launch_workspace(&tree, room)?,
                         &package,
                         access,
                     ));
@@ -3109,6 +3148,7 @@ pub(crate) fn queue_native_authoring_launch(
                     ));
                 }
                 native_launch_workspace(&tree, room)
+                    .map(|workspace| workspace.launch_grants(tilo_clock::unix_now()))
             };
             prepare().map_err(|detail| LaunchError::IdentityUnavailable { detail })
         },
@@ -3146,7 +3186,7 @@ fn prepare_observed_native_launch(
     room: RoomId,
     package: &str,
     original: &tilo_action_broker::services::ObservedApplicationLaunch,
-) -> Result<Workspace, String> {
+) -> Result<LaunchGrants, String> {
     let certificate = original.certificate()?;
     let owner = tree
         .read()
@@ -3177,33 +3217,32 @@ fn prepare_observed_native_launch(
     // Recheck even viewer/author opens; the earlier result was not authority.
     original.certificate()?;
     Ok(native_launch_capabilities(
-        native_launch_workspace(tree, room)?,
+        &native_launch_workspace(tree, room)?,
         package,
         access,
     ))
 }
 
+/// What a native open hands `package`: the room's launch grants, never
+/// naming a viewer as an author.
 fn native_launch_capabilities(
-    mut workspace: Workspace,
+    workspace: &Workspace,
     package: &str,
     access: NativeAppOpenAccess,
-) -> Workspace {
+) -> LaunchGrants {
+    let mut grants = workspace.launch_grants(tilo_clock::unix_now());
     if access == NativeAppOpenAccess::Viewer {
-        workspace
-            .capabilities
-            .push(collab_types::caps::CapOverride::new(
-                Subject::app(package),
-                collab_types::caps::Scope::Workspace,
-                collab_types::caps::Effect::Restrict,
-                collab_types::caps::Verb::Read,
-            ));
+        grants.authors.retain(|author| author != package);
     }
-    workspace
+    grants
 }
 
 #[cfg(test)]
 #[path = "launcher_native_open_tests.rs"]
 mod native_open_tests;
+#[cfg(test)]
+#[path = "launcher_package_surface_tests.rs"]
+mod package_surface_tests;
 
 fn native_app_open_access(
     owner: &super::native_workspace_owner::NativeWorkspaceOwner,
@@ -3216,7 +3255,7 @@ fn native_app_open_access(
             return Err("native app opening certificate is no longer admitted".into());
         }
         let now = std::time::SystemTime::now();
-        let (role, caps, person) = view
+        let member = view
             .peer()
             .permissions(certificate.device_public_key, now)?;
         let administrator = view
@@ -3230,23 +3269,15 @@ fn native_app_open_access(
         } else if !administrator {
             return Err("creating an application requires governor-authorized authorship".into());
         }
-        let seconds = now
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .map_err(|_| "native app opening clock is before the Unix epoch")?
-            .as_secs();
-        let person =
-            collab_types::caps::Actor::person(Some(role), person).in_room(room.to_string());
-        let application = collab_types::caps::Actor::app(package).in_room(room.to_string());
-        let writes = |actor: &collab_types::caps::Actor| {
-            collab_types::caps::decide_capability(
-                actor,
-                &collab_types::caps::ResourceRef::Workspace,
-                collab_types::caps::Verb::Write,
-                &caps,
-                Some(seconds),
-            ) == collab_types::caps::CapDecision::Allow
-        };
-        if writes(&person) && writes(&application) {
+        let person_writes = member.allows(
+            &member.policy.node().app(package),
+            tilo_action_policy::ActionKind::Undoable,
+            now,
+        );
+        let application_writes = member
+            .policy
+            .app_authors(package, &tilo_action_policy::Context::at_time(now));
+        if person_writes && application_writes {
             return Ok(NativeAppOpenAccess::Author);
         }
         Ok(if administrator {
@@ -3273,7 +3304,7 @@ fn native_launch_workspace(
 fn queue_prepared_launch(
     app: InstalledApp,
     room: RoomId,
-    prepare: impl FnOnce() -> Result<Workspace, LaunchError> + Send + 'static,
+    prepare: impl FnOnce() -> Result<LaunchGrants, LaunchError> + Send + 'static,
     uri: Option<String>,
 ) -> Result<(), LaunchError> {
     let package_id = app.package_id.clone();
@@ -3281,21 +3312,8 @@ fn queue_prepared_launch(
     spawn_reporting(
         std::thread::Builder::new().name("tilo-launch-preflight".to_string()),
         super::launch_readiness::inherit(move || {
-            let outcome = prepare().and_then(|workspace| {
-                let app_capabilities = workspace
-                    .capabilities
-                    .into_iter()
-                    .filter(|capability| capability.subject == Subject::app(&package_id))
-                    .collect();
-                execute_installed(
-                    app,
-                    room,
-                    None,
-                    uri.as_deref(),
-                    None,
-                    None,
-                    Some(app_capabilities),
-                )
+            let outcome = prepare().and_then(|grants| {
+                execute_installed(app, room, None, uri.as_deref(), None, None, Some(grants))
             });
             if let Err(error) = outcome {
                 super::launch_readiness::fail_current(error.user_message());
@@ -3329,7 +3347,7 @@ pub fn launch_document_in_workspace(
     workspace: &Workspace,
     document: Option<&Path>,
 ) -> Result<InstalledApp, LaunchError> {
-    set_workspace_capabilities(workspace.capabilities.clone());
+    set_workspace_capabilities(workspace.launch_grants(tilo_clock::unix_now()));
     launch_with_document(package_id, workspace.room, document)
 }
 
@@ -3354,7 +3372,7 @@ pub(crate) fn launch_resolved_in_workspace(
         None,
         None,
         None,
-        Some(workspace.capabilities.clone()),
+        Some(workspace.launch_grants(tilo_clock::unix_now())),
     )
     .map(|_| ())
 }
@@ -3371,10 +3389,10 @@ pub(crate) fn launch_resolved_in_workspace(
 pub fn launch_uri_in_room(
     package_id: &str,
     room: RoomId,
-    capabilities: Vec<CapOverride>,
+    grants: LaunchGrants,
     uri: &str,
 ) -> Result<InstalledApp, LaunchError> {
-    set_workspace_capabilities(capabilities);
+    set_workspace_capabilities(grants);
     launch_with_uri(package_id, room, uri)
 }
 
@@ -3393,7 +3411,7 @@ pub fn launch_uri_in_workspace(
     launch_uri_in_room(
         package_id,
         workspace.room,
-        workspace.capabilities.clone(),
+        workspace.launch_grants(tilo_clock::unix_now()),
         uri,
     )
 }
@@ -3834,7 +3852,9 @@ fn start_launch(
         let status = child.wait();
         // Reaped: the registry's liveness check now fails for this pid, even
         // while a descendant keeps stderr open and delays unregistering it.
+        // A replacement waiting for this writer to retire may go now.
         note_running_changed();
+        LAUNCH_RETIREMENT_CHANGED.notify_all();
         // Every end of an app, clean or not, with how it ended (a signal has
         // no exit code). The session's default log passes errors only, so a
         // clean exit would otherwise leave no trace; stderr is recorded.
@@ -6155,9 +6175,13 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("XDG_RUNTIME_DIR", tmp.path());
-            let caps = vec![fs_grant("../../etc/x", "/var/workspace/books", Verb::Read)];
-            let escaped = write_capabilities_file("../../etc/x", &caps);
-            let slashed = write_capabilities_file("a/b", &caps);
+            let caps = vec![fs_grant(
+                "../../etc/x",
+                "/var/workspace/books",
+                Access::Read,
+            )];
+            let escaped = write_capabilities_file("../../etc/x", &sandbox(caps.clone()));
+            let slashed = write_capabilities_file("a/b", &sandbox(caps));
             env.remove("XDG_RUNTIME_DIR");
             assert!(escaped.is_err(), "`..` in a package id must be refused");
             assert!(slashed.is_err(), "`/` in a package id must be refused");
@@ -6317,7 +6341,7 @@ mod tests {
         launched_apps_are_matched_back_by_app_id();
     }
 
-    use crate::shell::state::{Scope, Verb};
+    use crate::shell::state::{Access, CapOverride, Scope, Subject};
 
     fn test_app(package_id: &str) -> InstalledApp {
         InstalledApp {
@@ -6335,31 +6359,53 @@ mod tests {
         }
     }
 
-    fn fs_grant(app: &str, path: &str, verb: Verb) -> CapOverride {
+    fn fs_grant(app: &str, path: &str, verb: Access) -> CapOverride {
         CapOverride::grant(Subject::app(app), Scope::FsPath(path.to_string()), verb)
+    }
+
+    fn sandbox(capabilities: Vec<CapOverride>) -> LaunchGrants {
+        LaunchGrants {
+            authors: Vec::new(),
+            sandbox: capabilities,
+        }
     }
 
     #[test]
     #[serial_test::serial(process_env)]
     fn published_capabilities_are_filtered_bound_read_only_and_revoked() {
         fn published_capabilities_are_filtered_to_the_launching_app() {
-            set_workspace_capabilities(vec![
-                fs_grant("so.tilo.books", "/var/workspace/books", Verb::Read),
-                fs_grant("so.tilo.other", "/var/workspace/secrets", Verb::Write),
-                // A person's share is a capability in the same list but not
-                // an app grant, and must not travel.
-                CapOverride::grant(
-                    Subject::person("alice"),
-                    Scope::FsPath("/var/workspace/private".into()),
-                    Verb::Write,
-                ),
-            ]);
+            set_workspace_capabilities(LaunchGrants {
+                authors: vec!["so.tilo.books".into(), "so.tilo.other".into()],
+                sandbox: vec![
+                    fs_grant("so.tilo.books", "/var/workspace/books", Access::Read),
+                    fs_grant("so.tilo.other", "/var/workspace/secrets", Access::Write),
+                    // A person's share is a capability in the same list but
+                    // not an app grant, and must not travel.
+                    CapOverride::grant(
+                        Subject::person("alice"),
+                        Scope::FsPath("/var/workspace/private".into()),
+                        Access::Write,
+                    ),
+                ],
+            });
             let mine = capabilities_for_app("so.tilo.books");
             clear_workspace_capabilities();
 
-            assert_eq!(mine.len(), 1, "only this app's grant travels: {mine:?}");
-            assert_eq!(mine[0].scope, Scope::FsPath("/var/workspace/books".into()));
-            assert_eq!(mine[0].subject, Subject::app("so.tilo.books"));
+            assert_eq!(
+                mine.sandbox.len(),
+                1,
+                "only this app's grant travels: {mine:?}"
+            );
+            assert_eq!(
+                mine.sandbox[0].scope,
+                Scope::FsPath("/var/workspace/books".into())
+            );
+            assert_eq!(mine.sandbox[0].subject, Subject::app("so.tilo.books"));
+            assert_eq!(
+                mine.authors,
+                vec!["so.tilo.books".to_owned()],
+                "only this app's authorship travels"
+            );
         }
 
         fn nothing_published_means_nothing_granted() {
@@ -6378,10 +6424,10 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("XDG_RUNTIME_DIR", tmp.path());
-            set_workspace_capabilities(vec![
-                fs_grant("so.tilo.books", "/var/workspace/books", Verb::Read),
-                fs_grant("so.tilo.other", "/var/workspace/secrets", Verb::Write),
-            ]);
+            set_workspace_capabilities(sandbox(vec![
+                fs_grant("so.tilo.books", "/var/workspace/books", Access::Read),
+                fs_grant("so.tilo.other", "/var/workspace/secrets", Access::Write),
+            ]));
 
             let caps = capabilities_for_app("so.tilo.books");
             let path = write_capabilities_file("so.tilo.books", &caps)
@@ -6395,7 +6441,7 @@ mod tests {
             let records = launcher::capabilities::load_capability_file(path.path());
             let plan = launcher::capabilities::CapabilityPlan::for_app(
                 "so.tilo.books",
-                &records,
+                &records.sandbox,
                 Some(tilo_clock::unix_now()),
             );
 
@@ -6424,25 +6470,30 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("XDG_RUNTIME_DIR", tmp.path());
 
-            let granted = vec![fs_grant(
+            let granted = sandbox(vec![fs_grant(
                 "so.tilo.books",
                 "/var/workspace/books",
-                Verb::Read,
-            )];
+                Access::Read,
+            )]);
             let path = write_capabilities_file("so.tilo.books", &granted)
                 .unwrap()
                 .expect("file written while granted");
             let old_path = path.path().to_path_buf();
             assert!(old_path.exists());
 
-            let after_revoke = write_capabilities_file("so.tilo.books", &[]).unwrap();
+            let after_revoke =
+                write_capabilities_file("so.tilo.books", &LaunchGrants::default()).unwrap();
             assert!(
                 after_revoke.is_none(),
                 "revoked relaunch must have no capability file"
             );
             let other = write_capabilities_file(
                 "so.tilo.books",
-                &[fs_grant("so.tilo.books", "/another-room", Verb::Write)],
+                &sandbox(vec![fs_grant(
+                    "so.tilo.books",
+                    "/another-room",
+                    Access::Write,
+                )]),
             )
             .unwrap()
             .unwrap();
@@ -6453,7 +6504,7 @@ mod tests {
                 "a concurrent same-package launch must not overwrite this snapshot"
             );
             assert_eq!(
-                launcher::capabilities::load_capability_file(other.path())[0].scope,
+                launcher::capabilities::load_capability_file(other.path()).sandbox[0].scope,
                 Scope::FsPath("/another-room".into())
             );
             drop(path);
@@ -6840,6 +6891,67 @@ mod tests {
             replacement.exists(),
             "the replacement acquired the unchanged canonical lock after retirement"
         );
+    }
+
+    /// A retiring launch whose launcher exited but was never unregistered
+    /// (a descendant still holds its stderr, so its launch worker never gets
+    /// there) must not hold the app's next open for the whole timeout, nor
+    /// refuse it, for the rest of the session.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn retiring_writer_whose_launcher_exited_holds_no_replacement() {
+        let package = format!("so.tilo.retirement.{}", uuid::Uuid::new_v4());
+        let room = uuid::Uuid::new_v4().to_string();
+        let mut launcher = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = launcher.id();
+        register_launched_process(pid, &package, Some(&room), true);
+        note_native_writer_retiring(pid);
+        let command = LaunchCommand {
+            program: PathBuf::from("/bin/true"),
+            args: Vec::new(),
+            env: Vec::new(),
+            service_identity: Some(ServiceLaunchIdentity {
+                app_id: package.clone(),
+                workspace_id: room,
+                allowed_compat_entry_ids: Vec::new(),
+                compat_entry_generation: 0,
+                application_creation: None,
+            }),
+            portal_workspace_id: None,
+            managed_agent_id: None,
+        };
+        assert!(
+            wait_for_retiring_app(&package, &command, std::time::Duration::from_millis(1)).is_err(),
+            "a live retiring launcher still holds the replacement"
+        );
+        // The launcher exits while the replacement waits; nothing unregisters it.
+        let reaper = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            launcher.kill().unwrap();
+            launcher.wait().unwrap();
+        });
+        let started = std::time::Instant::now();
+        assert!(
+            wait_for_retiring_app(&package, &command, std::time::Duration::from_secs(30)).is_ok()
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the replacement went once the launcher had exited, not after the timeout: {:?}",
+            started.elapsed()
+        );
+        reaper.join().unwrap();
+        assert!(
+            !LAUNCHED_PROCESSES.lock().unwrap().contains_key(&pid),
+            "the exited launcher's retiring record is gone"
+        );
+        let again = std::time::Instant::now();
+        assert!(
+            wait_for_retiring_app(&package, &command, std::time::Duration::from_secs(30)).is_ok()
+        );
+        assert!(again.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[cfg(target_os = "linux")]

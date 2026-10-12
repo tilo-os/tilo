@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 /// writing.
 #[must_use]
 pub fn environment_spec(environment: &tilo_environment::Environment) -> EnvironmentSpec {
-    use collab_types::caps::{Scope, Verb};
+    use collab_types::caps::{Access, Scope};
     EnvironmentSpec {
         name: environment.name.clone(),
         runtime: RuntimeImages {
@@ -50,7 +50,7 @@ pub fn environment_spec(environment: &tilo_environment::Environment) -> Environm
             .filter_map(|grant| match &grant.scope {
                 Scope::FsPath(path) => Some(DirectoryGrant {
                     path: path.clone(),
-                    writable: matches!(grant.verb, Verb::Write | Verb::Admin),
+                    writable: grant.access == Access::Write,
                 }),
                 _ => None,
             })
