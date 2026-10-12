@@ -2242,7 +2242,7 @@ pub(crate) fn group_need(needs: impl IntoIterator<Item = ActionNeed>) -> ActionN
 
 /// The encoded group of the built `members`, of the resource `vocabulary`:
 /// what [`ActionGroup`](crate::ActionGroup) of them encodes as.
-fn encode_group(vocabulary: &Vocabulary, members: &[Built]) -> EncodedAction {
+pub(crate) fn encode_group(vocabulary: &Vocabulary, members: &[Built]) -> EncodedAction {
     let mut payload = Vec::with_capacity(128);
     payload.push(b'[');
     for (index, member) in members.iter().enumerate() {
