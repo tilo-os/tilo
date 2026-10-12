@@ -41,7 +41,7 @@ use drm_re::Device as BasicDevice;
 use drm_re::buffer::{Buffer as _, DrmFourcc, DrmModifier, PlanarBuffer};
 use drm_re::control::dumbbuffer::DumbBuffer;
 use drm_re::control::{
-    ClipRect, Device as ControlDevice, Event, FbCmd2Flags, Mode, ModeTypeFlags, connector, crtc,
+    ClipRect, Device as ControlDevice, FbCmd2Flags, Mode, ModeTypeFlags, connector, crtc,
     framebuffer,
 };
 use smithay::backend::allocator::gbm::{GbmBufferFlags, GbmDevice};
@@ -50,6 +50,7 @@ use super::client_scanout::{
     ClientFramebuffer, ClientHold, ClientPlane, ClientScanout, ClientStatus, OfferTarget,
 };
 use super::kms_flip::{FlipTarget, KmsFlip};
+use super::page_flip::{self, Completion, Identity};
 use super::paint::{BridgeError, SceneDamage, VelloDrmBridge};
 use super::xrgb_history::{
     XrgbHistoryCommit, XrgbHistoryIdentity, XrgbTargetHistory, XrgbWritePlan,
@@ -1691,9 +1692,9 @@ fn output_index_at(rects: &[(i32, i32, u32, u32)], xi: i32, yi: i32) -> Option<u
     })
 }
 
-/// Without event cookies, a late completion after cancellation cannot be
-/// distinguished from a newer flip on the same CRTC. Once ownership becomes
-/// uncertain, only a newly established scanout can supply physical proof.
+/// Cookies bind completions to accepted submissions. Cancellation or timeout
+/// still invalidates physical feedback: the associated scanout transition may
+/// be uncertain even when later kernel events have valid submission cookies.
 #[derive(Clone, Copy, Debug)]
 struct PhysicalFlipIdentity {
     eligible: bool,
@@ -1739,6 +1740,7 @@ pub struct DrmScanout {
     /// Diagnostic only: completion clears it and logs only anomalously slow
     /// retirements, keeping the normal 144 Hz path silent.
     flip_submission: u64,
+    pending_flip: Option<Identity>,
     physical_identity: PhysicalFlipIdentity,
     flip_queued_at: Option<std::time::Instant>,
     /// `CLOCK_MONOTONIC` when the pending flip was queued, the clock the
@@ -2026,6 +2028,7 @@ impl DrmScanout {
             front: 0,
             flip_pending: false,
             flip_submission: 0,
+            pending_flip: None,
             physical_identity: PhysicalFlipIdentity::default(),
             flip_queued_at: None,
             flip_queued_mono: None,
@@ -2729,18 +2732,16 @@ impl DrmScanout {
         let deadline = started.checked_add(timeout).unwrap_or(started);
         let mut latency = None;
         loop {
-            if let Ok(events) = self.card.receive_events() {
-                for event in events {
-                    if let Event::PageFlip(flip) = event
-                        && flip.crtc == self.crtc
-                    {
-                        latency = self
-                            .flip_queued_mono
-                            .take()
-                            .map(|queued| flip.duration.saturating_sub(queued));
-                        self.log_flip_completion();
-                        self.flip_pending = false;
-                    }
+            for flip in self.poll_flip_events() {
+                if self
+                    .pending_flip()
+                    .is_some_and(|identity| identity.matches(&flip))
+                {
+                    latency = self
+                        .flip_queued_mono
+                        .take()
+                        .map(|queued| flip.duration.saturating_sub(queued));
+                    self.mark_flip_complete(flip);
                 }
             }
             if !self.use_pageflip || !self.flip_pending {
@@ -3032,7 +3033,10 @@ impl DrmScanout {
     /// Queue a page flip onto `framebuffer`: every flip this output makes,
     /// whichever ring or client buffer it shows ([`KmsFlip::queue`]).
     fn queue_flip(&mut self, framebuffer: framebuffer::Handle) -> std::io::Result<()> {
-        self.flip.queue(&self.card, framebuffer)
+        let identity = self.flip.queue(&self.card, framebuffer)?;
+        self.pending_flip = Some(identity);
+        self.flip_queued_mono = identity.queued_at;
+        Ok(())
     }
 
     /// Whether this output's flips may change the framebuffer's format
@@ -3053,7 +3057,6 @@ impl DrmScanout {
             Ok(()) => {
                 self.flip_submission = self.flip_submission.wrapping_add(1);
                 self.flip_queued_at = Some(std::time::Instant::now());
-                self.flip_queued_mono = Some(monotonic_now());
                 self.front = idx;
                 self.note_publish(false, true);
                 tracing::trace!(
@@ -3163,38 +3166,33 @@ impl DrmScanout {
     /// Non-blocking drain of DRM events, clearing `flip_pending` on completion; fd is `O_NONBLOCK` so
     /// `EAGAIN` means no events, not failure. Single-output only — multi-output routes by crtc via [`Self::poll_flip_completions`] + [`Self::mark_flip_complete`].
     fn drain_flip_events(&mut self) {
-        if let Ok(events) = self.card.receive_events() {
-            for ev in events {
-                if let Event::PageFlip(_) = ev {
-                    self.log_flip_completion();
-                    self.flip_pending =
-                        inflight_after_page_flip_event(u8::from(self.flip_pending)) > 0;
+        for event in self.poll_flip_events() {
+            self.mark_flip_complete(event);
+        }
+    }
+
+    pub(super) fn poll_flip_completions(&mut self) -> Vec<Completion> {
+        self.poll_flip_events()
+    }
+
+    fn poll_flip_events(&mut self) -> Vec<Completion> {
+        match page_flip::receive(self.card.as_fd()) {
+            Ok(events) => events,
+            Err(error) => {
+                if !matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) {
+                    self.invalidate_physical_feedback();
+                    tracing::warn!(%error, "DRM completion read failed");
                 }
+                Vec::new()
             }
         }
     }
 
-    /// Drain pending DRM events, returning the crtc of each flip completion. Every per-connector
-    /// scanout dups the same open file description, so completions for all crtcs arrive on any one fd — must drain **once** and route via [`Self::mark_flip_complete`], or the first scanout wedges its siblings' `flip_pending` forever.
-    pub fn poll_flip_completions(&mut self) -> Vec<crtc::Handle> {
-        self.poll_flip_events()
-            .into_iter()
-            .map(|event| event.crtc)
-            .collect()
-    }
-
-    fn poll_flip_events(&self) -> Vec<drm_re::control::PageFlipEvent> {
-        self.card.receive_events().map_or_else(
-            |_| Vec::new(),
-            |events| {
-                events
-                    .filter_map(|event| match event {
-                        Event::PageFlip(flip) => Some(flip),
-                        _ => None,
-                    })
-                    .collect()
-            },
-        )
+    pub(super) fn pending_flip(&self) -> Option<Identity> {
+        self.flip_pending.then_some(self.pending_flip).flatten()
     }
 
     pub fn flip_submission(&self) -> u64 {
@@ -3229,10 +3227,10 @@ impl DrmScanout {
     /// The card fd is nonblocking for ordinary drains; `poll(2)` supplies the
     /// blocking boundary here. Events for sibling CRTCs are returned as well
     /// because every dup of a card shares one DRM event stream.
-    pub fn wait_flip_completions(
+    pub(super) fn wait_flip_completions(
         &mut self,
         timeout: Duration,
-    ) -> (DirectRetirement, Vec<drm_re::control::PageFlipEvent>) {
+    ) -> (DirectRetirement, Vec<Completion>) {
         let deadline = Instant::now()
             .checked_add(timeout)
             .unwrap_or_else(Instant::now);
@@ -3240,7 +3238,10 @@ impl DrmScanout {
         loop {
             completed.extend(self.poll_flip_events());
             let now = Instant::now();
-            let crtcs: Vec<_> = completed.iter().map(|event| event.crtc).collect();
+            let crtcs: Vec<_> = page_flip::unique_completion(self.pending_flip(), &completed)
+                .into_iter()
+                .map(|event| event.crtc)
+                .collect();
             if let Some(retirement) = retirement_after_poll(self.crtc, &crtcs, now >= deadline) {
                 return (retirement, completed);
             }
@@ -3271,8 +3272,8 @@ impl DrmScanout {
     }
 
     /// Clear `flip_pending` iff `crtc` is this scanout's crtc.
-    pub fn mark_flip_complete(&mut self, crtc: crtc::Handle) {
-        if crtc == self.crtc {
+    pub(super) fn mark_flip_complete(&mut self, event: Completion) {
+        if self.flip_pending && page_flip::consume_completion(&mut self.pending_flip, &event) {
             self.log_flip_completion();
             self.flip_pending = inflight_after_page_flip_event(u8::from(self.flip_pending)) > 0;
         }
@@ -3396,12 +3397,12 @@ impl DrmScanout {
     }
 
     /// Retire the imported target for this output after its page-flip event.
-    pub fn mark_direct_flip_complete(
+    pub(super) fn mark_direct_flip_complete(
         &mut self,
         targets: &mut DirectScanoutTargets,
-        crtc: crtc::Handle,
+        event: Completion,
     ) {
-        if crtc == self.crtc {
+        if self.flip_pending && page_flip::consume_completion(&mut self.pending_flip, &event) {
             self.log_flip_completion();
             self.flip_pending = false;
             // The buffer the retired flip replaced is no longer read: a client
@@ -3874,7 +3875,8 @@ impl Drop for CpuMapping {
 
 /// The [`Instant`] of a `CLOCK_MONOTONIC` page-flip timestamp.
 pub fn instant_from_monotonic(timestamp: Duration) -> Instant {
-    instant_at(timestamp, Instant::now(), monotonic_now())
+    let now = Instant::now();
+    page_flip::monotonic_now().map_or(now, |monotonic| instant_at(timestamp, now, monotonic))
 }
 
 /// `timestamp` placed on the `Instant` timeline through one paired reading
@@ -3883,20 +3885,6 @@ pub fn instant_from_monotonic(timestamp: Duration) -> Instant {
 fn instant_at(timestamp: Duration, now: Instant, now_monotonic: Duration) -> Instant {
     now.checked_sub(now_monotonic.saturating_sub(timestamp))
         .unwrap_or(now)
-}
-
-/// `CLOCK_MONOTONIC` now, comparable with page-flip event timestamps.
-fn monotonic_now() -> Duration {
-    let mut now = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: `now` is a valid timespec for the duration of the call.
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut now) };
-    Duration::new(
-        u64::try_from(now.tv_sec).unwrap_or(0),
-        u32::try_from(now.tv_nsec).unwrap_or(0),
-    )
 }
 
 /// A tracked page-flip write remains reusable only if both the established transfer hint and the
@@ -4023,8 +4011,9 @@ mod physical_identity_tests {
             "a late cancelled event cannot certify a newer frame"
         );
         let crtc = std::num::NonZeroU32::new(11).unwrap().into();
-        let late = [smithay::reexports::drm::control::PageFlipEvent {
+        let late = [super::page_flip::Completion {
             crtc,
+            cookie: 7,
             frame: 42,
             duration: std::time::Duration::from_secs(123),
         }];
@@ -4033,7 +4022,12 @@ mod physical_identity_tests {
                 super::DirectRetirement::Complete,
                 &late,
                 crtc,
-                normal.eligible
+                normal.eligible,
+                Some(super::page_flip::Identity {
+                    crtc,
+                    cookie: 7,
+                    queued_at: Some(std::time::Duration::ZERO)
+                }),
             )
             .is_none(),
             "even a real matching CRTC completion after cancellation cannot credit new pixels"

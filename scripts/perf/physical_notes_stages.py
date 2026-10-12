@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 
+from foreign_capture import capture_lines, summarize_foreign_capture
 from input_latency import summarize_physical_notes_latency
 from main_stages import POINTS, STAGES
 from native_delivery import rows
@@ -26,7 +27,7 @@ def bracket(row, prefix):
     return values
 
 
-def summarize_physical_notes_stages(lines, scratch_page):
+def summarize_physical_notes_stages(lines, scratch_page, compositor_lines=None, require_capture=False):
     latency = summarize_physical_notes_latency(lines, scratch_page)
     inputs = rows(lines, 'tilo-physical-input ')
     producer = inputs[0]['process_id'], inputs[0]['observer_session']
@@ -113,7 +114,10 @@ def summarize_physical_notes_stages(lines, scratch_page):
         [frame['intervals_ms'][key][index] for frame in frames], scale=1)
         for index, bound in enumerate(('lower', 'upper'))}
         for key in frames[0]['intervals_ms']}
-    return dict(available=True, performance_certified=False,
+    capture = summarize_foreign_capture(
+        lines if compositor_lines is None else compositor_lines, None,
+        latency['samples'], feedback, deliveries, events, presents, require_capture)
+    return dict(available=True, performance_certified=False, foreign_capture=capture,
                 main_stages_available=bool(mains),
                 clock='CLOCK_MONOTONIC', process_id=producer[0],
                 observer_session=producer[1], frames=frames, stages=stages,
@@ -128,11 +132,17 @@ def main():
     parser.add_argument('--capture', type=Path, required=True,
                         help='directory produced by device_notes_latency.py')
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--compositor-log', type=Path,
+                        help='bounded diagnostic capture from the same boot/presenter')
+    parser.add_argument('--require-foreign-capture', action='store_true',
+                        help='require exact capture/paint/presenter stages for every sample')
     options = parser.parse_args()
     capture = json.loads((options.capture / 'capture.json').read_text())
     report = summarize_physical_notes_stages(
-        (options.capture / 'timeline.log').read_text().splitlines(),
-        capture['scratch_page'])
+        capture_lines(options.capture / 'timeline.log'),
+        capture['scratch_page'],
+        capture_lines(options.compositor_log) if options.compositor_log else None,
+        options.require_foreign_capture)
     descriptor = os.open(options.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, 'w') as output:
         json.dump(report, output, indent=2)

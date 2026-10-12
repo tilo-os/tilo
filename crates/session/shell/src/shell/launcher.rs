@@ -1271,7 +1271,14 @@ impl LaunchSession {
     }
 
     pub(crate) fn configure_diagnostics(&self, options: diagnostics::Options) {
-        *lock(&self.diagnostics) = Some(options);
+        let mut diagnostics = lock(&self.diagnostics);
+        let previous = diagnostics.as_ref().map_or_else(
+            || std::env::var_os("TILO_PROFILE_PRESENTATION").is_some(),
+            |previous| previous.0[0],
+        );
+        super::capture_timing::observation_transition(previous, options.0[0]);
+        *diagnostics = Some(options);
+        drop(diagnostics);
     }
 
     /// The session launches started on this thread belong to.

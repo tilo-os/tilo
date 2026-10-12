@@ -21,6 +21,7 @@ pub mod input_config;
 mod kms_flip;
 mod output_signal;
 pub mod outputs;
+mod page_flip;
 pub mod paint;
 pub mod runtime;
 pub mod scale;
@@ -994,14 +995,18 @@ mod direct_eligibility_tests {
 
 fn physical_flip_proof(
     retirement: scanout::DirectRetirement,
-    events: &[smithay::reexports::drm::control::PageFlipEvent],
+    events: &[page_flip::Completion],
     crtc: smithay::reexports::drm::control::crtc::Handle,
     eligible_clock: bool,
+    pending: Option<page_flip::Identity>,
 ) -> Option<crate::shell::present::PhysicalPresentation> {
     if retirement != scanout::DirectRetirement::Complete || !eligible_clock {
         return None;
     }
-    let event = events.iter().find(|event| event.crtc == crtc)?;
+    let event = page_flip::unique_completion(pending, events)?;
+    if event.crtc != crtc || event.duration < pending?.queued_at? {
+        return None;
+    }
     Some(crate::shell::present::PhysicalPresentation {
         timestamp: event.duration,
         sequence: u64::from(event.frame),
@@ -1163,27 +1168,14 @@ impl DrmPresenter {
         if retirement != scanout::DirectRetirement::Complete {
             entry.scanout.invalidate_physical_feedback();
         }
-        // Every completion read here comes from this card's event stream. A
-        // driver without monotonic event stamps leaves the wakeup as the vblank.
-        let woke = Instant::now();
-        let monotonic = entry.scanout.monotonic_flip_timestamps();
         let device_id = entry.device_id;
-        self.flip_vblanks
-            .extend(completions.iter().map(|event| FlipVblank {
-                device_id,
-                crtc: event.crtc,
-                at: if monotonic {
-                    scanout::instant_from_monotonic(event.duration)
-                } else {
-                    woke
-                },
-            }));
         self.phase_window.record_flip_completions(completions.len());
         let proof = physical_flip_proof(
             retirement,
             &completions,
             entry.scanout.crtc(),
             single_output && entry.scanout.can_prove_physical_flip(),
+            entry.scanout.pending_flip(),
         )
         .map(|mut proof| {
             proof.refresh = if entry.scanout.adaptive_sync_active() {
@@ -1197,9 +1189,31 @@ impl DrmPresenter {
             };
             proof
         });
+        // Only an owned completion may anchor pacing too. A stale cookie on
+        // this card must not move a replacement submission's vblank clock.
+        let woke = Instant::now();
+        for owner in self
+            .scanouts
+            .iter()
+            .filter(|owner| owner.device_id == device_id)
+        {
+            if let Some(event) =
+                page_flip::unique_completion(owner.scanout.pending_flip(), &completions)
+            {
+                self.flip_vblanks.push(FlipVblank {
+                    device_id,
+                    crtc: event.crtc,
+                    at: if owner.scanout.monotonic_flip_timestamps() {
+                        scanout::instant_from_monotonic(event.duration)
+                    } else {
+                        woke
+                    },
+                });
+            }
+        }
         let completed: Vec<_> = completions
             .iter()
-            .map(|event| (device_id, event.crtc))
+            .map(|event| (device_id, *event))
             .collect();
         route_flip_completions(&mut self.scanouts, &completed);
         let entry = self.scanouts.get_mut(index)?;
@@ -2965,24 +2979,22 @@ fn drain_page_flip_completions(scanouts: &mut [ScanoutEntry]) -> usize {
     completed.len()
 }
 
-/// Hand each `(device, crtc)` completion to the scanout it belongs to: the
+/// Hand each card-scoped completion to the scanout owning its cookie: the
 /// direct targets' ring when the output renders direct, the dumb pair otherwise.
 fn route_flip_completions(
     scanouts: &mut [ScanoutEntry],
-    completed: &[(u64, smithay::reexports::drm::control::crtc::Handle)],
+    completed: &[(u64, page_flip::Completion)],
 ) {
-    let topology: Vec<_> = scanouts
-        .iter()
-        .map(|entry| (entry.device_id, entry.scanout.crtc()))
-        .collect();
-    for (index, crtc) in page_flip_completion_recipients(&topology, completed) {
-        let Some(entry) = scanouts.get_mut(index) else {
-            continue;
-        };
-        if let Some(targets) = entry.direct_targets.as_mut() {
-            entry.scanout.mark_direct_flip_complete(targets, crtc);
-        } else {
-            entry.scanout.mark_flip_complete(crtc);
+    for &(device_id, event) in completed {
+        for entry in scanouts
+            .iter_mut()
+            .filter(|entry| entry.device_id == device_id)
+        {
+            if let Some(targets) = entry.direct_targets.as_mut() {
+                entry.scanout.mark_direct_flip_complete(targets, event);
+            } else {
+                entry.scanout.mark_flip_complete(event);
+            }
         }
     }
 }
@@ -3003,6 +3015,7 @@ fn page_flip_representatives(devices: impl IntoIterator<Item = u64>) -> Vec<(u64
 /// CRTC. CRTC handles may repeat on a different DRM device, so matching the
 /// handle alone would clear the wrong `flip_pending` flag after a hybrid-GPU
 /// frame. Generic handles keep this routing rule testable without DRM fds.
+#[cfg(test)]
 fn page_flip_completion_recipients<T: Copy + Eq>(
     scanouts: &[(u64, T)],
     completed: &[(u64, T)],
@@ -3860,6 +3873,89 @@ mod tests {
 mod presentation_proof_tests {
     use super::*;
     #[test]
+    fn physical_flip_proof_rejects_unowned_same_crtc_completions() {
+        let own = std::num::NonZeroU32::new(11).unwrap().into();
+        let events = [
+            page_flip::Completion {
+                crtc: own,
+                cookie: 0,
+                frame: 42,
+                duration: Duration::from_secs(123),
+            },
+            page_flip::Completion {
+                crtc: own,
+                cookie: 0,
+                frame: 43,
+                duration: Duration::from_secs(124),
+            },
+        ];
+        assert!(
+            physical_flip_proof(
+                scanout::DirectRetirement::Complete,
+                &events,
+                own,
+                true,
+                None
+            )
+            .is_none(),
+            "a controller match cannot choose which submitted pixels this completion owns"
+        );
+    }
+
+    #[test]
+    fn physical_flip_proof_rejects_events_before_submission_and_unavailable_queue_clock() {
+        let own = std::num::NonZeroU32::new(11).unwrap().into();
+        let events = [page_flip::Completion {
+            crtc: own,
+            cookie: 7,
+            frame: 42,
+            duration: Duration::from_secs(123),
+        }];
+        let pending = page_flip::Identity {
+            crtc: own,
+            cookie: 7,
+            queued_at: Some(Duration::from_secs(124)),
+        };
+        assert!(
+            physical_flip_proof(
+                scanout::DirectRetirement::Complete,
+                &events,
+                own,
+                true,
+                Some(pending)
+            )
+            .is_none()
+        );
+        assert!(
+            physical_flip_proof(
+                scanout::DirectRetirement::Complete,
+                &events,
+                own,
+                true,
+                Some(page_flip::Identity {
+                    queued_at: None,
+                    ..pending
+                })
+            )
+            .is_none()
+        );
+        assert!(
+            physical_flip_proof(
+                scanout::DirectRetirement::Complete,
+                &events,
+                own,
+                true,
+                Some(page_flip::Identity {
+                    cookie: 8,
+                    queued_at: Some(Duration::ZERO),
+                    ..pending
+                })
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn physical_flip_proof_preserves_the_kernel_fields_and_rejects_uncertain_completion() {
         let own: smithay::reexports::drm::control::crtc::Handle = std::num::NonZeroU32::new(11)
             .expect("nonzero fixture CRTC")
@@ -3867,25 +3963,57 @@ mod presentation_proof_tests {
         let sibling: smithay::reexports::drm::control::crtc::Handle = std::num::NonZeroU32::new(12)
             .expect("nonzero fixture CRTC")
             .into();
-        let event = smithay::reexports::drm::control::PageFlipEvent {
+        let event = page_flip::Completion {
             crtc: own,
+            cookie: 7,
             frame: 76543,
             duration: Duration::new(1_234_567, 987_654_000),
         };
         let events = [event];
-        let proof =
-            physical_flip_proof(scanout::DirectRetirement::Complete, &events, own, true).unwrap();
+        let pending = Some(page_flip::Identity {
+            crtc: own,
+            cookie: 7,
+            queued_at: Some(Duration::ZERO),
+        });
+        let proof = physical_flip_proof(
+            scanout::DirectRetirement::Complete,
+            &events,
+            own,
+            true,
+            pending,
+        )
+        .unwrap();
         assert_eq!(proof.timestamp, events[0].duration);
         assert_eq!(proof.sequence, u64::from(events[0].frame));
         assert!(
-            physical_flip_proof(scanout::DirectRetirement::TimedOut, &events, own, true).is_none()
+            physical_flip_proof(
+                scanout::DirectRetirement::TimedOut,
+                &events,
+                own,
+                true,
+                pending
+            )
+            .is_none()
         );
         assert!(
-            physical_flip_proof(scanout::DirectRetirement::Complete, &events, own, false).is_none()
+            physical_flip_proof(
+                scanout::DirectRetirement::Complete,
+                &events,
+                own,
+                false,
+                pending
+            )
+            .is_none()
         );
         assert!(
-            physical_flip_proof(scanout::DirectRetirement::Complete, &events, sibling, true)
-                .is_none()
+            physical_flip_proof(
+                scanout::DirectRetirement::Complete,
+                &events,
+                sibling,
+                true,
+                pending
+            )
+            .is_none()
         );
     }
 }

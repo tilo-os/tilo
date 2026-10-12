@@ -106,5 +106,96 @@ class PhysicalNotesStages(unittest.TestCase):
         self.assertNotIn('profiler_commit', report['stages'])
 
 
+class ForeignCaptureJoin(unittest.TestCase):
+    def fixture(self):
+        from foreign_capture import PREFIXES
+        points = ('prepare_ns enqueue_ns worker_start_ns fence_start_ns fence_end_ns '
+                  'native_import_end_ns copy_submit_ns copy_submit_return_ns copy_end_ns '
+                  'staged_ns barrier_ns').split()
+        imported = dict(event='imported', clock_id=1, surface_id=42, capture_token=8,
+                        accepted=True, shared_gpu=True, barrier_return_ns=20500,
+                        **{key: 10000 + index * 1000 for index, key in enumerate(points)})
+        activated = dict(event='activated', clock_id=1, surface_id=42, capture_token=8,
+                         capture_seq=3, accepted=True, activated_ns=21000)
+        common = dict(clock_id=1, pipe_serial=41, surface_id=42, capture_seq=3,
+                      composed_time_ns=22000, omitted_pixels=0)
+        submitted = dict(common, event='submitted', event_time_ns=23500,
+                         physical_presented_time_ns=None, physical_sequence=None)
+        completed = dict(common, event='completed', event_time_ns=1000001,
+                         physical_presented_time_ns=1000000, physical_sequence=789)
+        pipe = dict(event='retired', clock_id=1, pipe_serial=41, enqueue_ns=23000,
+                    render_start_ns=24000, render_end_ns=25000)
+        return [(PREFIXES[0], imported), (PREFIXES[0], activated),
+                (PREFIXES[1], submitted), (PREFIXES[1], completed), (PREFIXES[2], pipe)]
+
+    def report(self, records, **changes):
+        from foreign_capture import summarize_foreign_capture
+        arguments = dict(
+            lines=[tag + json.dumps(row) for tag, row in records],
+            compositor_frames=[dict(cpu_frame_id=7, compositor_match_available=True, serial=41)],
+            samples=[dict(input_id=1, cpu_frame_id=7)],
+            displays={7: dict(presented_time_ns=1000000, sequence=789)},
+            deliveries={9: dict(surface_id=42)}, events={1: dict(wayland_serial=9)},
+            presents={7: dict(after_host_lo_s=.000001, after_host_hi_s=.000002)}, required=True)
+        arguments.update(changes)
+        return summarize_foreign_capture(**arguments)
+
+    def test_exact_capture_ownership_separates_every_observed_wait(self):
+        report = self.report(self.fixture())
+        self.assertTrue(report['complete'])
+        self.assertFalse(report['performance_certified'])
+        frame = report['frames'][0]
+        self.assertEqual((frame['capture_token'], frame['capture_seq'], frame['pipe_serial']), (8, 3, 41))
+        self.assertAlmostEqual(frame['intervals_ms']['owned_copy_wait'][0], .001)
+        self.assertAlmostEqual(frame['intervals_ms']['barrier_to_activation'][0], .0005)
+        self.assertAlmostEqual(frame['intervals_ms']['barrier_to_activation'][1], .001)
+        self.assertAlmostEqual(frame['intervals_ms']['present_return_to_capture_prepare'][0], .008)
+
+    def test_one_capture_token_cannot_claim_two_activated_generations(self):
+        fixture = self.fixture()
+        another = dict(fixture[1][1], capture_seq=4)
+        with self.assertRaises(ValueError):
+            self.report(fixture + [(fixture[1][0], another)])
+
+    def test_direct_physical_join_rejects_another_presenter_owner(self):
+        fixture = self.fixture()
+        another = dict(fixture[3][1], pipe_serial=99)
+        with self.assertRaises(ValueError):
+            self.report(fixture + [(fixture[3][0], another)], compositor_frames=None)
+
+    def test_borrowed_buffer_import_has_no_fictional_capture_copy(self):
+        fixture = self.fixture()
+        fixture[0][1].update(borrowed_gpu=True, fence_waited=False,
+                             copy_submit_ns=None, copy_submit_return_ns=None, copy_end_ns=None)
+        report = self.report(fixture, compositor_frames=None)
+        self.assertTrue(report['complete'])
+        self.assertTrue(report['frames'][0]['borrowed_gpu'])
+        self.assertIn('cached_native_import', report['stages'])
+        self.assertNotIn('owned_copy_wait', report['stages'])
+        fixture[0][1]['copy_end_ns'] = 19000
+        with self.assertRaises(ValueError):
+            self.report(fixture)
+
+    def test_absent_partial_duplicate_stale_and_omitted_evidence_never_passes(self):
+        fixture = self.fixture()
+        for index in range(len(fixture)):
+            with self.subTest(missing=index):
+                with self.assertRaises(ValueError): self.report(fixture[:index] + fixture[index + 1:])
+            with self.subTest(duplicate=index):
+                with self.assertRaises(ValueError): self.report(fixture + [fixture[index]])
+        for index, change in [(0, dict(shared_gpu=False)), (0, dict(copy_end_ns=None)),
+                              (0, dict(fence_end_ns=1)), (1, dict(capture_token=9)),
+                              (1, dict(accepted=False)), (2, dict(omitted_pixels=1)),
+                              (2, dict(composed_time_ns=999)), (3, dict(surface_id=99)),
+                              (3, dict(physical_sequence=788)), (4, dict(clock_id=0)), (4, dict(clock_id=True))]:
+            with self.subTest(index=index, change=change):
+                rows = self.fixture()
+                rows[index][1].update(change)
+                with self.assertRaises(ValueError): self.report(rows)
+        with self.assertRaises(ValueError): self.report([])
+        with self.assertRaises(ValueError): self.report(fixture, compositor_frames=[])
+        self.assertFalse(self.report([], required=False)['available'])
+
+
 if __name__ == '__main__':
     unittest.main()

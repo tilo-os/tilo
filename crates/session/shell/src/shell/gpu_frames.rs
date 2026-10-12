@@ -880,8 +880,23 @@ pub fn import_dmabuf(
     surface: u64,
     declared_opaque: bool,
 ) -> Result<Arc<GpuFrame>, String> {
+    import_dmabuf_observed(dmabuf, surface, declared_opaque, None)
+}
+
+/// Observe the existing cached import, without copying or reading its pixels.
+#[cfg(target_os = "linux")]
+pub(crate) fn import_dmabuf_observed(
+    dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
+    surface: u64,
+    declared_opaque: bool,
+    timing: Option<&mut super::capture_timing::CaptureTiming>,
+) -> Result<Arc<GpuFrame>, String> {
     let present = present_device().ok_or_else(|| "no presenting GPU yet".to_owned())?;
-    import_dmabuf_on(&present, dmabuf, surface, declared_opaque)
+    let imported = import_dmabuf_on(&present, dmabuf, surface, declared_opaque);
+    if let Some(timing) = timing {
+        timing.native_import_end = super::capture_timing::now();
+    }
+    imported
 }
 
 #[cfg(target_os = "linux")]

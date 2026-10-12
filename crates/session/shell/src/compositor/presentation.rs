@@ -33,9 +33,40 @@ pub struct FrameFeedback {
     callbacks: Callbacks,
     output: Option<Output>,
     submitted_at: Instant,
+    pixels: Vec<(SurfaceId, u64)>,
+    omitted_pixels: usize,
+    composed_time_ns: Option<u128>,
 }
 
 impl FrameFeedback {
+    /// Exact captured generations whose pending callbacks entered this frame.
+    /// Empty when profiling was disabled during composition.
+    pub fn captured_pixels(&self) -> &[(SurfaceId, u64)] {
+        &self.pixels
+    }
+
+    pub fn composed_time_ns(&self) -> Option<u128> {
+        self.composed_time_ns
+    }
+
+    fn trace(&self, serial: u64, event: &str, proof: Option<PhysicalPresentation>) {
+        if self.pixels.is_empty() {
+            return;
+        }
+        let event_time_ns = crate::compositor::client_input::monotonic_time_ns();
+        for (surface_id, capture_seq) in &self.pixels {
+            let record = serde_json::json!({
+                "event": event, "pipe_serial": serial, "surface_id": surface_id,
+                "capture_seq": capture_seq, "clock_id": 1, "event_time_ns": event_time_ns,
+                "composed_time_ns": self.composed_time_ns(),
+                "physical_presented_time_ns": proof.map(|proof| proof.timestamp.as_nanos()),
+                "physical_sequence": proof.map(|proof| proof.sequence),
+                "omitted_pixels": self.omitted_pixels,
+            });
+            eprintln!("tilo-compositor-feedback {record}");
+        }
+    }
+
     pub fn complete(mut self, proof: Option<PhysicalPresentation>) {
         let Some((proof, output)) = proof.zip(self.output.as_ref()) else {
             return;
@@ -56,11 +87,22 @@ impl FrameFeedback {
     }
 }
 
-#[derive(Default)]
 pub struct PresentationFeedback {
     pixels: HashMap<SurfaceId, PixelCommit>,
     pending: HashMap<SurfaceId, (Instant, Callbacks)>,
     submitted: HashMap<u64, FrameFeedback>,
+    launch_session: crate::shell::launcher::LaunchSession,
+}
+
+impl Default for PresentationFeedback {
+    fn default() -> Self {
+        Self {
+            pixels: HashMap::new(),
+            pending: HashMap::new(),
+            submitted: HashMap::new(),
+            launch_session: crate::shell::launcher::LaunchSession::current(),
+        }
+    }
 }
 
 impl PresentationFeedback {
@@ -99,6 +141,9 @@ impl PresentationFeedback {
     ) -> FrameFeedback {
         let painted = frames.take_painted_frames();
         let mut callbacks = Callbacks::default();
+        let enabled = self.launch_session.presentation_observer_enabled();
+        let mut pixels = Vec::new();
+        let mut omitted_pixels = 0_usize;
         for (id, seq) in painted {
             let Some((captured, shm_generation)) = frames.presentation_pixels(id) else {
                 continue;
@@ -112,6 +157,13 @@ impl PresentationFeedback {
                 _ => false,
             };
             if exact && let Some((_, mut pending)) = self.pending.remove(&id) {
+                if enabled {
+                    if pixels.len() < 256 {
+                        pixels.push((id, seq));
+                    } else {
+                        omitted_pixels = omitted_pixels.saturating_add(1);
+                    }
+                }
                 callbacks.0.append(&mut pending.0);
             }
         }
@@ -119,17 +171,28 @@ impl PresentationFeedback {
             callbacks,
             output,
             submitted_at: Instant::now(),
+            pixels,
+            omitted_pixels,
+            composed_time_ns: enabled
+                .then(crate::compositor::client_input::monotonic_time_ns)
+                .flatten(),
         }
     }
 
     pub fn submitted(&mut self, serial: u64, feedback: FrameFeedback) {
         if !feedback.callbacks.0.is_empty() {
+            feedback.trace(serial, "submitted", None);
             self.submitted.insert(serial, feedback);
         }
     }
 
     pub fn completed(&mut self, serial: u64, proof: Option<PhysicalPresentation>) {
         if let Some(feedback) = self.submitted.remove(&serial) {
+            feedback.trace(
+                serial,
+                "completed",
+                proof.filter(|_| feedback.output.is_some()),
+            );
             feedback.complete(proof);
         }
     }
@@ -149,5 +212,37 @@ impl PresentationFeedback {
         self.submitted.retain(|_, feedback| {
             now.saturating_duration_since(feedback.submitted_at) < Duration::from_secs(1)
         });
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+    use crate::shell::launcher::{LaunchSession, diagnostics::Options};
+
+    #[test]
+    fn capture_diagnostics_retain_the_originating_session_without_global_or_thread_fallback() {
+        let session = LaunchSession::current();
+        session.configure_diagnostics(Options([false; 4]));
+        let feedback = PresentationFeedback::default();
+        assert!(!feedback.launch_session.presentation_observer_enabled());
+        session.configure_diagnostics(Options([true, false, false, false]));
+        std::thread::spawn(move || {
+            let unrelated = LaunchSession::current();
+            unrelated.configure_diagnostics(Options([false; 4]));
+            assert!(feedback.launch_session.presentation_observer_enabled());
+            assert!(
+                !PresentationFeedback::default()
+                    .launch_session
+                    .presentation_observer_enabled()
+            );
+            feedback
+                .launch_session
+                .configure_diagnostics(Options([false; 4]));
+            assert!(!feedback.launch_session.presentation_observer_enabled());
+        })
+        .join()
+        .unwrap();
+        assert!(!session.presentation_observer_enabled());
     }
 }

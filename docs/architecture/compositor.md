@@ -227,14 +227,18 @@ measured on hardware.
 Standard `wp_presentation` feedback separately binds a client's committed
 buffer generation to the pixels drawn by the foreign-surface widget and
 then to the exact `PresentPipe` submission serial. On one physical DRM
-output, a successful page-flip event for that output's CRTC completes the
-feedback with the original kernel timestamp and sequence, provided the
+output, a successful page-flip event matching the accepted submission's
+unique kernel cookie and CRTC completes the feedback with the original kernel
+timestamp and sequence, provided the
 driver advertises monotonic timestamps. Presenter return and ordinary
 frame retirement do not prove presentation. Failed capture, uncertain
 completion, timeout, missing output, nested/headless backends and ambiguous
 multi-output frames discard feedback. Timeout or resetting a still-pending
-flip disables physical proof for that scanout: a late event without a
-submission cookie must not certify a newer frame. Refresh is unknown when adaptive
+flip disables physical proof for that scanout: uncertain scanout transitions
+must not certify a newer frame. Both nonblocking atomic commits and legacy
+page flips carry a never-reused 64-bit `user_data` cookie through raw KMS
+ioctls. Event decoding preserves that cookie; stale or foreign events cannot
+retire a replacement target, and duplicate events cannot provide physical proof. Refresh is unknown when adaptive
 sync is active. Feedback does not change the frame clock's cadence policy.
 
 Native protocol tests verify commit/frame ownership and discard paths;
@@ -814,3 +818,40 @@ when the tree still owns the tab, preserving position, metadata and focus.
 Undo history is published only after the captured tabs have actually gone.
 The existing separately supervised unconfined host-launch teardown retains its
 own scoped lifecycle; native close admission does not add a process kill rule.
+
+### Bounded foreign-capture timing
+
+The existing owner `session-diagnostics` presentation option also observes the
+foreign DMA capture worker and presenter admission. Observation is disabled by
+default. `tilo-foreign-capture` associates an exact surface and capture token
+with its activated pixel sequence; `tilo-compositor-feedback` associates the
+painted sequence with its presenter serial and physical outcome.
+`tilo-present-pipe` records that serial's pre-send admission and render
+boundaries. All timestamps use `CLOCK_MONOTONIC`; records contain no pixels,
+document values or client credentials.
+
+Each explicit presentation `false` → `true` transition renews quotas of 2048
+captures and 2048 presenter frames. Unchanged settings, reads and disabling do
+not renew them. Already admitted jobs may finish after disabling or renewal.
+Capture exhaustion emits a marker. At 120 observed captures per second the
+capture quota lasts about 17 seconds; idle/repaint traffic counts too. Measure
+the actual rate and start a short causal capture immediately after enabling.
+
+The current shared route borrows cached imports of client buffers; it does not
+copy or wait for a copy during capture. These records declare `borrowed_gpu`,
+leave copy timestamps unavailable, and label import elapsed time as
+`cached_native_import`. Capture queue time includes any fence parked on the
+compositor loop. `fence_waited` distinguishes the fallback worker wait from an
+already-readable buffer; `worker_fence_check` is not a GPU execution sample.
+Buffer leases, import caching, fence handling and presentation authority remain
+unchanged. Historical owned-copy records retain their separate submit/return
+and completion-wait stages; the analyzer never invents those for borrowed frames.
+
+Compositor observation is live; native-app diagnostics are inherited at startup
+and must already be enabled for the scratch app. Toggling the compositor does
+not restart its renderer or change an existing app's environment. Analyze with
+`physical_notes_stages.py --require-foreign-capture`: missing, partial,
+duplicate, omitted or mismatched token/sequence/serial evidence fails the
+measurement. Joins use exact ownership, never timestamp proximity. Elapsed
+stages include scheduling and diagnostic overhead and do not certify GPU
+execution duration or panel latency.

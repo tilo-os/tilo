@@ -1190,6 +1190,7 @@ struct CaptureJob<T> {
     surface: SurfaceId,
     token: u64,
     payload: T,
+    timing: Option<super::capture_timing::CaptureTiming>,
     barrier: Barrier,
     client: Client,
     /// The client's rendering into the buffer is known to be done. `false`
@@ -1336,6 +1337,7 @@ struct ShmSpare {
 #[derive(Debug)]
 #[cfg(any(test, target_os = "linux"))]
 struct ReadyCapture {
+    observed: bool,
     rgba: Vec<u8>,
     /// The frame at full precision, when it carries an HDR signal.
     hdr: Option<crate::shell::hdr_surface::HdrPlane>,
@@ -1442,8 +1444,11 @@ fn complete_capture(
     client: Client,
     completed: &Mutex<HashMap<ClientId, Client>>,
     ping: &Mutex<Option<smithay::reexports::calloop::ping::Ping>>,
-) {
+    observed: bool,
+) -> (Option<u64>, Option<u64>) {
+    let start = observed.then(super::capture_timing::now).flatten();
     signal_capture_barrier(barrier);
+    let returned = observed.then(super::capture_timing::now).flatten();
     mark_capture_complete(client, completed);
     if let Some(ping) = ping
         .lock()
@@ -1452,6 +1457,7 @@ fn complete_capture(
     {
         ping.ping();
     }
+    (start, returned)
 }
 
 #[cfg(target_os = "linux")]
@@ -1495,19 +1501,30 @@ impl AsyncDmabufCapture {
                             *rgba = previous;
                         }
                         let surface = job.surface;
-                        let (accepted, barrier, client) = capture_dmabuf_job(job, rgba);
+                        let token = job.token;
+                        let (accepted, barrier, client, observed) = capture_dmabuf_job(job, rgba);
                         if !accepted {
                             // The toplevel was destroyed while this import was
                             // in flight. Do not retain a full framebuffer in
                             // the worker's per-surface scratch map forever.
                             scratch.remove(&surface);
                         }
-                        complete_capture(
+                        let barrier_timing = complete_capture(
                             &barrier,
                             client,
                             &worker_completed,
                             &worker_completion_ping,
+                            observed.is_some(),
                         );
+                        if let Some((timing, staged, shared_gpu)) = observed {
+                            timing.imported(
+                                surface,
+                                token,
+                                staged,
+                                barrier_timing,
+                                (accepted, shared_gpu),
+                            );
+                        }
                     }
                 }
             })
@@ -1633,29 +1650,52 @@ impl AsyncDmabufCapture {
     }
 }
 
+#[cfg(target_os = "linux")]
+type StagedCaptureTiming = (super::capture_timing::CaptureTiming, Option<u64>, bool);
+
 /// Capture one readable dmabuf on the worker: share it on the GPU, or read it
 /// back. Returns whether the surface still took the frame, and the commit's
 /// barrier and client to let it apply: the shared route reads nothing here
 /// (the frame is drawn from the buffer itself, which the compositor holds
 /// from the commit on), the readback route is done reading.
 #[cfg(target_os = "linux")]
-fn capture_dmabuf_job(job: DmabufJob, rgba: &mut Vec<u8>) -> (bool, Barrier, Client) {
+fn capture_dmabuf_job(
+    mut job: DmabufJob,
+    rgba: &mut Vec<u8>,
+) -> (bool, Barrier, Client, Option<StagedCaptureTiming>) {
+    if let Some(timing) = job.timing.as_mut() {
+        timing.worker_start = super::capture_timing::now();
+        timing.fence_start = super::capture_timing::now();
+        timing.fence_waited = !job.readable;
+    }
     if !job.readable {
         crate::shell::gpu_frames::wait_readable(&job.payload);
     }
-    if let Some(frame) = share_dmabuf(&job.payload, job.surface, job.opaque) {
-        let accepted = store().stage_gpu_capture(job.surface, job.token, frame);
-        return (accepted, job.barrier, job.client);
+    if let Some(timing) = job.timing.as_mut() {
+        timing.fence_end = super::capture_timing::now();
     }
-    let colorimetry = store().colorimetry(job.surface);
-    let mut hdr = None;
-    let result = decode_dmabuf(&job.payload, rgba, colorimetry, &mut hdr)
-        .map(|(width, height, route)| (width, height, CaptureRoute::Dmabuf(route)));
-    if result.is_ok() && hdr.is_none() && job.opaque {
-        declare_opaque(job.payload.format().code, rgba);
-    }
-    let accepted = store().stage_dmabuf_capture(job.surface, job.token, result, rgba, hdr);
-    (accepted, job.barrier, job.client)
+    let shared = share_dmabuf(&job.payload, job.surface, job.opaque, job.timing.as_mut());
+    let shared_gpu = shared.is_some();
+    let accepted = if let Some(frame) = shared {
+        store().stage_gpu_capture(job.surface, job.token, frame)
+    } else {
+        let colorimetry = store().colorimetry(job.surface);
+        let mut hdr = None;
+        let result = decode_dmabuf(&job.payload, rgba, colorimetry, &mut hdr)
+            .map(|(width, height, route)| (width, height, CaptureRoute::Dmabuf(route)));
+        if result.is_ok() && hdr.is_none() && job.opaque {
+            declare_opaque(job.payload.format().code, rgba);
+        }
+        store().stage_dmabuf_capture(job.surface, job.token, result, rgba, hdr)
+    };
+    let observed = job.timing.map(|timing| {
+        let staged = super::capture_timing::now();
+        if accepted {
+            store().observe_ready_capture(job.surface, job.token);
+        }
+        (timing, staged, shared_gpu)
+    });
+    (accepted, job.barrier, job.client, observed)
 }
 
 #[cfg(target_os = "linux")]
@@ -2283,9 +2323,10 @@ fn share_dmabuf(
     dmabuf: &Dmabuf,
     surface: SurfaceId,
     opaque: bool,
+    timing: Option<&mut super::capture_timing::CaptureTiming>,
 ) -> Option<Arc<crate::shell::gpu_frames::GpuFrame>> {
     static REPORTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    match crate::shell::gpu_frames::import_dmabuf(dmabuf, surface, opaque) {
+    match crate::shell::gpu_frames::import_dmabuf_observed(dmabuf, surface, opaque, timing) {
         Ok(frame) => Some(frame),
         Err(reason) => {
             let mut reported = REPORTED
@@ -2601,6 +2642,7 @@ impl ForeignFrameStore {
         commit: DmabufCommit,
         damage: Option<Vec<Rect>>,
     ) -> Option<PreparedDmabufCapture> {
+        let mut timing = super::capture_timing::CaptureTiming::start();
         let DmabufCommit {
             buffer: dmabuf,
             colorimetry,
@@ -2627,10 +2669,14 @@ impl ForeignFrameStore {
                     smithay::reexports::calloop::Interest::READ,
                 )
                 .ok();
+                if let Some(timing) = timing.as_mut() {
+                    timing.enqueue = super::capture_timing::now();
+                }
                 let job = DmabufJob {
                     surface: id,
                     token,
                     payload: dmabuf,
+                    timing,
                     barrier: barrier.clone(),
                     client,
                     readable: true,
@@ -2857,6 +2903,7 @@ impl ForeignFrameStore {
         entry.ready_captures.insert(
             token,
             ReadyCapture {
+                observed: false,
                 rgba: captured,
                 hdr,
                 gpu: None,
@@ -2889,12 +2936,31 @@ impl ForeignFrameStore {
         entry.ready_captures.insert(
             token,
             ReadyCapture {
+                observed: false,
                 rgba: Vec::new(),
                 hdr: None,
                 gpu: Some(frame),
                 result: Ok((size.0, size.1, CaptureRoute::Dmabuf(DmabufRoute::Shared))),
             },
         );
+        drop(guard);
+        true
+    }
+
+    /// Mark only an already-staged exact token, never recreating a removed surface.
+    #[cfg(any(test, target_os = "linux"))]
+    fn observe_ready_capture(&self, id: SurfaceId, token: u64) -> bool {
+        let mut guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(ready) = guard
+            .get_mut(&id)
+            .and_then(|entry| entry.ready_captures.get_mut(&token))
+        else {
+            return false;
+        };
+        ready.observed = true;
         drop(guard);
         true
     }
@@ -2959,7 +3025,12 @@ impl ForeignFrameStore {
                 (outcome, false, Arc::new(ready.rgba), Some(previous))
             }
         };
+        let observed = ready.observed;
+        let seq = entry.seq;
         drop(guard);
+        if observed {
+            super::capture_timing::activated(id, token, seq, imported);
+        }
         // Freed, or handed back for reuse, outside the lock painting takes too.
         drop(released);
         recycle_dmabuf_pixels(id, recycled);
@@ -5190,6 +5261,38 @@ fn frame_throttle_releases(
 mod tests {
     use super::*;
     use crate::shell::state::WorkspaceTree;
+
+    #[test]
+    fn capture_observation_cannot_attribute_another_token_or_resurrect_a_surface() {
+        let frames = ForeignFrameStore::default();
+        let id = sid(105);
+        frames.with_entry(id, |entry| entry.capture_tokens.push_back(42));
+        let mut pixels = vec![7, 7, 7, 7];
+        assert!(frames.stage_dmabuf_capture(
+            id,
+            42,
+            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+            &mut pixels,
+            None
+        ));
+        assert!(!frames.observe_ready_capture(id, 41));
+        assert!(!frames.with_entry(id, |entry| entry.ready_captures[&42].observed));
+        assert!(frames.observe_ready_capture(id, 42));
+        assert!(frames.activate_dmabuf_capture_token(id, 41).is_none());
+        assert!(frames.capture_seq_for_token(id, 42).is_none());
+        assert!(matches!(
+            frames.activate_dmabuf_capture_token(id, 42),
+            Some(CaptureOutcome::Dmabuf { .. })
+        ));
+        assert_eq!(frames.capture_seq_for_token(id, 42), Some(1));
+        assert_eq!(
+            frames.snapshot(id).expect("activated pixels").rgba,
+            vec![7, 7, 7, 7]
+        );
+        frames.forget(id);
+        assert!(!frames.observe_ready_capture(id, 42));
+        assert!(!frames.entries.lock().expect("entries").contains_key(&id));
+    }
 
     /// Distinct ids per test so the process-wide store can't leak state between parallel test threads.
     fn sid(n: u64) -> SurfaceId {

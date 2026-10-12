@@ -169,6 +169,7 @@ enum PresentMsg {
         /// delay inhibitor.
         serial: u64,
         enqueued_at: Instant,
+        observed: Option<super::capture_timing::PipeTiming>,
         input_age_at_enqueue: Option<Duration>,
         inflight_at_enqueue: usize,
         /// The client frames `frame` draws, held until it was presented: their
@@ -412,11 +413,13 @@ impl PresentPipe {
                             output,
                             serial,
                             enqueued_at,
+                            mut observed,
                             input_age_at_enqueue,
                             inflight_at_enqueue,
                             pins,
                         } => {
                             let render_started = Instant::now();
+                            super::capture_timing::PipeTiming::render_started(&mut observed);
                             let queue_wait = render_started.saturating_duration_since(enqueued_at);
                             let physical = presenter.present_frame_observed(&frame, output);
                             // Rendered: its client buffers may go back.
@@ -425,6 +428,7 @@ impl PresentPipe {
                             let phases = presenter.frame_phase_timing();
                             let display = presenter.display_timing();
                             let render_done = Instant::now();
+                            super::capture_timing::PipeTiming::retire(observed, serial);
                             let render = render_done.saturating_duration_since(render_started);
                             let total = render_done.saturating_duration_since(enqueued_at);
                             report_frame(
@@ -465,18 +469,7 @@ impl PresentPipe {
         // `submit`/`resize`/`set_dpms` sees a channel with no receiver and reports failure,
         // exactly the "lost display" path this pipe already has to handle, rather than a panic
         // that would take the whole session down with it.
-        let handle = match spawned {
-            Ok(handle) => Some(handle),
-            Err(e) => {
-                tracing::error!(
-                    target: "shell::compositor::present",
-                    error = %e,
-                    "could not start the tilo-present render thread; presentation stays unavailable"
-                );
-                finished.store(true, Ordering::Release);
-                None
-            }
-        };
+        let handle = Self::spawned_handle(spawned, &finished);
         Self {
             tx,
             inflight,
@@ -489,6 +482,24 @@ impl PresentPipe {
             backpressured: 0,
             finished,
             handle,
+        }
+    }
+
+    fn spawned_handle(
+        spawned: std::io::Result<JoinHandle<()>>,
+        finished: &AtomicBool,
+    ) -> Option<JoinHandle<()>> {
+        match spawned {
+            Ok(handle) => Some(handle),
+            Err(error) => {
+                tracing::error!(
+                    target: "shell::compositor::present",
+                    %error,
+                    "could not start the tilo-present render thread; presentation stays unavailable"
+                );
+                finished.store(true, Ordering::Release);
+                None
+            }
         }
     }
 
@@ -612,6 +623,7 @@ impl PresentPipe {
             .fetch_add(1, Ordering::AcqRel)
             .saturating_add(1);
         let enqueued_at = Instant::now();
+        let observed = super::capture_timing::PipeTiming::start();
         let pins = frame.client_frame_pins();
         if self
             .tx
@@ -620,6 +632,7 @@ impl PresentPipe {
                 output,
                 serial,
                 enqueued_at,
+                observed,
                 input_age_at_enqueue,
                 inflight_at_enqueue,
                 pins,

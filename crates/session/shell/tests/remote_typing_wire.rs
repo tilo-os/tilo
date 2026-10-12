@@ -676,6 +676,10 @@ fn presentation_feedback_belongs_to_committed_pixels_and_exact_submitted_frames(
         .state
         .presentation_feedback
         .composed(shell::shell::foreign::store(), Some(presentation_output()));
+    // The actual composed generation is also the diagnostic association;
+    // default-off production must retain no extra trace metadata.
+    assert!(frame.captured_pixels().is_empty());
+    assert!(frame.composed_time_ns().is_none());
     h.state.presentation_feedback.submitted(42, frame);
     let proof = shell::shell::present::PhysicalPresentation {
         timestamp: std::time::Duration::new(987, 123_456_000),

@@ -43,7 +43,8 @@ def sample(number, render_phases=False):
         ("tilo-physical-frame ", dict(**worker, cpu_frame_id=number,
             input_ids=[number], state=state(number))),
         ("tilo-display-frame ", dict(**worker, backend="wayland", cpu_frame_id=number,
-            clock_id=1, flags=7, discarded=False, presented_time_ns=start + 10_000_000)),
+            clock_id=1, flags=7, discarded=False, presented_time_ns=start + 10_000_000,
+            sequence=number)),
     ]
     if render_phases:
         for tag in ("tilo-native-send", "tilo-native-main-stages", "tilo-native-worker",
@@ -83,6 +84,30 @@ class RollingCollection(unittest.TestCase):
         report = summarize_physical_notes_latency(list(captured), "new-scratch-page")
         self.assertEqual(len(report["samples"]), 1)
         self.assertTrue(report["latency_complete"])
+
+    def test_exact_capture_witnesses_are_selected_and_arbitrary_fields_are_not_exported(self):
+        from physical_notes_stages_test import ForeignCaptureJoin
+        fixture = ForeignCaptureJoin().fixture()
+        for tag, row in fixture:
+            row['not_permitted_user_text'] = 'must never leave the device'
+            if row.get('event') == 'completed':
+                row['physical_presented_time_ns'] = 110000000
+                row['physical_sequence'] = 1
+        log_rows = [tag + json.dumps(row) for tag, row in fixture]
+        log_rows.append('tilo-present-pipe ' + json.dumps(dict(event='retired', clock_id=1,
+            pipe_serial=999, enqueue_ns=1, render_start_ns=2, render_end_ns=3)))
+        captured = {}
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / 'latest.log'
+            log.write_text(sample(1) + '\n' + '\n'.join(log_rows))
+            collect_trace(LocalSlot(), str(log), 'new-scratch-page', captured)
+        diagnostics = [line for line in captured if line.startswith(('tilo-foreign-capture ',
+                       'tilo-compositor-feedback ', 'tilo-present-pipe '))]
+        self.assertEqual(len(diagnostics), 5)
+        self.assertNotIn('must never leave', '\n'.join(diagnostics))
+        self.assertNotIn('not_permitted', '\n'.join(diagnostics))
+        self.assertFalse(any(json.loads(line.split(' ', 1)[1]).get('pipe_serial') == 999
+                             for line in diagnostics))
 
     def test_complete_hundred_inputs_survive_rollover_and_the_rpc_limit(self):
         slot = LocalSlot()

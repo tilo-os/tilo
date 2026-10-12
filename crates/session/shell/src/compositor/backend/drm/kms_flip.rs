@@ -27,6 +27,9 @@
 //! their legacy ioctls (`scanout.rs`, `output_signal.rs`).
 
 use std::io;
+use std::os::fd::AsFd;
+
+use super::page_flip::{self, Identity};
 use std::sync::OnceLock;
 
 use smithay::reexports::drm as drm_re;
@@ -35,7 +38,7 @@ use drm_re::ClientCapability;
 use drm_re::Device as BasicDevice;
 use drm_re::control::atomic::AtomicModeReq;
 use drm_re::control::{
-    AtomicCommitFlags, Device as ControlDevice, PageFlipFlags, crtc, framebuffer, plane, property,
+    AtomicCommitFlags, Device as ControlDevice, crtc, framebuffer, plane, property,
 };
 
 use super::client_scanout::{PlaneFormats, parse_in_formats};
@@ -118,9 +121,15 @@ pub(super) trait FlipDevice {
         plane: &PrimaryPlane,
         commit: PlaneCommit,
         mode: CommitMode,
+        cookie: u64,
     ) -> io::Result<()>;
     /// `drmModePageFlip` with a page-flip event.
-    fn legacy_flip(&self, crtc: crtc::Handle, framebuffer: framebuffer::Handle) -> io::Result<()>;
+    fn legacy_flip(
+        &self,
+        crtc: crtc::Handle,
+        framebuffer: framebuffer::Handle,
+        cookie: u64,
+    ) -> io::Result<()>;
 }
 
 impl FlipDevice for Card {
@@ -189,16 +198,28 @@ impl FlipDevice for Card {
         plane: &PrimaryPlane,
         commit: PlaneCommit,
         mode: CommitMode,
+        cookie: u64,
     ) -> io::Result<()> {
-        let flags = match mode {
-            CommitMode::Test => AtomicCommitFlags::TEST_ONLY,
-            CommitMode::Flip => AtomicCommitFlags::PAGE_FLIP_EVENT | AtomicCommitFlags::NONBLOCK,
-        };
-        self.atomic_commit(flags, plane_request(plane, commit))
+        match mode {
+            CommitMode::Test => {
+                self.atomic_commit(AtomicCommitFlags::TEST_ONLY, plane_request(plane, commit))
+            }
+            CommitMode::Flip => page_flip::submit_atomic(
+                self.as_fd(),
+                plane.handle.into(),
+                &plane_properties(plane, commit).map(|(prop, value)| (prop.into(), value)),
+                cookie,
+            ),
+        }
     }
 
-    fn legacy_flip(&self, crtc: crtc::Handle, framebuffer: framebuffer::Handle) -> io::Result<()> {
-        self.page_flip(crtc, framebuffer, PageFlipFlags::EVENT, None)
+    fn legacy_flip(
+        &self,
+        crtc: crtc::Handle,
+        framebuffer: framebuffer::Handle,
+        cookie: u64,
+    ) -> io::Result<()> {
+        page_flip::submit_legacy(self.as_fd(), crtc, framebuffer, cookie)
     }
 }
 
@@ -213,7 +234,14 @@ fn fixed_16_16(value: u32) -> u64 {
 /// framebuffer's origin — the state the legacy modeset and flips leave it
 /// in, so only the framebuffer (and with it, possibly, the format) changes.
 fn plane_request(plane: &PrimaryPlane, commit: PlaneCommit) -> AtomicModeReq {
-    use property::Value;
+    let mut request = AtomicModeReq::new();
+    for (prop, value) in plane_properties(plane, commit) {
+        request.add_raw_property(plane.handle.into(), prop, value);
+    }
+    request
+}
+
+fn plane_properties(plane: &PrimaryPlane, commit: PlaneCommit) -> [(property::Handle, u64); 10] {
     let PlaneCommit {
         target: FlipTarget {
             crtc,
@@ -222,22 +250,18 @@ fn plane_request(plane: &PrimaryPlane, commit: PlaneCommit) -> AtomicModeReq {
         framebuffer,
     } = commit;
     let props = plane.props;
-    let mut request = AtomicModeReq::new();
-    for (prop, value) in [
-        (props.fb_id, Value::Framebuffer(Some(framebuffer))),
-        (props.crtc_id, Value::CRTC(Some(crtc))),
-        (props.src_x, Value::UnsignedRange(0)),
-        (props.src_y, Value::UnsignedRange(0)),
-        (props.src_w, Value::UnsignedRange(fixed_16_16(width))),
-        (props.src_h, Value::UnsignedRange(fixed_16_16(height))),
-        (props.crtc_x, Value::SignedRange(0)),
-        (props.crtc_y, Value::SignedRange(0)),
-        (props.crtc_w, Value::UnsignedRange(u64::from(width))),
-        (props.crtc_h, Value::UnsignedRange(u64::from(height))),
-    ] {
-        request.add_property(plane.handle, prop, value);
-    }
-    request
+    [
+        (props.fb_id, u64::from(u32::from(framebuffer))),
+        (props.crtc_id, u64::from(u32::from(crtc))),
+        (props.src_x, 0),
+        (props.src_y, 0),
+        (props.src_w, fixed_16_16(width)),
+        (props.src_h, fixed_16_16(height)),
+        (props.crtc_x, 0),
+        (props.crtc_y, 0),
+        (props.crtc_w, u64::from(width)),
+        (props.crtc_h, u64::from(height)),
+    ]
 }
 
 /// Find the primary plane on `crtc`, enabling atomic modesetting so that
@@ -260,7 +284,7 @@ pub(super) fn test_on_plane(
     commit: PlaneCommit,
 ) -> Result<(), String> {
     device
-        .commit_plane(plane, commit, CommitMode::Test)
+        .commit_plane(plane, commit, CommitMode::Test, 0)
         .map_err(|error| format!("the primary plane refused the buffer in a test commit: {error}"))
 }
 
@@ -362,14 +386,15 @@ impl KmsFlip {
         &mut self,
         device: &impl FlipDevice,
         framebuffer: framebuffer::Handle,
-    ) -> io::Result<()> {
+    ) -> io::Result<Identity> {
+        let identity = page_flip::new_identity(self.target.crtc)?;
         if let FlipApi::Atomic(plane) = &self.api {
             let commit = PlaneCommit {
                 target: self.target,
                 framebuffer,
             };
-            match device.commit_plane(plane, commit, CommitMode::Flip) {
-                Ok(()) => return Ok(()),
+            match device.commit_plane(plane, commit, CommitMode::Flip, identity.cookie) {
+                Ok(()) => return Ok(identity),
                 Err(error) if transient(&error) || without_master(&error) => return Err(error),
                 Err(error) => {
                     let reason = format!("an atomic flip failed: {error}");
@@ -381,7 +406,8 @@ impl KmsFlip {
                 }
             }
         }
-        device.legacy_flip(self.target.crtc, framebuffer)
+        device.legacy_flip(self.target.crtc, framebuffer, identity.cookie)?;
+        Ok(identity)
     }
 }
 
@@ -456,6 +482,7 @@ mod tests {
         formats: HashMap<framebuffer::Handle, u32>,
         shown: Cell<u32>,
         calls: RefCell<Vec<Call>>,
+        cookies: RefCell<Vec<u64>>,
     }
 
     impl MockCard {
@@ -468,11 +495,16 @@ mod tests {
                 formats: HashMap::from([(fb(1), XRGB), (fb(2), XRGB), (fb(9), XBGR)]),
                 shown: Cell::new(XRGB),
                 calls: RefCell::new(Vec::new()),
+                cookies: RefCell::new(Vec::new()),
             }
         }
 
         fn calls(&self) -> Vec<Call> {
             self.calls.borrow().clone()
+        }
+
+        fn check_cookie(cookie: u64, mode: CommitMode) {
+            assert_eq!(cookie == 0, mode == CommitMode::Test);
         }
 
         fn format(&self, framebuffer: framebuffer::Handle) -> io::Result<u32> {
@@ -501,7 +533,10 @@ mod tests {
             plane: &PrimaryPlane,
             commit: PlaneCommit,
             mode: CommitMode,
+            cookie: u64,
         ) -> io::Result<()> {
+            Self::check_cookie(cookie, mode);
+            self.cookies.borrow_mut().push(cookie);
             self.calls
                 .borrow_mut()
                 .push(Call::Atomic(mode, commit.framebuffer));
@@ -529,7 +564,10 @@ mod tests {
             &self,
             crtc: crtc::Handle,
             framebuffer: framebuffer::Handle,
+            cookie: u64,
         ) -> io::Result<()> {
+            Self::check_cookie(cookie, CommitMode::Flip);
+            self.cookies.borrow_mut().push(cookie);
             self.calls.borrow_mut().push(Call::Legacy(framebuffer));
             if crtc != super::tests::crtc() {
                 return Err(io::Error::from_raw_os_error(libc::ERANGE));
@@ -542,6 +580,25 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    #[test]
+    fn accepted_atomic_and_legacy_flips_own_the_exact_cookie_including_fallback() {
+        let card = MockCard::new();
+        let mut flip = KmsFlip::probe(&card, target(), None);
+        let atomic = flip.queue(&card, fb(1)).unwrap();
+        assert_eq!(atomic.crtc, target().crtc);
+        assert_eq!(*card.cookies.borrow(), [atomic.cookie]);
+        card.atomic_flip_error.set(Some(libc::EINVAL));
+        let fallback = flip.queue(&card, fb(2)).unwrap();
+        assert_ne!(atomic.cookie, fallback.cookie);
+        assert_eq!(
+            *card.cookies.borrow(),
+            [atomic.cookie, fallback.cookie, fallback.cookie]
+        );
+        let legacy = flip.queue(&card, fb(1)).unwrap();
+        assert_ne!(fallback.cookie, legacy.cookie);
+        assert_eq!(*card.cookies.borrow().last().unwrap(), legacy.cookie);
     }
 
     #[test]
@@ -747,7 +804,7 @@ mod tests {
                     .unwrap_or_default();
                 assert_eq!(
                     calls(production),
-                    (1, 1),
+                    (0, 1),
                     "one of each, in FlipDevice for Card"
                 );
             } else {
