@@ -27,6 +27,7 @@ use automerge::{AutoCommit, ObjId, ObjType, Patch, PatchAction, Prop, ReadDoc, V
 use crate::history_source::revert::ChangeRun;
 use crate::widget::history::HistoryEntryId;
 use crate::widget::history_group::{from_hex16, hex16};
+use tilo_automerge::read::int_at;
 
 /// Prefix of the root keys holding this document's cross-application runs.
 /// Namespaced like [`GROUPS_KEY`](crate::history_source::groups::GROUPS_KEY) so
@@ -204,8 +205,7 @@ pub fn read_runs(doc: &AutoCommit) -> Vec<AgentRun> {
         // so the conversion never loses a sign; `checked_add` only guards
         // the (unreachable for a real timestamp) case of overflowing
         // `SystemTime`'s own representation.
-        let at = doc
-            .int_at(&rec, "at")
+        let at = int_at(doc, &rec, "at")
             .filter(|ms| *ms > 0)
             .and_then(|ms| u64::try_from(ms).ok())
             .and_then(|ms| UNIX_EPOCH.checked_add(Duration::from_millis(ms)))

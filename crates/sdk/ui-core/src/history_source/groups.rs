@@ -36,6 +36,7 @@ use automerge::{AutoCommit, ObjType, PatchAction, Prop, ReadDoc, Value};
 use crate::history_source::authors::AuthorDirectory;
 use crate::widget::history::HistoryEntryId;
 use crate::widget::history_group::{NamedRange, from_hex16, hex16};
+use tilo_automerge::read::int_at;
 
 /// Namespaced so it cannot collide with an app's own schema: `qdoc` uses
 /// `content` / `comments` / `props`, and the shell's room document uses
@@ -70,8 +71,7 @@ pub fn read_named_ranges(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<Nam
         // so the conversion never loses a sign; `checked_add` only guards
         // the (unreachable for an out-of-range timestamp) case of overflowing
         // `SystemTime`'s own representation.
-        let created = doc
-            .int_at(&rec, "at")
+        let created = int_at(doc, &rec, "at")
             .filter(|ms| *ms > 0)
             .and_then(|ms| u64::try_from(ms).ok())
             .and_then(|ms| UNIX_EPOCH.checked_add(Duration::from_millis(ms)))

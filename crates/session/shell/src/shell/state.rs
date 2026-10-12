@@ -1530,6 +1530,35 @@ impl WorkspaceTree {
         }
     }
 
+    /// The delegated agents on `room`'s roster as history names them: each
+    /// device governance admitted as an agent whose person's root signed the
+    /// delegation for exactly that device, under the person's governed name.
+    /// The same devices, by the same check, that
+    /// [`Self::trusted_identity_projection`] marks as agents for Files, so
+    /// the workspace's Activity, an app's own history and Files name an
+    /// agent alike. Presentation only: nothing is admitted by it.
+    pub fn verified_agents(&self, room: RoomId) -> Vec<ui::history_source::RosterAgent> {
+        self.trusted_identity_projection(room)
+            .humans
+            .into_iter()
+            .flat_map(|human| {
+                let person = human.root_public_key;
+                let person_name = human.display_name;
+                human.devices.into_iter().filter_map(move |device| {
+                    let agent = device.agent?;
+                    Some(ui::history_source::RosterAgent {
+                        device: device.certificate.device_public_key,
+                        person,
+                        person_name: person_name.clone(),
+                        agent_id: agent.agent_id,
+                        label: agent.label,
+                        color: agent.color,
+                    })
+                })
+            })
+            .collect()
+    }
+
     /// The names `room` carries, keyed by the peer **handle** the
     /// presence path speaks in
     /// ([`crate::network::behaviour::peer_liveness_handle`]), not the
@@ -7595,6 +7624,175 @@ mod automerge_foundation_tests {
 
         ship(&mut host, &mut guest, room, 1);
         assert_eq!(guest.trusted_identity_projection(room), projection);
+    }
+
+    /// A room whose governance names Ada's laptop and admits Scribe, an
+    /// agent device of Ada's, with a delegation `signer` signed. Returns the
+    /// host, the room and Scribe's device key.
+    fn room_with_ada_and_scribe(
+        signer: &ed25519_dalek::SigningKey,
+    ) -> (WorkspaceTree, RoomId, [u8; 32]) {
+        let (mut host, _guest, room) = two_in_a_room();
+        let root_key = ed25519_dalek::SigningKey::from_bytes(&[97; 32]);
+        let certified = |device: [u8; 32], label: &str, capabilities| {
+            let mut certificate = tilo_user_identity::DeviceCert {
+                user_public_key: root_key.verifying_key().to_bytes(),
+                device_public_key: device,
+                device_label: label.into(),
+                capabilities,
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
+            certificate
+        };
+        let laptop = iroh::SecretKey::generate().public();
+        assert!(host.name_peer(
+            room,
+            &"quinten".to_string(),
+            &laptop.to_string(),
+            "Ada Lovelace"
+        ));
+        assert!(host.certify_peer_identity(
+            room,
+            &laptop.to_string(),
+            certified(
+                *laptop.as_bytes(),
+                "Studio laptop",
+                tilo_user_identity::DeviceCapabilities::member()
+            )
+        ));
+        let scribe = iroh::SecretKey::generate().public();
+        let delegation = tilo_relay_protocol::agents::AgentDelegation::sign(
+            signer,
+            *scribe.as_bytes(),
+            "scribe",
+            "Scribe",
+            [10, 20, 30],
+            tilo_relay_protocol::agents::AgentScope {
+                rooms: vec![room.to_string()],
+                apps: Vec::new(),
+            },
+            1,
+            2,
+        )
+        .unwrap();
+        host.room_peer_identities.entry(room).or_default().insert(
+            scribe.to_string(),
+            GovernedPeerIdentity {
+                device_cert: certified(
+                    *scribe.as_bytes(),
+                    "Agent: Scribe",
+                    tilo_user_identity::CertificationPolicy::agent().ceiling,
+                ),
+                revocations: Vec::new(),
+                agent: Some(GovernedAgentRow {
+                    delegation,
+                    withdrawn_at_ns: None,
+                }),
+            },
+        );
+        host.sync_room_doc(room);
+        (host, room, *scribe.as_bytes())
+    }
+
+    /// The workspace's Activity, as the compositor refreshes it, over one
+    /// record of the active room whose latest change `device` signed: the
+    /// author of that change.
+    fn activity_author_of_a_change_by(
+        mut tree: WorkspaceTree,
+        room: RoomId,
+        device: [u8; 32],
+    ) -> ui::widget::HistoryAuthor {
+        struct Record(ui::record::RecordId, automerge::AutoCommit);
+        impl tilo_desktop::activity::PersistedRecordHistory for Record {
+            fn load_record(&self, id: &ui::record::RecordId) -> Option<automerge::AutoCommit> {
+                (id == &self.0).then(|| self.1.clone())
+            }
+        }
+        let record = ui::record::RecordId::for_file("scribe.qdoc");
+        let kind = ui::RecordKind::new("document");
+        tree.room_records_held
+            .entry(room)
+            .or_default()
+            .insert(record.to_string(), kind.to_string());
+        tree.commit_room_change();
+        let mut document = automerge::AutoCommit::new();
+        ui::record::init(&mut document, &record, &kind, &room.to_string());
+        document.set_actor(automerge::ActorId::from(device.as_slice()));
+        document
+            .put(automerge::ROOT, "draft", "Written by an agent")
+            .unwrap();
+        tilo_resource::history::commit_stamped_with_message(&mut document, None);
+        let handle = WorkspaceTreeHandle::new(tree);
+        let mut pane =
+            crate::shell::room_activity::RoomActivityPane::with_local_user("quinten".into());
+        pane.refresh_observed(
+            &handle,
+            &ui::record::RecordStore::in_memory(),
+            &Record(record, document),
+        );
+        let short = ui::history_source::short_id(&hex::encode(device));
+        pane.entries()
+            .iter()
+            .find(|entry| entry.author.identity_short == short)
+            .map(|entry| entry.author.clone())
+            .expect("the agent's change is in the workspace's history")
+    }
+
+    /// A change an agent's own key signed reads as the agent's, for its
+    /// person, in the workspace's Activity and in what apps' own history is
+    /// told, once the room's governance verified the person's delegation
+    /// for exactly that device. A delegation another root signed names
+    /// nobody: the change stays an unknown participant's.
+    #[test]
+    fn an_agents_own_key_change_is_named_only_once_its_delegation_verifies() {
+        use tilo_action_broker::services::WorkspaceAuthority as _;
+        let ada = ed25519_dalek::SigningKey::from_bytes(&[97; 32]);
+        let forger = ed25519_dalek::SigningKey::from_bytes(&[98; 32]);
+
+        let (host, room, scribe) = room_with_ada_and_scribe(&forger);
+        assert!(host.verified_agents(room).is_empty());
+        let authority = crate::shell::broker_services::NativeWorkspaceAuthority(
+            WorkspaceTreeHandle::new(host.clone()),
+        );
+        assert!(authority.history_agents(&room.to_string()).is_empty());
+        let author = activity_author_of_a_change_by(host, room, scribe);
+        assert_eq!(author.name, ui::history_source::UNKNOWN_AUTHOR_NAME);
+        assert_eq!(author.attribution, None);
+
+        let (host, room, scribe) = room_with_ada_and_scribe(&ada);
+        let verified = ui::history_source::RosterAgent {
+            device: scribe,
+            person: ada.verifying_key().to_bytes(),
+            person_name: "Ada Lovelace".into(),
+            agent_id: "scribe".into(),
+            label: "Scribe".into(),
+            color: [10, 20, 30],
+        };
+        assert_eq!(host.verified_agents(room), std::slice::from_ref(&verified));
+        let authority = crate::shell::broker_services::NativeWorkspaceAuthority(
+            WorkspaceTreeHandle::new(host.clone()),
+        );
+        assert_eq!(
+            authority.history_agents(&room.to_string()),
+            [verified],
+            "apps' own history is told the same agents"
+        );
+        let author = activity_author_of_a_change_by(host, room, scribe);
+        assert_eq!(author.name, "Scribe · Agent, for Ada Lovelace");
+        assert_eq!(author.rgb(), (10, 20, 30), "the agent's presence colour");
+        assert_eq!(
+            author.attribution,
+            Some(ui::widget::history::HistoryAttribution {
+                actor: "agent:scribe".into(),
+                kind: tilo_actions::ActorKind::Agent,
+                actor_name: "Scribe".into(),
+                on_behalf_of: Some(hex::encode(ada.verifying_key().to_bytes())),
+                on_behalf_of_name: Some("Ada Lovelace".into()),
+            })
+        );
     }
 
     #[test]

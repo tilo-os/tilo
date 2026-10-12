@@ -690,6 +690,9 @@ impl AccountKind {
     }
 
     pub fn from_type_id(type_id: &str) -> Option<Self> {
+        if type_id == accounts::thunderbird::PENDING_TYPE {
+            return Some(Self::Mail);
+        }
         Self::ALL.into_iter().find(|kind| kind.type_id() == type_id)
     }
 
@@ -899,9 +902,11 @@ fn mail_store_from_shared(shared: &accounts::AccountStore) -> MailStore {
     let accounts: Vec<MailAccount> = shared
         .list(&ty)
         .into_iter()
+        .chain(shared.list(&accounts::thunderbird::PENDING_TYPE.into()))
         .filter_map(|a| {
             // The opaque config is Mail's own `AccountConfig`.
-            let config: AccountConfig = serde_json::from_value(a.config.clone()).ok()?;
+            let mut config: AccountConfig = serde_json::from_value(a.config.clone()).ok()?;
+            config.import_pending |= a.type_id.as_str() == accounts::thunderbird::PENDING_TYPE;
             Some(MailAccount {
                 id: a.id.to_string(),
                 config,
