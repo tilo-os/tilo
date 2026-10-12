@@ -15,8 +15,8 @@ impl std::fmt::Debug for ServiceSessionRequest {
 }
 impl ServiceSessionRequest {
     pub(crate) fn valid(&self) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now = crate::time::wall()
+            .duration_since(crate::time::UNIX_EPOCH)
             .ok()
             .and_then(|v| i64::try_from(v.as_secs()).ok());
         self.request_id > 0

@@ -2,8 +2,7 @@
 use super::{
     ArtifactKind, BTreeMap, ChannelState, DocumentMutation, Duration, Ed25519PublicKey,
     LocalDocument, MAX_PUBLICATION_BYTES, MAX_PUBLICATIONS, MemberAuthority, NeighbourMsg, OpKind,
-    ReadDoc, Route, SignedOp, SigningKey, StatePeer, SystemTime, err, peer_handle,
-    publication_size, room,
+    Route, SignedOp, SigningKey, StatePeer, SystemTime, err, peer_handle, publication_size, room,
 };
 
 /// A historical byte/count estimate, never signing or document authority.
@@ -34,9 +33,31 @@ impl LocalRecoveryReservation {
     }
 }
 
+/// A route's recovery obligation: the histories of its publications, in
+/// the order they are merged into the one history a recovery re-sends.
 struct RecoveryHistory {
-    doc: automerge::Automerge,
+    parts: Vec<std::sync::Arc<automerge::Automerge>>,
+    /// Each part's publication ([`super::history::key`]); `None` once a
+    /// part is not a retained publication's history.
+    keys: Option<Vec<super::history::Key>>,
+    merged: std::cell::OnceCell<Result<std::sync::Arc<automerge::Automerge>, String>>,
     original_sequence: u64,
+}
+impl RecoveryHistory {
+    /// The parts merged in order: each merges the changes of the next that
+    /// it lacks, as `Automerge::merge` does.
+    fn doc(&self) -> Result<&automerge::Automerge, String> {
+        let merged = self
+            .merged
+            .get_or_init(|| super::history::merged(self.keys.as_deref(), &self.parts));
+        merged.as_deref().map_err(Clone::clone)
+    }
+    /// Whether the merged history holds the change `hash`.
+    fn contains(&self, hash: &automerge::ChangeHash) -> bool {
+        self.parts
+            .iter()
+            .any(|part| part.get_change_meta_by_hash(hash).is_some())
+    }
 }
 
 /// The unsigned envelope re-sending a route's whole recovered history,
@@ -81,10 +102,11 @@ impl StatePeer {
             {
                 continue;
             }
+            let key = local.mutation.as_ref().map(super::history::key);
             add_history(
                 &mut routes,
                 local.route.clone(),
-                self.publication_history(&local)?,
+                (self.publication_history(&local)?, key),
                 local.admission.sequence(),
             )?;
         }
@@ -120,7 +142,12 @@ impl StatePeer {
                 add_history(
                     &mut routes,
                     route.clone(),
-                    automerge::Automerge::load(&old.doc.clone().save()).map_err(err)?,
+                    (
+                        std::sync::Arc::new(
+                            automerge::Automerge::load(&old.doc.clone().save()).map_err(err)?,
+                        ),
+                        None,
+                    ),
                     old.channel
                         .last_seq_per_author
                         .get(&Ed25519PublicKey::from_bytes(selected))
@@ -158,28 +185,7 @@ impl StatePeer {
         let mut peer_growth = 0usize;
         let mut peer_decimal_growth = 0usize;
         for (route, history) in obligations {
-            // This unsigned shape is cost-only, never returned or admitted. Every
-            // byte except time/sequence is the actual future wire representation.
-            // u64::MAX reserves sequence width. Serde SystemTime encodes u64
-            // seconds/u32 nanos: maximum postcard widths 10+5 rather than 1+1.
-            let envelope = history_envelope(
-                &self.core.room,
-                route,
-                &history.doc,
-                Ed25519PublicKey::from_bytes(selected),
-                SystemTime::UNIX_EPOCH,
-                u64::MAX,
-            )?;
-            let shape = NeighbourMsg::AppDocument {
-                peer: peer_handle(&selected),
-                app_id: route.app.clone(),
-                cluster_id: self.core.room.clone(),
-                record_id: route.record.clone(),
-                envelope: Box::new(envelope),
-            };
-            let bytes = publication_size(&[shape])?
-                .checked_add(13)
-                .ok_or("projection reservation overflow")?;
+            let bytes = self.reserved_route_bytes(route, history, selected)?;
             total = total
                 .checked_add(bytes)
                 .filter(|total| *total <= MAX_PUBLICATION_BYTES)
@@ -230,6 +236,54 @@ impl StatePeer {
             max_peer_growth_bytes: peer_growth,
             max_peer_decimal_growth: peer_decimal_growth,
         })
+    }
+
+    /// The encoded size of a recovery re-sending `history` on `route` as
+    /// `selected`, remembered for the same publications.
+    fn reserved_route_bytes(
+        &self,
+        route: &Route,
+        history: &RecoveryHistory,
+        selected: [u8; 32],
+    ) -> Result<usize, String> {
+        let key = history.keys.as_deref().map(|parts| {
+            super::history::reservation_key(
+                &self.core.room,
+                &route.app,
+                &route.record,
+                selected,
+                parts,
+            )
+        });
+        if let Some(bytes) = key.and_then(super::history::remembered_reservation) {
+            return Ok(bytes);
+        }
+        // This unsigned shape is cost-only, never returned or admitted. Every
+        // byte except time/sequence is the actual future wire representation.
+        // u64::MAX reserves sequence width. Serde SystemTime encodes u64
+        // seconds/u32 nanos: maximum postcard widths 10+5 rather than 1+1.
+        let envelope = history_envelope(
+            &self.core.room,
+            route,
+            history.doc()?,
+            Ed25519PublicKey::from_bytes(selected),
+            SystemTime::UNIX_EPOCH,
+            u64::MAX,
+        )?;
+        let shape = NeighbourMsg::AppDocument {
+            peer: peer_handle(&selected),
+            app_id: route.app.clone(),
+            cluster_id: self.core.room.clone(),
+            record_id: route.record.clone(),
+            envelope: Box::new(envelope),
+        };
+        let bytes = publication_size(&[shape])?
+            .checked_add(13)
+            .ok_or("projection reservation overflow")?;
+        if let Some(key) = key {
+            super::history::remember_reservation(key, bytes);
+        }
+        Ok(bytes)
     }
 
     fn historical_projection(
@@ -288,9 +342,13 @@ impl StatePeer {
             let acknowledged =
                 self.durable_receipt_checkpoint(&local.route.app, &local.route.record)?;
             if !history.get_heads().iter().all(|head| {
-                obligation.is_some_and(|entry| entry.doc.get_change_by_hash(head).is_some())
+                obligation.is_some_and(|entry| entry.contains(head))
                     || acknowledged.as_ref().is_some_and(|(_, accepted)| {
-                        accepted.doc.get_change_by_hash(head).is_some()
+                        accepted
+                            .doc
+                            .committed_document()
+                            .get_change_meta_by_hash(head)
+                            .is_some()
                     })
             }) {
                 return Err("recovery projection contains history outside actual obligations or durable acknowledgement".into());
@@ -462,10 +520,10 @@ impl StatePeer {
                 }
                 if let Some(carried) = candidate.recovery_publication_history(&local)?
                     && history
-                        .doc
+                        .doc()?
                         .get_heads()
                         .iter()
-                        .all(|head| carried.get_change_by_hash(head).is_some())
+                        .all(|head| carried.get_change_meta_by_hash(head).is_some())
                 {
                     let NeighbourMsg::AppDocument { envelope, .. } = message else {
                         return Err("recovery projection is not an app document".into());
@@ -495,7 +553,7 @@ impl StatePeer {
                 let mut envelope = history_envelope(
                     &candidate.core.room,
                     route,
-                    &history.doc,
+                    history.doc()?,
                     author,
                     now,
                     sequence,
@@ -535,11 +593,18 @@ impl StatePeer {
 fn add_history(
     routes: &mut BTreeMap<Route, RecoveryHistory>,
     route: Route,
-    mut doc: automerge::Automerge,
+    (doc, key): (
+        std::sync::Arc<automerge::Automerge>,
+        Option<super::history::Key>,
+    ),
     sequence: u64,
 ) -> Result<(), String> {
     if let Some(existing) = routes.get_mut(&route) {
-        existing.doc.merge(&mut doc).map_err(err)?;
+        existing.parts.push(doc);
+        existing.keys = existing.keys.take().zip(key).map(|(mut keys, key)| {
+            keys.push(key);
+            keys
+        });
         existing.original_sequence = existing.original_sequence.max(sequence);
     } else {
         if routes.len() == MAX_PUBLICATIONS {
@@ -548,7 +613,9 @@ fn add_history(
         routes.insert(
             route,
             RecoveryHistory {
-                doc,
+                parts: vec![doc],
+                keys: key.map(|key| vec![key]),
+                merged: std::cell::OnceCell::new(),
                 original_sequence: sequence,
             },
         );

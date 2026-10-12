@@ -50,3 +50,13 @@ browser-personal-bookmarks-unnamed-folder = Untitled folder
 browser-workspace-bookmarks = Workspace bookmarks
 browser-continuity-failed = We couldn’t finish bringing your browsing over.
 browser-continuity-retry = Try again
+browser-service-forget = Forget account on this device
+browser-service-forgetting = Forgetting this account on this device…
+browser-service-forgotten = Local website session removed
+browser-service-custody-backend-needed = Saved account credentials have not been revoked. A custody backend is needed to remove them.
+browser-service-forget-open-first = Open the selected account in this window first.
+browser-service-forget-wait = Wait for the selected account to finish opening.
+browser-service-forget-fence-failed = The selected account could not be fenced for forgetting.
+
+browser-service-forget-retry = Retry local account deletion
+browser-service-forget-retry-failed = Local deletion could not be retried. The account remains fenced; canonical credentials have not been revoked.

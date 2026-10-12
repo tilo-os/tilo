@@ -6,6 +6,8 @@ use ui::webview::{
 };
 
 const ANCHOR: &str = "service:";
+const CATALOG: ui::i18n::EmbeddedCatalog =
+    ui::i18n::EmbeddedCatalog::new("en-US", crate::resource::LOCALES);
 
 #[derive(Clone)]
 pub(crate) struct Selection {
@@ -24,6 +26,16 @@ impl Selection {
         }
     }
     pub fn resource(&self) -> tilo_actions::Resource {
+        let mut forget = crate::effects::BrowserEffect::ForgetServiceSession {
+            session_id: self.id.clone(),
+        }
+        .bound();
+        forget.label = CATALOG.t("browser-service-forget");
+        let mut retry = crate::effects::BrowserEffect::RetryForgetServiceSession {
+            session_id: self.id.clone(),
+        }
+        .bound();
+        retry.label = CATALOG.t("browser-service-forget-retry");
         let mut open = crate::effects::BrowserEffect::OpenServiceSession {
             session_id: self.id.clone(),
         }
@@ -35,6 +47,8 @@ impl Selection {
             self.label(),
         )
         .with_action(open)
+        .with_action(forget)
+        .with_action(retry)
     }
 }
 
@@ -506,6 +520,43 @@ impl ServiceView {
             self.waker.clone(),
         ));
     }
+    pub(crate) fn forget(&mut self, id: &str) -> Result<serde_json::Value, String> {
+        if self.selection.id != id {
+            return Err(CATALOG.t("browser-service-forget-open-first"));
+        }
+        if self.status == "forgetting" {
+            return Ok(self.report());
+        }
+        // A restart owns the lease off-thread; never race its authority.
+        let profile = self
+            .profile
+            .as_mut()
+            .ok_or_else(|| CATALOG.t("browser-service-forget-wait"))?;
+        profile
+            .begin_forget()
+            .map_err(|_| CATALOG.t("browser-service-forget-fence-failed"))?;
+        self.status = "forgetting";
+        self.begin_shutdown();
+        Ok(self.report())
+    }
+
+    pub(crate) fn retry_forget(&mut self, id: &str) -> Result<serde_json::Value, String> {
+        if self.selection.id != id || self.status != "forgetting" {
+            return Err(CATALOG.t("browser-service-forget-retry-failed"));
+        }
+        let cleanup = self
+            .cleanup
+            .as_mut()
+            .ok_or_else(|| CATALOG.t("browser-service-forget-wait"))?;
+        // Join the original cleanup before retrying through its retained lease.
+        if cleanup.finish().is_err() {
+            cleanup
+                .finish()
+                .map_err(|_| CATALOG.t("browser-service-forget-retry-failed"))?;
+        }
+        Ok(self.report())
+    }
+
     pub fn attach_waker(&mut self, waker: ui::WakeHandle) {
         self.waker = Some(waker);
     }
@@ -546,7 +597,14 @@ impl ServiceView {
                 .is_some_and(|target| target.uri == engine_uri)
     }
     pub fn report(&self) -> serde_json::Value {
-        serde_json::json!({"service": self.selection.service, "session_id": self.selection.id, "status": self.status, "authenticated": false,
+        serde_json::json!({"service": self.selection.service, "session_id": self.selection.id, "status": if self.status == "forgetting" && self.close_complete() {
+                "local-forgotten"
+            } else if self.status == "forgetting" && self.cleanup.as_ref().is_some_and(|cleanup|
+                cleanup.handle.as_ref().is_none_or(std::thread::JoinHandle::is_finished)) {
+                "local-forget-incomplete"
+            } else { self.status }, "authenticated": false,
+            "custody_revoked": false, "custody_backend_needed": self.status == "forgetting",
+            "local_only": self.status == "forgetting",
             "origin_storage_imported": self.status == "imported-unverified" && self.expected_origins > 0,
             "requires_reconnect": self.status == "needs-reconnect" || self.selection.service == Service::Discord && self.expected_origins == 0,
             "engine_shutdown_confirmed": self.close_complete(),
@@ -554,6 +612,14 @@ impl ServiceView {
     }
     pub fn notice(&self) -> Option<crate::notice::Notice> {
         match self.status {
+            "forgetting" => Some(
+                crate::notice::Notice::neutral(CATALOG.t(if self.close_complete() {
+                    "browser-service-forgotten"
+                } else {
+                    "browser-service-forgetting"
+                }))
+                .with_message(CATALOG.t("browser-service-custody-backend-needed")),
+            ),
             "waiting" | "importing" | "restarting" | "verifying" => Some(
                 crate::notice::Notice::neutral(format!("Opening {}…", self.selection.label())),
             ),
@@ -817,9 +883,7 @@ fn finish_cancelled_restart(
         return Err(());
     };
     engine.shutdown_service_session().map_err(|_| ())?;
-    if profile.needs_import() {
-        profile.cancel_after_engine_exit().map_err(|_| ())?;
-    }
+    profile.cleanup_after_engine_exit().map_err(|_| ())?;
     custody.payload = None;
     done.store(true, std::sync::atomic::Ordering::Release);
     Ok(())
@@ -861,7 +925,7 @@ fn cleanup_after_native_exit(
             };
             if let Some((engine, profile)) = custody.payload.as_mut() {
                 if engine.shutdown_service_session().is_ok()
-                    && (!profile.needs_import() || profile.cancel_after_engine_exit().is_ok())
+                    && profile.cleanup_after_engine_exit().is_ok()
                 {
                     custody.payload = None;
                     worker_done.store(true, std::sync::atomic::Ordering::Release);
@@ -905,7 +969,7 @@ impl NativeCleanup {
             };
             if let Some((engine, profile)) = custody.payload.as_mut() {
                 if engine.shutdown_service_session().is_ok()
-                    && (!profile.needs_import() || profile.cancel_after_engine_exit().is_ok())
+                    && profile.cleanup_after_engine_exit().is_ok()
                 {
                     custody.payload = None;
                     self.done.store(true, std::sync::atomic::Ordering::Release);
@@ -1047,6 +1111,69 @@ mod lifecycle_tests {
     use ui::component_lifecycle::ComponentLifecycle;
     use ui::webview::WebViewEngine;
     use ui::widget::{Widget, WindowCloseAdmission};
+
+    #[test]
+    fn forget_action_is_destructive_selected_and_never_carries_credentials() {
+        let selected = Selection {
+            id: "selected-account".into(),
+            service: Service::Slack,
+            binding: "private-setup-binding".into(),
+        };
+        let resource = selected.resource();
+        let action = resource
+            .actions
+            .iter()
+            .find(|action| action.contract.risk == tilo_actions::RiskLevel::Destructive)
+            .unwrap();
+        assert_eq!(
+            action.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
+        let encoded = action.build_json(&serde_json::Map::new()).unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&encoded.payload).unwrap();
+        let decoded = crate::effects::BrowserEffect::decode(
+            payload["effect"].as_str().unwrap(),
+            payload["args"].as_object().unwrap(),
+        )
+        .unwrap();
+        assert!(
+            matches!(decoded, crate::effects::BrowserEffect::ForgetServiceSession {
+            session_id
+        } if session_id == selected.id)
+        );
+        assert!(!payload.to_string().contains("private-setup-binding"));
+    }
+
+    #[test]
+    fn retry_forget_is_selected_destructive_and_contains_no_custody_binding() {
+        let selected = Selection {
+            id: "selected-account".into(),
+            service: Service::Slack,
+            binding: "private-setup-binding".into(),
+        };
+        let resource = selected.resource();
+        let action = resource
+            .actions
+            .iter()
+            .find(|action| action.label == CATALOG.t("browser-service-forget-retry"))
+            .unwrap();
+        assert_eq!(action.contract.risk, tilo_actions::RiskLevel::Destructive);
+        assert_eq!(
+            action.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
+        let encoded = action.build_json(&serde_json::Map::new()).unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&encoded.payload).unwrap();
+        let decoded = crate::effects::BrowserEffect::decode(
+            payload["effect"].as_str().unwrap(),
+            payload["args"].as_object().unwrap(),
+        )
+        .unwrap();
+        assert!(
+            matches!(decoded, crate::effects::BrowserEffect::RetryForgetServiceSession { session_id } if session_id == selected.id)
+        );
+        assert!(!payload.to_string().contains("private-setup-binding"));
+    }
 
     #[test]
     fn browser_protocol_two_probe_exercises_discord_custody_and_public_resource() {
@@ -1365,8 +1492,22 @@ while True:
             false,
             "completed-profile reuse is not fresh native restart/readback evidence"
         );
+        assert!(cached.0.forget("a-different-account").is_err());
+        assert!(path.exists());
+        let started = std::time::Instant::now();
+        let reply = cached.0.forget(id).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+        assert_eq!(reply["custody_revoked"], false);
+        assert_eq!(reply["custody_backend_needed"], true);
         cached.0.finish_close().unwrap();
         assert!(cached.0.close_complete());
+        assert_eq!(cached.0.report()["status"], "local-forgotten");
+        assert!(
+            !path.exists(),
+            "completed selected profile survived reaping"
+        );
+        assert!(!receipt.exists());
+        assert!(path.parent().unwrap().join("forgetting").exists());
     }
 
     #[test]

@@ -389,13 +389,6 @@ impl Message {
     pub fn is_top_level(&self) -> bool {
         self.parent.is_none()
     }
-
-    /// Whether this message refers to `user`. The question a notification, a
-    /// badge or an agent watching the room actually asks — answered from
-    /// structure, so it never depends on how the body happens to be spelled.
-    pub fn mentions_user(&self, user: &str) -> bool {
-        self.mentions.iter().any(|m| m.user == user)
-    }
 }
 
 /// What an agent in this room has done with a message addressed to it.

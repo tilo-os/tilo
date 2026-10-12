@@ -6956,7 +6956,7 @@ mod tests {
         let state_home = root.join("state");
         env.set("XDG_STATE_HOME", &state_home);
         let source = root.join("picture.png");
-        let original = include_bytes!("../fixtures/avatar.png");
+        let original = include!("../fixtures/avatar.rs");
         std::fs::write(&source, original).unwrap();
         let mut app = fixture();
         choose(&mut app, "computer");
@@ -7381,7 +7381,7 @@ mod tests {
         })
         .unwrap();
         let avatar = source.path().join("review-avatar.png");
-        std::fs::write(&avatar, include_bytes!("../fixtures/avatar.png")).unwrap();
+        std::fs::write(&avatar, include!("../fixtures/avatar.rs")).unwrap();
         app.effect(&InstallerPreviewEffect::SelectPreviewAvatar {
             source_file: avatar.to_string_lossy().into_owned(),
         })
@@ -8684,6 +8684,8 @@ mod tests {
             release
                 .recv_timeout(tilo_test_env::hang_bound())
                 .map_err(std::io::Error::other)?;
+            // This supplies discovery facts only. It does not stand in for
+            // retained-caller registration during actual media preparation.
             super::super::migration_handoff::capture_fixture(home, operation, categories)
         }
         let (started, ready) = std::sync::mpsc::channel();
@@ -8772,7 +8774,13 @@ mod tests {
             }
             assert_ne!(
                 snapshot["media_preparation"]["state"], "failed",
-                "{snapshot}"
+                "Positive writable-Files consent requires the real retained-caller \
+                 registration through pkexec and the standalone Imager --tilo-home-capture-helper \
+                 entry point, not the libtest executable. capture_fixture supplies discovery \
+                 facts only, not an owned GPT source or helper admission. See \
+                 prepared_media::native_retained::full_prepare_shared_files_via_owned_gpt_and_actual_root_helper \
+                 for the owned native source and matched compiler-artifact prerequisites. \
+                 The worker cause is printed above; do not substitute a helper receipt. {snapshot}"
             );
             assert!(std::time::Instant::now() < deadline, "{snapshot}");
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -9707,7 +9715,7 @@ mod tests {
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         env.set("XDG_STATE_HOME", root.join("state"));
         let original_path = root.join("original.png");
-        std::fs::write(&original_path, include_bytes!("../fixtures/avatar.png")).unwrap();
+        std::fs::write(&original_path, include!("../fixtures/avatar.rs")).unwrap();
         let changed_path = root.join("changed.png");
         // A distinct, valid one-pixel synthetic PNG exercises the actual decoder.
         std::fs::write(

@@ -147,9 +147,6 @@ impl Widget for RevealToggle {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    /// The owning field places this control in its own `apply_layout`.
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-
     fn draw(
         &mut self,
         scene: &mut Scene,

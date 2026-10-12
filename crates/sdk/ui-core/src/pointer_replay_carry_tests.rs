@@ -498,8 +498,6 @@ impl Widget for Keypad {
         self.targets.begin_frame();
         self.targets.target("seven", self.rect, "7");
     }
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         self.targets.handle_event(event, ctx);
         for _ in self.targets.take_activated() {

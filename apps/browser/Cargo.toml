@@ -23,7 +23,6 @@ account-custody = { path = "../../crates/system/account-custody" }
 accounts = { path = "../../crates/system/accounts" }
 browser-continuity = { workspace = true, features = ["native"] }
 fnv.workspace = true
-private-fs = { path = "../../crates/system/private-fs" }
 rustix = { workspace = true, features = ["fs", "process"] }
 zeroize.workspace = true
 # Session-store ownership and the private cache root's cleanup barrier.

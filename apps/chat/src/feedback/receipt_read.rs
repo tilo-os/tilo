@@ -10,7 +10,7 @@ use tilo_actions::{
     ResultSpec,
 };
 use ui::semantic_document_read::{
-    MAX_REQUEST_BYTES, ReadPage, RegisteredSemanticReader, SemanticReadError,
+    ReadPage, RegisteredSemanticReader, SemanticReadError, decode_request,
 };
 
 const OPERATION: &str = "chat.feedback.read";
@@ -30,11 +30,7 @@ pub(super) struct Request {
 }
 
 pub(super) fn validate(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
-    if payload.len() > MAX_REQUEST_BYTES {
-        return Err(SemanticReadError::Limit);
-    }
-    let request: Request =
-        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
+    let request: Request = decode_request(payload)?;
     if request.id.len() != 32
         || !request.id.bytes().all(|c| c.is_ascii_hexdigit())
         || resource.kind != "chat.workspace.feedback"
@@ -139,8 +135,7 @@ pub(super) fn snapshot(
     heads: &[automerge::ChangeHash],
     payload: &[u8],
 ) -> Result<(ui::feedback::Receipt, Vec<super::TriageEntry>), SemanticReadError> {
-    let request: Request =
-        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
+    let request: Request = decode_request(payload)?;
     let document = document
         .clone()
         .fork_at(heads)
@@ -167,15 +162,7 @@ pub(super) fn snapshot(
 pub(super) fn schema() -> &'static serde_json::Value {
     static SCHEMA: OnceLock<serde_json::Value> = OnceLock::new();
     SCHEMA.get_or_init(|| {
-        let mut schema = crate::semantic_read::action::result_schema().clone();
-        let Some(properties) = schema
-            .get_mut("properties")
-            .and_then(serde_json::Value::as_object_mut)
-        else {
-            return serde_json::json!(false);
-        };
-        properties.insert(
-            "content".into(),
+        ui::semantic_document_read::result_schema(
             serde_json::json!({
                 "type":"object", "additionalProperties":false,
                 "required":["id","digest","destination","report"], "properties":{
@@ -190,9 +177,8 @@ pub(super) fn schema() -> &'static serde_json::Value {
                         }}
                 }
             }),
-        );
-        properties.insert("nextCursor".into(), serde_json::json!({"type":"null"}));
-        schema
+            false,
+        )
     })
 }
 

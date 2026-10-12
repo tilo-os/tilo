@@ -722,7 +722,7 @@ impl PairingHandshake {
         expires_at: SystemTime,
     ) -> Result<Self, IdentityFlowError> {
         let root = root.into();
-        private_fs::directory(&root)?;
+        tilo_files::native::private::directory(&root)?;
         let requested_expiry = expires_at
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_secs());
@@ -736,7 +736,7 @@ impl PairingHandshake {
             })?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 use std::io::Write;
-                let mut file = private_fs::create_new(&expiry_path)?;
+                let mut file = tilo_files::native::private::create_new(&expiry_path)?;
                 writeln!(file, "{requested_expiry}")?;
                 file.sync_all()?;
                 requested_expiry
@@ -789,7 +789,7 @@ impl PairingHandshake {
         let lock = backend.root.join(format!("{}.lock", hex::encode(nonce)));
         let mut lock_file = None;
         for _ in 0..64 {
-            match private_fs::create_new(&lock) {
+            match tilo_files::native::private::create_new(&lock) {
                 Ok(file) => {
                     lock_file = Some(file);
                     break;
@@ -810,7 +810,7 @@ impl PairingHandshake {
             let _ = std::fs::remove_file(&lock);
             return false;
         };
-        let written = private_fs::write_atomic(&path, &bytes).is_ok();
+        let written = tilo_files::native::private::write_atomic(&path, &bytes).is_ok();
         let _ = std::fs::remove_file(&lock);
         written
     }
@@ -825,9 +825,11 @@ impl PairingHandshake {
                 .clear(),
             #[cfg(unix)]
             PairingBackend::Durable(backend) => {
-                if let Ok(file) = private_fs::rewrite(&(backend.root.join("cancelled"))) {
+                if let Ok(file) =
+                    tilo_files::native::private::rewrite(&(backend.root.join("cancelled")))
+                {
                     let _ = file.sync_all();
-                    let _ = private_fs::sync_directory(&backend.root);
+                    let _ = tilo_files::native::private::sync_directory(&backend.root);
                 }
             }
             PairingBackend::Remote { .. } => {}
@@ -1413,7 +1415,7 @@ impl InviteRedemptionAuthority {
     /// user-owned real directory.
     pub fn at(root: impl Into<PathBuf>) -> Result<Self, IdentityFlowError> {
         let root = root.into();
-        private_fs::directory(&root)?;
+        tilo_files::native::private::directory(&root)?;
         Ok(Self { root })
     }
 
@@ -1424,7 +1426,7 @@ impl InviteRedemptionAuthority {
     /// Serializes invite issuance across processes. Holders only read and
     /// write small private files, so waiting for one is bounded by that I/O.
     fn issue_lock(&self) -> Result<advisory_lock::FileLock, IdentityFlowError> {
-        let file = private_fs::lock_file(&(self.root.join("issue.lock")))?;
+        let file = tilo_files::native::private::lock_file(&(self.root.join("issue.lock")))?;
         Ok(advisory_lock::FileLock::exclusive(file)?)
     }
 
@@ -1432,7 +1434,7 @@ impl InviteRedemptionAuthority {
         use std::io::Read;
         let path = self.root.join("authority-key");
         let read_existing = || -> Result<Option<zeroize::Zeroizing<Vec<u8>>>, IdentityFlowError> {
-            let file = match private_fs::read(&path) {
+            let file = match tilo_files::native::private::read(&path) {
                 Ok(file) => file,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
                 Err(error) => return Err(error.into()),
@@ -1456,7 +1458,7 @@ impl InviteRedemptionAuthority {
             })?;
             // Publication never replaces a concurrently created key; the
             // loser adopts the winner's.
-            if private_fs::create_atomic(&path, key.expose_secret())? {
+            if tilo_files::native::private::create_atomic(&path, key.expose_secret())? {
                 zeroize::Zeroizing::new(key.expose_secret().to_vec())
             } else {
                 read_existing()?.ok_or_else(|| {
@@ -1497,7 +1499,7 @@ impl InviteRedemptionAuthority {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.len() == 128)
-                && let Ok(mut file) = private_fs::read(&path)
+                && let Ok(mut file) = tilo_files::native::private::read(&path)
                 && let Ok(metadata) = file.metadata()
                 && metadata.file_type().is_file()
                 && is_invite_record_len(metadata.len())
@@ -1543,10 +1545,10 @@ impl InviteRedemptionAuthority {
                 "invite authority record has an unexpected size".into(),
             ));
         }
-        let mut file = private_fs::create_new(&(self.path(&capability)))?;
+        let mut file = tilo_files::native::private::create_new(&(self.path(&capability)))?;
         file.write_all(&bytes)?;
         file.sync_all()?;
-        private_fs::sync_directory(&self.root)?;
+        tilo_files::native::private::sync_directory(&self.root)?;
         Ok(())
     }
 
@@ -1579,8 +1581,8 @@ impl InviteRedemptionAuthority {
         // Durably consume the capability before decrypting or returning the
         // secret. After power loss, replay must remain impossible even if the
         // process died between release and cleanup.
-        private_fs::sync_directory(&self.root)?;
-        let file = private_fs::read(&claimed)?;
+        tilo_files::native::private::sync_directory(&self.root)?;
+        let file = tilo_files::native::private::read(&claimed)?;
         let metadata = file.metadata()?;
         if !metadata.file_type().is_file() || !is_invite_record_len(metadata.len()) {
             let _ = std::fs::remove_file(&claimed);

@@ -1,6 +1,6 @@
 # leveldb-sys provenance
 
-- Package: `leveldb-sys` 2.0.9, exact crates.io archive, 203 regular files.
+- Package: `leveldb-sys` 2.0.9, derived from the exact crates.io archive (203 regular files before the local patches and omissions below).
 - Registry checksum: `9dd94a4d0242a437e5e41a27c782b69a624469ca1c4d1e5cb3c337f74a8031d4`.
 - Source: <https://static.crates.io/crates/leveldb-sys/leveldb-sys-2.0.9.crate>.
 - Binding repository: <https://github.com/skade/leveldb-sys>.
@@ -18,5 +18,11 @@ Four local build compatibility patches keep ordinary Cargo builds working with F
 3. `deps/snappy-1.1.7/CMakeLists.txt` raises the policy minimum from 3.1 to 3.5, the compatibility floor supported by CMake 4. No global CMake environment override is needed.
 
 4. `src/lib.rs` spells the existing default C ABI explicitly on the five callback function types (`extern "C" fn`). This removes Rust missing-ABI warnings without changing callback safety, argument types, or ABI.
+
+## Omitted upstream fixture payload
+
+The vendored tree omits `deps/snappy-1.1.7/.CMakeLists.txt.swp` (an editor swap file) and the unused `deps/snappy-1.1.7/testdata/` payload: `alice29.txt`, `asyoulik.txt`, `baddata1.snappy`, `baddata2.snappy`, `baddata3.snappy`, `fireworks.jpeg`, `geo.protodata`, `html`, `html_x_4`, `kppkn.gtb`, `lcet10.txt`, `paper-100k.pdf`, `plrabn12.txt`, and `urls.10K`.
+
+These are upstream compression test/benchmark inputs, not production library inputs. `src/build.rs` disables `SNAPPY_BUILD_TESTS`, `LEVELDB_BUILD_TESTS`, and `LEVELDB_BUILD_BENCHMARKS`; Snappy reads the payload only through its disabled test executable. Upstream test source remains for reference, but running those tests requires restoring the payload from the checksum-pinned archive above. No source-content policy exemptions are added. All production source, headers, build definitions, licenses, author files, and archive provenance are retained; the clean archive tree hash above describes the original archive, not this stripped and patched tree.
 
 The C API semantics, engine sources, checksummed WAL recovery, and compression implementation are unchanged. No ambient LevelDB installation is required. The workspace root selects this copy with a reviewed Cargo patch; root manifest and lock updates are separate from the vendor payload.

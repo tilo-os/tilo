@@ -211,14 +211,18 @@ def check_image_trust():
 
 
 def check_service_trust(evidence):
+    service = load_service_consumer()
     require(isinstance(evidence, dict)
+            and type(evidence.get('schema')) is int
+            and evidence['schema'] == service.SERVICE_SCHEMA
+            and service.ROUTE_KEYS <= set(evidence)
             and re.fullmatch('[0-9a-f]{64}', evidence.get('browser_package_hash', ''))
             and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]{0,255}', evidence.get('cef_runtime_version', '')),
             'unsafe installed service proof identity')
     require(evidence.get('receiving_shell_path') in ('/usr/bin/shell', '/usr/bin/tilo-shell'),
             'unsafe installed receiving Shell')
     image_owned(Path(evidence['receiving_shell_path']))
-    for relative in load_service_consumer().RECEIVING_DEPENDENCIES:
+    for relative in service.RECEIVING_DEPENDENCIES:
         image_owned(Path(relative))
     python = Path('/usr/bin/python3').resolve(strict=True)
     require(str(python) == evidence.get('receiving_python_path') and python.parent == Path('/usr/bin'),
@@ -259,8 +263,12 @@ def main(check=False):
     receipt = produce(qualify_services=not check, service_evidence=evidence)
     if check:
         receipt = read_receipt(target, receipt)
-        # Only this bounded public identity result leaves the verifier.
-        print(json.dumps(receipt, sort_keys=True, separators=(',', ':')))
+        # Schema 2 includes the full fixed dependency inventory, not just a
+        # Shell digest. Keep the public result bounded at the Rust reader limit.
+        encoded = json.dumps(receipt, sort_keys=True, separators=(',', ':'))
+        require(len(encoded.encode()) + 1 <= 16 * 1024,
+                'account consumer capability exceeds public contract bound')
+        print(encoded)
         return
     descriptor, temporary = tempfile.mkstemp(prefix='.account-consumer-', dir=target.parent)
     try:

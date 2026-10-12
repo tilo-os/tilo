@@ -412,7 +412,7 @@ fn guided_new_user_migrates_recognized_home_then_reviews_shared_files_storage() 
     env.set(runtime_identity::FILE_SECRETS_ENV, "1");
     env.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "1");
     let picture = root.join("avatar.png");
-    std::fs::write(&picture, include_bytes!("../fixtures/avatar.png")).unwrap();
+    std::fs::write(&picture, include!("../fixtures/avatar.rs")).unwrap();
     let mut app = App::launched(&["--installer"]).unwrap();
     wait(&mut app, |v| v["restart"]["state"] == "missing");
     for choice in ["computer", "migrate", "new"] {

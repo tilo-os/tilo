@@ -102,10 +102,29 @@ class AuthenticatedStagingPlan:
     This cannot grant source access. The actual read/copy consumers still replay
     their protected root declarations and signed source witnesses independently.
     """
-    def __init__(self, plan, scope, native_services):
+    def __init__(self, plan, scope, native_services, service_protocol=None):
         self.plan = plan
         self.scope = scope
         self.native_services = native_services
+        self.service_protocol = service_protocol
+
+
+def bind_service_candidate(attested, candidate, setup_binding):
+    """Bind observations to the native-authenticated manifest, not source hints.
+
+    This is not installed consumer admission. Native import continues to refuse
+    an unqualified receiver until a separate exact-scope native door exists.
+    """
+    from service_sessions import selections
+    if (type(candidate) is not dict or type(candidate.get('required_protocol')) is not int
+            or candidate['required_protocol'] != 2
+            or type(attested.service_protocol) is not int
+            or attested.service_protocol != candidate['required_protocol']):
+        raise RuntimeError('authenticated service manifest differs from candidate protocol')
+    rows = selections(attested.native_services)
+    if any(row['setup_binding'] != setup_binding for row in rows):
+        raise RuntimeError('authenticated service manifest differs from source setup binding')
+    return rows
 
 
 def authenticated_staging_plan(package_directory, password, source, evidence, log):
@@ -167,4 +186,5 @@ def authenticated_staging_plan(package_directory, password, source, evidence, lo
             native_services = {'schema': 1, 'sessions': [
                 {'id': row['id'], 'service': row['service'], 'setup_binding': manifest['setup_binding']}
                 for row in selected['sessions']]}
-        return AuthenticatedStagingPlan(plan, scope, native_services)
+        return AuthenticatedStagingPlan(plan, scope, native_services,
+                                        selected.get('consumer_protocol') if selected is not None else None)

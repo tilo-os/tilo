@@ -1645,15 +1645,6 @@ mod tests {
                 origin.y + f64::from(l.size.height),
             );
         }
-        fn draw(
-            &mut self,
-            _s: &mut Scene,
-            _t: Affine,
-            _tr: &mut TextRenderer,
-            _th: &Theme,
-            _p: &PresenceCtx,
-        ) {
-        }
         fn handle_event(&mut self, _e: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
             self.events.set(self.events.get().saturating_add(1));
         }

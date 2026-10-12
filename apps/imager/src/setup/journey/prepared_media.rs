@@ -934,7 +934,13 @@ impl Controller {
                 self.state = "session-reconnect";
                 Some(Err("installer-service-session-reconnect"))
             }
-            Err(_) => {
+            Err(error) => {
+                // Preserve the worker's cause in test output; the public surface
+                // deliberately exposes only the localized, non-secret error key.
+                #[cfg(test)]
+                eprintln!("installer media preparation failed: {error}");
+                #[cfg(not(test))]
+                let _ = error;
                 self.state = "failed";
                 Some(Err("installer-media-prepare-failed"))
             }

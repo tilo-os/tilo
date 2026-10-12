@@ -607,11 +607,14 @@ impl CompositionFocus {
         bindings: &BoundNodeMap,
         allowed: Option<&[NodeId]>,
     ) -> Option<NodeId> {
+        // Asked of every node: look the order up, do not scan it each time.
+        let allowed: Option<std::collections::HashSet<NodeId>> =
+            allowed.map(|order| order.iter().copied().collect());
         let focused: Vec<_> = nodes
             .keys()
             .copied()
             .filter(|&node| {
-                allowed.is_none_or(|order| order.contains(&node))
+                allowed.as_ref().is_none_or(|order| order.contains(&node))
                     && unsafe {
                         crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
                             widget.is_focusable() && widget.is_enabled() && widget.is_focused()
@@ -793,19 +796,6 @@ impl Widget for AnonymousFocusProbe {
         nodes.insert(node, self as *mut dyn Widget);
         node
     }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {}
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut TextRenderer,
-        _: &crate::Theme,
-        _: &crate::PresenceCtx,
-    ) {
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
-    }
     fn is_focusable(&self) -> bool {
         true
     }
@@ -834,7 +824,7 @@ impl crate::undo::UndoPoints for AnonymousFocusProbe {
 mod tests {
     use super::*;
     use crate::widget::TaffyTreeExt;
-    use vello::kurbo::{Affine, Point, Rect};
+    use vello::kurbo::{Point, Rect};
 
     #[derive(Default)]
     struct UnsettledStyles {
@@ -885,18 +875,6 @@ mod tests {
         }
         fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {
             panic!("unsettled geometry must not be applied")
-        }
-        fn draw(
-            &mut self,
-            _: &mut vello::Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &crate::Theme,
-            _: &crate::PresenceCtx,
-        ) {
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
     }
 

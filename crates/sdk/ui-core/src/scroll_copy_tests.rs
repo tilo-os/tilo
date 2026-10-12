@@ -1,6 +1,4 @@
 use super::*;
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use std::collections::HashMap;
@@ -33,18 +31,6 @@ impl Widget for Boxed {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
-    }
-
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
 
     fn name(&self) -> &'static str {
@@ -515,4 +501,37 @@ fn a_gpu_copy_moves_pixels_within_the_target() {
         OffscreenRenderer::pixels_differing_beyond_aa(&actual, &expected),
         0
     );
+}
+
+/// A collaborator's mark resting over a scroll: the copy takes the mark on
+/// screen along with the content, so where it lands is repainted, and the
+/// mark is repainted where it is; a mark nowhere near the copy costs
+/// nothing.
+#[test]
+fn peer_marks_repaint_where_they_are_and_where_a_copy_took_them() {
+    // Content moved up 10 px: rows 10..200 land at 0..190.
+    let copy = DeviceCopy {
+        x: 0,
+        y: 10,
+        width: 300,
+        height: 190,
+        dx: 0,
+        dy: -10,
+    };
+    let mark = Rect::new(100.0, 50.0, 124.0, 74.0);
+    let far = Rect::new(400.0, 50.0, 424.0, 74.0);
+    let mut damage = Vec::new();
+    marks_over_copies(&[copy], &[mark, far], &[mark, far], &mut damage);
+    assert_eq!(
+        damage,
+        vec![Rect::new(100.0, 40.0, 124.0, 64.0), mark],
+        "the stale mark one delta away and the mark where it is, not the far one"
+    );
+    let mut none = Vec::new();
+    marks_over_copies(&[], &[mark], &[mark], &mut none);
+    assert!(
+        none.is_empty(),
+        "without copies the marks cost nothing here"
+    );
+    assert_eq!(carried(&[copy], &[far]), Vec::<Rect>::new());
 }

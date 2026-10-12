@@ -20,10 +20,6 @@ pub const APP_TITLE: &str = "Graph Screens";
 
 pub mod locales;
 
-fn install_catalog() {
-    locales::install();
-}
-
 pub mod components;
 pub mod screens;
 
@@ -85,8 +81,11 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn view(cx: &mut ViewCx<Projects>) -> Element {
-        install_catalog();
         let input = cx
             .input(cx.paths().draft)
             .with_id("name-input")

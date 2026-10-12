@@ -49,7 +49,7 @@
 //! # Not in this version
 //!
 //! - Trash, owner-only directories and extended attributes report
-//!   [`Availability::Unsupported`] (see [`CAPABILITIES`]); [`Dir::trash`]
+//!   [`Availability::Unsupported`] (see [`Feature`]); [`Dir::trash`]
 //!   returns the error. The absorbed native modules still offer
 //!   owner-checked private files by path ([`native::private`]).
 //! - Reads and writes take whole buffers; there is no `open_read` stream.
@@ -103,7 +103,7 @@ mod watch;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod web;
 
-pub use caps::{Availability, CAPABILITIES, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability};
 pub use error::FsError;
 pub use native::lock::LockMode;
 pub use tilo_paths::{InvalidVPath, Location, VPath, VirtualRoot};
@@ -483,7 +483,7 @@ impl Dir {
             Root::Local(Local::Memory(scope)) => Ok(Watch::new(scope.watch(path), Box::new(()))),
             Root::Local(Local::Disk(root)) => disk_watch(root, path),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            Root::Local(Local::Mirror(_)) => Err(caps::unsupported(Feature::Watch).into()),
+            Root::Local(Local::Mirror(_)) => Err(Unsupported::of(Feature::Watch).into()),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             Root::Opfs(scope) => web::watch(scope, path),
         }
@@ -501,7 +501,7 @@ impl Dir {
     )]
     pub async fn trash(&self, path: &VPath) -> Result<(), FsError> {
         below_root(path)?;
-        Err(caps::unsupported(Feature::Trash).into())
+        Err(Unsupported::of(Feature::Trash).into())
     }
 
     /// The operating-system path of `path`, for code that must hand one to a
@@ -518,9 +518,9 @@ impl Dir {
                 reason: caps::MEMORY_NATIVE_PATHS,
             }),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            Root::Local(Local::Mirror(_)) => Err(caps::unsupported(Feature::NativePaths)),
+            Root::Local(Local::Mirror(_)) => Err(Unsupported::of(Feature::NativePaths)),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            Root::Opfs(_) => Err(caps::unsupported(Feature::NativePaths)),
+            Root::Opfs(_) => Err(Unsupported::of(Feature::NativePaths)),
         }
     }
 
@@ -593,7 +593,7 @@ pub fn file_at(path: &std::path::Path) -> Result<(Dir, VPath), FsError> {
 /// [`FsError::Unsupported`] on the web.
 pub fn canonicalize(path: &std::path::Path) -> Result<PathBuf, FsError> {
     if cfg!(all(target_arch = "wasm32", target_os = "unknown")) {
-        return Err(caps::unsupported(Feature::NativePaths).into());
+        return Err(Unsupported::of(Feature::NativePaths).into());
     }
     Ok(std::fs::canonicalize(path)?)
 }
@@ -641,7 +641,7 @@ fn check_rename(from: &VPath, to: &VPath) -> Result<(), FsError> {
 
 fn native_root(path: PathBuf) -> Result<Root, FsError> {
     if cfg!(all(target_arch = "wasm32", target_os = "unknown")) {
-        return Err(caps::unsupported(Feature::NativePaths).into());
+        return Err(Unsupported::of(Feature::NativePaths).into());
     }
     Ok(Root::Local(Local::Disk(path)))
 }

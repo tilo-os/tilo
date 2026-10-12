@@ -35,6 +35,11 @@ impl ResourceApp for Scratchpad {
     type Resource = Note;
     const ID: &'static str = "so.tilo.scratchpad";
     const TITLE: &'static str = "Scratchpad";
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (800, 600)
     }
@@ -55,7 +60,6 @@ impl ResourceApp for Scratchpad {
     }
 
     fn view(cx: &mut ViewCx<Note>) -> Element {
-        locales::install();
         let scroll = Rc::new(Cell::new((0.0, 0.0)));
         let editor = cx
             .input(cx.paths().body)

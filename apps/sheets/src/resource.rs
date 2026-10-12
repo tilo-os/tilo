@@ -37,8 +37,7 @@ pub const LOCALES: &[(&str, &str)] = &[
     ("de-DE", include_str!("../locales/de-DE.ftl")),
 ];
 
-static CATALOG: EmbeddedCatalog =
-    EmbeddedCatalog::new("en-US", LOCALES, "sheets-new-sheet").with_system_locale();
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
 
 /// The most cells one write, sort or import changes.
 pub const MAX_WRITES: usize = 16 * 1024;

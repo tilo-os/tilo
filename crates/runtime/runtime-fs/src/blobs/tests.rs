@@ -12,6 +12,25 @@ struct MemoryBackend {
     pending: Mutex<HashSet<String>>,
     /// Every ranged read served, as `(offset, max_len)`.
     reads: Mutex<Vec<(u64, u32)>>,
+    /// The length of every piece a streamed put received.
+    pieces: Mutex<Vec<usize>>,
+    /// Streamed puts that ended without finishing, so stored nothing.
+    abandoned: std::sync::atomic::AtomicUsize,
+    /// Held by a test to keep streamed puts from reading their pieces.
+    stall: tokio::sync::Mutex<()>,
+}
+
+impl MemoryBackend {
+    fn keep(&self, scope: &BlobScope, bytes: Vec<u8>, mime: String) -> BlobRef {
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        let len = bytes.len() as u64;
+        self.bytes.lock().unwrap().insert(hash.clone(), bytes);
+        self.refs
+            .lock()
+            .unwrap()
+            .insert((scope.room().to_owned(), hash.clone()));
+        BlobRef { hash, len, mime }
+    }
 }
 
 impl BlobBackend for MemoryBackend {
@@ -21,15 +40,28 @@ impl BlobBackend for MemoryBackend {
         bytes: Vec<u8>,
         mime: String,
     ) -> BlobFuture<Result<BlobRef, BlobError>> {
+        Box::pin(async move { Ok(self.keep(&scope, bytes, mime)) })
+    }
+
+    fn put_stream(
+        self: Arc<Self>,
+        scope: BlobScope,
+        mut chunks: BlobChunks,
+        mime: String,
+    ) -> BlobFuture<Result<BlobRef, BlobError>> {
         Box::pin(async move {
-            let hash = blake3::hash(&bytes).to_hex().to_string();
-            let len = bytes.len() as u64;
-            self.bytes.lock().unwrap().insert(hash.clone(), bytes);
-            self.refs
-                .lock()
-                .unwrap()
-                .insert((scope.room().to_owned(), hash.clone()));
-            Ok(BlobRef { hash, len, mime })
+            drop(self.stall.lock().await);
+            let mut bytes = Vec::new();
+            while let Some(piece) = chunks.next().await {
+                let Ok(piece) = piece else {
+                    self.abandoned
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    return Err(BlobError::Refused("abandoned".into()));
+                };
+                self.pieces.lock().unwrap().push(piece.len());
+                bytes.extend_from_slice(&piece);
+            }
+            Ok(self.keep(&scope, bytes, mime))
         })
     }
 
@@ -661,5 +693,145 @@ fn put_reader_streams_one_chunk_at_a_time_and_checks_the_reference() {
         assert!(store.lock().unwrap().is_empty());
         // The connection stays usable after the abandoned upload.
         assert!(client.put(b"after", "").is_ok());
+    }
+}
+
+/// Runs `scenario` against the `room-1` photos scope of `harness` as a raw
+/// Cap'n Proto peer, which `BlobClient`'s own checks do not constrain.
+fn raw_app<F, Fut>(harness: &Harness, scenario: F)
+where
+    F: FnOnce(document_blobs::Client) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let mut stream = StdUnixStream::connect(&harness.socket).unwrap();
+    write_handoff(
+        &mut stream,
+        &BlobPrincipal::App(BlobScope::new("room-1", "so.tilo.photos").unwrap()),
+    )
+    .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    tokio::task::LocalSet::new().block_on(&runtime, async move {
+        let Ok(rpc) = runtime_portal::UnixCapnpClient::from_connected_fd(
+            stream.into_raw_fd(),
+            rpc_twoparty_capnp::Side::Client,
+        ) else {
+            panic!("the test connection could not be driven");
+        };
+        scenario(rpc.bootstrap()).await;
+    });
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc clients are Rc-based and run on a LocalSet by construction"
+)]
+async fn open_upload(blobs: &document_blobs::Client) -> blob_upload::Client {
+    let mut request = blobs.upload_request();
+    request.get().set_mime("");
+    request
+        .send()
+        .promise
+        .await
+        .unwrap()
+        .get()
+        .unwrap()
+        .get_upload()
+        .unwrap()
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc clients are Rc-based and run on a LocalSet by construction"
+)]
+async fn write_upload(upload: &blob_upload::Client, bytes: &[u8]) -> Result<(), capnp::Error> {
+    let mut request = upload.write_request();
+    request.get().set_bytes(bytes);
+    request.send().promise.await.map(drop)
+}
+
+/// Waits until the backend has seen `count` uploads end without finishing.
+fn await_abandoned(backend: &MemoryBackend, count: usize) {
+    let deadline = std::time::Instant::now()
+        .checked_add(Duration::from_secs(10))
+        .unwrap();
+    while backend.abandoned.load(std::sync::atomic::Ordering::SeqCst) < count {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the backend never saw the upload end"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn the_upload_server_streams_pieces_and_stores_nothing_unfinished() {
+    // phase: an_upload_reaches_the_backend_in_bounded_pieces
+    {
+        let harness = Harness::start();
+        let client = harness.app("room-1", "so.tilo.photos");
+        let len = MAX_PUT_CHUNK * 2 + 17;
+        let content: Vec<u8> = (0..len).map(pattern).collect();
+        let stored = client.put(&content, "").unwrap();
+        let pieces = harness.backend.pieces.lock().unwrap().clone();
+        assert_eq!(pieces.iter().sum::<usize>(), len);
+        assert!(
+            pieces.iter().all(|piece| *piece <= UPLOAD_PIECE),
+            "the backend received pieces larger than {UPLOAD_PIECE} B: {pieces:?}"
+        );
+        assert_eq!(
+            client.read_all(&stored.hash).unwrap(),
+            ReadOutcome::Ready {
+                bytes: content,
+                total_len: len as u64,
+            }
+        );
+    }
+    // phase: an_upload_dropped_before_finishing_stores_nothing
+    {
+        let harness = Harness::start();
+        raw_app(&harness, |blobs| async move {
+            let upload = open_upload(&blobs).await;
+            write_upload(&upload, &[7; 1000]).await.unwrap();
+            drop(upload);
+        });
+        await_abandoned(&harness.backend, 1);
+        assert!(harness.backend.bytes.lock().unwrap().is_empty());
+    }
+    // phase: the_server_refuses_more_than_the_limit_while_streaming
+    {
+        let harness = Harness::start();
+        raw_app(&harness, |blobs| async move {
+            let upload = open_upload(&blobs).await;
+            let chunk = vec![1_u8; MAX_PUT_CHUNK];
+            for _ in 0..MAX_BLOB_BYTES / MAX_PUT_CHUNK as u64 {
+                write_upload(&upload, &chunk).await.unwrap();
+            }
+            assert!(write_upload(&upload, &[1]).await.is_err());
+            assert!(upload.finish_request().send().promise.await.is_err());
+        });
+        await_abandoned(&harness.backend, 1);
+        assert!(harness.backend.bytes.lock().unwrap().is_empty());
+    }
+    // phase: a_write_pipelined_behind_another_is_refused
+    {
+        let harness = Harness::start();
+        let stall = harness.backend.stall.blocking_lock();
+        raw_app(&harness, |blobs| async move {
+            let upload = open_upload(&blobs).await;
+            // The backend reads nothing yet, so the first write cannot be
+            // taken in full before the second arrives.
+            let mut first = upload.write_request();
+            first.get().set_bytes(&vec![2_u8; MAX_PUT_CHUNK]);
+            let first = first.send().promise;
+            assert!(write_upload(&upload, &[3]).await.is_err());
+            drop(stall);
+            let _ = first.await;
+            assert!(upload.finish_request().send().promise.await.is_err());
+        });
+        await_abandoned(&harness.backend, 1);
+        assert!(harness.backend.bytes.lock().unwrap().is_empty());
     }
 }

@@ -1749,17 +1749,6 @@ impl Widget for FrameworkPresentation<'_> {
     ) -> taffy::NodeId {
         self.layout_root
     }
-    fn apply_layout(&mut self, _: &taffy::TaffyTree<()>, _: taffy::NodeId, _: vello::kurbo::Point) {
-    }
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut crate::text_render::TextRenderer,
-        _: &crate::Theme,
-        _: &crate::presence::PresenceCtx,
-    ) {
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         self.roots.clone()
     }

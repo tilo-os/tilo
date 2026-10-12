@@ -69,7 +69,7 @@ fn held<T: Section>(
 fn sections(cx: &ui::framework::SurfaceCx<Settings>) -> HashMap<TypeId, Box<dyn Any>> {
     let mut sections = HashMap::new();
     held::<crate::prefs::AppearancePrefs>(cx, &mut sections);
-    held::<crate::prefs::AccessibilityPrefs>(cx, &mut sections);
+    held::<crate::accessibility_settings::AccessibilitySettings>(cx, &mut sections);
     held::<crate::prefs::InputPrefs>(cx, &mut sections);
     held::<ui::text_assistance::TextAssistancePrefs>(cx, &mut sections);
     held::<crate::prefs::PowerPrefs>(cx, &mut sections);

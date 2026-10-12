@@ -49,7 +49,7 @@ mod workspace_memberships;
 mod workspace_tasks;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
-    DocumentBytes, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
+    DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
 };
 use durable_local_invocation::DurableContext;
 pub(crate) use invocation_journal::DurableInvocation;
@@ -555,7 +555,9 @@ struct AdmittedJoinIdentity {
     display_handle: Option<String>,
     /// Workspace admission role from the live owner/capability roster.
     /// Certified document operations use this directly instead of requiring
-    /// a second, channel-local role attestation for the same person.
+    /// a second, channel-local role attestation for the same person. For a
+    /// delegated agent it is the agent's role
+    /// ([`roles::agent_policy::role`]): its preset's, capped by its person's.
     role: CapRole,
     /// Delegated agent principal for this channel. The certified device still
     /// proves which person launched it, while policy uses this revocable id.
@@ -1116,13 +1118,13 @@ fn admit_agent_delegation_at(
     {
         return Err("only a workspace administrator may launch a delegated agent session".into());
     }
-    if !workspace
-        .agent_members_at(now)
-        .iter()
-        .any(|(agent, _)| agent == agent_id)
-    {
-        return Err("the requested agent is not an active workspace member".into());
-    }
+    // The agent takes part with the role its room admission (its preset)
+    // grants, never more than its person's: revoking either ends it here,
+    // and every revalidation of the session asks again.
+    let granted = workspace
+        .agent_role_at(agent_id, now)
+        .ok_or("the requested agent is not an active workspace member")?;
+    admitted.role = roles::agent_policy::role(admitted.role, granted);
     admitted.agent_id = Some(agent_id.to_string());
     admitted.display_handle = Some(agent_id.to_string());
     Ok(())
@@ -3290,6 +3292,8 @@ impl CapnpBrokerState {
     pub(crate) fn request_stop(&self) {
         self.accepting.store(false, Ordering::Release);
         self.local_turn.notify_one();
+        // Held committed-read waits re-check custody, which now refuses.
+        tilo_identity_host::policy_change::announce();
     }
 
     /// Hold the broker lifecycle read side for one complete shell-facade
@@ -8228,11 +8232,30 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::CommittedDocumentParams,
         mut results: channel_handle::CommittedDocumentResults,
     ) -> Promise<(), capnp::Error> {
-        Promise::from((|| {
+        use runtime_collab::committed_document::Request;
+        let decoded = (|| {
             let reader = params.get()?;
-            let request =
-                runtime_collab::committed_document::Request::decode(reader.get_request()?)
-                    .map_err(|e| capnp::Error::failed(e.into()))?;
+            Request::decode(reader.get_request()?).map_err(|e| capnp::Error::failed(e.into()))
+        })();
+        let request = match decoded {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        if let Request::Await { known_revision } = request {
+            // Held without blocking the channel: answered on this LocalSet
+            // when the read may have changed.
+            return Promise::from_future(async move {
+                let reply = self
+                    .await_committed_change(known_revision)
+                    .await
+                    .map_err(capnp::Error::failed)?;
+                results
+                    .get()
+                    .set_reply(&reply.encode().map_err(|e| capnp::Error::failed(e.into()))?);
+                Ok(())
+            });
+        }
+        Promise::from((|| {
             let reply = self
                 .committed_document_dispatch(&request)
                 .map_err(capnp::Error::failed)?;
@@ -15766,6 +15789,126 @@ pub mod tests {
             state.revalidate_admission(&route, &admitted).is_err(),
             "revoking agent membership invalidates an already-open agent channel"
         );
+    }
+
+    /// In a room this desktop hosts itself, a delegated agent takes part
+    /// with exactly its preset, capped by its person's role, and revoking
+    /// either the person or the agent cuts an open session off.
+    #[test]
+    fn a_hosted_agent_takes_its_preset_capped_by_its_person_and_ends_with_either() {
+        use tilo_action_policy::roles::{AgentPreset, governance};
+        let owner_root = SigningKey::from_bytes(&[45; 32]);
+        let owner = principal_id_for_root(owner_root.verifying_key().to_bytes());
+        let bob_root = SigningKey::from_bytes(&[46; 32]);
+        let bob = principal_id_for_root(bob_root.verifying_key().to_bytes());
+        let mut workspace =
+            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(45), "Hosted");
+        workspace.set_owner(owner.clone());
+        let room = workspace.policy.room.clone();
+        // Bob comments, and may launch the room's agents.
+        workspace.admit(bob.clone(), Role::Commenter);
+        workspace.grant(tilo_action_policy::Grant::new(
+            "fixture:bob-launches-agents",
+            crate::test_support::Subject::Person(bob.clone()),
+            roles::governance_action(&room, governance::GRANT),
+            crate::test_support::KindSet::OUTSIDE,
+            Answer::Allow,
+            crate::test_support::Subject::Person(owner.clone()),
+        ));
+        let granted_by = crate::test_support::Subject::Person(owner);
+        let operator = workspace.admit_agent_preset("scribe", AgentPreset::Operator, &granted_by);
+        workspace.admit_agent_preset("reader", AgentPreset::Observer, &granted_by);
+        let route = CrdtRoute::cluster(workspace.room.to_string());
+        let notes = workspace.node().app("so.tilo.notes");
+        let set_role = roles::governance_action(&room, governance::SET_ROLE);
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+
+        let delegate = |root: &SigningKey, agent: &str, tree: &WorkspaceTree| {
+            let mut admitted = admit_verified_join(tree, &route, verified_device(root)).unwrap();
+            admit_agent_delegation(tree, &route, &mut admitted, agent).map(|()| admitted)
+        };
+        let answer = |admitted: &AdmittedJoinIdentity,
+                      tree: &WorkspaceTree,
+                      node: &TreePath,
+                      kind: ActionKind| {
+            admitted
+                .with_authority(Some(&tree.desktop), &route.cluster_id, |authority| {
+                    authority
+                        .decide(node, kind, &tilo_desktop_model::context_at(0))
+                        .answer
+                })
+                .unwrap()
+        };
+
+        // The owner's Operator agent edits as an Editor and never governs.
+        let scribe = delegate(&owner_root, "scribe", &tree).unwrap();
+        assert_eq!(scribe.role, Role::Editor, "Operator, below its owner");
+        assert!(workspace_control_role_allowed(scribe.role));
+        assert_eq!(
+            answer(&scribe, &tree, &notes, ActionKind::Undoable),
+            Answer::Allow
+        );
+        assert_eq!(
+            answer(&scribe, &tree, &set_role, roles::GOVERNANCE_KIND),
+            Answer::Deny,
+            "the owner's agent does not govern the room"
+        );
+        // The owner's Observer agent reads, and is no Editor anywhere.
+        let reader = delegate(&owner_root, "reader", &tree).unwrap();
+        assert_eq!(reader.role, Role::Viewer, "exactly its preset");
+        assert!(!workspace_control_role_allowed(reader.role));
+        assert_eq!(
+            answer(&reader, &tree, &notes, ActionKind::Read),
+            Answer::Allow
+        );
+        assert_eq!(
+            answer(&reader, &tree, &notes, ActionKind::Undoable),
+            Answer::Deny
+        );
+        // Bob's session with the same Operator agent holds Bob's role.
+        let bobs = delegate(&bob_root, "scribe", &tree).unwrap();
+        assert_eq!(bobs.role, Role::Commenter, "capped by its person's role");
+        assert!(!workspace_control_role_allowed(bobs.role));
+        assert_eq!(
+            answer(&bobs, &tree, &notes, ActionKind::Undoable),
+            Answer::Deny,
+            "the agent changes nothing its person may not"
+        );
+
+        let membership = tree.shared();
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(membership.clone()),
+            None,
+        );
+        assert_eq!(
+            state.revalidate_admission(&route, &bobs).unwrap().role,
+            Role::Commenter,
+            "revalidation resolves the same role"
+        );
+        assert!(state.revalidate_admission(&route, &scribe).is_ok());
+
+        // Removing the person ends their agent's session at once.
+        assert!(membership.write().workspaces[0].dismiss(&bob));
+        assert!(
+            state.revalidate_admission(&route, &bobs).is_err(),
+            "revoking the person cuts their agent off"
+        );
+        assert!(state.revalidate_admission(&route, &scribe).is_ok());
+
+        // Revoking the agent's admission ends every session it runs.
+        for id in &operator {
+            assert!(membership.write().workspaces[0].revoke_grant(id));
+        }
+        assert!(
+            state.revalidate_admission(&route, &scribe).is_err(),
+            "revoking the agent cuts it off"
+        );
+        assert!(state.revalidate_admission(&route, &reader).is_ok());
     }
 
     #[tokio::test(flavor = "current_thread")]

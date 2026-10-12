@@ -380,6 +380,9 @@ struct ApartWindow {
     /// The screen shows another stretch than the lane's last draw did: the
     /// strip is panning, and groups off screen replay their drawings.
     panning: bool,
+    /// `(y0, y1)` of the lane's clip in the row's coordinates: nothing the
+    /// lane draws reaches past them.
+    rows: (f64, f64),
 }
 
 /// Whether `scene` draws an image whose pixels are not in it: a client's
@@ -400,6 +403,9 @@ struct ApartDrawing {
     rect: Rect,
     transform: Affine,
     scene: Scene,
+    /// The damage parts the drawing marked ([`crate::scene_parts`]), which
+    /// a replay marks again.
+    parts: Option<crate::scene_parts::SectionParts>,
     /// The drawing put a secret on screen; a replay notes it again.
     shows_secret: bool,
 }
@@ -2112,10 +2118,35 @@ impl GroupRow {
         true
     }
 
+    /// The pan that brings `group_id` wholly into view, aimed at where the
+    /// group will be once the slot-width springs of it and the groups before
+    /// it have settled, not at where they are this frame.
+    ///
+    /// A window that has just opened grows from zero width over several
+    /// frames. Aiming at its first frames' rect ends the pan short of it, and
+    /// the host's edge-triggered framing (which keys on destination widths)
+    /// sees nothing change afterwards and never frames it again: the focused
+    /// new window is left off screen.
     fn scroll_target_for(&self, group_id: u64) -> Option<f64> {
         let g = self.groups.iter().find(|g| g.id == group_id)?;
+        // No layout pass has placed this group yet, so it has no position.
+        if !self.laid_group_ids.contains(&group_id) {
+            return None;
+        }
         let lane = self.lane_of_group(group_id).unwrap_or(0);
-        self.pan_of_lane(lane).scroll_target_for(g.get_rect())
+        let mut rect = g.get_rect();
+        let mut shift = 0.0;
+        for earlier in &self.groups {
+            if earlier.id == group_id {
+                break;
+            }
+            if self.lane_of_group(earlier.id).unwrap_or(0) == lane {
+                shift += earlier.dest_width_px() - earlier.layout_width_px();
+            }
+        }
+        let own = g.dest_width_px() - g.layout_width_px();
+        rect = Rect::new(rect.x0 + shift, rect.y0, rect.x1 + shift + own, rect.y1);
+        self.pan_of_lane(lane).scroll_target_for(rect)
     }
 
     /// Whether, in any run, one group is severed by the viewport's left
@@ -3738,11 +3769,12 @@ impl Widget for GroupRow {
             }
             // The stretch of the canvas this draw's pan shows: the
             // viewport, moved by the shift that took the groups there.
-            self.apart_window = unbake.then(|| self.apart_window_of_lane(k, viewport, shift));
             let clip = Rect {
                 x1: clip_right,
                 ..Self::drawn_bounds(viewport)
             };
+            self.apart_window =
+                unbake.then(|| self.apart_window_of_lane(k, viewport, shift, (clip.y0, clip.y1)));
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
@@ -4277,8 +4309,15 @@ impl GroupRow {
 
     /// What of lane `k`'s canvas the screen shows, its `viewport` moved by
     /// `shift`, and whether that is another stretch than its last canvas
-    /// draw showed; remembered for the next draw.
-    fn apart_window_of_lane(&mut self, k: usize, viewport: Rect, shift: f64) -> ApartWindow {
+    /// draw showed (remembered for the next draw); `rows` is the lane's
+    /// clip, top to bottom.
+    fn apart_window_of_lane(
+        &mut self,
+        k: usize,
+        viewport: Rect,
+        shift: f64,
+        rows: (f64, f64),
+    ) -> ApartWindow {
         let span = (viewport.x0 + shift, viewport.x1 + shift);
         let bits = |(x0, x1): (f64, f64)| (x0.to_bits(), x1.to_bits());
         let last = self.apart_spans.iter_mut().find(|(lane, _)| *lane == k);
@@ -4289,7 +4328,11 @@ impl GroupRow {
             Some((_, last)) => *last = span,
             None => self.apart_spans.push((k, span)),
         }
-        ApartWindow { span, panning }
+        ApartWindow {
+            span,
+            panning,
+            rows,
+        }
     }
 
     /// Draw group `i` of a row drawn in canvas coordinates, of which the
@@ -4318,6 +4361,18 @@ impl GroupRow {
         let (id, rect) = (self.groups[i].id, self.groups[i].get_rect());
         let reach = rect.inflate(GROUP_SPRITE_REACH_PX, 0.0);
         let on_screen = reach.x1 > window.span.0 && reach.x0 < window.span.1;
+        // The group is a damage part of the strip: a presenter that keeps
+        // the strip's pixels rasterises only where a group's drawing changed
+        // (a window off screen that changed while the strip rested: none of
+        // the screen). Everything it paints stays inside its sprites' reach
+        // and the lane's clip.
+        let key = crate::scene_parts::PartKey::new("ui.strip-group", id);
+        let bounds = vec![transform.transform_rect_bbox(Rect::new(
+            reach.x0,
+            window.rows.0,
+            reach.x1,
+            window.rows.1,
+        ))];
         let kept = self
             .apart_drawings
             .iter()
@@ -4328,7 +4383,14 @@ impl GroupRow {
             && drawing.rect == rect
             && drawing.transform == transform
         {
-            scene.append(&drawing.scene, Some(Affine::IDENTITY));
+            crate::scene_parts::part(scene, key, bounds, |scene| {
+                crate::scene_parts::append(
+                    scene,
+                    &drawing.scene,
+                    drawing.parts.as_ref(),
+                    Some(Affine::IDENTITY),
+                );
+            });
             if drawing.shows_secret {
                 crate::secret_paint::note_secret_painted();
             }
@@ -4341,20 +4403,31 @@ impl GroupRow {
         local.reset();
         crate::backdrop::nest_scene(&local);
         let secrets = crate::secret_paint::SecretPaint::begin();
-        self.groups[i].draw(&mut local, transform, tr, theme, presence);
+        let group = &mut self.groups[i];
+        let ((), parts) = crate::scene_parts::record(&mut local, |local| {
+            group.draw(local, transform, tr, theme, presence);
+        });
         let shows_secret = secrets.finish();
         // A drawing that carries a blurred material is drawn every frame:
         // replayed, the material would lose its backdrop. So is one that
         // draws pixels living outside it (a client's GPU buffer): those are
         // valid only for the frame that drew them, and a replay could read a
         // buffer its client already got back.
-        let carries_material = crate::backdrop::append_nested(scene, &local, Affine::IDENTITY) > 0;
+        let carries_material = crate::scene_parts::part(scene, key, bounds, |scene| {
+            crate::scene_parts::append_with(
+                scene,
+                parts.as_ref(),
+                Some(Affine::IDENTITY),
+                |scene| crate::backdrop::append_nested(scene, &local, Affine::IDENTITY),
+            )
+        }) > 0;
         if !carries_material && !draws_external_pixels(&local) {
             self.apart_drawings.push(ApartDrawing {
                 id,
                 rect,
                 transform,
                 scene: local,
+                parts,
                 shows_secret,
             });
         }
@@ -5973,6 +6046,42 @@ mod tests {
     }
 
     #[test]
+    fn the_reveal_target_of_a_group_still_growing_is_where_it_will_end() {
+        // A new window's slot grows from zero width. The pan toward it
+        // must aim at the finished layout, not at the first frames' rect.
+        let layout = |animate: bool| {
+            let (mut row, _taffy, _root) =
+                make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4], &[5]]);
+            row.set_rect_for_test(Rect::new(0.0, 0.0, 700.0, 600.0));
+            if animate {
+                row.groups
+                    .last_mut()
+                    .expect("groups")
+                    .start_spawn_animation();
+                let (relaid, _t, _r) = relayout_row_owned(row, 700.0);
+                row = relaid;
+                row.set_rect_for_test(Rect::new(0.0, 0.0, 700.0, 600.0));
+            }
+            row
+        };
+        let settled = layout(false);
+        let growing = layout(true);
+        let last = growing.groups.last().expect("groups");
+        assert!(
+            last.dest_width_px() > last.layout_width_px() + 1.0,
+            "the fixture must still be growing: {} of {}",
+            last.layout_width_px(),
+            last.dest_width_px()
+        );
+        let id = last.id;
+        assert_eq!(
+            growing.scroll_target_for(id),
+            settled.scroll_target_for(id),
+            "the pan aims at the finished layout"
+        );
+    }
+
+    #[test]
     fn scroll_group_into_view_pans_or_eases_only_when_offscreen() {
         fn scroll_group_into_view_pans_to_reveal_offscreen_group() {
             let (mut row, _taffy, _root) =
@@ -7131,6 +7240,69 @@ mod tests {
             row.apart_drawings.is_empty(),
             "a screen-space draw drops the canvas drawings"
         );
+    }
+
+    /// Each window group of a strip drawn in canvas coordinates is a damage
+    /// part of the strip's drawing: drawn again, panned (groups off screen
+    /// replaying their drawings) or held still, the strip shows no damage,
+    /// and a change to one group damages only where that group can paint.
+    #[test]
+    fn each_group_of_a_strip_drawn_in_canvas_coordinates_is_a_damage_part() {
+        fn draw(
+            row: &mut GroupRow,
+            text: &mut TextRenderer,
+        ) -> (Scene, crate::scene_parts::SectionParts) {
+            let mut scene = Scene::new();
+            let ((), parts) = crate::scene_parts::record(&mut scene, |scene| {
+                row.draw(
+                    scene,
+                    Affine::IDENTITY,
+                    text,
+                    &Theme::dark(),
+                    &PresenceCtx::empty(),
+                );
+            });
+            (scene, parts.expect("the strip's parts are well nested"))
+        }
+        let text = &mut TextRenderer::new();
+        let mut row = strip_at(8, 800.0, 0.0, 1000);
+        relayout_strip(&mut row, 800.0);
+        let _scope = crate::retained_present::RetainedScene::begin(true);
+        let (first, first_parts) = draw(&mut row, text);
+        let (again, again_parts) = draw(&mut row, text);
+        assert_eq!(
+            crate::scene_parts::damage(&first, &first_parts, &again, &again_parts),
+            Ok(Vec::new())
+        );
+        row.set_scroll_x_for_test(1300.0);
+        relayout_strip(&mut row, 800.0);
+        let (panned, panned_parts) = draw(&mut row, text);
+        assert!(
+            !row.culled_groups.is_empty(),
+            "groups off screen replay their drawings"
+        );
+        assert_eq!(
+            crate::scene_parts::damage(&first, &first_parts, &panned, &panned_parts),
+            Ok(Vec::new()),
+            "a replayed group marks its part again"
+        );
+        let index = 5;
+        let focused = row.groups[index].focused();
+        let _ = row.groups[index].set_focused(!focused);
+        let (changed, changed_parts) = draw(&mut row, text);
+        let damage = crate::scene_parts::damage(&panned, &panned_parts, &changed, &changed_parts)
+            .expect("a group bounds its change");
+        assert!(!damage.is_empty(), "the group's focus edge changed");
+        let shift = row.canvas_shift();
+        let group = row.groups[index]
+            .get_rect()
+            .inflate(GROUP_SPRITE_REACH_PX, 0.0);
+        for rect in damage {
+            assert!(
+                rect.x0 >= group.x0 + shift - 1e-6 && rect.x1 <= group.x1 + shift + 1e-6,
+                "{rect:?} lies where group {index} paints ({group:?} shifted by {shift})"
+            );
+        }
     }
 
     /// A drawing of a client's GPU buffer (an image with no CPU pixels) is

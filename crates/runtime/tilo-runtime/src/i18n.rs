@@ -4,7 +4,7 @@
 
 use ui::i18n::{ArgValue, EmbeddedCatalog};
 
-ui::embedded_catalog!(pub(crate) fn, "device-consent-question", ["en-US", "de-DE"]);
+ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 
 /// The arguments of a message about `app` and `device`: each catalogue
 /// selects its own sentence on the device, since a spliced-in noun does not
@@ -53,12 +53,9 @@ mod tests {
 
     #[test]
     fn german_names_each_device_with_its_own_article() {
-        let catalog = EmbeddedCatalog::new(
-            "de-DE",
-            &[("de-DE", include_str!("../locales/de-DE.ftl"))],
-            "device-consent-question",
-        )
-        .with_pinned_locale("de-DE");
+        let catalog =
+            EmbeddedCatalog::new("de-DE", &[("de-DE", include_str!("../locales/de-DE.ftl"))])
+                .with_pinned_locale("de-DE");
         let ask = |device| catalog.t_args("device-consent-question", &device_args("Video", device));
         assert!(
             ask(tilo_capture::DeviceKind::Camera).ends_with("die Kamera verwenden?"),

@@ -255,11 +255,6 @@ pub trait SettingsSource: Send + Sync {
     fn dictionary_service(&self) -> Option<Arc<crate::personal_dictionary::Service>> {
         None
     }
-
-    /// Verified original profile identity permitted to migrate unscoped words.
-    fn dictionary_legacy_owner(&self) -> Option<[u8; 32]> {
-        None
-    }
 }
 
 /// Wakes the readers of a [`SettingsSource`] when its document changes.

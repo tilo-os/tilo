@@ -171,8 +171,7 @@ enum Command {
         history: bool,
     },
     /// The open windows in the desktop's own terms: workspace, strip, window
-    /// group, tab. Asked of the `windows` op; a compositor that predates it
-    /// is read through its state dump instead.
+    /// group, tab, as the `windows` op answers them.
     Windows {
         json: bool,
     },
@@ -1413,22 +1412,14 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
     0
 }
 
-/// Print `windows`' rows: the `windows` op's answer, or the rows read from
-/// the state dump a compositor without that op answered instead.
+/// Print the `windows` op's rows.
 fn print_windows(response: &serde_json::Value, json: bool) {
     let windows = response
         .get("answer")
         .and_then(|answer| answer.get("windows"))
         .and_then(serde_json::Value::as_array)
         .cloned()
-        .unwrap_or_else(|| {
-            windows_of(
-                response
-                    .get("state")
-                    .and_then(|state| state.get("workspace_tree"))
-                    .unwrap_or(&serde_json::Value::Null),
-            )
-        });
+        .unwrap_or_default();
     if json {
         println!("{}", serde_json::Value::Array(windows));
     } else if windows.is_empty() {
@@ -1457,89 +1448,6 @@ fn print_windows(response: &serde_json::Value, json: bool) {
             );
         }
     }
-}
-
-/// The request to send instead when `response` says the socket does not know
-/// the op `cmd` sent: a compositor that predates `windows` answers it from its
-/// state dump. Its parser calls an unknown op a `parse_error`; the
-/// installer's and greeter's consoles call it `not_implemented`.
-fn fallback_request(cmd: &Command, response: &serde_json::Value) -> Option<&'static str> {
-    let code = response.get("err")?.get("code")?.as_str()?;
-    (matches!(cmd, Command::Windows { .. }) && matches!(code, "parse_error" | "not_implemented"))
-        .then_some(r#"{"op":"state_dump"}"#)
-}
-
-/// One row per tab in `workspace_tree`: where it is, which app shows it, and
-/// whether it is the tab in front of the active workspace's active group.
-/// How `windows` reads a compositor that predates the `windows` op.
-fn windows_of(tree: &serde_json::Value) -> Vec<serde_json::Value> {
-    let str_or_id = |value: &serde_json::Value, name: &str| {
-        value
-            .get(name)
-            .and_then(serde_json::Value::as_str)
-            .filter(|text| !text.is_empty())
-            .map_or_else(
-                || value.get("id").cloned().unwrap_or_default(),
-                |text| serde_json::Value::String(text.to_string()),
-            )
-    };
-    let active_workspace = tree.get("active").cloned().unwrap_or_default();
-    let mut rows = Vec::new();
-    let workspaces = tree.get("workspaces").and_then(serde_json::Value::as_array);
-    for workspace in workspaces.into_iter().flatten() {
-        let workspace_active = workspace.get("id") == Some(&active_workspace);
-        let workspace_key = workspace
-            .get("id")
-            .map(ToString::to_string)
-            .unwrap_or_default();
-        let active_strip = tree
-            .get("active_strip")
-            .and_then(|strips| strips.get(&workspace_key));
-        let strips = workspace
-            .get("strips")
-            .and_then(serde_json::Value::as_array);
-        for strip in strips.into_iter().flatten() {
-            let strip_key = strip.get("id").map(ToString::to_string).unwrap_or_default();
-            let strip_active = workspace_active && strip.get("id") == active_strip;
-            let active_group = tree
-                .get("active_group")
-                .and_then(|groups| groups.get(&strip_key));
-            let groups = strip
-                .get("window_groups")
-                .and_then(serde_json::Value::as_array);
-            for group in groups.into_iter().flatten() {
-                let group_active = strip_active && group.get("id") == active_group;
-                let tabs = group.get("tabs").and_then(serde_json::Value::as_array);
-                for tab in tabs.into_iter().flatten() {
-                    let tile = tab.get("tile").cloned().unwrap_or_default();
-                    let (kind, app_id) = match &tile {
-                        serde_json::Value::String(kind) => (kind.clone(), serde_json::Value::Null),
-                        serde_json::Value::Object(map) => map.iter().next().map_or_else(
-                            || (String::new(), serde_json::Value::Null),
-                            |(kind, body)| {
-                                (
-                                    kind.clone(),
-                                    body.get("app_id").cloned().unwrap_or_default(),
-                                )
-                            },
-                        ),
-                        _ => (String::new(), serde_json::Value::Null),
-                    };
-                    rows.push(serde_json::json!({
-                        "workspace": str_or_id(workspace, "name"),
-                        "strip": str_or_id(strip, "name"),
-                        "group": group.get("id"),
-                        "tab": tab.get("id"),
-                        "kind": kind,
-                        "app_id": app_id,
-                        "title": tab.get("title"),
-                        "active": group_active && group.get("active_tab") == tab.get("id"),
-                    }));
-                }
-            }
-        }
-    }
-    rows
 }
 
 /// Print the CLI usage banner to stdout. Mirrors the module-level
@@ -1755,17 +1663,6 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let response = match fallback_request(&invocation.command, &response) {
-        Some(fallback) => match round_trip(&mut stream, fallback) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("tilo-control: socket round-trip: {e}");
-                return ExitCode::from(2);
-            }
-        },
-        None => response,
-    };
-
     let code = print_response(&invocation.command, &response);
     if code == 0 {
         ExitCode::SUCCESS
@@ -2488,75 +2385,6 @@ mod tests {
             parse(&["actions", "session", "extra"]),
             Err(ParseError::Usage(_))
         ));
-    }
-
-    /// `windows` reads the tree in the desktop's own terms, and marks the
-    /// tab in front of the active workspace's active group.
-    #[test]
-    fn windows_lists_every_tab_with_its_app_and_place() {
-        let tree = serde_json::json!({
-            "active": 1,
-            "active_strip": {"1": 10},
-            "active_group": {"10": 100},
-            "workspaces": [{
-                "id": 1, "name": "Home",
-                "strips": [{
-                    "id": 10, "name": "",
-                    "window_groups": [
-                        {"id": 100, "active_tab": 1000, "tabs": [
-                            {"id": 1000, "title": "Notes",
-                             "tile": {"Foreign": {"app_id": "so.tilo.notes", "surface_id": 3}}},
-                            {"id": 1001, "title": "Activity", "tile": "WorkspaceActivity"}
-                        ]},
-                        {"id": 101, "active_tab": 1010, "tabs": [
-                            {"id": 1010, "title": "Terminal",
-                             "tile": {"LocalApp": {"app_id": "so.tilo.terminal", "label": "Terminal"}}}
-                        ]}
-                    ]
-                }]
-            }]
-        });
-        let rows = windows_of(&tree);
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0]["app_id"], "so.tilo.notes");
-        assert_eq!(rows[0]["workspace"], "Home");
-        assert_eq!(rows[0]["strip"], 10, "an unnamed strip is named by its id");
-        assert_eq!(rows[0]["active"], true);
-        assert_eq!(rows[1]["kind"], "WorkspaceActivity");
-        assert_eq!(rows[1]["active"], false);
-        assert_eq!(rows[2]["app_id"], "so.tilo.terminal");
-        assert_eq!(
-            rows[2]["active"], false,
-            "only the active group's tab is in front"
-        );
-        assert!(windows_of(&serde_json::Value::Null).is_empty());
-    }
-
-    /// A compositor that predates the `windows` op is read through its
-    /// state dump; any other answer, refusals included, stands.
-    #[test]
-    fn windows_falls_back_to_the_state_dump_only_for_an_unknown_op() {
-        let windows = Command::Windows { json: false };
-        let err = |code: &str| serde_json::json!({ "err": { "code": code, "message": "" } });
-        for code in ["parse_error", "not_implemented"] {
-            assert_eq!(
-                fallback_request(&windows, &err(code)),
-                Some(r#"{"op":"state_dump"}"#)
-            );
-        }
-        assert_eq!(fallback_request(&windows, &err("not_permitted")), None);
-        assert_eq!(
-            fallback_request(
-                &windows,
-                &serde_json::json!({ "answer": { "windows": [] } })
-            ),
-            None
-        );
-        let dump = Command::StateDump {
-            pretty: false,
-            history: false,
-        };
-        assert_eq!(fallback_request(&dump, &err("parse_error")), None);
     }
 
     /// History is opt-in, beside `--pretty` and in any order.

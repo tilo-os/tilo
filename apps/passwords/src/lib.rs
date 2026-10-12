@@ -36,7 +36,7 @@ enum Vault {
 
 const CLOSED: &str = "the vault is not open in this window";
 
-ui::embedded_catalog!(pub(crate) static CATALOG, "passwords-credential-permission", ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VaultHealth {
@@ -196,17 +196,6 @@ impl PasswordsModel {
         match &mut self.store {
             Some(Vault::Shared(owner)) => owner.revoke_grant(grant),
             _ => self.edit(|store| store.revoke_grant(grant))?,
-        }
-        .map_err(|error| format!("could not revoke app access: {error:?}"))
-    }
-    /// Revoke all durable vault access for an application.
-    ///
-    /// # Errors
-    /// Returns an error if the vault cannot durably store the revocations.
-    pub fn revoke_all_app_grants(&mut self, app_id: &str) -> Result<usize, String> {
-        match &mut self.store {
-            Some(Vault::Shared(owner)) => owner.revoke_app(app_id),
-            _ => self.edit(|store| store.revoke_app_grants(app_id))?,
         }
         .map_err(|error| format!("could not revoke app access: {error:?}"))
     }

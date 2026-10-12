@@ -6,6 +6,10 @@ receiving route is qualified; codec/native-engine probes alone are insufficient.
 """
 import json
 import hashlib
+import importlib.util
+import os
+import stat
+import sys
 from pathlib import Path
 import platform
 import re
@@ -107,6 +111,9 @@ RECEIVING_DEPENDENCIES = tuple(
                  'packages', 'apps', 'cloud', 'service_sessions', 'service_contract', 'service_processes')) + tuple(
     '/usr/libexec/tilo-installer-source-fixture/' + name + '.py'
     for name in ('source', 'owned_gpt', 'bounded_native', 'flatpak_material', 'source_sessions'))
+# Schema 2 is the complete measured Python receiving closure. Schema 1
+# candidate Browser/CEF proofs are never sufficient for service admission.
+SERVICE_SCHEMA = 2
 ROUTE_KEYS = {'receiving_shell_path', 'receiving_shell_sha256',
               'receiving_entry_sha256', 'receiving_dependencies',
               'receiving_python_path', 'receiving_python_sha256',
@@ -129,7 +136,9 @@ def route_artifacts(root, shell_path, primitives):
     # redirect outside the admitted image. The target is measured independently.
     python_alias = root / 'usr/bin/python3'
     python = python_alias.resolve(strict=True)
-    require(python.parent == root / 'usr/bin', 'receiving Python escapes the image binary directory')
+    require(python.parent == root / 'usr/bin'
+            and re.fullmatch(r'python3(?:\.[0-9]+)?', python.name) is not None,
+            'receiving Python escapes the canonical image interpreter identity')
     require(regular(python, 256 * 1024 * 1024).st_mode & 0o111,
             'receiving Python is not executable')
     facts = {'receiving_shell_sha256': digest(shell, 256 * 1024 * 1024),
@@ -150,11 +159,15 @@ def produce(root, runner, primitives, sdk, qualify=False, evidence=None,
     if evidence is not None:
         require(type(evidence) is dict and ROUTE_KEYS <= set(evidence),
                 'saved service proof lacks qualified sandbox credential receiving route')
+        require(type(evidence.get('schema')) is int and evidence['schema'] == SERVICE_SCHEMA,
+                'unsupported measured receiving closure schema')
         candidate_evidence = {key: value for key, value in evidence.items() if key not in ROUTE_KEYS}
+        candidate_evidence['schema'] = 1
         candidate = qualify_receivers(root, runner, primitives, sdk,
                                       evidence=candidate_evidence, qualifier=qualifier)
         facts = route_artifacts(root, evidence['receiving_shell_path'], primitives)
-        proof = dict(candidate, receiving_shell_path=evidence['receiving_shell_path'], **facts)
+        proof = dict(candidate, schema=SERVICE_SCHEMA,
+                     receiving_shell_path=evidence['receiving_shell_path'], **facts)
         require(proof == evidence, 'installed receiving route differs from qualified consumers')
         return proof
     if qualify:
@@ -283,10 +296,26 @@ def qualify_receivers(root, runner, primitives, sdk, qualify=False, evidence=Non
 
 
 def native_route_qualify(command, env, request):
-    # The source/receiving coordinator owns genuine disposable GPT/PAM and
-    # namespace lifetimes. An image-only probe has no owned candidate/source
-    # context and may never fabricate it or start an unowned second driver.
-    raise ValueError('service route qualification requires the canonical owned receiving coordinator')
+    # Fixed image-controlled code checks the existing owned candidate, evidence
+    # and outer namespace witness before starting the canonical coordinator.
+    path = Path('/usr/libexec/tilo-installer-receive-fixture/service_contract.py')
+    require(json.loads(request, object_pairs_hook=unique).get('root') == '/',
+            'service qualification requires the actual owned receiving image')
+    require(os.getuid() == os.geteuid() == 0,
+            'service route qualification requires the canonical owned receiving coordinator')
+    for edge in (path, *path.parents):
+        info = edge.lstat()
+        require(info.st_uid == 0 and not info.st_mode & 0o022
+                and not stat.S_ISLNK(info.st_mode), 'service bridge is not image controlled')
+    saved = list(sys.path)
+    try:
+        sys.path.insert(0, str(path.parent))
+        spec = importlib.util.spec_from_file_location('owned_service_contract', path)
+        bridge = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bridge)
+        return bridge.owned_bridge(command, env, request)
+    finally:
+        sys.path[:] = saved
 
 
 def qualify_receiving_route(root, sdk, candidate, primitives, shell_path,
@@ -331,4 +360,4 @@ def qualify_receiving_route(root, sdk, candidate, primitives, shell_path,
             and value == expected, 'actual sandbox receiving route did not complete')
     require(route_artifacts(root, shell_path, primitives) == facts,
             'receiving Shell or fixed Python closure changed during qualification')
-    return dict(candidate, receiving_shell_path=shell_path, **facts)
+    return dict(candidate, schema=SERVICE_SCHEMA, receiving_shell_path=shell_path, **facts)

@@ -1280,27 +1280,8 @@ mod save_status_fixture {
         ) -> taffy::NodeId {
             tree.new_leaf(taffy::Style::default()).unwrap()
         }
-        fn apply_layout(
-            &mut self,
-            _: &taffy::TaffyTree<()>,
-            _: taffy::NodeId,
-            _: vello::kurbo::Point,
-        ) {
-        }
-        fn draw(
-            &mut self,
-            _: &mut vello::Scene,
-            _: vello::kurbo::Affine,
-            _: &mut tilo_ui::TextRenderer,
-            _: &tilo_ui::Theme,
-            _: &tilo_ui::presence::PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "Status"
-        }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
         }
         fn settle(&mut self, _: &mut tilo_ui::widget::Edits<'_>, _: &automerge::ObjId) {
             // Only settlement holds an exclusive record loan; sync/update
@@ -1627,27 +1608,8 @@ mod paired_local {
         ) -> taffy::NodeId {
             tree.new_leaf(taffy::Style::default()).unwrap()
         }
-        fn apply_layout(
-            &mut self,
-            _: &taffy::TaffyTree<()>,
-            _: taffy::NodeId,
-            _: vello::kurbo::Point,
-        ) {
-        }
-        fn draw(
-            &mut self,
-            _: &mut vello::Scene,
-            _: vello::kurbo::Affine,
-            _: &mut tilo_ui::TextRenderer,
-            _: &tilo_ui::Theme,
-            _: &tilo_ui::presence::PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "Local pair"
-        }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
         }
         fn is_focusable(&self) -> bool {
             true

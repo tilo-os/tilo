@@ -1487,13 +1487,6 @@ impl FrameHarness {
         Some(address)
     }
 
-    pub fn confirm_pending_history_control(
-        &mut self,
-        token: &crate::history_mode::pending_controls::ContinuationToken,
-    ) -> Option<crate::history_mode::pending_controls::PendingControlStatus> {
-        self.continue_pending_history_control_checked(token, true)
-    }
-
     /// Cancel one exact retained control without dispatching it.
     pub fn cancel_pending_history_control(
         &mut self,
@@ -3251,6 +3244,7 @@ impl FrameHarness {
                 history.restore_focus(&self.node_map, &self.bindings)
             });
         } else {
+            let admitted = self.history_focus_admission();
             let allowed: Vec<_> = self
                 .node_map
                 .keys()
@@ -3267,16 +3261,10 @@ impl FrameHarness {
                                 .is_some_and(|binding| binding.instance_id == instance)
                                 && self.app_focus_eligible(node)
                         }))
-                        && crate::history_mode::embedded::allows_focus(
-                            self.root.as_ref(),
-                            node,
-                            &self.taffy,
-                        )
-                        && self.history.as_ref().is_none_or(|history| {
-                            !history.has_saved_focus() || history.owns_node(node, &self.taffy)
-                        })
+                        && admitted(node)
                 })
                 .collect();
+            drop(admitted);
             // An exact owner restored above outranks unrelated retained focus
             // flags (several mounted editors may initially report focus).
             self.focused = self.focused.filter(|node| {
@@ -3722,16 +3710,39 @@ impl FrameHarness {
         order
     }
 
+    /// Whether embedded History and a History holding saved focus leave a
+    /// node free to take focus, for asking of every node in one pass: each
+    /// History's subtrees are walked once, not once per node.
+    fn history_focus_admission(&self) -> impl Fn(NodeId) -> bool + '_ {
+        let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
+            self.root.as_ref(),
+            &self.taffy,
+        );
+        let saved = self
+            .history
+            .as_ref()
+            .filter(|history| history.has_saved_focus())
+            .map(|history| history.owned_nodes(&self.taffy));
+        move |node| {
+            restrictions.allows(node) && saved.as_ref().is_none_or(|owned| owned.contains(&node))
+        }
+    }
+
     fn history_app_focus_order(
         &self,
         root: NodeId,
         restrictions: &crate::history_mode::embedded::FocusRestrictions,
     ) -> (Vec<NodeId>, bool) {
+        // While History captures input only its own nodes take focus; walk
+        // them once for this recomputation, not once per node.
+        let owned = self
+            .history
+            .as_ref()
+            .filter(|history| history.captures_input())
+            .map(|history| history.owned_nodes(&self.taffy));
         crate::focus_navigation::mapped_order(root, &self.taffy, |node| {
             let allowed = restrictions.allows(node)
-                && self.history.as_ref().is_none_or(|history| {
-                    !history.captures_input() || history.owns_node(node, &self.taffy)
-                });
+                && owned.as_ref().is_none_or(|owned| owned.contains(&node));
             self.inspect_node(node, |widget| {
                 (
                     allowed && widget.is_focusable() && widget.is_enabled(),
@@ -3747,6 +3758,7 @@ impl FrameHarness {
         &mut self,
         before_layout: Option<crate::widget::layout::CompositionFocus>,
     ) {
+        let _profile = tilo_resource::profiling::Phase::start("ui.focus_order");
         let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
             self.root.as_ref(),
             &self.taffy,
@@ -4268,6 +4280,7 @@ impl FrameHarness {
             // clear competing mount/restoration flags, or a preceding editor
             // can consume its first key. Keep the selected compound editor's
             // ancestors/children, and never blur a history-suspended caret.
+            let admitted = self.history_focus_admission();
             let competing: Vec<_> = self
                 .node_map
                 .keys()
@@ -4276,14 +4289,7 @@ impl FrameHarness {
                     candidate != target
                         && !self.bindings.is_descendant(candidate, target)
                         && !self.bindings.is_descendant(target, candidate)
-                        && crate::history_mode::embedded::allows_focus(
-                            self.root.as_ref(),
-                            candidate,
-                            &self.taffy,
-                        )
-                        && self.history.as_ref().is_none_or(|history| {
-                            !history.has_saved_focus() || history.owns_node(candidate, &self.taffy)
-                        })
+                        && admitted(candidate)
                         && self
                             .inspect_node(candidate, |widget| {
                                 widget.is_focusable() && widget.is_focused()
@@ -4291,6 +4297,7 @@ impl FrameHarness {
                             .unwrap_or(false)
                 })
                 .collect();
+            drop(admitted);
             for competing in competing {
                 let _ = self.mutate_node(competing, |widget| widget.set_focus(false));
             }
@@ -5376,13 +5383,6 @@ impl FrameHarness {
                 }
                 ControlBindingKind::CollaborativeDocument(_)
                 | ControlBindingKind::SemanticAction(_) => None,
-                ControlBindingKind::LegacyDocumentPath(path) => Some(NativeAppIssue {
-                    control: binding.control_id,
-                    code: "legacy-document-path".into(),
-                    message: format!(
-                        "direct document path {path:?} bypasses the resource/action door"
-                    ),
-                }),
                 ControlBindingKind::LegacyCallback => Some(NativeAppIssue {
                     control: binding.control_id,
                     code: "legacy-callback".into(),
@@ -9257,16 +9257,6 @@ mod tests {
         ) -> NodeId {
             taffy.leaf_node(taffy::Style::default())
         }
-        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
-        }
         fn children(&self) -> Vec<&dyn Widget> {
             self.children
                 .iter()
@@ -9291,9 +9281,6 @@ mod tests {
         }
         fn name(&self) -> &str {
             self.name
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
     }
 
@@ -9490,16 +9477,6 @@ mod tests {
         ) -> NodeId {
             taffy.widget_leaf(Style::default(), node_map, self)
         }
-        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
-        }
         fn needs_animation_frame(&self) -> bool {
             let now = crate::time::now();
             let until = self
@@ -9511,9 +9488,6 @@ mod tests {
         }
         fn name(&self) -> &str {
             "Entrance"
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
     }
 
@@ -10592,16 +10566,6 @@ mod tests {
             );
         }
 
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
-        }
-
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if self.focused
                 && matches!(
@@ -10699,16 +10663,6 @@ mod tests {
                 origin.x + f64::from(layout.size.width),
                 origin.y + f64::from(layout.size.height),
             );
-        }
-
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
         }
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -11797,13 +11751,7 @@ mod tests {
             dyn crate::record::capability::RecordScoped
         );
 
-        crate::testing::inert_widget_methods!(
-            leaf_layout,
-            apply_layout,
-            draw,
-            get_rect,
-            name = "RecordRootProbe"
-        );
+        crate::testing::inert_widget_methods!(leaf_layout, name = "RecordRootProbe");
     }
 
     impl crate::record::capability::RecordScoped for RecordRootProbe {
@@ -12172,16 +12120,6 @@ mod a11y_driver_tests {
         ) -> NodeId {
             taffy.widget_leaf(taffy::Style::default(), node_map, self)
         }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: vello::kurbo::Point) {}
-        fn draw(
-            &mut self,
-            _sc: &mut Scene,
-            _tr: vello::kurbo::Affine,
-            _tx: &mut crate::text_render::TextRenderer,
-            _th: &crate::theme::Theme,
-            _pr: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "Strip"
         }
@@ -12540,16 +12478,6 @@ mod undo_driver_tests {
             self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
-        fn draw(
-            &mut self,
-            _s: &mut Scene,
-            _t: Affine,
-            _tr: &mut TextRenderer,
-            _th: &Theme,
-            _p: &PresenceCtx,
-        ) {
-        }
-
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             use automerge::{ReadDoc, transaction::Transactable};
 
@@ -12806,16 +12734,6 @@ mod dispatched_action_driver_tests {
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
-
-        fn draw(
-            &mut self,
-            _s: &mut Scene,
-            _t: Affine,
-            _tr: &mut TextRenderer,
-            _th: &Theme,
-            _p: &PresenceCtx,
-        ) {
         }
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -13271,15 +13189,6 @@ mod prepared_driver_tests {
                 origin.x + f64::from(layout.size.width),
                 origin.y + f64::from(layout.size.height),
             );
-        }
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
         }
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if let WindowEvent::KeyboardInput { event, .. } = event
@@ -13912,16 +13821,6 @@ mod framed_tests {
             self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
-        }
-
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if matches!(
                 event,
@@ -14033,16 +13932,6 @@ mod framed_tests {
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
-
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
         }
 
         fn get_rect(&self) -> Rect {

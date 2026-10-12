@@ -32,8 +32,7 @@ use crate::settings::Settings;
 /// The browser's Fluent catalog.
 pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
 
-static CATALOG: EmbeddedCatalog =
-    EmbeddedCatalog::new("en-US", LOCALES, "browser-add-bookmark").with_system_locale();
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
 
 /// The browser's document: collaborative bookmarks, the preferences, and
 /// the origins tracker protection is off for.
@@ -427,6 +426,37 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
             return Ok(Effected::value(
                 serde_json::json!({"status":"opening", "authenticated":false}),
             ));
+        }
+        if let BrowserEffect::RetryForgetServiceSession { session_id } = &effect {
+            #[cfg(target_os = "linux")]
+            {
+                let person = self
+                    .service_cx
+                    .as_ref()
+                    .and_then(|source| source.me())
+                    .and_then(crate::service_sessions::identity)
+                    .ok_or("This account needs to be connected again")?;
+                return Ok(Effected::value(
+                    self.page_mut()
+                        .retry_forget_service_session(session_id, person)?,
+                ));
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = session_id;
+                return Err("Local account forgetting needs the native backend".into());
+            }
+        }
+        if let BrowserEffect::ForgetServiceSession { session_id } = &effect {
+            #[cfg(target_os = "linux")]
+            return Ok(Effected::value(
+                self.page_mut().forget_service_session(session_id)?,
+            ));
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = session_id;
+                return Err("Local account forgetting needs the native backend".into());
+            }
         }
         let invocation = cx.invocation().unwrap_or_default();
         match self.page_mut().admit(invocation, effect.operation())? {

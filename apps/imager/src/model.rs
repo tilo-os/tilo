@@ -743,18 +743,6 @@ pub struct InstallProfile {
     pub prepared_setup: Option<PreparedSetupExpectation>,
 }
 
-/// 1–63 letters, digits or hyphens, without a hyphen at either end: one DNS
-/// label, which is also what `<hostname>.local` needs.
-pub(crate) fn hostname_is_valid(hostname: &str) -> bool {
-    !hostname.is_empty()
-        && hostname.len() <= 63
-        && hostname
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
-        && !hostname.starts_with('-')
-        && !hostname.ends_with('-')
-}
-
 /// The hostname a profile starts with. A profile that still carries it has not
 /// chosen one, so a written disk keeps the image's own name.
 pub const DEFAULT_HOSTNAME: &str = "tilo";
@@ -777,32 +765,10 @@ impl Default for InstallProfile {
     }
 }
 
-const INSTALLER_KEYBOARDS: &[&str] = &[
-    "us", "gb", "de", "fr", "es", "it", "pt", "br", "ru", "se", "no", "dk", "ch", "pl", "dvorak",
-    "colemak",
-];
-
-/// Exact locale catalog supported by both the host customizer and the
-/// installed OS. Keep this in the image source so the host builds, live
-/// installer and privileged backend all consume one reviewed contract.
-pub(crate) const INSTALLER_LOCALE_CATALOG: &str =
-    include_str!("../../../os/usr/share/tilo/installer-locales.txt");
-
-pub(crate) fn installer_locales() -> impl Iterator<Item = &'static str> {
-    INSTALLER_LOCALE_CATALOG
-        .lines()
-        .map(str::trim)
-        .filter(|locale| !locale.is_empty())
-}
-
 impl InstallProfile {
-    /// Validate the exact secret-free subset accepted by the live installer.
-    ///
-    /// This intentionally mirrors `installer::media_profile` locally: the
-    /// imager cannot depend on the graphical installer crate without pulling a
-    /// second application into every host build. Keeping the checks beside the
-    /// media serializer still lets us reject a bad profile before spending time
-    /// flashing it; the live installer repeats every check across the trust
+    /// Validate the exact secret-free subset accepted by the live installer,
+    /// with the rules it applies, so a bad profile is refused before
+    /// flashing. The live installer repeats every check across the trust
     /// boundary.
     ///
     /// # Errors
@@ -810,89 +776,36 @@ impl InstallProfile {
     /// Returns a field-specific message when any transported value would be
     /// rejected by the live installer.
     pub fn validate_media_profile(&self) -> Result<(), String> {
+        use install_profile_model as rules;
         if (!self.device_label.is_empty() && self.device_label.trim().is_empty())
             || self.device_label.len() > 64
             || self.device_label.chars().any(char::is_control)
         {
             return Err("Device name must be at most 64 bytes without control characters.".into());
         }
-        if !hostname_is_valid(self.hostname.trim()) {
+        if !rules::valid_hostname(&self.hostname) {
             return Err(
                 "Hostname must be 1–63 letters, numbers or hyphens, without a hyphen at either end."
                     .into(),
             );
         }
-
-        let username = self.user.username.trim();
-        let username_bytes = username.as_bytes();
-        let reserved = matches!(
-            username,
-            "root"
-                | "bin"
-                | "daemon"
-                | "adm"
-                | "lp"
-                | "sync"
-                | "shutdown"
-                | "halt"
-                | "mail"
-                | "operator"
-                | "games"
-                | "ftp"
-                | "nobody"
-                | "dbus"
-                | "polkitd"
-                | "sshd"
-                | "chrony"
-                | "tss"
-                | "greetd"
-                | "tilo"
-        );
-        if username_bytes.is_empty()
-            || username_bytes.len() > 32
-            || !username_bytes
-                .first()
-                .is_some_and(|c| matches!(c, b'a'..=b'z' | b'_'))
-            || !username_bytes
-                .iter()
-                .skip(1)
-                .all(|c| matches!(c, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
-            || reserved
-        {
+        if !rules::valid_username(self.user.username.trim()) {
             return Err(
                 "Username must be a non-reserved Linux account name of at most 32 characters."
                     .into(),
             );
         }
-
-        let full_name = self.user.full_name.trim();
-        if full_name.chars().count() > 100
-            || full_name
-                .chars()
-                .any(|c| c.is_control() || matches!(c, ':' | '\n' | '\r'))
-        {
+        if !rules::valid_full_name(self.user.full_name.trim()) {
             return Err("Full name must be at most 100 characters and contain no control characters or colon."
                 .into());
         }
-
-        let locale = self.locale.trim();
-        if !installer_locales().any(|supported| supported == locale) {
+        if !rules::valid_locale(self.locale.trim()) {
             return Err("Choose a language and locale supported by Tilo.".into());
         }
-
-        if !INSTALLER_KEYBOARDS.contains(&self.keyboard.trim()) {
+        if !rules::KEYBOARDS.contains(&self.keyboard.trim()) {
             return Err("Keyboard layout is not supported by the Tilo installer.".into());
         }
-
-        let timezone = self.timezone.trim();
-        if timezone.is_empty()
-            || timezone.len() > 128
-            || timezone.starts_with('/')
-            || timezone.contains("..")
-            || !timezone
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'/' | b'+' | b'-'))
-        {
+        if !rules::valid_timezone_name(self.timezone.trim()) {
             return Err("Time zone must be a safe IANA name such as Europe/Berlin.".into());
         }
         if self

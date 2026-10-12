@@ -5,11 +5,13 @@ consumer capability and cannot be saved as one before real route observations
 and all existing outer retirement checks complete.
 """
 import importlib.util
+import fcntl
 import json
 import os
 from pathlib import Path
 import re
 import stat
+import time
 import tomllib
 
 from semantic import bounded_command
@@ -82,8 +84,46 @@ def module(path):
     return result
 
 
+def owned_bridge(command, env, raw):
+    """Execute only in the existing disposable owner's admitted layout.
+
+    No image-only caller may construct a second source/receiving lifetime. The
+    initial namespace handle and private evidence belong to the outer owner.
+    """
+    request = decode(raw)
+    require(os.getuid() == os.geteuid() == 0, 'service bridge requires owned root')
+    require(command == [request['receiving_python_path'], '-I',
+                        '/usr/libexec/tilo-installer-receive-fixture/receive.py',
+                        '--service-session-qualification']
+            and env == {'PATH': '/usr/bin:/bin', 'LANG': 'C', 'LC_ALL': 'C'},
+            'service bridge is not the canonical owned coordinator')
+    for path, mode in ((Path('/owned'), None), (Path('/owned/candidate'), None),
+                       (Path('/evidence'), None), (Path('/evidence/owned'), 0o700)):
+        info = path.lstat()
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0
+                and not info.st_mode & 0o022 and path.resolve(strict=True) == path
+                and (mode is None or stat.S_IMODE(info.st_mode) == mode),
+                'service bridge lacks protected owned candidate/evidence')
+    descriptor = os.open('/owned/initial-pidns', os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        initial = os.fstat(descriptor)
+        require(initial.st_uid == 0 and initial.st_ino != Path('/proc/self/ns/pid').stat().st_ino
+                and fcntl.ioctl(descriptor, 0xb703) == 0x20000000,  # NS_GET_NSTYPE / CLONE_NEWPID
+                'service bridge lacks the outer initial PID namespace witness')
+        with Path('/evidence/owned/service-bridge.log').open('xb') as log:
+            os.fchmod(log.fileno(), 0o600)
+            return bounded_command([*command, '--candidate', '/owned/candidate',
+                                    '--evidence', '/evidence/owned'],
+                                   time.monotonic() + 2800, log, raw, 4096)
+    finally:
+        os.close(descriptor)
+
+
 def admit_request(raw, candidate, hash_file, log, deadline):
     require(os.getuid() == os.geteuid() == 0, 'service artifact admission requires owned root')
+    require(Path(candidate) == Path('/owned/candidate')
+            and Path(candidate).resolve(strict=True) == Path(candidate),
+            'service admission is not the exact owned candidate')
     request = decode(raw)
     verifier = module(Path('/usr/libexec/tilo-service-consumer-capability.py'))
     def regular(path, maximum):
@@ -146,14 +186,28 @@ def admit_request(raw, candidate, hash_file, log, deadline):
     return {'request': request, 'subjects': subjects}
 
 
+def candidate_scope(admission):
+    """Authenticated artifact scope only; deliberately not a ConsumerCapability."""
+    request = decode(json.dumps(admission['request'], separators=(',', ':')).encode())
+    return {'required_protocol': request['required_protocol'],
+            'browser_package_hash': request['browser_package_hash'],
+            'cef_runtime_root_hash': request['cef_runtime_root_hash'],
+            'sdk_runtime_root_hash': request['sdk_runtime_root_hash'],
+            'receiving_route_qualification_sha256': request['receiving_route_qualification_sha256']}
+
+
 def complete(admission, result):
     # The caller reaches this only after SAME source.run observes all original
     # server, source/target physical, namespace and Services retirements.
     for name in ('receiving_namespace_retired', 'receiving_services_retired',
                  'source_physical_retired', 'target_physical_retired'):
         require(result.get(name) is True, 'service outer lifetime remains unobserved')
+    require(type(result.get('cloud')) is dict
+            and result['cloud'].get('server_upload_observed') is True,
+            'service live server observation remains unproven')
     service = result.get('service_sessions')
-    require(type(service) is dict and service.get('schema') == 1
+    require(type(service) is dict and type(service.get('schema')) is int
+            and service['schema'] == 1
             and type(service.get('conditions')) is dict
             and set(service['conditions']) == CONDITIONS
             and all(type(value) is bool and value for value in service['conditions'].values()),

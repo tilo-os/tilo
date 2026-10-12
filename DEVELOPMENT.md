@@ -138,11 +138,17 @@ Routine changes land through pull requests to `main`. Each PR head revision gets
 its own affected-package check and fast-quality lint result. Both test the head
 merged onto the tip of its base branch (`main`, or the lower branch of a stack)
 at the time the run starts, and select affected packages against that tip, so a
-PR is checked as it would land. When `main` moves after a PR's check went green,
-the lander reruns that check, which then only re-runs the packages and suites
-`main`'s new commits reach. A PR that conflicts with
-`main` fails there; merge `main` into the branch. A newer commit on the PR
-cancels the older revision's runs; every push to `main` keeps its own.
+PR is checked as it would land. A green result stands when `main` moves on; the
+lander re-checks only results older than six hours, and that re-check only
+re-runs the packages and suites `main`'s new commits reach. A newer commit on
+the PR cancels the older revision's runs; every push to `main` keeps its own.
+
+Do not merge `main` into your branch to keep it current, and do not wait for a
+conflict to clear. When a ready PR conflicts with `main`, the merge assistant
+merges `main` into its branch, builds and tests what the merge touched, and
+pushes the merge commit; the PR then lands like any other. If it cannot resolve
+the conflict, it converts the PR to a draft and comments with what is in the
+way; resolve that and mark the PR ready again.
 
 A ready (non-draft) PR lands by itself: within a minute of both required checks
 passing on its current head, the lander merges it with a merge commit. The
@@ -587,14 +593,22 @@ every generic image it publishes out by content before anything consumes it
 - `os/Containerfile.rechunk` runs [chunkah](https://github.com/coreos/chunkah)
   (built offline from its checksum-pinned release) over the raw image's root:
   one component per RPM package, read from the image's rpmdb, files over 1 MB
-  on their own, the rest grouped, packed into at most 128 layers. An unchanged
+  on their own, the rest grouped, packed into at most 96 layers. An unchanged
   component is the same blob in the next build. Whited-out bytes, the base's
   old kernel and `/sysroot`'s ostree objects are in no layer. Trees that change
   on their own schedule get a chunkah run and layers of their own
-  (`os/scripts/rechunk-chunkah.py`: Proton and the Steam runtime, and the
-  preinstalled apps, whose binaries and archives change one app at a time):
-  otherwise their small files share one layer with Tilo's, which change with
-  almost every build. Small files that are new in every build although
+  (`os/scripts/rechunk-chunkah.py`): Proton and the Steam runtime; the
+  preinstalled apps, whose binaries and archives change one app at a time; the
+  native runtime, whose directory is named by its payload's digest so that one
+  changed library renames every file in it (with its fonts' hard-linked names
+  in `/usr/share/fonts/tilo` and the font catalogues); the Chromium runtime;
+  and Tilo's own programs and data (`/usr/bin/{shell,fs,app,tilo-*}`,
+  `/usr/libexec/tilo*`, `/usr/lib/tilo`, `/usr/share/tilo`, the UKI), with
+  more layers than components so that chunkah packs nothing there. Otherwise a
+  runtime rename re-sends every layer its files share with unchanged ones, and
+  one new Tilo binary moves RPMs between the main run's bins: which components
+  share a layer depends on every component in the run. The main run is left
+  with the RPMs and the few other files no package owns. Small files that are new in every build although
   nothing they describe changed (the runtime bundles' signatures and
   publisher keys, whose keys are minted per build because the launcher trusts
   them; systemd's update stamp), and the app store's index, which changes
@@ -641,6 +655,24 @@ publication, which takes the released collection. Without it (local builds)
 the image mints one as before. With it, an update between two builds that
 change nothing the image reads is 0.26 MB, and one that changes one app
 33 MB (`docs/benchmarks/os-image-size-2026-10-10-reproducible-apps.md`).
+
+Every lane builds with one `SOURCE_DATE_EPOCH`, the newest creation time of
+the base and the RPM snapshot (`os/dev/image-epoch.sh`), not the commit time.
+Content embeds it: dracut writes it as every cpio time of the initramfs, so
+the 116 MB UKI was a new blob in every release-lane build although its files
+were the same; dnf records it as each package's install time in the rpmdb;
+`fc-cache` records the font directories' times. With it stable, two release
+builds share those layers unless what is in them changed. A publication still
+reseals a second UKI on top, which carries the new tree's composefs digest and
+is new in every release by design. With the runtime, Chromium and Tilo trees,
+an update for a framework change went from 518 MB to 448 MB on x86_64, and the
+release lane no longer re-sends the UKI (116 MB) and the rpmdb (17 MB) when
+nothing in them changed (`docs/benchmarks/os-image-size-2026-10-12-update-layers.md`).
+
+The nightly footprint group records `footprint.image.update_bytes.<arch>`,
+the update from main's previous build (`image_size.py --update-from-previous
+'main-{sha7}-{arch}'`), under an enforced ceiling in
+`tools/perf/kpi-budgets.toml`.
 
 ## Fast checks before assembly
 
@@ -1191,9 +1223,9 @@ exist, investigate Explorer's catalog, then run
 `./tools/windows/check-start-apps.ps1 -Apps hex-editor` (substitute
 the affected package names). The installer does not restart the desktop shell.
 
-Private identity files and local account-vault keys use the shared `private-fs`
-crate. On Windows, files are created with a protected, current-user-only DACL;
-reads validate the opened file's owner, access rules and reparse status. Existing
+Private identity files and local account-vault keys use the shared
+`tilo_files::native::private` module. On Windows, files are created with a
+protected, current-user-only DACL; reads validate the opened file's owner, access rules and reparse status. Existing
 keys with public access are rejected rather than silently replaced. Concurrent
 vault creators publish one complete key without overwriting the winner. The
 shared Accounts vault records failed loads and refuses writes until access is
@@ -1211,7 +1243,7 @@ transfer verification covers Unicode paths, acknowledged CSV export/import,
 encrypted backup, wrong-passphrase rejection, and fresh-profile restoration.
 
 ```powershell
-cargo test --locked -p private-fs -p tilo-user-identity -p accounts --lib
+cargo test --locked -p tilo-files -p tilo-user-identity -p accounts --lib
 ```
 
 Apps that need persistent content-addressed blobs without mounting a filesystem
@@ -2226,6 +2258,12 @@ on the staged Rust files, workspace membership
 lint `#[allow]` policy, `#[ignore]` reasons, integration-test module
 declarations, conflict markers, `dbg!` and secrets. Compilation and tests run in
 CI (`.forgejo/workflows/check.yml`).
+
+Committing a merge checks only what the resolution changed. A file staged
+exactly as the merged-in side has it already passed that side's checks, so the
+hook runs against a temporary index where those files are back at `HEAD`. A
+merge of `origin/main` into a branch 300 commits behind (3,400 staged files)
+takes about 13 seconds instead of nearly three minutes.
 
 A vendored crate under `vendor/` is upstream's code, carried as it ships: the
 added-code checks (`#[ignore]` reasons, `#[allow]` placement, `dbg!`) and

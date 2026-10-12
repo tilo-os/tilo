@@ -5049,16 +5049,6 @@ mod tests {
             self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
-        }
-
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.cursor = Some(Point::new(position.x, position.y));

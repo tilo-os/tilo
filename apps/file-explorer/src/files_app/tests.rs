@@ -3622,6 +3622,83 @@ mod command_path_tests {
         assert!(w.collab_panel.is_none());
     }
 
+    /// A version an agent's own device signed reaches Workspace Activity as
+    /// the agent's, on behalf of its person, as the file's History names it.
+    #[test]
+    fn history_activity_names_an_agents_version_as_the_agent_for_its_person() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+        let person = root.verifying_key().to_bytes();
+        let agent_key = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
+        let mut certificate = tilo_user_identity::DeviceCert {
+            user_public_key: person,
+            device_public_key: agent_key.verifying_key().to_bytes(),
+            device_label: "Agent: Scribe".into(),
+            capabilities: tilo_user_identity::CertificationPolicy::agent().ceiling,
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+        let device = certificate.device_public_key;
+        let version = "c0d4e23f-c7cb-4ded-a427-b32cf9da9342";
+        let record = "c0d4e23f-c7cb-4ded-a427-b32cf9da9341";
+        let mut entry = ent("report.txt", false, "text/plain");
+        entry.history = crate::model::HistoryProjection::parse(
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1, "record_id": record, "total_versions": 1,
+                "versions_truncated": false, "heads": [version],
+                "versions": [
+                    {"id": version, "record_id": record, "parents": [],
+                     "actor": {"person": person.to_vec(), "device": device.to_vec()},
+                     "timestamp_ms": 9, "content_hash": vec![3; 32], "metadata_hash": vec![4; 32], "provenance": "Edit"}
+                ], "conflicts_truncated": false, "conflicts": []
+            }))
+            .unwrap(),
+        );
+        let mut w = FileExplorerWidget::new();
+        w.trusted_humans = crate::identity_directory::TrustedHumanDirectory::from_projection_v2(
+            tilo_user_identity::TrustedIdentityProjectionV2 {
+                schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+                humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
+                    root_public_key: person,
+                    display_name: "Ada Lovelace".to_string(),
+                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 {
+                        certificate,
+                        agent: Some(tilo_user_identity::GovernedAgentIdentityV2 {
+                            agent_id: "scribe".into(),
+                            label: "Scribe".into(),
+                            color: [10, 20, 30],
+                        }),
+                    }],
+                }],
+            },
+        )
+        .unwrap();
+        w.entries = vec![entry];
+        w.selection.select_only(0);
+        let selected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(version).unwrap());
+        w.apply_command(FileCommand::ShowInWorkspaceActivity {
+            record_id: record.into(),
+            version_id: selected,
+        });
+        let Some(ui::widget::AppHostIntent::ShowWorkspaceActivity {
+            entry: Some(entry), ..
+        }) = w.take_host_intent()
+        else {
+            panic!("Files hands the selected version to Workspace Activity");
+        };
+        assert_eq!(entry.author.name, "Scribe · Agent, for Ada Lovelace");
+        assert_eq!(entry.author.relation, ui::widget::AuthorRelation::Software);
+        let attribution = entry.author.attribution.expect("who acted for whom");
+        assert_eq!(attribution.actor, "agent:scribe");
+        assert_eq!(attribution.actor_name, "Scribe");
+        assert_eq!(attribution.on_behalf_of, Some(hex::encode(person)));
+        assert_eq!(
+            attribution.on_behalf_of_name.as_deref(),
+            Some("Ada Lovelace")
+        );
+    }
+
     fn history_activity_intent_preserves_selected_version_and_signed_identity() {
         let older = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
         let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
@@ -3708,7 +3785,10 @@ mod command_path_tests {
                 humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
                     root_public_key: person_bytes,
                     display_name: "Ada Lovelace".to_string(),
-                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 { certificate }],
+                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 {
+                        certificate,
+                        agent: None,
+                    }],
                 }],
             },
         )
@@ -3806,7 +3886,10 @@ mod command_path_tests {
                         signature: [0; 64],
                     };
                     tilo_user_identity::sign_device_cert(&mut certificate, root).unwrap();
-                    tilo_user_identity::GovernedDeviceIdentityV2 { certificate }
+                    tilo_user_identity::GovernedDeviceIdentityV2 {
+                        certificate,
+                        agent: None,
+                    }
                 })
                 .collect();
             tilo_user_identity::TrustedIdentityProjectionV2 {

@@ -21,7 +21,7 @@ valid_sha512_crypt() {
 
   # crypt(5) SHA-512 hashes have an optional rounds field, a 1-16 byte
   # crypt-base64 salt, and an exact 86 byte crypt-base64 digest. Keep this
-  # parser strict: this value is passed directly to useradd(8)'s -p option.
+  # parser strict: this value is installed directly through chpasswd --encrypted.
   if [[ "$candidate" =~ ^\$6\$[./0-9A-Za-z]{1,16}\$[./0-9A-Za-z]{86}$ ]]; then
     return 0
   fi
@@ -147,11 +147,34 @@ repair_enrolled_device_key() {
   fi
 }
 
+# The private intent's random locked shadow value proves transaction ownership.
+TRANSACTION=/etc/tilo/install-user.transaction
+retry=0
+lock_value=""
+if [ -e "$TRANSACTION" ] || [ -L "$TRANSACTION" ]; then
+  valid_seed_file "$TRANSACTION" 1024 || exit 1
+  IFS=: read -r transaction_user lock_value < "$TRANSACTION" || true
+  [ "$transaction_user" = "$user" ] \
+    && [[ "$lock_value" =~ ^!tilo-firstboot-[a-f0-9]{32}$ ]] || exit 1
+  if id "$user" >/dev/null 2>&1; then
+    shadow="$(getent shadow "$user")" || exit 1
+    shadow="${shadow#*:}"
+    shadow="${shadow%%:*}"
+    # A crash after final unlock may leave the intent. Re-lock before retry.
+    [ "$shadow" = "$lock_value" ] || [ "$shadow" = "$hash" ] || exit 1
+    printf '%s:%s\n' "$user" "$lock_value" | chpasswd --encrypted
+    retry=1
+  fi
+elif id "$user" >/dev/null 2>&1; then
+  echo "tilo-firstboot-user: refusing to modify pre-existing account '$user'; preserving credential seed" >&2
+  exit 1
+fi
+
 # Writable shared originals depend on preserving their original Linux UID.
 # The strict root helper validates the private plan, regular-account policy and
 # both username/UID availability before any account creation side effect.
 uid_args=()
-if [ -e /var/lib/tilo/migration-plan.json ] || [ -L /var/lib/tilo/migration-plan.json ]; then
+if [ "$retry" -eq 0 ] && { [ -e /var/lib/tilo/migration-plan.json ] || [ -L /var/lib/tilo/migration-plan.json ]; }; then
   required_uid="$(/usr/libexec/tilo-staging-handoff required-user-id --username "$user")" || {
     echo "tilo-firstboot-user: migration ownership validation failed; preserving credential seed" >&2
     exit 1
@@ -165,12 +188,16 @@ if [ -e /var/lib/tilo/migration-plan.json ] || [ -L /var/lib/tilo/migration-plan
   fi
 fi
 
-if id "$user" >/dev/null 2>&1; then
-  echo "tilo-firstboot-user: refusing to modify pre-existing account '$user'" >&2
-  repair_enrolled_device_key
-  shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
-  exit 1
-else
+if [ -z "$lock_value" ]; then
+  lock_value="!tilo-firstboot-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+  # Do not replace an unexpected intent; create it before useradd can succeed.
+  (umask 077; set -C; printf '%s:%s\n' "$user" "$lock_value" > "$TRANSACTION")
+fi
+# Persist the ownership witness before useradd commits the locked account.
+sync -f -- "$TRANSACTION"
+
+native_home="/var/home/$user"
+if [ "$retry" -eq 0 ]; then
   # `tilo-identity` is read access to the machine's device key. The
   # compositor runs in this user's session and presents the device
   # identity on the network — the same identity fs.service presents as
@@ -184,7 +211,6 @@ else
   # The setup handoff may already have seeded this home with the enrolled
   # identity. `useradd -m` refuses an existing home, which would leave the
   # account uncreated and the device key unreadable.
-  native_home="/var/home/$user"
   seeded_home=""
   for candidate in "$native_home" "/home/$user"; do
     if [ -d "$candidate" ] && [ ! -L "$candidate" ]; then
@@ -194,17 +220,24 @@ else
   done
   if [ -n "$seeded_home" ]; then
     if [ -n "$full_name" ]; then
-      useradd "${uid_args[@]}" -M -d "$seeded_home" -p '!' -c "$full_name" -G wheel,tilo-identity,video "$user"
+      useradd "${uid_args[@]}" -M -d "$seeded_home" -p "$lock_value" -c "$full_name" -G wheel,tilo-identity,video "$user"
     else
-      useradd "${uid_args[@]}" -M -d "$seeded_home" -p '!' -G wheel,tilo-identity,video "$user"
+      useradd "${uid_args[@]}" -M -d "$seeded_home" -p "$lock_value" -G wheel,tilo-identity,video "$user"
     fi
-    chown -R "$user:$user" "$seeded_home"
   elif [ -n "$full_name" ]; then
-    useradd "${uid_args[@]}" -M -d "$native_home" -p '!' -c "$full_name" -G wheel,tilo-identity,video "$user"
+    useradd "${uid_args[@]}" -M -d "$native_home" -p "$lock_value" -c "$full_name" -G wheel,tilo-identity,video "$user"
   else
-    useradd "${uid_args[@]}" -M -d "$native_home" -p '!' -G wheel,tilo-identity,video "$user"
+    useradd "${uid_args[@]}" -M -d "$native_home" -p "$lock_value" -G wheel,tilo-identity,video "$user"
   fi
 fi
+
+# Recursive ownership repair must also run after an interrupted creation.
+for candidate in "$native_home" "/home/$user"; do
+  if [ -d "$candidate" ] && [ ! -L "$candidate" ]; then
+    chown -R "$user:$user" "$candidate"
+    break
+  fi
+done
 
 seed_helper=/etc/tilo/firstboot-home-seeds.py
 if [ ! -e "$seed_helper" ] && [ ! -L "$seed_helper" ]; then
@@ -218,19 +251,12 @@ fi
 
 repair_enrolled_device_key
 
-# Keep the account locked until device custody is readable and shadow-utils
-# accepts the complete hash.
-# printf is a shell builtin: credential bytes travel only over the pipe,
-# never through useradd/chpasswd's observable process arguments.
-printf '%s:%s\n' "$user" "$hash" | chpasswd --encrypted
-
 # This only delivers bounded metadata. Source mounts, data copies and final
 # promotion require an explicit first-login migration action by this account.
 if [ -f /var/lib/tilo/migration-plan.json ]; then
   if ! /usr/libexec/tilo-staging-handoff deliver-user-plan --username "$user"; then
     # Do not permit a first login that silently loses reviewed migration.
     # Preserve both root metadata and the private credential seed for repair.
-    usermod -L "$user"
     echo "tilo-firstboot-user: migration metadata delivery failed; account remains locked" >&2
     exit 1
   fi
@@ -240,7 +266,6 @@ fi
 # explicit import action may authenticate and adopt its contents later.
 if [ -e /var/lib/tilo/prepared-setup ] || [ -L /var/lib/tilo/prepared-setup ]; then
   if ! /usr/bin/python3 /etc/tilo/prepared-setup-transport.py deliver-user --username "$user"; then
-    usermod -L "$user"
     echo "tilo-firstboot-user: encrypted prepared setup delivery failed; account remains locked" >&2
     exit 1
   fi
@@ -252,14 +277,19 @@ if [ -e /var/lib/tilo/prepared-home ] || [ -L /var/lib/tilo/prepared-home ] \
     || [ -e /var/lib/tilo/prepared-applications ] || [ -L /var/lib/tilo/prepared-applications ] \
     || [ -e /var/lib/tilo/prepared-browser ] || [ -L /var/lib/tilo/prepared-browser ]; then
   if ! /usr/bin/python3 /etc/tilo/prepared-setup-transport.py deliver-home-user --username "$user"; then
-    usermod -L "$user"
     echo "tilo-firstboot-user: portable data custody delivery failed; account remains locked" >&2
     exit 1
   fi
 fi
 
+# All fallible migration runs while shadow still carries the locked intent.
+# Credential bytes travel only through stdin, never process arguments.
+printf '%s:%s\n' "$user" "$hash" | chpasswd --encrypted
+
 # Remove the seed file (best-effort shred; fall back to rm).
 shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
 [ ! -f "$FULL_NAME_CONF" ] || shred -u -- "$FULL_NAME_CONF" 2>/dev/null || rm -f -- "$FULL_NAME_CONF"
+
+rm -f -- "$TRANSACTION"
 
 echo "tilo-firstboot-user: created account '$user'"

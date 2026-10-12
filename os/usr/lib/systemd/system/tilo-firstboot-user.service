@@ -11,7 +11,9 @@ Before=greetd.service shell-firstboot.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/libexec/tilo-firstboot-user
-TimeoutStartSec=30
+# Encrypted custody handoff may verify arbitrarily large selected archives.
+# Never kill a healthy transfer because it exceeds a fixed boot deadline.
+TimeoutStartSec=infinity
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes

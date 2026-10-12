@@ -411,19 +411,19 @@ pub fn render_rgba(project: &Project, playhead: f64, width: u32, height: u32) ->
                 Some(base) => {
                     // Mirror draw_preview: darkened base, a lighter upper band,
                     // and a darker mid band.
-                    let mut c = mix(base, black, 0.18);
+                    let mut c = lerp(base, black, 0.18);
                     if yf < 0.5 {
-                        c = mix(c, mix(base, Rgb::new(1.0, 1.0, 1.0), 0.18), 0.55);
+                        c = lerp(c, lerp(base, Rgb::new(1.0, 1.0, 1.0), 0.18), 0.55);
                     }
                     if (0.62..0.72).contains(&yf) {
-                        c = mix(c, mix(base, black, 0.15), 0.6);
+                        c = lerp(c, lerp(base, black, 0.15), 0.6);
                     }
                     c
                 }
             };
             // Fade/opacity envelope dims toward black.
             if env < 0.999 {
-                px = mix(px, black, 1.0 - env);
+                px = lerp(px, black, 1.0 - env);
             }
             // Transition flash.
             if let Some(f) = flash {
@@ -432,7 +432,7 @@ pub fn render_rgba(project: &Project, playhead: f64, width: u32, height: u32) ->
                 } else {
                     black
                 };
-                px = mix(px, target, f.alpha);
+                px = lerp(px, target, f.alpha);
             }
             *out = [
                 (px.r * 255.0).round().clamp(0.0, 255.0) as u8,
@@ -443,16 +443,6 @@ pub fn render_rgba(project: &Project, playhead: f64, width: u32, height: u32) ->
         }
     }
     buf
-}
-
-/// Per-channel linear interpolation between two colours.
-fn mix(a: Rgb, b: Rgb, t: f64) -> Rgb {
-    let t = t.clamp(0.0, 1.0);
-    Rgb::new(
-        a.r + (b.r - a.r) * t,
-        a.g + (b.g - a.g) * t,
-        a.b + (b.b - a.b) * t,
-    )
 }
 
 // ---------------------------------------------------------------------------
@@ -736,10 +726,10 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
             })
         };
         match kind {
-            // mix(black, B, t) — nothing beneath, so B simply rises out
+            // lerp(black, B, t) — nothing beneath, so B simply rises out
             // of the letterbox black.
             Transition::FadeIn => out.push(mk(base * t, None)),
-            // mix(A, B, t) — both clips are sampled, B fades up over A.
+            // lerp(A, B, t) — both clips are sampled, B fades up over A.
             Transition::CrossDissolve => {
                 out.extend(a_layer(1.0));
                 out.push(mk(base * t, None));
