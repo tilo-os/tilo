@@ -1603,7 +1603,8 @@ impl ChannelHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable`] when serialization or the broker call fails.
+    /// Returns [`NotAvailable`] when serialization or the broker call fails,
+    /// or the encoded update exceeds 64 KiB.
     pub async fn report_task_run(
         &self,
         run_id: u64,
@@ -1613,6 +1614,9 @@ impl ChannelHandle {
         let update_json = serde_json::to_string(update).map_err(|error| {
             capnp::Error::failed(format!("task update serialization failed: {error}"))
         })?;
+        if update_json.len() > 64 * 1024 {
+            return Err(capnp::Error::failed("task update too large".into()).into());
+        }
         let mut request = self.inner.report_task_run_request();
         let mut params = request.get();
         params.set_run_id(run_id);
@@ -2493,6 +2497,9 @@ pub struct TaskRunEnvelope {
     pub version: u16,
     pub task_id: String,
     pub title: String,
+    /// Private full instruction. Older senders omit it and use `title`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction: Option<String>,
     pub run_id: u64,
     pub lease: String,
     pub planning: TaskRunPlanning,
@@ -2500,6 +2507,13 @@ pub struct TaskRunEnvelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     pub action_context: serde_json::Value,
+}
+
+impl TaskRunEnvelope {
+    #[must_use]
+    pub fn instruction(&self) -> &str {
+        self.instruction.as_deref().unwrap_or(&self.title)
+    }
 }
 
 /// How the task owner allowed its delegated agent to choose actions.

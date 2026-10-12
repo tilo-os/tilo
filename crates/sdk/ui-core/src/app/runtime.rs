@@ -377,6 +377,11 @@ pub(super) struct CollaborationRuntime {
     /// What the primary route's end-to-end encrypted channel lets this
     /// device do, as last reported; `None` before the first report.
     pub(super) channel_access: Option<crate::collaboration::ChannelAccessState>,
+    /// Ids in the last complete collaboration Context snapshot. This is kept
+    /// separately from ephemeral pointer/caret presence so a replacement can
+    /// retire departed certified members without touching unrelated local
+    /// presentation state.
+    pub(super) context_participants: std::collections::HashSet<crate::permissions::UserId>,
 }
 
 impl CollaborationRuntime {
@@ -392,6 +397,7 @@ impl CollaborationRuntime {
             snapshot_on_ready: false,
             history: crate::collaboration::DocumentHistory::default(),
             channel_access: None,
+            context_participants: std::collections::HashSet::new(),
         }
     }
 }

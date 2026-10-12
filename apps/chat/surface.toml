@@ -19,6 +19,7 @@ fields = [
   { path = "channels.*.topic", type = "String" },
   { path = "channels.*.kind", type = "ChannelKind", readonly = true },
   { path = "channels.*.archived", type = "bool" },
+  { path = "channels.*.conversation_with", type = "Option<Atom>", readonly = true },
   { path = "messages", type = "Collection<Message>", stored = "collection" },
   { path = "messages.*.channel", type = "Id", readonly = true },
   { path = "messages.*.author", type = "Atom", readonly = true },

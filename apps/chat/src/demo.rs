@@ -411,6 +411,7 @@ pub fn demo(me: &str) -> Chat {
                 topic: (*topic).to_owned(),
                 kind: *kind,
                 archived: false,
+                conversation_with: None,
             },
         );
     }
