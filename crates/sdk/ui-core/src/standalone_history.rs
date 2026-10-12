@@ -28,6 +28,51 @@ pub(crate) enum HistoryTarget {
     },
 }
 
+impl HistoryTarget {
+    /// What History opened from a window reads: the binding of the focused
+    /// node or the root, else the one binding the window's `nodes` share,
+    /// else the window's document. Nodes bound to different documents with
+    /// none chosen, or records with none active, leave nothing to read.
+    pub(crate) fn capture(
+        bindings: &crate::bound_dispatch::BoundNodeMap,
+        focused: Option<taffy::NodeId>,
+        root: &dyn crate::widget::Widget,
+        nodes: impl IntoIterator<Item = taffy::NodeId>,
+        records: Option<&crate::record::RecordSet>,
+        document_identity: uuid::Uuid,
+    ) -> Result<Self, HistoryError> {
+        let mut binding = focused
+            .and_then(|node| bindings.binding_for(node))
+            .or_else(|| root.callback_binding());
+        if binding.is_none() {
+            for node in nodes {
+                let Some(candidate) = bindings.binding_for(node) else {
+                    continue;
+                };
+                if binding
+                    .as_ref()
+                    .is_some_and(|current| current.lifetime_id != candidate.lifetime_id)
+                {
+                    return Err(HistoryError::Unavailable);
+                }
+                binding = Some(candidate);
+            }
+        }
+        let active = records.map(|records| records.active());
+        if binding.is_none() && matches!(active, Some(None)) {
+            return Err(HistoryError::Unavailable);
+        }
+        Ok(binding.map_or_else(
+            || Self::Legacy {
+                app_id: crate::collaboration::local_app_id(),
+                record: active.flatten().cloned(),
+                document_identity,
+            },
+            |binding| Self::Bound(Box::new(binding)),
+        ))
+    }
+}
+
 pub(crate) struct HistoryReadContext<'a> {
     pub document: &'a AutoCommit,
     pub active_record: Option<&'a RecordId>,
