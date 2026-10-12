@@ -1095,16 +1095,6 @@ impl Widget for PresentationRoots<'_> {
     ) -> NodeId {
         self.layout_root
     }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         self.children.clone()
     }

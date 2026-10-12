@@ -93,7 +93,7 @@ SH
 chmod 0755 "$fake_bin/rpmkeys"
 verify="$repo_root/dist/ci/verify-release-artifacts.sh"
 run_verify() {
-    PATH="$fake_bin:$PATH" TILO_FAKE_KEY_ID="$key_id" \
+    PATH="$fake_bin:$PATH" TILO_FAKE_KEY_ID="$key_id" TILO_RPM_SIGNING_FINGERPRINT="$fingerprint" \
         "$verify" "$1" 0.1.5 amd64
 }
 run_verify "$fixture" >/dev/null
@@ -144,8 +144,12 @@ printf '\nbaseurl=https://attacker.invalid/repo\n' >> "$altered_repo/tilo-fedora
 (cd "$altered_repo" && sha256sum tilo-fedora-44.repo > tilo-fedora-44.repo.sha256)
 expect_reject run_verify "$altered_repo"
 
+expect_reject env -u TILO_RPM_SIGNING_FINGERPRINT PATH="$fake_bin:$PATH" \
+    TILO_FAKE_KEY_ID="$key_id" "$verify" "$fixture" 0.1.5 amd64
 expect_reject env TILO_FAKE_RPM_MODE=unsigned PATH="$fake_bin:$PATH" \
+    TILO_RPM_SIGNING_FINGERPRINT="$fingerprint" \
     TILO_FAKE_KEY_ID="$key_id" "$verify" "$fixture" 0.1.5 amd64
 expect_reject env TILO_FAKE_RPM_MODE=wrong PATH="$fake_bin:$PATH" \
+    TILO_RPM_SIGNING_FINGERPRINT="$fingerprint" \
     TILO_FAKE_KEY_ID="$key_id" "$verify" "$fixture" 0.1.5 amd64
 printf 'RPM signing trust-contract negatives: PASS\n'

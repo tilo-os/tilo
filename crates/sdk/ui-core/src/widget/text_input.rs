@@ -4651,6 +4651,11 @@ fn paint_field_chrome(
                 crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
             ),
         )
+    } else if theme.colors_are_forced() {
+        // Accessibility deliberately collapses surface levels. Keep the
+        // declared contrast edge instead of deriving a decorative hairline;
+        // disabled fields keep this edge under the existing group opacity.
+        (1.0, colors.border_standard)
     } else {
         (1.0, crate::surface::edge_on(rest))
     };

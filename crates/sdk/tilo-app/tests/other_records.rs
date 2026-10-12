@@ -447,16 +447,6 @@ impl Widget for Rules {
         self.rect = Rect::from_origin_size(origin, Size::ZERO);
     }
 
-    fn draw(
-        &mut self,
-        _: &mut tilo_app::advanced::Scene,
-        _: tilo_app::advanced::Affine,
-        _: &mut TextRenderer,
-        _: &Theme,
-        _: &PresenceCtx,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "Rules"
     }

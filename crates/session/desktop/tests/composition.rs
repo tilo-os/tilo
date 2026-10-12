@@ -206,15 +206,6 @@ impl ui::widget::Widget for OverlayApp {
     ) -> taffy::NodeId {
         self.leaf.build_layout(tree, theme, map)
     }
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut ui::TextRenderer,
-        _: &ui::Theme,
-        _: &ui::presence::PresenceCtx,
-    ) {
-    }
     fn draw_overlay(
         &mut self,
         _: &mut vello::Scene,

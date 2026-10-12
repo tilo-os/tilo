@@ -207,6 +207,31 @@ struct StewardEntry {
     announced: bool,
 }
 
+/// A channel an endpoint asked about that this device could not open: its
+/// room has no steward this device knows of and is not governed here, or
+/// opening its state failed. Its answer changes with nothing arriving for
+/// it, so the service tells the route itself ([`ChannelEncryption::bump`])
+/// rather than leaving the endpoint to ask on a timer.
+struct Unopened {
+    room: RoomId,
+    /// `None` while the room has no steward: re-checked whenever the policy
+    /// inputs announce a change (the tree announces when a room's authority
+    /// or governance changes). `Some` after a failed open: retried on its
+    /// own backoff.
+    retry: Option<Backoff>,
+}
+
+impl Unopened {
+    fn failed(room: RoomId, now: Instant) -> Self {
+        let mut retry = Backoff::now(now, REQUEST_FIRST);
+        retry.fired(now, REQUEST_LONGEST);
+        Self {
+            room,
+            retry: Some(retry),
+        }
+    }
+}
+
 struct MemberEntry {
     room: RoomId,
     member: ChannelMember,
@@ -238,6 +263,8 @@ pub struct ChannelEncryption {
     /// (a genesis to announce, an access request to make). A host that parks
     /// its pump while idle wakes it on this; see [`ChannelKeyAccess::with_wake`].
     queued: bool,
+    /// Channels asked about that could not be opened; see [`Unopened`].
+    unopened: HashMap<ChannelId, Unopened>,
 }
 
 impl ChannelEncryption {
@@ -267,6 +294,7 @@ impl ChannelEncryption {
             changed: HashMap::new(),
             changes: tokio::sync::watch::Sender::new(0),
             queued: false,
+            unopened: HashMap::new(),
         };
         for room_dir in std::fs::read_dir(&service.config.root)? {
             let room_dir = room_dir?.path();
@@ -316,11 +344,12 @@ impl ChannelEncryption {
             if !self.stewards.contains_key(&channel) {
                 if let Err(error) = self.open_steward(room, channel) {
                     tracing::warn!(%error, %room, "channel group could not be created");
+                    self.note_unopened(channel, Unopened::failed(room, now));
                     return ChannelAccess::Unavailable;
                 }
                 self.queued = true;
             }
-            return self
+            let access = self
                 .stewards
                 .get(&channel)
                 .map_or(ChannelAccess::Unavailable, |entry| {
@@ -329,17 +358,28 @@ impl ChannelEncryption {
                         .content_keys()
                         .map_or(ChannelAccess::Unavailable, ChannelAccess::Ready)
                 });
+            if matches!(access, ChannelAccess::Unavailable) {
+                self.note_unopened(channel, Unopened::failed(room, now));
+            } else {
+                self.unopened.remove(&channel);
+            }
+            return access;
         }
         if !self.members.contains_key(&channel) {
             match self.open_member(room, channel, now) {
                 Ok(true) => self.queued = true,
-                Ok(false) => return ChannelAccess::Unavailable,
+                Ok(false) => {
+                    self.note_unopened(channel, Unopened { room, retry: None });
+                    return ChannelAccess::Unavailable;
+                }
                 Err(error) => {
                     tracing::warn!(%error, %room, "channel member state could not be created");
+                    self.note_unopened(channel, Unopened::failed(room, now));
                     return ChannelAccess::Unavailable;
                 }
             }
         }
+        self.unopened.remove(&channel);
         let Some(entry) = self.members.get_mut(&channel) else {
             return ChannelAccess::Unavailable;
         };
@@ -359,6 +399,64 @@ impl ChannelEncryption {
                 ChannelAccess::Removed
             }
         }
+    }
+
+    /// Remember that `channel` could not be opened, so its route hears when
+    /// that may have changed. A failed open keeps the backoff it already
+    /// has; a first entry wakes a parked pump, which then arms its policy
+    /// watch or retry deadline for it.
+    fn note_unopened(&mut self, channel: ChannelId, entry: Unopened) {
+        match self.unopened.get_mut(&channel) {
+            Some(known) if known.room == entry.room => {
+                if entry.retry.is_none() {
+                    known.retry = None;
+                } else if known.retry.is_none() {
+                    known.retry = entry.retry;
+                }
+            }
+            _ => {
+                self.unopened.insert(channel, entry);
+                self.queued = true;
+            }
+        }
+    }
+
+    /// Tell the routes of unopened channels whose answer may now differ:
+    /// on a policy re-check (`recheck`), those whose room now has a steward
+    /// or is governed here; and those whose failed open is due again.
+    fn wake_unopened(&mut self, now: Instant, recheck: bool) {
+        let mut changed = Vec::new();
+        for (channel, entry) in &mut self.unopened {
+            match &mut entry.retry {
+                None => {
+                    if recheck
+                        && (self.directory.governs(entry.room)
+                            || self.directory.steward_of(entry.room).is_some())
+                    {
+                        changed.push((*channel, true));
+                    }
+                }
+                Some(retry) => {
+                    if retry.is_due(now) {
+                        retry.fired(now, REQUEST_LONGEST);
+                        changed.push((*channel, false));
+                    }
+                }
+            }
+        }
+        for (channel, settled) in changed {
+            // A room that gained a steward is told once; its route asks and
+            // opens the channel. A failed open stays until one succeeds.
+            if settled {
+                self.unopened.remove(&channel);
+            }
+            self.bump(channel);
+        }
+    }
+
+    /// Whether an unopened channel waits for a policy announcement.
+    fn unopened_waits_for_policy(&self) -> bool {
+        self.unopened.values().any(|entry| entry.retry.is_none())
     }
 
     /// Observe a current key without opening a channel, requesting access or
@@ -403,6 +501,9 @@ impl ChannelEncryption {
             }
             self.redeliver(channel, transport, now);
         }
+        // Unopened channels are re-checked with the stewards' policy, and
+        // a failed open when its backoff is due.
+        self.wake_unopened(now, reconcile_due);
         if reconcile_due {
             self.reconcile
                 .checked(now, epoch.unwrap_or(0), epoch.is_none());
@@ -433,7 +534,8 @@ impl ChannelEncryption {
     /// holding its keys has nothing to do until a frame arrives.
     #[must_use]
     pub fn next_pump_deadline(&self, now: Instant) -> Option<Instant> {
-        let steward = if self.stewards.is_empty() {
+        let policy_waiters = !self.stewards.is_empty() || self.unopened_waits_for_policy();
+        let steward = if !policy_waiters {
             None
         } else if self.stewards.values().any(|entry| entry.dirty) {
             Some(now)
@@ -458,7 +560,12 @@ impl ChannelEncryption {
                 asking.then_some(entry.retry.due)
             })
             .min();
-        steward.into_iter().chain(member).min()
+        let unopened = self
+            .unopened
+            .values()
+            .filter_map(|entry| entry.retry.as_ref().map(|retry| retry.due))
+            .min();
+        steward.into_iter().chain(member).chain(unopened).min()
     }
 
     /// When a steward next owes a delivery that no message brings, after a
@@ -483,7 +590,7 @@ impl ChannelEncryption {
     /// since their last re-check. The host's pump then sleeps until an
     /// announcement wakes it ([`ChannelKeyAccess::arm_policy_watch`]).
     fn waits_for_policy_change(&self) -> bool {
-        !self.stewards.is_empty()
+        (!self.stewards.is_empty() || self.unopened_waits_for_policy())
             && self
                 .directory
                 .policy_epoch()
@@ -1069,11 +1176,15 @@ impl ChannelKeyAccess {
     }
 
     /// Whether a timer still has to pump governance. An idle device with no
-    /// channel parks the drainer until the next inbound frame.
+    /// channel parks the drainer until the next inbound frame. A channel
+    /// whose open failed is retried by the pump; one whose room has no
+    /// steward yet is re-checked when the room's frames arrive.
     pub fn has_live_channels(&self) -> bool {
-        self.inner
-            .lock()
-            .is_ok_and(|service| !service.stewards.is_empty() || !service.members.is_empty())
+        self.inner.lock().is_ok_and(|service| {
+            !service.stewards.is_empty()
+                || !service.members.is_empty()
+                || service.unopened.values().any(|entry| entry.retry.is_some())
+        })
     }
 
     /// See [`ChannelEncryption::generation`].
@@ -2434,5 +2545,141 @@ mod tests {
             waiting.renew_sealed(room_id, &write).is_err(),
             "a device still waiting for access renews nothing"
         );
+    }
+
+    /// A room whose steward this device learns of later, as the workspace
+    /// tree does when a room's authority arrives: it announces the change.
+    #[derive(Clone, Default)]
+    struct LateSteward {
+        steward: Arc<Mutex<Option<Ed25519PublicKey>>>,
+        epoch: Arc<std::sync::atomic::AtomicU64>,
+    }
+
+    impl ChannelDirectory for LateSteward {
+        fn governs(&self, _: RoomId) -> bool {
+            false
+        }
+        fn steward_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
+            *self.steward.lock().unwrap()
+        }
+        fn allowed_devices(&self, _: RoomId, _: u64) -> BTreeSet<Ed25519PublicKey> {
+            BTreeSet::new()
+        }
+        fn policy_epoch(&self) -> Option<u64> {
+            Some(self.epoch.load(Ordering::SeqCst))
+        }
+    }
+
+    fn late_steward_service(dir: &Path, directory: &LateSteward) -> ChannelEncryption {
+        ChannelEncryption::open(
+            ChannelEncryptionConfig {
+                root: dir.join("channels"),
+                vault: VaultKey::new([21; 32]),
+                device_key: key(21),
+            },
+            Box::new(directory.clone()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+        )
+        .unwrap()
+    }
+
+    /// A route asked about before its room's steward is known is told when
+    /// the steward is learned, with no timer running meanwhile: the endpoint
+    /// need not ask on one to find out.
+    #[test]
+    fn a_route_hears_when_its_rooms_steward_is_learned() {
+        let dir = tempfile::tempdir().unwrap();
+        let directory = LateSteward::default();
+        let mut service = late_steward_service(dir.path(), &directory);
+        let (room, channel) = (RoomId::new(), ChannelId::new());
+        let transport = Endpoint::join(&Arc::new(Room::default()), room, 0);
+        let mut now = Instant::now();
+        assert!(matches!(
+            service.access(room, channel, now),
+            ChannelAccess::Unavailable
+        ));
+        assert!(
+            std::mem::take(&mut service.queued),
+            "a newly unopened channel wakes a parked pump to arm its watch"
+        );
+        service.pump(&transport, now, 1_000);
+        assert_eq!(service.channel_change(channel), 0);
+        assert_eq!(
+            service.next_pump_deadline(now),
+            None,
+            "nothing is due while the room has no steward"
+        );
+        assert!(
+            service.waits_for_policy_change(),
+            "the pump waits for an announcement instead"
+        );
+
+        // Announcements that do not give the room a steward tell no route.
+        directory.epoch.fetch_add(1, Ordering::SeqCst);
+        now = now.checked_add(Duration::from_secs(5)).unwrap();
+        service.pump(&transport, now, 1_005);
+        assert_eq!(service.channel_change(channel), 0);
+
+        *directory.steward.lock().unwrap() = Some(public(22));
+        directory.epoch.fetch_add(1, Ordering::SeqCst);
+        now = now.checked_add(Duration::from_secs(5)).unwrap();
+        service.pump(&transport, now, 1_010);
+        let told = service.channel_change(channel);
+        assert_ne!(told, 0, "the route is told its room has a steward now");
+        assert!(matches!(
+            service.access(room, channel, now),
+            ChannelAccess::Waiting
+        ));
+        assert!(service.unopened.is_empty());
+
+        directory.epoch.fetch_add(1, Ordering::SeqCst);
+        now = now.checked_add(Duration::from_secs(5)).unwrap();
+        service.pump(&transport, now, 1_015);
+        assert_eq!(
+            service.channel_change(channel),
+            told,
+            "an opened channel is not told again"
+        );
+    }
+
+    /// A channel whose state could not be opened is retried by the pump on
+    /// its own backoff, each retry telling the route to ask again.
+    #[test]
+    fn a_failed_open_is_retried_on_the_pumps_backoff() {
+        let dir = tempfile::tempdir().unwrap();
+        let directory = LateSteward::default();
+        *directory.steward.lock().unwrap() = Some(public(22));
+        let mut service = late_steward_service(dir.path(), &directory);
+        let (room, channel) = (RoomId::new(), ChannelId::new());
+        let transport = Endpoint::join(&Arc::new(Room::default()), room, 0);
+        // The room's state directory cannot be created: a file is in its way.
+        let blocker = dir.path().join("channels").join(room.to_string());
+        std::fs::write(&blocker, b"").unwrap();
+        let now = Instant::now();
+        assert!(matches!(
+            service.access(room, channel, now),
+            ChannelAccess::Unavailable
+        ));
+        service.pump(&transport, now, 1_000);
+        let due = service
+            .next_pump_deadline(now)
+            .expect("the failed open is due again");
+        assert_eq!(due, now.checked_add(REQUEST_FIRST).unwrap());
+        assert_eq!(service.channel_change(channel), 0);
+        service.pump(&transport, due, 1_002);
+        let told = service.channel_change(channel);
+        assert_ne!(told, 0, "the retry tells the route to ask again");
+        assert_eq!(
+            service.next_pump_deadline(due),
+            Some(due.checked_add(REQUEST_FIRST * 2).unwrap()),
+            "and backs off"
+        );
+
+        std::fs::remove_file(&blocker).unwrap();
+        assert!(matches!(
+            service.access(room, channel, due),
+            ChannelAccess::Waiting
+        ));
+        assert!(service.unopened.is_empty(), "an open that succeeds settles");
     }
 }

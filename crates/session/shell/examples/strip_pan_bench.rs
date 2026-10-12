@@ -20,7 +20,8 @@
 //!
 //! Every motion starts from a desktop at rest: two frames in a row that
 //! change nothing, with nothing animating, each kept rather than rendered as
-//! the DRM presenter keeps it. Once at rest the layered presenter warms its
+//! the DRM presenter keeps it; a pan also rests as long as the session waits
+//! before it warms the layers first, and then again two such frames. Once at rest the layered presenter warms its
 //! strip layers as the session does when the desktop rests after a frame
 //! that changed it (`FrameBuilder::layers_at_rest`,
 //! `RetainedGpuTarget::warm_layers`); that idle work is reported apart
@@ -85,6 +86,13 @@ const QUIET_FRAMES: usize = 2;
 /// a whole pixel, as a touchpad reports it.
 const PAN_STEP: f64 = 17.3;
 const RENDER_DEADLINE: Duration = Duration::from_secs(10);
+/// How long the desktop rests before a motion: longer than the session
+/// waits after a frame that changed the desktop before it warms the layers
+/// (`LAYER_WARM_SETTLE`, a second). Windows off screen ask for no frames, so
+/// what they still do after the desktop came to rest (an app presenting its
+/// first content, an animation running on the clock) happens unseen in that
+/// time, as it does in a session.
+const REST: Duration = Duration::from_millis(1100);
 
 struct Args {
     out: Option<PathBuf>,
@@ -562,6 +570,18 @@ fn settle(
     ))
 }
 
+/// Come to rest ([`settle`]), let the desktop rest as a session does before
+/// it warms the layers ([`REST`]), and come to rest again.
+fn rest(
+    fixture: &mut Fixture,
+    target: &mut RetainedGpuTarget,
+    size: (u32, u32),
+) -> Result<(), String> {
+    settle(fixture, target, size)?;
+    std::thread::sleep(REST);
+    settle(fixture, target, size)
+}
+
 fn active_strip_max_scroll(frame: &FrameBuilder) -> f64 {
     let active = frame.chrome().active_strip_id();
     frame
@@ -578,7 +598,7 @@ fn pan(
     size: (u32, u32),
     frames: usize,
 ) -> Result<Samples, String> {
-    settle(fixture, target, size)?;
+    rest(fixture, target, size)?;
     let max = active_strip_max_scroll(&fixture.frame);
     if max < PAN_STEP * 4.0 {
         return Err(format!("the strip does not pan: max scroll {max}"));
@@ -615,7 +635,7 @@ fn pan(
         .frame
         .host_mut()
         .end_active_strip_pan(Instant::now());
-    settle(fixture, target, size)?;
+    rest(fixture, target, size)?;
     samples.rewarm = warm(fixture, target)?;
     fixture.frame.host_mut().update_active_strip_pan(0.0, true);
     fixture
@@ -646,6 +666,8 @@ fn strip_move(
     target: &mut RetainedGpuTarget,
     size: (u32, u32),
 ) -> Result<Samples, String> {
+    // Settled, not rested: a first move after a real rest repaints about
+    // 2.6 M px at 4K, which the strip-move budgets do not measure yet.
     settle(fixture, target, size)?;
     let mut samples = Samples {
         warm: warm(fixture, target)?,
