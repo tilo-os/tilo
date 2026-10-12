@@ -149,8 +149,7 @@ jobs:
         run: |
           command -v node || dnf install -y nodejs
           # Chrome's shared-library dependencies; present on current builders.
-          dnf install -y nss atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage \
-            libXrandr mesa-libgbm pango alsa-lib libxkbcommon || true
+          bash tools/ci/ensure-browser-dependencies.sh
           npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
             | tee "$RUNNER_TEMP/chrome.txt"
           echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"
