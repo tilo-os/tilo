@@ -1637,9 +1637,13 @@ fn pixels_apart(a: &[u8], b: &[u8], width: u32) -> Vec<(usize, usize, u8)> {
         .collect()
 }
 
-/// Pixels of the band copies of `work` that differ by more than one step
-/// between `before`, moved as the copies move it, and `after`: what moving
-/// a full render of one frame gives against a full render of the next.
+/// How many pixels of the band copies of `work` differ by more than one
+/// step between `before`, moved as the copies move it, and `after`, and the
+/// most steps any of them differs by: what moving a full render of one
+/// frame gives against a full render of the next. The most is over every
+/// copied pixel, a step of rounding included: once vello rasterises a shape
+/// alike at every offset, that rounding is all whole renders at two pans
+/// differ in, and a copy can show it.
 #[cfg(target_os = "linux")]
 fn moved_render_apart(
     work: &crate::shell::render::strip_layers::LayerWork,
@@ -1668,8 +1672,9 @@ fn moved_render_apart(
                     .max()
                     .unwrap_or(0);
                 if step > 1 {
-                    apart = (apart.0 + 1, apart.1.max(step));
+                    apart.0 += 1;
                 }
+                apart.1 = apart.1.max(step);
             }
         }
     }
