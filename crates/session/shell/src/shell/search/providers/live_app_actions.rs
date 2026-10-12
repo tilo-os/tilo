@@ -5403,7 +5403,6 @@ mod tests {
         }
         let chrome = chrome();
         let broker = broker_for(&chrome);
-        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
         let (cluster_id, actor) = {
             let chrome = chrome.borrow();
             let room = chrome.tree().desktop.workspaces[0].room;
@@ -5415,6 +5414,10 @@ mod tests {
             cluster_id,
             record_id: "notebook".into(),
         }]);
+        // Made after the root is published: a provider retires every cached
+        // page when the directory's generation moves, as publishing a root
+        // does, so pages seeded before that would be dropped unread.
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
         provider.directory_pages.borrow_mut().insert(
             (9, actor.clone(), String::new(), Vec::new()),
             page(
