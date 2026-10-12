@@ -17,8 +17,6 @@
 #   BIN_DIR        directory of built release binaries      [default: /out]
 #   TAPP_DIR       install these already-verified release tapps instead of
 #                  packing BIN_DIR (optional)
-#   COHORT_TAPP_DIR retain each installed signed archive by application id
-#                  for verified image-cohort selection (optional)
 #   EXPECTED_PUBKEY require every prebuilt tapp to use this publisher (64 hex)
 #   STORE          app store root; becomes TILO_APPS_DATA_DIR
 #                                          [default: /usr/share/tilo-apps]
@@ -37,6 +35,11 @@
 #                  application-format ceiling (the byte count in
 #                  crates/packaging/tilo-app-package/max-app-bytes, which the
 #                  Rust package checks compile in) and may only be made stricter
+#
+# The store keeps each package once, as its installed tree and signed record
+# (pkgs/<root>.pkg/). Whoever needs the archive itself rebuilds it from those
+# (the dev VM daemon, crates/dev/tilo-vmd/src/cohort.rs): the same signed root
+# and the same bytes, without a second copy of every app in the image.
 #
 # STORE is written at its *final* path on purpose: `tilo-install` records
 # absolute payload paths in registry.toml, so staging it elsewhere and moving
@@ -111,9 +114,9 @@ initial_rows="$(grep -c '^\[\[entry\]\]' "$STORE/registry.toml" 2>/dev/null || t
 # install) is done once the packages are unpacked into the store, and the key
 # is in no trust list. It does name every package: the publisher key is in the
 # signed root, whose hash is the package id and the payload tree's directory
-# name. So a key minted per build gives identical binaries new paths and new
-# cohort archives in every image; Build / OS dev passes one identity for all
-# its builds instead (os/Containerfile).
+# name. So a key minted per build gives identical binaries new paths in every
+# image; Build / OS dev passes one identity for all its builds instead
+# (os/Containerfile).
 prebuilt=0
 if [ -n "$TAPP_DIR" ] && compgen -G "$TAPP_DIR/*.tapp" >/dev/null; then
     prebuilt=1
@@ -172,20 +175,10 @@ if [ "$prebuilt" = 1 ]; then
             failed+=("$(basename "$tapp"): collection mixes publisher identities")
             continue
         fi
-        if [ -n "${COHORT_TAPP_DIR:-}" ]; then
-            package_id=$(printf '%s\n' "$package_details" \
-                | sed -n 's/^id  *= *"\([^"]*\)".*/\1/p' | head -1)
-            [[ "$package_id" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] \
-                || { failed+=("$(basename "$tapp"): unsafe or missing application id"); continue; }
-        fi
         if ! "$INSTALL_BIN" install "$tapp" --allow-self-signed \
                 >"$STAGE/$(basename "$tapp").install.log" 2>&1; then
             failed+=("$(basename "$tapp"): install failed")
             continue
-        fi
-        if [ -n "${COHORT_TAPP_DIR:-}" ]; then
-            mkdir -p "$COHORT_TAPP_DIR"
-            cp "$tapp" "$COHORT_TAPP_DIR/$package_id.tapp"
         fi
         shipped+=("$(basename "$tapp")")
     done
@@ -267,10 +260,6 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
         continue
     fi
 
-    if [ -n "${COHORT_TAPP_DIR:-}" ]; then
-        mkdir -p "$COHORT_TAPP_DIR"
-        cp "$tapp" "$COHORT_TAPP_DIR/$id.tapp"
-    fi
     if [ -n "${TAPP_OUT:-}" ]; then
         [ -n "${APP_DIR:-}" ] || die "TAPP_OUT requires a selected APP_DIR"
         cp "$tapp" "$TAPP_OUT"

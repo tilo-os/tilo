@@ -22,8 +22,22 @@ install() {
     # shellcheck disable=SC2154 # dracut defines moddir before loading modules
     inst_hook cmdline 90 "$moddir/parse-tilo-root.sh"
     inst_simple /usr/bin/tilo-rollback /usr/bin/tilo-rollback
+    tilo_initramfs_helper tilo-rollback
     inst_simple /usr/libexec/tilo-rollback-initrd-unlock
     inst_simple /usr/libexec/tilo-root-discover
     inst_simple /usr/lib/systemd/system-generators/tilo-root-generator
     inst_simple /usr/share/tilo/tpm2-pcr-signing.public.pem
+}
+
+# The image build's copy without its symbol table, when it made one
+# (os/scripts/build-initramfs.sh, TILO_INITRAMFS_HELPERS). The installed file
+# is removed, never written through: it may share its inode with the rootfs's.
+tilo_initramfs_helper() {
+    [ -n "${TILO_INITRAMFS_HELPERS:-}" ] || return 0
+    local stripped="$TILO_INITRAMFS_HELPERS/$1"
+    [ -f "$stripped" ] || { derror "tilo: no stripped $1 in $TILO_INITRAMFS_HELPERS"; return 1; }
+    # shellcheck disable=SC2154 # dracut defines initdir before installing modules
+    rm -f -- "$initdir/usr/bin/$1"
+    cp --preserve=mode -- "$stripped" "$initdir/usr/bin/$1" || return 1
+    dinfo "tilo: initramfs $1 without its symbol table"
 }

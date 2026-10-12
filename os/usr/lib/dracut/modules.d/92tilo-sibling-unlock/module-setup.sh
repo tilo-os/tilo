@@ -17,6 +17,7 @@ depends() {
 
 install() {
     inst_multiple tilo-sibling-unlock NetworkManager cryptsetup ip systemctl systemd-creds
+    tilo_initramfs_helper tilo-sibling-unlock
     # Wi-Fi, for a machine whose owner chose a Wi-Fi network for unlocking.
     inst_multiple -o wpa_supplicant
     inst_libdir_dir "NetworkManager/$(NetworkManager --version)"
@@ -33,4 +34,17 @@ install() {
     inst_simple "$moddir/tilo-sibling-unlock.conf" /etc/NetworkManager/tilo-sibling-unlock.conf
     inst_simple "$moddir/tilo-sibling-unlock@.service" "$systemdsystemunitdir/tilo-sibling-unlock@.service"
     inst_simple "$moddir/tilo-sibling-unlock-network.service" "$systemdsystemunitdir/tilo-sibling-unlock-network.service"
+}
+
+# The image build's copy without its symbol table, when it made one
+# (os/scripts/build-initramfs.sh, TILO_INITRAMFS_HELPERS). The installed file
+# is removed, never written through: it may share its inode with the rootfs's.
+tilo_initramfs_helper() {
+    [ -n "${TILO_INITRAMFS_HELPERS:-}" ] || return 0
+    local stripped="$TILO_INITRAMFS_HELPERS/$1"
+    [ -f "$stripped" ] || { derror "tilo: no stripped $1 in $TILO_INITRAMFS_HELPERS"; return 1; }
+    # shellcheck disable=SC2154 # dracut defines initdir before installing modules
+    rm -f -- "$initdir/usr/bin/$1"
+    cp --preserve=mode -- "$stripped" "$initdir/usr/bin/$1" || return 1
+    dinfo "tilo: initramfs $1 without its symbol table"
 }

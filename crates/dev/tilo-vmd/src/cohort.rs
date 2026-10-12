@@ -1,20 +1,23 @@
 //! Evidence that an authenticated component carries its own complete thin graph.
 //! Neither a component label nor a claimed profile grants this exception.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::Read as _;
-use std::os::unix::fs::MetadataExt as _;
+use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Component, Path, PathBuf};
 
 use package_store::registry::{InstalledPackage, Registry};
 use runtime_bundle::{VerifyOptions, verify_bundle_with};
+use tilo_app_package::{BlobHash, BlobSource, OpenBlob, PackageMeta};
 
 use crate::error::DaemonError;
 
 pub(crate) struct VerifiedCohort {
     pub(crate) version: String,
     pub(crate) packages: Vec<CohortPackage>,
+    /// Holds the derived archives `packages` name until the cohort is dropped.
+    _archives: Staging,
 }
 
 pub(crate) struct CohortPackage {
@@ -22,33 +25,107 @@ pub(crate) struct CohortPackage {
     archive: PathBuf,
 }
 
-fn archive(layer: &Path, row: &InstalledPackage, publisher: &str) -> Result<PathBuf, DaemonError> {
-    let store = layer.join("usr/share/tilo-apps");
-    let path = within(
-        &store,
-        &store.join("cohort").join(format!("{}.tapp", row.id)),
-    )?;
-    let metadata = fs::symlink_metadata(&path).map_err(invalid)?;
-    if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
-        return Err(invalid("a cohort archive is not immutable root-owned data"));
+/// A private directory of derived archives, removed with the cohort.
+struct Staging(PathBuf);
+
+impl Staging {
+    fn create(parent: &Path) -> Result<Self, DaemonError> {
+        let path = parent.join(format!("tilo-vmd-cohort-{}", uuid::Uuid::new_v4().simple()));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&path)
+            .map_err(invalid)?;
+        Ok(Self(path))
     }
-    let bytes = bounded(&path, tilo_app_package::MAX_APP_TAPP_BYTES)?;
-    let tapp = tilo_app_package::tapp::read(bytes.as_slice(), &mut tilo_app_package::DiscardBlobs)
-        .map_err(invalid)?;
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// An installed package `application` admitted: its signed record, and its
+/// payload tree at its path in the layer.
+struct Installed {
+    package: InstalledPackage,
+    record: package_store::integrity::Record,
+}
+
+/// Payload blobs read from an installed tree, by the hashes its signed
+/// collection names. The archive writer hashes each one as it streams, so a
+/// file that differs from its signed hash fails the write.
+struct InstalledBlobs(BTreeMap<BlobHash, PathBuf>);
+
+impl BlobSource for InstalledBlobs {
+    fn open_blob(&self, hash: &BlobHash) -> std::io::Result<Option<OpenBlob<'_>>> {
+        let Some(path) = self.0.get(hash) else {
+            return Ok(None);
+        };
+        let file = fs::File::open(path)?;
+        let len = file.metadata()?.len();
+        Ok(Some(OpenBlob {
+            len,
+            reader: Box::new(file),
+        }))
+    }
+}
+
+/// The complete signed archive of an installed cohort package, written into
+/// `staging` from the layer's own signed record and its verified payload.
+///
+/// An image ships each app once, as its installed tree. The archive the
+/// installer takes is the same package (the same signed root, so the same
+/// package id), rebuilt here instead of carried a second time as a `.tapp`.
+fn archive(installed: &Installed, publisher: &str, staging: &Path) -> Result<PathBuf, DaemonError> {
+    let Installed { package, record } = installed;
+    let meta = PackageMeta::from_root(
+        record.root.clone(),
+        record.manifest_bytes.clone(),
+        record.collection.encode(),
+    )
+    .map_err(invalid)?;
     let key: [u8; 32] = hex::decode(publisher)
         .map_err(invalid)?
         .try_into()
         .map_err(|_| invalid("malformed cohort publisher"))?;
-    if tapp.meta.id.to_hex() != row.package_id_hex
+    if meta.id.to_hex() != package.package_id_hex
         || !matches!(
-            tilo_app_package::verify(&tapp.meta, &[key]),
+            tilo_app_package::verify(&meta, &[key]),
             tilo_app_package::Verification::Trusted { .. }
         )
-        || !tapp.missing().is_empty()
     {
         return Err(invalid(
-            "cohort archive is not the complete authenticated package",
+            "an installed cohort package is not the authenticated package",
         ));
+    }
+    let blobs = meta
+        .collection
+        .entries
+        .iter()
+        .map(|(relative, hash)| {
+            let path = within(&package.payload_root, &package.payload_root.join(relative))?;
+            Ok((*hash, path))
+        })
+        .collect::<Result<BTreeMap<_, _>, DaemonError>>()?;
+    let path = staging.join(format!("{}.tapp", meta.id.to_hex()));
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(invalid)?;
+    let written = tilo_app_package::tapp::write(
+        std::io::BufWriter::new(file),
+        &meta,
+        Some(&InstalledBlobs(blobs)),
+    )
+    .map_err(invalid)?
+    .into_inner()
+    .map_err(|error| invalid(error.error()))?;
+    written.sync_all().map_err(invalid)?;
+    if written.metadata().map_err(invalid)?.len() > tilo_app_package::MAX_APP_TAPP_BYTES {
+        return Err(invalid("a cohort archive exceeds the application bound"));
     }
     Ok(path)
 }
@@ -182,7 +259,7 @@ fn application(
     publisher: &str,
     runtime: &str,
     arch: &str,
-) -> Result<PathBuf, DaemonError> {
+) -> Result<(PathBuf, Installed), DaemonError> {
     let mut package = row.clone();
     package.manifest_path = installed_path(layer, &row.manifest_path)?;
     package.payload_root = installed_path(layer, &row.payload_root)?;
@@ -253,7 +330,7 @@ fn application(
             "a purported thin app does not link the shipped toolkit",
         ));
     }
-    Ok(entry)
+    Ok((entry, Installed { package, record }))
 }
 
 fn closure(runtime: &Path, entries: Vec<PathBuf>, arch: &str) -> Result<(), DaemonError> {
@@ -288,10 +365,13 @@ fn closure(runtime: &Path, entries: Vec<PathBuf>, arch: &str) -> Result<(), Daem
     Ok(())
 }
 
+/// Verify the apps+runtime cohort in `layer`, and derive each package's
+/// complete archive into a private directory under `staging`.
 pub(crate) fn verify(
     layer: &Path,
     base_store: &Path,
     arch: &str,
+    staging: &Path,
 ) -> Result<VerifiedCohort, DaemonError> {
     let runtime_key = publisher(layer, "runtime-bundle-publisher.hex")?;
     let app_key = publisher(layer, "app-publisher.hex")?;
@@ -342,11 +422,15 @@ pub(crate) fn verify(
         ));
     }
     let runtime = format!("tilo-runtime/{}", manifest.version);
-    let entries = rows
+    let admitted = rows
         .entries()
         .iter()
         .map(|row| application(layer, row, &app_key, &runtime, arch))
         .collect::<Result<Vec<_>, _>>()?;
+    let entries = admitted
+        .iter()
+        .map(|(entry, _)| entry.clone())
+        .collect::<Vec<_>>();
     for entry in &entries {
         let interpreter = launcher::loader_preflight::read_interpreter(entry)
             .map_err(invalid)?
@@ -362,19 +446,22 @@ pub(crate) fn verify(
         closure(&bundle, vec![loader], arch)?;
     }
     closure(&bundle, entries, arch)?;
+    let archives = Staging::create(staging)?;
     let packages = rows
         .entries()
         .iter()
-        .map(|row| {
+        .zip(&admitted)
+        .map(|(row, (_, installed))| {
             Ok(CohortPackage {
                 row: row.clone(),
-                archive: archive(layer, row, &app_key)?,
+                archive: archive(installed, &app_key, &archives.0)?,
             })
         })
         .collect::<Result<Vec<_>, DaemonError>>()?;
     Ok(VerifiedCohort {
         version: manifest.version,
         packages,
+        _archives: archives,
     })
 }
 

@@ -1039,10 +1039,15 @@ RUN --mount=type=secret,id=browser_runtime_identity \
 # Apps compiled here are signed by the identity in the `app_publisher_identity`
 # secret when the build is given one (Build / OS dev: DEV_APP_PUBLISHER_IDENTITY),
 # else by one minted for this build. Ed25519 signs deterministically, so with
-# the one identity the same binaries give the same package ids, payload paths
-# and cohort archives in every build, and an update re-sends only the apps
-# that changed. The key is in no trust list: see the store's COPY
-# below. Secrets are not part of BuildKit's cache key and never enter a layer.
+# the one identity the same binaries give the same package ids and payload
+# paths in every build, and an update re-sends only the apps that changed. The
+# key is in no trust list: see the store's COPY below. Secrets are not part of
+# BuildKit's cache key and never enter a layer.
+#
+# Each app is in the image once, as its installed tree and signed record. The
+# dev VM daemon, the one reader of a complete archive, rebuilds it from those
+# (crates/dev/tilo-vmd/src/cohort.rs); a second copy of every app as a `.tapp`
+# was half of the app bytes in every update.
 RUN --mount=type=secret,id=app_publisher_identity \
     export TILO_IMAGE_BUILD=1 \
     && if [ -s /run/secrets/app_publisher_identity ]; then \
@@ -1050,7 +1055,6 @@ RUN --mount=type=secret,id=app_publisher_identity \
        fi \
     && BIN_DIR=/out/thin-apps \
     TAPP_DIR=/out/prebuilt-apps \
-    COHORT_TAPP_DIR=/usr/share/tilo-apps/cohort \
     EXPECTED_PUBKEY="${TILO_APP_COLLECTION_PUBLISHER}" \
     PKG_BIN=/out/tilo-app-package \
     INSTALL_BIN=/out/tilo-install \
@@ -1178,6 +1182,21 @@ FROM builder-base AS virtio-gallivm-cpu
 COPY os/scripts/virtio-gallivm-cpu.c /tmp/virtio-gallivm-cpu.c
 RUN cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC -shared \
     -Wl,-z,relro,-z,now /tmp/virtio-gallivm-cpu.c -o /virtio-gallivm-cpu.so
+
+# binutils' strip with its loader and libraries, for the initramfs build
+# (os/scripts/strip-initramfs-helpers.py). The rootfs has no binutils, and
+# BuildKit hashes every file of a bind mount, so the initramfs RUN mounts these
+# few files rather than the whole toolchain stage. Nothing here ships.
+FROM builder-base AS initramfs-strip-build
+RUN mkdir -p /strip-tools/usr/bin /strip-tools/usr/lib64 \
+    && cp /usr/bin/strip /strip-tools/usr/bin/strip \
+    && ldd /usr/bin/strip | awk '$2 == "=>" { print $3 } $1 ~ /^\// { print $1 }' \
+       | xargs -r -I{} cp -L {} /strip-tools/usr/lib64/ \
+    && /strip-tools/usr/lib64/ld-linux-*.so.* --library-path /strip-tools/usr/lib64 \
+       /strip-tools/usr/bin/strip --version
+
+FROM scratch AS initramfs-strip-tools
+COPY --from=initramfs-strip-build /strip-tools/ /
 
 # ---- Tilo build outputs, arranged by os/components.toml ---------------------
 # The manifest is the one record of which Tilo-built file lands where. This
@@ -2778,6 +2797,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     --mount=type=bind,source=os/dev/prepare-hardware-profile.py,target=/run/tilo-prepare-hardware-profile.py \
     --mount=type=bind,source=os/scripts/build-initramfs.sh,target=/run/tilo-build-initramfs.sh \
     --mount=type=bind,source=os/scripts/verify-board-initramfs.py,target=/run/verify-board-initramfs.py \
+    --mount=type=bind,source=os/scripts/strip-initramfs-helpers.py,target=/run/strip-initramfs-helpers.py \
+    --mount=type=bind,from=initramfs-strip-tools,source=/,target=/run/tilo-strip-tools,ro \
     --mount=type=bind,source=os/dev/hardware_profile.py,target=/run/hardware_profile.py \
     --mount=type=bind,source=os/hardware/profiles,target=/run/tilo-hardware-profiles \
     set -eux; \
@@ -2854,7 +2875,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
         --target-update-ref "$TILO_TARGET_IMGREF"; \
     # The initramfs recipe and its checks, shared with the dev image's board
     # layer.
-    bash /run/tilo-build-initramfs.sh "$kver"; \
+    # Its Tilo helpers go in without their symbol tables (TILO_STRIP_TOOLS).
+    TILO_STRIP_TOOLS=/run/tilo-strip-tools bash /run/tilo-build-initramfs.sh "$kver"; \
     # /boot belongs to the deployment, not the image: whatever the kernel
     # packages dropped there is now duplicated under the modules directory.
     rm -f /boot/vmlinuz-* /boot/initramfs-* /boot/System.map-* /boot/config-*; \

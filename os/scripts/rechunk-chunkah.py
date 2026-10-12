@@ -14,7 +14,9 @@ everything outside the tree pruned, into at most TREE_LAYERS layers, and the
 main run prunes the tree, its top directories included. A tree is a list of glob patterns
 (absolute image paths); a tree whose path lies inside another tree's is
 pruned from that one. Each set of files in FILE_SETS gets one layer the same
-way, and every other run prunes those files.
+way, and every other run prunes those files. The files no RPM owns that are
+in no tree or set get a run of their own too ("unowned"), so the main run
+holds packages only.
 os/scripts/oci-rechunk.py merges the layouts and proves the result is the raw
 image.
 
@@ -22,15 +24,19 @@ image.
 
 writes OUT/image (the main layout), OUT/components.json, and for each tree
 or file set present in ROOTFS, OUT/trees/<name>/image and its components.json.
-SOURCE_DATE_EPOCH must be set; chunkah reads it.
+SOURCE_DATE_EPOCH must be set; chunkah reads it. `rpm` must be on PATH: the
+unowned files are read from ROOTFS's own package database.
 """
 
 from __future__ import annotations
 
 import glob
 import os
+import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -157,6 +163,86 @@ def tree_roots(rootfs: Path) -> dict[str, list[str]]:
     return trees
 
 
+# Layers for the files no package owns (below). Its bigfiles (the SELinux
+# policy, the rpmdb, PDFium) are layers of their own and its small files one
+# more, so a changed unit re-sends the unit's layer and nothing else.
+UNOWNED_LAYERS = 8
+# Where an image keeps its package database, newest layout first.
+RPMDB_PATHS = ("/usr/lib/sysimage/rpm", "/usr/share/rpm", "/var/lib/rpm")
+
+
+def rpmdb(rootfs: Path) -> str:
+    """The image path of `rootfs`'s package database; an image without one is an error.
+
+    A path that is a symlink is passed over: rpm would resolve an absolute
+    target outside `rootfs`.
+    """
+    for path in RPMDB_PATHS:
+        directory = rootfs / path.lstrip("/")
+        if not directory.is_symlink() and directory.is_dir() and any(
+                (directory / name).is_file() for name in ("rpmdb.sqlite", "Packages", "Packages.db")):
+            return path
+    raise SystemExit(f"{rootfs} has no package database in {', '.join(RPMDB_PATHS)}")
+
+
+def owned_inodes(rootfs: Path) -> set[tuple[int, int]]:
+    """The inodes of every path an RPM of `rootfs` owns, so a hard link to one counts as owned.
+
+    rpm reads a copy of the database: opening the image's own could leave
+    SQLite sidecars in the root that every later run would then chunk.
+    """
+    with tempfile.TemporaryDirectory() as scratch:
+        database = Path(scratch) / "rpm"
+        shutil.copytree(rootfs / rpmdb(rootfs).lstrip("/"), database, symlinks=True)
+        listing = subprocess.run(["rpm", "--dbpath", str(database), "-qa", "--qf", "[%{FILENAMES}\\n]"],
+                                 check=True, capture_output=True, text=True).stdout
+    owned = set()
+    for line in listing.splitlines():
+        if not line.startswith("/"):
+            continue
+        try:
+            status = os.lstat(rootfs / line.lstrip("/"))
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        owned.add((status.st_dev, status.st_ino))
+    if not owned:
+        raise SystemExit(f"the package database of {rootfs} owns no file it carries")
+    return owned
+
+
+def unowned(rootfs: Path, skip: list[str]) -> list[str]:
+    """The regular files and symlinks of `rootfs` that no RPM owns, outside `skip`, as image paths.
+
+    In the main run chunkah packs them into one small "unclaimed" component
+    that its budget hashes into a bin with RPMs, so any change to one of Tilo's
+    units or config files re-sent tens of MB of unchanged packages.
+    """
+    owned = owned_inodes(rootfs)
+    skipped = set(skip)
+    found = []
+    for directory, subdirectories, files in os.walk(rootfs):
+        relative = Path(directory).relative_to(rootfs).as_posix()
+        prefix = "/" if relative == "." else f"/{relative}/"
+        kept = []
+        for name in sorted(subdirectories):
+            path = prefix + name
+            if path in skipped:
+                continue
+            if (rootfs / path.lstrip("/")).is_symlink():
+                files.append(name)
+            else:
+                kept.append(name)
+        subdirectories[:] = kept
+        for name in sorted(files):
+            path = prefix + name
+            status = os.lstat(rootfs / path.lstrip("/"))
+            if path in skipped or (status.st_dev, status.st_ino) in owned:
+                continue
+            if stat.S_ISREG(status.st_mode) or stat.S_ISLNK(status.st_mode):
+                found.append(path)
+    return sorted(found)
+
+
 def main(argv: list[str]) -> int:
     rootfs, out, max_layers = Path(argv[1]), Path(argv[2]), int(argv[3])
     if int(os.environ.get("SOURCE_DATE_EPOCH", "0")) <= 0:
@@ -172,6 +258,10 @@ def main(argv: list[str]) -> int:
     # renew that run's layer at every rename.
     main_prune = ["/sysroot/", *(path for path in every_root if not within(path, every_root)),
                   *(path for path in set_files if not within(path, every_root))]
+    # Files no package owns leave the main run for one of their own, which
+    # leaves the main run the RPMs alone.
+    loose = unowned(rootfs, ["/sysroot", *every_root, *set_files])
+    main_prune += loose
     out.mkdir(parents=True, exist_ok=True)
     chunkah(rootfs, out / "main", max_layers, main_prune)
     (out / "main" / "image").rename(out / "image")
@@ -185,6 +275,8 @@ def main(argv: list[str]) -> int:
         chunkah(rootfs, out / "trees" / name, TREE_LAYERS[name], prune)
     for name, files in file_sets.items():
         chunkah(rootfs, out / "trees" / name, 1, outside(rootfs, files))
+    if loose:
+        chunkah(rootfs, out / "trees" / "unowned", UNOWNED_LAYERS, outside(rootfs, loose))
     return 0
 
 

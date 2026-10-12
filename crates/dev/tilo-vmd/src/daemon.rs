@@ -1353,10 +1353,15 @@ impl Daemon {
                     "apps+runtime requires actual source-bound thin graph provenance".into(),
                 ));
             }
+            // The derived archives go beside the layer store's staging, which
+            // garbage collection clears of anything a dropped swap left.
+            let staging = self.root.join("staging");
+            fs::create_dir_all(&staging).map_err(DaemonError::io("create the cohort staging"))?;
             Some(crate::cohort::verify(
                 &layer_path,
                 Path::new("/usr/share/tilo-apps"),
                 std::env::consts::ARCH,
+                &staging,
             )?)
         } else {
             None

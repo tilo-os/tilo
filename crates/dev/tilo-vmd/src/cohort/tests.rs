@@ -161,10 +161,10 @@ type = "{entry_type}"
     manifest.publisher.identity = format!("ed25519:{publisher}");
     let packed = tilo_app_package::pack(&payload, &manifest, &identity).unwrap();
     let store = layer.join("usr/share/tilo-apps");
-    let archives = store.join("cohort");
-    fs::create_dir_all(&archives).unwrap();
+    // The archive the publisher signed and the store installed. The layer does
+    // not carry it: the daemon must rebuild exactly these bytes.
     tilo_app_package::tapp::write(
-        fs::File::create(archives.join("so.tilo.fixture.tapp")).unwrap(),
+        fs::File::create(work.join("signed.tapp")).unwrap(),
         &packed.meta,
         Some(&packed),
     )
@@ -246,19 +246,22 @@ fn fixture(root: &Path, case: &str) {
             )
             .unwrap();
         }
-        "archive_missing" => {
-            fs::remove_file(layer.join("usr/share/tilo-apps/cohort/so.tilo.fixture.tapp")).unwrap();
+        // Another key in the app publisher pin: the installed packages are
+        // signed, but not by the publisher this layer names.
+        "app_publisher" => pin(&layer, "app-publisher.hex", &"11".repeat(32)),
+        // A payload file swapped for a link out of the store: the archive must
+        // never be rebuilt from bytes outside the authenticated layer.
+        "payload_escape" => {
+            let binary = layer.join("usr/share/tilo-apps/payload/fixture/bin/fixture");
+            fs::copy(&binary, work.join("outside")).unwrap();
+            fs::remove_file(&binary).unwrap();
+            std::os::unix::fs::symlink(work.join("outside"), binary).unwrap();
         }
-        "archive_corrupt" => fs::write(
-            layer.join("usr/share/tilo-apps/cohort/so.tilo.fixture.tapp"),
-            b"corrupt",
-        )
-        .unwrap(),
-        "archive_escape" => {
-            let archive = layer.join("usr/share/tilo-apps/cohort/so.tilo.fixture.tapp");
-            fs::remove_file(&archive).unwrap();
-            std::os::unix::fs::symlink(work.join("outside"), archive).unwrap();
-            fs::write(work.join("outside"), b"outside").unwrap();
+        // A cohort archive left in the layer is not what the daemon installs.
+        "stale_archive" => {
+            let archives = layer.join("usr/share/tilo-apps/cohort");
+            fs::create_dir_all(&archives).unwrap();
+            fs::write(archives.join("so.tilo.fixture.tapp"), b"stale").unwrap();
         }
         "record_escape" => {
             let path = layer.join("usr/share/tilo-apps/packages/fixture/manifest.toml");
@@ -286,14 +289,31 @@ fn save(registry: &Registry, path: &Path) {
 }
 
 fn verify_subject(root: &Path, case: &str) {
+    let staging = root.join("staging");
     let result = verify(
         &root.join("layer"),
         &root.join("base"),
         std::env::consts::ARCH,
+        &staging,
     );
-    if matches!(case, "valid" | "dual_isa" | "service" | "empty_isa") {
+    if matches!(
+        case,
+        "valid" | "dual_isa" | "service" | "empty_isa" | "stale_archive"
+    ) {
         assert!(result.is_ok(), "{}", result.err().unwrap());
         let cohort = result.unwrap();
+        // The derived archive is the publisher's signed archive, byte for
+        // byte: complete, the same package id, trusted under the layer's pin.
+        let derived = fs::read(&cohort.packages.first().unwrap().archive).unwrap();
+        assert_eq!(derived, fs::read(root.join("work/signed.tapp")).unwrap());
+        let tapp =
+            tilo_app_package::tapp::read(derived.as_slice(), &mut tilo_app_package::DiscardBlobs)
+                .unwrap();
+        assert!(tapp.is_complete());
+        assert_eq!(
+            tapp.meta.id.to_hex(),
+            cohort.packages.first().unwrap().row.package_id_hex
+        );
         if case == "valid" {
             let session = crate::apply::Session {
                 slot: "device".into(),
@@ -379,8 +399,19 @@ fn verify_subject(root: &Path, case: &str) {
             )
             .is_err()
         );
+        drop(cohort);
+        assert_eq!(
+            fs::read_dir(&staging).unwrap().count(),
+            0,
+            "the derived archives outlived their cohort"
+        );
     } else {
         assert!(result.is_err(), "an invalid cohort was admitted");
+        assert_eq!(
+            fs::read_dir(&staging).unwrap().count(),
+            0,
+            "a refused cohort left archives behind"
+        );
     }
 }
 
@@ -412,12 +443,16 @@ fn complete_cohort_replays_real_signatures_payload_and_native_closure() {
         "executable",
         "escape",
         "record_escape",
-        "archive_missing",
-        "archive_corrupt",
-        "archive_escape",
+        "app_publisher",
+        "payload_escape",
+        "stale_archive",
     ] {
         let root = tempfile::tempdir().unwrap();
         fixture(root.path(), case);
+        // The one directory the verifier may write: everything else is
+        // read-only in the sandbox below.
+        let staging = root.path().join("staging");
+        fs::create_dir_all(&staging).unwrap();
         let output = Command::new("timeout")
             .args([
                 "30",
@@ -435,6 +470,8 @@ fn complete_cohort_replays_real_signatures_payload_and_native_closure() {
                 "--proc",
                 "/proc",
             ])
+            .arg("--bind")
+            .args([&staging, &staging])
             .args(["--setenv", SUBJECT])
             .arg(root.path())
             .args(["--setenv", "TILO_VMD_COHORT_CASE", case])

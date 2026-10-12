@@ -54,7 +54,8 @@ RUN --network=none \
 # /sysroot's contents pruned (the base's ostree repository, which bootc's
 # composefs backend never deploys), and gives trees that change on their own
 # schedule (Proton and the Steam runtime, the apps, the runtimes, Tilo's own
-# programs) layers of their own. The main run's budget leaves room for theirs:
+# programs, and the files no package owns, read with rpm from the image's own
+# database) layers of their own. The main run's budget leaves room for theirs:
 # ~200 layers in all, well under containers-storage's 500. The epoch caps
 # the time of files no package owns (a package's files are capped at its build
 # time), so it must be the same for two builds that should share layers.

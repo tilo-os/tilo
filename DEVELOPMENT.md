@@ -601,8 +601,11 @@ every generic image it publishes out by content before anything consumes it
   more layers than components so that chunkah packs nothing there. Otherwise a
   runtime rename re-sends every layer its files share with unchanged ones, and
   one new Tilo binary moves RPMs between the main run's bins: which components
-  share a layer depends on every component in the run. The main run is left
-  with the RPMs and the few other files no package owns. Small files that are new in every build although
+  share a layer depends on every component in the run. The files no package
+  owns (read with rpm from the image's own database: Tilo's units and config,
+  the SELinux policy, the rpmdb) get a run of their own too, so a changed unit
+  re-sends one small layer, not a bin of unchanged RPMs, and the main run is
+  left with the RPMs. Small files that are new in every build although
   nothing they describe changed (the runtime bundles' signatures and
   publisher keys, whose keys are minted per build because the launcher trusts
   them; systemd's update stamp), and the app store's index, which changes

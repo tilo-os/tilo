@@ -346,13 +346,20 @@ class Rechunk(unittest.TestCase):
             "/usr/lib/tilo-runtime/2026.07+native.ab/lib",
             "/usr/share/tilo/app-publisher.hex", "/usr/share/tilo/catalog.toml"])
 
-    def test_the_runner_gives_present_trees_their_own_run(self) -> None:
-        rootfs = self.work / "rootfs"
-        (rootfs / "usr/lib/tilo/windows-runners").mkdir(parents=True)
-        (rootfs / "etc").mkdir()
+    def fake_tools(self, rootfs: Path, owned: list[str] = ()) -> tuple[Path, dict]:
+        """A chunkah that records its arguments, and an rpm whose database owns `owned`.
+
+        The rootfs gets a package database file, which the fake rpm owns, so
+        a test names exactly the files no package owns.
+        """
+        database = rootfs / "usr/lib/sysimage/rpm"
+        database.mkdir(parents=True, exist_ok=True)
+        (database / "rpmdb.sqlite").write_text("packages")
+        listing = self.work / "owned"
+        listing.write_text("".join(f"{path}\n" for path in ["/usr/lib/sysimage/rpm/rpmdb.sqlite", *owned]))
         calls = self.work / "calls"
         fake = self.work / "bin"
-        fake.mkdir()
+        fake.mkdir(exist_ok=True)
         (fake / "chunkah").write_text(
             "#!/bin/sh\n"
             f"printf '%s\\n' \"$*\" >> {calls}\n"
@@ -360,8 +367,19 @@ class Rechunk(unittest.TestCase):
             "  case $1 in --output) mkdir -p \"${2#oci:}\";; --write-manifest-to) echo {} > \"$2\";; esac\n"
             "  shift\n"
             "done\n")
-        (fake / "chunkah").chmod(0o755)
-        environment = {"PATH": f"{fake}:/usr/bin:/bin", "SOURCE_DATE_EPOCH": "1700000000"}
+        (fake / "rpm").write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$*\" >> {self.work / 'rpm-calls'}\n"
+            f"cat {listing}\n")
+        for tool in ("chunkah", "rpm"):
+            (fake / tool).chmod(0o755)
+        return calls, {"PATH": f"{fake}:/usr/bin:/bin", "SOURCE_DATE_EPOCH": "1700000000"}
+
+    def test_the_runner_gives_present_trees_their_own_run(self) -> None:
+        rootfs = self.work / "rootfs"
+        (rootfs / "usr/lib/tilo/windows-runners").mkdir(parents=True)
+        (rootfs / "etc").mkdir()
+        calls, environment = self.fake_tools(rootfs)
         out = self.work / "out"
         (rootfs / "etc/tilo").mkdir()
         (rootfs / "etc/tilo/runtime-bundle-trusted-publishers.txt").write_text("ab\n")
@@ -397,18 +415,7 @@ class Rechunk(unittest.TestCase):
         for path in ("registry.toml", "pkgs/ab/bin/calculator", "pkgs/ab.pkg/manifest.toml",
                      "pkgs/ab.pkg/signed-root", "cohort/so.tilo.calculator.tapp"):
             (store / path).write_text(path)
-        calls = self.work / "calls"
-        fake = self.work / "bin"
-        fake.mkdir()
-        (fake / "chunkah").write_text(
-            "#!/bin/sh\n"
-            f"printf '%s\\n' \"$*\" >> {calls}\n"
-            "while [ $# -gt 0 ]; do\n"
-            "  case $1 in --output) mkdir -p \"${2#oci:}\";; --write-manifest-to) echo {} > \"$2\";; esac\n"
-            "  shift\n"
-            "done\n")
-        (fake / "chunkah").chmod(0o755)
-        environment = {"PATH": f"{fake}:/usr/bin:/bin", "SOURCE_DATE_EPOCH": "1700000000"}
+        calls, environment = self.fake_tools(rootfs)
         subprocess.run([sys.executable, str(SCRIPTS / "rechunk-chunkah.py"), str(rootfs), str(self.work / "out"),
                         "128"], check=True, env=environment)
         main, store_run, index = calls.read_text().splitlines()
@@ -450,18 +457,9 @@ class Rechunk(unittest.TestCase):
         (rootfs / "usr/share/fonts/tilo/NotoSans.ttf").hardlink_to(font)
         (rootfs / "usr/share/tilo/font-catalogs/c1/NotoSans.ttf").hardlink_to(font)
         (rootfs / "usr/bin/tilo-control").symlink_to("tilo-greeter")
-        calls = self.work / "calls"
-        fake = self.work / "bin"
-        fake.mkdir()
-        (fake / "chunkah").write_text(
-            "#!/bin/sh\n"
-            f"printf '%s\\n' \"$*\" >> {calls}\n"
-            "while [ $# -gt 0 ]; do\n"
-            "  case $1 in --output) mkdir -p \"${2#oci:}\";; --write-manifest-to) echo {} > \"$2\";; esac\n"
-            "  shift\n"
-            "done\n")
-        (fake / "chunkah").chmod(0o755)
-        environment = {"PATH": f"{fake}:/usr/bin:/bin", "SOURCE_DATE_EPOCH": "1700000000"}
+        calls, environment = self.fake_tools(rootfs, owned=[
+            "/etc/hostname", "/usr/bin/bash", "/usr/bin/fsck", "/usr/libexec/sssd/krb5_child",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf"])
         out = self.work / "out"
         subprocess.run([sys.executable, str(SCRIPTS / "rechunk-chunkah.py"), str(rootfs), str(out), "96"],
                        check=True, env=environment)
@@ -513,6 +511,71 @@ class Rechunk(unittest.TestCase):
                           "/usr/share/tilo/app-publisher.hex"} & signatures[1])
         for name in ("windows-runners", "native-runtime", "browser-runtime", "tilo", "build-signatures"):
             self.assertTrue((out / "trees" / name / "image").is_dir(), name)
+
+    def test_files_no_package_owns_leave_the_main_run_for_one_of_their_own(self) -> None:
+        rootfs = self.work / "rootfs"
+        for path in ("usr/bin", "usr/lib64", "etc/systemd/system/multi-user.target.wants",
+                     "etc/tilo", "usr/share/tilo", "sysroot/ostree"):
+            (rootfs / path).mkdir(parents=True)
+        for path in ("usr/bin/bash", "usr/lib64/libc.so.6", "etc/hostname",
+                     "etc/systemd/system/tilo-units.service", "usr/lib64/libpdfium.so",
+                     "usr/share/tilo/catalog.toml", "sysroot/ostree/object", "etc/.updated"):
+            (rootfs / path).write_text(path)
+        # A link to the unit: no package owns it either.
+        (rootfs / "etc/systemd/system/multi-user.target.wants/tilo-units.service").symlink_to(
+            "../tilo-units.service")
+        # Another name of a packaged file is the package's, whatever its path.
+        (rootfs / "usr/lib64/libc-alias.so.6").hardlink_to(rootfs / "usr/lib64/libc.so.6")
+        calls, environment = self.fake_tools(rootfs, owned=[
+            "/usr/bin/bash", "/usr/lib64/libc.so.6", "/etc/hostname", "/usr/share/doc/absent"])
+        subprocess.run([sys.executable, str(SCRIPTS / "rechunk-chunkah.py"), str(rootfs), str(self.work / "out"),
+                        "96"], check=True, env=environment)
+
+        def run(line: str) -> tuple[int, set[str]]:
+            words = line.split()
+            return (int(words[words.index("--max-layers") + 1]),
+                    {words[i + 1] for i, word in enumerate(words) if word == "--prune"})
+
+        main, tilo, signatures, loose = map(run, calls.read_text().splitlines())
+        mine = {"/etc/systemd/system/tilo-units.service",
+                "/etc/systemd/system/multi-user.target.wants/tilo-units.service",
+                "/usr/lib64/libpdfium.so"}
+        # The main run keeps the packages' files and leaves the loose ones.
+        self.assertEqual(main[0], 96)
+        self.assertTrue(mine <= main[1])
+        self.assertFalse({"/usr/bin/bash", "/usr/lib64/libc.so.6", "/usr/lib64/libc-alias.so.6",
+                          "/etc/hostname"} & main[1])
+        # Their run keeps exactly them; a tree's files and a set's are not theirs.
+        self.assertEqual(loose[0], 8)
+        self.assertFalse(mine & loose[1])
+        self.assertTrue({"/usr/bin", "/usr/lib64/libc.so.6", "/usr/lib64/libc-alias.so.6", "/etc/hostname",
+                         "/etc/.updated", "/usr/share", "/sysroot", "/etc/tilo"} <= loose[1])
+        self.assertTrue((self.work / "out/trees/unowned/image").is_dir())
+        # Read from a copy of the image's own database, which stays untouched.
+        query = (self.work / "rpm-calls").read_text()
+        self.assertRegex(query, r"^--dbpath /\S+/rpm -qa --qf ")
+        self.assertNotIn(str(rootfs), query)
+        self.assertEqual(sorted(path.name for path in (rootfs / "usr/lib/sysimage/rpm").iterdir()),
+                         ["rpmdb.sqlite"])
+        self.assertEqual((tilo[0], signatures[0]), (56, 1))
+
+    def test_an_image_whose_packages_cannot_be_read_is_refused(self) -> None:
+        rootfs = self.work / "rootfs"
+        (rootfs / "etc").mkdir(parents=True)
+        (rootfs / "etc/hostname").write_text("tilo")
+        _, environment = self.fake_tools(rootfs)
+        # A database that owns nothing in the image is no observation.
+        (self.work / "owned").write_text("/usr/share/doc/absent\n")
+        failed = subprocess.run([sys.executable, str(SCRIPTS / "rechunk-chunkah.py"), str(rootfs),
+                                 str(self.work / "out"), "96"], env=environment, capture_output=True, text=True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("owns no file", failed.stderr)
+        # No database at all.
+        shutil.rmtree(rootfs / "usr/lib/sysimage")
+        failed = subprocess.run([sys.executable, str(SCRIPTS / "rechunk-chunkah.py"), str(rootfs),
+                                 str(self.work / "out2"), "96"], env=environment, capture_output=True, text=True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("no package database", failed.stderr)
 
     def test_two_trees_may_not_name_one_path(self) -> None:
         rootfs = self.work / "rootfs"

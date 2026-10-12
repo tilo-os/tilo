@@ -199,7 +199,7 @@ class AssemblyNamespaces(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ASSEMBLER.selected_applications(repo, invalid)
 
-    def test_complete_cohort_retains_signed_archives_without_restamping_versions(self):
+    def test_complete_cohort_ships_each_app_once_without_restamping_versions(self):
         with tempfile.TemporaryDirectory(prefix='cohort-pack-') as directory:
             stage = Path(directory)
             (stage / 'work').mkdir()
@@ -209,7 +209,9 @@ class AssemblyNamespaces(unittest.TestCase):
             with patch.object(ASSEMBLER, 'run') as run:
                 ASSEMBLER.package_inside(args)
             environment = run.call_args.kwargs['env']
-            self.assertEqual(environment['COHORT_TAPP_DIR'], '/usr/share/tilo-apps/cohort')
+            # The installed tree is the only copy: no second archive per app.
+            self.assertNotIn('COHORT_TAPP_DIR', environment)
+            self.assertNotIn('TAPP_OUT', environment)
             self.assertNotIn('APP_VERSION', environment)
             self.assertNotIn('VERSION_OVERRIDE', environment)
             args.app = 'notes'

@@ -45,7 +45,18 @@ printf 'sysloglvl=0\n' > /etc/dracut.conf.d/99-tilo-build-logging.conf
 omit_modules="network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh"
 required_modules="crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock"
 log="$(mktemp /tmp/tilo-dracut.XXXXXX)"
-trap 'rm -f -- "$log"' EXIT
+helpers="$(mktemp -d /tmp/tilo-initramfs-helpers.XXXXXX)"
+trap 'rm -rf -- "$log" "$helpers"' EXIT
+# Tilo's early-boot helpers go into the initramfs without their symbol tables
+# when TILO_STRIP_TOOLS names a tree with binutils (the uki-tools stage): the
+# UKI is resealed every release, and their symbols were 12 MB of it that no
+# crash log there reads. The module scripts install the checked copies from
+# TILO_INITRAMFS_HELPERS; the rootfs keeps the full binaries.
+if [ -n "${TILO_STRIP_TOOLS:-}" ]; then
+  python3 -B "$(dirname "${BASH_SOURCE[0]}")/strip-initramfs-helpers.py" \
+      --tools "$TILO_STRIP_TOOLS" --out "$helpers" /usr/bin/tilo-rollback /usr/bin/tilo-sibling-unlock
+  export TILO_INITRAMFS_HELPERS="$helpers"
+fi
 dracut --force --reproducible --compress zstd -v --kver "$kver" \
     --omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh" \
     --omit-drivers "amdgpu nouveau xe xfs" \
@@ -54,6 +65,14 @@ dracut --force --reproducible --compress zstd -v --kver "$kver" \
     "/usr/lib/modules/$kver/initramfs.img" > "$log" 2>&1 \
   || { cat "$log" >&2; exit 1; }
 test -s "/usr/lib/modules/$kver/initramfs.img"
+# dracut's log is the record of what went in (see below): each stripped copy
+# must be named in it, or the initramfs carries the full binary after all.
+if [ -n "${TILO_STRIP_TOOLS:-}" ]; then
+  for helper in tilo-rollback tilo-sibling-unlock; do
+    grep -q "tilo: initramfs $helper without its symbol table" "$log" || {
+      echo "dracut did not install the stripped $helper" >&2; cat "$log" >&2; exit 1; }
+  done
+fi
 # Record what dracut says it included, and check THAT rather than reading the
 # image back. dracut wraps the contents in a squashfs, and listing one needs
 # privileges an unprivileged image builder does not have — so inspecting the
