@@ -131,12 +131,31 @@ fn probe_sampleable(device: &wgpu::Device) {
     }
 }
 
-/// The layouts the presenting device was confirmed to sample, with a version
+/// The layouts clients are told the presenting device samples, with a version
 /// that changes when they do (`0` until a device is published).
+///
+/// Only LINEAR, for now. Sampling a client's compressed (UBWC) buffer was seen
+/// to read wrong pixels on the Yoga's Adreno ("pixel … is …, the client wrote
+/// …" in `a_gpu_client_writing_a_compressed_buffer_is_sampled_exactly_for_fifty_frames`),
+/// so no client is asked to allocate one until that race is understood. The
+/// probe still finds every sampleable layout (logged above), and importing
+/// one a client chose anyway still works.
 #[cfg(target_os = "linux")]
 pub fn sampleable_formats() -> (u64, Vec<smithay::backend::allocator::Format>) {
     let known = SAMPLEABLE.lock().unwrap_or_else(PoisonError::into_inner);
-    (known.version, known.formats.clone())
+    (known.version, advertised(&known.formats))
+}
+
+/// Of the layouts the device samples, the ones clients are offered.
+#[cfg(target_os = "linux")]
+fn advertised(
+    sampled: &[smithay::backend::allocator::Format],
+) -> Vec<smithay::backend::allocator::Format> {
+    sampled
+        .iter()
+        .filter(|format| format.modifier == smithay::backend::allocator::Modifier::Linear)
+        .copied()
+        .collect()
 }
 
 /// Whether the presenting device was confirmed to sample a client buffer of
@@ -1144,6 +1163,25 @@ pub(crate) fn wait_readable(dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Clients are offered LINEAR only: a compressed or tiled layout the
+    /// device samples stays importable but is not advertised.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_linear_layouts_are_advertised() {
+        use smithay::backend::allocator::{Format, Fourcc, Modifier};
+        let format = |code, modifier: u64| Format {
+            code,
+            modifier: Modifier::from(modifier),
+        };
+        let linear = format(Fourcc::Xrgb8888, 0);
+        let sampled = [
+            linear,
+            format(Fourcc::Xrgb8888, 0x0500_0000_0000_0001),
+            format(Fourcc::Argb8888, 0x0500_0000_0000_0004),
+        ];
+        assert_eq!(advertised(&sampled), [linear]);
+    }
 
     fn present() -> Option<PresentDevice> {
         let mut context = ui::gpu::RenderContext::new();
