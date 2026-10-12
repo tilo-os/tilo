@@ -8,12 +8,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use tilo_vm_protocol::layer_hash::walk;
 use tilo_vm_protocol::{BootChange, BootConfirmResult, ControlResult, InputAction, OutputSpec};
 
 use crate::apply::{Apply, GREETER_UNIT, Session, SessionProcess};
 use crate::boot::Boot;
 use crate::error::DaemonError;
-use crate::fsutil::{symlink, walk, write_atomic};
+use crate::fsutil::{symlink, write_atomic};
 use crate::input;
 use crate::slots::{DeviceSession, Login};
 
@@ -31,14 +32,27 @@ pub struct SystemdApply {
     layers_dir: PathBuf,
     views_dir: PathBuf,
     boot: Boot,
+    cohort_view: Option<(String, Vec<PathBuf>, PathBuf)>,
 }
 
 impl SystemdApply {
+    fn cohort_environment(
+        &mut self,
+        session: &Session,
+        uid: u32,
+    ) -> Result<Vec<(String, String)>, DaemonError> {
+        let pid = self.session_pid(session).ok_or_else(|| {
+            DaemonError::InvalidParams("the admitted session has no live process".into())
+        })?;
+        cohort_process_environment(pid, uid)
+    }
+
     pub fn new(root: &Path) -> Self {
         Self {
             layers_dir: root.join("layers"),
             views_dir: root.join("views"),
             boot: Boot::new(root),
+            cohort_view: None,
         }
     }
 }
@@ -403,6 +417,7 @@ impl Apply for SystemdApply {
         generation: u64,
         layers: &[PathBuf],
     ) -> Result<String, DaemonError> {
+        self.cohort_view = None;
         let view = crate::session_view::prepare(&self.views_dir, slot, layers)?;
         Ok(format!(
             "# Written by tilo-vmd: slot {slot}, generation {generation}. Do not edit.\n[Service]\nExtensionDirectories=\nBindReadOnlyPaths={}/usr:/usr {}/opt:/opt\n",
@@ -1006,6 +1021,98 @@ impl Apply for SystemdApply {
         install_app_in_session(self, session, tapp, false)
     }
 
+    fn prepare_cohort_selection(
+        &mut self,
+        session: &Session,
+        layers: &[PathBuf],
+    ) -> Result<(), DaemonError> {
+        // Another RPC process may have replaced this slot's mounted view since
+        // our last request. Never reuse an earlier connection's cached identity.
+        self.cohort_view = None;
+        let view = crate::session_view::prepare(&self.views_dir, &session.slot, layers)?;
+        self.cohort_view = Some((session.slot.clone(), layers.to_vec(), view));
+        Ok(())
+    }
+
+    fn cohort_selected_apps(
+        &mut self,
+        session: &Session,
+        layers: &[PathBuf],
+    ) -> Result<crate::SelectedApps, DaemonError> {
+        let view = self
+            .cohort_view
+            .as_ref()
+            .filter(|(slot, current, _)| slot == &session.slot && current == layers)
+            .map(|(_, _, view)| view.clone())
+            .ok_or_else(|| DaemonError::InvalidParams("no current cohort view".into()))?;
+        let uid = self.account_uid(&session.user)?;
+        let home = home_of(&session.user).ok_or_else(|| {
+            DaemonError::InvalidParams("the admitted session account has no home".into())
+        })?;
+        let environment = self.cohort_environment(session, uid)?;
+        let mut command = cohort_account_command(session, uid, &home, &view, &environment);
+        command.args(["list", "--json", "--runtime-paths"]);
+        let text = run("read authoritative cohort selections", &mut command)?;
+        if text.len() > 8 * 1024 * 1024 {
+            return Err(DaemonError::InvalidParams(
+                "cohort selection metadata exceeds bound".into(),
+            ));
+        }
+        let rows: crate::SelectedApps = serde_json::from_str(&text).map_err(|error| {
+            DaemonError::InvalidParams(format!("cohort selection metadata: {error}"))
+        })?;
+        if rows.apps.len() > 512 || rows.runtime_paths.len() > 512 {
+            return Err(DaemonError::InvalidParams(
+                "cohort selection count exceeds bound".into(),
+            ));
+        }
+        Ok(rows)
+    }
+    fn cohort_runtime_view(
+        &mut self,
+        session: &Session,
+        layers: &[PathBuf],
+        prior: bool,
+    ) -> Result<PathBuf, DaemonError> {
+        crate::session_view::prepare(
+            &self.views_dir,
+            &format!(
+                "{}-cohort-{}",
+                session.slot,
+                if prior { "prior" } else { "candidate" }
+            ),
+            layers,
+        )
+    }
+    fn install_cohort_app_in_view(
+        &mut self,
+        session: &Session,
+        tapp: &Path,
+        layers: &[PathBuf],
+    ) -> Result<String, DaemonError> {
+        let view = match &self.cohort_view {
+            Some((slot, existing, view)) if slot == &session.slot && existing == layers => {
+                view.clone()
+            }
+            _ => {
+                return Err(DaemonError::InvalidParams(
+                    "cohort installer has no current request-scoped view".into(),
+                ));
+            }
+        };
+        let uid = self.account_uid(&session.user)?;
+        let home = home_of(&session.user).ok_or_else(|| DaemonError::Apply {
+            step: "select cohort in verified view".into(),
+            detail: "the verified session account has no home".into(),
+        })?;
+        let environment = self.cohort_environment(session, uid)?;
+        with_staged_app(tapp, |staged| {
+            run(
+                "select cohort in verified view",
+                &mut cohort_view_command(session, uid, &home, &view, staged, &environment),
+            )
+        })
+    }
     fn install_cohort_app(
         &mut self,
         session: &Session,
@@ -1054,6 +1161,96 @@ fn install_app_in_session(
         });
     let _ = fs::remove_dir_all(&dir);
     result
+}
+
+fn with_staged_app(
+    tapp: &Path,
+    install: impl FnOnce(&Path) -> Result<String, DaemonError>,
+) -> Result<String, DaemonError> {
+    let dir = Path::new("/var/tmp").join(format!("tilo-vm-app-{}", uuid::Uuid::new_v4().simple()));
+    fs::create_dir_all(&dir).map_err(DaemonError::io("stage the app package"))?;
+    let staged = dir.join("app.tapp");
+    let result = fs::copy(tapp, &staged)
+        .map_err(DaemonError::io("stage the app package"))
+        .and_then(|_| make_readable(&dir, &staged))
+        .and_then(|()| install(&staged));
+    let _ = fs::remove_dir_all(&dir);
+    result
+}
+
+/// A transient system service gets the same readonly slot view as the final
+/// session, independently of the old compositor's retained namespace. systemd
+/// sets the existing session account; no caller command or identity is accepted.
+fn cohort_view_command(
+    session: &Session,
+    uid: u32,
+    home: &str,
+    view: &Path,
+    staged: &Path,
+    environment: &[(String, String)],
+) -> Command {
+    let mut command = cohort_account_command(session, uid, home, view, environment);
+    command
+        .args([
+            "install",
+            "--allow-self-signed",
+            "--force",
+            "--preserve-held",
+        ])
+        .arg(staged);
+    command
+}
+
+fn cohort_process_environment(pid: u32, uid: u32) -> Result<Vec<(String, String)>, DaemonError> {
+    if !proc_field(pid, "Uid:").is_some_and(|value| {
+        value
+            .split_whitespace()
+            .all(|value| value.parse::<u32>() == Ok(uid))
+    }) {
+        return Err(DaemonError::InvalidParams(
+            "the session process account changed".into(),
+        ));
+    }
+    let bytes = fs::read(format!("/proc/{pid}/environ"))
+        .map_err(DaemonError::io("read admitted session environment"))?;
+    Ok(crate::exec::session_env(&bytes))
+}
+
+fn cohort_account_command(
+    session: &Session,
+    uid: u32,
+    home: &str,
+    view: &Path,
+    environment: &[(String, String)],
+) -> Command {
+    let mut command = Command::new("systemd-run");
+    command
+        .args(["--wait", "--pipe", "--collect", "--quiet"])
+        .arg(format!(
+            "--unit=tilo-vm-cohort-{}",
+            uuid::Uuid::new_v4().simple()
+        ))
+        .arg(format!("--property=User={}", session.user))
+        .arg(format!(
+            "--property=BindReadOnlyPaths={}/usr:/usr {}/opt:/opt",
+            view.display(),
+            view.display()
+        ))
+        .arg(format!("--setenv=HOME={home}"))
+        .arg(format!("--setenv=USER={}", session.user))
+        .arg(format!("--setenv=XDG_RUNTIME_DIR=/run/user/{uid}"));
+    for (key, value) in environment {
+        if matches!(key.as_str(), "XDG_DATA_HOME" | "XDG_RUNTIME_DIR") {
+            command.arg(format!("--setenv={key}={value}"));
+        }
+    }
+    command.args([
+        "--property=NoNewPrivileges=yes",
+        "--property=RuntimeMaxSec=300",
+        "--",
+        "/usr/bin/tilo-install",
+    ]);
+    command
 }
 
 fn app_install_command(pid: u32, user: &str, uid: u32, home: &str, staged: &Path) -> Command {
@@ -1694,5 +1891,90 @@ mod tests {
             let error = await_png(&path, std::time::Duration::from_millis(200)).unwrap_err();
             assert!(error.to_string().contains("no complete PNG"), "{error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod userspace_tests {
+    use super::*;
+
+    #[test]
+    fn cohort_store_environment_is_read_from_the_admitted_process() {
+        use std::io::BufRead as _;
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("sh")
+            .args(["-c", "printf 'ready\\n'; read finish"])
+            .env("XDG_DATA_HOME", "/srv/person/nondefault-data")
+            .env("XDG_RUNTIME_DIR", "/run/person")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        let uid = super::proc_field(child.id(), "Uid:")
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse::<u32>()
+            .unwrap();
+        let environment = super::cohort_process_environment(child.id(), uid);
+        let wrong_account = super::cohort_process_environment(child.id(), uid.wrapping_add(1));
+        drop(child.stdin.take());
+        child.wait().unwrap();
+        let environment = environment.unwrap();
+        assert!(
+            environment.contains(&("XDG_DATA_HOME".into(), "/srv/person/nondefault-data".into()))
+        );
+        assert!(wrong_account.is_err());
+        assert!(super::cohort_process_environment(child.id(), uid).is_err());
+    }
+
+    #[test]
+    fn cohort_installer_uses_the_candidate_view_and_existing_account_without_restart() {
+        let session = Session {
+            slot: "owned".into(),
+            user: "existing-person".into(),
+            unit: "session-3.scope".into(),
+            units: Vec::new(),
+            control_socket: PathBuf::from("/run/owned/control"),
+            stand_in: false,
+            login: None,
+        };
+        let command = cohort_view_command(
+            &session,
+            1000,
+            "/home/existing-person",
+            Path::new("/verified/view"),
+            Path::new("/staged/app.tapp"),
+            &crate::exec::session_env(
+                b"XDG_DATA_HOME=/srv/person/data\0XDG_RUNTIME_DIR=/run/person\0UNTRUSTED=bad\0",
+            ),
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(command.get_program(), "systemd-run");
+        for required in [
+            "--property=User=existing-person",
+            "--setenv=XDG_DATA_HOME=/srv/person/data",
+            "--setenv=XDG_RUNTIME_DIR=/run/person",
+            "--property=BindReadOnlyPaths=/verified/view/usr:/usr /verified/view/opt:/opt",
+            "--property=NoNewPrivileges=yes",
+            "--preserve-held",
+            "/usr/bin/tilo-install",
+            "/staged/app.tapp",
+        ] {
+            assert!(args.iter().any(|arg| arg == required), "{args:?}");
+        }
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.contains("nsenter") || arg.contains("restart"))
+        );
     }
 }

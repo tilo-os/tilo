@@ -2727,7 +2727,11 @@ impl FrameBuilderControlState<'_> {
         // yet: an index build or an app's directory page that would add to it
         // is still on its way. `wait_ms` waits for that.
         answer.insert("revision".into(), format!("{fingerprint:016x}").into());
-        answer.insert("complete".into(), complete.into());
+        answer.insert(
+            "complete".into(),
+            (complete && catalog.completion().complete).into(),
+        );
+        answer.insert("completion".into(), serde_json::json!(catalog.completion()));
         Ok(serde_json::Value::Object(answer))
     }
 }
@@ -3212,10 +3216,15 @@ impl ControlState for FrameBuilderControlState<'_> {
     fn chrome_state_json(&self) -> serde_json::Value {
         let chrome = self.fb.chrome();
         let overlays = &chrome.overlays;
+        let native_broker = chrome
+            .native_app_opening
+            .as_ref()
+            .and_then(|opening| opening.0.upgrade().ok());
         let peer_sync = self.fb.host().peer_sync_snapshot();
         let (status_sharing, own_status, following) = self.fb.host().presence_snapshot();
         serde_json::json!({
             "seat_focus": self.seat.map(State::seat_focus_json),
+            "native_window_provenance": self.seat.map(|seat| seat.native_window_provenance_with_broker(native_broker.as_ref())),
             "overlays": {
                 "overview": overlays.overview,
                 "quick_settings": overlays.quick_settings,
@@ -16232,7 +16241,6 @@ mod tests {
                 );
             attach_directory_fixture(&mut fixture.frame_builder, &directory);
             let (wake, woken) = loop_wake(&fixture.event_loop);
-            let _installed = crate::shell::search::invocation_wake::install(wake);
             let (mut conn, mut writer, mut reader) = control_client();
 
             let enumerate = b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n";
@@ -16258,6 +16266,12 @@ mod tests {
                 .dispatch(Some(Duration::ZERO), &mut fixture.state)
                 .expect("dispatch");
             woken.set(false);
+            // Install the loop's wake only now. The listings above start the
+            // local index workers, and a finished build wakes whichever loop
+            // was installed when it started; one landing after the clear
+            // above would read as the admission waking the loop early. The
+            // admission ticket takes this wake when the invocation makes it.
+            let _installed = crate::shell::search::invocation_wake::install(wake);
 
             let invoke = serde_json::json!({
                 "op": "actions_invoke",
@@ -16391,6 +16405,7 @@ mod tests {
                 panic!("a waited listing answers with the listing");
             };
             assert_eq!(listing["complete"], true, "{listing}");
+            assert_eq!(listing["completion"]["complete"], true, "{listing}");
             assert_eq!(listing["settled"], true, "{listing}");
             let action_id = listing["actions"]
                 .as_array()
@@ -17174,6 +17189,20 @@ mod tests {
             rows["count"].as_u64().is_some_and(|count| count > 0),
             "{rows}"
         );
+        let completion = &rows["completion"];
+        assert!(
+            completion["complete"].is_boolean(),
+            "admin wire preserves completion: {rows}"
+        );
+        assert!(
+            completion["incomplete"].is_array(),
+            "admin wire preserves provider outcomes: {rows}"
+        );
+        assert_eq!(
+            completion["complete"].as_bool(),
+            completion["incomplete"].as_array().map(Vec::is_empty)
+        );
+        assert_eq!(rows["complete"], completion["complete"]);
         assert!(matches!(
             ask(r#"{"op":"state_dump"}"#),
             test_control::Response::State { .. }

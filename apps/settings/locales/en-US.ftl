@@ -1807,6 +1807,15 @@ net-sim-pin-caption = Enter the PIN for the selected SIM to unlock mobile broadb
 net-ipv4-caption = Use automatic addressing unless your network requires a fixed address.
 net-vpn-caption = Choose a saved VPN to connect. Add connections in VPN Studio.
 
+net-wake-network = Wake over { $name }
+net-wake-disabled = Enable magic-packet wake for this connection. Whether this machine resumes must be tested separately.
+net-wake-unverified = Magic-packet wake is saved and enabled in the driver. Waking this machine has not been verified.
+net-wake-connect-first = Connect to this network to check its device and apply wake settings.
+net-wake-unsupported = This connection's driver does not report magic-packet wake support.
+net-wake-unavailable = Wake settings could not be read.
+net-wake-pending = The wake setting is saved, but applying it to this connection needs attention.
+net-wake-saved = Wake configuration saved. Physical wake remains unverified.
+
 # Copy used by Settings panes and their status/error branches.
 a11y-mouse-keys-caption = Use the numeric keypad to move the pointer and click.
 a11y-shared-caption = Tilo apps use these shared accessibility settings.
@@ -2427,3 +2436,37 @@ settings-allow-capability = { $on ->
     [true] Allowed { $capability } for Continuity
    *[false] Stopped { $capability } for Continuity
 }
+
+accounts-import-title = Import Thunderbird account settings
+accounts-import-choose = Choose prefs.js
+accounts-import-about = Review account identities, servers and sign-in methods. No passwords or tokens are imported. Accounts remain inactive until you explicitly sign in and authorize mail sync and sending.
+accounts-import-reading = Reading account metadata…
+accounts-import-review = Select the account settings to import and choose each sign-in method.
+accounts-import-none = No IMAP accounts were found in these preferences.
+accounts-import-auth-unspecified = Thunderbird did not specify every authentication method. Choose a supported sign-in method; no password method is assumed.
+accounts-import-endpoints = IMAP { $imap }:{ $imap-port } ({ $incoming-transport }) · SMTP { $smtp }:{ $smtp-port } ({ $outgoing-transport })
+accounts-import-logins = Incoming login: { $imap-user } · Outgoing login: { $smtp-user }
+accounts-import-identity = { $name } — { $email }
+accounts-import-password-choice = Select for password sign-in
+accounts-import-oauth-choice = Select for browser sign-in
+accounts-import-unselect = Deselect account
+accounts-import-continue = Import selected settings
+accounts-import-cancel = Cancel review
+accounts-import-saved = Imported { $count } new account settings. Existing accounts were preserved. Each imported account still needs explicit sign-in.
+accounts-import-password-step = Enter a new password or app password directly here, then save to authorize this account's mail sync and sending. No Thunderbird credential is copied.
+accounts-import-oauth-step = Open Mail, edit this account and choose browser sign-in. Microsoft will ask for IMAP mail access, SMTP sending and offline access. No sign-in is performed by metadata import.
+accounts-import-stale = This review changed. Read the current account review and try again.
+accounts-import-accounts-changed = Accounts changed during review. Discover and review the metadata again.
+accounts-import-auth-required = Choose an explicit supported authentication method.
+accounts-import-select = Select at least one account before continuing.
+accounts-import-save-failed = Account settings could not be saved. No credentials were imported.
+accounts-import-read-failed = Thunderbird account metadata could not be read.
+accounts-import-prefs-required = Choose only Thunderbird's ordinary prefs.js file.
+accounts-import-too-large = These account preferences exceed the import limit.
+accounts-import-malformed = These account preferences are incomplete or malformed.
+accounts-import-unsupported = The native connector cannot faithfully represent this server, authentication or transport. Configure the account manually instead.
+accounts-import-duplicate = Two selected accounts use the same address. Choose one configuration.
+accounts-import-chooser-unavailable = The file chooser is available only in an interactive Settings window. A granted preferences path can be discovered through the account action.
+accounts-import-plain = Unencrypted
+accounts-import-starttls = STARTTLS
+accounts-import-tls = TLS

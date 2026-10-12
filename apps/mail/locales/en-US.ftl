@@ -93,3 +93,5 @@ mail-draft-state-attachments = Changed the attachments of the draft
 mail-draft-state-rich-body = Edited the draft
 mail-save-draft = Saved the draft
 mail-mail-server = Recorded how a mail server took a change
+
+mail-import-sign-in-required = Imported account settings require authentication. Sign in before connecting.

@@ -130,7 +130,7 @@ pub enum Command {
         after_help = "Examples:\n  tilo-vm swap shell                      # your slot, built in the VM from this worktree\n  tilo-vm swap shell --profile dev        # faster compile, slower binary\n  tilo-vm swap --slot vm fs               # VM-wide component into the vm slot\n  tilo-vm swap app:notes                  # package and install one app; live at its next launch\n  tilo-vm swap shell --from ci:main-1a2b3c4   # the CI build of a published image\n  tilo-vm swap shell --from sha:1a2b3c4   # the CI build of a main commit\n  tilo-vm swap shell --builder host       # build on this Linux host instead\n  tilo-vm swap --slot review-a launcher --from layer:3f9c...\n  tilo-vm swap kernel                     # build os/kernel incrementally, install VM-wide, reboot\n  tilo-vm swap kernel --jobs 4            # fewer parallel compile jobs (default: half the CPUs)\n  tilo-vm swap kernel --direct            # boot the host build directly (libvirt), install nothing\n  tilo-vm swap kernel --direct --cmdline 'root=UUID=... ro console=ttyS0'   # when the VM is not up\n  tilo-vm rollback --slot vm              # back to the previous kernel (or off the direct boot)\n\nKernel: the build reuses ~/.cache/tilo-kernel/, so after the first (long) build\nonly what changed recompiles; see tilo-vm guide kernel.\n\nBuild profile: builds from this worktree use the component's manifest profile\n(release for almost all) with the manifest's features plus each package's\ndev-overrides feature, so speed is realistic and the harness variables work.\n--profile dev compiles much faster and runs slower; the layer records which."
     )]
     Swap {
-        /// A component from os/components.toml (python3 os/scripts/install-components.py --list), or `app:<dir>` for an app under apps/.
+        /// A component from os/components.toml, `userspace` for its matched session cohort (remote worktree build, one refresh), or `app:<dir>` for an app under apps/.
         component: String,
         /// The slot to swap into (default: the one named after your branch;
         /// `vm` for VM-wide components).
@@ -847,6 +847,20 @@ pub enum VmCommand {
     Wake {
         /// The VM or device (default: the one this worktree uses).
         name: Option<String>,
+    },
+    /// Inspect or persist magic-packet wake for a saved network profile; never suspends or reconnects.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm network-wake --profile <UUID>\n  tilo-vm vm network-wake --profile <UUID> --enabled true\n\nEnabling requires active driver support. Saved and applied settings are\nreported separately; physical wake remains unverified."
+    )]
+    NetworkWake {
+        /// The registered VM or device (default: the one this worktree uses).
+        name: Option<String>,
+        /// The saved `NetworkManager` connection UUID on that device.
+        #[arg(long)]
+        profile: String,
+        /// Enable magic-packet wake (requires active driver support), or disable it.
+        #[arg(long, action = clap::ArgAction::Set)]
+        enabled: Option<bool>,
     },
     /// Keep the machine from suspending longer than the 30 minutes every tilo-vm request holds it, or let it suspend now.
     #[command(

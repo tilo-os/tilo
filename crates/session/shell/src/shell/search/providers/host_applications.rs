@@ -346,6 +346,19 @@ impl SearchProvider for HostApplicationsProvider {
         self.query_page(ctx, None, SearchBudget::PALETTE).results
     }
 
+    fn query_incomplete_reason(
+        &self,
+        _ctx: &SearchContext<'_>,
+    ) -> Option<crate::shell::search::QueryIncompleteReason> {
+        if self.index.building() {
+            Some(crate::shell::search::QueryIncompleteReason::Pending)
+        } else if self.snapshot().is_none() {
+            Some(crate::shell::search::QueryIncompleteReason::Unavailable)
+        } else {
+            None
+        }
+    }
+
     fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
         self.index
             .refresh(&self.source_generation(), self.builder());
@@ -447,6 +460,62 @@ mod tests {
             terminal: false,
             icon: None,
             window_identities: vec![desktop_id.to_string()],
+        }
+    }
+
+    #[test]
+    fn catalogue_completion_waits_for_actual_worker() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible};
+        use crate::shell::search::{QueryArgs, QueryIncompleteReason, SearchRegistry};
+        let source = HostAppsTestSource::new(Vec::new(), Vec::new());
+        let gate = source.state.lock().expect("hold source materialization");
+        let (woken, wake) = std::sync::mpsc::channel();
+        let _installed = crate::shell::search::invocation_wake::install(Arc::new(move || {
+            woken.send(()).expect("waiting catalogue caller");
+        }));
+        let mut registry = SearchRegistry::new();
+        registry.register(std::rc::Rc::new(
+            HostApplicationsProvider::with_test_source(source.clone()),
+        ));
+        let chrome = chrome_rc();
+        let doc = AutoCommit::new();
+        let args = QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let pending = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(pending.enumerate().is_empty());
+        assert!(!pending.completion().complete);
+        assert_eq!(
+            pending
+                .completion()
+                .incomplete
+                .first()
+                .expect("pending source")
+                .reason,
+            QueryIncompleteReason::Pending
+        );
+        drop(gate);
+        wake.recv_timeout(tilo_test_env::hang_bound())
+            .expect("the actual index worker must wake a held listing");
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let ready = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+            assert!(ready.enumerate().is_empty());
+            if ready.completion().complete {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "actual empty index did not become ready"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
 

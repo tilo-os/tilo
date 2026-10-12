@@ -78,7 +78,6 @@ mod tests {
     /// Answer an open with a PTY and a private session lease; the returned
     /// supervisor end of the lease reads end-of-file once the tab drops it.
     fn grant_session(server: &UnixStream, session: &str) -> UnixStream {
-        use std::os::fd::AsRawFd;
         let pair = portable_pty::native_pty_system()
             .openpty(portable_pty::PtySize::default())
             .unwrap();
@@ -87,9 +86,13 @@ mod tests {
             "{{\"result\":\"session\",\"protocol\":2,\"session\":\"{session}\",\"environment\":\"default\"}}\n"
         );
         runtime_portal::fd_transport::send_with_fds(
-            server.as_raw_fd(),
+            server,
             reply.as_bytes(),
-            &[pair.master.as_raw_fd().unwrap(), terminal_lease.as_raw_fd()],
+            // SAFETY: `pair` owns the master and outlives this call.
+            &[
+                unsafe { std::os::fd::BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
+                std::os::fd::AsFd::as_fd(&terminal_lease),
+            ],
         )
         .unwrap();
         supervisor_lease

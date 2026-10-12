@@ -84,6 +84,30 @@ attributed, limited to what the workspace grants that agent, and revoked with
 its membership. It is offered path-addressed tools (`tilo_ls`, `tilo_read`,
 `tilo_do`, `tilo_find`) rather than ids: `notes/Todo/body#append-paragraph`.
 See [`runtime-mcp.md`](runtime-mcp.md#inside-a-tilo-session).
+### Observing an installed native application's exact window
+
+Store's native `open` action is a background action with an explicit JSON result.
+After real adopted-window readiness and revalidation of the original caller, its
+`launch.adopted_window` identifies the surface, package, room and an opaque host-issued adoption UUID.
+The UUID identifies that resource lifetime, including across numeric ID reuse;
+knowing it grants no authority. It contains no
+kernel PID. Legacy hosts may return `launch: null`; that proves no particular
+window and cannot qualify resident-package acceptance. Flatpak Open retains its
+unit-job result contract.
+
+The authenticated device owner's existing `state-dump` adds
+`chrome.native_window_provenance`: at most 128 current window associations from
+confined, launcher-attributed Wayland connections. Each row carries the current
+room, tab, surface, matching adoption UUID, package, local record instance and
+kernel peer PID/start time.
+The dump omits unattested, missing, closed, foreign or reused-process associations;
+`omitted` reports overflow. Agent-control cannot request this owner diagnostic.
+
+The official Store acceptance runner joins only the adopted surface to this
+current association, before and after reading retained kernel executable and SDK
+file descriptors. A closed/replaced window or changed process lifetime refuses
+acceptance. Existing unrelated app workers are reported separately, never required
+to use the newly installed package and never closed by the runner.
 
 ### Unlocking the owner's session remotely
 
@@ -392,6 +416,19 @@ resolves to, reason about it, and only then commit. It also makes the failure
 modes distinguishable: "that action does not exist for you" and "I ran it and
 nothing happened" must not look alike to a caller with no way to check the
 screen.
+
+Unlocked native desktop `actions list --json` includes `completion` alongside `count` and
+`actions`. The top-level `complete` and `completion.complete` are true only when every
+selected provider exhausted its bounded traversal and has no outstanding work or
+failed reply. `truncated` and `next_cursor` still describe paging of the returned
+catalogue, independently of whether the source catalogue is complete.
+An empty `actions` array with `complete: false` is not proof that the application
+publishes nothing. `completion.incomplete` names the provider and the observed
+reason (`pending`, `refused`, `unavailable`, `timed_out`, `stale_cursor`,
+`budget_exhausted`, `continuation`, or `invalid_input`); it exposes no document contents or
+additional authority. Older transports without this field do not establish
+completion. Keep any returned actions, but require completion before treating an
+empty listing as authoritative or using a listing for readiness acceptance.
 
 Invocation re-resolves the address against a freshly built catalogue before
 anything runs, so an address that was valid at enumeration time and is no longer

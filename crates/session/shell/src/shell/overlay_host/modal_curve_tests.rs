@@ -65,12 +65,13 @@ fn modal_transitions_pump_only_the_frames_they_need() {
         // Deterministic proof (no wall-clock sleep) that the palette fades
         // out rather than popping, by sampling openness at explicit instants.
         let mut t = ui::Transition::open();
-        t.set_open(
+        let start = Instant::now();
+        t.set_open_at(
             false,
             Duration::from_millis(MODAL_OPEN_ANIM_MS),
             ui::Curve::EaseOut,
+            start,
         );
-        let start = Instant::now();
         let at_start = t.value(start);
         let at_mid = t.value(start + Duration::from_millis(MODAL_OPEN_ANIM_MS / 3));
         let at_end = t.value(start + Duration::from_millis(MODAL_OPEN_ANIM_MS + 50));

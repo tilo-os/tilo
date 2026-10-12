@@ -5291,6 +5291,30 @@ mod tests {
     }
 
     #[test]
+    fn refused_final_tab_close_restores_live_group_input() {
+        let mut group = WindowGroup::new(
+            10,
+            vec![(
+                TabDescriptor::new(1, "solo"),
+                TileContent::Stub {
+                    kind: AppKind::Settings,
+                    label: "a".into(),
+                },
+            )],
+            1,
+            WindowWidth::Normal,
+        );
+        assert!(group.request_close_tab(1));
+        assert!(group.is_closing());
+        assert_eq!(group.keyboard_input_scope(), None);
+        assert!(group.cancel_tab_close(1));
+        assert!(!group.is_closing());
+        assert!(!group.has_closing_host(1));
+        assert_eq!(group.keyboard_input_scope(), Some(1));
+        assert!(group.has_host(1));
+    }
+
+    #[test]
     fn maximized_control_bounds_capture_visible_chrome_across_themes() {
         for (theme, size) in [
             (Theme::dark(), "default"),

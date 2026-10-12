@@ -2923,6 +2923,178 @@ mod launcher_recovery_tests;
 #[path = "launcher_ranking_tests.rs"]
 mod launcher_ranking_tests;
 
+struct HoverRefreshProvider {
+    revision: Rc<std::cell::Cell<u64>>,
+    activated: Rc<RefCell<Vec<String>>>,
+}
+
+impl crate::shell::search::SearchProvider for HoverRefreshProvider {
+    fn id(&self) -> &'static str {
+        "refreshing-panes"
+    }
+    fn name(&self) -> &'static str {
+        "Pane refresh fixture"
+    }
+    fn resource_kinds(&self) -> &[crate::shell::search::ResourceKind] {
+        &[crate::shell::search::ResourceKind::Application]
+    }
+    fn search_revision(&self, _: &crate::shell::search::SearchContext<'_>) -> String {
+        self.revision.get().to_string()
+    }
+    fn query(
+        &self,
+        _: crate::shell::search::SearchContext<'_>,
+    ) -> Vec<crate::shell::search::SearchResult> {
+        let ids = if self.revision.get() == 0 {
+            vec!["Appearance", "Network"]
+        } else {
+            vec!["Bluetooth", "Appearance", "Network"]
+        };
+        ids.into_iter()
+            .enumerate()
+            .map(|(index, id)| {
+                let activated = Rc::clone(&self.activated);
+                crate::shell::search::SearchResult::nullary(
+                    crate::shell::search::ResourceKind::Application,
+                    self.id(),
+                    id,
+                    id,
+                    None,
+                    100_i32
+                        .checked_sub(i32::try_from(index).unwrap())
+                        .expect("three fixture rows fit the score range"),
+                    move |_, _, _| activated.borrow_mut().push(id.to_owned()),
+                )
+            })
+            .collect()
+    }
+}
+
+struct HoverRefreshFixture {
+    h: AbsorbHarness,
+    revision: Rc<std::cell::Cell<u64>>,
+    activated: Rc<RefCell<Vec<String>>>,
+}
+
+fn hover_refresh_fixture(width: f64, height: f64) -> HoverRefreshFixture {
+    let revision = Rc::new(std::cell::Cell::new(0));
+    let activated = Rc::new(RefCell::new(Vec::new()));
+    let mut h = build_harness_sized(width, height);
+    h.host
+        .search_registry
+        .register(Rc::new(HoverRefreshProvider {
+            revision: Rc::clone(&revision),
+            activated: Rc::clone(&activated),
+        }));
+    h.host.active_kind_filter = vec![crate::shell::search::ResourceKind::Application];
+    h.host.set_palette_visible(true);
+    h.host.set_palette_focus(true);
+    h.host.force_palette_settled();
+    h.host.palette.set_query("fixture");
+    h.host
+        .refresh_search_results(&AutoCommit::new(), &automerge::ROOT);
+    settle(&mut h, width, height);
+    h.log.borrow_mut().clear();
+    HoverRefreshFixture {
+        h,
+        revision,
+        activated,
+    }
+}
+
+#[test]
+fn palette_background_refresh_preserves_hovered_action_identity() {
+    let HoverRefreshFixture {
+        mut h,
+        revision,
+        activated,
+    } = hover_refresh_fixture(1600.0, 900.0);
+    let network = h
+        .host
+        .search_results
+        .iter()
+        .position(|row| row.id == "Network")
+        .expect("Network is initially published");
+    let target = h
+        .host
+        .palette
+        .row_rect(network)
+        .expect("the row is painted")
+        .center();
+    assert!(pump(&mut h, &cursor_moved_at(target)));
+    assert_eq!(
+        h.host.palette.selected_id(),
+        Some(format!("result:{network}").as_str())
+    );
+    assert!(
+        h.log.borrow().is_empty(),
+        "hover must not reach app content"
+    );
+    assert!(pump(&mut h, &left_button_released()));
+    assert!(
+        h.log.borrow().is_empty(),
+        "release must not reach app content"
+    );
+    assert!(
+        activated.borrow().is_empty(),
+        "hover and release do not invoke actions"
+    );
+    revision.set(1);
+    h.host
+        .refresh_search_results(&AutoCommit::new(), &automerge::ROOT);
+    let selected = h
+        .host
+        .palette
+        .selected_id()
+        .expect("selection survives refresh");
+    let index: usize = selected.strip_prefix("result:").unwrap().parse().unwrap();
+    assert_eq!(
+        h.host.search_results[index].id, "Network",
+        "background catalogue arrival must not replace the hovered action"
+    );
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter))));
+    assert_eq!(&*activated.borrow(), &["Network"]);
+}
+
+#[test]
+fn covering_workspace_settings_keeps_pointer_priority_over_palette_rows() {
+    let HoverRefreshFixture {
+        mut h, activated, ..
+    } = hover_refresh_fixture(900.0, 600.0);
+    let network = h
+        .host
+        .search_results
+        .iter()
+        .position(|row| row.id == "Network")
+        .unwrap();
+    let row = h
+        .host
+        .palette
+        .row_rect(network)
+        .expect("published row is painted");
+    let overlap = row.intersect(h.host.ws_settings_rect());
+    assert!(
+        overlap.area() > 0.0,
+        "the modal must cover the actual palette row"
+    );
+    let before = h.host.palette.selected_id().unwrap().to_owned();
+    h.chrome.borrow_mut().overlays.ws_settings = true;
+    assert!(pump(&mut h, &cursor_moved_at(overlap.center())));
+    assert_eq!(h.host.palette.selected_id(), Some(before.as_str()));
+    assert!(
+        h.log.borrow().is_empty(),
+        "covered input must not reach app content"
+    );
+    assert!(activated.borrow().is_empty());
+    h.chrome.borrow_mut().overlays.ws_settings = false;
+    assert!(pump(&mut h, &cursor_moved_at(row.center())));
+    assert_eq!(
+        h.host.palette.selected_id(),
+        Some(format!("result:{network}").as_str())
+    );
+    assert!(h.log.borrow().is_empty());
+}
+
 // Deterministic owned-room fixture: no policy override and no ambient identity.
 fn workspace_name_owner_harness(width: f64, height: f64) -> (AbsorbHarness, tempfile::TempDir) {
     let profile = tempfile::tempdir().unwrap();

@@ -475,6 +475,40 @@ p99_tolerance = 2.0
 min_delta = 20.0
 source = "the same plan in order, for comparison: three 100 ms steps, plus the loop's own"
 
+# Native task steps (apps/agent `native_task_benchmark`, a release test on
+# `runner`): the same three-step plan as a native workspace task, whose steps
+# are children the agent follows by re-asks the broker holds until a child
+# moves on. Before held re-asks the agent re-asked every 50 ms: a focused
+# debug run measured 456 ms for the plan in order and in parallel alike (152
+# ms per 100 ms step) and 3.3 idle host round trips per step; with them, 307
+# ms in order, 105 ms pipelined and 1.7 idle round trips per step. `idle` is
+# the host round trips per step that brought no news while a step ran (the
+# plan in order). Reported, not enforced, until three nightly records exist.
+[kpi."agent.task.native.pipelined.wall"]
+unit = "ms"
+p50 = 150.0
+p99 = 200.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "floor: one 100 ms step, plus 50 ms of the agent loop's own"
+
+[kpi."agent.task.native.sequential.wall"]
+unit = "ms"
+p50 = 360.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "three 100 ms steps in order, each noticed one round trip after it settles"
+
+[kpi."agent.task.native.idle_round_trips"]
+unit = "count"
+p50 = 2.5
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+source = "per step: the held re-ask answers with news; only cancellation polls come back empty"
+
 # Latency, compositor side (scripts/perf/latency_bench.py): a headless dev
 # build on the shared `runner` class, input through the control socket,
 # lavapipe. The ceilings are the KPIs' 60 Hz targets ("Input→photon

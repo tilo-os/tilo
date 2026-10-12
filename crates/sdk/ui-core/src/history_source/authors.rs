@@ -68,6 +68,27 @@ pub struct HistoryAgent {
     pub person: String,
 }
 
+/// A delegated agent on a room's roster, as the session verified it: its
+/// own device key, the person whose root signed its delegation for exactly
+/// that device, and how it is shown. Only the session produces these, after
+/// checking that delegation; history uses them to name who wrote and never
+/// to decide what anyone may do.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RosterAgent {
+    /// The agent's own device key: the actor its signed changes carry.
+    pub device: [u8; 32],
+    /// The root key of the person it acts for.
+    pub person: [u8; 32],
+    /// That person's name as the room's governance records it.
+    pub person_name: String,
+    /// The delegation's stable agent id.
+    pub agent_id: String,
+    /// The agent's display name.
+    pub label: String,
+    /// Its cursor colour, sRGB.
+    pub color: [u8; 3],
+}
+
 /// The directory key of a principal: the hex of its UTF-8, the actor id a
 /// process writing under that principal's handle has.
 fn principal_key(principal: &str) -> String {
@@ -100,6 +121,44 @@ impl AuthorDirectory {
     /// of its person, wherever this directory names authors.
     pub fn register_agent(&mut self, actor_hex: &str, agent: HistoryAgent) {
         self.agents.insert(actor_hex.to_lowercase(), agent);
+    }
+
+    /// Name a verified roster agent: the changes its own device key signed
+    /// read as the agent's, on behalf of its person, and the person reads by
+    /// the name governance gives them unless the directory already names
+    /// them.
+    pub fn register_roster_agent(&mut self, agent: &RosterAgent) {
+        let person = hex::encode(agent.person);
+        if !self.by_actor.contains_key(&principal_key(&person)) {
+            self.register_person(
+                &person,
+                author_for_identity(agent.person_name.clone(), &person),
+            );
+        }
+        let [red, green, blue] = agent.color;
+        self.register_agent(
+            &hex::encode(agent.device),
+            HistoryAgent {
+                principal: format!("agent:{}", agent.agent_id),
+                label: agent.label.clone(),
+                rgb: (red, green, blue),
+                person,
+            },
+        );
+    }
+
+    /// An empty directory that names every agent the session verified for
+    /// the rooms this thread's app is in ([`set_room_agents`]): what an app's
+    /// own history reads with.
+    #[must_use]
+    pub fn with_room_agents() -> Self {
+        let mut directory = Self::new();
+        ROOM_AGENTS.with(|rooms| {
+            for agent in rooms.borrow().values().flatten() {
+                directory.register_roster_agent(agent);
+            }
+        });
+        directory
     }
 
     /// Bind `actor_hex` to the local user, read from the Tilo identity on disk.
@@ -327,6 +386,34 @@ impl AuthorDirectory {
 
 thread_local! {
     static THREAD_READER: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    /// The verified agents of each room this thread's app is in, as the
+    /// session last sent them.
+    static ROOM_AGENTS: std::cell::RefCell<std::collections::BTreeMap<String, Vec<RosterAgent>>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    /// Moves whenever [`ROOM_AGENTS`] is replaced, so a history view that
+    /// named them knows to name them again.
+    static ROOM_AGENTS_REVISION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Which replacement of this thread's room agents
+/// ([`set_room_agents`]) is current.
+pub(crate) fn room_agents_revision() -> u64 {
+    ROOM_AGENTS_REVISION.with(std::cell::Cell::get)
+}
+
+/// Replace the verified agents of `room` this thread's app names in its
+/// history ([`AuthorDirectory::with_room_agents`]). Only the session's
+/// context stream calls this, with what it verified.
+pub fn set_room_agents(room: &str, agents: Vec<RosterAgent>) {
+    ROOM_AGENTS.with(|rooms| {
+        let mut rooms = rooms.borrow_mut();
+        if agents.is_empty() {
+            rooms.remove(room);
+        } else {
+            rooms.insert(room.to_owned(), agents);
+        }
+    });
+    ROOM_AGENTS_REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
 }
 
 /// The principal of the person this thread's app runs for: whose changes
