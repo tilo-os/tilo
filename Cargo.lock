@@ -16353,6 +16353,7 @@ dependencies = [
  "objc2-core-video",
  "objc2-foundation 0.3.2",
  "os-actions",
+ "rustix 1.1.4",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-platform-caps",
@@ -16777,6 +16778,7 @@ dependencies = [
  "bounded-command",
  "collab-types",
  "libc",
+ "rustix 1.1.4",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-clock",
@@ -17459,6 +17461,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "libc",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.11.0",
