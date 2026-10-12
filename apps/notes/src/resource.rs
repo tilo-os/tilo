@@ -109,6 +109,25 @@ impl Resource for Notebook {
         false
     }
 
+    /// A new note answers with the note it made, so its caller can export
+    /// or edit it without reading the notebook first.
+    fn answer(doc: &Doc, action: &str, changes: &[automerge::Patch]) -> Option<serde_json::Value> {
+        if !matches!(action, "new-page" | "daily-note") {
+            return None;
+        }
+        let page = created_page(changes)?;
+        let title = NotesDoc::list_pages(doc)
+            .into_iter()
+            .find(|meta| meta.id == page)
+            .map(|meta| meta.title)
+            .unwrap_or_default();
+        Some(serde_json::json!({
+            "page": crate::actions::page_resource_id(page),
+            "id": page.to_string(),
+            "title": title,
+        }))
+    }
+
     fn bound_declarations(state: &Workspace) -> Vec<ActionDecl<Self>> {
         crate::actions::notebook_bound_declarations(state)
     }
@@ -172,6 +191,19 @@ impl Resource for Notebook {
     fn search(state: &Workspace) -> Vec<SearchEntry> {
         crate::search::entries(state)
     }
+}
+
+/// The page `changes` made: the one entry they put under `pages`.
+fn created_page(changes: &[automerge::Patch]) -> Option<PageId> {
+    changes.iter().find_map(|patch| {
+        let (_, automerge::Prop::Map(map)) = patch.path.last()? else {
+            return None;
+        };
+        match &patch.action {
+            automerge::PatchAction::PutMap { key, .. } if map == "pages" => key.parse().ok(),
+            _ => None,
+        }
+    })
 }
 
 fn committed_projection_heads(doc: &Doc) -> Option<Vec<automerge::ChangeHash>> {

@@ -53,11 +53,14 @@ pub enum NotesEffect {
     ///
     /// Keep a note as Markdown in the content store, its title as the first
     /// heading and its images inside it, with no file to write: the caller
-    /// reads the bytes by the content address it answers.
-    #[effect(row, content, permission = "read")]
+    /// reads the bytes by the content address it answers. Name the note by
+    /// `page` or `title`.
+    #[effect(content, permission = "read")]
     ExportMarkdownContent {
-        #[param("The note")]
-        page: Uuid,
+        #[param("The note's id or notes.page:<id>")]
+        page: Option<String>,
+        #[param("The note's title, instead of page: exact, else ignoring case")]
+        title: Option<String>,
     },
     /// Insert image
     ///
@@ -120,6 +123,15 @@ pub enum NotesEffect {
 }
 
 impl NotesEffect {
+    /// Export note `page` as Markdown content, as its row offers it.
+    #[must_use]
+    pub fn export_markdown_content(page: Uuid) -> Self {
+        Self::ExportMarkdownContent {
+            page: Some(page.to_string()),
+            title: None,
+        }
+    }
+
     /// This effect as the action `id` an item offers, labelled `label`:
     /// opening a note from its row, a backlink or a tag.
     pub(crate) fn offered(&self, id: impl Into<String>, label: impl Into<String>) -> ActionSpec {

@@ -37,7 +37,8 @@ impl NotesApp {
                 })))
             }
             NotesEffect::ExportMarkdown { page } => self.export_markdown(&state, page, cx),
-            NotesEffect::ExportMarkdownContent { page } => {
+            NotesEffect::ExportMarkdownContent { page, title } => {
+                let page = actions::note_named(state.pages(), page.as_deref(), title.as_deref())?;
                 self.export_markdown_content(&state, page)
             }
             NotesEffect::InsertImage { page } => {
@@ -95,7 +96,6 @@ impl NotesApp {
         };
         match effect {
             NotesEffect::ExportMarkdown { page }
-            | NotesEffect::ExportMarkdownContent { page }
             | NotesEffect::InsertImage { page }
             | NotesEffect::CopyLink { page } => {
                 dispatcher.effect_on(&actions::page_resource_id(*page), effect);

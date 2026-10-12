@@ -1155,12 +1155,31 @@ pub(crate) const MAX_FOUND_PARAGRAPHS: usize = MAX_RESOURCE_OBJECTS.saturating_m
 /// The paragraph kinds `insert-image` places an image after.
 const TEXT_BLOCKS: &[&str] = &["paragraph", "heading", "list_item"];
 
-/// The body as `insert-image` finds its place in it: each text block's id
-/// and text in order, and the last block's id and length.
+/// The body as `insert-image` finds its place in it: each text block's id,
+/// text and whether it is a heading, in order, and the last block's id and
+/// length.
 struct ImagePlaces {
-    paragraphs: Vec<(String, String)>,
+    paragraphs: Vec<ImagePlace>,
     end: Option<(String, usize)>,
 }
+
+struct ImagePlace {
+    id: String,
+    text: String,
+    heading: bool,
+}
+
+/// How many headings a refused `after` lists.
+const LISTED_HEADINGS: usize = 20;
+
+/// How alike an `after` and a paragraph must be for a fuzzy match, 0 to 1.
+const FUZZY_MATCH: f64 = 0.75;
+
+/// The longest `after` compared character by character.
+const MAX_FUZZY_CHARS: usize = 200;
+
+/// How much of each paragraph a fuzzy `after` is looked for in.
+const MAX_FUZZY_TEXT_CHARS: usize = 500;
 
 impl ImagePlaces {
     /// `None` for a body `state` did not read whole.
@@ -1174,7 +1193,11 @@ impl ImagePlaces {
             paragraphs: blocks
                 .iter()
                 .filter(|block| TEXT_BLOCKS.contains(&block.kind.as_str()))
-                .map(|block| (block.id.clone(), block.text.clone()))
+                .map(|block| ImagePlace {
+                    id: block.id.clone(),
+                    text: block.text.clone(),
+                    heading: block.kind == "heading",
+                })
                 .collect(),
             end: blocks
                 .last()
@@ -1182,22 +1205,178 @@ impl ImagePlaces {
         })
     }
 
-    /// Where the image goes: after the first paragraph containing `after`,
-    /// else at the end of the body.
+    /// Where the image goes: after the paragraph `after` names, else at the
+    /// end of the body.
     fn place(&self, after: Option<&str>) -> Result<(String, usize), String> {
         match after {
             Some(after) => self
-                .paragraphs
-                .iter()
-                .find(|(_, text)| text.contains(after))
-                .map(|(id, text)| (id.clone(), text.chars().count()))
-                .ok_or_else(|| format!("no paragraph contains the text `{after}`")),
+                .named(after)
+                .map(|place| (place.id.clone(), place.text.chars().count()))
+                .ok_or_else(|| self.unmatched(after)),
             None => self
                 .end
                 .clone()
                 .ok_or_else(|| "the document has no body to insert into".to_string()),
         }
     }
+
+    /// The heading or paragraph `after` names: the first containing it
+    /// exactly, else ignoring case, spacing and punctuation, else the
+    /// longest one it begins with, else the most alike above
+    /// [`FUZZY_MATCH`].
+    fn named(&self, after: &str) -> Option<&ImagePlace> {
+        if let Some(found) = self
+            .paragraphs
+            .iter()
+            .find(|place| place.text.contains(after))
+        {
+            return Some(found);
+        }
+        let wanted = normalized(after);
+        if wanted.is_empty() {
+            return None;
+        }
+        let texts: Vec<String> = self
+            .paragraphs
+            .iter()
+            .map(|place| normalized(&place.text))
+            .collect();
+        let found = texts
+            .iter()
+            .position(|text| text.contains(&wanted))
+            .or_else(|| {
+                texts
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, text)| {
+                        text.chars().count() >= 4 && wanted.starts_with(text.as_str())
+                    })
+                    .max_by_key(|(_, text)| text.len())
+                    .map(|(at, _)| at)
+            })
+            .or_else(|| {
+                let mut best: Option<(usize, f64)> = None;
+                for (at, text) in texts.iter().enumerate() {
+                    let score = likeness(&wanted, text);
+                    if score >= FUZZY_MATCH && best.is_none_or(|(_, top)| score > top) {
+                        best = Some((at, score));
+                    }
+                }
+                best.map(|(at, _)| at)
+            })?;
+        self.paragraphs.get(found)
+    }
+
+    /// Why nothing matched `after`, with the headings to retry with (or the
+    /// first paragraphs' openings when there are none).
+    fn unmatched(&self, after: &str) -> String {
+        let headings: Vec<String> = self
+            .paragraphs
+            .iter()
+            .filter(|place| place.heading && !place.text.trim().is_empty())
+            .take(LISTED_HEADINGS)
+            .map(|place| format!("`{}`", place.text.trim()))
+            .collect();
+        if !headings.is_empty() {
+            return format!(
+                "no heading or paragraph matches `{after}`; the headings are {}",
+                headings.join(", ")
+            );
+        }
+        let openings: Vec<String> = self
+            .paragraphs
+            .iter()
+            .filter(|place| !place.text.trim().is_empty())
+            .take(5)
+            .map(|place| {
+                let opening: String = place.text.trim().chars().take(40).collect();
+                format!("`{opening}`")
+            })
+            .collect();
+        if openings.is_empty() {
+            format!("no heading or paragraph matches `{after}`; the document has no text")
+        } else {
+            format!(
+                "no heading or paragraph matches `{after}`; the document has no headings, its \
+                 paragraphs begin {}",
+                openings.join(", ")
+            )
+        }
+    }
+}
+
+/// `text` lowercased, with each run of spaces and punctuation one space.
+fn normalized(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for word in text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+    {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.extend(word.chars().flat_map(char::to_lowercase));
+    }
+    out
+}
+
+/// How alike normalized `wanted` is to normalized `text`, 0 to 1: the share
+/// of its words `text` has, or how few edits make it a part of `text`.
+fn likeness(wanted: &str, text: &str) -> f64 {
+    let words: Vec<&str> = wanted.split(' ').collect();
+    let present = words
+        .iter()
+        .filter(|word| text.split(' ').any(|candidate| candidate == **word))
+        .count();
+    let overlap = ratio(present, words.len());
+    let wanted: Vec<char> = wanted.chars().take(MAX_FUZZY_CHARS).collect();
+    if wanted.len() < 4 {
+        return overlap;
+    }
+    let text: Vec<char> = text.chars().take(MAX_FUZZY_TEXT_CHARS).collect();
+    overlap.max(1.0 - ratio(substring_distance(&wanted, &text), wanted.len()))
+}
+
+/// `part / whole` as a fraction, 0 for an empty whole.
+fn ratio(part: usize, whole: usize) -> f64 {
+    let (Ok(part), Ok(whole)) = (u32::try_from(part), u32::try_from(whole)) else {
+        return 0.0;
+    };
+    if whole == 0 {
+        0.0
+    } else {
+        f64::from(part) / f64::from(whole)
+    }
+}
+
+/// The fewest edits that make `wanted` a part of `text` (Sellers'
+/// approximate substring distance).
+fn substring_distance(wanted: &[char], text: &[char]) -> usize {
+    // A match may start and end anywhere in `text`: the first row costs
+    // nothing, and the answer is the cheapest cell of the last.
+    let mut previous = vec![0; text.len().saturating_add(1)];
+    let mut current = previous.clone();
+    for (i, cw) in wanted.iter().enumerate() {
+        if let Some(first) = current.first_mut() {
+            *first = i.saturating_add(1);
+        }
+        for (j, ct) in text.iter().enumerate() {
+            let substitute = previous.get(j).map_or(usize::MAX, |&cost| {
+                cost.saturating_add(usize::from(cw != ct))
+            });
+            let skip_text = current
+                .get(j)
+                .map_or(usize::MAX, |&cost| cost.saturating_add(1));
+            let skip_wanted = previous
+                .get(j.saturating_add(1))
+                .map_or(usize::MAX, |&cost| cost.saturating_add(1));
+            if let Some(cell) = current.get_mut(j.saturating_add(1)) {
+                *cell = substitute.min(skip_text).min(skip_wanted);
+            }
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous.iter().copied().min().unwrap_or(wanted.len())
 }
 
 /// Insert an image another action produced (its content hash, carried as
@@ -1227,7 +1406,7 @@ pub(crate) fn insert_image_spec(state: &tilo_document::RichTextState) -> ActionS
             ActionParam::optional_owned(
                 "after",
                 ParamType::Text,
-                "Text of the paragraph to insert the image after (the first paragraph containing it); omit to insert at the end of the document",
+                "Text of the heading or paragraph to insert the image after: matched exactly, else ignoring case and punctuation, else closest; omit to insert at the end",
             ),
         ],
         move |args: &ActionArgs| {
@@ -1259,7 +1438,7 @@ pub(crate) fn insert_image_spec(state: &tilo_document::RichTextState) -> ActionS
         },
     )
     .with_description(
-        "Insert the image the preceding action produced: after the first paragraph containing the text `after`, or at the end of the document without it",
+        "Insert the image the preceding action produced: after the heading or paragraph `after` names, or at the end of the document without it. An unmatched `after` is refused with the headings.",
     )
     .requiring(tilo_actions::PermissionRequirement::Write)
     .reversible();
@@ -1372,6 +1551,22 @@ fn declare_changes(resource: &mut Resource, ids: &[&str]) {
     }
 }
 
+/// What content that is not a picture is, for a refusal a model can act on.
+fn content_kind(mime: &str, bytes: &[u8]) -> String {
+    if !mime.is_empty() {
+        return mime.to_owned();
+    }
+    if bytes.starts_with(b"PK") {
+        "a ZIP package (a DOCX, XLSX or ODF export)".into()
+    } else if bytes.starts_with(b"%PDF") {
+        "a PDF".into()
+    } else if std::str::from_utf8(bytes).is_ok() {
+        "text".into()
+    } else {
+        "of an unknown kind".into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1380,6 +1575,68 @@ mod tests {
     use tilo_actions::LocalTransport;
     use tilo_automerge::ApplyIncoming;
     use tilo_doc::DocMut;
+
+    /// A body of a title, two sections and their paragraphs, as
+    /// `insert-image` finds places in it.
+    fn report() -> ImagePlaces {
+        let place = |id: &str, text: &str, heading: bool| ImagePlace {
+            id: id.into(),
+            text: text.into(),
+            heading,
+        };
+        ImagePlaces {
+            paragraphs: vec![
+                place("h1", "Quarterly Results", true),
+                place("p1", "Revenue grew in every region.", false),
+                place("h2", "Market Outlook — 2027", true),
+                place("p2", "We expect steady demand next year.", false),
+            ],
+            end: Some(("p2".into(), 34)),
+        }
+    }
+
+    /// An `after` that differs from the text in case, spacing, punctuation
+    /// or a typo, or runs on past a heading, still finds its place.
+    #[test]
+    fn insert_image_finds_a_loosely_quoted_anchor() {
+        let places = report();
+        let at = |after: &str| places.place(Some(after)).map(|(id, _)| id);
+        assert_eq!(at("grew in every").as_deref(), Ok("p1"), "exact");
+        assert_eq!(
+            at("quarterly   RESULTS").as_deref(),
+            Ok("h1"),
+            "case and spacing"
+        );
+        assert_eq!(
+            at("Market Outlook - 2027").as_deref(),
+            Ok("h2"),
+            "punctuation"
+        );
+        assert_eq!(
+            at("Quarterly Results: summary of Q3").as_deref(),
+            Ok("h1"),
+            "an anchor running on past the heading"
+        );
+        assert_eq!(at("Markt Outlok 2027").as_deref(), Ok("h2"), "typos");
+        assert_eq!(
+            at("demand we expect next year").as_deref(),
+            Ok("p2"),
+            "the same words reordered"
+        );
+        assert_eq!(places.place(Some("grew")), Ok(("p1".into(), 29)));
+    }
+
+    /// An anchor like nothing in the document is refused with its headings,
+    /// so the caller retries with one of them.
+    #[test]
+    fn an_unmatched_anchor_is_refused_with_the_headings() {
+        let error = report().place(Some("Appendix B")).unwrap_err();
+        assert_eq!(
+            error,
+            "no heading or paragraph matches `Appendix B`; the headings are \
+             `Quarterly Results`, `Market Outlook — 2027`"
+        );
+    }
 
     /// A four-byte stand-in image, described as an [`ImageInput`].
     fn test_image(width: Option<i64>, height: Option<i64>) -> ImageInput {
@@ -3135,21 +3392,5 @@ mod tests {
         let (mut state, _) = seeded("Aé🦀\n");
         dispatch(&mut state.doc, &continue_paragraph_action("z"));
         assert_eq!(body_blocks(&state.doc)[0].text, "Aé🦀z");
-    }
-}
-
-/// What content that is not a picture is, for a refusal a model can act on.
-fn content_kind(mime: &str, bytes: &[u8]) -> String {
-    if !mime.is_empty() {
-        return mime.to_owned();
-    }
-    if bytes.starts_with(b"PK") {
-        "a ZIP package (a DOCX, XLSX or ODF export)".into()
-    } else if bytes.starts_with(b"%PDF") {
-        "a PDF".into()
-    } else if std::str::from_utf8(bytes).is_ok() {
-        "text".into()
-    } else {
-        "of an unknown kind".into()
     }
 }

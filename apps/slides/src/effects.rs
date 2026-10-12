@@ -87,6 +87,19 @@ pub enum SlidesEffect {
         #[param("Absolute path to write; omit to use the system picker")]
         path: Option<String>,
     },
+    /// The deck as a `.pptx` kept in the content store, pictures included:
+    /// answers its `tilo.content:<hash>` address, no file or chooser.
+    #[effect(content, permission = "read", label = "Export PowerPoint as content")]
+    ExportPptxContent,
+    /// Export slide picture as content
+    ///
+    /// One slide drawn as a 1280×720 PNG kept in the content store: answers
+    /// its `tilo.content:<hash>` address.
+    #[effect(content, permission = "read")]
+    ExportSlidePngContent {
+        #[param("Slide number as `read` shows it, 1 for the first slide")]
+        slide: u32,
+    },
     /// Read deck as text
     ///
     /// The deck as text: each slide's number, layout and {#id}, its title

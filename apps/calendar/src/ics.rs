@@ -71,6 +71,13 @@ pub fn export(model: &Model) -> String {
         if !e.location.is_empty() {
             line(&mut out, "LOCATION", &e.location);
         }
+        if let Some(notes) = model
+            .notes
+            .get(&e.id)
+            .filter(|notes| !notes.trim().is_empty())
+        {
+            line(&mut out, "DESCRIPTION", notes.trim());
+        }
         let rr = recurrence_rule(e);
         if !rr.is_empty() {
             // RRULE is a structured value — written raw (no TEXT escaping).

@@ -1882,7 +1882,7 @@ fn page_resource_from_index(
         }
     }
     res = res.with_action(NotesEffect::ExportMarkdown { page: m.id }.bound());
-    res = res.with_action(NotesEffect::ExportMarkdownContent { page: m.id }.bound());
+    res = res.with_action(NotesEffect::export_markdown_content(m.id).bound());
     res = res.with_action(NotesEffect::InsertImage { page: m.id }.bound());
 
     // Rename — a prompted action carrying the rest of the page's metadata
@@ -2236,6 +2236,117 @@ pub(crate) fn notebook_child(workspace: &crate::Workspace, id: &str) -> Option<R
 /// The `new-page` parameter holding the new note's text.
 const NOTE_TEXT_PARAM: &str = "text";
 
+/// How many titles a "no such note" refusal lists.
+const NAMED_NOTES_LISTED: usize = 20;
+
+/// The note `page` (its id or `notes.page:<id>`) names in `pages`, else the
+/// one titled `title`: exactly, else ignoring case and surrounding space;
+/// the newest when several share it.
+///
+/// # Errors
+/// Neither is given, or no note matches: the refusal lists the titles.
+pub(crate) fn note_named(
+    pages: &[PageMeta],
+    page: Option<&str>,
+    title: Option<&str>,
+) -> Result<PageId, String> {
+    let page = page.map(str::trim).filter(|page| !page.is_empty());
+    if let Some(page) = page {
+        let id = page.strip_prefix("notes.page:").unwrap_or(page);
+        if let Ok(id) = id.parse::<PageId>()
+            && pages.iter().any(|candidate| candidate.id == id)
+        {
+            return Ok(id);
+        }
+        if title.is_none() {
+            return Err(format!(
+                "no note `{page}`; {}",
+                listed_notes(pages, "give its title instead")
+            ));
+        }
+    }
+    let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) else {
+        return Err("name the note by `page` (its id) or `title`".into());
+    };
+    let found = pages
+        .iter()
+        .rfind(|candidate| candidate.title.trim() == title)
+        .or_else(|| {
+            let folded = title.to_lowercase();
+            pages
+                .iter()
+                .rfind(|candidate| candidate.title.trim().to_lowercase() == folded)
+        });
+    found.map(|candidate| candidate.id).ok_or_else(|| {
+        format!(
+            "no note titled `{title}`; {}",
+            listed_notes(pages, "the notebook is empty")
+        )
+    })
+}
+
+/// The notebook's titles, as a refusal lists them, or `empty`.
+fn listed_notes(pages: &[PageMeta], empty: &str) -> String {
+    if pages.is_empty() {
+        return empty.to_owned();
+    }
+    let mut titles = pages
+        .iter()
+        .take(NAMED_NOTES_LISTED)
+        .map(|page| format!("`{}`", page.title))
+        .collect::<Vec<_>>();
+    if pages.len() > NAMED_NOTES_LISTED {
+        titles.push(format!(
+            "and {} more",
+            pages.len().saturating_sub(NAMED_NOTES_LISTED)
+        ));
+    }
+    format!("the notes are {}", titles.join(", "))
+}
+
+/// `append-to-note`: Markdown added at the end of a note named by id or
+/// title, so an agent needs no body resource id.
+fn append_to_note_declaration(
+    workspace: &crate::Workspace,
+) -> ui::tilo_resource::ActionDecl<crate::resource::Notebook> {
+    let pages = workspace.pages().to_vec();
+    ui::tilo_resource::ActionDecl::new(
+        "append-to-note",
+        "Append to note",
+        vec![
+            ActionParam::optional(
+                NOTE_PAGE_PARAM,
+                ParamType::Text,
+                "The note's id or notes.page:<id>",
+            ),
+            ActionParam::optional(
+                NOTE_TITLE_PARAM,
+                ParamType::Text,
+                "The note's title, instead of page: exact, else ignoring case",
+            ),
+            ActionParam::required("markdown", ParamType::Text, "The text to add, as Markdown"),
+        ],
+        move |args, _| {
+            let page = note_named(
+                &pages,
+                args.text(NOTE_PAGE_PARAM),
+                args.text(NOTE_TITLE_PARAM),
+            )?;
+            let markdown = args.text("markdown").ok_or("missing markdown")?.to_owned();
+            Ok(edit_body_action(
+                page,
+                RichTextAction::AppendMarkdown { markdown },
+            ))
+        },
+    )
+    .describe("Add Markdown at the end of a note named by `page` or `title`; what is there stays.")
+}
+
+/// The parameter naming a note by id.
+const NOTE_PAGE_PARAM: &str = "page";
+/// The parameter naming a note by title.
+const NOTE_TITLE_PARAM: &str = "title";
+
 /// The notebook's state-bound edits: a new root note after the last one, and
 /// today's note when the notebook has none yet.
 pub(crate) fn notebook_bound_declarations(
@@ -2270,7 +2381,12 @@ pub(crate) fn notebook_bound_declarations(
                 Ok(action)
             },
         )
-        .describe("Create a new root note, with its text (Markdown) when given."),
+        .describe(
+            "Create a new root note, with its text (Markdown) when given. Answers its \
+             `page` (notes.page:<id>), `id` and `title`.",
+        )
+        .answering(),
+        append_to_note_declaration(workspace),
     ];
     let title = today_title();
     if !workspace.pages().iter().any(|page| page.title == title) {
@@ -2287,7 +2403,8 @@ pub(crate) fn notebook_bound_declarations(
                 Vec::new(),
                 move |_, _| Ok(new_page_action(Uuid::new_v4(), None, order.clone(), &title)),
             )
-            .describe("Create today's note, titled with the date."),
+            .describe("Create today's note, titled with the date.")
+            .answering(),
         );
     }
     declarations

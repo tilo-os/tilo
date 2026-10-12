@@ -3174,8 +3174,17 @@ impl ui::resources::PublishesResources for SheetsApp {
         address: &tilo_actions::ActionAddress,
         changes: &[automerge::Patch],
     ) -> Option<serde_json::Value> {
-        let sheet_id = address.resource.strip_prefix("sheets.sheet:")?;
-        crate::cell_actions::edit_result(doc, sheet_id, &address.action, changes)
+        match address.resource.strip_prefix("sheets.sheet:") {
+            Some(sheet_id) => {
+                crate::cell_actions::edit_result(doc, sheet_id, &address.action, changes)
+            }
+            None if address.resource
+                == <crate::resource::SheetsWorkbook as ui::tilo_resource::Resource>::KIND =>
+            {
+                crate::cell_actions::workbook_edit_result(doc, &address.action, changes)
+            }
+            None => None,
+        }
     }
 }
 

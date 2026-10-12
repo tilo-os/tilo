@@ -492,14 +492,135 @@ pub fn sheet_actions(
     specs
 }
 
+/// The parameter a workbook-level cell action names its sheet by.
+const SHEET_PARAM: &str = "sheet";
+
+/// How many sheet names an unknown-sheet refusal lists.
+const NAMED_SHEETS_LISTED: usize = 20;
+
+/// The sheet `key` names among `sheets`: its name exactly, else ignoring
+/// case and surrounding space, else its id or `sheets.sheet:<id>`.
+///
+/// # Errors
+///
+/// No sheet matches: the refusal lists the sheets' names.
+pub(crate) fn sheet_named<'a>(
+    sheets: &'a [(usize, std::sync::Arc<crate::resource::SheetInfo>)],
+    key: &str,
+) -> Result<&'a (usize, std::sync::Arc<crate::resource::SheetInfo>), String> {
+    let key = key.trim();
+    let folded = key.to_lowercase();
+    let id = key.strip_prefix("sheets.sheet:").unwrap_or(key);
+    sheets
+        .iter()
+        .find(|(_, sheet)| sheet.name == key)
+        .or_else(|| {
+            sheets
+                .iter()
+                .find(|(_, sheet)| sheet.name.trim().to_lowercase() == folded)
+        })
+        .or_else(|| sheets.iter().find(|(_, sheet)| sheet.id == id))
+        .ok_or_else(|| {
+            let mut names = sheets
+                .iter()
+                .take(NAMED_SHEETS_LISTED)
+                .map(|(_, sheet)| format!("`{}`", sheet.name))
+                .collect::<Vec<_>>();
+            if sheets.len() > NAMED_SHEETS_LISTED {
+                names.push(format!(
+                    "and {} more",
+                    sheets.len().saturating_sub(NAMED_SHEETS_LISTED)
+                ));
+            }
+            format!("no sheet `{key}`; the sheets are {}", names.join(", "))
+        })
+}
+
+/// Each sheet's cell actions on the workbook too, naming their sheet by a
+/// `sheet` argument, so a caller that knows a sheet by name needs no id.
+pub fn workbook_actions(state: &crate::resource::SheetsState) -> Vec<ActionSpec> {
+    let sheets: std::sync::Arc<[(usize, std::sync::Arc<crate::resource::SheetInfo>)]> = state
+        .sheets
+        .iter()
+        .enumerate()
+        .filter(|(_, sheet)| !sheet.id.is_empty())
+        .map(|(idx, sheet)| (idx, std::sync::Arc::clone(sheet)))
+        .collect();
+    let Some((first, info)) = sheets.first() else {
+        return Vec::new();
+    };
+    sheet_actions(*first, &info.id, std::sync::Arc::clone(info))
+        .into_iter()
+        .map(|template| workbook_spec(&template, std::sync::Arc::clone(&sheets)))
+        .collect()
+}
+
+/// `template`, a sheet's cell action, as the workbook offers it: the same
+/// parameters after `sheet`, built by the named sheet's own action.
+fn workbook_spec(
+    template: &ActionSpec,
+    sheets: std::sync::Arc<[(usize, std::sync::Arc<crate::resource::SheetInfo>)]>,
+) -> ActionSpec {
+    let mut params = vec![ActionParam::required(
+        SHEET_PARAM,
+        ParamType::Text,
+        "The sheet's name (or its id)",
+    )];
+    params.extend(template.params().iter().cloned());
+    let id = template.id.clone();
+    let build = move |args: &tilo_actions::ActionArgs| {
+        let (idx, info) = match sheet_named(&sheets, args.text(SHEET_PARAM).unwrap_or_default()) {
+            Ok(found) => found,
+            Err(message) => return invalid(message),
+        };
+        let mut arguments = args.to_json();
+        arguments.remove(SHEET_PARAM);
+        sheet_actions(*idx, &info.id, std::sync::Arc::clone(info))
+            .into_iter()
+            .find(|spec| spec.id == id)
+            .map_or_else(
+                || invalid(format!("a sheet has no `{id}`")),
+                |spec| {
+                    spec.build_json(&arguments)
+                        .unwrap_or_else(|error| invalid(error.to_string()))
+                },
+            )
+    };
+    let placeholder = format!("sheet, then {}", template.label.to_lowercase());
+    let mut spec = match &template.operation_type {
+        Some(operation) => ActionSpec::typed_operation(
+            template.id.clone(),
+            template.label.clone(),
+            placeholder,
+            template.kind,
+            operation.clone(),
+            params,
+            build,
+        ),
+        None => ActionSpec::typed(
+            template.id.clone(),
+            template.label.clone(),
+            placeholder,
+            template.locus,
+            params,
+            build,
+        ),
+    };
+    spec.contract = template.contract.clone();
+    spec.description.clone_from(&template.description);
+    spec
+}
+
 fn validate_read(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
     if payload.len() > MAX_REQUEST_BYTES {
         return Err(SemanticReadError::Limit);
     }
     let request: ReadRequest =
         serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
-    if resource.kind != "sheets.sheet" || resource.id.as_str() != sheet_resource_id(&request.sheet)
-    {
+    // The workbook reads any of its sheets, which `project_read` resolves.
+    let own_sheet = resource.kind == "sheets.sheet"
+        && resource.id.as_str() == sheet_resource_id(&request.sheet);
+    if !own_sheet && resource.kind != "sheets.workbook" {
         return Err(SemanticReadError::InvalidRequest);
     }
     if request
@@ -663,6 +784,22 @@ pub fn edit_result(
         fields.insert("changed".into(), range_label(start, end).into());
     }
     Some(content)
+}
+
+/// The answer of workbook-level cell edit `action`: [`edit_result`] on the
+/// sheet whose cells `changes` touched.
+pub fn workbook_edit_result(
+    doc: &AutoCommit,
+    action: &str,
+    changes: &[automerge::Patch],
+) -> Option<serde_json::Value> {
+    if !ANSWERING_EDITS.contains(&action) {
+        return None;
+    }
+    (0..SheetsDoc::sheet_count(doc))
+        .find(|&idx| !SheetsDoc::changed_cells(doc, idx, changes).is_empty())
+        .and_then(|idx| SheetsDoc::sheet_resource_id(doc, idx))
+        .and_then(|sheet_id| edit_result(doc, &sheet_id, action, changes))
 }
 
 pub fn read_result_schema() -> &'static serde_json::Value {

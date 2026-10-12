@@ -294,6 +294,11 @@ impl Resource for SheetsWorkbook {
         ]
     }
 
+    /// Each sheet's cell actions, naming the sheet by a `sheet` argument.
+    fn bound_actions(state: &SheetsState) -> Vec<tilo_actions::ActionSpec> {
+        crate::cell_actions::workbook_actions(state)
+    }
+
     fn children(state: &SheetsState) -> Vec<tilo_actions::Resource> {
         document_children(state)
     }
@@ -477,6 +482,30 @@ mod tests {
         assert_eq!(names, ["Sheet1"]);
         assert!(state.sheets[0].snapshot.raw.is_empty());
         assert_eq!(state.sheets[0].id, FIRST_SHEET_ID);
+    }
+
+    /// A cell edit on the workbook names its sheet and answers with the
+    /// range it changed, as the sheet's own edit does.
+    #[test]
+    fn a_workbook_cell_edit_answers_the_range_it_changed() {
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        let answer = app
+            .call(
+                "set-cells",
+                serde_json::json!({"sheet": "sheet1", "start": "B2", "rows": [[2, "=B2*3"]]}),
+            )
+            .unwrap()
+            .expect("the edit answers");
+        assert_eq!(answer["range"], "B2:C2");
+        assert_eq!(answer["rows"], serde_json::json!([[2.0, 6.0]]));
+        let error = app
+            .call(
+                "set-cells",
+                serde_json::json!({"sheet": "Budget", "start": "A1", "rows": [[1]]}),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("the sheets are `Sheet1`"), "{error}");
     }
 
     /// Screenshots show the sample workbook, staged through its actions.

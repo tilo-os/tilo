@@ -471,6 +471,11 @@ pub enum SlidesAction {
         palette: String,
         slides: Vec<SlideData>,
     },
+    /// Add `slide` after the last slide as the deck stands when this
+    /// applies. A deck whose only slide has nothing on it (a new deck) gets
+    /// `slide` in that slide's place instead, so a deck an agent composes
+    /// does not keep an empty first slide. What `add-slide` authors.
+    AppendSlide { slide: SlideData },
 }
 
 const MAX_DECK_SLIDES: usize = 10_000;
@@ -535,6 +540,40 @@ fn replacement_deck(
         return Err(refused("the deck exceeds the deck limits"));
     }
     Ok(deck)
+}
+
+/// Refuse `slide` as a new slide of `deck` unless its data is valid, its
+/// slide and element ids are new to the deck, and the deck stays within its
+/// limits with it.
+fn check_new_slide(deck: crate::model::Deck, slide: &SlideData) -> Result<(), ActionError> {
+    if deck.slides.len() >= MAX_DECK_SLIDES
+        || !valid_id(&slide.id)
+        || !exact_layout(&slide.layout)
+        || !exact_background(&slide.background)
+        || slide.notes.chars().count() > MAX_TEXT_CHARS
+        || slide.elements.len() > MAX_ELEMENTS_PER_SLIDE
+        || deck.slides.iter().any(|existing| existing.id == slide.id)
+    {
+        return Err(refused("new slide data is invalid or stale"));
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    for element in &slide.elements {
+        validate_element(element)?;
+        if !ids.insert(&element.id)
+            || deck
+                .slides
+                .iter()
+                .any(|existing| existing.elements.iter().any(|live| live.id == element.id))
+        {
+            return Err(refused("new element id already exists"));
+        }
+    }
+    let mut projected = deck;
+    projected.slides.push(slide.to_slide());
+    if !deck_within_aggregate_limits(&projected) {
+        return Err(refused("deck aggregate limit would be exceeded"));
+    }
+    Ok(())
 }
 
 fn refused(reason: &str) -> ActionError {
@@ -963,33 +1002,24 @@ impl Action for SlidesAction {
                 SlidesDoc::insert_slide(doc, *at, &slide.to_slide());
             }
             SlidesAction::InsertSlideWithOrder { slide, rank } => {
-                if deck.slides.len() >= MAX_DECK_SLIDES
-                    || !valid_id(&slide.id)
-                    || !exact_layout(&slide.layout)
-                    || !exact_background(&slide.background)
-                    || slide.notes.chars().count() > MAX_TEXT_CHARS
-                    || slide.elements.len() > MAX_ELEMENTS_PER_SLIDE
-                    || deck.slides.iter().any(|existing| existing.id == slide.id)
-                {
-                    return Err(refused("new slide data is invalid or stale"));
-                }
-                let mut ids = std::collections::BTreeSet::new();
-                for element in &slide.elements {
-                    validate_element(element)?;
-                    if !ids.insert(&element.id)
-                        || deck.slides.iter().any(|existing| {
-                            existing.elements.iter().any(|live| live.id == element.id)
-                        })
-                    {
-                        return Err(refused("new element id already exists"));
-                    }
-                }
-                let mut projected = deck;
-                projected.slides.push(slide.to_slide());
-                if !deck_within_aggregate_limits(&projected) {
-                    return Err(refused("deck aggregate limit would be exceeded"));
-                }
+                check_new_slide(deck, slide)?;
                 SlidesDoc::insert_slide_with_order(doc, &slide.to_slide(), *rank);
+            }
+            SlidesAction::AppendSlide { slide } => {
+                let ranks = SlidesDoc::slide_ranks(doc);
+                let fills = matches!(deck.slides.as_slice(), [only] if only.is_unwritten());
+                let mut projected = deck;
+                if fills {
+                    projected.slides.clear();
+                }
+                check_new_slide(projected, slide)?;
+                let rank = if fills {
+                    SlidesDoc::remove_slide(doc, 0);
+                    ranks.first().copied().unwrap_or_default()
+                } else {
+                    crate::doc::rank_for_insert(&ranks, ranks.len())
+                };
+                SlidesDoc::insert_slide_with_order(doc, &slide.to_slide(), rank);
             }
             SlidesAction::DeleteSlide { idx, id } => {
                 if deck.slides.len() <= 1 {
@@ -1626,8 +1656,8 @@ impl ui::tilo_resource::Resource for SlidesDeck {
         Ok(())
     }
 
-    fn bound_actions(state: &SlidesResourceCtx) -> Vec<ActionSpec> {
-        deck_bound_document_actions(state)
+    fn bound_actions(_state: &SlidesResourceCtx) -> Vec<ActionSpec> {
+        deck_bound_document_actions()
     }
 
     fn coalesces(previous: &SlidesAction, next: &SlidesAction) -> bool {
@@ -1656,7 +1686,9 @@ impl ui::tilo_resource::Resource for SlidesDeck {
             ActionParam::optional(
                 "src",
                 ParamType::Text,
-                "Content id (`asset:blake3:<hash>`) of an image element's picture",
+                "An image element's picture: a content address `tilo.content:<hash>` (what an \
+                 export answers), its bare hash, or a deck asset id `asset:blake3:<hash>`. \
+                 PNG, JPEG, GIF or WebP",
             ),
         ]);
         add_params.extend(style_params());
@@ -1673,8 +1705,8 @@ impl ui::tilo_resource::Resource for SlidesDeck {
             })
             .describe(
                 "Add a text box, shape, line or image to a slide, above everything on it. \
-                 The new element's id is chosen when the edit applies; read the deck again to \
-                 find it.",
+                 The new element's id is chosen when the edit applies: the returned outline \
+                 lists it last on its slide with its {#id}.",
             )
             .returns(outline_result()),
             ActionDecl::new(
@@ -2003,12 +2035,14 @@ fn build_add_element(args: &ActionArgs) -> Result<SlidesAction, String> {
     if !text.is_empty() && kind != "text" {
         return Err("only a text element takes `text`".into());
     }
-    if kind == "image" && !crate::assets::is_asset_id(&src) {
-        return Err("an image needs `src`, the content id of its picture".into());
-    }
     if kind != "image" && !src.is_empty() {
         return Err("only an image element takes `src`".into());
     }
+    let src = if kind == "image" {
+        image_src(&src)?
+    } else {
+        src
+    };
     Ok(SlidesAction::CreateElement {
         slide_id: slide_id_arg(args)?,
         element: NewElement {
@@ -2021,6 +2055,49 @@ fn build_add_element(args: &ActionArgs) -> Result<SlidesAction, String> {
             src,
             style: style_patch(args)?,
         },
+    })
+}
+
+/// The deck asset id an image's `src` names: an `asset:blake3:<hash>` id as
+/// it is, or a content address (`tilo.content:<hash>`) or bare hash whose
+/// picture the window's content store holds, kept there as a deck asset.
+fn image_src(src: &str) -> Result<String, String> {
+    const FORMS: &str = "give `src` as `tilo.content:<hash>`, a bare content hash, or \
+                         `asset:blake3:<hash>`";
+    let src = src.trim();
+    if crate::assets::is_asset_id(src) {
+        return Ok(src.to_owned());
+    }
+    if src.is_empty() {
+        return Err(format!("an image needs its picture: {FORMS}"));
+    }
+    let hash = tilo_actions::content_hash(src)
+        .unwrap_or(src)
+        .to_ascii_lowercase();
+    if !tilo_content::valid_hash(&hash) {
+        return Err(format!("`{src}` names no picture: {FORMS}"));
+    }
+    let content = ui::tilo_resource::content::current()
+        .ok_or("this window keeps no content to read the picture from")?;
+    let bytes = content
+        .read(&hash)
+        .ok_or_else(|| format!("content `{hash}` is not available on this machine"))?;
+    if !matches!(
+        image::guess_format(&bytes),
+        Ok(image::ImageFormat::Png
+            | image::ImageFormat::Jpeg
+            | image::ImageFormat::Gif
+            | image::ImageFormat::WebP)
+    ) {
+        return Err(format!(
+            "content `{hash}` is not a PNG, JPEG, GIF or WebP picture"
+        ));
+    }
+    crate::assets::store_asset(&content, &bytes).ok_or_else(|| {
+        format!(
+            "content `{hash}` is larger than a slide picture may be ({} MiB)",
+            crate::assets::MAX_IMAGE_FILE_BYTES / (1024 * 1024)
+        )
     })
 }
 
@@ -2103,15 +2180,15 @@ fn returning_outline(mut spec: ActionSpec) -> ActionSpec {
     spec
 }
 
-/// Document ops whose payload needs the live deck: append a slide (rank after
-/// the last slide) and set the accent theme. Published through
-/// [`SlidesDeck::bound_actions`] so `tilo_resource::publish` owns them.
-fn deck_bound_document_actions(ctx: &SlidesResourceCtx) -> Vec<ActionSpec> {
-    // Deck-level: add a new slide after the whole deck. The slide's ids are
+/// Deck-level document ops: append a slide and set the accent theme.
+/// Published through [`SlidesDeck::bound_actions`] so `tilo_resource::publish`
+/// owns them.
+fn deck_bound_document_actions() -> Vec<ActionSpec> {
+    // Deck-level: add a new slide after the whole deck, its place found when
+    // the action applies ([`SlidesAction::AppendSlide`]). The slide's ids are
     // minted when the palette dispatches (a genuinely new slide), so this spec
     // is not asserted for byte-equality against a builder — every other action
     // here is deterministic and is.
-    let rank = resource_rank_for_slot(ctx, ctx.slides.len());
     let mut specs = vec![returning_outline(
         ActionSpec::typed(
             ADD_SLIDE,
@@ -2128,12 +2205,20 @@ fn deck_bound_document_actions(ctx: &SlidesResourceCtx) -> Vec<ActionSpec> {
                 ActionParam::optional("layout", ParamType::Text, "title: a cover slide")
                     .with_choices(["title", "title-content"]),
             ],
-            move |args| {
-                encode(&insert_slide_with_order_action(
-                    &authored_slide(args.text("title"), args.text("body"), args.text("layout")),
-                    rank,
-                ))
+            |args| {
+                encode(&SlidesAction::AppendSlide {
+                    slide: SlideData::from_slide(&authored_slide(
+                        args.text("title"),
+                        args.text("body"),
+                        args.text("layout"),
+                    )),
+                })
             },
+        )
+        .with_description(
+            "Add a slide after the last one. A new deck starts with one empty slide: while it \
+             is the only slide and still empty, add-slide fills it instead of adding a second. \
+             The returned outline lists the new slide last with its {#id}.",
         )
         .reversible(),
     )];

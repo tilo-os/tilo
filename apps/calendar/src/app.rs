@@ -4514,6 +4514,15 @@ impl CalendarApp {
                 Ok(Effected::Pending)
             }
             CalendarEffect::ExportIcs => self.export_ics(cx),
+            CalendarEffect::ExportIcsContent { from, to } => {
+                crate::listing::export_content(&cx.live().get(), from.as_deref(), to.as_deref())
+            }
+            CalendarEffect::ListEvents { from, to, query } => crate::listing::answer(
+                &cx.live().get(),
+                from.as_deref(),
+                to.as_deref(),
+                query.as_deref(),
+            ),
             CalendarEffect::ImportIcs => Ok(Self::import_ics(cx)),
             CalendarEffect::PrepareInMail {
                 event_id,

@@ -52,6 +52,7 @@ fn default_local_event() -> EventData {
         reminder: -1,
         project: String::new(),
         calendar_id: String::new(),
+        notes: String::new(),
     }
 }
 
@@ -151,6 +152,33 @@ pub enum CalendarEffect {
     /// Saves every event and task to an iCalendar file you choose.
     #[effect(job, device_only)]
     ExportIcs,
+    /// Export ICS as content
+    ///
+    /// Keeps the calendar as an .ics file in the content store, with no file
+    /// to write: every event and task, or with a range the events in it and
+    /// the tasks due in it. Answers the content address to read it by.
+    #[effect(content, permission = "read")]
+    ExportIcsContent {
+        #[param("First date, YYYY-MM-DD (default: no limit)")]
+        from: Option<String>,
+        #[param("Last date, YYYY-MM-DD, inclusive (default: no limit)")]
+        to: Option<String>,
+    },
+    /// List events
+    ///
+    /// Answers the events, ordered by start, each with its uid, title,
+    /// start, end, `all_day`, location, attendees, description, calendar and
+    /// project. With a range, a repeating event is listed once per
+    /// occurrence in it. Changes nothing.
+    #[effect(view, returns, idempotent)]
+    ListEvents {
+        #[param("First date, YYYY-MM-DD (default: no limit)")]
+        from: Option<String>,
+        #[param("Last date, YYYY-MM-DD, inclusive (default: no limit)")]
+        to: Option<String>,
+        #[param("Text in the title, location, description or attendees")]
+        query: Option<String>,
+    },
     /// Import ICS
     ///
     /// Imports the events and tasks of an iCalendar file you choose.
@@ -247,6 +275,74 @@ impl Resource for Calendar {
         Ok(CalDoc::read_model(doc))
     }
 
+    /// The calendar reads as its events: with no item every event, ordered
+    /// by start, and the tasks; with `calendar.event:<uid>` that event.
+    const READABLE: bool = true;
+
+    fn read_content(
+        state: &Model,
+        _doc: &Doc,
+        item: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let all = crate::listing::list(state, &crate::listing::EventFilter::default());
+        let Some(item) = item else {
+            let tasks: Vec<_> = state
+                .tasks
+                .iter()
+                .map(|task| {
+                    serde_json::json!({
+                        "uid": task.id.to_string(),
+                        "task": crate::actions::task_resource_id(task.id),
+                        "title": task.title,
+                        "due": task.due.map(|due| due.to_string()),
+                        "done": task.done,
+                        "project": task.project.and_then(|id| state.project(id)).map(|p| p.name.as_str()),
+                    })
+                })
+                .collect();
+            let mut answer = all;
+            if let serde_json::Value::Object(fields) = &mut answer {
+                fields.insert("tasks".into(), tasks.into());
+            }
+            return Ok(answer);
+        };
+        all.get("events")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|events| {
+                events
+                    .iter()
+                    .find(|event| event["event"] == item || event["uid"] == item)
+            })
+            .cloned()
+            .ok_or_else(|| format!("the calendar holds no event {item}"))
+    }
+
+    /// `new-event` answers with the event it made, by uid and resource.
+    fn answer(
+        _doc: &Doc,
+        action: &str,
+        changes: &[ui::automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        if action != "new-event" {
+            return None;
+        }
+        let uid = changes.iter().find_map(|patch| match &patch.action {
+            ui::automerge::PatchAction::PutMap { key, .. }
+                if matches!(
+                    patch.path.as_slice(),
+                    [(_, ui::automerge::Prop::Map(map))] if map == "events"
+                ) =>
+            {
+                key.parse::<crate::model::Id>().ok()
+            }
+            _ => None,
+        })?;
+        Some(serde_json::json!({
+            "uid": uid.to_string(),
+            "event": crate::actions::event_resource_id(uid),
+        }))
+    }
+
     fn initialize(_doc: &mut Doc) -> Result<(), ModelError> {
         // An empty Automerge document is a valid empty calendar; maps are
         // created on first write inside Action::apply.
@@ -270,6 +366,8 @@ impl Resource for Calendar {
                         ParamType::Text,
                         "Local end date and time in YYYY-MM-DDTHH:MM (default: an hour after the start)",
                     ),
+                    ActionParam::optional("location", ParamType::Text, "Place, room or meeting link"),
+                    ActionParam::optional("description", ParamType::Text, "Notes, as Markdown"),
                 ],
                 |args, _| {
                     let title = args
@@ -295,10 +393,17 @@ impl Resource for Calendar {
                     data.title = title;
                     data.start = start.format("%Y-%m-%dT%H:%M").to_string();
                     data.end = end.format("%Y-%m-%dT%H:%M").to_string();
+                    let text = |name| args.text(name).unwrap_or_default().trim();
+                    text("location").clone_into(&mut data.location);
+                    text("description").clone_into(&mut data.notes);
                     Ok(CalendarAction::UpsertEvent(data))
                 },
             )
-            .describe("Create an event on the local calendar."),
+            .describe(
+                "Create an event on the local calendar. Answers its `uid` and `event` resource \
+                 (calendar.event:<uid>), where set-start, set-location and the other edits apply.",
+            )
+            .answering(),
             ActionDecl::new(
                 "new-task",
                 "New task",

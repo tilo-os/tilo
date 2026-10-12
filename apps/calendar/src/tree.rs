@@ -378,7 +378,14 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
             ActionParam::required(
                 "start",
                 ParamType::Text,
-                "Local start date and time in YYYY-MM-DDTHH:MM",
+                "Local start date and time in YYYY-MM-DDTHH:MM; a start past the end moves \
+                 the event, keeping its length",
+            )
+            .with_schema(serde_json::json!({"pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$"})),
+            ActionParam::optional(
+                "end",
+                ParamType::Text,
+                "New local end in YYYY-MM-DDTHH:MM, set together with the start",
             )
             .with_schema(serde_json::json!({"pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$"})),
         ],
@@ -386,14 +393,27 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
         |data, args| {
             let start = args.text("start").unwrap_or_default();
             let start_value = parse_local_datetime(start, "start")?;
-            let end_value = parse_local_datetime(&data.end, "current end")?;
-            if start_value > end_value {
-                return Err("start must not be after end".into());
-            }
+            let old_start = parse_local_datetime(&data.start, "current start")?;
+            let old_end = parse_local_datetime(&data.end, "current end")?;
+            let end = match args.text("end").filter(|end| !end.trim().is_empty()) {
+                Some(end) => {
+                    if parse_local_datetime(end, "end")? < start_value {
+                        return Err("end must not be before start".into());
+                    }
+                    Some(end.to_string())
+                }
+                None if start_value > old_end => Some(
+                    (start_value + (old_end - old_start))
+                        .format(crate::actions::DT_FMT)
+                        .to_string(),
+                ),
+                None => None,
+            };
             Ok(patch_event_action(
                 data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
                 EventPatch {
                     start: Some(start.to_string()),
+                    end,
                     ..EventPatch::default()
                 },
             ))

@@ -27,8 +27,12 @@ struct Participant {
 
 impl Participant {
     fn new() -> Self {
+        Self::over(&seed_deck())
+    }
+
+    fn over(deck: &Deck) -> Self {
         let mut doc = AutoCommit::new();
-        SlidesDoc::seed(&mut doc, &seed_deck());
+        SlidesDoc::seed(&mut doc, deck);
         doc.commit();
         doc.set_actor(ActorId::from(AGENT));
         let registry = ActionRegistry::with(actions::register);
@@ -532,4 +536,118 @@ fn add_slide_writes_its_title_and_body_in_one_step() {
             .is_err(),
         "a layout outside the choices is refused"
     );
+}
+
+/// A new deck's one empty slide is what the first `add-slide` writes:
+/// a deck of four added slides has four slides, not an empty first one.
+/// Once a slide has words, add-slide appends, in a group as well.
+#[test]
+fn add_slide_into_a_new_deck_fills_its_empty_slide() {
+    let mut participant = Participant::over(&crate::model::starter_deck());
+    let blank = participant.deck().slides[0].id.clone();
+    participant
+        .invoke(ADD_SLIDE, &json!({"layout": "title", "title": "Launch"}))
+        .unwrap();
+    // Each append finds its place as the deck stands when it applies, so
+    // two in one change both land after the slide the first one wrote.
+    let append = |title: &str| {
+        serde_json::to_value(actions::SlidesAction::AppendSlide {
+            slide: actions::SlideData::from_slide(&actions::authored_slide(
+                Some(title),
+                None,
+                None,
+            )),
+        })
+        .unwrap()
+    };
+    participant
+        .invoke(
+            ui::tilo_resource::GROUP,
+            &json!({"actions": [
+                {"action": ui::tilo_resource::APPLY, "args": {"action": append("Agenda")}},
+                {"action": ui::tilo_resource::APPLY, "args": {"action": append("Budget")}},
+            ]}),
+        )
+        .expect("the group applies");
+    let deck = participant.deck();
+    let titles: Vec<&str> = deck
+        .slides
+        .iter()
+        .map(|slide| slide.elements[0].text.as_str())
+        .collect();
+    assert_eq!(titles, ["Launch", "Agenda", "Budget"]);
+    assert!(deck.slides.iter().all(|slide| slide.id != blank));
+    assert_eq!(deck.slides[0].layout, crate::model::Layout::Title);
+
+    // A lone slide with words on it stays.
+    let mut participant = Participant::over(&crate::model::starter_deck());
+    let slide = participant.deck().slides[0].id.clone();
+    participant
+        .invoke(
+            crate::actions::SET_SLIDE_TEXT,
+            &json!({"slide": slide, "title": "Kept"}),
+        )
+        .unwrap();
+    participant
+        .invoke(ADD_SLIDE, &json!({"title": "Next"}))
+        .unwrap();
+    let deck = participant.deck();
+    assert_eq!(deck.slides.len(), 2);
+    assert_eq!(deck.slides[0].id, slide);
+}
+
+/// Four pixels of PNG.
+fn png() -> Vec<u8> {
+    use image::ImageEncoder as _;
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(&[200; 16], 2, 2, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    png
+}
+
+/// An image element takes the content address an export answered, or its
+/// bare hash, as well as a deck asset id; the picture becomes a deck asset.
+/// What the store lacks, or is no picture, is refused naming the forms.
+#[test]
+fn an_image_element_takes_a_content_address() {
+    let mut participant = Participant::new();
+    let slide = participant.deck().slides[1].id.clone();
+    let store = tilo_content::ContentStore::memory();
+    let hash = store.put(&png()).unwrap();
+    let text = store.put(b"not a picture").unwrap();
+    let window = ui::WakeScope::new();
+    ui::tilo_resource::content::register(&window.handle(), store.clone());
+    let _entered = window.enter();
+
+    let image = |src: &str| json!({"slide": slide, "kind": "image", "x": 10, "y": 20, "w": 300, "h": 200, "src": src});
+    let heads = participant.doc.get_heads();
+    for (src, says) in [
+        (text.clone(), "not a PNG"),
+        (tilo_content::hash_bytes(b"never stored"), "not available"),
+        ("photo.png".to_owned(), "tilo.content:<hash>"),
+        (String::new(), "asset:blake3:<hash>"),
+    ] {
+        let error = participant.invoke(ADD_ELEMENT, &image(&src)).unwrap_err();
+        assert!(error.to_string().contains(says), "{src}: {error}");
+    }
+    assert_eq!(
+        participant.doc.get_heads(),
+        heads,
+        "a refusal writes nothing"
+    );
+
+    let asset = format!("asset:blake3:{hash}");
+    for src in [format!("tilo.content:{hash}"), hash.clone(), asset.clone()] {
+        participant.invoke(ADD_ELEMENT, &image(&src)).unwrap();
+        let deck = participant.deck();
+        let added = deck.slides[1].elements.last().unwrap();
+        assert_eq!(added.kind, ElementKind::Image);
+        assert_eq!(added.src, asset, "{src} names the deck asset");
+        assert_eq!(
+            crate::assets::read_asset(&store, &added.src),
+            Some(png()),
+            "the deck asset reads the picture"
+        );
+    }
 }

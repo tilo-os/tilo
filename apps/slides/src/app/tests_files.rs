@@ -345,3 +345,75 @@ fn the_slide_shown_stays_shown_when_a_collaborator_inserts_before_it() {
         assert_eq!(app.cur_slide, 3);
     });
 }
+
+/// An agent with no files of its own places the picture an export answered
+/// by its content address, then exports the deck as `.pptx` and a slide
+/// as a PNG kept as content: the `.pptx` carries the picture, the PNG is the
+/// slide at 1280×720, and neither asks for a chooser.
+#[test]
+fn a_picture_by_content_address_travels_into_the_exports_kept_as_content() {
+    use image::ImageEncoder as _;
+    let mut picture = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut picture)
+        .write_image(&[40; 64], 4, 4, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
+    let content = bench.app.content();
+    let hash = content.put(&picture).unwrap();
+    let slide = bench.deck().slides[0].id.clone();
+    let outline = bench
+        .app
+        .call(
+            actions::ADD_ELEMENT,
+            serde_json::json!({"slide": slide, "kind": "image", "src": format!("tilo.content:{hash}"),
+                               "x": 100, "y": 100, "w": 400, "h": 300}),
+        )
+        .expect("the picture is placed")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .expect("add-element answers the outline");
+    let element = bench.deck().slides[0].elements[0].clone();
+    assert_eq!(element.src, format!("asset:blake3:{hash}"));
+    assert!(
+        outline.contains(&format!("[image] {{#{}}}", element.id)),
+        "the outline names the new element: {outline}"
+    );
+
+    let kept = |bench: &mut Bench, effect: &SlidesEffect| {
+        let (services, recorder) = ui::host::HostServices::recording();
+        let output = ui::host::scoped(&services, || bench.app.effect(effect)).expect("exported");
+        assert!(recorder.pick_requests().is_empty(), "no chooser is asked");
+        let [address] = output.resources.as_slice() else {
+            panic!("one content resource: {output:?}");
+        };
+        let hash = tilo_actions::content_hash(address).expect("a content address");
+        bench.app.content().read(hash).expect("the bytes are kept")
+    };
+
+    let pptx = kept(&mut bench, &SlidesEffect::ExportPptxContent);
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&pptx)).expect("a .pptx package");
+    let mut media = Vec::new();
+    std::io::Read::read_to_end(
+        &mut zip
+            .by_name("ppt/media/image1.png")
+            .expect("the picture is inside"),
+        &mut media,
+    )
+    .unwrap();
+    assert_eq!(media, picture);
+    let reopened = crate::pptx::read_pptx(&pptx, &ContentStore::memory()).unwrap();
+    assert_eq!(reopened.slides[0].elements[0].kind, ElementKind::Image);
+
+    let png = kept(
+        &mut bench,
+        &SlidesEffect::ExportSlidePngContent { slide: 1 },
+    );
+    let drawn = image::load_from_memory(&png).expect("a PNG");
+    assert_eq!((drawn.width(), drawn.height()), (1280, 720));
+    assert!(
+        bench
+            .app
+            .effect(&SlidesEffect::ExportSlidePngContent { slide: 2 })
+            .is_err(),
+        "a slide the deck lacks is refused"
+    );
+}

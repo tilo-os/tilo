@@ -681,7 +681,9 @@ mod tests {
         assert!(error.to_string().contains("not available"), "{error}");
         let error = insert_image(&mut participant, &hash, Some("no such words")).unwrap_err();
         assert!(
-            error.to_string().contains("no paragraph contains"),
+            error
+                .to_string()
+                .contains("no heading or paragraph matches"),
             "{error}"
         );
         assert!(

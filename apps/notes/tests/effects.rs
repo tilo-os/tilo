@@ -130,7 +130,7 @@ fn a_note_exported_as_content_is_markdown_read_back_by_address() {
     let (services, recorder) = ui::host::HostServices::recording();
     let _host = ui::host::enter(&services);
     let (mut app, page) = with_note("Guide", "Intro to the guide");
-    let spec = NotesEffect::ExportMarkdownContent { page }.bound();
+    let spec = NotesEffect::export_markdown_content(page).bound();
     assert_eq!(
         spec.contract.result,
         tilo_actions::ResultSpec::Resource {
@@ -149,7 +149,7 @@ fn a_note_exported_as_content_is_markdown_read_back_by_address() {
     let output = app
         .effect_on(
             &page_resource_id(page),
-            &NotesEffect::ExportMarkdownContent { page },
+            &NotesEffect::export_markdown_content(page),
         )
         .unwrap();
     assert!(recorder.pick_requests().is_empty(), "no chooser is asked");
@@ -313,7 +313,7 @@ fn exported(
     let output = app
         .effect_on(
             &page_resource_id(page),
-            &NotesEffect::ExportMarkdownContent { page },
+            &NotesEffect::export_markdown_content(page),
         )
         .unwrap();
     let [address] = output.resources.as_slice() else {
@@ -362,5 +362,104 @@ fn plain_text_given_to_a_new_note_is_a_paragraph_per_line() {
     assert_eq!(
         exported(&mut app, page),
         "# Groceries\n\noat milk\n\nbread\n\napples\n"
+    );
+}
+
+/// The content `output` answered, as text.
+fn content_text(
+    app: &ui::framework::testing::TestApp<notes::NotesShell>,
+    output: &tilo_actions::ActionOutput,
+) -> String {
+    let [address] = output.resources.as_slice() else {
+        panic!("one content resource: {output:?}");
+    };
+    let hash = address
+        .strip_prefix("tilo.content:")
+        .expect("a content address");
+    String::from_utf8(app.content().read(hash).expect("the bytes are kept")).unwrap()
+}
+
+/// An agent that made a note with `new-page` gets its id back, and exports
+/// it by that id or by its title alone.
+#[test]
+fn a_new_note_answers_its_id_and_exports_by_title() {
+    let mut app = notes();
+    let answer = app
+        .call(
+            "new-page",
+            serde_json::json!({ "value": "Launch plan", "text": "Ship Friday" }),
+        )
+        .unwrap()
+        .expect("new-page answers the note it made");
+    app.settle();
+    let page = app.state().pages()[0].id;
+    assert_eq!(
+        answer,
+        serde_json::json!({
+            "page": page_resource_id(page),
+            "id": page.to_string(),
+            "title": "Launch plan",
+        })
+    );
+
+    for (page_arg, title) in [
+        (Some(page_resource_id(page)), None),
+        (Some(page.to_string()), None),
+        (None, Some("Launch plan")),
+        (None, Some("  launch PLAN ")),
+    ] {
+        let output = app
+            .effect(&NotesEffect::ExportMarkdownContent {
+                page: page_arg,
+                title: title.map(str::to_owned),
+            })
+            .unwrap();
+        assert_eq!(
+            content_text(&app, &output),
+            "# Launch plan\n\nShip Friday\n"
+        );
+    }
+}
+
+#[test]
+fn an_unknown_note_title_is_refused_with_the_titles_there_are() {
+    let mut app = notes();
+    new_page(&mut app, "Groceries", "Milk");
+    new_page(&mut app, "Trip", "Rome");
+    let error = app
+        .effect(&NotesEffect::ExportMarkdownContent {
+            page: None,
+            title: Some("Holiday".into()),
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no note titled `Holiday`"), "{error}");
+    assert!(
+        error.contains("`Groceries`") && error.contains("`Trip`"),
+        "{error}"
+    );
+}
+
+/// Text reaches a note named by its title, with no body resource id.
+#[test]
+fn append_to_note_adds_markdown_to_the_note_titled() {
+    let mut app = notes();
+    let page = new_page(&mut app, "Journal", "Monday");
+    new_page(&mut app, "Other", "Untouched");
+    app.call(
+        "append-to-note",
+        serde_json::json!({ "title": "journal", "markdown": "Tuesday\n\n- gym" }),
+    )
+    .unwrap();
+    app.settle();
+    assert_eq!(body(&app, page), ["Monday", "Tuesday", "gym"]);
+    assert!(
+        app.call(
+            "append-to-note",
+            serde_json::json!({ "title": "Diary", "markdown": "x" }),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("`Journal`")
     );
 }

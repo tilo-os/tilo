@@ -3230,9 +3230,37 @@ impl SlidesApp {
             SlidesEffect::InsertPicture => return Ok(Self::choose_picture(cx)),
             SlidesEffect::Open { path } => return Ok(self.open_presentation(path, cx)),
             SlidesEffect::SaveAs { path } => return self.save_presentation(path, cx),
+            SlidesEffect::ExportPptxContent => {
+                if !actions::deck_within_aggregate_limits(&self.deck) {
+                    return Err(tr("slides-toast-export-limit"));
+                }
+                let bytes = crate::pptx::write_pptx(&self.deck, &self.content)
+                    .map_err(|error| format!("the deck could not be written: {error}"))?;
+                return self.keep_as_content(&bytes);
+            }
+            SlidesEffect::ExportSlidePngContent { slide } => {
+                let count = self.deck.slides.len();
+                let shown = usize::try_from(slide)
+                    .ok()
+                    .and_then(|number| number.checked_sub(1))
+                    .and_then(|index| self.deck.slides.get(index))
+                    .ok_or_else(|| format!("no slide {slide}: the deck has slides 1 to {count}"))?;
+                let bytes = render::slide_png(&self.deck, shown, &self.content)?;
+                return self.keep_as_content(&bytes);
+            }
             SlidesEffect::Read => return Ok(Effected::value(crate::outline::of_deck(&self.deck))),
         }
         Ok(Effected::done())
+    }
+
+    /// Keep an export's `bytes` in the window's content store and answer
+    /// their content address.
+    fn keep_as_content(&self, bytes: &[u8]) -> EffectAnswer {
+        let content = ui::tilo_resource::content::current().unwrap_or_else(|| self.content.clone());
+        let hash = content
+            .put(bytes)
+            .map_err(|error| format!("the export could not be kept: {error}"))?;
+        Effected::content(&hash)
     }
 
     fn slide_index(&self, slide: &str) -> Result<usize, String> {

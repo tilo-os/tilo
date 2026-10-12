@@ -538,6 +538,12 @@ impl Slide {
         id
     }
 
+    /// Nothing written on it: no words in any text box, no other element,
+    /// no speaker notes — a new deck's first slide.
+    pub fn is_unwritten(&self) -> bool {
+        self.notes.trim().is_empty() && self.elements.iter().all(Element::is_blank_text)
+    }
+
     pub fn element(&self, id: &str) -> Option<&Element> {
         self.elements.iter().find(|e| e.id == id)
     }

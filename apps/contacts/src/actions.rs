@@ -134,6 +134,37 @@ pub enum ContactsEffect {
         #[param("The contact merged into it")]
         source: ContactId,
     },
+    /// List contacts
+    ///
+    /// Answer the contacts as JSON: id, name, org, title (job title/role),
+    /// emails, phones, notes and groups. Changes nothing.
+    #[effect(view, returns)]
+    ListContacts {
+        #[param("Only contacts with this text in any field")]
+        query: Option<String>,
+        #[param("Only contacts in this group")]
+        group: Option<String>,
+    },
+    /// Read contact
+    ///
+    /// Answer one contact in full as JSON: every field, with the entry ids
+    /// of its emails, phones and addresses. Changes nothing.
+    #[effect(view, returns)]
+    ReadContact {
+        #[param("The contact's id, as list-contacts answers it")]
+        id: String,
+    },
+    /// Export vCard as content
+    ///
+    /// Keep the contacts as one vCard 4.0 (.vcf) file in the content store,
+    /// with no file to choose; answers its content address.
+    #[effect(content, permission = "read")]
+    ExportVcardContent {
+        #[param("Only contacts with this text in any field")]
+        query: Option<String>,
+        #[param("Only contacts in this group")]
+        group: Option<String>,
+    },
     /// Import vCard.
     #[effect(job)]
     ImportVcard,
@@ -769,6 +800,232 @@ pub fn encode(action: &ContactsAction) -> EncodedAction {
 }
 
 // ===========================================================================
+// Reads and plain field edits — what agents and scripts see and send.
+// ===========================================================================
+
+/// The most contacts one `list-contacts` answer carries; `total` still
+/// counts every match.
+pub const MAX_LISTED_CONTACTS: usize = 200;
+
+/// The active contacts matching `query` (any field) and `group`, ordered by
+/// name.
+pub fn matching_contacts<'a>(
+    contacts: &'a [Contact],
+    query: Option<&str>,
+    group: Option<&str>,
+) -> Vec<&'a Contact> {
+    let query = query.map(str::trim).unwrap_or_default();
+    let group = group.map(str::trim).filter(|group| !group.is_empty());
+    let mut found: Vec<&Contact> = contacts
+        .iter()
+        .filter(|contact| contact.matches(query))
+        .filter(|contact| {
+            group.is_none_or(|group| {
+                contact
+                    .groups
+                    .iter()
+                    .any(|entry| group_names_equal(&entry.value, group))
+            })
+        })
+        .collect();
+    found.sort_by_cached_key(|contact| (normalize_text(&contact.display_name()), contact.id));
+    found
+}
+
+/// One contact as `list-contacts` answers it.
+pub fn contact_summary_json(contact: &Contact) -> serde_json::Value {
+    let values = |rows: &[Labeled]| -> Vec<String> {
+        rows.iter()
+            .filter(|row| !row.value.trim().is_empty())
+            .map(|row| row.value.clone())
+            .collect()
+    };
+    serde_json::json!({
+        "id": contact.id.to_string(),
+        "name": contact.display_name(),
+        "org": contact.org,
+        "title": contact.title,
+        "emails": values(&contact.emails),
+        "phones": values(&contact.phones),
+        "notes": contact.notes,
+        "groups": contact.groups.iter().map(|group| group.value.clone()).collect::<Vec<_>>(),
+    })
+}
+
+/// One contact as `read-contact` answers it: every field, repeated rows with
+/// the entry ids `update-fields` list edits address.
+pub fn contact_detail_json(contact: &Contact) -> serde_json::Value {
+    let rows = |rows: &[Labeled]| -> Vec<serde_json::Value> {
+        rows.iter()
+            .map(|row| serde_json::json!({"id": row.id, "label": row.label, "value": row.value}))
+            .collect()
+    };
+    serde_json::json!({
+        "id": contact.id.to_string(),
+        "resource": contact_resource_id(contact.id),
+        "name": contact.display_name(),
+        "first": contact.first,
+        "last": contact.last,
+        "org": contact.org,
+        "title": contact.title,
+        "website": contact.website,
+        "birthday": contact.birthday.map(|birthday| birthday.iso()).unwrap_or_default(),
+        "notes": contact.notes,
+        "favorite": contact.favorite,
+        "emails": rows(&contact.emails),
+        "phones": rows(&contact.phones),
+        "addresses": contact.addresses.iter().map(|address| serde_json::json!({
+            "id": address.id,
+            "label": address.label,
+            "street": address.street,
+            "city": address.city,
+            "region": address.region,
+            "postal": address.postal,
+            "country": address.country,
+        })).collect::<Vec<_>>(),
+        "groups": contact.groups.iter().map(|group| group.value.clone()).collect::<Vec<_>>(),
+    })
+}
+
+/// The `list-contacts` answer for `query` and `group`.
+pub fn list_contacts_json(
+    contacts: &[Contact],
+    query: Option<&str>,
+    group: Option<&str>,
+) -> serde_json::Value {
+    let found = matching_contacts(contacts, query, group);
+    let mut answer = serde_json::Map::new();
+    answer.insert("total".into(), found.len().into());
+    answer.insert(
+        "contacts".into(),
+        found
+            .iter()
+            .take(MAX_LISTED_CONTACTS)
+            .map(|contact| contact_summary_json(contact))
+            .collect::<Vec<_>>()
+            .into(),
+    );
+    if found.len() > MAX_LISTED_CONTACTS {
+        answer.insert(
+            "more".into(),
+            "narrow with query or group to see the rest".into(),
+        );
+    }
+    serde_json::Value::Object(answer)
+}
+
+/// The keys a field patch takes, as `update-fields` describes them.
+pub const PATCH_KEYS_HELP: &str = "first, last, name (full name), org (organisation), title \
+    (job title, role), website, birthday (YYYY-MM-DD or --MM-DD), notes, email, phone, \
+    group_edits, phone_edits, email_edits, address_edits";
+
+/// Common spellings of a scalar patch key, and the key they mean.
+const PATCH_ALIASES: &[(&str, &str)] = &[
+    ("first_name", "first"),
+    ("given_name", "first"),
+    ("last_name", "last"),
+    ("family_name", "last"),
+    ("surname", "last"),
+    ("organisation", "org"),
+    ("organization", "org"),
+    ("company", "org"),
+    ("job_title", "title"),
+    ("jobtitle", "title"),
+    ("role", "title"),
+    ("position", "title"),
+    ("note", "notes"),
+    ("url", "website"),
+];
+
+const PATCH_SCALARS: &[&str] = &[
+    "first", "last", "org", "title", "website", "birthday", "notes",
+];
+const PATCH_LISTS: &[&str] = &["group_edits", "phone_edits", "email_edits", "address_edits"];
+
+/// The edit that makes `value` the contact's primary (first) row: it updates
+/// the first row, adds one labelled `label` when there is none, and removes
+/// the first row when `value` is empty.
+fn primary_edit(first: Option<&Labeled>, label: &str, value: &str) -> Option<ListEdit<Labeled>> {
+    let value = value.trim();
+    match first {
+        Some(row) if value.is_empty() => Some(ListEdit::Remove { entry_id: row.id }),
+        Some(row) => Some(ListEdit::Update {
+            entry_id: row.id,
+            value: Labeled {
+                id: row.id,
+                label: row.label.clone(),
+                value: value.to_string(),
+            },
+        }),
+        None if value.is_empty() => None,
+        None => {
+            let row = Labeled::new(label, value);
+            Some(ListEdit::Add {
+                entry_id: row.id,
+                value: row,
+            })
+        }
+    }
+}
+
+/// A [`ContactPatch`] from the plain field object an agent sends: canonical
+/// keys, their common aliases (`role` is `title`, `organisation` is `org`),
+/// `name` for first and last, and `email` / `phone` for the primary row of
+/// `contact`. An unknown key is refused with the keys there are, so a
+/// misspelt field never answers success while changing nothing.
+///
+/// # Errors
+/// Names the key or value that is not a contact field.
+pub fn field_patch(
+    contact: &Contact,
+    fields: serde_json::Map<String, serde_json::Value>,
+) -> Result<ContactPatch, String> {
+    let mut canonical = serde_json::Map::new();
+    let mut put = |key: &str, value: serde_json::Value, given: &str| {
+        if canonical.insert(key.to_string(), value).is_some() {
+            return Err(format!("`{given}` sets {key}, which is given twice"));
+        }
+        Ok(())
+    };
+    let mut primaries: Vec<(&str, String)> = Vec::new();
+    for (given, value) in fields {
+        let key = given.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+        let text = || {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("`{given}` is text"))
+        };
+        if let Some((_, alias)) = PATCH_ALIASES.iter().find(|(alias, _)| *alias == key) {
+            put(alias, serde_json::Value::String(text()?), &given)?;
+        } else if PATCH_SCALARS.contains(&key.as_str()) || PATCH_LISTS.contains(&key.as_str()) {
+            put(&key, value.clone(), &given)?;
+        } else if key == "name" || key == "full_name" {
+            let (first, last) = split_name(&text()?);
+            put("first", first.into(), &given)?;
+            put("last", last.into(), &given)?;
+        } else if matches!(key.as_str(), "email" | "phone") {
+            primaries.push((if key == "email" { "email" } else { "phone" }, text()?));
+        } else {
+            return Err(format!(
+                "`{given}` is not a contact field; the fields are: {PATCH_KEYS_HELP}"
+            ));
+        }
+    }
+    let mut patch = serde_json::from_value::<ContactPatch>(serde_json::Value::Object(canonical))
+        .map_err(|error| format!("invalid contact fields: {error}"))?;
+    for (field, value) in primaries {
+        let (edits, first, label) = if field == "email" {
+            (&mut patch.email_edits, contact.emails.first(), "work")
+        } else {
+            (&mut patch.phone_edits, contact.phones.first(), "mobile")
+        };
+        edits.extend(primary_edit(first, label, &value));
+    }
+    Ok(patch)
+}
+
+// ===========================================================================
 // Action builders — the single source of truth shared by the on-screen
 // affordances (see `crate::app`) and the Ctrl+K resource tree below.
 // ===========================================================================
@@ -1184,38 +1441,52 @@ fn invalid_arguments(message: impl Into<String>) -> EncodedAction {
 }
 
 /// The complete agent-facing edit surface. Unlike the convenient Rename and
-/// Add-to-group prompts, this accepts the typed sparse [`ContactPatch`] JSON
-/// directly, covering every scalar and UUID-addressed repeated field without
-/// asking a caller to reproduce a private form interaction.
+/// Add-to-group prompts, this takes plain field values ([`field_patch`]) as
+/// well as the UUID-addressed list edits of a [`ContactPatch`], so a caller
+/// never reproduces a private form interaction.
 fn patch_spec(contact: &Contact) -> ActionSpec {
-    let id = contact.id.to_string();
+    let base = contact.clone();
     ActionSpec::typed(
         "update-fields",
         "Update contact fields",
-        "Sparse ContactPatch object",
+        "fields to set",
         ExecutionLocus::ClientLocal,
         vec![ActionParam::required(
             "patch",
             ParamType::Object,
-            "Sparse ContactPatch with scalar fields and UUID-addressed list edits",
+            "Fields to set, e.g. {\"title\": \"CTO\", \"org\": \"Acme\", \"email\": \
+             \"a@acme.test\", \"notes\": \"Vegetarian\"}. Keys: first, last, name, org, title \
+             (job title/role), website, birthday (YYYY-MM-DD), notes, email and phone (the \
+             primary one; \"\" removes it), and group_edits/phone_edits/email_edits/\
+             address_edits: lists of {\"Add\"|\"Update\": {entry_id, value}} or {\"Remove\": \
+             {entry_id}} with read-contact's entry ids. Other keys are refused",
         )],
         move |args| {
             let Some(value) = args.to_json().remove("patch") else {
                 return invalid_arguments("patch is required");
             };
-            let patch = match serde_json::from_value::<ContactPatch>(value) {
+            let serde_json::Value::Object(fields) = value else {
+                return invalid_arguments(format!(
+                    "patch is an object of contact fields: {PATCH_KEYS_HELP}"
+                ));
+            };
+            let patch = match field_patch(&base, fields) {
                 Ok(patch) if !patch.is_empty() => patch,
                 Ok(_) => return invalid_arguments("patch must change at least one contact field"),
-                Err(error) => return invalid_arguments(format!("invalid ContactPatch: {error}")),
+                Err(error) => return invalid_arguments(error),
             };
             if let Err(error) = patch.validate() {
                 return invalid_arguments(error.to_string());
             }
             encode(&ContactsAction::PatchContact {
-                id: id.clone(),
+                id: base.id.to_string(),
                 patch: Box::new(patch),
             })
         },
+    )
+    .with_description(
+        "Set this contact's fields: title (job title/role), org, email, phone, notes, name and \
+         more. Changes only the fields given.",
     )
 }
 

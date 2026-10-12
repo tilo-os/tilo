@@ -172,7 +172,9 @@ fn the_font_size_stepper_writes_the_size() {
     );
 }
 
-/// The fill colour picker writes a concrete hex fill.
+/// The fill colour picker writes a concrete hex fill. Its hex is typed
+/// through a helper debug builds alone carry.
+#[cfg(debug_assertions)]
 #[test]
 fn the_fill_colour_picker_writes_a_hex_fill() {
     let mut s = Slide::new(Layout::Blank);

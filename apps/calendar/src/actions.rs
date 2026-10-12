@@ -174,6 +174,11 @@ pub struct EventData {
     pub project: String,
     /// Source calendar id, or `""` for the local on-device calendar.
     pub calendar_id: String,
+    /// Markdown the event's notes are set to when this is written; empty
+    /// leaves its notes as they are. Only creation carries notes: every
+    /// later edit of them is [`CalendarAction::EditNotes`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notes: String,
 }
 
 fn default_recurrence_interval() -> u32 {
@@ -247,6 +252,7 @@ impl EventData {
                 .unwrap_or(-1),
             project: e.project.map(|p| p.to_string()).unwrap_or_default(),
             calendar_id: e.calendar_id.clone().unwrap_or_default(),
+            notes: String::new(),
         }
     }
 
@@ -1283,6 +1289,16 @@ fn apply_upsert_event(doc: &mut Doc, data: &EventData) {
         // the delete wrote so the row can be rewritten.
         CalDoc::clear_tombstone(doc, "event", event.id);
         CalDoc::update_event(doc, &event);
+        if !data.notes.is_empty()
+            && let Some(notes) = CalDoc::notes(doc, true, event.id)
+        {
+            let body = RichTextAction::ReplaceBody {
+                markdown: data.notes.clone(),
+            };
+            if let Err(error) = body.apply_under(doc, &notes) {
+                tracing::warn!(%error, "calendar: an event's first notes were not written");
+            }
+        }
         // A remote-calendar event is an outside consequence: the push outbox
         // is the projection the live window drains to its server. Undo of a
         // remote delete restores through UpsertEvent and must re-queue the
@@ -2531,6 +2547,7 @@ mod tests {
                 reminder: -1,
                 project: String::new(),
                 calendar_id: String::new(),
+                notes: String::new(),
             };
             let action = CalendarAction::ImportIcs {
                 events: vec![event.clone()],
@@ -2804,6 +2821,7 @@ mod tests {
             reminder: -1,
             project: String::new(),
             calendar_id: remote.clone(),
+            notes: String::new(),
         };
         let id = data.id.parse::<Id>().expect("id");
 

@@ -631,3 +631,78 @@ fn an_import_into_a_blank_workbook_replaces_its_empty_sheet() {
     import(&mut used);
     assert_eq!(SheetsDoc::sheet_names(&used), ["Data", "sales"]);
 }
+
+/// The workbook as published, with its sheet-naming cell actions.
+fn workbook_resource(doc: &AutoCommit) -> Resource {
+    use ui::tilo_resource::Resource as _;
+    crate::actions::published(&crate::resource::SheetsWorkbook::read(doc).unwrap())
+}
+
+fn build_on_workbook(doc: &AutoCommit, action: &str, args: &serde_json::Value) -> EncodedAction {
+    let resource = workbook_resource(doc);
+    let spec = resource
+        .actions
+        .iter()
+        .find(|spec| spec.id == action)
+        .unwrap_or_else(|| panic!("the workbook offers {action}"));
+    spec.build_json(args.as_object().unwrap()).unwrap()
+}
+
+/// A caller that knows a sheet only by name edits and reads it through the
+/// workbook, the name matched ignoring case; the sheet's id works too.
+#[test]
+fn workbook_cell_actions_name_their_sheet() {
+    let mut doc = workbook(&[&["Region", "Q1"], &["North", "0.25"]]);
+    let encoded = build_on_workbook(
+        &doc,
+        "format-cells",
+        &json!({"sheet": " data ", "range": "B2", "format": "percent", "bold": true}),
+    );
+    assert_ne!(
+        encoded.type_id,
+        tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
+        "{}",
+        String::from_utf8_lossy(&encoded.payload)
+    );
+    let registry = ActionRegistry::with(crate::actions::register);
+    let decoded = registry.decode(&encoded).unwrap();
+    tilo_actions::apply_local(&mut doc, decoded.as_ref(), encoded).unwrap();
+
+    let sheet_id = SheetsDoc::sheet_resource_id(&doc, 0).unwrap();
+    let read = build_on_workbook(
+        &doc,
+        "read-cells",
+        &json!({"sheet": sheet_resource_id(&sheet_id), "range": "B2"}),
+    );
+    assert_eq!(read.type_id, READ_OPERATION_TYPE);
+    validate_read(&workbook_resource(&doc), &read.payload).unwrap();
+    let page = project_read(&doc, &doc.clone().get_heads(), &read.payload)
+        .unwrap()
+        .content;
+    assert_eq!(page["formats"], json!({"B2": "percent"}));
+    assert_eq!(page["bold"], json!(["B2"]));
+}
+
+/// An unknown sheet is refused with the names there are, so the caller
+/// retries with one of them.
+#[test]
+fn an_unknown_sheet_is_refused_with_the_sheet_names() {
+    let mut doc = workbook(&[&["x"]]);
+    SheetsDoc::add_sheet(&mut doc, "Summary");
+    doc.commit();
+    let encoded = build_on_workbook(
+        &doc,
+        "set-cells",
+        &json!({"sheet": "0b6f9e3e-0000-4000-8000-000000000000", "start": "A1", "rows": [[1]]}),
+    );
+    assert_eq!(
+        encoded.type_id,
+        tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+    );
+    let message = String::from_utf8_lossy(&encoded.payload).into_owned();
+    assert!(
+        message.contains("no sheet `0b6f9e3e-0000-4000-8000-000000000000`")
+            && message.contains("`Data`, `Summary`"),
+        "{message}"
+    );
+}

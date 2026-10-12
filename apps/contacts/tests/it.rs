@@ -10,6 +10,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+#[path = "agent_api.rs"]
+mod agent_api;
 #[path = "association.rs"]
 mod association;
 #[path = "diag_focus.rs"]

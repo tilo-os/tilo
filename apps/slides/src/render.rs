@@ -473,3 +473,70 @@ fn draw_text_element(ctx: &mut PaintCtx<'_>, color: Color, e: &Element, dest: Re
     });
     tr.set_text_scale(reader_scale);
 }
+
+/// The pictures of one slide, decoded at once: what an export draws with,
+/// where the editor's cache would still be decoding.
+struct DecodedImages(HashMap<String, ImageState>);
+
+impl DecodedImages {
+    fn of(slide: &Slide, content: &tilo_content::ContentStore) -> Self {
+        let mut images = HashMap::new();
+        for element in &slide.elements {
+            if element.kind == ElementKind::Image && !images.contains_key(&element.src) {
+                let state = crate::assets::read_asset(content, &element.src)
+                    .map_or(ImageState::Failed, |bytes| {
+                        crate::assets::decode_bytes(&bytes)
+                    });
+                images.insert(element.src.clone(), state);
+            }
+        }
+        Self(images)
+    }
+}
+
+impl ImageLookup for DecodedImages {
+    fn get(&self, id: &str) -> ImageState {
+        self.0.get(id).cloned().unwrap_or(ImageState::Failed)
+    }
+}
+
+/// `slide` of `deck` drawn full bleed at 1280×720 in the light theme, its
+/// pictures read from `content`, as PNG bytes.
+///
+/// # Errors
+/// Returns why the slide could not be drawn or encoded.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the slide's fixed 1280×720 size"
+)]
+pub fn slide_png(
+    deck: &crate::model::Deck,
+    slide: &Slide,
+    content: &tilo_content::ContentStore,
+) -> Result<Vec<u8>, String> {
+    use image::ImageEncoder as _;
+    let theme = ui::theme::Theme::light();
+    let palette = Palette::resolve(deck.palette, &theme);
+    let images = DecodedImages::of(slide, content);
+    let mut scene = Scene::new();
+    let mut text = ui::text_render::TextRenderer::new();
+    let dest = Rect::new(0.0, 0.0, SLIDE_W, crate::model::SLIDE_H);
+    draw_slide(
+        &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+        DeckAssets {
+            palette: &palette,
+            images: &images,
+        },
+        slide,
+        dest,
+        0.0,
+    );
+    let (width, height) = (dest.width() as u32, dest.height() as u32);
+    let rgba = ui::offscreen::render_picture(&scene, width, height, Color::WHITE)?;
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(&rgba, width, height, image::ExtendedColorType::Rgba8)
+        .map_err(|error| format!("the slide picture could not be encoded: {error}"))?;
+    Ok(png)
+}

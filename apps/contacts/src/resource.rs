@@ -9,6 +9,7 @@
 //! Imported cards waiting for review are live rows of the surface: they are
 //! not in the document until the person decides.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use ui::framework::{LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
@@ -19,12 +20,12 @@ use uuid::Uuid;
 
 use crate::actions::{
     CONTACTS_ACTION_TYPE, ContactsAction, ContactsEffect, contact_resource_id,
-    create_contact_action, open_contact_address, open_group_address, ordered_groups,
+    create_contact_action, field_patch, open_contact_address, open_group_address, ordered_groups,
     publish_children, register, resolve_child, split_name,
 };
 use crate::app::ContactsApp;
 use crate::doc::ContactsDoc;
-use crate::model::{Birthday, Contact, Labeled, sample_contacts};
+use crate::model::{Birthday, Contact, ContactId, GroupEntry, Labeled, sample_contacts};
 
 /// The address book's state: every contact, in document order.
 #[derive(Clone, Debug, Default)]
@@ -56,26 +57,125 @@ impl Resource for Contacts {
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
+        let optional =
+            |name, description| ActionParam::optional(name, ParamType::Text, description);
         vec![
             ActionDecl::new(
                 "new-contact",
                 "New contact",
-                vec![ActionParam::required(
-                    PROMPTED_PARAM,
-                    ParamType::Text,
-                    "Name",
-                )],
+                vec![
+                    ActionParam::required(PROMPTED_PARAM, ParamType::Text, "Full name"),
+                    optional("org", "Organisation or company"),
+                    optional("title", "Job title or role"),
+                    optional("email", "Email address"),
+                    optional("phone", "Phone number"),
+                    optional("notes", "Notes"),
+                    optional("group", "Group to add the contact to"),
+                ],
                 |args, _| {
-                    let name = args.text(PROMPTED_PARAM).unwrap_or_default();
-                    let (first, last) = split_name(name);
+                    let text = |name| args.text(name).map(str::trim).unwrap_or_default();
+                    let (first, last) = split_name(text(PROMPTED_PARAM));
                     let mut contact = Contact::new();
                     contact.first = first;
                     contact.last = last;
+                    contact.org = text("org").to_string();
+                    contact.title = text("title").to_string();
+                    contact.notes = args.text("notes").unwrap_or_default().to_string();
+                    if !text("email").is_empty() {
+                        contact.emails.push(Labeled::new("work", text("email")));
+                    }
+                    if !text("phone").is_empty() {
+                        contact.phones.push(Labeled::new("mobile", text("phone")));
+                    }
+                    if !text("group").is_empty() {
+                        contact.groups.push(GroupEntry::new(text("group")));
+                    }
                     Ok(create_contact_action(&contact))
                 },
             )
-            .describe("Create a new contact from a typed full name."),
+            .describe("Create a contact; answers its id.")
+            .answering(),
         ]
+    }
+
+    /// `update-contact` names its contact by id, so it is bound to the
+    /// first email and phone row of each, which `email` and `phone` edit.
+    fn bound_declarations(state: &ContactsState) -> Vec<ActionDecl<Self>> {
+        let primaries: HashMap<ContactId, Contact> = state
+            .contacts
+            .iter()
+            .map(|contact| {
+                let mut primary = Contact {
+                    id: contact.id,
+                    ..Contact::default()
+                };
+                primary.emails.extend(contact.emails.first().cloned());
+                primary.phones.extend(contact.phones.first().cloned());
+                (contact.id, primary)
+            })
+            .collect();
+        let optional =
+            |name, description| ActionParam::optional(name, ParamType::Text, description);
+        vec![
+            ActionDecl::new(
+                "update-contact",
+                "Update contact",
+                vec![
+                    ActionParam::required("id", ParamType::Text, "The contact's id"),
+                    optional("name", "Full name"),
+                    optional("org", "Organisation or company"),
+                    optional("title", "Job title or role"),
+                    optional("email", "Primary email address (\"\" removes it)"),
+                    optional("phone", "Primary phone number (\"\" removes it)"),
+                    optional("notes", "Notes, replacing the old ones"),
+                    optional("website", "Website"),
+                    optional("birthday", "Birthday, YYYY-MM-DD or --MM-DD"),
+                ],
+                move |args, _| {
+                    let mut fields = args.to_json();
+                    let id: ContactId = fields
+                        .remove("id")
+                        .and_then(|id| id.as_str().and_then(|id| id.trim().parse().ok()))
+                        .ok_or("id is a contact id, as list-contacts answers it")?;
+                    let contact = primaries.get(&id).ok_or("no contact has this id")?;
+                    let patch = field_patch(contact, fields)?;
+                    if patch.is_empty() {
+                        return Err("name at least one field to set".into());
+                    }
+                    Ok(ContactsAction::PatchContact {
+                        id: id.to_string(),
+                        patch: Box::new(patch),
+                    })
+                },
+            )
+            .describe("Set fields of the contact with this id; changes only the fields given."),
+        ]
+    }
+
+    /// `new-contact` answers the contact it made.
+    fn answer(
+        _doc: &Doc,
+        action: &str,
+        changes: &[ui::automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        if action != "new-contact" {
+            return None;
+        }
+        let made = changes.iter().find_map(|patch| {
+            let [(_, ui::automerge::Prop::Map(map))] = patch.path.as_slice() else {
+                return None;
+            };
+            match &patch.action {
+                ui::automerge::PatchAction::PutMap { key, .. } if map == "contacts" => {
+                    key.parse::<ContactId>().ok()
+                }
+                _ => None,
+            }
+        })?;
+        Some(serde_json::json!({
+            "id": made.to_string(),
+            "resource": contact_resource_id(made),
+        }))
     }
 
     fn children(state: &ContactsState) -> Vec<PublishedResource> {

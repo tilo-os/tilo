@@ -15,7 +15,8 @@
 //!
 //! The first text box is the title and the second the body (what `add-slide`
 //! and `set-slide-text` fill); a line break inside a text box reads as `↵`.
-//! Other elements appear by kind, and speaker notes close the block.
+//! Other elements appear by kind, and speaker notes close the block. A slide
+//! with nothing written on it reads `(empty)`.
 
 use std::fmt::Write as _;
 
@@ -55,6 +56,9 @@ pub fn of_deck(deck: &Deck) -> String {
             }
             out.push_str(&text.replace('\n', "↵"));
             let _ = writeln!(out, " {{#{}}}", element.id);
+        }
+        if slide.is_unwritten() {
+            out.push_str("(empty)\n");
         }
         let notes = slide.notes.trim();
         if !notes.is_empty() {
