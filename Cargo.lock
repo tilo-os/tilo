@@ -17460,6 +17460,7 @@ name = "tilo-ntfs-protocol"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "libc",
  "rustix 1.1.4",
  "serde",
  "serde_json",
