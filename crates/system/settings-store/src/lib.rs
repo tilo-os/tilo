@@ -51,6 +51,9 @@
 /// `#[serde(remote = "Self")]`: writing runs the derived code, reading goes
 /// through one `serde_json::Value` and one function compiled here, rather
 /// than a derived decoder per deserializer in every crate reading the type.
+/// The calling crate needs `serde` and `serde_json`.
+#[doc(hidden)]
+#[macro_export]
 macro_rules! read_through_json_value {
     ($ty:ty) => {
         impl serde::Serialize for $ty {
@@ -58,7 +61,7 @@ macro_rules! read_through_json_value {
                 Self::serialize(self, serializer)
             }
         }
-        read_through_json_value!($ty, deserialize);
+        $crate::read_through_json_value!($ty, deserialize);
     };
     ($ty:ty, deserialize) => {
         impl<'de> serde::Deserialize<'de> for $ty {
@@ -76,8 +79,6 @@ macro_rules! read_through_json_value {
         }
     };
 }
-pub(crate) use read_through_json_value;
-
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};

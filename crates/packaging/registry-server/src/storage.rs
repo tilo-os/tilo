@@ -907,13 +907,6 @@ impl Storage {
     pub fn moderation_head(&self) -> Result<String, StorageError> {
         let mut events = self.load_transparency::<ModerationEvent>()?;
         events.sort_by_key(|event| event.sequence);
-        for (index, event) in events.iter().enumerate() {
-            if event.sequence != u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1) {
-                return Err(StorageError::Parse(
-                    "moderation log is not contiguous".into(),
-                ));
-            }
-        }
         let head = registry_types::verify_transparency_chain(&events, "")
             .map_err(|error| StorageError::Parse(error.to_string()))?;
         let identity = self.load_identity()?;
