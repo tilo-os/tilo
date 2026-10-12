@@ -118,10 +118,17 @@ pub struct Popover<C: Widget = NoContent> {
     anchor: Rect,
     side: PopoverSide,
     resolved_side: PopoverSide,
+    fallback_side: Option<PopoverSide>,
+    /// Descriptive paint this panel should avoid when an alternate placement
+    /// genuinely fits. It never changes the anchor or hit testing.
+    avoid: Option<Rect>,
     align: PanelAlign,
     /// Bounds the panel stays inside. `None` uses the window the top layer
     /// paints over.
     viewport: Option<Rect>,
+    /// Prefer retaining the complete panel over preserving anchor separation
+    /// when neither side has enough room. Ordinary menus keep their policy.
+    confine_to_viewport: bool,
     /// The window the top layer last painted over.
     presented: Option<Rect>,
     /// The panel, resolved by [`Self::place`] (also run by layout and paint).
@@ -158,8 +165,11 @@ impl<C: Widget> Popover<C> {
             anchor: Rect::ZERO,
             side: PopoverSide::Below,
             resolved_side: PopoverSide::Below,
+            fallback_side: None,
+            avoid: None,
             align: PanelAlign::Leading,
             viewport: None,
+            confine_to_viewport: false,
             presented: None,
             rect: Rect::ZERO,
             on_dismiss: None,
@@ -178,6 +188,16 @@ impl<C: Widget> Popover<C> {
     #[must_use]
     pub fn aligned(mut self, align: PanelAlign) -> Self {
         self.align = align;
+        self
+    }
+
+    /// Keep a panel that fits the viewport entirely on screen, with the
+    /// shared theme edge margin, even when
+    /// neither side of its anchor has room. The caller must still size its
+    /// content to the viewport; this never shrinks or clips that content.
+    #[must_use]
+    pub fn confined_to_viewport(mut self) -> Self {
+        self.confine_to_viewport = true;
         self
     }
 
@@ -204,6 +224,27 @@ impl<C: Widget> Popover<C> {
         self.side = side;
         self.resolved_side = side;
         self
+    }
+
+    /// Try this axis when the ordinary preferred/opposite placement would
+    /// cover `avoid`. The fallback is used only when its measured panel fits
+    /// the viewport and is disjoint from the protected paint.
+    #[must_use]
+    pub fn fallback_side(mut self, side: PopoverSide) -> Self {
+        self.fallback_side = Some(side);
+        self
+    }
+
+    /// Protect exact painted geometry from an optional fallback placement.
+    /// This is presentation metadata, never an expanded input target.
+    pub fn set_avoid(&mut self, avoid: Option<Rect>) {
+        self.avoid = avoid;
+    }
+
+    /// Alias for a protected source-control/receipt footprint. This changes
+    /// only placement, never the anchor, input rectangle or authority.
+    pub fn set_protected_rect(&mut self, protected: Option<Rect>) {
+        self.set_avoid(protected);
     }
 
     /// Open or close at construction.
@@ -286,6 +327,16 @@ impl<C: Widget> Popover<C> {
         &mut self.content
     }
 
+    /// Width available to the body inside the current placement viewport.
+    /// Hosts use this before measuring responsive content, not after clipping.
+    pub fn available_content_width(&self, theme: &Theme) -> f32 {
+        crate::num::f32_of_f64(
+            (self.room(theme).width() - 2.0 * self.padding(theme))
+                .floor()
+                .max(0.0),
+        )
+    }
+
     fn padding(&self, theme: &Theme) -> f64 {
         if self.options.is_some() {
             MenuMetrics::of(theme).pad
@@ -307,6 +358,13 @@ impl<C: Widget> Popover<C> {
     /// keeps), else anywhere.
     fn room(&self, theme: &Theme) -> Rect {
         self.viewport
+            .map(|viewport| {
+                if self.confine_to_viewport {
+                    floating_surface::panel_room(viewport, theme)
+                } else {
+                    viewport
+                }
+            })
             .or_else(|| {
                 self.presented
                     .map(|window| floating_surface::panel_room(window, theme))
@@ -341,16 +399,47 @@ impl<C: Widget> Popover<C> {
         };
         let (w, h) = (body_w.ceil() + pad * 2.0, body_h.ceil() + pad * 2.0);
         let gap = f64::from(theme.tokens.spacing.s1);
-        let (rect, side) = floating_surface::place_aligned(
-            self.anchor,
-            (w, h),
-            self.side,
-            self.align,
-            gap,
-            viewport,
-        );
-        self.resolved_side = side;
-        self.rect = rect;
+        let place = |side| {
+            floating_surface::place_aligned(self.anchor, (w, h), side, self.align, gap, viewport)
+        };
+        let confine = |rect: Rect| {
+            if !self.confine_to_viewport {
+                return rect;
+            }
+            let x = if w <= viewport.width() {
+                rect.x0.clamp(viewport.x0, viewport.x1 - w)
+            } else {
+                rect.x0
+            };
+            let y = if h <= viewport.height() {
+                rect.y0.clamp(viewport.y0, viewport.y1 - h)
+            } else {
+                rect.y0
+            };
+            Rect::new(x, y, x + w, y + h)
+        };
+        let (default_rect, default_side) = place(self.side);
+        let mut chosen = (confine(default_rect), default_side);
+        if let Some(avoid) = self.avoid
+            && chosen.0.intersect(avoid).area() > 0.0
+        {
+            for candidate_side in [Some(self.side.opposite()), self.fallback_side]
+                .into_iter()
+                .flatten()
+            {
+                let (candidate, resolved) = place(candidate_side);
+                let candidate = confine(candidate);
+                let contained = w <= viewport.width()
+                    && h <= viewport.height()
+                    && viewport.contains_rect(candidate);
+                if contained && candidate.intersect(avoid).area() == 0.0 {
+                    chosen = (candidate, resolved);
+                    break;
+                }
+            }
+        }
+        self.rect = chosen.0;
+        self.resolved_side = chosen.1;
         if self.options.is_none() && self.host_content.is_none() {
             self.place_content(tr, theme);
         }
@@ -1182,7 +1271,18 @@ impl<C: Widget + 'static> Widget for Popover<C> {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        let options = self.options.as_ref()?;
+        let Some(options) = self.options.as_ref() else {
+            // A labeled content panel needs its own stable semantic scope;
+            // a changing heading inside it is not the popup's identity.
+            return self.label.as_ref().map(|label| {
+                AccessNode::new(Role::Group)
+                    .with_name(label.clone())
+                    .with_state(AccessState {
+                        hidden: !self.open,
+                        ..Default::default()
+                    })
+            });
+        };
         let n = options.items.len();
         let children = options
             .items
@@ -1418,3 +1518,37 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
 #[cfg(test)]
 #[path = "popover_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod protected_placement_tests {
+    use super::*;
+
+    #[test]
+    fn protected_measured_panel_uses_shared_opposite_placement_without_moving_anchor() {
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let anchor = Rect::new(350.0, 250.0, 370.0, 270.0);
+        let protected = Rect::new(375.0, 230.0, 700.0, 400.0);
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            let mut panel = Popover::new()
+                .with_items(["Message", "Queue task", "Steer current task"])
+                .anchored(anchor)
+                .side(PopoverSide::Right)
+                .fallback_side(PopoverSide::Above)
+                .with_viewport(viewport)
+                .confined_to_viewport()
+                .open(true);
+            panel.set_protected_rect(Some(protected));
+            let room = panel.room(&theme);
+            let capacity = panel.available_content_width(&theme);
+            assert!(f64::from(capacity) <= room.width() - 2.0 * panel.padding(&theme));
+            panel.place(&mut TextRenderer::new(), &theme);
+            assert_eq!(
+                panel.anchor, anchor,
+                "placement never changes the source input locus"
+            );
+            assert!(room.contains_rect(panel.rect()));
+            assert_eq!(panel.rect().intersect(protected).area(), 0.0);
+            assert_eq!(panel.resolved_side(), PopoverSide::Left);
+        }
+    }
+}

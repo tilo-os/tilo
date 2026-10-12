@@ -2488,6 +2488,7 @@ dependencies = [
  "hex",
  "launcher",
  "libc",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -7933,6 +7934,7 @@ dependencies = [
  "runtime-bundle",
  "runtime-identity",
  "runtime-portal",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",
@@ -15828,10 +15830,12 @@ dependencies = [
  "serde_json",
  "settings",
  "settings-store",
+ "store",
  "tempfile",
  "tilo-action-policy",
  "tilo-actions",
  "tilo-advisory-lock",
+ "tilo-app",
  "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-fork",
@@ -15846,6 +15850,7 @@ dependencies = [
  "tilo-peer-state",
  "tilo-relay",
  "tilo-relay-session",
+ "tilo-resource",
  "tilo-rt",
  "tilo-test-env",
  "tilo-ui",
@@ -15865,6 +15870,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "web-time",
 ]
 
 [[package]]
@@ -16356,6 +16362,7 @@ dependencies = [
  "objc2-core-video",
  "objc2-foundation 0.3.2",
  "os-actions",
+ "rustix 1.1.4",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-platform-caps",
@@ -16624,6 +16631,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "uuid",
+ "web-time",
 ]
 
 [[package]]
@@ -16780,6 +16788,7 @@ dependencies = [
  "bounded-command",
  "collab-types",
  "libc",
+ "rustix 1.1.4",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-clock",
@@ -17462,6 +17471,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "libc",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -18615,6 +18625,7 @@ dependencies = [
  "hex",
  "launcher",
  "libc",
+ "os-actions",
  "package-store",
  "runtime-bundle",
  "serde",

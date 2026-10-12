@@ -296,6 +296,17 @@ impl ClientInput {
         self.pointer_focus
     }
 
+    /// Content-free custody of the router's implicit pointer grab. This is
+    /// separate from both the actual Wayland focus and keyboard focus.
+    pub(super) fn pointer_custody(&self) -> (&'static str, Option<u64>, u32) {
+        let (kind, surface) = match self.grab {
+            None => ("none", None),
+            Some(PointerOwner::Chrome) => ("chrome", None),
+            Some(PointerOwner::Client(surface)) => ("client", Some(surface)),
+        };
+        (kind, surface, self.buttons_down)
+    }
+
     /// Whether `surface_id` is a live foreign toplevel this compositor can route input to.
     pub fn is_known(&self, surface_id: u64) -> bool {
         self.surfaces.contains_key(&surface_id)
@@ -482,6 +493,14 @@ impl State {
         // A tile showing a dialog sheet types into the sheet, not the window it belongs to.
         let surface_id =
             surface_id.map(|id| crate::compositor::foreign::store().keyboard_target(id));
+        if surface_id.is_some_and(|target| self.preserves_floating_preedit_for(target)) {
+            // The logical floating destination is exact-owner bound, but the
+            // active composer must keep its real text-input-v3 resource until
+            // commit/cancel. Physical keys therefore continue through the
+            // existing source seat; the app's native runner routes them to
+            // the same retained editor during this bounded handoff.
+            return;
+        }
         if self.client_input.keyboard_focus == surface_id {
             return;
         }
@@ -503,7 +522,19 @@ impl State {
             return;
         };
         let serial = mint_serial(self);
+        if self.input_method_resource_client.is_some() {
+            // Smithay deactivates (and sends `done`) once for the old focus
+            // and once again before entering the new one.
+            let protocol_done = u32::from(self.client_input.keyboard_focus.is_some())
+                .saturating_add(u32::from(target.is_some()));
+            self.input_method_serial = self.input_method_serial.saturating_add(protocol_done);
+            if self.client_input.keyboard_focus.is_some() {
+                self.text_fields.protocol_focus_left();
+                self.input_method_preedit = super::state::InputMethodPreeditState::Inactive;
+            }
+        }
         self.client_input.keyboard_focus = target.as_ref().map(|(id, _)| *id);
+        self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus);
         // Clipboard/primary selection follow the keyboard: smithay refuses `set_selection` from a client without keyboard focus.
         let selection_client = target.as_ref().and_then(|(_, surface)| surface.client());
         self.set_selection_focus(selection_client);
@@ -921,6 +952,9 @@ pub fn touch_target(
 /// keyboard, popups, fullscreen and floating windows before tiles, and a
 /// tile's subsurface before the tile.
 fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u64, (f64, f64))> {
+    if fb.host().agent_marker_pointer_at(point) {
+        return None;
+    }
     let (x, y) = (&point.0, &point.1);
     if let Some((surface_id, rect)) = fb.osk_surface_hit((*x, *y))
         && state.osk_surface == Some(surface_id)
@@ -1042,6 +1076,9 @@ pub fn focus_touch_target(state: &mut State, fb: &mut FrameBuilder, surface_id: 
 /// Reconcile the seat's keyboard focus with the shell's focused tab. Called every tick: chrome capture drops client focus outright; otherwise focus follows the active tab.
 pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     let captured = chrome_captures_input(fb);
+    let handoff = (!captured)
+        .then(|| state.apply_floating_focus_handoffs(fb))
+        .flatten();
     // Overlay clicks assign focus directly because they are not represented in
     // the workspace tree. Preserve that assignment across the next tick while
     // the surface is still mapped; otherwise this reconciliation immediately
@@ -1063,9 +1100,11 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     );
     // A window the person focused while showing it on another device of
     // theirs types there until they use this device again.
-    let candidate = state
-        .focused_output_presentation_surface()
+    let candidate = handoff
+        .or_else(|| state.floating_preedit_source_focus())
+        .or_else(|| state.focused_output_presentation_surface())
         .or_else(|| state.headless_keyboard_focus())
+        .or_else(|| state.floating_return_focus())
         .or(overlay_focus)
         .or_else(|| state.personal_keyboard_focus())
         .or_else(|| {
@@ -1382,11 +1421,16 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
             .collect();
         drop(tree);
         drop(chrome);
-        tiles.extend(
-            fb.floating_surface_rects()
-                .into_iter()
-                .filter(|(surface_id, _)| state.client_input.surfaces.contains_key(surface_id)),
-        );
+        // Floating widgets paint back-to-front and hit-test in reverse. Their
+        // interactive frames must precede tiles in this front-to-back view.
+        let mut floating = fb
+            .floating_surface_rects()
+            .into_iter()
+            .rev()
+            .filter(|(surface_id, _)| state.client_input.surfaces.contains_key(surface_id))
+            .collect::<Vec<_>>();
+        floating.append(&mut tiles);
+        tiles = floating;
         tiles.extend(state.output_presentation_remote_tiles());
         let offscreen = state.offscreen_stream_tiles(&tiles);
         tiles.extend(offscreen);
@@ -1405,6 +1449,7 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
         fb.host().palette_visible(),
     )
     .chrome_regions(chrome_regions)
+    .input_regions(fb.floating_surface_input_rects())
     .locked(session_locked)
     .pointer_held(state.pointer_lock.is_engaged());
     state.remote_input_firewall.publish_view(view);
@@ -2003,7 +2048,10 @@ pub fn finish_chrome_drag_into_shell(
 )]
 fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> Option<TileHit> {
     if state.client_input.grab.is_none()
-        && fb.host().dictation_pointer_at(state.client_input.cursor())
+        && (fb.host().dictation_pointer_at(state.client_input.cursor())
+            || fb
+                .host()
+                .agent_marker_pointer_at(state.client_input.cursor()))
     {
         return None;
     }

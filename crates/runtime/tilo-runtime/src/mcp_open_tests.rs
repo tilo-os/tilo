@@ -1933,7 +1933,7 @@ fn toggle_bold() -> Value {
     json!({"resource": STYLE, "action": "toggle-bold"})
 }
 
-/// TIL-588: an agent that listed or browsed an instance acts on it without
+/// #3870: an agent that listed or browsed an instance acts on it without
 /// asking the host anything first.
 #[test]
 fn invoke_on_a_seen_peer_asks_no_catalogue_question() {
@@ -1961,7 +1961,7 @@ fn invoke_on_a_seen_peer_asks_no_catalogue_question() {
     assert_eq!(host.asked(), [STARTED]);
 }
 
-/// TIL-588: a batch asks at most once before its first step, and never
+/// #3870: a batch asks at most once before its first step, and never
 /// between steps; listing instances asks for providers only.
 #[test]
 fn a_batch_asks_at_most_once_before_its_first_step() {
@@ -2007,7 +2007,7 @@ fn a_batch_asks_at_most_once_before_its_first_step() {
     assert_eq!(asked[1..], vec![STARTED; 10]);
 }
 
-/// TIL-588: an instance the session saw that has gone since is refused as
+/// #3870: an instance the session saw that has gone since is refused as
 /// before, by asking once the host refused the call; a browse never takes
 /// it as live.
 #[test]

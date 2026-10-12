@@ -9,6 +9,7 @@
 pub mod atomic;
 pub mod bounded;
 pub mod lock;
+pub mod nofollow;
 pub mod private;
 
 /// Whether the native path itself names a regular file, without following a symlink.

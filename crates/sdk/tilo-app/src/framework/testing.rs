@@ -1453,6 +1453,7 @@ pub fn drive_live_window<A: ResourceApp, T>(
 ///
 /// # Errors
 /// Returns any launch, storage or construction failure.
+#[cfg(feature = "native")]
 pub fn drive_live_embedded<A: ResourceApp, T>(
     drive: impl FnOnce(&mut ui_core::app::EmbeddedApp) -> T,
 ) -> Result<T, LaunchError> {

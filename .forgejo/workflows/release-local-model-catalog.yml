@@ -121,7 +121,7 @@ jobs:
       - name: Reproduce the reviewed signed image inputs and publish
         env:
           MODEL_SIGNING_SEED: ${{ secrets.TILO_MODEL_CATALOG_SIGNING_KEY }}
-          PACKAGE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
