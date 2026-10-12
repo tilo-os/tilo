@@ -17,6 +17,8 @@ use tilo_action_broker::services::{
 
 /// Lines in the large document, about 50,000 characters: one text op each.
 const LINES: usize = 1_000;
+/// Lines written per edit while the document is made large.
+const LINES_PER_EDIT: usize = 250;
 /// Small edits measured after the document is large.
 const EDITS: usize = 10;
 /// Bytes a reader may be handed per one-line edit of the large document;
@@ -226,11 +228,15 @@ pub(super) async fn run(device: &Device, target: &mut Mounted) {
         .clone()
         .expect("the active journey measures the mounted app's reads");
     let owner = target.network.native_owner().unwrap();
+    // Written in edits a signed text edit can carry (16 KiB each).
     let mut body = String::from(BODY);
-    for line in 0..LINES {
-        let _ = writeln!(body, "// shared line {line:05} kept by every collaborator");
+    for lines in (0..LINES).collect::<Vec<_>>().chunks(LINES_PER_EDIT) {
+        let base = body.clone();
+        for line in lines {
+            let _ = writeln!(body, "// shared line {line:05} kept by every collaborator");
+        }
+        commit_edit(device, &owner, &base, &body);
     }
-    commit_edit(device, &owner, BODY, &body);
     shown(target, &body, "the large shared document to show").await;
     eprintln!(
         "active journey: the shared document holds {} characters",

@@ -251,8 +251,8 @@ fn a_remote_edit_of_a_large_document_costs_its_reader_the_edit() {
     commit(&joined, |chat| {
         let body = chat.put_object(ROOT, "body", ObjType::Text).unwrap();
         let line_characters = LARGE_CHARACTERS / LARGE_EDITS;
+        chat.commit_edit("fixture", "body");
         for edit in 0..LARGE_EDITS {
-            chat.commit();
             let mut line = format!("{edit:04} {:x} ", edit.wrapping_mul(7919));
             while line.len() < line_characters.saturating_sub(1) {
                 let letter = line.len().wrapping_mul(31).wrapping_add(edit) % 26;
@@ -263,6 +263,7 @@ fn a_remote_edit_of_a_large_document_costs_its_reader_the_edit() {
             line.push('\n');
             let end = chat.length(&body);
             chat.splice_text(&body, end, 0, &line).unwrap();
+            chat.commit_edit("fixture", "line");
         }
     });
     let held = full(&joined, member);
