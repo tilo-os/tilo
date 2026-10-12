@@ -2723,6 +2723,55 @@ fn wide_shortcut_help_is_exactly_as_tall_as_its_content() {
     );
 }
 
+/// Every anchored shell overlay stays inside the window at every size from a
+/// phone-class window to the desktop: the regression net for placement that
+/// runs off a short or narrow window.
+#[test]
+fn anchored_overlays_stay_inside_the_window_at_every_size() {
+    for (vw, vh) in [
+        (640.0, 400.0),
+        (800.0, 600.0),
+        (900.0, 520.0),
+        (1280.0, 800.0),
+        (1472.0, 920.0),
+    ] {
+        let window = Rect::new(0.0, 0.0, vw, vh);
+        let mut h = build_harness_sized(vw, vh);
+        {
+            let mut chrome = h.chrome.borrow_mut();
+            chrome.overlays.shortcut_help = true;
+        }
+        settle(&mut h, vw, vh);
+        let guide = h.host.shortcut_help_panel_rect();
+        assert!(
+            guide.x0 >= window.x0
+                && guide.x1 <= window.x1
+                && guide.y0 >= window.y0
+                && guide.y1 <= window.y1,
+            "shortcut guide {guide:?} leaves {window:?}"
+        );
+        h.chrome.borrow_mut().overlays.shortcut_help = false;
+        h.chrome.borrow_mut().overlays.quick_settings = true;
+        settle(&mut h, vw, vh);
+        let qs = h.host.quick_settings_rect();
+        assert!(
+            qs.x0 >= window.x0 && qs.x1 <= window.x1 && qs.y0 >= window.y0 && qs.y1 <= window.y1,
+            "quick settings {qs:?} leaves {window:?}"
+        );
+        h.chrome.borrow_mut().overlays.quick_settings = false;
+        h.chrome.borrow_mut().overlays.ws_settings = true;
+        settle(&mut h, vw, vh);
+        let lens = h.host.ws_settings_rect();
+        assert!(
+            lens.x0 >= window.x0
+                && lens.x1 <= window.x1
+                && lens.y0 >= window.y0
+                && lens.y1 <= window.y1,
+            "workspace lens {lens:?} leaves {window:?}"
+        );
+    }
+}
+
 #[test]
 fn shortcut_guide_tab_stops_only_land_on_painted_bindings() {
     let (vw, vh) = (1280.0, 800.0);
