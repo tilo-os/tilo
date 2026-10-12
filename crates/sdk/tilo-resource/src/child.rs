@@ -87,17 +87,14 @@ fn wrap_encoded<C: Resource, R: Resource>(
                 crate::resource::encode::<R>(&wrap(action)).map_err(|error| error.to_string())
             })
     } else if encoded.type_id == group_type::<C>() {
-        tilo_actions::decode_json::<ActionGroup<C::Action>>(&tilo_actions::group_form::readable(
-            &encoded.type_id,
-            &encoded.payload,
-        ))
-        .map_err(|error| error.to_string())
-        .and_then(|group| {
-            let group = ActionGroup {
-                actions: group.actions.into_iter().map(wrap).collect::<Vec<_>>(),
-            };
-            EncodedAction::encode(group_type::<R>(), &group).map_err(|error| error.to_string())
-        })
+        tilo_actions::decode_payload::<ActionGroup<C::Action>>(&encoded.type_id, &encoded.payload)
+            .map_err(|error| error.to_string())
+            .and_then(|group| {
+                let group = ActionGroup {
+                    actions: group.actions.into_iter().map(wrap).collect::<Vec<_>>(),
+                };
+                EncodedAction::encode(group_type::<R>(), &group).map_err(|error| error.to_string())
+            })
     } else {
         Err(format!(
             "`{}` is not an action of {}",
