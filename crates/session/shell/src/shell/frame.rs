@@ -4069,13 +4069,7 @@ impl FrameBuilder {
             return;
         }
         let bounds = Rect::new(0.0, 0.0, self.viewport.0, self.viewport.1);
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            Color::from_rgba8(0, 0, 0, 110),
-            None,
-            &bounds,
-        );
+        ui::overlay::scrim::modal(scene, Affine::IDENTITY, bounds, 1.0, &self.theme);
     }
 
     /// Show or hide the scrim a system-modal prompt dims the desktop with.
