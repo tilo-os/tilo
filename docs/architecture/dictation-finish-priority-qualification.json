@@ -57,7 +57,7 @@
     "actual_actor_finish_regressions": "2 PASS (2665 excluded by filter), production actor and owned child; no microphone",
     "service_all_target_check": "PASS",
     "service_all_target_clippy": "PASS, warnings denied, no added allow",
-    "shell_tests_compile": "PASS: rcargo --no-fallback --no-fetch check --locked --offline -j2 -p shell --tests",
+    "shell_tests_compile": "PASS: $CARGO --no-fallback --no-fetch check --locked --offline -j2 -p shell --tests",
     "staged_source_contract_secret_checks": "PASS",
     "exact_signature_and_blob_policy": "PASS",
     "python_probe": "ruff format/check, py_compile PASS; formatting preserves exact Python AST of the first matrix helper"
@@ -494,5 +494,10 @@
     "Language switches use public concatenated phrases and a digital pause; natural intra-sentence switching not qualified.",
     "No physical older-device, current merged browser runtime or installed microphone acceptance in this increment.",
     "Normal public-model publication and trusted-runtime security holds remain scoped to those actions; no repeated denied action."
-  ]
+  ],
+  "execution_record_portability": {
+    "executor_name": "$CARGO denotes the original remote-only cargo executor; switches, results and measurements are unchanged.",
+    "original_signed_feature_source": "3de84e1c5c0191ea5bf9ac3c5b1e63561adac1d3",
+    "original_file_sha256": "c807273bde4ff5938f147d690f2a2feea963cdd720b177e189919f62fd197727"
+  }
 }

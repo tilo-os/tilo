@@ -728,7 +728,7 @@
     ]
   },
   "validation_scope": {
-    "candidate_worker_builds": "Two remote rcargo --no-fallback --no-fetch builds; no local Cargo",
+    "candidate_worker_builds": "Two remote $CARGO --no-fallback --no-fetch builds; no local Cargo",
     "production_source_changed": false,
     "rust_regressions": "Not rerun for withdrawn candidates/evidence-only increment. Existing signed Finish source20 speech,5 wire,2 production actor, all-target servicecheck/Clippy and shell--tests compile remain the qualified baseline.",
     "ci": "Not pushed; existing lander lane owns combined integration/CI.",
@@ -741,5 +741,10 @@
     "Leading ambient-noise hallucination still fails explicit German; do not insert model text as proof of speech.",
     "Natural utterance diversity and real short commands require aligned human speech and holdout validation.",
     "Normal trusted runtime/model delivery and current browser/installed-microphone acceptance remain pending; publication and denied SDK-transfer actions were not repeated."
-  ]
+  ],
+  "execution_record_portability": {
+    "executor_name": "$CARGO denotes the original remote-only cargo executor; switches, results and measurements are unchanged.",
+    "original_signed_feature_source": "3de84e1c5c0191ea5bf9ac3c5b1e63561adac1d3",
+    "original_file_sha256": "0fca2a7a81fd9e0f6a89de0d518d36c65be696ed4e3cc68413127bd9112b36b7"
+  }
 }

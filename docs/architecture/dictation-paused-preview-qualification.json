@@ -957,7 +957,7 @@
     "focused_speech_tests": "22 PASS; 27 excluded by filter",
     "service_all_target_check": "PASS",
     "service_all_target_clippy": "PASS with warnings denied",
-    "shell_tests_compile": "PASS: rcargo --no-fallback --no-fetch check --locked --offline -j2 -p shell --tests",
+    "shell_tests_compile": "PASS: $CARGO --no-fallback --no-fetch check --locked --offline -j2 -p shell --tests",
     "assembled_field_journeys": {
       "status": "PASS, 4 tests",
       "scope": "Actual candidate worker with pinned d101 native CEF component: selected replacement/undo/redo, focus refusal, cancel/reap, fresh successor",
@@ -1002,5 +1002,10 @@
     "normal_admission": false,
     "all_owned_capsules_absent": true,
     "goal_complete": false
+  },
+  "execution_record_portability": {
+    "executor_name": "$CARGO denotes the original remote-only cargo executor; switches, results and measurements are unchanged.",
+    "original_signed_feature_source": "3de84e1c5c0191ea5bf9ac3c5b1e63561adac1d3",
+    "original_file_sha256": "122a75c2645f1acce34c257881906b163f389f5b427b49fbe7fda356c0e7ffa4"
   }
 }
