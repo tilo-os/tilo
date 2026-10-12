@@ -11,8 +11,8 @@
 //! session reader. Afterwards the test walks the relay's state root.
 //!
 //! It prints one `HOSTING_COST key=value …` line for the cost model (TIL-625).
-//! It gates only deterministic byte counts, as DEVELOPMENT.md "Performance
-//! results" requires of a per-PR check; the delivery latency it prints is a
+//! It gates only deterministic byte counts, as docs/measurements/performance.md
+//! requires of a per-PR check; the delivery latency it prints is a
 //! report, never an assertion.
 
 #![allow(

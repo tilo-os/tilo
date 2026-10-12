@@ -427,6 +427,19 @@ impl RemoteDesktopBackend {
         }
         self.injector.inject(action);
     }
+
+    /// [`Self::route`] for the sender of a `Notify*` call.
+    fn notify(
+        &self,
+        hdr: &zbus::message::Header<'_>,
+        session_handle: &ObjectPath<'_>,
+        need: u32,
+        action: RemoteAction,
+    ) {
+        if let Some(sender) = hdr.sender() {
+            self.route(sender.as_str(), session_handle, need, action);
+        }
+    }
 }
 
 /// Decode the standard v2 `(suv)` restore record. The third component is a
@@ -449,6 +462,10 @@ fn restore_data(key: String) -> Option<OwnedValue> {
 
 #[cfg(target_os = "linux")]
 #[interface(name = "org.freedesktop.impl.portal.RemoteDesktop")]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop D-Bus signatures; zbus deserializes owned values here rather than by reference"
+)]
 impl RemoteDesktopBackend {
     /// Device types the seat can be driven with.
     #[zbus(property)]
@@ -475,10 +492,6 @@ impl RemoteDesktopBackend {
     }
 
     /// `CreateSession` — register the session.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types and count are fixed by the org.freedesktop.impl.portal.RemoteDesktop.CreateSession D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
     async fn create_session(
         &self,
         #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
@@ -830,10 +843,6 @@ impl RemoteDesktopBackend {
     }
 
     /// Relative pointer motion.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerMotion D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
     fn notify_pointer_motion(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
@@ -842,9 +851,8 @@ impl RemoteDesktopBackend {
         dx: f64,
         dy: f64,
     ) {
-        let Some(sender) = hdr.sender() else { return };
-        self.route(
-            sender.as_str(),
+        self.notify(
+            &hdr,
             &session_handle,
             device_type::POINTER,
             RemoteAction::PointerMotionRelative { dx, dy },
@@ -852,10 +860,6 @@ impl RemoteDesktopBackend {
     }
 
     /// Absolute pointer motion, relative to a stream node.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerMotionAbsolute D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
     fn notify_pointer_motion_absolute(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
@@ -865,9 +869,8 @@ impl RemoteDesktopBackend {
         x: f64,
         y: f64,
     ) {
-        let Some(sender) = hdr.sender() else { return };
-        self.route(
-            sender.as_str(),
+        self.notify(
+            &hdr,
             &session_handle,
             device_type::POINTER,
             RemoteAction::PointerMotionAbsolute { stream, x, y },
@@ -875,10 +878,6 @@ impl RemoteDesktopBackend {
     }
 
     /// Pointer button (evdev code + state).
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerButton D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
     fn notify_pointer_button(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
@@ -887,9 +886,8 @@ impl RemoteDesktopBackend {
         button: i32,
         state: u32,
     ) {
-        let Some(sender) = hdr.sender() else { return };
-        self.route(
-            sender.as_str(),
+        self.notify(
+            &hdr,
             &session_handle,
             device_type::POINTER,
             RemoteAction::PointerButton {
@@ -900,10 +898,6 @@ impl RemoteDesktopBackend {
     }
 
     /// Smooth scroll.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerAxis D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
     fn notify_pointer_axis(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
@@ -912,9 +906,8 @@ impl RemoteDesktopBackend {
         dx: f64,
         dy: f64,
     ) {
-        let Some(sender) = hdr.sender() else { return };
-        self.route(
-            sender.as_str(),
+        self.notify(
+            &hdr,
             &session_handle,
             device_type::POINTER,
             RemoteAction::PointerAxis { dx, dy },
@@ -922,10 +915,6 @@ impl RemoteDesktopBackend {
     }
 
     /// Discrete scroll (`axis` 0 vertical, 1 horizontal).
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerAxisDiscrete D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
     fn notify_pointer_axis_discrete(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
@@ -934,9 +923,8 @@ impl RemoteDesktopBackend {
         axis: u32,
         steps: i32,
     ) {
-        let Some(sender) = hdr.sender() else { return };
-        self.route(
-            sender.as_str(),
+        self.notify(
+            &hdr,
             &session_handle,
             device_type::POINTER,
             RemoteAction::PointerAxisDiscrete { axis, steps },
@@ -944,10 +932,6 @@ impl RemoteDesktopBackend {
     }
 
     /// Key press/release by evdev keycode.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyKeyboardKeycode D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
     fn notify_keyboard_keycode(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
@@ -956,9 +940,8 @@ impl RemoteDesktopBackend {
         keycode: i32,
         state: u32,
     ) {
-        let Some(sender) = hdr.sender() else { return };
-        self.route(
-            sender.as_str(),
+        self.notify(
+            &hdr,
             &session_handle,
             device_type::KEYBOARD,
             RemoteAction::KeyboardKeycode {
@@ -969,10 +952,6 @@ impl RemoteDesktopBackend {
     }
 
     /// Key press/release by keysym.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyKeyboardKeysym D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
     fn notify_keyboard_keysym(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
@@ -981,9 +960,8 @@ impl RemoteDesktopBackend {
         keysym: i32,
         state: u32,
     ) {
-        let Some(sender) = hdr.sender() else { return };
-        self.route(
-            sender.as_str(),
+        self.notify(
+            &hdr,
             &session_handle,
             device_type::KEYBOARD,
             RemoteAction::KeyboardKeysym {

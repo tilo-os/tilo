@@ -134,9 +134,10 @@ async fn ranged_reads_after_a_restart_read_only_the_range() {
             ReadOutcome::Unavailable
         );
     }
-    // The whole-blob API still loads and caches for its existing callers.
+    // The whole-blob API still loads for its existing callers, but a blob
+    // this large is not worth its share of the hot cache.
     assert_eq!(store.local(hash).await.unwrap().as_ref(), data);
-    assert!(store.is_cached(hash));
+    assert!(!store.is_cached(hash));
     store.store().shutdown().await.unwrap();
 }
 
@@ -334,6 +335,24 @@ impl BlobBackend for Observed {
     ) -> BlobFuture<Result<BlobRef, BlobError>> {
         self.puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Arc::clone(&self.media).put(scope, bytes, mime)
+    }
+
+    fn put_stream(
+        self: Arc<Self>,
+        scope: BlobScope,
+        chunks: runtime_fs::blobs::BlobChunks,
+        mime: String,
+    ) -> BlobFuture<Result<BlobRef, BlobError>> {
+        // An upload begins before its size is known, so it counts once it
+        // has stored something.
+        let stored = Arc::clone(&self.media).put_stream(scope, chunks, mime);
+        Box::pin(async move {
+            let stored = stored.await;
+            if stored.is_ok() {
+                self.puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            stored
+        })
     }
 
     fn read(

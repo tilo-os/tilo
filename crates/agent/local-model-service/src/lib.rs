@@ -699,16 +699,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         runtime: &SignedRuntime,
         model: &LocalModelRelease,
     ) -> Result<LocalModelStatus, ServiceError> {
-        runtime.validate()?;
-        if !runtime.release.supports_format(model.artifact_format)
-            || !model.allowed_runtimes.contains(&runtime.release.kind)
-        {
-            return Err(ServiceError::RuntimeNotAccepted);
-        }
-        self.require_license_acceptance(model)?;
-        let archive = self.fetch_verified(&runtime.release.artifact)?;
-        self.supervisor
-            .install_runtime_image(&archive, &runtime.release.oci_image)?;
+        self.install_accepted_runtime(runtime, model)?;
         self.install_model(model)
     }
 
@@ -723,6 +714,17 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         runtime: &SignedRuntime,
         model: &LocalModelRelease,
     ) -> Result<LocalModelStatus, ServiceError> {
+        self.install_accepted_runtime(runtime, model)?;
+        self.install_model_with_progress(model)
+    }
+
+    /// Check `runtime` may serve `model` and its licence is accepted, then
+    /// fetch and install the verified runtime image.
+    fn install_accepted_runtime(
+        &mut self,
+        runtime: &SignedRuntime,
+        model: &LocalModelRelease,
+    ) -> Result<(), ServiceError> {
         runtime.validate()?;
         if !runtime.release.supports_format(model.artifact_format)
             || !model.allowed_runtimes.contains(&runtime.release.kind)
@@ -733,7 +735,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         let archive = self.fetch_verified(&runtime.release.artifact)?;
         self.supervisor
             .install_runtime_image(&archive, &runtime.release.oci_image)?;
-        self.install_model_with_progress(model)
+        Ok(())
     }
 
     /// Background-worker install of a model that runs in the process using

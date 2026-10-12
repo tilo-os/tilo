@@ -16,6 +16,7 @@ import adapters  # noqa: E402
 import compare  # noqa: E402
 
 GATE = ROOT / "crates/system/fs/tests/performance_gate.rs"
+FOOTPRINT = ROOT / "crates/system/fs/tests/document_media_footprint.rs"
 ENV = {"commit": "a" * 40, "profile": "dev", "renderer": "none", "virtualization": "kvm",
        "runner": "runner", "hardware": "test cpu", "started_at": "2026-10-09T01:15:00Z"}
 
@@ -45,6 +46,17 @@ class FsGate(unittest.TestCase):
         self.assertEqual((cold.n, cold.unit, cold.p50, cold.max), (3, "ms", 128.85, 171.8))
         self.assertEqual(cold.meta, {"runs": "3"})
 
+    def test_footprint_lines_keep_their_unit(self):
+        heap = "PERF document-media-upload-64m-peak-heap: {:.3} MiB (SLO <= 16.000 MiB)"
+        logs = [gate_log(1.0) + "\n" + heap.format(9.5), gate_log(1.0) + "\n" + heap.format(10.5)]
+        by_kpi = {item.kpi: item for item in adapters.fs_gate(logs, ENV)}
+        upload = by_kpi["fs.document-media-upload-64m-peak-heap"]
+        self.assertEqual((upload.n, upload.unit, upload.max), (2, "MiB", 10.5))
+        self.assertEqual(by_kpi["fs.metadata-warm-8x-1000-list"].unit, "ms")
+        mixed = gate_log(1.0) + "\nPERF metadata-warm-8x-1000-list: 1.000 MiB (SLO <= 2.000 MiB)"
+        with self.assertRaises(ValueError):
+            adapters.fs_gate([mixed], ENV)
+
     def test_a_log_without_gate_lines_fails(self):
         with self.assertRaisesRegex(ValueError, "TILO_FS_PERF_GATE"):
             adapters.fs_gate(["collaborative FS performance gate disabled"], ENV)
@@ -63,6 +75,14 @@ class FsGate(unittest.TestCase):
             slos[name] = float(value) * (1000.0 if unit == "secs" else 1.0)
         reports = dict(re.findall(r'report\(\s*"([a-z0-9-]+)",\s*[^,]+,\s*(\w+_SLO),?\s*\)', source))
         self.assertEqual(len(reports), 13, reports)
+        # The daemon heap KPIs of the footprint test, in MiB.
+        footprint = FOOTPRINT.read_text()
+        for match in re.finditer(r"const (\w+_HEAP_SLO): usize = (\d+)((?: \* 1024)+);", footprint):
+            name, value, factors = match.groups()
+            slos[name] = float(value) * 1024 ** factors.count("1024") / (1024 * 1024)
+        heap = dict(re.findall(r'report_heap\(\s*"([a-z0-9-]+)",\s*[^,]+,\s*(\w+_HEAP_SLO),?\s*\)', footprint))
+        self.assertEqual(len(heap), 3, heap)
+        reports.update(heap)
         budgets = compare.load_budgets(compare.BUDGETS)
         expected = {f"fs.{name}": slos[constant] for name, constant in reports.items()}
         got = {kpi: entry["max"] for kpi, entry in budgets.kpis.items() if kpi.startswith("fs.")}

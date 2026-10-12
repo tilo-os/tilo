@@ -5155,7 +5155,6 @@ impl ScenarioSuitePlan {
                 .env("XDG_CACHE_HOME", state.path().join("cache"))
                 .env_remove("TILO_PACKAGE_ID")
                 .env_remove("TILO_WORKSPACE_ID")
-                .env_remove("QUICK_CLUSTER_ID")
                 .status()
                 .with_context(|| format!("starting scenario {:?}", case.name))?;
             if status.success() {
@@ -7047,7 +7046,10 @@ fn attach_model_gateway(
     // for here as optional, and says what is missing.
     let wanted = std::collections::BTreeMap::from([(
         name.to_owned(),
-        format!("optional@{}", requirement.version),
+        tilo_app_package::ServiceReq {
+            requirement: tilo_app_package::Requirement::Optional,
+            ..requirement.clone()
+        },
     )]);
     let context = launcher::services::ServiceLaunchContext {
         app_id: &manifest.package.id,

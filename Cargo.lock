@@ -138,7 +138,6 @@ dependencies = [
  "cloud-source",
  "getrandom 0.4.3",
  "hex",
- "private-fs",
  "serde",
  "serde_json",
  "tilo-advisory-lock",
@@ -1383,7 +1382,6 @@ dependencies = [
  "fnv",
  "hex",
  "host-info",
- "private-fs",
  "reqwest 0.13.4",
  "runtime-dylib",
  "serde",
@@ -11726,12 +11724,12 @@ dependencies = [
  "hex",
  "image",
  "os-actions",
- "private-fs",
  "runtime-dylib",
  "taffy",
  "tempfile",
  "tilo-app",
  "tilo-doc-pdf",
+ "tilo-files",
  "tilo-history",
  "tilo-ocr",
  "tilo-thumbnail",
@@ -11748,14 +11746,6 @@ dependencies = [
  "equivalent",
  "indexmap",
  "serde",
-]
-
-[[package]]
-name = "private-fs"
-version = "0.1.0"
-dependencies = [
- "tilo-files",
- "workspace-hack",
 ]
 
 [[package]]
@@ -14271,6 +14261,7 @@ dependencies = [
  "emoji",
  "file-explorer",
  "fnv",
+ "fs-protocol",
  "futures-util",
  "gbm",
  "getrandom 0.4.3",
@@ -14302,7 +14293,6 @@ dependencies = [
  "pipewire",
  "pollster",
  "postcard",
- "private-fs",
  "qcms",
  "quick-xml 0.41.0",
  "rand_chacha 0.10.0",
@@ -17053,7 +17043,6 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "postcard",
- "private-fs",
  "rand_core 0.10.0",
  "rustls",
  "serde",
@@ -17065,6 +17054,7 @@ dependencies = [
  "threshold-identity",
  "tilo-advisory-lock",
  "tilo-clock",
+ "tilo-files",
  "tilo-net",
  "tilo-seal",
  "tilo-test-env",
@@ -17309,7 +17299,6 @@ dependencies = [
  "chrono",
  "futures-util",
  "messages",
- "private-fs",
  "reqwest 0.13.4",
  "rustls",
  "rustls-native-certs",
@@ -17320,6 +17309,7 @@ dependencies = [
  "tilo-app",
  "tilo-clock",
  "tilo-contact-directory",
+ "tilo-files",
  "tilo-messaging",
  "tilo-net",
  "tilo-resource",
@@ -17774,7 +17764,6 @@ dependencies = [
  "neighbour-wire",
  "package-store",
  "postcard",
- "private-fs",
  "rand 0.10.1",
  "runtime-identity",
  "runtime-portal",
@@ -18149,9 +18138,9 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
  "hex",
- "private-fs",
  "tempfile",
  "tilo-advisory-lock",
+ "tilo-files",
  "tilo-seal",
  "tilo-secrets",
  "tracing",
@@ -18382,7 +18371,6 @@ dependencies = [
  "percent-encoding",
  "pollster",
  "postcard",
- "private-fs",
  "qrcode",
  "rand_core 0.10.0",
  "regex",
@@ -18514,7 +18502,6 @@ dependencies = [
  "hex",
  "libc",
  "postcard",
- "private-fs",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -22777,6 +22764,7 @@ version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
 dependencies = [
+ "serde",
  "zeroize_derive",
 ]
 

@@ -3,15 +3,18 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::io::Write as _;
 use std::sync::Arc;
 
 use tantivy::collector::TopDocs;
+use tantivy::directory::{Directory as _, TerminatingWrite as _};
+use tantivy::merge_policy::{LogMergePolicy, MergeCandidate, MergePolicy, NoMergePolicy};
 use tantivy::schema::{
     FAST, Field, INDEXED, IndexRecordOption, Schema, TextFieldIndexing, TextOptions,
 };
 use tantivy::{
-    DocId, Index, IndexReader, IndexSettings, IndexWriter, ReloadPolicy, Score, SegmentReader,
-    SingleSegmentIndexWriter, TantivyDocument, Term,
+    DocId, Index, IndexReader, IndexSettings, IndexWriter, ReloadPolicy, Score, SegmentMeta,
+    SegmentReader, SingleSegmentIndexWriter, TantivyDocument, TantivyError, Term,
 };
 
 use crate::query::{FIELD_BASE, Matching, Used, compile};
@@ -31,8 +34,13 @@ pub(crate) const RECORD_SEGMENT: u64 = u64::MAX;
 /// Heap for one bulk build. The build is a single segment, so this only
 /// sizes the term table it starts with.
 const BUILD_HEAP_BYTES: usize = 3_000_000;
-/// Heap for an incremental commit: tantivy's minimum per indexing thread.
+/// Heap of the kept writer's one indexing thread: tantivy's minimum. The
+/// thread never indexes (a batch is built as its own segment), so this is
+/// never allocated.
 const WRITER_HEAP_BYTES: usize = 15_000_000;
+/// Heap for one incremental batch's segment. It sizes the term table the
+/// segment starts with (128K slots) and grows as a large batch needs.
+const BATCH_HEAP_BYTES: usize = 400_000;
 /// A commit touching more than one in this many records rebuilds instead:
 /// a bulk build is cheaper than deleting and re-adding most of the index.
 const REBUILD_FRACTION: usize = 8;
@@ -252,6 +260,27 @@ fn manual_reader(index: &Index) -> tantivy::Result<IndexReader> {
         .try_into()
 }
 
+/// Merge what tantivy's default policy would merge after a commit, and wait
+/// for it, as a writer closed after each commit did: every commit returns a
+/// settled index, so the segments a search sees, and with them the body
+/// statistics BM25 orders by, do not depend on a merge's timing.
+fn settle_merges(index: &Index, writer: &mut IndexWriter) -> tantivy::Result<()> {
+    /// Each round merges a level into one segment, so a cascade is a few
+    /// rounds; the bound only keeps a policy surprise from spinning.
+    const MAX_ROUNDS: usize = 16;
+    let policy = LogMergePolicy::default();
+    for _ in 0..MAX_ROUNDS {
+        let candidates = policy.compute_merge_candidates(&index.searchable_segment_metas()?);
+        if candidates.is_empty() {
+            break;
+        }
+        for MergeCandidate(segments) in candidates {
+            writer.merge(&segments).wait()?;
+        }
+    }
+    Ok(())
+}
+
 fn segment_text(body: &dyn BodySource, segment: usize) -> String {
     let mut text = String::new();
     for piece in 0..body.piece_count(segment) {
@@ -288,7 +317,19 @@ pub struct SearchIndex {
     used: Used,
     documents: BTreeMap<u64, Document>,
     pending: BTreeSet<u64>,
+    /// Pending keys the committed index has never held, so their records
+    /// need no delete. Emptied by a failed commit, which may have applied
+    /// some of its records: every pending key then gets its delete.
+    fresh: BTreeSet<u64>,
     rebuild: bool,
+    /// The incremental writer, opened by the first incremental commit and
+    /// kept for every later one (see [`Self::commit`]).
+    writer: Option<IndexWriter>,
+    /// Incremental writers opened over this index's life.
+    writers_opened: u32,
+    /// Fail the next incremental commit between its two commits.
+    #[cfg(test)]
+    fail_between_commits: bool,
 }
 
 impl fmt::Debug for SearchIndex {
@@ -298,6 +339,7 @@ impl fmt::Debug for SearchIndex {
             .field("records", &self.documents.len())
             .field("pending", &self.pending.len())
             .field("rebuild", &self.rebuild)
+            .field("writer", &self.writer.is_some())
             .field("matching", &self.matching)
             .finish_non_exhaustive()
     }
@@ -327,7 +369,12 @@ impl SearchIndex {
             used: Used::default(),
             documents: BTreeMap::new(),
             pending: BTreeSet::new(),
+            fresh: BTreeSet::new(),
             rebuild: false,
+            writer: None,
+            writers_opened: 0,
+            #[cfg(test)]
+            fail_between_commits: false,
         }
     }
 
@@ -382,6 +429,11 @@ impl SearchIndex {
     /// Insert or replace the record with `document`'s key.
     pub fn upsert(&mut self, document: Document) {
         self.note_used(&document);
+        // Since the last commit every change is pending: a key neither held
+        // nor pending was not committed either.
+        if !self.documents.contains_key(&document.key) && !self.pending.contains(&document.key) {
+            self.fresh.insert(document.key);
+        }
         self.pending.insert(document.key);
         self.documents.insert(document.key, document);
     }
@@ -389,7 +441,10 @@ impl SearchIndex {
     /// Remove a record. Returns whether it existed.
     pub fn remove(&mut self, key: u64) -> bool {
         let existed = self.documents.remove(&key).is_some();
-        if existed {
+        if existed && self.fresh.remove(&key) {
+            // Never committed: nothing to delete.
+            self.pending.remove(&key);
+        } else if existed {
             self.pending.insert(key);
         }
         existed
@@ -404,6 +459,7 @@ impl SearchIndex {
             self.documents.insert(document.key, document);
         }
         self.pending.clear();
+        self.fresh.clear();
         self.rebuild = true;
     }
 
@@ -415,10 +471,19 @@ impl SearchIndex {
 
     /// Make every mutation searchable.
     ///
+    /// A few changes commit incrementally through one tantivy writer the
+    /// index keeps from its first incremental commit on: opening a writer
+    /// (its lock, its meta and six threads) costs more than the records a
+    /// typical commit carries. Between commits the writer holds nothing
+    /// staged and its threads sleep without a timeout, so a kept writer
+    /// costs no wakeups and no arena; dropping the index drops it.
+    ///
     /// # Errors
     ///
     /// Returns tantivy's error when indexing fails; the index then still
-    /// answers from its last commit and the mutations stay pending.
+    /// answers from its last commit and the mutations stay pending. A
+    /// failed writer is dropped with whatever it had staged, and the next
+    /// commit opens a new one.
     pub fn commit(&mut self) -> tantivy::Result<()> {
         if !self.is_dirty() {
             return Ok(());
@@ -426,11 +491,19 @@ impl SearchIndex {
         let incremental = !cfg!(target_arch = "wasm32")
             && !self.rebuild
             && self.pending.len().saturating_mul(REBUILD_FRACTION) < self.documents.len();
-        if incremental {
-            self.commit_incremental()?;
+        let committed = if incremental {
+            match self.commit_incremental() {
+                // A writer lock nothing will release (a writer leaked by a
+                // panic, say) would refuse every incremental commit from
+                // now on: a rebuild gives the records an index without it.
+                Err(TantivyError::LockFailure(..)) => self.rebuild_index(),
+                other => other,
+            }
         } else {
-            self.rebuild_index()?;
-        }
+            self.rebuild_index()
+        };
+        self.fresh.clear();
+        committed?;
         self.pending.clear();
         self.rebuild = false;
         Ok(())
@@ -479,11 +552,16 @@ impl SearchIndex {
         out(record);
     }
 
-    fn rebuild_index(&mut self) -> tantivy::Result<()> {
+    /// `documents` indexed as the one segment of a new index in memory.
+    fn build<'a>(
+        &self,
+        heap_bytes: usize,
+        documents: impl Iterator<Item = &'a Document>,
+    ) -> tantivy::Result<Index> {
         let index = in_memory(self.index.schema());
-        let mut writer = SingleSegmentIndexWriter::<TantivyDocument>::new(index, BUILD_HEAP_BYTES)?;
+        let mut writer = SingleSegmentIndexWriter::<TantivyDocument>::new(index, heap_bytes)?;
         let mut failed = None;
-        for document in self.documents.values() {
+        for document in documents {
             self.tantivy_documents(document, &mut |built| {
                 if failed.is_none()
                     && let Err(error) = writer.add_document(built)
@@ -495,34 +573,99 @@ impl SearchIndex {
         if let Some(error) = failed {
             return Err(error);
         }
-        let index = writer.finalize()?;
+        writer.finalize()
+    }
+
+    fn rebuild_index(&mut self) -> tantivy::Result<()> {
+        let index = self.build(BUILD_HEAP_BYTES, self.documents.values())?;
         let reader = manual_reader(&index)?;
+        // The kept writer writes to the index this one replaces.
+        self.writer = None;
         self.index = index;
         self.reader = Some(reader);
         Ok(())
     }
 
-    fn commit_incremental(&mut self) -> tantivy::Result<()> {
-        let mut writer: IndexWriter = self.index.writer_with_num_threads(1, WRITER_HEAP_BYTES)?;
-        let mut failed = None;
-        for key in &self.pending {
-            writer.delete_term(Term::from_field_u64(self.fields.key, *key));
-            let Some(document) = self.documents.get(key) else {
-                continue;
-            };
-            self.tantivy_documents(document, &mut |built| {
-                if failed.is_none()
-                    && let Err(error) = writer.add_document(built)
-                {
-                    failed = Some(error);
-                }
-            });
+    /// One indexing thread, which never indexes: [`Self::batch_segment`]
+    /// does. It never merges on its own either: [`settle_merges`] merges as
+    /// each commit ends.
+    fn open_writer(&mut self) -> tantivy::Result<IndexWriter> {
+        let writer: IndexWriter = self.index.writer_with_num_threads(1, WRITER_HEAP_BYTES)?;
+        writer.set_merge_policy(Box::new(NoMergePolicy));
+        self.writers_opened = self.writers_opened.saturating_add(1);
+        Ok(writer)
+    }
+
+    /// The pending records that still exist, as a segment of this index
+    /// that no segment list names yet: built in an index of its own sized to
+    /// the batch, then its files moved into this index's directory.
+    ///
+    /// The writer's own indexing thread would start every segment with the
+    /// term table of its 15 MB minimum heap, 4 MB written and read back even
+    /// for one record, which costs more than the record.
+    fn batch_segment(&self) -> tantivy::Result<Option<SegmentMeta>> {
+        let mut documents = self
+            .pending
+            .iter()
+            .filter_map(|key| self.documents.get(key))
+            .peekable();
+        if documents.peek().is_none() {
+            return Ok(None);
         }
-        if let Some(error) = failed {
-            return Err(error);
+        let built = self.build(BATCH_HEAP_BYTES, documents)?;
+        let Some(segment) = built.searchable_segment_metas()?.into_iter().next() else {
+            return Ok(None);
+        };
+        // A meta of this index first: while it lives, its files are never
+        // collected as garbage.
+        let meta = self.index.new_segment_meta(segment.id(), segment.max_doc());
+        let (from, to) = (built.directory(), self.index.directory());
+        for path in segment.list_files() {
+            if !from.exists(&path)? {
+                continue;
+            }
+            // Read without its footer, which the write adds back.
+            let bytes = from.open_read(&path)?.read_bytes()?;
+            let mut file = to.open_write(&path)?;
+            file.write_all(&bytes)?;
+            file.terminate()?;
+        }
+        Ok(Some(meta))
+    }
+
+    /// Delete the pending records from the index, then add their segment,
+    /// commit and merge on the kept writer, then move the reader onto the
+    /// commit. The writer is taken out for the commit and put back only once
+    /// it has succeeded: on an error it drops here, discarding what it
+    /// staged and releasing the index's lock.
+    fn commit_incremental(&mut self) -> tantivy::Result<()> {
+        let mut writer = match self.writer.take() {
+            Some(writer) => writer,
+            None => self.open_writer()?,
+        };
+        let mut replaces = false;
+        for key in self.pending.difference(&self.fresh) {
+            writer.delete_term(Term::from_field_u64(self.fields.key, *key));
+            replaces |= self.documents.contains_key(key);
+        }
+        if let Some(segment) = self.batch_segment()? {
+            // An added segment takes every delete the writer has queued but
+            // not yet applied as its own. Deletes of removed records find
+            // nothing in it, but a replaced record would lose its new
+            // version: apply those to the old segments first. The commit
+            // between is never read; the reader moves once the batch is in.
+            if replaces {
+                writer.commit()?;
+                #[cfg(test)]
+                if std::mem::take(&mut self.fail_between_commits) {
+                    return Err(TantivyError::SystemError("injected".into()));
+                }
+            }
+            writer.add_segment(segment)?;
         }
         writer.commit()?;
-        writer.wait_merging_threads()?;
+        settle_merges(&self.index, &mut writer)?;
+        self.writer = Some(writer);
         if let Some(reader) = &self.reader {
             return reader.reload();
         }
@@ -648,3 +791,7 @@ impl SearchIndex {
 fn rank_of(score: Score) -> i32 {
     (score - FIELD_BASE).floor() as i32
 }
+
+#[cfg(test)]
+#[path = "index_writer_tests.rs"]
+mod writer_tests;

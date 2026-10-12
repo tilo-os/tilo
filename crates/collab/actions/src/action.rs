@@ -227,8 +227,19 @@ impl EncodedAction {
     where
         A: Action + Serialize,
     {
-        let payload = serde_json::to_vec(action).map_err(ActionError::Encode)?;
-        Ok(Self::written(type_id.into(), payload))
+        Self::encoded(type_id.into(), serde_json::to_vec(action))
+    }
+
+    /// The tail of [`Self::encode`] every action type shares.
+    #[inline(never)]
+    fn encoded(
+        type_id: String,
+        payload: Result<Vec<u8>, serde_json::Error>,
+    ) -> Result<Self, ActionError> {
+        Ok(Self::written(
+            type_id,
+            payload.map_err(ActionError::Encode)?,
+        ))
     }
 
     /// An action of `type_id` whose payload is `payload`, a group's written

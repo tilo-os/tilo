@@ -25,7 +25,7 @@ use cloud_source_dav::DavSource;
 use cloud_source_dav::fake::{FakeDav, PASSWORD, USER};
 use fs::cloud::credential::{MountReply, ToMount};
 use fs::cloud::service::dispatch;
-use fs::cloud::volume::{DEFAULT_IDLE_POLL_MAX, Health, ROOT_INO};
+use fs::cloud::volume::{DEFAULT_IDLE_POLL_MAX, ROOT_INO};
 use fs::cloud::{CloudService, CloudVolume, InProcessLauncher, ServiceConfig, VolumeConfig};
 use runtime_fs::cloud::{
     CloudClient, CloudMount, CloudRequest, CloudResponse, CloudSocket, FileReply, FileRequest,
@@ -41,7 +41,7 @@ fn credential() -> Credential {
 
 struct Mount {
     volume: Arc<CloudVolume>,
-    health: Arc<Mutex<Vec<Health>>>,
+    health: Arc<Mutex<Vec<MountHealth>>>,
 }
 
 fn mount_volume(server: &FakeDav, dir: &Path) -> Mount {
@@ -121,7 +121,10 @@ fn listing_mirrors_the_server_tree() {
         .getattr(mount.volume.resolve("readme.txt").unwrap())
         .unwrap();
     assert_eq!(attr.size, 5);
-    assert_eq!(mount.health.lock().unwrap().last(), Some(&Health::Healthy));
+    assert_eq!(
+        mount.health.lock().unwrap().last(),
+        Some(&MountHealth::Healthy)
+    );
 
     // Remote changes show up on the next sync; unchanged subtrees are not
     // listed again (Nextcloud folder ETags are recursive).
@@ -315,7 +318,10 @@ fn offline_reads_come_from_cache_and_writes_queue_across_restarts() {
     let mount = mount_volume(&server, dir.path());
     // Metadata and cached bytes survive the restart without the server.
     assert!(mount.volume.sync_once().is_err());
-    assert_eq!(mount.health.lock().unwrap().last(), Some(&Health::Offline));
+    assert_eq!(
+        mount.health.lock().unwrap().last(),
+        Some(&MountHealth::Offline)
+    );
     assert_eq!(names(&mount.volume, ""), ["cached.txt", "cold.txt"]);
     assert_eq!(
         read_all(&mount.volume, "cached.txt"),
@@ -409,7 +415,10 @@ fn failed_sync_does_not_rewrite_tree_json() {
     let written = tree_json(dir.path()).unwrap();
     server.set_offline(true);
     assert!(mount.volume.sync_once().is_err());
-    assert_eq!(mount.health.lock().unwrap().last(), Some(&Health::Offline));
+    assert_eq!(
+        mount.health.lock().unwrap().last(),
+        Some(&MountHealth::Offline)
+    );
     assert_eq!(tree_json(dir.path()), Some(written));
 }
 
@@ -601,7 +610,7 @@ fn sync_now_cuts_backoff_and_syncs_immediately() {
     server.set_offline(true);
     let workers = mount.volume.spawn_workers();
     wait_until("the first failed pass", || {
-        mount.health.lock().unwrap().contains(&Health::Offline)
+        mount.health.lock().unwrap().contains(&MountHealth::Offline)
     });
     // A second failure, from a sync asked for while still offline: the
     // loop now backs off 120 s.
@@ -613,7 +622,7 @@ fn sync_now_cuts_backoff_and_syncs_immediately() {
     let asked = std::time::Instant::now();
     dispatch(&mount.volume, ToMount::SyncNow, &no_reply());
     wait_until("a healthy pass", || {
-        mount.health.lock().unwrap().last() == Some(&Health::Healthy)
+        mount.health.lock().unwrap().last() == Some(&MountHealth::Healthy)
     });
     let took = asked.elapsed();
     assert!(
@@ -1062,7 +1071,7 @@ fn posix_tools_see_the_account_through_the_kernel_mount() {
     assert_eq!(service.mounted(), [("cloud-1".to_owned(), mount.clone())]);
 
     // The first sync runs in the mount's worker; it reports health when done.
-    assert!(service.wait_for_health("cloud-1", Health::Healthy, tilo_test_env::hang_bound()));
+    assert!(service.wait_for_health("cloud-1", MountHealth::Healthy, tilo_test_env::hang_bound()));
     assert_eq!(
         std::fs::read_to_string(mount.join("Docs/hello.txt")).unwrap(),
         "hello from the cloud"
