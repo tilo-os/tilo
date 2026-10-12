@@ -759,16 +759,6 @@ fn removed_connector_discards_queued_wake_and_reconnects_with_fresh_power_contro
 
 const KANSHI: &str = "/usr/bin/kanshi";
 
-fn unix_now_ms() -> u64 {
-    u64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_millis(),
-    )
-    .expect("milliseconds fit u64")
-}
-
 /// The monitor's size, and a refresh rate 0.2 Hz off the 144 Hz it lists.
 const UNLISTED_MODE: (i32, i32, i32) = (2560, 1440, 143_800);
 
@@ -820,7 +810,9 @@ fn await_confirmation(
 /// ended, so how long the host takes to get there cannot end it early.
 fn countdown_outlasting_the_test() -> u64 {
     let bound = u64::try_from(tilo_test_env::hang_bound().as_millis()).expect("bound fits u64");
-    unix_now_ms().saturating_add(bound.saturating_mul(2))
+    tilo_clock::try_unix_now_ms()
+        .expect("clock after epoch")
+        .saturating_add(bound.saturating_mul(2))
 }
 
 /// The shell, laid out over the fixture's displays, showing the prompt the
@@ -843,7 +835,7 @@ fn prompt_host(
         })
         .collect();
     host.set_output_geometry(&geometry);
-    let layout = crate::display_layout_switcher::layout_host(&mut host);
+    let layout = crate::support::host::layout_host(&mut host);
     host.show_display_confirmation(confirmation.transaction, confirmation.tool);
     (host, layout)
 }
@@ -1263,7 +1255,11 @@ fn running_out_of_time_restores_the_previous_layout() {
     assert!(!host.poll_display_confirmation(), "time is left");
 
     let mut transaction = DisplayTransaction::load().expect("transaction");
-    transaction.deadline_unix_ms = Some(unix_now_ms().saturating_sub(1));
+    transaction.deadline_unix_ms = Some(
+        tilo_clock::try_unix_now_ms()
+            .expect("clock after epoch")
+            .saturating_sub(1),
+    );
     transaction.save().expect("save");
     assert!(
         !host.poll_display_confirmation(),

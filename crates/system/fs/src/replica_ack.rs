@@ -7,10 +7,8 @@
 
 use std::time::Duration;
 
-use collab_types::{
-    ContentRevisionV1, Ed25519PublicKey, FileActor, Signature, canonical_bytes, sign_event,
-    verify_event,
-};
+use collab_types::{Ed25519PublicKey, Signature, canonical_bytes, sign_event, verify_event};
+use fs_protocol::{ContentRevisionV1, FileActor};
 use getrandom::{SysRng, rand_core::TryRng as _};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -312,7 +310,7 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{ContentHash, FileRecordId, FileVersionId};
+    use fs_protocol::{ContentHash, FileRecordId, FileVersionId};
     use getrandom::rand_core::UnwrapErr;
     use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 

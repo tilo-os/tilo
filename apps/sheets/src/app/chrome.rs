@@ -14,10 +14,11 @@ use super::annotations::CardMetrics;
 use super::{
     Affine, BlendMode, Button, Fill, GridMetrics, HashMap, MenuItem, Point, PresenceCtx,
     PresenceKey, Rect, RoundedRect, Scene, SheetsApp, TextRenderer, TextRole, TextStyle, Theme,
-    Widget, WindowEvent, count_f64, tab_palette_color,
+    Widget, WindowEvent, tab_palette_color,
 };
 use ui::chrome::HeaderRowFace;
 use ui::icons::Icon;
+use ui::num::f64_of_usize;
 use ui::surface::separator;
 use ui::widget::toolbar;
 use ui::widget::toolbar::Orientation;
@@ -158,7 +159,7 @@ impl ChromeMetrics {
 
     /// An estimate of a label's width until the first draw has measured it.
     fn estimate(&self, label: &str) -> f64 {
-        count_f64(label.chars().count()) * 7.0 * self.scale
+        f64_of_usize(label.chars().count()) * 7.0 * self.scale
     }
 
     /// How much the chrome text has grown past the 1× reference; scales the

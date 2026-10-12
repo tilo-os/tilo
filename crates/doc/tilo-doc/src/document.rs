@@ -122,7 +122,28 @@ impl Document {
     /// carry a qdoc schema `open` recognises.
     pub fn load(bytes: &[u8]) -> Result<Self, DocError> {
         let doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
-        let c = crate::model::open(&doc, &ROOT)?;
+        Self::from_automerge(doc)
+    }
+
+    /// Open an Automerge document that is already loaded, as [`Self::load`] does: for bytes
+    /// from peers, which are decoded in `tilo_automerge_isolate` rather than here.
+    ///
+    /// # Errors
+    /// Returns [`DocError`] if `doc` does not carry a qdoc schema `open` recognises.
+    pub fn from_automerge(doc: AutoCommit) -> Result<Self, DocError> {
+        Self::from_automerge_under(doc, &ROOT)
+    }
+
+    /// [`Self::from_automerge`] for a document whose rich text is stored
+    /// under `root`, the map of a field of a larger record.
+    ///
+    /// # Errors
+    /// Returns [`DocError`] if `root` does not hold a qdoc schema `open` recognises.
+    pub fn from_automerge_under(
+        doc: AutoCommit,
+        root: &automerge::ObjId,
+    ) -> Result<Self, DocError> {
+        let c = crate::model::open(&doc, root)?;
         let mut ids = crate::model::try_seeded_id_gen(&doc, &c)?;
         ids.allow_commits();
         Ok(Self { doc, c, ids })
@@ -312,12 +333,6 @@ impl Document {
     pub fn splice_footer_text(&mut self, block_id: &str, char_idx: usize, del: isize, ins: &str) {
         self.as_mut()
             .splice_text_in(crate::model::Region::Footer, block_id, char_idx, del, ins);
-        self.doc.commit();
-    }
-
-    pub fn insert_header_page_number(&mut self, block_id: &str, char_idx: usize) {
-        self.as_mut()
-            .insert_page_number_field(crate::model::Region::Header, block_id, char_idx);
         self.doc.commit();
     }
 
@@ -621,11 +636,6 @@ impl Document {
         let a = self.materialize_at(from)?;
         let b = self.materialize_at(to)?;
         Ok(crate::diff::diff_snapshots(&a, &b))
-    }
-
-    /// Structural diff of this document's current state against another snapshot; `other` is the baseline (old), `self` is the new side.
-    pub fn diff_against(&self, other: &crate::snapshot::DocSnapshot) -> crate::diff::DocDiff {
-        crate::diff::diff_snapshots(other, &self.materialize())
     }
 
     /// Independent replica with a fresh actor id (distinct edit lineage).
@@ -1034,7 +1044,7 @@ mod tests {
         let mint = |doc: &mut automerge::AutoCommit, payload: &[u8]| {
             let mut replica = doc.fork();
             replica.set_actor(doc.get_actor().clone());
-            let cx = tilo_resource::ActionCx::for_apply(&mut replica, payload, 0);
+            let cx = tilo_resource::ActionCx::for_apply(&replica, payload, 0);
             let mut ids = crate::model::IdGen::for_action(cx);
             let mut dm = DocMut {
                 doc: &mut replica,

@@ -5,6 +5,8 @@
 //! recheck account ownership/revocation before writing the encoded request.
 
 pub mod journal;
+#[cfg(feature = "signal-broker")]
+pub mod native_broker;
 pub mod routing;
 pub mod signal;
 #[cfg(all(unix, feature = "signal-broker"))]
@@ -116,11 +118,15 @@ pub enum ProtocolReference {
         message_object: String,
         daemon_epoch: u64,
     },
+    Tilo {
+        message_id: String,
+    },
 }
 
 impl std::fmt::Debug for ProtocolReference {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::Tilo { .. } => "Tilo(<reference>)",
             Self::Signal { .. } => "Signal(<reference>)",
             Self::Whatsapp { .. } => "Whatsapp(<reference>)",
             Self::Sms { .. } => "Sms(<reference>)",
@@ -131,6 +137,8 @@ impl std::fmt::Debug for ProtocolReference {
 impl ProtocolReference {
     pub(crate) fn valid_for(&self, service: Service) -> bool {
         match (self, service) {
+            (Self::Tilo { message_id }, Service::Tilo) => uuid::Uuid::parse_str(message_id)
+                .is_ok_and(|id| !id.is_nil() && id.to_string() == *message_id),
             (Self::Signal { timestamp }, Service::Signal) => *timestamp > 0,
             (Self::Whatsapp { message_id }, Service::Whatsapp) => identifier(message_id),
             (

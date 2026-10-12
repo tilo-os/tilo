@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import textwrap
 from pathlib import Path
 import tomllib
 
@@ -76,6 +79,35 @@ linux_clipboard_dependencies = clipboard_manifest["target"]['cfg(target_os = "li
 assert "smithay-clipboard" in linux_clipboard_dependencies
 
 session_workflow = (ROOT / ".forgejo/workflows/release-desktop.yml").read_text()
+# Standalone host-session runs build the same immutable app store as releases.
+# Exercise the actual preflight shell before any checkout/download/build step:
+# an absent authority must fail immediately, without weakening staging checks.
+host_session_workflow = (ROOT / ".forgejo/workflows/host-session-e2e.yml").read_text()
+host_rpms = host_session_workflow.split("  rpms:\n", 1)[1].split("  host-session:\n", 1)[0]
+assert "TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}" in host_rpms
+preflight, expensive_steps = host_rpms.split("      # A full clone", 1)
+assert "if: ${{ !inputs.rpm-artifact && !inputs.rpm-source-run }}" in preflight
+assert "Fetch the env-runtime environment image" in expensive_steps
+assert "dist/ci/run-package-job.sh" in expensive_steps
+owner_preflight = preflight.split("      - name: Validate the app-store registry owner\n", 1)[1]
+owner_check = textwrap.dedent(owner_preflight.split("        run: |\n", 1)[1])
+for owner, accepted in (
+    (None, False),
+    ("", False),
+    ("invalid", False),
+    ("0" * 64, False),
+    ("ab" * 31, False),
+    ("ab" * 33, False),
+    ("ab" * 32, True),
+    ("AB" * 32, True),
+):
+    check_env = os.environ.copy()
+    check_env.pop("TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY", None)
+    if owner is not None:
+        check_env["TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"] = owner
+    result = subprocess.run(["bash", "-c", owner_check], env=check_env, capture_output=True)
+    assert (result.returncode == 0) == accepted, "host-session registry-owner preflight"
+
 packaging_docs = (ROOT / "docs/packaging.md").read_text()
 rpm_publisher = (ROOT / "dist/ci/publish-forgejo-packages.sh").read_text()
 rpm_signer = (ROOT / "dist/rpm/sign-rpms.sh").read_text()
@@ -101,49 +133,47 @@ assert "releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-fedora-44.repo" 
 assert "releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-rpm-signing-key.asc" in packaging_docs
 assert "dnf config-manager` persists credentials" in packaging_docs
 assert "dnf stores the credential" not in packaging_docs.lower()
-assert "TILO_RPM_SIGNING_KEY_B64" in packaging_docs
-assert "unencrypted armored" in packaging_docs and "private key" in packaging_docs
-assert "TILO_RPM_SIGNING_KEY_B64" in session_workflow
+assert "isolated broker" in packaging_docs
+assert "desktop-rpm-broker.md" in packaging_docs
 assert "TILO_RPM_SIGNING_FINGERPRINT" in session_workflow
-# A protected tag step, after exact-main qualification, is the only place
-# the RPM private key may enter packaging. Ordinary candidates stay unsigned.
-unsigned_step, signed_step = session_workflow.split(
-    "      - name: Build, install-test and sign protected desktop release userspaces\n", 1
-)
-signed_step = signed_step.split("      # The v4 artifact pins", 1)[0]
-unsigned_step = unsigned_step.split(
-    "      - name: Build and install-test unsigned candidate userspaces\n", 1
-)[1]
-assert "if: startsWith(github.ref, 'refs/tags/desktop-v')" in signed_step
-assert "if: ${{ !startsWith(github.ref, 'refs/tags/desktop-v') }}" in unsigned_step
-assert 'TILO_RPM_SIGNING_ENABLED: "1"' in signed_step
-assert 'TILO_RPM_SIGNING_ENABLED: "0"' in unsigned_step
-assert "secrets." not in unsigned_step
-for signing_name in ("TILO_RPM_SIGNING_KEY_B64", "TILO_RPM_SIGNING_KEY_ID"):
-    reference = "secrets." + signing_name
-    assert session_workflow.count(reference) == 1
-    assert reference in signed_step
+package_job = session_workflow.split("  package:\n", 1)[1].split("  sign-rpm:\n", 1)[0]
+signing_job = session_workflow.split("  sign-rpm:\n", 1)[1].split("  host-session-e2e:\n", 1)[0]
+assert "    needs: validate\n" in package_job
+assert "secrets.TILO_RPM_SIGNING" not in session_workflow
+assert "enable-openid-connect" not in package_job
+assert "enable-openid-connect: true" in signing_job
+assert "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/desktop-v')" in signing_job
+assert "needs: [validate, package]" in signing_job
+assert "dist/rpm/sign-rpms.sh signed-fedora" in signing_job
+assert "vars.TILO_RPM_SIGNING_FINGERPRINT" in signing_job
 validation = session_workflow.split("  validate:\n", 1)[1].split("  package:\n", 1)[0]
 assert 'run: tools/ci/receipt.sh verify "$GITHUB_SHA" origin' in validation
-package_job = session_workflow.split("  package:\n", 1)[1].split("  host-session-e2e:\n", 1)[0]
-assert "    needs: validate\n" in package_job
-assert "TILO_RPM_SIGNING_KEY_ARTIFACT: ${{ matrix.arch == 'amd64' && '1' || '0' }}" in session_workflow
+assert "needs: [validate, package, sign-rpm, host-session-e2e]" in session_workflow
+assert "'signed-fedora-44-amd64' || 'fedora-44-amd64'" in session_workflow
 rpm_job = (ROOT / "dist/ci/run-package-job.sh").read_text()
-assert "--env TILO_RPM_SIGNING_KEY_B64" in rpm_job
-assert "if [[ ${TILO_RPM_SIGNING_ENABLED:-0} == 1 ]]" in rpm_job
-assert "dist/rpm/sign-rpms.sh /artifacts" in rpm_job
-assert "TILO_RPM_SIGNING_KEY_B64" in rpm_signer
-assert "rpmkeys --dbpath" in rpm_signer
-assert "rpmsign" in rpm_signer
+assert "--env TILO_RPM_SIGNING" not in rpm_job
+assert "ACTIONS_ID_TOKEN_REQUEST_" in rpm_job
+assert "dist/rpm/sign-rpms.sh" not in rpm_job
+assert 'exec python3 "$(dirname -- "$0")/sign-rpms-broker.py"' in rpm_signer
+rpm_broker = (ROOT / "dist/rpm/sign-rpms-broker.py").read_text()
+assert "'/usr/local/libexec/tilo-desktop-rpm-broker'" in rpm_broker
+assert "trusted_broker(BROKER, env)" in rpm_broker
+assert "private-key environment is forbidden" in rpm_broker
+assert "broker changed package header or payload" in rpm_broker
+assert "'rpmkeys', '--dbpath'" in rpm_broker
+assert "'gpg', '--homedir'" in rpm_broker
+assert "'--checksig', '--verbose'" in rpm_broker
+assert "verify_published" in rpm_broker
+assert "OpenPGP private authority" in (ROOT / "docs/desktop-rpm-broker.md").read_text()
 assert "substituted-key" in rpm_signing_tests
 assert "TILO_FAKE_RPM_MODE=unsigned" in rpm_signing_tests
 assert "TILO_FAKE_RPM_MODE=wrong" in rpm_signing_tests
 assert "gpgcheck=1" in rpm_repo_generator
 assert "repo_gpgcheck=0" in rpm_repo_generator
-assert "make-repo-file.sh" in (ROOT / "dist/ci/run-package-job.sh").read_text()
+assert "make-repo-file.sh" in signing_job
 assert "rpm-sign" in rpm_build_deps
-assert "expected_count=18" in rpm_release_verifier
-assert "expected_count=26" in rpm_release_verifier
+assert "expected_count=20" in rpm_release_verifier
+assert "expected_count=30" in rpm_release_verifier
 assert 'tilo-session-apps-${version}-1.fc44.x86_64.rpm' in rpm_release_verifier
 assert "RPM is unsigned" in rpm_release_verifier
 assert "make-repo-file.sh" in rpm_release_verifier

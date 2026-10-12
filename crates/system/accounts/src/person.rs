@@ -313,6 +313,102 @@ impl PersonAccounts {
         )
     }
 
+    /// Publish the explicitly reviewed self identity of one native `WhatsApp`
+    /// profile. The caller retains provider proof and credential authority;
+    /// this record contains no credential, pairing payload or messaging state.
+    /// # Errors
+    /// Refuses invalid self identity, generation, name or an occupied account.
+    #[action]
+    pub fn publish_whatsapp_account(
+        &mut self,
+        id: String,
+        display_name: String,
+        jid: String,
+        generation: u64,
+    ) -> Result<(), Refusal> {
+        if !uuid::Uuid::parse_str(&id).is_ok_and(|parsed| parsed.to_string() == id)
+            || generation == 0
+            || display_name.trim().is_empty()
+            || display_name.chars().count() > 160
+            || display_name.chars().any(char::is_control)
+            || jid.len() > 128
+            || !jid.split_once('@').is_some_and(|(user, server)| {
+                server == "s.whatsapp.net"
+                    && !user.is_empty()
+                    && user.bytes().all(|c| c.is_ascii_digit())
+            })
+            || self.accounts.get(&Id::from_raw(&id)).is_some()
+            || self.accounts.iter().any(|(_, row)| {
+                row.type_id == "whatsapp"
+                    && row
+                        .config
+                        .0
+                        .get("whatsapp_jid")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(jid.as_str())
+            })
+        {
+            return Err(Refusal::from(
+                "a fresh account and reviewed WhatsApp self identity are required",
+            ));
+        }
+        let scope = format!("whatsapp:{id}");
+        self.save_account(
+            id, "whatsapp".into(), display_name,
+            serde_json::json!({"messaging_scope":scope, "linking_generation":generation, "whatsapp_jid":jid}),
+            true, 0,
+        )
+    }
+
+    /// Publish the original personal Tilo sender with an opaque private scope.
+    /// Neither workspace membership nor a label authorizes this account.
+    /// # Errors
+    /// Refuses malformed identities, duplicate accounts or an invalid name/generation.
+    #[action]
+    pub fn publish_tilo_account(
+        &mut self,
+        id: String,
+        display_name: String,
+        scope: String,
+        generation: u64,
+    ) -> Result<(), Refusal> {
+        if uuid::Uuid::parse_str(&id).is_ok_and(|uuid| uuid.is_nil())
+            || uuid::Uuid::parse_str(&id)
+                .map_err(|_| Refusal::from("a canonical Tilo account identity is required"))?
+                .to_string()
+                != id
+            || scope != format!("tilo:{id}")
+            || generation == 0
+            || display_name.trim().is_empty()
+            || display_name.chars().count() > 160
+            || display_name.chars().any(char::is_control)
+        {
+            return Err(Refusal::from(
+                "a canonical Tilo sender, bounded name and generation are required",
+            ));
+        }
+        if self
+            .accounts
+            .iter()
+            .any(|(_, account)| account.type_id == "tilo")
+        {
+            return Err(Refusal::from("the original Tilo sender already exists"));
+        }
+        if self.accounts.get(&Id::from_raw(&id)).is_some() {
+            return Err(Refusal::from(
+                "this account already exists; use its existing setup",
+            ));
+        }
+        self.save_account(
+            id,
+            "tilo".into(),
+            display_name,
+            serde_json::json!({"messaging_scope": scope, "linking_generation": generation}),
+            true,
+            0,
+        )
+    }
+
     /// Remove account.
     #[action]
     pub fn remove_account(&mut self, account: Id) -> Result<(), Refusal> {

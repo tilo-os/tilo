@@ -59,6 +59,7 @@ fn linux_ancestry_and_acl_mask_rules_are_lossless_and_strict() {
 mod native {
     use super::super::{native::fixture_acquire, *};
     use crate::setup::internal_cache::layout;
+    use crate::setup::test_support::isolated;
     use crate::{
         release::InternalRelease,
         setup::{
@@ -886,21 +887,6 @@ mod native {
                 drop(b);
             },
         );
-    }
-
-    /// Runs one merged phase on a fresh thread so the thread-local fault and
-    /// cancellation hooks start clean, exactly as when the phase was its own
-    /// test; a failing phase re-raises its original panic payload.
-    fn isolated(phase: &str, body: impl FnOnce() + Send) {
-        std::thread::scope(|scope| {
-            let handle = std::thread::Builder::new()
-                .name(phase.to_owned())
-                .spawn_scoped(scope, body)
-                .expect("spawn isolated test phase");
-            if let Err(panic) = handle.join() {
-                std::panic::resume_unwind(panic);
-            }
-        });
     }
 }
 

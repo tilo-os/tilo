@@ -1,0 +1,4 @@
+bytes = 983040
+measured = 97519187
+run = 87193
+reason = "Multiline TextInput paragraph-by-paragraph layout (TIL-631): the paragraph splice, the per-width layouts and per-line spelling and word lookup that make a keystroke shape one paragraph instead of the whole text (85 ms to 0.6 ms per key at 100 KB). SDK run 87193 measured the optimized release desktop module at 97519187 bytes, 1619 over the prior limit. This receipt follows the standard 1% headroom rounded to 64 KiB."

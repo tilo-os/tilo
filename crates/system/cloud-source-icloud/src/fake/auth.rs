@@ -1,27 +1,20 @@
-//! idmsa sign-in and setup.icloud.com, server side.
-
-#![allow(
-    clippy::arithmetic_side_effects,
-    reason = "arbitrary-precision BigUint arithmetic cannot overflow"
-)]
+//! idmsa sign-in and setup.icloud.com, server side. The SRP half is
+//! `tilo-crypto`'s test server, so a wrong password fails the proof exactly
+//! as Apple's would.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use num_bigint::BigUint;
 use serde_json::{Value, json};
 use test_http::{Reply, Request};
+use tilo_crypto::srp_apple::{ELEMENT_LEN, server};
 
 use super::{
     APPLE_ID, DEVICE_CODE, PHONE_ID, SMS_CODE, SignInState, State, has_web_session, json_reply,
 };
-use crate::auth::srp;
 
 /// The SRP verifier `g^x` for `password`.
-pub fn verifier(password: &str, salt: &[u8], iterations: u32, protocol: &str) -> BigUint {
-    let group = srp::group();
-    let derived = srp::derive_password(password, salt, iterations, protocol).expect("protocol");
-    let x = srp::private_key(salt, derived.as_slice());
-    group.g.modpow(&x, &group.n)
+pub fn verifier(password: &str, salt: &[u8], iterations: u32, protocol: &str) -> [u8; ELEMENT_LEN] {
+    server::verifier(password, salt, iterations, protocol).expect("protocol")
 }
 
 fn body(request: &Request) -> Value {
@@ -33,12 +26,6 @@ fn service_error(status: u16, code: &str) -> Reply {
         status,
         &json!({"serviceErrors": [{"code": code, "message": "refused"}]}),
     )
-}
-
-fn random_exponent() -> BigUint {
-    let mut bytes = [0_u8; 32];
-    getrandom::fill(&mut bytes).expect("randomness");
-    BigUint::from_bytes_be(&bytes)
 }
 
 /// The sign-in a request belongs to, by its echoed session id.
@@ -53,14 +40,11 @@ pub fn idmsa(state: &mut State, request: &Request, path: &str) -> Reply {
     if path == "/appleauth/authorize/signin" {
         let id = state.next("sid-");
         let scnt = state.next("scnt-");
-        let group = srp::group();
-        let b = random_exponent();
-        let b_pub = (&group.k * &state.verifier + group.g.modpow(&b, &group.n)) % &group.n;
+        let srp = server::ServerSession::new(&state.verifier).expect("randomness");
         state.sign_ins.insert(
             id.clone(),
             SignInState {
-                b,
-                b_pub,
+                srp,
                 a_pub: None,
                 session_token: None,
                 code_verified: false,
@@ -168,11 +152,7 @@ fn signin_init(state: &mut State, id: &str, payload: &Value) -> Reply {
     if payload["accountName"].as_str() != Some(APPLE_ID) {
         return service_error(401, "-20101");
     }
-    let Some(a_pub) = payload["a"]
-        .as_str()
-        .and_then(|a| BASE64.decode(a).ok())
-        .map(|a| BigUint::from_bytes_be(&a))
-    else {
+    let Some(a_pub) = payload["a"].as_str().and_then(|a| BASE64.decode(a).ok()) else {
         return service_error(400, "-20101");
     };
     let salt = BASE64.encode(&state.salt);
@@ -188,14 +168,13 @@ fn signin_init(state: &mut State, id: &str, payload: &Value) -> Reply {
             "iteration": iterations,
             "salt": salt,
             "protocol": protocol,
-            "b": BASE64.encode(srp::pad(&sign_in.b_pub)),
+            "b": BASE64.encode(sign_in.srp.public()),
             "c": format!("challenge-{id}"),
         }),
     )
 }
 
 fn signin_complete(state: &mut State, id: &str, payload: &Value) -> Reply {
-    let group = srp::group();
     let Some(sign_in) = state.sign_ins.get(id) else {
         return service_error(401, "-20101");
     };
@@ -205,18 +184,15 @@ fn signin_complete(state: &mut State, id: &str, payload: &Value) -> Reply {
     if payload["c"].as_str() != Some(format!("challenge-{id}").as_str()) {
         return service_error(400, "-20101");
     }
-    let u = srp::scrambler(&a_pub, &sign_in.b_pub);
-    let shared =
-        (&a_pub * state.verifier.modpow(&u, &group.n) % &group.n).modpow(&sign_in.b, &group.n);
-    let key = srp::hash(&[&srp::pad(&shared)]);
-    let expected = srp::client_proof(&group, APPLE_ID, &state.salt, &a_pub, &sign_in.b_pub, &key);
+    let Ok(expected) = sign_in.srp.expected(APPLE_ID, &state.salt, &a_pub) else {
+        return service_error(400, "-20101");
+    };
     let sent = payload["m1"].as_str().and_then(|m1| BASE64.decode(m1).ok());
-    if sent.as_deref() != Some(expected.as_slice()) {
+    if sent.as_deref() != Some(expected.m1.as_slice()) {
         return service_error(401, "-20101");
     }
-    let expected_m2 = srp::server_proof(&a_pub, &expected, &key);
     let sent_m2 = payload["m2"].as_str().and_then(|m2| BASE64.decode(m2).ok());
-    if sent_m2.as_deref() != Some(expected_m2.as_slice()) {
+    if sent_m2.as_deref() != Some(expected.m2.as_slice()) {
         return service_error(400, "-20101");
     }
     let trusted = payload["trustTokens"].as_array().is_some_and(|tokens| {
@@ -262,7 +238,7 @@ fn code_verdict(state: &mut State, id: &str, accepted: bool) -> Reply {
 }
 
 /// What `accountLogin` and `validate` answer for a trusted session.
-fn account(state: &State, trusted: bool) -> Value {
+pub(super) fn account(state: &State, trusted: bool) -> Value {
     let base = &state.base;
     let pcs = state.options.advanced_data_protection;
     json!({

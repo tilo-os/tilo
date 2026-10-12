@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use legacy_agent_protocol::{
     AgentHello, Display, Duplex, ExitStatus, GuestMessage, GuestOs, GuestShare, Health,
@@ -225,9 +225,7 @@ impl Agent {
                 pid,
                 argv: request.argv.clone(),
                 windowed: request.display == Display::Forwarded,
-                started_unix: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_or(0, |since| since.as_secs()),
+                started_unix: tilo_clock::unix_now(),
             },
         );
         reply(&GuestMessage::Started { pid })?;

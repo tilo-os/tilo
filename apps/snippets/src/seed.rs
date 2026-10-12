@@ -1,14 +1,8 @@
-//! Starter library seeded on first launch (and for the headless shot).
-//!
-//! A realistic spread of shell / rust / sql / git / docker snippets with
-//! folders, tags, descriptions and `${placeholder}` variables, so a fresh
-//! install (or a screenshot) shows the app doing real work rather than an
-//! empty shell.
+//! The starter library a screenshot capture shows.
 
 use crate::model::{Language, Snippet};
 
-/// Build the starter set of snippets. Ids are fresh each call, so seeding
-/// always produces a distinct library.
+/// The starter set of snippets.
 pub fn starter_library() -> Vec<Snippet> {
     let mut lib = ops_snippets();
     lib.extend(git_snippets());
@@ -30,23 +24,20 @@ struct SeedSnippet<'a> {
     description: &'a str,
     body: &'a str,
     favorite: bool,
-    uses: u32,
+    uses: i64,
 }
 
 fn mk(seed: &SeedSnippet<'_>) -> Snippet {
-    let mut s = Snippet::blank(seed.folder);
-    s.title = seed.title.to_string();
-    s.language = seed.language;
-    s.tags = seed
-        .tags
-        .iter()
-        .map(std::string::ToString::to_string)
-        .collect();
-    s.description = seed.description.to_string();
-    s.body = seed.body.to_string();
-    s.favorite = seed.favorite;
-    s.uses = seed.uses;
-    s
+    let mut snippet = Snippet {
+        language: seed.language,
+        description: seed.description.to_string(),
+        body: seed.body.to_string(),
+        favorite: seed.favorite,
+        tags: seed.tags.iter().map(|tag| (*tag).to_owned()).collect(),
+        ..Snippet::titled(seed.title, seed.folder)
+    };
+    snippet.uses.add(seed.uses);
+    snippet
 }
 
 fn ops_snippets() -> Vec<Snippet> {
@@ -291,13 +282,14 @@ mod tests {
             );
         }
 
-        // Case `ids_are_unique`.
+        // Case `titles_are_unique`: a capture and an agent tell the
+        // starter snippets apart by name.
         {
             let lib = starter_library();
-            let mut ids: Vec<_> = lib.iter().map(|s| s.id).collect();
-            ids.sort();
-            ids.dedup();
-            assert_eq!(ids.len(), lib.len());
+            let mut titles: Vec<_> = lib.iter().map(|s| s.title.as_str()).collect();
+            titles.sort_unstable();
+            titles.dedup();
+            assert_eq!(titles.len(), lib.len());
         }
     }
 }

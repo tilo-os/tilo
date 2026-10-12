@@ -32,8 +32,21 @@ enum Job {
 pub(crate) struct NativeTaskReview {
     queue: mpsc::SyncSender<Job>,
     state: Arc<Mutex<State>>,
-    #[cfg(test)]
-    worker: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+    // Fields drop in declaration order: every sender must disconnect before
+    // the last worker handle joins the receiver's loop.
+    _worker: Arc<WorkerThread>,
+}
+
+struct WorkerThread(Option<std::thread::JoinHandle<()>>);
+
+impl Drop for WorkerThread {
+    fn drop(&mut self) {
+        if let Some(thread) = self.0.take()
+            && thread.join().is_err()
+        {
+            tracing::warn!("the task review worker panicked during shutdown");
+        }
+    }
 }
 
 impl NativeTaskReview {
@@ -59,26 +72,11 @@ impl NativeTaskReview {
             .name("tilo-task-review".into())
             .spawn(move || worker.run(receiver))
             .map_err(|error| error.to_string())?;
-        #[cfg(not(test))]
-        drop(worker_thread);
         Ok(Self {
             queue,
             state,
-            #[cfg(test)]
-            worker: Arc::new(Mutex::new(Some(worker_thread))),
+            _worker: Arc::new(WorkerThread(Some(worker_thread))),
         })
-    }
-
-    #[cfg(test)]
-    fn shutdown(self) {
-        let Self {
-            queue,
-            state,
-            worker,
-        } = self;
-        drop(queue);
-        drop(state);
-        worker.lock().unwrap().take().unwrap().join().unwrap();
     }
 
     pub(crate) fn requires_room(&self, room: &str) -> bool {

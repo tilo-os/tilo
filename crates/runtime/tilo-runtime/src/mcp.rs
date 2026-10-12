@@ -17,20 +17,28 @@ use tilo_actions::remote::{
 pub type SessionFactory<H> =
     std::sync::Arc<dyn Fn() -> std::io::Result<McpServer<H>> + Send + Sync>;
 
+/// One MCP session. Its requests are answered through `&self`, so a client
+/// may overlap them: `tilo_status` or `tilo_cancel` answers while a
+/// `tilo_invoke` of the same session waits for its action.
 pub struct McpServer<H> {
-    host: H,
+    /// Shared with the blocking threads synchronous broker work runs on.
+    host: std::sync::Arc<H>,
     retire_execution: fn(&H, &Caller),
     room: String,
     actor: String,
     /// One transport-issued execution scope, independent of history labels.
     caller: Caller,
     /// The agent run every invocation of this connection is attributed to.
-    run: Option<tilo_actions::ActionGroup>,
+    run: std::sync::Mutex<Option<tilo_actions::ActionGroup>>,
     /// Pixel fallback, when the host runs beside a compositor.
     computer: Option<std::sync::Arc<crate::computer::Computer>>,
     /// The page `tilo_query` answers when a call names no `detail`; a client
     /// that parses v1 rows pins `full` for its session at `initialize`.
-    detail: Detail,
+    detail: std::sync::Mutex<Detail>,
+    /// The caller-chosen invocation ids a call of this session is running
+    /// now. A second call naming one waits for the first, so overlapping
+    /// calls never start the same id twice, nor retry it twice.
+    invoking: InFlight,
     /// The short names compact pages gave long resource ids.
     handles: std::sync::Mutex<page::Handles>,
     open_files: std::sync::Arc<OpenFiles>,
@@ -43,7 +51,25 @@ pub struct McpServer<H> {
     /// invocation that showed each: the same picture again is named, not
     /// sent again.
     shown: std::sync::Mutex<std::collections::HashMap<String, tilo_actions::InvocationId>>,
+    /// The live, browsable instances of this bridge's workspace its last
+    /// instance list named, with their app ids. An invocation on one does
+    /// not list them again first: discovery only, never authority — the host
+    /// decides every invocation, and one it refuses as not offered lists
+    /// them again ([`Self::invoke_one`]).
+    seen: std::sync::Mutex<std::collections::HashMap<u64, Option<String>>>,
+    /// Turns for the session's requests that work ([`Self::turn`]).
+    working: tokio::sync::Semaphore,
+    /// Places for the session's requests that work or wait for a turn.
+    admitted: tokio::sync::Semaphore,
 }
+
+/// A session's requests that work at once; more wait for a turn. One agent
+/// cannot occupy the host with every call it can send.
+pub(crate) const MAX_WORKING: usize = 16;
+/// A session's requests that work or wait for a turn; more are refused at
+/// once, so a flood of calls neither queues without end nor makes the one
+/// that cancels wait behind it.
+pub(crate) const MAX_ADMITTED: usize = 64;
 
 /// Where an answer carries the images it shows until [`tool_result`] moves
 /// them out of the JSON and into MCP image blocks. Not a valid JSON key an
@@ -254,8 +280,8 @@ struct InvokeArgs {
 }
 /// One action of either form, after the batch has been split apart.
 struct OneCall {
-    peer_id: Option<u64>,
-    app_id: Option<String>,
+    /// Resolved once per tool call: a batch runs on one peer.
+    provider: Addressed,
     workspace: bool,
     revision: Option<String>,
     resource: String,
@@ -268,6 +294,13 @@ struct OneCall {
 #[serde(deny_unknown_fields)]
 struct StatusArgs {
     invocation_id: String,
+}
+/// The provider a call addresses, with the app of the instance it names
+/// (none for the workspace itself).
+#[derive(Clone)]
+struct Addressed {
+    provider: String,
+    app_id: Option<String>,
 }
 fn invocation_id(value: &str) -> Result<tilo_actions::InvocationId, String> {
     uuid::Uuid::parse_str(value)
@@ -293,16 +326,83 @@ fn tool_result(result: Result<Value, String>) -> Value {
 }
 impl<H> Drop for McpServer<H> {
     fn drop(&mut self) {
-        (self.retire_execution)(&self.host, &self.caller);
+        (self.retire_execution)(&*self.host, &self.caller);
     }
 }
 
-impl<H: ActionHost + Send + Sync> McpServer<H> {
+/// Each invocation id a call of a session runs, with the lock a second call
+/// naming it waits on.
+type InvocationLocks =
+    std::collections::HashMap<tilo_actions::InvocationId, std::sync::Arc<tokio::sync::Mutex<()>>>;
+
+/// Invocation ids a session is running.
+#[derive(Default)]
+struct InFlight(std::sync::Mutex<InvocationLocks>);
+
+/// Holds one invocation id for one call; dropped, the next call naming it
+/// runs, and an id nobody waits on is forgotten.
+struct Running<'a> {
+    in_flight: &'a InFlight,
+    id: tilo_actions::InvocationId,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl InFlight {
+    fn ids(&self) -> std::sync::MutexGuard<'_, InvocationLocks> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Wait until no other call of the session runs `id`, then hold it.
+    async fn hold(&self, id: tilo_actions::InvocationId) -> Running<'_> {
+        let lock = std::sync::Arc::clone(self.ids().entry(id).or_default());
+        let guard = lock.lock_owned().await;
+        Running {
+            in_flight: self,
+            id,
+            guard: Some(guard),
+        }
+    }
+}
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        // Released first, so a waiter's clone is what keeps the entry.
+        drop(self.guard.take());
+        let mut ids = self.in_flight.ids();
+        if ids
+            .get(&self.id)
+            .is_some_and(|lock| std::sync::Arc::strong_count(lock) == 1)
+        {
+            ids.remove(&self.id);
+        }
+    }
+}
+
+/// The agent an MCP connection is: one per connection, named after its run.
+#[must_use]
+pub fn agent_id(caller: &Caller) -> String {
+    let run = caller
+        .execution_id()
+        .unwrap_or_else(uuid::Uuid::new_v4)
+        .simple()
+        .to_string();
+    format!("mcp-{}", run.get(..12).unwrap_or(&run))
+}
+
+impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+    /// An MCP client of `actor`'s on this device, in `room`. The client is
+    /// an agent acting for the person ([`agent_id`]): what it does is the
+    /// agent's, for them, within what both the person and the delegation a
+    /// device gives its agents allow.
     #[must_use]
     pub fn new(host: H, room: String, actor: String) -> Self {
         let caller = Caller::local_person(actor.clone())
             .in_room(room.clone())
             .in_new_execution();
+        let agent = agent_id(&caller);
+        let caller = caller.delegated_to(agent);
         Self::from_caller(host, room, actor, caller)
     }
 
@@ -334,22 +434,29 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
 
     fn from_caller(host: H, room: String, actor: String, caller: Caller) -> Self {
         Self {
-            host,
+            host: std::sync::Arc::new(host),
             retire_execution: H::retire_execution,
             room,
             actor,
             caller,
-            run: None,
+            run: std::sync::Mutex::new(None),
             computer: None,
-            detail: Detail::Compact,
+            detail: std::sync::Mutex::new(Detail::Compact),
+            invoking: InFlight::default(),
             handles: std::sync::Mutex::default(),
             open_files: std::sync::Arc::default(),
             media: None,
             produced_by: std::sync::Mutex::default(),
             shown: std::sync::Mutex::default(),
+            seen: std::sync::Mutex::default(),
+            working: tokio::sync::Semaphore::new(MAX_WORKING),
+            admitted: tokio::sync::Semaphore::new(MAX_ADMITTED),
         }
     }
-    pub(crate) fn execution_caller(&self) -> Caller {
+    /// The caller this connection's actions run as: the agent it is, acting
+    /// for the person.
+    #[must_use]
+    pub fn execution_caller(&self) -> Caller {
         self.caller.clone()
     }
 
@@ -368,30 +475,16 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
-    /// Remember that `invocation` went to `provider`'s app.
-    async fn record_producer(&self, invocation: tilo_actions::InvocationId, provider: &str) {
-        if self.media.is_none() {
-            return;
-        }
-        let Some(app_id) = self.app_of(provider).await else {
+    /// Remember that `invocation` went to the instance of `app_id`.
+    fn record_producer(&self, invocation: tilo_actions::InvocationId, app_id: Option<&str>) {
+        let Some(app_id) = app_id.filter(|_| self.media.is_some()) else {
             return;
         };
         let mut produced = self.produced_by();
         if produced.len() >= 256 {
             produced.clear();
         }
-        produced.insert(invocation, app_id);
-    }
-    /// The app id of the live instance `provider`.
-    async fn app_of(&self, provider: &str) -> Option<String> {
-        let peer = provider.parse::<u64>().ok()?;
-        self.instances()
-            .await
-            .ok()?
-            .1
-            .into_iter()
-            .find(|(id, _)| *id == peer)
-            .and_then(|(_, app)| app.get("app_id")?.as_str().map(str::to_owned))
+        produced.insert(invocation, app_id.to_owned());
     }
     fn shown(
         &self,
@@ -699,7 +792,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
     /// version 1 published it.
     fn resolved(&self, row: &CatalogueRow, provider: &str) -> Value {
         let mut value = resolved_row_json(row);
-        if self.detail == Detail::Full {
+        if self.detail() == Detail::Full {
             return value;
         }
         let Some(fields) = value.as_object_mut() else {
@@ -737,7 +830,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         self
     }
     fn tools(&self) -> Vec<Value> {
-        let mut tools = tool_definitions();
+        let mut tools = tool_definitions().to_vec();
         if self.computer.is_some() {
             tools.extend(crate::computer::tool_definitions());
         }
@@ -788,9 +881,9 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
     /// The agent this connection's pixel actions act for: its agent run, so
     /// concurrent agents get separate seats and strips.
     fn agent(&self) -> Option<crate::computer::Agent> {
-        self.run.as_ref().map(|run| crate::computer::Agent {
-            id: run.id.clone(),
-            label: run.label.clone(),
+        self.agent_run().map(|run| crate::computer::Agent {
+            id: run.id,
+            label: run.label,
         })
     }
     /// End this connection's agent on the compositor: it releases whatever
@@ -820,14 +913,31 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
     /// only: authority stays the profile actor's.
     #[must_use]
     pub fn with_agent_run(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
-        self.run = Some(tilo_actions::ActionGroup {
+        *self
+            .run
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tilo_actions::ActionGroup {
             id: id.into(),
             label: label.into(),
             kind: "agent-run".into(),
         });
         self
     }
-    pub async fn handle(&mut self, request: Value) -> Option<Value> {
+    /// The agent run this session's invocations are attributed to now.
+    fn agent_run(&self) -> Option<tilo_actions::ActionGroup> {
+        self.run
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+    /// The page detail this session answers with when a call names none.
+    fn detail(&self) -> Detail {
+        *self
+            .detail
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    pub async fn handle(&self, request: Value) -> Option<Value> {
         let id = request.get("id").cloned();
         let valid_id = id
             .as_ref()
@@ -846,7 +956,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         }
         let id = id?;
         // A request may have retained this server before HTTP DELETE or expiry
-        // and only now acquired its mutex. Do not let it resume a retired run.
+        // and only now reached it. Do not let it resume a retired run.
         if self.caller.execution_id().is_some() && !self.caller.execution_is_live() {
             return Some(error(&id, -32000, "execution session ended"));
         }
@@ -879,6 +989,10 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 ));
             }
         }
+        let _turn = match self.turn(method, &params).await {
+            Ok(turn) => turn,
+            Err(message) => return Some(error(&id, -32000, message)),
+        };
         let result = match method {
             "initialize" => match self.initialize(&params) {
                 Ok(result) => Ok(result),
@@ -921,8 +1035,37 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             Err(e) => error(&id, -32602, &e),
         })
     }
+    /// The turn a request of this session works in: at most [`MAX_WORKING`]
+    /// work at once, and at most [`MAX_ADMITTED`] work or wait, beyond which
+    /// a request is refused rather than queued. A request that only reads
+    /// the session or stops one of its invocations (`tilo_status`,
+    /// `tilo_cancel`, `ping`, `tools/list`, `initialize`) needs no turn: it
+    /// never waits behind the calls it is about.
+    async fn turn(
+        &self,
+        method: &str,
+        params: &Value,
+    ) -> Result<Option<[tokio::sync::SemaphorePermit<'_>; 2]>, &'static str> {
+        let immediate = match method {
+            "initialize" | "ping" | "tools/list" => true,
+            "tools/call" => matches!(
+                params.get("name").and_then(Value::as_str),
+                Some("tilo_status" | "tilo_cancel")
+            ),
+            _ => false,
+        };
+        if immediate {
+            return Ok(None);
+        }
+        let admitted = self
+            .admitted
+            .try_acquire()
+            .map_err(|_| "too many requests in flight for this session")?;
+        let working = self.working.acquire().await.map_err(|_| "session closed")?;
+        Ok(Some([admitted, working]))
+    }
     /// Negotiate the protocol version and take the client's page detail.
-    fn initialize(&mut self, params: &Value) -> Result<Value, &'static str> {
+    fn initialize(&self, params: &Value) -> Result<Value, &'static str> {
         let version = params
             .get("protocolVersion")
             .and_then(Value::as_str)
@@ -933,8 +1076,12 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             "2025-06-18"
         };
         if let Some(detail) = params.pointer(SURFACE_DETAIL) {
-            self.detail =
+            let detail =
                 Detail::deserialize(detail).map_err(|_| "detail must be compact or full")?;
+            *self
+                .detail
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = detail;
         }
         // Every connection is one agent run, so its edits are attributed to
         // it in history and undo, whatever transport it came over. A host
@@ -945,49 +1092,79 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             None | Some(Value::Null) => None,
             Some(run) => Some(continued_run(run)?),
         };
-        if self.run.is_none() || continued.is_some() {
-            let label: String = params
-                .pointer("/clientInfo/name")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .unwrap_or("MCP agent")
-                .chars()
-                .filter(|character| !character.is_control())
-                .take(64)
-                .collect();
-            let label = self.run.take().map_or(label, |run| run.label);
-            self.run = Some(tilo_actions::ActionGroup {
-                id: continued.unwrap_or_else(|| format!("mcp:{}", uuid::Uuid::new_v4())),
-                label,
-                kind: "agent-run".into(),
-            });
-        }
-        let run = self.run.as_ref().map(|run| run.id.clone());
+        let label: String = params
+            .pointer("/clientInfo/name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or("MCP agent")
+            .chars()
+            .filter(|character| !character.is_control())
+            .take(64)
+            .collect();
+        let run = {
+            let mut run = self
+                .run
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if run.is_none() || continued.is_some() {
+                let label = run.take().map_or(label, |run| run.label);
+                *run = Some(tilo_actions::ActionGroup {
+                    id: continued.unwrap_or_else(|| format!("mcp:{}", uuid::Uuid::new_v4())),
+                    label,
+                    kind: "agent-run".into(),
+                });
+            }
+            run.as_ref().map(|run| run.id.clone())
+        };
         Ok(
             json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3,"run":run,"execution_id":self.caller.execution_id()}}},"serverInfo":{"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")}}),
         )
     }
     /// One catalogue page from the action host, as this bridge's caller.
     async fn ask(&self, query: CatalogueQuery) -> Result<CataloguePage, String> {
+        // The whole catalogue's rows and the workspace's own are assembled
+        // synchronously by the broker. Who publishes is cheap, and an app's
+        // directory answers later on the broker's own set: asking either
+        // costs this runtime nothing.
+        let eager = match query.provider.as_deref() {
+            None => query.max_results > 0,
+            Some(provider) => tilo_actions::remote::workspace_provider_room(provider).is_some(),
+        };
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            self.host().query(&self.caller(), query),
+            self.at_host(eager, move |host, caller| host.query(caller, query)),
         )
         .await
         .map_err(|_| "TimedOut".to_string())?
         .ok_or_else(|| "Unavailable".to_string())?
         .map_err(|error| error.to_string())
     }
+    /// The answer `ask` gives the host as this bridge's caller. With
+    /// `blocking`, the host is asked on a blocking thread: every session of an
+    /// endpoint shares one current-thread runtime, which synchronous broker
+    /// work (a catalogue assembled, an admission decided) would stall for
+    /// all of them.
+    async fn at_host<T: Send + 'static>(
+        &self,
+        blocking: bool,
+        ask: impl FnOnce(&H, &Caller) -> tilo_actions::remote::Pending<T> + Send + 'static,
+    ) -> Option<T> {
+        let caller = self.caller();
+        let answer = if blocking {
+            let host = std::sync::Arc::clone(&self.host);
+            tokio::task::spawn_blocking(move || ask(&host, &caller))
+                .await
+                .ok()?
+        } else {
+            ask(self.host(), &caller)
+        };
+        answer.await
+    }
     /// Live, browsable application instances in this bridge's workspace,
     /// ordered by instance id.
     async fn instances(&self) -> Result<(String, Vec<(u64, Value)>), String> {
-        let page = self
-            .ask(CatalogueQuery {
-                max_results: 1,
-                ..CatalogueQuery::default()
-            })
-            .await?;
+        let page = self.ask(instances_query()).await?;
         let mut apps = page
             .providers
             .into_iter()
@@ -1001,7 +1178,16 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             })
             .collect::<Vec<_>>();
         apps.sort_by_key(|(peer, _)| *peer);
+        *self.seen() = apps
+            .iter()
+            .map(|(peer, app)| (*peer, app["app_id"].as_str().map(str::to_owned)))
+            .collect();
         Ok((page.revision, apps))
+    }
+    fn seen(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<u64, Option<String>>> {
+        self.seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     async fn apps(&self, args: ListArgs) -> Result<Value, String> {
         let (generation, apps) = self.instances().await?;
@@ -1016,17 +1202,74 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         let apps = page.into_iter().map(|(_, app)| app).collect::<Vec<_>>();
         Ok(json!({"apps":apps,"generation":generation,"next_after_peer":next_after_peer}))
     }
-    async fn live_peer(&self, peer: u64) -> Result<(), String> {
-        if self
-            .instances()
-            .await?
-            .1
-            .iter()
-            .any(|(candidate, _)| *candidate == peer)
-        {
+
+    /// Reuse a live default presentation through its permission-checked view action.
+    /// Absence permits a new launch; a present but unready/refusing owner does not.
+    pub(crate) async fn activate_existing(&self, app_id: &str) -> Result<Option<u64>, String> {
+        let (_, instances) = self.instances().await?;
+        let Some((peer, _)) = instances.iter().rev().find(|(_, instance)| {
+            instance["app_id"].as_str() == Some(app_id)
+                && matches!(
+                    instance["record_id"].as_str(),
+                    Some("" | "derived:default@tab:0000000000000000")
+                )
+        }) else {
+            return Ok(None);
+        };
+        match self.activate_peer(*peer, app_id).await {
+            Ok(()) => Ok(Some(*peer)),
+            Err(reason) => {
+                // A disappearing provider is not an unready live owner. The
+                // process-lifetime lease still prevents launching a writer
+                // until the actual process exits.
+                let (_, current) = self.instances().await.map_err(|failure| {
+                    format!("could not confirm {app_id} owner exit: {failure}; owner retained")
+                })?;
+                if current.iter().any(|(live, _)| live == peer) {
+                    Err(reason)
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    async fn activate_peer(&self, peer: u64, app_id: &str) -> Result<(), String> {
+        let page = self
+            .ask(CatalogueQuery {
+                provider: Some(peer.to_string()),
+                needle: tilo_actions::remote::APPLICATION_ACTIVATE_ACTION.into(),
+                max_results: 1,
+                ..CatalogueQuery::default()
+            })
+            .await
+            .map_err(|reason| format!("existing {app_id} window is not ready: {reason}"))?;
+        let address = page.rows.into_iter().filter_map(|row| row.action)
+            .find(|action| action.address.action == tilo_actions::remote::APPLICATION_ACTIVATE_ACTION
+                && action.kind == tilo_actions::OperationKind::View)
+            .map(|action| action.address)
+            .ok_or_else(|| format!("existing {app_id} window does not support activation; update its SDK or use its current window"))?;
+        let value = self
+            .invoke_one(OneCall {
+                provider: Addressed {
+                    provider: peer.to_string(),
+                    app_id: Some(app_id.to_owned()),
+                },
+                workspace: false,
+                revision: None,
+                resource: address.resource,
+                action: address.action,
+                arguments: serde_json::Map::new(),
+                invocation_id: None,
+                wait_ms: Some(3000),
+            })
+            .await?;
+        if value.pointer("/update/state").and_then(Value::as_str) == Some("succeeded") {
             Ok(())
         } else {
-            Err("Unavailable live application instance".into())
+            Err(format!(
+                "existing {app_id} window did not acknowledge activation; its document owner was retained"
+            ))
         }
     }
     /// The provider a call addresses: one live application instance, or the
@@ -1037,11 +1280,56 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         app_id: Option<&str>,
         workspace: bool,
     ) -> Result<String, String> {
+        self.addressed(peer_id, app_id, workspace)
+            .await
+            .map(|addressed| addressed.provider)
+    }
+    /// [`Self::addressed`] for an invocation: an instance this session's
+    /// last instance list named is taken as it was, without listing them
+    /// again. One that has gone since is refused by the host, and
+    /// [`Self::invoke_one`] asks then. A browse still lists them, so a gone
+    /// instance's empty page never reads as "no actions".
+    async fn invoked(
+        &self,
+        peer_id: Option<u64>,
+        app_id: Option<&str>,
+        workspace: bool,
+    ) -> Result<Addressed, String> {
+        let seen = peer_id
+            .filter(|_| app_id.is_none() && !workspace)
+            .and_then(|peer| Some((peer, self.seen().get(&peer)?.clone())));
+        if let Some((peer, app_id)) = seen {
+            return Ok(Addressed {
+                provider: peer.to_string(),
+                app_id,
+            });
+        }
+        self.addressed(peer_id, app_id, workspace).await
+    }
+    /// [`Self::provider`], with the app of the instance it names, read from
+    /// the one listing of live instances it takes.
+    async fn addressed(
+        &self,
+        peer_id: Option<u64>,
+        app_id: Option<&str>,
+        workspace: bool,
+    ) -> Result<Addressed, String> {
+        let app_of = |app: &Value| app["app_id"].as_str().map(str::to_owned);
         match (peer_id, app_id, workspace) {
-            (None, None, true) => Ok(tilo_actions::remote::workspace_provider(&self.room)),
+            (None, None, true) => Ok(Addressed {
+                provider: tilo_actions::remote::workspace_provider(&self.room),
+                app_id: None,
+            }),
             (Some(peer), None, false) => {
-                self.live_peer(peer).await?;
-                Ok(peer.to_string())
+                let (_, running) = self.instances().await?;
+                let (_, app) = running
+                    .iter()
+                    .find(|(candidate, _)| *candidate == peer)
+                    .ok_or("Unavailable live application instance")?;
+                Ok(Addressed {
+                    provider: peer.to_string(),
+                    app_id: app_of(app),
+                })
             }
             // The newest instance: the one an `open` in the same turn started.
             (None, Some(app_id), false) => {
@@ -1051,12 +1339,16 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                     .filter_map(|(_, app)| app["app_id"].as_str())
                     .collect::<Vec<_>>();
                 let app_id = page::app_named(app_id, &ids)?;
-                running
+                let peer = running
                     .iter()
                     .rev()
                     .find(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
                     .map(|(peer, _)| peer.to_string())
-                    .ok_or_else(|| page::not_running(&app_id, &ids))
+                    .ok_or_else(|| page::not_running(&app_id, &ids))?;
+                Ok(Addressed {
+                    provider: peer,
+                    app_id: Some(app_id),
+                })
             }
             _ => Err("name exactly one of peer_id, app_id or workspace: true".into()),
         }
@@ -1100,7 +1392,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 max_depth: Some(args.max_depth.unwrap_or(16).min(16)),
             }),
         };
-        let detail = args.detail.unwrap_or(self.detail);
+        let detail = args.detail.unwrap_or_else(|| self.detail());
         let mut page = self.ask(query.clone()).await?;
         let mut partial = false;
         if words.len() > 1 {
@@ -1382,6 +1674,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             if calls.is_empty() || calls.len() > MAX_CALLS {
                 return Err(format!("calls must hold 1 to {MAX_CALLS} actions"));
             }
+            let _running = self.hold_invocation(a.invocation_id.as_deref()).await;
             return self.invoke_calls(a, calls).await;
         }
         let resource = a
@@ -1394,11 +1687,14 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             .take()
             .filter(|action| !action.is_empty())
             .ok_or("name resource and action, or calls")?;
+        let _running = self.hold_invocation(a.invocation_id.as_deref()).await;
+        let provider = self
+            .invoked(a.peer_id, a.app_id.as_deref(), a.workspace)
+            .await?;
         // Boxed: an invocation's future is large, and every tool call's
         // future would otherwise carry it.
         Box::pin(self.invoke_one(OneCall {
-            peer_id: a.peer_id,
-            app_id: a.app_id,
+            provider,
             workspace: a.workspace,
             revision: a.revision,
             resource,
@@ -1409,16 +1705,30 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         }))
         .await
     }
+    /// Wait until no other call of this session runs the caller-chosen
+    /// `invocation`, then hold it for this one. An id that is no UUID holds
+    /// nothing: the call refuses it where it always has.
+    async fn hold_invocation(&self, invocation: Option<&str>) -> Option<Running<'_>> {
+        let id = invocation_id(invocation?).ok()?;
+        Some(self.invoking.hold(id).await)
+    }
     /// `calls` in order on one peer. The first keeps the caller's revision
     /// and invocation id; each later call reads the directory as it is then,
     /// under an id derived from that one, so a retry does not run twice.
     async fn invoke_calls(&self, a: InvokeArgs, calls: Vec<InvokeCall>) -> Result<Value, String> {
+        let provider = match self
+            .invoked(a.peer_id, a.app_id.as_deref(), a.workspace)
+            .await
+        {
+            Ok(provider) => provider,
+            // As the first step would have stopped on it.
+            Err(error) => return Ok(json!({ "results": [{ "error": error }], "stopped": 0 })),
+        };
         let mut results = Vec::with_capacity(calls.len());
         let mut stopped = None;
         for (index, call) in calls.into_iter().enumerate() {
             let value = Box::pin(self.invoke_one(OneCall {
-                peer_id: a.peer_id,
-                app_id: a.app_id.clone(),
+                provider: provider.clone(),
                 workspace: a.workspace,
                 revision: if index == 0 { a.revision.clone() } else { None },
                 resource: call.resource,
@@ -1462,9 +1772,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         if a.revision.as_deref() == Some("") {
             return Err("revision must not be empty".into());
         }
-        let provider = self
-            .provider(a.peer_id, a.app_id.as_deref(), a.workspace)
-            .await?;
+        let Addressed { provider, app_id } = a.provider;
         if a.workspace {
             self.seat_for_launch().await;
         }
@@ -1510,7 +1818,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             .parse::<u64>()
             .ok()
             .zip(opened_file(&target.address.action, &a.arguments).map(str::to_owned));
-        self.record_producer(invocation, &target.provider).await;
+        self.record_producer(invocation, app_id.as_deref());
         let not_offered = tilo_actions::remote::ActionHostError::UnknownAction.to_string();
         let mut value = match self
             .run_with_handles(
@@ -1522,8 +1830,12 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             )
             .await
         {
-            // Nothing ran: the resource may be named by its kind or label.
+            // Nothing ran: the instance may have gone since this session
+            // saw it, or the resource be named by its kind or label.
             Err(error) if error.contains(&not_offered) => {
+                if let Ok(peer) = target.provider.parse::<u64>() {
+                    self.addressed(Some(peer), None, false).await?;
+                }
                 let Some(named) = self.named_resource(&target).await else {
                     return Err(self.not_offered(&target).await);
                 };
@@ -1576,7 +1888,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         });
         // Best effort: the app is open whether or not its directory reads.
         let page = match peer {
-            Some(peer) if self.detail == Detail::Compact || file_open => {
+            Some(peer) if self.detail() == Detail::Compact || file_open => {
                 self.first_directory(peer).await.ok()
             }
             _ => None,
@@ -1586,7 +1898,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             .filter(|_| file_open)
             .and_then(|(page, _)| document_reader(page));
         let directory = page
-            .filter(|_| self.detail == Detail::Compact)
+            .filter(|_| self.detail() == Detail::Compact)
             .map(|(page, truncated)| self.directory_value(&page, truncated));
         let content = match (peer, reader) {
             (Some(peer), Some(reader)) => Some(self.document_content(peer, reader, wait).await),
@@ -1660,9 +1972,9 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         Value::Object(answer)
     }
     /// [`Self::run`], with the session handles `arguments` name expanded
-    /// where the action takes a resource. Refused with a handle left as
-    /// text, the call runs once more with that handle's resource id, and
-    /// the answer says so in `adjusted`.
+    /// where the action takes a resource. Text arguments stay literal: a
+    /// failed invocation may already have mutated state, so a text handle
+    /// is never grounds to replay it under a fresh invocation id.
     async fn run_with_handles(
         &self,
         target: RemoteActionTarget,
@@ -1671,34 +1983,10 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         revision: Option<String>,
         wait: std::time::Duration,
     ) -> Result<Value, String> {
-        let unexpanded = self
-            .expand_handles(&target, revision.clone(), &mut arguments)
+        self.expand_handles(&target, revision.clone(), &mut arguments)
             .await;
-        let retry = (!unexpanded.is_empty()).then(|| (target.clone(), arguments.clone()));
-        let value = self
-            .run(target, arguments, invocation, revision.clone(), wait)
-            .await?;
-        let Some((target, mut arguments)) = retry
-            .filter(|_| value.pointer("/update/state").and_then(Value::as_str) == Some("failed"))
-        else {
-            return Ok(value);
-        };
-        for (name, _, id) in &unexpanded {
-            arguments.insert(name.clone(), id.clone().into());
-        }
-        let mut value = self
-            .run(
-                target,
-                arguments,
-                tilo_actions::InvocationId::new(),
-                revision,
-                wait,
-            )
-            .await?;
-        if let Some(fields) = value.as_object_mut() {
-            fields.insert("adjusted".into(), handle_note(&unexpanded).into());
-        }
-        Ok(value)
+        self.run(target, arguments, invocation, revision, wait)
+            .await
     }
     /// Start one invocation of `target` and answer with its update once it
     /// is terminal or `wait` has passed. An omitted revision is the
@@ -1755,22 +2043,37 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         revision: Option<String>,
         wait: std::time::Duration,
     ) -> Result<Value, String> {
-        let (revision, current) = self.revision_for(&target.provider, revision).await?;
+        if revision.as_deref() == Some("") {
+            return Err("revision must not be empty".into());
+        }
+        // An omitted revision is passed on as none: the host resolves the
+        // directory as it is now in the same turn it admits the action,
+        // instead of this bridge reading the revision first, a round trip
+        // to the app of its own.
+        let current = revision.is_none();
         let mut request = InvokeRequest {
             on_behalf_of: None,
             invocation,
             target,
             argument: InvokeArgument::Json(arguments),
             context: self.context(),
-            // The MCP client admitted this call under its own
-            // allow/deny policy; that decision is the confirmation.
-            confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
-            revision: Some(revision),
+            // The MCP client's own allow/deny policy confirms nothing here:
+            // an action that asks is confirmed by the person on their
+            // device (see `start_confirmed`).
+            confirmation: None,
+            revision,
+            wait_ms: None,
         };
         let mut started = self.start_confirmed(&mut request).await;
-        if current && started.as_ref().is_err_and(|error| error.contains(STALE)) {
-            // The caller asked for the directory as it is now, and it moved
-            // between reading its revision and starting: read it again.
+        if current
+            && started.as_ref().is_err_and(|error| {
+                error.contains(STALE)
+                    || error.contains(tilo_actions::remote::CONFIRMED_ACTION_NEEDS_REVISION)
+            })
+        {
+            // An app built before revisionless resolution refuses none as a
+            // moved revision, and an action asking for confirmation needs
+            // the revision it is confirmed at: name the one it is at now.
             request.revision = Some(self.current_revision(&request.target.provider).await?);
             started = self.start_confirmed(&mut request).await;
         }
@@ -1825,7 +2128,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         value.insert("update".into(), json!({"state": "succeeded"}));
         value.insert("peer_id".into(), peer.into());
         value.insert("opened".into(), json!({"already_open": true}));
-        if self.detail == Detail::Compact
+        if self.detail() == Detail::Compact
             && let Ok(directory) = self.directory(&peer.to_string()).await
         {
             value.insert("directory".into(), directory);
@@ -1833,28 +2136,27 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         Value::Object(value)
     }
     /// Replace each argument naming a session handle with the resource id
-    /// it stands for, where the action takes a resource there. Answers the
-    /// handles left as they were, as `(argument, handle, resource id)`: the
-    /// action takes text there, which may mean the handle literally.
+    /// it stands for, where the action takes a resource there. Leave other
+    /// arguments as given: text may mean the handle literally.
     async fn expand_handles(
         &self,
         target: &RemoteActionTarget,
         revision: Option<String>,
         arguments: &mut serde_json::Map<String, Value>,
-    ) -> Vec<(String, String, String)> {
-        let named: Vec<(String, String, String)> = {
+    ) {
+        let named: Vec<(String, String)> = {
             let handles = self.handles();
             arguments
                 .iter()
                 .filter_map(|(name, value)| {
                     let handle = value.as_str()?;
                     let id = handles.issued(handle)?;
-                    Some((name.clone(), handle.to_owned(), id.to_owned()))
+                    Some((name.clone(), id.to_owned()))
                 })
                 .collect()
         };
         if named.is_empty() {
-            return named;
+            return;
         }
         let params = match self.revision_for(&target.provider, revision).await {
             Ok((revision, _)) => self
@@ -1866,18 +2168,14 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 .unwrap_or_default(),
             Err(_) => Vec::new(),
         };
-        let mut unexpanded = Vec::new();
-        for (name, handle, id) in named {
+        for (name, id) in named {
             let takes_resource = params.iter().any(|param| {
                 param.name == name.as_str() && param.ty == tilo_actions::ParamType::Resource
             });
             if takes_resource {
                 arguments.insert(name, id.into());
-            } else {
-                unexpanded.push((name, handle, id));
             }
         }
-        unexpanded
     }
     /// The action of `provider` that opens `path`, by the directory's
     /// convention.
@@ -2011,8 +2309,9 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         }
         Ok((page, truncated))
     }
-    /// Start `request`, answering an exact-phrase confirmation contract with
-    /// the phrase it names.
+    /// Start `request`. An action that asks for confirmation is put to the
+    /// person this agent acts for, on their own device, and started again
+    /// with their answer; the agent never confirms by its own word.
     async fn start_confirmed(&self, request: &mut InvokeRequest) -> Result<(), String> {
         let Err(error) = self.start(request.clone()).await else {
             return Ok(());
@@ -2020,20 +2319,32 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         if error != tilo_actions::remote::ActionHostError::ConfirmationRequired.to_string() {
             return Err(error);
         }
-        // Only an exact-phrase contract refuses the plain confirmation.
-        let revision = request.revision.clone().unwrap_or_default();
-        match self
-            .contract_confirmation(&request.target, &revision)
-            .await?
+        // The person confirms the action as the directory is at this
+        // revision.
+        if request.revision.is_none()
+            && tilo_actions::remote::workspace_provider_room(&request.target.provider).is_none()
         {
-            tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
-                request.confirmation = Some(tilo_actions::remote::Confirmation::Phrase(phrase));
-                self.start(request.clone()).await
-            }
-            _ => Err(error),
+            request.revision = Some(self.current_revision(&request.target.provider).await?);
         }
+        let asked = request.clone();
+        let witnessed = tokio::time::timeout(
+            CONFIRMATION_PATIENCE,
+            self.at_host(false, move |host, caller| host.confirm(caller, &asked)),
+        )
+        .await
+        .map_err(|_| "ConfirmationRequired; the person did not answer in time".to_string())?
+        .ok_or_else(|| "Unavailable".to_string())?
+        .map_err(|error| error.to_string())?;
+        request.confirmation = Some(witnessed);
+        self.start(request.clone()).await
     }
     /// The invocation's update once it is terminal, or after `wait`.
+    ///
+    /// Woken by the host when the invocation may have changed, not on a
+    /// timer: an action that finishes at once answers at once. A host that
+    /// cannot tell is observed every [`SETTLE_POLL`]. Waiting is authorized
+    /// exactly as observing: a host offers no change of an invocation this
+    /// caller may not observe.
     async fn settled(
         &self,
         id: tilo_actions::InvocationId,
@@ -2041,15 +2352,19 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
     ) -> Result<Value, String> {
         let deadline = tokio::time::Instant::now().checked_add(wait);
         loop {
-            let terminal = self
-                .host()
-                .observe(&self.caller(), &id)
-                .is_some_and(|state| state.update.is_terminal());
-            if terminal {
-                return self.status(id);
+            // Asked before observing, so a change in between still wakes it.
+            let change = self.host().next_change(&self.caller(), &id);
+            let state = self.host().observe(&self.caller(), &id);
+            if let Some(state) = state.as_ref().filter(|state| state.update.is_terminal()) {
+                return Ok(state_json(id, state));
             }
-            if deadline.is_none_or(|deadline| tokio::time::Instant::now() >= deadline) {
-                let mut value = self.status(id)?;
+            let Some(deadline) =
+                deadline.filter(|deadline| tokio::time::Instant::now() < *deadline)
+            else {
+                let mut value = state
+                    .as_ref()
+                    .map(|state| state_json(id, state))
+                    .ok_or_else(|| UNOWNED.to_string())?;
                 if let Some(fields) = value.as_object_mut() {
                     fields.insert(
                         "pending".into(),
@@ -2062,19 +2377,31 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                     );
                 }
                 return Ok(value);
+            };
+            if let Some(change) = change {
+                let _ = tokio::time::timeout_at(deadline, change).await;
+            } else {
+                let next = tokio::time::Instant::now()
+                    .checked_add(SETTLE_POLL)
+                    .map_or(deadline, |next| next.min(deadline));
+                tokio::time::sleep_until(next).await;
             }
-            tokio::time::sleep(SETTLE_POLL).await;
         }
     }
     /// The action host every caller shares; this bridge is one more caller.
-    const fn host(&self) -> &H {
+    fn host(&self) -> &H {
         &self.host
     }
     /// Start one invocation, reporting the host's refusal verbatim.
     async fn start(&self, request: InvokeRequest) -> Result<(), String> {
+        // The workspace's own actions are admitted and started synchronously
+        // (a launch among them); an app's action is resolved on the broker's
+        // set and answers later.
+        let blocking =
+            tilo_actions::remote::workspace_provider_room(&request.target.provider).is_some();
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            self.host().invoke(&self.caller(), request),
+            self.at_host(blocking, move |host, caller| host.invoke(caller, request)),
         )
         .await
         .map_err(|_| {
@@ -2084,27 +2411,9 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         .map(|_| ())
         .map_err(|error| error.to_string())
     }
-    /// The confirmation the target's current contract asks for.
-    async fn contract_confirmation(
-        &self,
-        target: &RemoteActionTarget,
-        revision: &str,
-    ) -> Result<tilo_actions::ConfirmationPolicy, String> {
-        let page = self
-            .ask(CatalogueQuery::resolve(target, revision.to_owned()))
-            .await?;
-        if page.stale_cursor {
-            return Err("StaleRevision".into());
-        }
-        page.rows
-            .first()
-            .and_then(|row| row.action.as_ref())
-            .map(|action| action.contract.advertised_confirmation())
-            .ok_or_else(|| "NotFound".into())
-    }
     fn context(&self) -> Option<tilo_actions::ActionContext> {
-        self.run.as_ref().map(|run| tilo_actions::ActionContext {
-            group: Some(run.clone()),
+        self.agent_run().map(|run| tilo_actions::ActionContext {
+            group: Some(run),
             invoker: Some(tilo_actions::ActionInvoker::actor(self.actor.clone())),
             ..tilo_actions::ActionContext::default()
         })
@@ -2116,8 +2425,9 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
     fn status(&self, id: tilo_actions::InvocationId) -> Result<Value, String> {
         self.host()
             .observe(&self.caller(), &id)
-            .map(|state| json!({"invocation_id":id.0.to_string(),"update":state.update}))
-            .ok_or_else(|| "Unknown or unowned invocation".into())
+            .as_ref()
+            .map(|state| state_json(id, state))
+            .ok_or_else(|| UNOWNED.into())
     }
     async fn resources(&self, params: Value) -> Result<Value, String> {
         #[derive(Deserialize)]
@@ -2247,8 +2557,28 @@ const MAX_WAIT_MS: u64 = 30_000;
 /// more than this is several turns.
 const MAX_CALLS: usize = 32;
 const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+/// How long an invocation waits for the person to confirm it on their
+/// device.
+const CONFIRMATION_PATIENCE: std::time::Duration = std::time::Duration::from_secs(300);
 /// What the host says when a target changed since the revision named.
 const STALE: &str = "changed since that revision";
+/// What `instances` asks: no provider and no rows, which a host answers with
+/// its publishers alone instead of assembling every row it offers.
+fn instances_query() -> CatalogueQuery {
+    CatalogueQuery {
+        max_results: 0,
+        ..CatalogueQuery::default()
+    }
+}
+/// What an invocation this caller may not observe answers.
+const UNOWNED: &str = "Unknown or unowned invocation";
+/// Invocation `id`, observed, as `tilo_status` and `tilo_invoke` answer it.
+fn state_json(
+    id: tilo_actions::InvocationId,
+    state: &tilo_actions::remote::InvocationState,
+) -> Value {
+    json!({"invocation_id":id.0.to_string(),"update":state.update})
+}
 /// Longer names are resource ids, never a kind or a label.
 const RESOURCE_NAME_BYTES: usize = 64;
 /// How many resources an error names before it stops.
@@ -2367,16 +2697,6 @@ fn batch_invocation(parent: Option<&str>, index: usize) -> Result<Option<String>
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Ok(Some(uuid::Uuid::from_bytes(bytes).to_string()))
-}
-/// What a call refused with session handles as text ran again with: each
-/// handle's resource id in full.
-fn handle_note(expanded: &[(String, String, String)]) -> String {
-    let named = expanded
-        .iter()
-        .map(|(name, handle, id)| format!("{name} {handle} was refused; used its id {id}"))
-        .collect::<Vec<_>>()
-        .join("; ");
-    format!("{named} (this argument takes ids, not handles)")
 }
 /// The `path` an application `open` names, taken out of its arguments: the
 /// workspace launches the app empty and this bridge hands the path to the
@@ -2510,10 +2830,16 @@ fn row_json(row: &CatalogueRow) -> Value {
         "visibility_contract":row.visibility.as_ref().map(|visibility| &visibility.contract),
     })
 }
+/// The `tilo_*` tools, built once: every `tools/call` checks its name
+/// against them.
+fn tool_definitions() -> &'static [Value] {
+    static TOOLS: std::sync::LazyLock<Vec<Value>> = std::sync::LazyLock::new(tilo_tools);
+    &TOOLS
+}
 /// The advertised tools. Descriptions are read on every model turn, so they
 /// say what an agent needs and no more; tuning knobs a model never needs
 /// (`max_bytes`, `max_work`, `max_depth`) are accepted but not advertised.
-fn tool_definitions() -> Vec<Value> {
+fn tilo_tools() -> Vec<Value> {
     let integer = json!({"type":"integer"});
     let string = json!({"type":"string"});
     let boolean = json!({"type":"boolean"});

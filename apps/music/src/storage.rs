@@ -27,6 +27,10 @@ pub struct DeviceProfile {
     pub local_file: Option<crate::local_file::LocalFile>,
     #[serde(default)]
     pub playback: Playback,
+    /// Queued catalogue metadata remains private until explicitly saved to the
+    /// library; restoring playback must not depend on a previous search page.
+    #[serde(default)]
+    pub queue_catalogue: Vec<crate::model::CatalogueTrack>,
 }
 
 /// Device-local index for durable media objects. It is deliberately separate

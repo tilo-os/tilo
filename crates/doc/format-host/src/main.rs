@@ -5,11 +5,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -30,8 +26,10 @@ fn main() -> anyhow::Result<()> {
         )
         .try_init();
 
-    let registry_path = default_registry_path();
-    let socket_path = transport::default_socket_path();
+    let registry_path = default_registry_path()
+        .ok_or_else(|| anyhow::anyhow!("no config directory for the provider registry"))?;
+    let socket_path = transport::default_socket_path()
+        .ok_or_else(|| anyhow::anyhow!("XDG_RUNTIME_DIR is not set"))?;
     tracing::info!(
         registry = %registry_path.display(),
         socket   = %socket_path.display(),

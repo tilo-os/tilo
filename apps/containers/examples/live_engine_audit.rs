@@ -29,9 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let name = format!(
         "tilo-live-audit-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos()
+        ui::time::try_unix_now_ns().ok_or("system clock is before the Unix epoch")?
     );
     podman::create_volume(&name)?;
     let mut volume = OwnedVolume { name, active: true };

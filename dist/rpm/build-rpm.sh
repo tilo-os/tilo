@@ -23,6 +23,9 @@ version=$(<"$repo_root/dist/VERSION")
 release=${TILO_RPM_RELEASE:-1}
 [[ $release =~ ^[0-9][0-9A-Za-z._+~]*$ ]] || { echo "invalid TILO_RPM_RELEASE: $release" >&2; exit 1; }
 
+# Reject stale exception paths before spending time compiling the native payload.
+python3 "$repo_root/dist/rpm/test-rpmlint-config.py"
+
 run_cargo=1
 [[ ${1:-} == --no-cargo ]] && run_cargo=0
 
@@ -39,15 +42,20 @@ check_rpmbuild() { "$repo_root/dist/rpm/rpmbuild.sh" --check; }
 if (( run_cargo )); then
     check_rpmbuild
     say "cargo build --release (session and app support)"
-    ( cd "$repo_root" && cargo build --release --locked \
+    # Resolve support, imager and relay helpers together. Separate Cargo
+    # graphs repeatedly rebuild feature-unified dependencies; keep every
+    # shipped target, and leave the compositor's no-default-features graph
+    # separate below. Explicit bins avoid developer-only relay/launcher tools.
+    ( cd "$repo_root" && cargo build --release --locked --lib \
         -p launcher -p tilo-unlock-helper -p tilo-app-package-cli -p install -p runtime-bundle \
-        -p cli-shim -p app-host -p app-cli -p ush -p local-model-service -p tilo-model-gateway )
-    ( cd "$repo_root" && cargo build --release --locked -p imager --bin imager )
-    # What the ush supervisor runs: a relay environment's pty bridge, the
-    # relay picker's asker, and the legacy VM service its app shims reach.
-    ( cd "$repo_root" && cargo build --release --locked \
-        -p tilo-relay --bin tilo-relay-environment --bin tilo-relay-offers \
-        -p legacy-vm --bin tilo-legacy )
+        -p cli-shim -p app-host -p app-cli -p ush -p local-model-service -p tilo-model-gateway \
+        -p imager -p tilo-relay -p tilo-fs -p legacy-vm \
+        --bin tilo-launcher --bin tilo-signal-provider --bin tilo-unlock-helper \
+        --bin tilo-app-package --bin tilo-install --bin tilo-runtime-bundle \
+        --bin tilo-cli-shim --bin tilo-app-host --bin app --bin tilo-ush \
+        --bin tilo-model-catalog --bin tilo-model-manager --bin tilo-speech-worker \
+        --bin tilo-model-gateway --bin imager \
+        --bin tilo-relay-environment --bin tilo-relay-offers --bin tilo-relay-admin --bin tilo-enroll --bin fs --bin tilo-legacy )
     say "cargo build --release (compositor, no default features)"
     # `shell` also owns developer tools such as `shots` and `tilo-control`.
     # Building the package without an explicit target compiles and LTO-links
@@ -62,7 +70,7 @@ target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 [[ $target_dir = /* ]] || target_dir=$repo_root/$target_dir
 target_dir=$(realpath -m "$target_dir")
 rel=${TILO_BIN_DIR:-$target_dir/release}
-for bin in shell imager tilo-launcher tilo-unlock-helper tilo-install tilo-runtime-bundle \
+for bin in shell fs tilo-relay-admin tilo-enroll imager tilo-launcher tilo-unlock-helper tilo-install tilo-runtime-bundle \
            tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway \
            tilo-relay-environment tilo-relay-offers tilo-legacy app; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }
@@ -81,7 +89,7 @@ stage=$out/stage/$name-$version
 rm -rf "$out/stage" "$out/SOURCES" "$out/BUILD" "$out/BUILDROOT" \
        "$out/RPMS" "$out/SRPMS"
 mkdir -p "$out"/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
-"$repo_root/dist/stage-payload.sh" "$rel" "$stage"
+"$repo_root/dist/stage-payload.sh" "$rel" "$stage" --primary-files
 
 # A desktop session that advertises Tilo Settings must ship that application.
 # Build the same default tapp collection as the OS image and materialise its

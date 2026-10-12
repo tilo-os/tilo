@@ -7,10 +7,8 @@
 
 pub mod a1;
 pub mod model;
-pub mod resource;
 pub mod schema;
 pub mod snapshot;
 
 pub use model::{CellInput, SheetContainers, Workbook};
-pub use resource::{WorkbookAction, WorkbookDoc};
 pub use snapshot::{CellType, CellView, SheetView, WorkbookSnapshot};

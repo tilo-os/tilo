@@ -97,7 +97,40 @@ mod tests {
     use super::*;
 
     fn authored() -> Manifest {
-        crate::web::tests::authored("app", Some("tilo-runtime/2026.07"))
+        Manifest::from_toml_str(&format!(
+            r#"
+[package]
+id = "so.tilo.books"
+version = "0.1.0"
+kind = "app"
+runtime = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity = "ed25519:{zero}"
+signature = ""
+
+[sandbox]
+namespaces = ["user"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+bin = "bin/books"
+type = "gui"
+splash-segments = ["bin/books[0x0:0x10]"]
+
+[cli]
+commands = ["books"]
+"#,
+            zero = "00".repeat(32)
+        ))
+        .unwrap()
     }
 
     #[test]

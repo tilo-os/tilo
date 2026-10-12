@@ -320,6 +320,7 @@ impl CodeApp {
                 self.reset_language_server();
                 self.clear_search();
                 self.search_symbols.clear();
+                self.symbol_projection_revision = None;
                 self.refresh_header();
                 self.note(format!("Opened {name}"), false);
                 Ok(())

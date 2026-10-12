@@ -44,7 +44,8 @@ pub struct TrustedDisplayTools {
 }
 
 impl TrustedDisplayTools {
-    const SECTION: &'static str = "display_tools";
+    /// The section the trusted tools are stored in, whole.
+    pub const SECTION: &'static str = "display_tools";
 
     pub fn load() -> Self {
         serde_json::from_value(serde_json::Value::Object(super::load_section(

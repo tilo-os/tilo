@@ -17,7 +17,7 @@ use super::super::nearby_transfer::{SecureNearbyDestination, SecureNearbySource}
 use super::super::state::{Capability, FsMode, WorkspaceTreeHandle};
 use runtime_collab::file_clipboard::{Command, Offer as Offered, Reply, SelectedDescriptor};
 use tilo_action_broker::services::{FileClipboardContext, FileClipboardServices};
-use tilo_actions::PermissionRequirement as Permission;
+use tilo_actions::ActionKind as Permission;
 
 const OFFER_LIFETIME: Duration = Duration::from_secs(10 * 60);
 const MAX_OPERATIONS: usize = 256;
@@ -25,6 +25,7 @@ const MAX_WORKERS: usize = 4;
 const MAX_RETAINED_DESCRIPTORS: usize = 4096;
 
 mod journal;
+mod restore;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod trash;
@@ -136,7 +137,7 @@ fn current_files_grant(
         )
         .into_iter()
         .any(|row| {
-            scopes.contains(&(row.scope.clone(), row.verb))
+            scopes.contains(&(row.scope.clone(), row.access))
                 && tree
                     .native_runtime
                     .files_home_consent_current(workspace, row, actor)
@@ -335,7 +336,7 @@ impl Offer {
             return Err("Files clipboard offer expired".into());
         }
         self.source.authorize(if self.public.cut {
-            Permission::Write
+            Permission::Undoable
         } else {
             Permission::Read
         })
@@ -375,6 +376,8 @@ struct Operation {
     reply: Mutex<Option<Reply>>,
     journal: Arc<journal::Journal>,
     receipt: std::sync::OnceLock<Arc<journal::PendingReceipt>>,
+    destination_name: Option<OsString>,
+    restore_info: Option<restore::Info>,
 }
 enum SelectedObject {
     Source(Arc<Source>),
@@ -427,7 +430,7 @@ impl Compensation {
             offer: None,
         };
         let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.context.authorize(Permission::Write)?;
+            self.context.authorize(Permission::Undoable)?;
             match self.kind {
                 CompensationKind::Recover => input.journal.recover(&input.tree, &self.context),
                 CompensationKind::Undo => match input.retained {
@@ -517,6 +520,11 @@ impl State {
             || self.operations.len() >= MAX_OPERATIONS
             || self
                 .reserved_descriptors()
+                .saturating_add(if operation.restore_info.is_some() {
+                    3
+                } else {
+                    0
+                })
                 .saturating_add(operation.offer.entries.len())
                 .saturating_add(3)
                 > MAX_RETAINED_DESCRIPTORS
@@ -702,7 +710,7 @@ impl NativeFileClipboard {
         cut: bool,
     ) -> Result<Reply, String> {
         context.authorize(if cut {
-            Permission::Write
+            Permission::Undoable
         } else {
             Permission::Read
         })?;
@@ -824,7 +832,7 @@ impl NativeFileClipboard {
         if !context.is_history_compensation() {
             return self.operation(context, id);
         }
-        context.authorize(Permission::Write)?;
+        context.authorize(Permission::Undoable)?;
         let state = self
             .state
             .lock()
@@ -852,7 +860,7 @@ impl NativeFileClipboard {
         id: String,
         kind: CompensationKind,
     ) -> Result<Reply, String> {
-        context.authorize(Permission::Write)?;
+        context.authorize(Permission::Undoable)?;
         // Resolve the original receipt before admission. Saved paths confer no
         // authority; each destructive phase rechecks this invocation's grants.
         let retained = if kind == CompensationKind::Undo {
@@ -955,7 +963,7 @@ impl NativeFileClipboard {
         destination_ticket: String,
         id: String,
     ) -> Result<Reply, String> {
-        context.authorize(Permission::Write)?;
+        context.authorize(Permission::Undoable)?;
         let prior = self.operation(context, &id).ok();
         if let Some(prior) = prior {
             if !prior.matches_paste(context, offer, &destination_ticket) {
@@ -985,13 +993,21 @@ impl NativeFileClipboard {
             destination,
             destination_ticket,
             destination_custody: ticket,
-            id: id.clone(),
+            id,
             cancelled: AtomicBool::new(false),
             records: Mutex::default(),
             reply: Mutex::default(),
             journal: self.journal.clone(),
             receipt: std::sync::OnceLock::new(),
+            destination_name: None,
+            restore_info: None,
         });
+        self.enqueue(&operation)
+    }
+
+    fn enqueue(&self, operation: &Arc<Operation>) -> Result<Reply, String> {
+        let context = &operation.context;
+        let id = operation.id.clone();
         let mut state = self
             .state
             .lock()
@@ -1005,12 +1021,22 @@ impl NativeFileClipboard {
                 context,
                 &operation.offer.public.id,
                 &operation.destination_ticket,
-            ) {
+            ) || prior.restore_info.is_some() != operation.restore_info.is_some()
+                || prior.destination.path != operation.destination.path
+                || prior.destination_name != operation.destination_name
+                || (operation.restore_info.is_some()
+                    && prior
+                        .offer
+                        .entries
+                        .iter()
+                        .zip(&operation.offer.entries)
+                        .any(|(a, b)| a.path != b.path || a.identity != b.identity))
+            {
                 return Err("operation id already names another transfer".into());
             }
             return Ok(prior.answer());
         }
-        state.check_paste_capacity(&operation)?;
+        state.check_paste_capacity(operation)?;
         if operation.offer.public.cut && operation.offer.cut_busy.swap(true, Ordering::AcqRel) {
             return Err("another Cut paste is still running".into());
         }
@@ -1098,13 +1124,21 @@ impl Operation {
             })
     }
     fn check(&self, tree: &WorkspaceTreeHandle, source: &Source) -> Result<(), String> {
+        #[cfg(test)]
+        if self.restore_info.is_some() {
+            test_support::pause(&self.destination.path, "restore-before-transfer")
+                .map_err(|error| error.to_string())?;
+        }
         if self.cancelled.load(Ordering::Acquire) {
             return Err("clipboard transfer cancelled".into());
         }
-        self.context.authorize(Permission::Write)?;
+        self.context.authorize(Permission::Undoable)?;
         self.context.authorize(Permission::Read)?;
         self.offer.check(Instant::now())?;
         source.check(tree, self.context.workspace(), self.context.owner())?;
+        if let Some(info) = &self.restore_info {
+            info.check(tree, &self.context)?;
+        }
         self.check_destination(tree)
     }
     fn check_destination(&self, tree: &WorkspaceTreeHandle) -> Result<(), String> {
@@ -1157,6 +1191,10 @@ impl Operation {
                         .map_err(|error| error.to_string())
                         .and_then(|()| self.receipt())
                         .and_then(|receipt| receipt.published(source, &destination))
+                        .and_then(|()| {
+                            self.receipt()?
+                                .consume_restore_info(source, tree, &self.context)
+                        })
                     {
                         error = Some(reason);
                         break;
@@ -1209,9 +1247,10 @@ impl Operation {
             tree,
             staged: None,
         };
-        let destination = file_explorer::fileops::transfer_into_with(
+        let destination = file_explorer::fileops::transfer_into_named_with(
             &source.anchored(),
             &self.destination.directory.anchored_root(),
+            self.destination_name.as_deref().unwrap_or(&source.name),
             self.offer.public.cut,
             &mut admission,
         )?;
@@ -1233,7 +1272,7 @@ impl Operation {
         tree: &WorkspaceTreeHandle,
         context: &FileClipboardContext,
     ) -> Result<Reply, String> {
-        context.authorize(Permission::Write)?;
+        context.authorize(Permission::Undoable)?;
         if self.receipt()?.needs_resume()? {
             let answer = self.receipt()?.undo(tree, context)?;
             if matches!(
@@ -1277,6 +1316,8 @@ impl Operation {
                 error = Some(reason);
                 break;
             }
+            self.receipt()?
+                .restore_source_info(&record.source, tree, context)?;
             self.receipt()?.undone(&record.source)?;
             record.undone = true;
         }
@@ -1299,7 +1340,7 @@ impl Operation {
         context: &FileClipboardContext,
         record: &'a Record,
     ) -> Result<&'a std::ffi::OsStr, String> {
-        context.authorize(Permission::Write)?;
+        context.authorize(Permission::Undoable)?;
         self.destination
             .check(tree, context.workspace(), context.owner())?;
         let name = record
@@ -1363,7 +1404,7 @@ impl Operation {
             .entry(&retained)
             .and_then(|entry| entry.metadata().map_err(|error| error.to_string()))
             .map(|metadata| Identity::of(&metadata));
-        let admitted = context.authorize(Permission::Write).and_then(|()| {
+        let admitted = context.authorize(Permission::Undoable).and_then(|()| {
             self.destination
                 .check(tree, context.workspace(), context.owner())
         });
@@ -1585,6 +1626,18 @@ impl file_explorer::fileops::TransferObserver for Admission<'_> {
             .flatten())
     }
     fn before_publish(&mut self, path: &Path) -> io::Result<()> {
+        if let Some(name) = &self.operation.destination_name
+            && path.file_name() != Some(name.as_os_str())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "original Restore location is occupied; Trash data is retained",
+            ));
+        }
+        if let Some(info) = &self.operation.restore_info {
+            info.check(self.tree, &self.operation.context)
+                .map_err(io::Error::other)?;
+        }
         let relative = path
             .strip_prefix(self.operation.destination.directory.anchored_root())
             .map_err(io::Error::other)?;
@@ -1605,7 +1658,7 @@ impl file_explorer::fileops::TransferObserver for Admission<'_> {
                 .map_err(io::Error::other)?;
             self.operation
                 .context
-                .authorize(Permission::Write)
+                .authorize(Permission::Undoable)
                 .map_err(io::Error::other)?;
             self.operation
                 .offer
@@ -1628,7 +1681,7 @@ impl file_explorer::fileops::TransferObserver for Admission<'_> {
         self.exact(&fs::symlink_metadata(path)?)?;
         self.operation
             .context
-            .authorize(Permission::Write)
+            .authorize(Permission::Undoable)
             .map_err(io::Error::other)?;
         self.operation
             .offer
@@ -1652,7 +1705,7 @@ impl file_explorer::fileops::TransferObserver for Admission<'_> {
     fn before_source_restore(&mut self, _: &Path, material: &Path) -> io::Result<()> {
         self.operation
             .context
-            .authorize(Permission::Write)
+            .authorize(Permission::Undoable)
             .map_err(io::Error::other)?;
         self.operation
             .offer
@@ -1735,6 +1788,9 @@ impl FileClipboardServices for NativeFileClipboard {
                 destination,
                 operation,
             } => self.paste(context, &offer, destination, operation),
+            Command::RestoreTrash { source, operation } => self
+                .restore_trash(context, &source, operation)
+                .or_else(|reason| Ok(Reply::Rejected { reason })),
             Command::Observe { operation } => {
                 context.authorize(Permission::Read)?;
                 if let Some(answer) = self.compensation_answer(context, &operation)? {
@@ -1746,7 +1802,7 @@ impl FileClipboardServices for NativeFileClipboard {
                 }
             }
             Command::Cancel { operation } => {
-                context.authorize(Permission::Write)?;
+                context.authorize(Permission::Undoable)?;
                 let operation = self.operation(context, &operation)?;
                 operation.cancelled.store(true, Ordering::Release);
                 Ok(operation.answer())
@@ -1961,7 +2017,7 @@ mod tests {
             );
             assert!(!grants.is_empty());
             for grant in grants {
-                assert!(workspace.revoke_capability(&grant));
+                assert!(workspace.revoke_sandbox(&grant));
             }
             drop(tree);
         }

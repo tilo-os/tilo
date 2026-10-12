@@ -14,6 +14,7 @@
 //! series carries its own [`Series::color`] (callers typically pull these
 //! from the theme accent / semantic ramps). Nothing is hard-coded.
 
+use crate::num::f64_of_usize;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -43,13 +44,6 @@ const LINE_WIDTH: f64 = 1.8;
 const SPARK_LINE_WIDTH: f64 = 1.5;
 /// Height reserved at the top of the plot for the title / legend strip.
 const HEADER_H: f64 = 22.0;
-
-/// Widens a sample index/count to `f64` for plot math, through `u32` (exact
-/// in `f64`) with a saturating fallback rather than an `as` cast — a series
-/// never approaches `u32::MAX` samples.
-fn count_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
 
 /// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
 /// `f64` matrix math with no overflow trap, so it cannot panic regardless of
@@ -277,12 +271,6 @@ impl TrendStyle {
     };
 
     #[must_use]
-    pub fn with_line_width(mut self, width: f64) -> Self {
-        self.line_width = width;
-        self
-    }
-
-    #[must_use]
     pub fn with_fill(mut self, fill: TrendFill) -> Self {
         self.fill = fill;
         self
@@ -291,12 +279,6 @@ impl TrendStyle {
     #[must_use]
     pub fn with_curve(mut self, curve: TrendCurve) -> Self {
         self.curve = curve;
-        self
-    }
-
-    #[must_use]
-    pub fn with_baseline_overhang(mut self, overhang: f64) -> Self {
-        self.baseline_overhang = overhang;
         self
     }
 
@@ -324,11 +306,11 @@ impl Default for TrendStyle {
 /// at `plot.y0`).
 fn map_point(plot: Rect, idx: usize, len: usize, value: f64, range: TrendRange) -> Point {
     let dx = if len > 1 {
-        plot.width() / (count_f64(len) - 1.0)
+        plot.width() / (f64_of_usize(len) - 1.0)
     } else {
         0.0
     };
-    let x = plot.x0 + dx * count_f64(idx);
+    let x = plot.x0 + dx * f64_of_usize(idx);
     let y = plot.y1 - range.fraction(value) * plot.height();
     Point::new(x, y)
 }
@@ -696,7 +678,7 @@ impl Chart {
             .unwrap_or_else(|| crate::surface::edge_on(tokens.colors.surfaces.raised));
         let divisions = style.grid_divisions.max(1);
         for i in 0..=divisions {
-            let y = plot.y0 + plot.height() * (count_f64(i) / count_f64(divisions));
+            let y = plot.y0 + plot.height() * (f64_of_usize(i) / f64_of_usize(divisions));
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -787,41 +769,10 @@ impl ChartStyle {
         self.header = false;
         self
     }
-
-    #[must_use]
-    pub fn with_title_weight(mut self, weight: TextWeight) -> Self {
-        self.title_weight = weight;
-        self
-    }
 }
 
 impl Widget for Chart {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-    }
+    crate::widget::chart_navigation::chart_leaf!();
 
     fn draw(
         &mut self,
@@ -853,14 +804,6 @@ impl Widget for Chart {
 
     fn name(&self) -> &'static str {
         "Chart"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
     }
 }
 
@@ -986,26 +929,19 @@ impl Widget for Sparkline {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(self.width),
                 height: Dimension::length(self.height),
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(

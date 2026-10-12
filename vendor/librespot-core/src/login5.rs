@@ -20,12 +20,19 @@ use std::time::{Duration, SystemTime};
 use thiserror::Error;
 use tokio::time::sleep;
 
+/// An embedding host can supply the bearer issued to its own OAuth client.
+/// It remains responsible for refreshing it and checking the original grant.
+pub type ExternalTokenProvider = dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Token, Error>> + Send>>
+    + Send
+    + Sync;
+
 const MAX_LOGIN_TRIES: u8 = 3;
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(3);
 
 component! {
     Login5Manager : Login5ManagerInner {
         auth_token: Option<Token> = None,
+        external_token_provider: Option<std::sync::Arc<ExternalTokenProvider>> = None,
     }
 }
 
@@ -58,6 +65,13 @@ impl From<Login5Error> for Error {
 }
 
 impl Login5Manager {
+    /// Use an embedding host's existing OAuth grant instead of exchanging AP
+    /// stored credentials through login5. Provider failures never fall back to
+    /// another authentication mode or client identity.
+    pub fn set_external_token_provider(&self, provider: std::sync::Arc<ExternalTokenProvider>) {
+        self.lock(|inner| inner.external_token_provider = Some(provider));
+    }
+
     async fn request(&self, message: &LoginRequest) -> Result<Bytes, Error> {
         let client_token = self.session().spclient().client_token().await?;
         let body = message.write_to_bytes()?;
@@ -164,6 +178,16 @@ impl Login5Manager {
     /// stored credentials generated with the keymaster client-id will not work, for example, with
     /// the android client-id.
     pub async fn auth_token(&self) -> Result<Token, Error> {
+        let provider = self.lock(|inner| inner.external_token_provider.clone());
+        if let Some(provider) = provider {
+            let token = provider().await?;
+            if token.access_token.is_empty() || token.token_type != "Bearer" || token.is_expired() {
+                return Err(Error::unauthenticated(
+                    "the host OAuth bearer is missing or expired",
+                ));
+            }
+            return Ok(token);
+        }
         let auth_data = self.session().auth_data();
         if auth_data.is_empty() {
             return Err(Login5Error::NoStoredCredentials.into());

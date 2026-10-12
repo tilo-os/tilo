@@ -17,6 +17,7 @@ use tilo_messaging_protocol::sms_runtime::SimBinding;
 use tokio::sync::oneshot;
 const ORIGIN: &str = "https://modemmanager.org";
 const CAPACITY: usize = 8;
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
 type Reply<T> = oneshot::Sender<Result<T, SendError>>;
 enum Request {
     Choices(Reply<Vec<SimChoice>>),
@@ -36,18 +37,6 @@ struct Port {
     wake: Wake,
     chooser_epoch: Arc<std::sync::atomic::AtomicU64>,
 }
-async fn answer<T>(
-    receiver: oneshot::Receiver<Result<T, SendError>>,
-    submitted: bool,
-) -> Result<T, SendError> {
-    if !submitted {
-        return Err(SendError::Unavailable);
-    }
-    tokio::time::timeout(Duration::from_secs(30), receiver)
-        .await
-        .map_err(|_| SendError::Unavailable)?
-        .map_err(|_| SendError::Unavailable)?
-}
 impl EnrollmentHost for Port {
     fn begin(&self, _: String) -> PairingFuture {
         Box::pin(async { Err(SendError::Unavailable) })
@@ -56,13 +45,9 @@ impl EnrollmentHost for Port {
         Box::pin(async { Err(SendError::Unavailable) })
     }
     fn review(&self, account: ServiceAccount, name: String) -> EnrollmentApprovalFuture {
-        let (reply, receiver) = oneshot::channel();
-        let submitted = self
-            .sender
-            .try_send(Request::Review(account, name, reply))
-            .is_ok();
-        (self.wake)();
-        Box::pin(answer(receiver, submitted))
+        super::ask_owner(&self.sender, &self.wake, ANSWER_TIMEOUT, |reply| {
+            Request::Review(account, name, reply)
+        })
     }
     fn phase(&self, account: &ServiceAccount) -> EnrollmentPhase {
         let status = self.projection.lock().ok().and_then(|states| {
@@ -103,16 +88,14 @@ impl EnrollmentHost for Port {
         true
     }
     fn sim_choices(&self) -> SimChoicesFuture {
-        let (reply, receiver) = oneshot::channel();
-        let submitted = self.sender.try_send(Request::Choices(reply)).is_ok();
-        (self.wake)();
-        Box::pin(answer(receiver, submitted))
+        super::ask_owner(&self.sender, &self.wake, ANSWER_TIMEOUT, |reply| {
+            Request::Choices(reply)
+        })
     }
     fn select_sim(&self, token: String) -> EnrollmentReviewFuture {
-        let (reply, receiver) = oneshot::channel();
-        let submitted = self.sender.try_send(Request::Select(token, reply)).is_ok();
-        (self.wake)();
-        Box::pin(answer(receiver, submitted))
+        super::ask_owner(&self.sender, &self.wake, ANSWER_TIMEOUT, |reply| {
+            Request::Select(token, reply)
+        })
     }
     fn cancel_sim_selection(&self) {
         self.chooser_epoch
@@ -870,8 +853,14 @@ impl Actor {
         credential: super::NativeMessagingCredential,
     ) -> Result<(), SendError> {
         credential.check()?;
-        apps.publish_native_sms_account(&attempt.identity, permission.name, &attempt.review.scope)
-            .map_err(|_| SendError::Revoked)?;
+        apps.publish_native_account(
+            &attempt.identity,
+            tilo_messaging_protocol::Service::Sms,
+            accounts::person::PersonAccounts::PUBLISH_SMS_ACCOUNT,
+            permission.name,
+            &attempt.review.scope,
+        )
+        .map_err(|_| SendError::Revoked)?;
         super::first_account::ensure_contacts(apps, &attempt.identity)?;
         let authority = apps
             .native_messaging_authority(&attempt.identity, &credential, &attempt.review.scope)

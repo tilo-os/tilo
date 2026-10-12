@@ -27,12 +27,14 @@ use shell::shell::state::{
     WorkspaceId, WorkspaceTree,
 };
 use shell::shell::topbar_chrome::{TOPBAR_HEIGHT_PX, TopBarChrome};
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use ui::synthetic_input::PointerAction;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
-use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+
+use crate::support::host;
 
 const W: f32 = 1280.0;
 const H: f32 = 800.0;
@@ -107,11 +109,6 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
 
 struct Layout {
     taffy: TaffyTree<()>,
-    #[allow(
-        dead_code,
-        reason = "The fixture retains the root layout node even when a test inspects only its child."
-    )]
-    root_node: NodeId,
     child_node: NodeId,
     theme: Theme,
     input_scale: f64,
@@ -141,44 +138,10 @@ fn lay_out_host_with_theme(host: &mut ShellOverlayHost, theme: Theme, input_scal
         f64::from(W),
         f64::from(H),
     )]);
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = host.build_layout(&mut taffy, &theme, &mut node_map);
-    let root_node = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(W),
-                    height: Dimension::length(H),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-    let mut tr = ui::text_render::TextRenderer::new();
-    let measure_map = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            root_node,
-            Size {
-                width: AvailableSpace::Definite(W),
-                height: AvailableSpace::Definite(H),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    host.apply_layout(&taffy, child, Point::ORIGIN);
+    let host::Layout { taffy, child_node } = host::lay_out_with_theme(host, W, H, &theme);
     Layout {
         taffy,
-        root_node,
-        child_node: child,
+        child_node,
         theme,
         input_scale,
     }
@@ -211,23 +174,11 @@ fn dispatch_with_modifiers(
     event: &WindowEvent,
     modifiers: Modifiers,
 ) {
-    let mut doc = automerge::AutoCommit::new();
-    let doc_root = automerge::ROOT.clone();
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
-    host.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: layout.input_scale,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(&mut doc),
-            path: &doc_root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: layout.child_node,
-            taffy: &layout.taffy,
-        },
-    );
+    ui::testing::Dispatch::new()
+        .scale_factor(layout.input_scale)
+        .modifiers(modifiers)
+        .layout(&layout.taffy, layout.child_node)
+        .send(host, event);
 }
 
 fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: &WindowEvent) {
@@ -322,16 +273,7 @@ fn paint_group(host: &mut ShellOverlayHost, layout: &Layout, strip_id: StripId) 
 }
 
 fn press_with_modifiers(host: &mut ShellOverlayHost, layout: &Layout, modifiers: Modifiers) {
-    dispatch_with_modifiers(
-        host,
-        layout,
-        &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-        modifiers,
-    );
+    dispatch_with_modifiers(host, layout, &ui::synthetic_input::mouse_press(), modifiers);
 }
 
 #[test]
@@ -1544,7 +1486,7 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
             &mut host,
             &layout,
             &WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, -3.0),
                 phase: winit::event::TouchPhase::Moved,
             },

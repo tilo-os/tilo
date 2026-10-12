@@ -615,59 +615,6 @@ impl Editor {
         }
         self.caret.offset = at.saturating_add(n);
     }
-
-    /// Move the caret inside the first structure found scanning the root row
-    /// left→right: into a fraction's numerator (after its first atom), a
-    /// power's exponent, or a radical's radicand. No-op if the root row has no
-    /// structures. Used to seed a representative static frame.
-    pub fn park_in_first_structure(&mut self) {
-        for (i, node) in self.expr.root.iter().enumerate() {
-            let slot = match node {
-                Node::Frac { .. } => Some(Slot::Num),
-                Node::Sup { .. } => Some(Slot::Exp),
-                Node::Sqrt { .. } => Some(Slot::Radicand),
-                Node::Func { .. } => Some(Slot::Arg),
-                _ => None,
-            };
-            if let Some(slot) = slot {
-                self.caret.steps = vec![(i, slot)];
-                let len = self.row_len();
-                // Sit one atom in (after the first), so the caret is clearly
-                // *within* the structure, not just at its leading edge.
-                self.caret.offset = len.min(1);
-                self.anchor = None;
-                return;
-            }
-        }
-    }
-
-    /// Seed a visible selection: select the contents of the first structure's
-    /// first box (e.g. the numerator `x²+1`), else select the whole root row.
-    pub fn park_demo_selection(&mut self) {
-        for (i, node) in self.expr.root.iter().enumerate() {
-            let slot = match node {
-                Node::Frac { .. } => Some(Slot::Num),
-                Node::Sqrt { index: None, .. } => Some(Slot::Radicand),
-                Node::Func { .. } => Some(Slot::Arg),
-                _ => None,
-            };
-            if let Some(slot) = slot {
-                self.caret.steps = vec![(i, slot)];
-                let len = self.row_len();
-                if len > 0 {
-                    self.anchor = Some(0);
-                    self.caret.offset = len;
-                    return;
-                }
-            }
-        }
-        // No structure: select the whole root row.
-        self.caret.steps.clear();
-        if !self.expr.root.is_empty() {
-            self.anchor = Some(0);
-            self.caret.offset = self.expr.root.len();
-        }
-    }
 }
 
 /// Whether a node counts as part of a "word" for word-wise motion / token
