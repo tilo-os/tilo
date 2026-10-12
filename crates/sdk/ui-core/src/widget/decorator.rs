@@ -671,6 +671,30 @@ pub trait Decorator: Sized + 'static {
         self.inner().layout_needs_measure()
     }
 
+    /// A decorator composes from its allocation when anything it wraps does.
+    fn composition_follows_allocation(&self) -> bool {
+        crate::widget::layout::tree_composition_follows_allocation(self.inner())
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        permissions: &crate::permissions::PermissionContext,
+    ) {
+        self.inner_mut().draw_with_presence(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
+    }
+
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -1290,6 +1314,30 @@ impl<T: Decorator> Widget for T {
 
     fn layout_needs_measure(&self) -> bool {
         Decorator::layout_needs_measure(self)
+    }
+
+    fn composition_follows_allocation(&self) -> bool {
+        Decorator::composition_follows_allocation(self)
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        permissions: &crate::permissions::PermissionContext,
+    ) {
+        Decorator::draw_with_presence(
+            self,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
     }
 
     fn draw_overlay(

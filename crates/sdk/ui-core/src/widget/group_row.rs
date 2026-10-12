@@ -3299,6 +3299,10 @@ impl Widget for GroupRow {
         clippy::too_many_lines,
         reason = "one ordered build of the row: group nodes, handles, then either the single run or one run per lane"
     )]
+    fn composition_follows_allocation(&self) -> bool {
+        true
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -11305,6 +11305,10 @@ impl Widget for PhotosApp {
         clippy::unwrap_used,
         reason = "root's taffy node always builds from freshly-built children"
     )]
+    fn composition_follows_allocation(&self) -> bool {
+        true
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
