@@ -41,7 +41,7 @@ mod shared_tree;
 mod typed;
 mod widget;
 use shared_tree::{ItemChildren, NestedViews, PublishedChildren, RecordChildren, SharedTreeCache};
-use typed::TypedRoot;
+pub(crate) use typed::TypedRoot;
 pub(crate) use typed::{ResourceType, Typed};
 pub(crate) use widget::{RootApp, RootControls, RootModel, RootPublishes, RootSearch, RootWidget};
 
@@ -1640,6 +1640,7 @@ impl RootModel for ResourceRoot {
                 .map(|op| (*op).to_owned()),
         );
         handlers.insert(super::history::VIEW_TYPE.to_owned());
+        handlers.insert(super::history::compare::TYPE.to_owned());
         handlers.insert(super::person::HISTORY_TYPE.to_owned());
         handlers.insert(super::record::RECORD_ACTION_TYPE.to_owned());
         if self.stages.opens() {
@@ -1729,9 +1730,16 @@ impl RootModel for ResourceRoot {
             ));
         }
         if let Some(request) = op.unscoped()
-            && request.type_id == super::history::VIEW_TYPE
+            && matches!(
+                request.type_id,
+                super::history::VIEW_TYPE | super::history::compare::TYPE
+            )
         {
-            let output = super::history::answer(doc, request.payload)?;
+            let output = if request.type_id == super::history::compare::TYPE {
+                super::history::compare::answer(self.typed.as_ref(), doc, request.payload)?
+            } else {
+                super::history::answer(doc, request.payload)?
+            };
             return Ok(Some(
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));

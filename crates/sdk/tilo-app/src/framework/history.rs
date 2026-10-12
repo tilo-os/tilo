@@ -17,6 +17,7 @@
 //! of its own (a picture of what changed) publishes its own `diff`, which
 //! takes the place of this one.
 
+pub(crate) mod compare;
 pub(crate) mod review;
 
 use std::collections::HashSet;
@@ -278,6 +279,7 @@ pub(crate) fn specs() -> Vec<ActionSpec> {
     let mut specs = edit_specs();
     specs.extend(view_specs());
     specs.extend(review::specs());
+    specs.push(compare::spec());
     specs
 }
 

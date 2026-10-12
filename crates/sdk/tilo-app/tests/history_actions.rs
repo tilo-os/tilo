@@ -36,6 +36,8 @@ fn read_board(board: &Board, item: Option<&Id>) -> Result<Value, String> {
     }
 }
 
+#[path = "history_compare.rs"]
+mod compared;
 #[path = "history_review.rs"]
 mod reviewed;
 
@@ -51,6 +53,12 @@ impl Board {
     #[action]
     pub fn add(&mut self, cx: &mut ActionCx, text: String) {
         self.cards.push(cx.id(), Card { text });
+    }
+
+    /// Remove a card.
+    #[action]
+    pub fn remove(&mut self, card: &Id) {
+        self.cards.remove(card);
     }
 
     /// Reword a card.

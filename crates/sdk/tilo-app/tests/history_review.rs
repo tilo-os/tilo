@@ -108,8 +108,35 @@ fn reviewed_item_restore_preserves_peer_work_is_attributed_and_undoable() {
             .iter()
             .any(|item| item["item"] == path)
     );
+    // Coupled native execution proof for the closed-record broker fixture:
+    // its fake app proves custody/routing; here the framework really decodes
+    // the frozen read, reviews those exact heads, and applies the restore.
+    let historical = app
+        .call("read", json!({"version": "good", "item": ids[0].as_str()}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(historical["content"]["text"], "sky");
+    let exact = historical["heads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|head| head.as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join("+");
+    let typed = app
+        .call(
+            "compare",
+            json!({"from": exact, "items": [format!("test.board/{path}")]}),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        typed["comparisons"][0]["before"]["content"],
+        historical["content"]
+    );
+    assert_eq!(typed["comparisons"][0]["after"]["content"]["text"], "storm");
     let before = app.peer_document().base_heads();
-    let reviewed = review(&mut app, "good", std::slice::from_ref(&path));
+    let reviewed = review(&mut app, &exact, std::slice::from_ref(&path));
     assert_eq!(
         app.peer_document().base_heads(),
         before,

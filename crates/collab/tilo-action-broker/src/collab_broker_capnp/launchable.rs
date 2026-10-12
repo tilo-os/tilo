@@ -517,6 +517,14 @@ mod tests {
         state: &Arc<CapnpBrokerState>,
         peer_id: u64,
     ) -> (Streams, Arc<Mutex<Vec<String>>>, Places) {
+        app_comes_up_published(state, peer_id, None)
+    }
+
+    fn app_comes_up_published(
+        state: &Arc<CapnpBrokerState>,
+        peer_id: u64,
+        published: Option<PublishedSurface>,
+    ) -> (Streams, Arc<Mutex<Vec<String>>>, Places) {
         let (streams, stream) = std::sync::mpsc::channel();
         let launches = Arc::new(Mutex::new(Vec::new()));
         let places = Arc::new(Mutex::new(Vec::new()));
@@ -537,7 +545,10 @@ mod tests {
                     .lock()
                     .expect("subscribers")
                     .insert(peer_id, tx);
-                let mut up = surface(peer_id, &workspace.room.to_string());
+                let mut up = published
+                    .clone()
+                    .unwrap_or_else(|| surface(peer_id, &workspace.room.to_string()));
+                up.peer_id = peer_id;
                 if let Some(record) = record {
                     up.route.record_id = record.to_owned();
                 }
@@ -707,6 +718,237 @@ mod tests {
         );
         let mut stream = streams.try_recv().expect("the app came up on the record");
         assert_eq!(stream.try_recv().expect("delivered").action, "new-window");
+    }
+
+    fn history_surface(room: &str) -> PublishedSurface {
+        use serde_json::json;
+        use tilo_actions::{ActionKind, ActionParam, ParamType, ResultSpec};
+        let mut draft = surface(7, room);
+        draft.route.record_id = "draft-record".into();
+        draft.actions = ["read", "review-restore", "restore-reviewed"]
+            .into_iter()
+            .map(|name| {
+                let mut published = action(name, tilo_actions::ConfirmationPolicy::None);
+                published.operation_kind = if name == "restore-reviewed" {
+                    tilo_actions::OperationKind::Document
+                } else {
+                    tilo_actions::OperationKind::View
+                };
+                published.contract.kind = if name == "restore-reviewed" {
+                    ActionKind::Undoable
+                } else {
+                    ActionKind::Read
+                };
+                published.params = match name {
+                    "read" => vec![
+                        ActionParam::required("version", ParamType::Text, "Version"),
+                        ActionParam::required("item", ParamType::Text, "Item"),
+                    ],
+                    "review-restore" => vec![
+                        ActionParam::required("version", ParamType::Text, "Version"),
+                        ActionParam::required("paths", ParamType::Array, "Paths"),
+                    ],
+                    _ => vec![ActionParam::required("review", ParamType::Object, "Review")],
+                };
+                published.contract.result = ResultSpec::Json {
+                    schema: json!({"type": "object"}),
+                };
+                published
+            })
+            .collect();
+        draft
+    }
+
+    async fn route_history_answer(
+        state: &Arc<CapnpBrokerState>,
+        owner: &Caller,
+        streams: &Mutex<Streams>,
+        stream: &mut Option<tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope>>,
+        case: (&str, serde_json::Value, serde_json::Value),
+    ) -> serde_json::Value {
+        let (name, argument, answer) = case;
+        let stranger = Caller::local_person("stranger");
+        let provider = offered_provider(state, owner, name).expect("offered action");
+        let request = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            on_behalf_of: None,
+            target: RemoteActionTarget {
+                provider,
+                address: tilo_actions::ActionAddress::new("files.app", name),
+            },
+            argument: InvokeArgument::Json(argument.as_object().unwrap().clone()),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+        };
+        let receipt = state
+            .action_invoke(owner, None, None, &request)
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten()
+            .expect("admission answered")
+            .expect("admitted");
+        assert_eq!(
+            receipt.status,
+            tilo_actions::remote::ReceiptStatus::Accepted
+        );
+        let stream = stream.get_or_insert_with(|| {
+            streams
+                .lock()
+                .expect("streams")
+                .try_recv()
+                .expect("launched record")
+        });
+        let delivered = stream.try_recv().expect("delivered history action");
+        assert_eq!(delivered.invocation, request.invocation);
+        assert_eq!(delivered.resource, "files.app");
+        assert_eq!(delivered.action, name);
+        assert_eq!(delivered.actor, "owner");
+        assert_eq!(delivered.argument, request.argument.to_slot());
+        let update = tilo_actions::InvocationUpdate::Succeeded {
+            invocation: request.invocation,
+            output: tilo_actions::ActionOutput {
+                value: Some(answer),
+                resources: vec![],
+            },
+        };
+        assert!(
+            state
+                .apply_invocation_update(9, delivered.id, update.clone(), None)
+                .await
+                .is_err(),
+            "another app cannot supply the result"
+        );
+        state
+            .apply_invocation_update(8, delivered.id, update.clone(), None)
+            .await
+            .unwrap();
+        let observed = state.action_observe(owner, &request.invocation).unwrap();
+        assert_eq!(observed.update, update);
+        let tilo_actions::InvocationUpdate::Succeeded { output, .. } = observed.update else {
+            panic!("history action must return a result");
+        };
+        assert!(
+            state
+                .action_observe(&stranger, &request.invocation)
+                .is_none(),
+            "a result belongs to its admitted caller"
+        );
+        output.value.expect("history result value")
+    }
+
+    async fn finish_broker(state: Arc<CapnpBrokerState>) {
+        // Result delivery can wake the caller before the delivery task releases
+        // its final Arc. Own and drop the broker so its catalogue writer joins
+        // before a replacement reads the persisted file.
+        let retired = tokio::time::timeout(tilo_test_env::hang_bound(), async move {
+            let mut state = state;
+            loop {
+                match Arc::try_unwrap(state) {
+                    Ok(retired) => break retired,
+                    Err(held) => state = held,
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("delivery tasks release the retired broker");
+        drop(retired);
+    }
+
+    /// Routing proof only: the launcher and app answers are controlled. No
+    /// native resource, historical document, causal review validation or CRDT
+    /// restoration runs here. Those belong to the native framework tests.
+    #[tokio::test(flavor = "current_thread")]
+    async fn closed_record_history_read_review_restore_routes_results_across_broker_restart() {
+        use serde_json::json;
+
+        let dir = tempfile::tempdir().expect("state dir");
+        let path = dir.path().join("actions/launchable.json");
+        let workspace = workspace();
+        let (initial, room) = broker(&workspace);
+        let draft = history_surface(&room);
+        initial.launchable.persist_at(&path);
+        initial.launchable.retain(&draft);
+        let owner = Caller::local_person("owner").in_room(&room);
+        let stranger = Caller::local_person("stranger").in_room(&room);
+        let remote = Caller::authenticated([0xA1; 32], [0xA2; 32]);
+        let review = json!({
+            "schema": 1, "target_heads": ["11".repeat(32)],
+            "live_heads": ["22".repeat(32)], "paths": ["title"],
+        });
+        let mut state = initial;
+        for restart in [false, true] {
+            if restart {
+                finish_broker(state).await;
+                state = broker(&workspace).0;
+                state.launchable.persist_at(&path);
+            }
+            let retained = state.launchable.surfaces();
+            assert_eq!(retained.len(), 1);
+            assert_eq!(retained[0].route.record_id, "draft-record");
+            assert!(!retained[0].live);
+            let (streams, launches, places) =
+                app_comes_up_published(&state, 8, Some(draft.clone()));
+            let streams = Mutex::new(streams);
+            let provider = offered_provider(&state, &owner, "read").expect("retained read");
+            assert!(is_launchable_provider(&provider));
+            // This checks the local launch boundary, not a remote historical
+            // read/restore transport: authenticated remote callers cannot use
+            // retained launch providers to start an app on this desktop.
+            for name in ["read", "review-restore", "restore-reviewed"] {
+                assert_eq!(
+                    invoke(&state, &stranger, &provider, name, None),
+                    Err(ActionHostError::NotPermitted)
+                );
+                assert_eq!(
+                    invoke(&state, &remote, &provider, name, None),
+                    Err(ActionHostError::UnknownAction)
+                );
+            }
+            assert!(launches.lock().expect("launches").is_empty());
+            let cases = [
+                (
+                    "read",
+                    json!({"version": "past", "item": "title"}),
+                    json!({"version": "11".repeat(32), "heads": ["11".repeat(32)], "content": "Old title"}),
+                ),
+                (
+                    "review-restore",
+                    json!({"version": "past", "paths": ["title"]}),
+                    json!({"review": review, "items": [{"item": "title", "change": "modified"}]}),
+                ),
+                (
+                    "restore-reviewed",
+                    json!({"review": review}),
+                    json!({"restored": ["title"]}),
+                ),
+            ];
+            let mut stream = None;
+            let mut previous = serde_json::Value::Null;
+            for (name, argument, answer) in cases {
+                let argument = match name {
+                    "review-restore" => json!({"version": previous["version"], "paths": ["title"]}),
+                    "restore-reviewed" => json!({"review": previous["review"]}),
+                    _ => argument,
+                };
+                previous = route_history_answer(
+                    &state,
+                    &owner,
+                    &streams,
+                    &mut stream,
+                    (name, argument, answer),
+                )
+                .await;
+            }
+            assert_eq!(previous, json!({"restored": ["title"]}));
+            assert_eq!(*launches.lock().expect("launches"), [APP]);
+            assert_eq!(
+                *places.lock().expect("places"),
+                [(Some("draft-record".to_owned()), LaunchPlace::Focus)]
+            );
+        }
     }
 
     /// An agent running a task is held to the task's grants on every call,
