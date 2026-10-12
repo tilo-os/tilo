@@ -233,6 +233,56 @@ class IdleWakeups(unittest.TestCase):
         self.assertEqual(nightly, set(adapters.IDLE_WAKEUPS_KPIS.values()))
 
 
+NAME_INDEX_TEST = ROOT / "crates/session/shell/src/shell/search/providers/files.rs"
+
+
+def name_index_log(scale: float, names: int = 50_000) -> str:
+    # The shape of a --nocapture run: libtest's prefix shares the line.
+    return "\n".join([
+        "running 1 test",
+        "test shell::search::providers::files::tests::a_watched_change_costs_one_record_not_a_rebuild ... "
+        f"FILES-NAME-INDEX names={names} rebuild_ms={1500 * scale:.3f} "
+        f"change_ms={2.1 * scale:.3f},{2.4 * scale:.3f},{3.0 * scale:.3f} unchanged_ms=0.050,0.060 "
+        f"rename_ms={3.2 * scale:.3f} burst64_ms={9.5 * scale:.3f}",
+        "ok",
+    ])
+
+
+class FilesNameIndex(unittest.TestCase):
+    def test_every_listed_value_is_a_sample(self):
+        records = {item.kpi: item for item in adapters.files_name_index(
+            [name_index_log(1.0), name_index_log(2.0)], ENV)}
+        change = records["search.files_name_index.change_cpu_ms.50k"]
+        self.assertEqual((change.unit, change.n, change.max), ("ms", 6, 6.0))
+        self.assertEqual(records["search.files_name_index.unchanged_cpu_ms.50k"].n, 4)
+        rebuild = records["search.files_name_index.rebuild_cpu_ms.50k"]
+        self.assertEqual((rebuild.n, rebuild.max), (2, 3000.0))
+        self.assertEqual(records["search.files_name_index.burst64_cpu_ms.50k"].max, 19.0)
+        self.assertEqual(records["search.files_name_index.rename_cpu_ms.50k"].n, 2)
+        self.assertEqual(change.meta, {"runs": "2"})
+
+    def test_a_run_without_its_line_fails(self):
+        with self.assertRaisesRegex(ValueError, "FILES-NAME-INDEX"):
+            adapters.files_name_index([name_index_log(1.0), "running 1 test\ntest ... FAILED"], ENV)
+
+    def test_runs_of_different_sizes_are_refused(self):
+        with self.assertRaisesRegex(ValueError, "different index sizes"):
+            adapters.files_name_index([name_index_log(1.0), name_index_log(1.0, names=20_000)], ENV)
+
+    def test_the_fields_are_the_tests(self):
+        """The test prints every field the adapter reads."""
+        source = NAME_INDEX_TEST.read_text()
+        printed = source[source.index('"FILES-NAME-INDEX'):]
+        for field in (*adapters.FILES_NAME_INDEX_KPIS, "names"):
+            self.assertIn(f"{field}=", printed)
+
+    def test_every_name_index_kpi_has_a_budget(self):
+        budgets = compare.load_budgets(compare.BUDGETS)
+        nightly = {kpi for kpi in budgets.kpis if kpi.startswith("search.")}
+        produced = {item.kpi for item in adapters.files_name_index([name_index_log(1.0)], ENV)}
+        self.assertEqual(nightly, produced)
+
+
 SCALING = ROOT / "crates/sdk/tilo-app/examples/framework-scaling.rs"
 
 

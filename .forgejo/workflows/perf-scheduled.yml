@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       kpis:
-        description: "Comma-separated KPI groups to run (fs, footprint (app and OS image sizes), agent, latency, render, wakeups, hosting); empty runs all."
+        description: "Comma-separated KPI groups to run (fs, footprint (app and OS image sizes), agent, latency, render, wakeups, search, hosting); empty runs all."
         required: false
         default: ""
       accept:
@@ -91,6 +91,7 @@ jobs:
       latency: ${{ steps.select.outputs.latency }}
       render: ${{ steps.select.outputs.render }}
       wakeups: ${{ steps.select.outputs.wakeups }}
+      search: ${{ steps.select.outputs.search }}
       hosting: ${{ steps.select.outputs.hosting }}
     steps:
       - name: Select KPI groups
@@ -101,7 +102,7 @@ jobs:
           AB_ROUNDS: ${{ github.event.inputs.ab_rounds }}
         run: |
           set -euo pipefail
-          known=(fs footprint agent latency render wakeups hosting)
+          known=(fs footprint agent latency render wakeups search hosting)
           mode=${MODE:-scheduled}
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
           if [[ $mode == ab ]]; then
@@ -568,6 +569,68 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
+  # Files search's name index under file changes: process CPU for one watched
+  # change to an index of MAX_ENTRIES (50k) names, an unchanged one, a
+  # rename, a 64-file burst and a whole-index build, from the shell unit test
+  # a_watched_change_costs_one_record_not_a_rebuild (which pull requests run
+  # at 20k names), five times, through adapters.py files-name-index. A debug
+  # lib-test build with check.yml's Cargo environment; the index engine
+  # (tantivy, tilo-search) is optimised in that profile as in every other.
+  search:
+    needs: [plan, builder]
+    if: needs.plan.outputs.search == 'true'
+    runs-on: runner
+    timeout-minutes: 90
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      TILO_FILES_NAME_INDEX_NAMES: "50000"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the shell unit tests
+        run: >-
+          bash scripts/ci-run.sh "files name index cost build" --
+          cargo test --locked -p shell --lib --no-run
+
+      - name: Measure watched changes to a 50k-name index five times and record them
+        run: |
+          set -uo pipefail
+          mkdir -p perf
+          status=0
+          for run in 1 2 3 4 5; do
+            bash tools/test-env.sh cargo test --locked -p shell --lib \
+              shell::search::providers::files::tests::a_watched_change_costs_one_record_not_a_rebuild \
+              -- --exact --nocapture --test-threads=1 > "perf/files-name-index-$run.log" 2>&1 || status=$?
+            grep 'FILES-NAME-INDEX' "perf/files-name-index-$run.log" || true
+          done
+          # The Kata runners are KVM guests; the test draws nothing.
+          python3 tools/perf/record.py env --profile dev --renderer none \
+            --virtualization kvm --runner runner > perf/env.json || status=1
+          python3 tools/perf/adapters.py files-name-index --env-json perf/env.json perf/files-name-index-*.log \
+            > perf/search.jsonl || status=1
+          cat perf/search.jsonl
+          exit "$status"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-search
+          path: perf/
+          if-no-files-found: warn
+
   # What an active collaborator costs a relay (TIL-592): 100 collaborators in
   # rooms of four type, point and idle through one relay process for ten
   # measured minutes, with authentication and the production co-edit path on
@@ -691,7 +754,7 @@ jobs:
           if-no-files-found: warn
 
   compare:
-    needs: [plan, fs, footprint, footprint-image, agent, latency, render, wakeups, hosting]
+    needs: [plan, fs, footprint, footprint-image, agent, latency, render, wakeups, search, hosting]
     if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.mode != 'ab' }}
     runs-on: runner-quality
     timeout-minutes: 15
@@ -723,6 +786,7 @@ jobs:
           LATENCY_RESULT: ${{ needs.latency.result }}
           RENDER_RESULT: ${{ needs.render.result }}
           WAKEUPS_RESULT: ${{ needs.wakeups.result }}
+          SEARCH_RESULT: ${{ needs.search.result }}
           HOSTING_RESULT: ${{ needs.hosting.result }}
           TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
@@ -730,7 +794,7 @@ jobs:
           shopt -s nullglob
           owner=${GITHUB_REPOSITORY%%/*}
           status=0
-          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "footprint-image:$FOOTPRINT_IMAGE_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT" "hosting:$HOSTING_RESULT"; do
+          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "footprint-image:$FOOTPRINT_IMAGE_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT" "search:$SEARCH_RESULT" "hosting:$HOSTING_RESULT"; do
             case ${job#*:} in
               success|skipped) ;;
               *) echo "::error::benchmark job ${job%%:*} ended ${job#*:}"; status=1 ;;
