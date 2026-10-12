@@ -2,7 +2,8 @@
 # The --unlock phase of os/dev/test-nearby-pairing.sh, sourced once B has
 # joined A's identity and both are signed in: B's encrypted root opens at boot
 # with A's consent (docs/device-reach.md, "Unlocking it after a reboot"). It
-# uses that script's vm_a/vm_b/sudo_b/die/note, $out, $run_b and $TILO_USER.
+# uses that script's vm_a/vm_b/sudo_b/die/note/session_log, $out, $run_b and
+# $TILO_USER.
 # A created the identity, so it holds the person's root and can release.
 #
 #   8. B's root moves onto a LUKS2 volume (online, with btrfs replace) whose
@@ -30,8 +31,7 @@ b_root_part=""
 
 # The `device unlock:` lines in A's history with outcome $1 (and reason $2).
 a_history() {
-  vm_a ssh "journalctl --no-pager -o cat _UID=\$(id -u)" 2>/dev/null \
-    | grep -F 'device unlock:' | grep -- "outcome=$1" | grep -c -- "${2:-}" || true
+  session_log vm_a | grep -F 'device unlock:' | grep -- "outcome=$1" | grep -c -- "${2:-}" || true
 }
 await_history() {
   local outcome=$1 before=$2 label=$3 reason=${4:-}
@@ -39,8 +39,7 @@ await_history() {
     [ "$(a_history "$outcome" "$reason")" -gt "$before" ] && return 0
     sleep 2
   done
-  vm_a ssh "journalctl --no-pager -o cat _UID=\$(id -u)" 2>/dev/null \
-    | grep -F 'device unlock:' > "$out/unlock-$label-a-history.txt" || true
+  session_log vm_a | grep -F 'device unlock:' > "$out/unlock-$label-a-history.txt" || true
   die "A's history has no new outcome=$outcome for the $label case"
 }
 # The six-digit code of B's pending request, once A lists it.
@@ -274,6 +273,5 @@ await_history refused "$refused_before" revoked reason=Revoked
 at_prompt_then_type revoked
 grep -q 'removed from the fleet' "$out/unlock-revoked-b-initrd.txt" \
   || die "B's attempt did not see that it was removed"
-vm_a ssh "journalctl --no-pager -o cat _UID=\$(id -u)" 2>/dev/null | grep -F 'device unlock:' \
-  > "$out/unlock-a-history.txt" || true
+session_log vm_a | grep -F 'device unlock:' > "$out/unlock-a-history.txt" || true
 note "a device removed from the fleet falls back to the passphrase"
