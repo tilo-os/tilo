@@ -8,8 +8,6 @@
 //! the install's progress. The host decides where from and under which
 //! signatures; see `runtime_portal::runtime_request`.
 
-use super::runtime::RUNTIME_REF;
-
 /// Where an install stands, in the terms the page area shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InstallStatus {
@@ -81,7 +79,7 @@ impl EngineInstaller for HostInstaller {
         use runtime_portal::runtime_request::{Phase, Response};
         match self
             .0
-            .ensure(RUNTIME_REF)
+            .ensure(super::runtime::RUNTIME_REF)
             .map_err(|error| error.to_string())?
         {
             Response::Installed => Ok(InstallStatus::Installed),
