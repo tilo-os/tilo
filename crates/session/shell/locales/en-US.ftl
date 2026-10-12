@@ -2437,7 +2437,7 @@ display-confirm-answer-failed = Could not save the display answer: { $reason }
 display-sheet-saving-layout = Saving display layout…
 
 session-diagnostics-title = Session timing diagnostics
-session-diagnostics-configure = Configure timing for subsequent app launches
+session-diagnostics-configure = Configure session timing diagnostics
 session-diagnostics-inspect = Inspect session timing diagnostics
 session-diagnostics-owner-required = Session diagnostics require the authenticated owner's admin control socket while unlocked.
 session-diagnostics-app-filter = Only return launch attempts for this app ID

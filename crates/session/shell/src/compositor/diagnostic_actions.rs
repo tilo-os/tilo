@@ -155,6 +155,8 @@ pub(super) fn dispatch(command: &Command) -> Option<Response> {
         ("diagnostics".into(), flags.value()),
         ("live_input_delivery".into(), json!(flags.0[0])),
         ("current_gpu_renderer".into(), json!("unchanged")),
+        ("live_compositor_phase_export".into(), json!(flags.0[1])),
+        ("gpu_timestamp_options".into(), json!("startup_only")),
     ]);
     if admitted.encoded.payload == b"inspect" {
         let mut history = session

@@ -43,7 +43,7 @@ def sample(number, render_phases=False):
         ("tilo-physical-frame ", dict(**worker, cpu_frame_id=number,
             input_ids=[number], state=state(number))),
         ("tilo-display-frame ", dict(**worker, backend="wayland", cpu_frame_id=number,
-            clock_id=1, flags=7, discarded=False, presented_time_ns=start + 10_000_000)),
+            clock_id=1, flags=7, discarded=False, presented_time_ns=start + 10_000_000, sequence=number)),
     ]
     if render_phases:
         for tag in ("tilo-native-send", "tilo-native-main-stages", "tilo-native-worker",
@@ -104,6 +104,23 @@ class RollingCollection(unittest.TestCase):
         self.assertTrue(report["latency_complete"])
         self.assertEqual(sum(line.startswith("tilo-native-") for line in captured), 500)
         self.assertLess(max(slot.output_sizes), 1048576)
+
+    def test_same_outcome_phases_survive_background_window_without_private_text(self):
+        from physical_notes_stages_test import CompositorPhaseJoin
+        phase = CompositorPhaseJoin()
+        exact = phase.line(physical_presented_time_ns=110000000, physical_sequence=1)
+        background = [phase.line(serial=n, physical_sequence=n,
+                                 physical_presented_time_ns=200000000 + n) for n in range(42, 192)]
+        slot, captured = LocalSlot(), {}
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "latest.log"
+            log.write_text(sample(1) + "\n" + exact + " password=private-do-not-copy\n" + "\n".join(background))
+            collect_trace(slot, str(log), "new-scratch-page", captured)
+        frames = [line for line in captured if line.startswith('FRAME-LIFECYCLE ')]
+        self.assertEqual(len(frames), 129)
+        self.assertIn(exact, frames)
+        self.assertNotIn('private-do-not-copy', '\n'.join(captured))
+        self.assertLess(max(slot.output_sizes), 524288)
 
     def test_conflicting_duplicate_input_is_preserved_and_rejected(self):
         slot = LocalSlot()

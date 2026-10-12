@@ -22,6 +22,8 @@ mod kms_flip;
 mod output_signal;
 pub mod outputs;
 pub mod paint;
+#[cfg(test)]
+mod phase_export_tests;
 pub mod runtime;
 pub mod scale;
 pub mod scanout;
@@ -192,10 +194,10 @@ pub struct DrmPresenter {
     /// frame — reconfiguration drain, paint and page-flip retirement — and
     /// [`Presenter::set_dpms`] across a power change.
     present_gate: Option<Arc<Mutex<()>>>,
-    /// Opt-in physical-hardware profiling. The production session wrapper
-    /// enables this while the readback presenter is under development so a
-    /// hard reset still leaves exact phase costs in the flight record.
-    profile_phases: bool,
+    /// Legacy startup opt-in, retained for existing session wrappers.
+    /// The captured session also admits live owner-authorized phase export.
+    legacy_phase_trace: bool,
+    launch_session: crate::shell::launcher::LaunchSession,
     profile_seq: u64,
     frame_phases: Option<crate::shell::present::FramePhaseTiming>,
     /// Bounded aggregate diagnostics are always collected. They make a slow physical session
@@ -250,7 +252,8 @@ struct PresenterParts {
     /// whoever owns one owns the other.
     commands: Option<Receiver<ScanoutCommand>>,
     present_gate: Option<Arc<Mutex<()>>>,
-    profile_phases: bool,
+    legacy_phase_trace: bool,
+    launch_session: crate::shell::launcher::LaunchSession,
     signal_reports: Option<Sender<SignalReport>>,
     client_planes: client_scanout::ClientPlanes,
 }
@@ -269,7 +272,8 @@ impl DrmPresenter {
             paused,
             commands,
             present_gate,
-            profile_phases,
+            legacy_phase_trace,
+            launch_session,
             signal_reports,
             client_planes,
         } = parts;
@@ -284,7 +288,8 @@ impl DrmPresenter {
             paused,
             commands,
             present_gate,
-            profile_phases,
+            legacy_phase_trace,
+            launch_session,
             profile_seq: 0,
             frame_phases: None,
             phase_window: PhaseWindow::default(),
@@ -1051,7 +1056,7 @@ impl DrmPresenter {
             Some(&mut self.phase_window),
         );
         let flip_queued_at = sample.direct_queued.then(Instant::now);
-        let retirement_started = self.profile_phases.then(Instant::now);
+        let retirement_started = self.phase_export_enabled().then(Instant::now);
         let retirement_attempted = sample.direct_queued
             || (self.scanouts.len() == 1
                 && self
@@ -1074,6 +1079,27 @@ impl DrmPresenter {
         } else {
             None
         };
+        self.collect_frame_phases(retirement_started, retirement_attempted);
+        self.display_timing = self.frame_display_timing(flip_queued_at);
+        self.emit_phase_profile(sample);
+        if let Some(bridge) = &mut self.paint {
+            let _ = bridge.take_phase_timing();
+        }
+        report_signal_status(&mut self.scanouts, self.signal_reports.as_ref());
+        publish_client_planes(&mut self.scanouts, &self.client_planes);
+        physical
+    }
+
+    fn phase_export_enabled(&self) -> bool {
+        self.legacy_phase_trace || self.launch_session.diagnostic_options().0[1]
+    }
+
+    fn collect_frame_phases(
+        &mut self,
+        retirement_started: Option<Instant>,
+        retirement_attempted: bool,
+    ) {
+        self.frame_phases = None;
         if let Some(started) = retirement_started {
             self.frame_phases = self
                 .paint
@@ -1088,14 +1114,6 @@ impl DrmPresenter {
                     },
                 });
         }
-        self.display_timing = self.frame_display_timing(flip_queued_at);
-        self.emit_phase_profile(sample);
-        if let Some(bridge) = &mut self.paint {
-            let _ = bridge.take_phase_timing();
-        }
-        report_signal_status(&mut self.scanouts, self.signal_reports.as_ref());
-        publish_client_planes(&mut self.scanouts, &self.client_planes);
-        physical
     }
 
     /// Tighten `Presenter::present_frame`'s completion boundary to the KMS page-flip events of
@@ -1239,7 +1257,10 @@ impl DrmPresenter {
         // instead flushes every non-empty window immediately: if rendering
         // stalls or becomes idle after one expensive frame, there may never be
         // a later frame available to flush that evidence.
-        if self.phase_window.should_emit(now, self.profile_phases) {
+        if self
+            .phase_window
+            .should_emit(now, self.phase_export_enabled())
+        {
             let frames = self.phase_window.frames.max(1);
             let summary = self.phase_window.summary_fields(now);
             // The session's default subscriber passes only errors unless
@@ -1300,7 +1321,7 @@ impl DrmPresenter {
             );
             self.phase_window.reset(now);
         }
-        if !self.profile_phases {
+        if !self.phase_export_enabled() {
             return;
         }
         let Some(timing) = self
@@ -3405,8 +3426,9 @@ impl Backend for DrmBackend {
             paused: self.paused,
             commands: self.commands.take(),
             present_gate: self.inner.dispatch.present_gate.clone(),
-            profile_phases: std::env::var_os("TILO_DRM_PHASE_TRACE").is_some()
+            legacy_phase_trace: std::env::var_os("TILO_DRM_PHASE_TRACE").is_some()
                 || std::env::var_os("TILO_PROFILE_GPU_STAGES").is_some_and(|value| value == "1"),
+            launch_session: crate::shell::launcher::LaunchSession::current(),
             signal_reports: self.signal_reports.take(),
             client_planes: self.inner.dispatch.client_planes.clone(),
         })))
@@ -3743,7 +3765,8 @@ mod tests {
             paused: false,
             commands: Some(receiver),
             present_gate: Some(Arc::new(Mutex::new(()))),
-            profile_phases: false,
+            legacy_phase_trace: false,
+            launch_session: crate::shell::launcher::LaunchSession::current(),
             signal_reports: None,
             client_planes: client_scanout::ClientPlanes::default(),
         });
@@ -3775,7 +3798,8 @@ mod tests {
                 paused,
                 commands: Some(receiver),
                 present_gate: Some(Arc::new(Mutex::new(()))),
-                profile_phases: false,
+                legacy_phase_trace: false,
+                launch_session: crate::shell::launcher::LaunchSession::current(),
                 signal_reports: None,
                 client_planes: client_scanout::ClientPlanes::default(),
             });
@@ -3823,7 +3847,8 @@ mod tests {
                 paused: false,
                 commands: Some(receiver),
                 present_gate: Some(Arc::clone(&gate)),
-                profile_phases: false,
+                legacy_phase_trace: false,
+                launch_session: crate::shell::launcher::LaunchSession::current(),
                 signal_reports: None,
                 client_planes: client_scanout::ClientPlanes::default(),
             });

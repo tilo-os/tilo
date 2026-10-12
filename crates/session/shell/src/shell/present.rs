@@ -231,28 +231,36 @@ struct FrameLifecycle {
     input_age_at_enqueue: Option<Duration>,
     phases: Option<FramePhaseTiming>,
     display: DisplayTiming,
+    physical: Option<PhysicalPresentation>,
 }
 
-fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
-    let FrameLifecycle {
-        queue_wait,
-        render,
-        total,
-        inflight_at_enqueue,
-        input_age_at_enqueue,
-        phases,
-        display,
-    } = timing;
-    // Keep the first completed presentation observable even when
-    // it is fast and the event loop then parks indefinitely.
-    if phases.is_some()
-        || serial == 1
-        || queue_wait >= SLOW_FRAME_LIFECYCLE
-        || render >= SLOW_FRAME_LIFECYCLE
-        || total >= SLOW_FRAME_LIFECYCLE
-    {
-        eprintln!(
-            "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={} vblank_paced={} flip_to_vblank_us={} monotonic_us={}",
+#[derive(Clone, Copy)]
+struct FrameLifecycleRecord {
+    serial: u64,
+    revision: u64,
+    timing: FrameLifecycle,
+}
+
+impl std::fmt::Display for FrameLifecycleRecord {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            serial,
+            revision,
+            timing,
+        } = *self;
+        let FrameLifecycle {
+            queue_wait,
+            render,
+            total,
+            inflight_at_enqueue,
+            input_age_at_enqueue,
+            phases,
+            display,
+            physical,
+        } = timing;
+        write!(
+            output,
+            "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={} vblank_paced={} flip_to_vblank_us={} monotonic_us={} cpu_copy_us={} readback_bytes={} output_bytes={} physical_presented_time_ns={} physical_sequence={}",
             queue_wait.as_micros(),
             render.as_micros(),
             total.as_micros(),
@@ -277,6 +285,34 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
             // session's first presented frame on the system's own clock (TIL-767).
             crate::compositor::client_input::monotonic_time_ns()
                 .map_or_else(|| "none".to_owned(), |ns| (ns / 1_000).to_string()),
+            phases.map_or(0, |value| value.paint.cpu_copy_swizzle_us),
+            phases.map_or(0, |value| value.paint.readback_bytes),
+            phases.map_or(0, |value| value.paint.cpu_output_bytes),
+            physical.map_or_else(
+                || "none".to_owned(),
+                |value| value.timestamp.as_nanos().to_string()
+            ),
+            physical.map_or_else(|| "none".to_owned(), |value| value.sequence.to_string()),
+        )
+    }
+}
+
+fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
+    // Keep the first completed presentation observable even when
+    // it is fast and the event loop then parks indefinitely.
+    if timing.phases.is_some()
+        || serial == 1
+        || timing.queue_wait >= SLOW_FRAME_LIFECYCLE
+        || timing.render >= SLOW_FRAME_LIFECYCLE
+        || timing.total >= SLOW_FRAME_LIFECYCLE
+    {
+        eprintln!(
+            "{}",
+            FrameLifecycleRecord {
+                serial,
+                revision,
+                timing
+            }
         );
     }
 }
@@ -371,6 +407,66 @@ pub fn with_driver_thread_name<R>(build: impl FnOnce() -> R) -> R {
     build()
 }
 
+#[cfg(test)]
+mod phase_record_tests {
+    use super::*;
+
+    #[test]
+    fn same_frame_phase_export_distinguishes_readback_zero_and_missing_samples() {
+        let mut record = FrameLifecycleRecord {
+            serial: 41,
+            revision: 73,
+            timing: FrameLifecycle {
+                queue_wait: Duration::ZERO,
+                render: Duration::ZERO,
+                total: Duration::ZERO,
+                inflight_at_enqueue: 1,
+                input_age_at_enqueue: None,
+                phases: None,
+                display: DisplayTiming::default(),
+                physical: None,
+            },
+        };
+        let absent = record.to_string();
+        assert!(absent.contains("serial=41 "));
+        assert!(absent.contains("revision=73 phase_timing=false"));
+        assert!(absent.ends_with("cpu_copy_us=0 readback_bytes=0 output_bytes=0 physical_presented_time_ns=none physical_sequence=none"));
+        record.timing.phases = Some(FramePhaseTiming {
+            paint: super::super::render::paint::BridgePhaseTiming {
+                cpu_copy_swizzle_us: 17,
+                readback_bytes: 4096,
+                cpu_output_bytes: 2048,
+                ..Default::default()
+            },
+            kms_retirement_us: 19,
+        });
+        let readback = record.to_string();
+        assert!(readback.contains("revision=73 phase_timing=true"));
+        assert!(readback.contains(
+            "kms_retirement_us=19 vblank_paced=false flip_to_vblank_us=none monotonic_us="
+        ));
+        assert!(readback.ends_with(
+            "cpu_copy_us=17 readback_bytes=4096 output_bytes=2048 physical_presented_time_ns=none physical_sequence=none"
+        ));
+        record.timing.phases.as_mut().unwrap().paint =
+            super::super::render::paint::BridgePhaseTiming::default();
+        let direct = record.to_string();
+        assert!(direct.contains("phase_timing=true"));
+        record.timing.physical = Some(PhysicalPresentation {
+            timestamp: Duration::new(123, 456_000),
+            sequence: 789,
+            refresh: None,
+        });
+        assert!(
+            record
+                .to_string()
+                .ends_with("physical_presented_time_ns=123000456000 physical_sequence=789")
+        );
+
+        assert!(direct.ends_with("cpu_copy_us=0 readback_bytes=0 output_bytes=0 physical_presented_time_ns=none physical_sequence=none"));
+    }
+}
+
 /// How long [`PresentPipe::shutdown`] waits for the render thread before giving up on it.
 ///
 /// Generous enough to cover a frame in flight on any real display (a 24 Hz mode is 42 ms) plus a slow driver's teardown, short enough that a wedged GPU cannot hold the session open.
@@ -439,6 +535,7 @@ impl PresentPipe {
                                     input_age_at_enqueue,
                                     phases,
                                     display,
+                                    physical,
                                 },
                             );
                             board.publish(

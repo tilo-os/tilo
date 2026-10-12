@@ -17130,7 +17130,7 @@ mod tests {
         let mut writer = client.try_clone().unwrap();
         let mut reader = BufReader::new(client);
         let mut conn = TestControlConn::new(server, false).unwrap();
-        let request = serde_json::json!({"op":"actions_invoke", "provider":"session-diagnostics", "id":"configure@session-diagnostics", "args":{"presentation":true,"gpu_stages":false,"gpu_timestamps":false,"gpu_dispatch_timestamps":false}});
+        let request = serde_json::json!({"op":"actions_invoke", "provider":"session-diagnostics", "id":"configure@session-diagnostics", "args":{"presentation":true,"gpu_stages":true,"gpu_timestamps":false,"gpu_dispatch_timestamps":false}});
         writer.write_all(format!("{request}\n").as_bytes()).unwrap();
         pump_test_control_conn(
             &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
@@ -17146,13 +17146,25 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        let mut presenter = crate::compositor::backend::drm::DrmPresenter::phase_export_fixture();
+        assert!(presenter.collect_gpu_phase_fixture().is_none());
         conn.admin = true; // Set by authenticated production accept, tested in admin_control.
         writer.write_all(format!("{request}\n").as_bytes()).unwrap();
         pump_test_control_conn(
             &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
         );
         assert!(
-            matches!(socket_response(&mut reader), test_control::Response::Answer(value) if value["diagnostics"]["presentation"] == true)
+            matches!(socket_response(&mut reader), test_control::Response::Answer(value) if value["diagnostics"]["presentation"] == true && value["live_compositor_phase_export"] == true && value["gpu_timestamp_options"] == "startup_only" && value["current_gpu_renderer"] == "unchanged")
+        );
+        let phases = presenter
+            .collect_gpu_phase_fixture()
+            .expect("existing presenter exports real work");
+        assert!(phases.paint.submit_us > 0);
+        assert!(phases.paint.completed_readback_map_us > 0);
+        assert_eq!(phases.paint.cpu_output_bytes, 32 * 32 * 4);
+        assert_eq!(
+            phases.kms_retirement_us, 0,
+            "fixture did not retire a physical flip"
         );
         writer.write_all(b"{\"op\":\"actions_invoke\",\"provider\":\"session-diagnostics\",\"id\":\"inspect@session-diagnostics\",\"args\":{}}\n").unwrap();
         pump_test_control_conn(
@@ -17178,6 +17190,21 @@ mod tests {
         );
         assert!(
             matches!(socket_response(&mut reader), test_control::Response::Err { code, .. } if code == "not_permitted")
+        );
+        let mut disabled = request.clone();
+        disabled["args"]["gpu_stages"] = serde_json::json!(false);
+        writer
+            .write_all(format!("{disabled}\n").as_bytes())
+            .unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(
+            matches!(socket_response(&mut reader), test_control::Response::Answer(value) if value["live_compositor_phase_export"] == false)
+        );
+        assert!(
+            presenter.collect_gpu_phase_fixture().is_none(),
+            "live disable removes prior frame phases"
         );
         let _ = session.request_lock(Instant::now());
         writer.write_all(format!("{request}\n").as_bytes()).unwrap();

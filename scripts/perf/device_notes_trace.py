@@ -12,8 +12,34 @@ markers = ("tilo-physical-input ", "tilo-physical-frame ",
            "tilo-native-send ", "tilo-native-main-stages ",
            "tilo-native-worker ", "tilo-native-worker-handoff ",
            "tilo-native-present-call ", "tilo-native-gpu-stages ")
+phase_fields = set("serial event revision phase_timing queue_wait_us render_us total_us "
+                   "inflight_at_enqueue input_age_at_enqueue_us encode_submit_us "
+                   "gpu_completion_wait_us bump_settle_us backdrop_us kms_retirement_us "
+                   "cpu_copy_us readback_bytes output_bytes physical_presented_time_ns "
+                   "physical_sequence".split())
+optional_numbers = {"input_age_at_enqueue_us", "physical_presented_time_ns", "physical_sequence"}
+lifecycle = []
 records = []
 for line in Path(sys.argv[1]).read_text().splitlines():
+    if "FRAME-LIFECYCLE serial=" in line:
+        suffix = line.partition("FRAME-LIFECYCLE ")[2]
+        fields = {}
+        for token in suffix.split():
+            key, separator, value = token.partition("=")
+            if not separator or key not in phase_fields:
+                continue  # Never export arbitrary diagnostic/user text.
+            if key in fields:
+                raise SystemExit("Duplicate compositor lifecycle field")
+            valid = ((key == "event" and value == "render-retired")
+                     or (key == "phase_timing" and value in ("true", "false"))
+                     or (key in optional_numbers and value == "none")
+                     or (key not in ("event", "phase_timing") and value.isascii() and value.isdecimal()))
+            if not valid:
+                raise SystemExit("Invalid compositor lifecycle field")
+            fields[key] = value
+        proof = (fields.get("physical_presented_time_ns"), fields.get("physical_sequence"))
+        lifecycle.append((proof, "FRAME-LIFECYCLE " + " ".join(key + "=" + value for key, value in fields.items())))
+        continue
     for marker in markers:
         if marker in line:
             value = line[line.index(marker) + len(marker):]
@@ -45,7 +71,16 @@ for tag, row, original in records:
             or (tag in markers[4:]
                 and worker + (row.get("cpu_frame_id"),) in frame_ids)):
         selected.append(original)
-result = "\n".join(selected)
+proofs = {(str(row.get("presented_time_ns")), str(row.get("sequence")))
+          for tag, row, _ in records if tag == markers[3]
+          and (row.get("process_id"), row.get("observer_session"), row.get("cpu_frame_id")) in frame_ids
+          and row.get("clock_id") == 1 and row.get("discarded") is False
+          and type(row.get("flags")) is int and row["flags"] & 7 == 7
+          and type(row.get("presented_time_ns")) is int and type(row.get("sequence")) is int}
+# Preserve exact selected outcomes even outside the bounded background window.
+selected.extend(original for proof, original in lifecycle if proof in proofs)
+selected.extend(original for _, original in lifecycle[-128:])
+result = "\n".join(dict.fromkeys(selected))
 if len(result.encode()) > 524288:
     raise SystemExit("Notes trace cohort exceeds the bounded collection limit")
 print(result)

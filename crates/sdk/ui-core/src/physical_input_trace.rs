@@ -1,6 +1,7 @@
 //! Content-free evidence from ordinary native platform input and drawn frames.
 //! A drawn frame is not display completion: only matching presentation feedback
 //! can close the timeline. Missing IDs/state/feedback never qualify a measurement.
+use crate::time::{Duration, Instant};
 use serde_json::Value;
 use winit::event::{ElementState, Ime, WindowEvent};
 
@@ -8,6 +9,9 @@ use winit::event::{ElementState, Ime, WindowEvent};
 pub struct Trace {
     next_id: u64,
     pending: Vec<u64>,
+    drawn_inputs: Vec<u64>,
+    redraws_remaining: u8,
+    redraw_until: Option<Instant>,
 }
 
 impl Trace {
@@ -19,6 +23,10 @@ impl Trace {
 
     pub(crate) fn has_pending(&self) -> bool {
         !self.pending.is_empty()
+            || (self.redraws_remaining > 0
+                && self
+                    .redraw_until
+                    .is_some_and(|until| crate::time::now() < until))
     }
 
     pub fn begin(&mut self, event: &WindowEvent, snapshot: Option<Value>) -> Option<Value> {
@@ -32,6 +40,11 @@ impl Trace {
         let stamp = tilo_presentation::key_stamp(event);
         self.next_id = self.next_id.checked_add(1)?;
         let id = self.next_id;
+        if self.pending.is_empty() {
+            self.drawn_inputs.clear();
+            self.redraws_remaining = 0;
+            self.redraw_until = None;
+        }
         self.pending.push(id);
         let (_, time) = crate::native_scenario::host_clock::sample();
         Some(serde_json::json!({
@@ -52,12 +65,20 @@ impl Trace {
     }
 
     pub fn drawn(&mut self, cpu_frame_id: Option<u64>, snapshot: Option<Value>) -> Option<Value> {
-        if self.pending.is_empty() {
+        if !self.pending.is_empty() {
+            self.drawn_inputs = std::mem::take(&mut self.pending);
+            // A submitted buffer can be discarded before display. Preserve
+            // a bounded content-free witness on subsequent actual draws.
+            self.redraws_remaining = 32;
+            self.redraw_until = crate::time::now().checked_add(Duration::from_secs(2));
+        }
+        if !self.has_pending() {
             return None;
         }
+        self.redraws_remaining = self.redraws_remaining.saturating_sub(1);
         Some(serde_json::json!({
             "cpu_frame_id": cpu_frame_id, "process_id": std::process::id(), "observer_session": crate::native_scenario::observer_session_id(),
-            "input_ids": std::mem::take(&mut self.pending),
+            "input_ids": self.drawn_inputs,
             "state": safe_snapshot(snapshot),
         }))
     }
@@ -102,4 +123,52 @@ fn safe_snapshot(snapshot: Option<Value>) -> Value {
         safe.insert("caret".into(), Value::Object(safe_caret));
     }
     Value::Object(safe)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redraw_witness_is_bounded_and_a_new_input_replaces_it() {
+        let mut trace = Trace {
+            next_id: 1,
+            ..Trace::default()
+        };
+        trace.pending.push(1);
+        let state = serde_json::json!({"app": "so.tilo.notes", "body_chars": 1});
+        for frame in 1..=32 {
+            assert!(trace.drawn(Some(frame), Some(state.clone())).is_some());
+        }
+        assert!(!trace.has_pending());
+        assert!(trace.drawn(Some(33), Some(state.clone())).is_none());
+        let event = WindowEvent::Ime(Ime::Commit("private input".to_owned()));
+        let input = trace.begin(&event, Some(state.clone())).unwrap();
+        assert_eq!(input["id"], 2);
+        let row = trace.drawn(Some(34), Some(state)).unwrap();
+        assert_eq!(row["input_ids"], serde_json::json!([2]));
+        assert!(!input.to_string().contains("private input"));
+        trace.redraw_until = crate::time::now().checked_sub(Duration::from_secs(1));
+        assert!(trace.drawn(Some(35), None).is_none());
+    }
+
+    #[test]
+    fn discarded_draw_keeps_a_content_free_witness_for_its_redraw() {
+        let mut trace = Trace::default();
+        trace.pending.push(1);
+        let state = serde_json::json!({
+            "app": "so.tilo.notes", "body_hash": "1".repeat(64),
+            "body_chars": 1, "title": "private title", "text": "private text"
+        });
+        let first = trace.drawn(Some(433), Some(state.clone())).unwrap();
+        assert_eq!(first["input_ids"], serde_json::json!([1]));
+        let retry = trace
+            .drawn(Some(435), Some(state))
+            .expect("a discarded first buffer must not erase the input witness for a later draw");
+        assert_eq!(retry["cpu_frame_id"], 435);
+        assert_eq!(retry["input_ids"], first["input_ids"]);
+        assert_eq!(retry["state"], first["state"]);
+        assert!(retry["state"].get("title").is_none());
+        assert!(retry["state"].get("text").is_none());
+    }
 }
