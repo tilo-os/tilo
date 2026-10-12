@@ -413,6 +413,29 @@ fn scrolling_an_in_process_app_copies_and_matches_in_high_contrast() {
     scroll_copies_in(THEMES[2]);
 }
 
+/// At 200 % a step of half a layout pixel is a whole device pixel: the tile
+/// plans its copies in the display's pixels, so the presenter copies those
+/// steps too, and every frame is still a whole render's.
+#[test]
+fn half_pixel_steps_at_200_percent_copy_and_match() {
+    let (mut frame, _clock, panel) = scroll_desktop(Theme::dark(), 2.0, true);
+    let label = "half-pixel steps at 2x";
+    let rest = write_a_long_note(&mut frame, label, 16.0 * 20.5 + 120.0);
+    point_peer_at(&mut frame, (rest.x - 120.0, rest.y - 80.0));
+    settle(&mut frame, 2);
+    let mut presented = gpu_target(panel);
+    let mut whole = gpu_target(panel);
+    let first = frame.paint_with_damage();
+    let _ = render_whole(&mut presented, &first.scene, first.revision, label);
+    let down = scroll_and_present(
+        &mut frame,
+        (&mut presented, &mut whole),
+        panel,
+        (&format!("{label}, down"), 20.5, 12),
+    );
+    assert_scroll_copies(&down, label);
+}
+
 /// The same scroll for a presenter that does not copy: every frame
 /// rasterises the note's viewport, the number the copies are measured
 /// against.

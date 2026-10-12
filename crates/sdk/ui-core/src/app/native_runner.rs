@@ -97,6 +97,9 @@ struct AppHandler {
     /// The collaborators' marks painted over the widgets, as last submitted,
     /// so a frame damages only the marks that changed.
     presence_layer: crate::presence::PresenceLayer,
+    /// Bounds what the presence layer draws outside its parts, so scrolls
+    /// beneath peer marks still copy ([`peer_marks`]).
+    mark_bounds: crate::scene_parts::DrawBounds,
     last_primary_frame_presented: u64,
     primary_retry: crate::render_thread::retry::RenderRetryState,
     /// `None` waits for the next primary submission; `Some(sequence)` waits
@@ -2322,8 +2325,16 @@ impl AppHandler {
                 }
             }
             // Peer marks and a header bar paint over the content without
-            // moving with it, where the planner cannot see them.
-            if !offers.is_empty() && (decorated || self.presence_layer.paints()) {
+            // moving with it, where the planner cannot see them. The marks
+            // are damage around the copies where they can be bounded; the
+            // header bar, or marks that cannot, repaint the scrollers.
+            let window = KurboRect::new(0.0, 0.0, f64::from(width), f64::from(height));
+            let marks = if offers.is_empty() {
+                None
+            } else {
+                peer_marks(&self.presence_layer, &mut self.mark_bounds, window)
+            };
+            if !offers.is_empty() && (decorated || marks.is_none()) {
                 damage_regions.extend(offers.iter().map(crate::scroll_copy::ScrollOffer::viewport));
                 offers.clear();
             }
@@ -2343,7 +2354,7 @@ impl AppHandler {
                     presence_damage.as_deref().unwrap_or_default(),
                     self.presence_layer.widgets_place_content_marks(),
                     f64::from(scale_factor),
-                    KurboRect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+                    window,
                 )
             {
                 full_redraw_required = true;
@@ -2351,9 +2362,18 @@ impl AppHandler {
             } else {
                 // Already in device pixels, and exact: no effect margin. What
                 // changed in place where a copy reads it lands one delta
-                // away; what the copies exposed is repainted as it is.
+                // away, as do the peer marks the copies took; what the
+                // copies exposed is repainted as it is.
                 damage_regions.extend(planned.damage);
                 crate::scroll_copy::carry(&planned.copies, &mut damage_regions);
+                if let Some(marks) = &marks {
+                    crate::scroll_copy::marks_over_copies(
+                        &planned.copies,
+                        &marks.shown,
+                        &marks.painted,
+                        &mut damage_regions,
+                    );
+                }
                 damage_regions.extend(planned.exposed);
                 scroll_copies = planned.copies;
             }
@@ -4038,6 +4058,7 @@ impl App {
             primary_frames_completed: 0,
             top_layer_drawn: false,
             presence_layer: crate::presence::PresenceLayer::new(),
+            mark_bounds: crate::scene_parts::DrawBounds::default(),
             last_primary_frame_presented: 0,
             primary_retry: crate::render_thread::retry::RenderRetryState::default(),
             floating_source_clear_frames: std::collections::HashMap::new(),

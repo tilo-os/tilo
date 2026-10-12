@@ -81,9 +81,24 @@ struct PaintedDamage {
     from: u64,
     to: u64,
     rects: Option<Vec<KurboRect>>,
-    /// What moved instead, in the app's own coordinates: where a scroll's
-    /// content took its pixels from and how far it moved them.
+    /// What moved instead, in the host's device pixels at `copy_scale` per
+    /// unit of the app's own coordinates: where a scroll's content took its
+    /// pixels from and how far it moved them.
     copies: Vec<crate::scroll_copy::DeviceCopy>,
+    copy_scale: f64,
+}
+
+/// How many pixels of the target of the host drawing now
+/// ([`crate::scroll_copy::host_device_scale`]) one unit of an app placed
+/// with `placement` is; 1 when the placement scales the axes apart, rotates
+/// or skews (the host then makes no copy of it anyway).
+fn copy_scale(placement: Affine) -> f64 {
+    let [a, b, c, d, _, _] = crate::scroll_copy::on_screen(placement).as_coeffs();
+    if b == 0.0 && c == 0.0 && a > 0.0 && a.to_bits() == d.to_bits() {
+        crate::scroll_copy::host_device_scale() * a
+    } else {
+        1.0
+    }
 }
 
 /// Hands out each embedded app's [`crate::scene_parts::DamageHint::source`].
@@ -321,6 +336,12 @@ impl Widget for EmbeddedApp {
             };
             self.wants_frame.set(true);
         }
+        let placement = transform * Affine::translate((self.rect.x0, self.rect.y0));
+        if ground.is_some() {
+            // Copies are planned in the host's device pixels: at 200 % a
+            // step of half a logical pixel is a whole one and copies.
+            self.damage.set_copy_scale(copy_scale(placement));
+        }
         if self.wants_frame.get() || woken || due {
             // A frame whose sync or layout leaves more to settle runs again
             // at once, so what the host paints is the app at rest.
@@ -365,6 +386,7 @@ impl Widget for EmbeddedApp {
                     .as_ref()
                     .map(|(copies, _)| copies.clone())
                     .unwrap_or_default(),
+                copy_scale: self.damage.copy_scale(),
                 rects: taken.map(|(_, rects)| rects),
             };
             // What the host's accessibility walk reads of the app.
@@ -372,7 +394,6 @@ impl Widget for EmbeddedApp {
             self.wants_frame
                 .set(again || self.region.redraw.replace(false));
         }
-        let placement = transform * Affine::translate((self.rect.x0, self.rect.y0));
         // A host comparing this frame with one that painted the generation
         // before repaints only the app's damage; any other change to the
         // app (it moved, it repainted whole, frames were skipped) repaints
@@ -382,10 +403,11 @@ impl Widget for EmbeddedApp {
                 .iter()
                 .map(|rect| placement.transform_rect_bbox(*rect).inflate(1.0, 1.0))
                 .collect();
-            // The app plans copies at its own scale, one unit a pixel.
+            // The app plans copies in the host's device pixels.
             let mut copies = Vec::with_capacity(self.painted_damage.copies.len());
             for copy in &self.painted_damage.copies {
-                let moved = crate::scroll_copy::MovedRegion::of(copy, 1.0);
+                let moved =
+                    crate::scroll_copy::MovedRegion::of(copy, self.painted_damage.copy_scale);
                 match moved.transformed(placement) {
                     Some(moved) => copies.push(moved),
                     None => rects.push(

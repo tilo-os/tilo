@@ -156,8 +156,15 @@ stayed put (a pinned title, a sticky header). Damage that a copy reads is
 carried along to where it lands (`scroll_copy::carry`), and the strip the copy
 exposed is repainted. A relayout whose only moves are scrolls (a long list
 mounting the rows it brought near is a described rebuild) stays sparse; any
-other move, peer presence marks, or another desktop's header bar repaint as
-before. The render worker moves the pixels within its retained target through
+other move, or another desktop's header bar, repaints as before. Collaborators'
+pointers, names and activity, which the window paints over its widgets
+(`PresenceLayer`), do not stop a copy: the target holds the marks of the frame
+on screen, which a copy moves with the content, so where the copy took them is
+repainted, and so are this frame's marks wherever a copy wrote under them
+(`scroll_copy::marks_over_copies`, bounded by the layer's parts through
+`PresenceLayer::marks`); marks that cannot be bounded repaint the scrollers as
+before. `SurfaceDamage::painting_peers` paints the same layer the same way on
+an `AppSurface`, which the tests and `framework-scaling … scroll` use. The render worker moves the pixels within its retained target through
 a 128-row scratch band (WebGPU refuses a copy within one texture) or, on a
 software adapter, within its CPU canvas, then rasterizes the damage; the
 compositor gets the copies' destinations as damage too. History's toolbar is
@@ -167,7 +174,10 @@ framework window no longer repaints whole on every frame.
 An app the shell hosts in-process (`EmbeddedApp`) copies the same way, with
 the compositor as the host. Drawn for a presenter that keeps its target
 (`scroll_copy::HostCopies`, set by `FrameBuilder::set_scroll_copy_presenter`),
-the app collects with `SurfaceDamage::copying`, stands on an opaque ground of
+the app collects with `SurfaceDamage::copying`, plans its copies in the
+display's device pixels (`HostCopies::begin_scaled`,
+`SurfaceDamage::set_copy_scale`; at 200 % a step of half a logical pixel is
+a whole device pixel and copies), stands on an opaque ground of
 the theme's content colour (as a window stands on its target's), refuses
 copies while anything is painted over its widgets, and hands its copies to the
 compositor in its `scene_parts::DamageHint`. `scene_parts::damage_with_copies`
