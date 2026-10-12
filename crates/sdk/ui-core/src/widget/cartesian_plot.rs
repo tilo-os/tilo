@@ -785,13 +785,9 @@ impl CartesianPlot {
     }
 
     #[must_use]
-    pub fn styled(mut self, style: CartesianStyle) -> Self {
+    pub fn with_style(mut self, style: CartesianStyle) -> Self {
         self.style = style;
         self
-    }
-    #[must_use]
-    pub fn with_style(self, style: CartesianStyle) -> Self {
-        self.styled(style)
     }
     #[must_use]
     pub fn with_annotations(
@@ -1095,13 +1091,6 @@ impl CartesianPlot {
     /// brush-to-zoom and linked-detail workflows.
     pub fn zoom_to_selection(&mut self, selection: CartesianBrushSelection) -> bool {
         self.set_viewport(Some(selection.x), selection.y)
-    }
-    pub fn style_mut(&mut self) -> &mut CartesianStyle {
-        self.invalidate_domains();
-        &mut self.style
-    }
-    pub fn style(&self) -> &CartesianStyle {
-        &self.style
     }
     pub fn take_activated(&mut self) -> Option<(String, String)> {
         self.activated.take()
