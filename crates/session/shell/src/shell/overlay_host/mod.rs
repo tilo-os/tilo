@@ -45,6 +45,7 @@ mod emoji_layer;
 mod history;
 pub(crate) mod layers;
 mod now_playing;
+mod parked_workspaces;
 mod sheet_accessibility;
 mod shortcut_steps;
 mod shortcut_triggers;
@@ -494,6 +495,9 @@ pub struct ShellOverlayHost {
     /// rebuild replaced `content`; handed on by
     /// [`Widget::take_component_close_reports`] so a rebuild cannot lose them.
     desktop_close_reports: Vec<ui::application::ComponentCloseReport>,
+    /// The content of workspaces shown recently, kept while another one is
+    /// `content` so a switch back puts it back instead of building it again.
+    parked_workspaces: parked_workspaces::ParkedWorkspaces,
     /// Trusted first-login chrome. While present it is the entire root
     /// surface: desktop content, launch affordances, and every other overlay
     /// stay unreachable until a real identity has been provisioned and the
@@ -2316,6 +2320,7 @@ impl ShellOverlayHost {
             shortcut_help_drawn_rect: Rect::ZERO,
             content,
             desktop_close_reports: Vec::new(),
+            parked_workspaces: parked_workspaces::ParkedWorkspaces::default(),
             onboarding: None,
             onboarding_node: None,
             onboarding_released: false,
@@ -4121,7 +4126,7 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let (desktop, failures) = {
+        let (rebuild, stale) = {
             let st = chrome.borrow();
             let tree = st.tree();
             let active_raw = tree.desktop.active.raw();
@@ -4131,23 +4136,35 @@ impl ShellOverlayHost {
                     .iter()
                     .all(|strip| strip.window_groups.is_empty())
             });
-            match self.content_built_for_ws {
+            // A kept workspace that was removed (or became another room)
+            // lets go of its apps now, not at the next switch; so does one a
+            // tab moved out of, before the reconcile that follows mounts the
+            // tab where it went. Tabs move only with the chrome's revision.
+            let moved_tabs = st.revision != self.last_chrome_revision;
+            let stale = self.parked_workspaces.stale(&tree.desktop, moved_tabs);
+            let rebuild = match self.content_built_for_ws {
                 // Hand-made test content: latch, never rebuild over it.
                 None => {
-                    drop(tree);
                     self.content_built_for_ws = Some(active_raw);
-                    return false;
+                    None
                 }
                 Some(cur)
                     if cur == active_raw
                         && self.content_built_empty == Some(active_empty)
                         && self.rows_cover_active_strips(&tree) =>
                 {
-                    return false;
+                    None
                 }
-                Some(_) => {}
-            }
-            (tree.desktop.clone(), st.record_creation_errors(&tree))
+                Some(_) => Some((tree.desktop.clone(), st.record_creation_errors(&tree))),
+            };
+            (rebuild, stale)
+        };
+        if !stale.is_empty() {
+            self.desktop_close_reports
+                .extend(parked_workspaces::close(stale));
+        }
+        let Some((desktop, failures)) = rebuild else {
+            return false;
         };
         let swapped = self.rebuild_workspace_content(&chrome, &desktop, &failures);
         if swapped {
@@ -4159,9 +4176,11 @@ impl ShellOverlayHost {
     /// Rebuilds the desktop surface for `desktop` and replaces the row
     /// pointer map with it. Tabs whose tile is unchanged in the same room
     /// keep their live hosts, so a strip added or removed beside them costs
-    /// no app state; a different workspace gets fresh content. Takes the
-    /// desktop alone, with `failures` read beside it under the same tree
-    /// lock, so a workspace switch never copies the replication documents.
+    /// no app state. A different workspace puts back the content kept for it
+    /// ([`parked_workspaces`]) or gets fresh content, and the content it
+    /// replaces is kept. Takes the desktop alone, with `failures` read
+    /// beside it under the same tree lock, so a workspace switch never
+    /// copies the replication documents.
     fn rebuild_workspace_content(
         &mut self,
         chrome: &Chrome,
@@ -4169,18 +4188,26 @@ impl ShellOverlayHost {
         failures: &std::collections::BTreeMap<u64, String>,
     ) -> bool {
         let records = chrome.borrow().records().clone();
+        let switching = self
+            .content_built_for_ws
+            .is_some_and(|shown| shown != desktop.active.raw());
+        if switching && self.desktop_surface_mut().is_some() {
+            self.switch_workspace_content(chrome, desktop, failures, &records);
+        }
         if let Some(surface) = self.desktop_surface_mut() {
-            let surface_chrome = crate::shell::workspace_surface_chrome(desktop, chrome);
-            let state = chrome.borrow();
-            surface.rebuild_retaining(
-                desktop,
-                &records,
-                &mut crate::shell::NativeTileResolver {
-                    inputs: &state.hosted_inputs,
-                    failures,
-                },
-                surface_chrome,
-            );
+            if !switching {
+                let surface_chrome = crate::shell::workspace_surface_chrome(desktop, chrome);
+                let state = chrome.borrow();
+                surface.rebuild_retaining(
+                    desktop,
+                    &records,
+                    &mut crate::shell::NativeTileResolver {
+                        inputs: &state.hosted_inputs,
+                        failures,
+                    },
+                    surface_chrome,
+                );
+            }
             for id in surface.strip_ids() {
                 if let Some(row) = surface.row_mut(id) {
                     for group in &mut row.groups {
@@ -4217,6 +4244,87 @@ impl ShellOverlayHost {
         });
         self.workspace_content_layout_dirty = true;
         true
+    }
+
+    /// Show `desktop`'s active workspace in place of the one shown until
+    /// now, which is kept: its content as it was left when it was kept, with
+    /// what changed in the tree since reconciled, or else built fresh. The
+    /// caller re-reads the row pointers.
+    fn switch_workspace_content(
+        &mut self,
+        chrome: &Chrome,
+        desktop: &crate::shell::state::DesktopTree,
+        failures: &std::collections::BTreeMap<u64, String>,
+        records: &ui::record::RecordStore,
+    ) {
+        use tilo_desktop::composition::{DesktopSurface, ReconcileOutcome};
+        // Before the target is mounted: a tab that moved here from a kept
+        // workspace is mounted by this one alone.
+        let moved_on = self.parked_workspaces.stale(desktop, true);
+        self.desktop_close_reports
+            .extend(parked_workspaces::close(moved_on));
+        let kept = self.parked_workspaces.take(desktop.active.raw());
+        let resumed = kept.is_some();
+        let incoming = kept.unwrap_or_else(|| {
+            crate::shell::build_desktop_root(desktop, records, chrome, failures).0
+        });
+        let mut outgoing = std::mem::replace(&mut self.content, incoming);
+        if let Some(shown) = outgoing
+            .as_any_mut()
+            .and_then(|content| content.downcast_mut::<DesktopSurface>())
+            && let Some(next) = self.desktop_surface_mut()
+        {
+            next.take_pointer_from(shown);
+        }
+        // The outgoing rows stay alive, kept; the map moves to the new ones
+        // before anything walks it.
+        self.group_row_ptrs.clear();
+        let dropped = match self.content_built_for_ws {
+            Some(shown) => self.parked_workspaces.park(shown, outgoing),
+            None => vec![outgoing],
+        };
+        self.desktop_close_reports
+            .extend(parked_workspaces::close(dropped));
+        if !resumed {
+            return;
+        }
+        let outcome = {
+            let state = chrome.borrow();
+            self.desktop_surface_mut().map(|surface| {
+                surface.reconcile(
+                    desktop,
+                    records,
+                    &mut crate::shell::NativeTileResolver {
+                        inputs: &state.hosted_inputs,
+                        failures,
+                    },
+                )
+            })
+        };
+        if outcome == Some(ReconcileOutcome::RebuildRequired) {
+            // Its strips changed while it was away: new chrome around the
+            // same mounted apps (the surface is this workspace's room).
+            let surface_chrome = crate::shell::workspace_surface_chrome(desktop, chrome);
+            let state = chrome.borrow();
+            if let Some(surface) = self.desktop_surface_mut() {
+                surface.rebuild_retaining(
+                    desktop,
+                    records,
+                    &mut crate::shell::NativeTileResolver {
+                        inputs: &state.hosted_inputs,
+                        failures,
+                    },
+                    surface_chrome,
+                );
+            }
+        }
+    }
+
+    /// The workspaces whose content is kept while another one is shown,
+    /// least recently shown first.
+    #[cfg(test)]
+    pub(crate) fn kept_workspaces_for_tests(&self) -> Vec<u64> {
+        self.parked_workspaces.workspaces()
     }
 
     /// The shared desktop surface, when the content is one. Hand-built test
@@ -20138,11 +20246,65 @@ impl ShellOverlayHost {
     }
 }
 
+/// The kept workspaces' apps are mounted like the shown one's, so every step
+/// of closing the session reaches them too, after the widget children.
 impl ui::component_lifecycle::ComponentLifecycle for ShellOverlayHost {
+    fn unsaved_documents(
+        &self,
+        doc: &automerge::AutoCommit,
+    ) -> Vec<ui::close_admission::UnsavedDocument> {
+        let mut out = Vec::new();
+        self.for_each_child(&mut |child| {
+            out.extend(ui::component_lifecycle::unsaved_documents(child, doc));
+        });
+        for kept in self.parked_workspaces.contents() {
+            out.extend(ui::component_lifecycle::unsaved_documents(kept, doc));
+        }
+        out
+    }
+
+    fn checkpoint_components(&mut self) -> Vec<String> {
+        let mut errors: Vec<String> = self
+            .children_mut()
+            .into_iter()
+            .flat_map(ui::component_lifecycle::checkpoint_components)
+            .collect();
+        for kept in self.parked_workspaces.contents_mut() {
+            errors.extend(ui::component_lifecycle::checkpoint_components(kept));
+        }
+        errors
+    }
+
+    fn finish_admitted_close(&mut self) -> Vec<ui::application::ComponentCloseReport> {
+        let mut reports: Vec<_> = self
+            .children_mut()
+            .into_iter()
+            .flat_map(ui::component_lifecycle::finish_admitted_close)
+            .collect();
+        for kept in self.parked_workspaces.contents_mut() {
+            reports.extend(ui::component_lifecycle::finish_admitted_close(kept));
+        }
+        reports
+    }
+
+    fn close_components(&mut self) -> Vec<ui::application::ComponentCloseReport> {
+        let mut reports: Vec<_> = self
+            .children_mut()
+            .into_iter()
+            .flat_map(ui::component_lifecycle::close_components)
+            .collect();
+        // Closed content is not kept: nothing would put it back usable.
+        reports.extend(parked_workspaces::close(self.parked_workspaces.drain()));
+        reports
+    }
+
     fn take_component_close_reports(&mut self) -> Vec<ui::application::ComponentCloseReport> {
         let mut reports = std::mem::take(&mut self.desktop_close_reports);
         for child in self.children_mut() {
             reports.extend(ui::component_lifecycle::take_component_close_reports(child));
+        }
+        for kept in self.parked_workspaces.contents_mut() {
+            reports.extend(ui::component_lifecycle::take_component_close_reports(kept));
         }
         reports
     }
@@ -26643,6 +26805,10 @@ mod palette_dispatch_tests;
 #[cfg(test)]
 #[path = "two_workspace_host_tests.rs"]
 mod two_workspace_host_tests;
+
+#[cfg(test)]
+#[path = "parked_workspaces_tests.rs"]
+mod parked_workspaces_tests;
 
 #[cfg(test)]
 #[allow(

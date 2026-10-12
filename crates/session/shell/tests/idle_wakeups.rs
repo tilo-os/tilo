@@ -193,6 +193,15 @@ impl Desktop {
     /// The same with `tree` as the saved session (`idle_memory` starts an
     /// empty desktop).
     pub(crate) fn start_with(tree: &shell::shell::state::WorkspaceTree) -> Self {
+        Self::start_with_env(tree, &[])
+    }
+
+    /// [`Self::start_with`] with `env` added to the compositor's
+    /// environment (`workspace_switch_cost` turns on the frame trace).
+    pub(crate) fn start_with_env(
+        tree: &shell::shell::state::WorkspaceTree,
+        env: &[(&str, &std::ffi::OsStr)],
+    ) -> Self {
         tilo_test_env::require_isolated_desktop();
         // SUN_LEN caps a unix socket path, so the runtime dir stays short.
         // One per desktop: this module's tests run beside each other.
@@ -246,6 +255,7 @@ impl Desktop {
             .env("RUST_LOG", "warn,tilo::collab::key_rounds=debug")
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
+            .envs(env.iter().copied())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -385,7 +395,7 @@ impl Drop for Desktop {
 
 /// A signed-in person's desktop with one Notes notebook open, as a saved
 /// session restores it.
-fn notes_desktop() -> shell::shell::state::WorkspaceTree {
+pub(crate) fn notes_desktop() -> shell::shell::state::WorkspaceTree {
     let mut tree = shell::shell::state::WorkspaceTree::bootstrap_demo();
     // Keep the demo's first workspace with only its Notes tab; an untouched
     // demo tree would be migrated away as legacy sample data on load.
