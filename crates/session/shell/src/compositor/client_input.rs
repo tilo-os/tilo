@@ -411,6 +411,34 @@ fn event_time(state: &State) -> u32 {
 }
 
 impl State {
+    /// `app_id`s of the toplevels `client` has mapped, for naming a client in logs.
+    pub(crate) fn client_app_ids(
+        &self,
+        client: &smithay::reexports::wayland_server::Client,
+    ) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .client_input
+            .surfaces
+            .values()
+            .filter(|surface| surface.client().is_some_and(|c| c.id() == client.id()))
+            .filter_map(toplevel_app_id)
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    /// Who holds the seat's keyboard focus, for logs: `app_id` (or `none`).
+    pub(crate) fn keyboard_focus_holder(&self) -> String {
+        self.client_input
+            .keyboard_focus
+            .and_then(|id| self.client_input.surfaces.get(&id))
+            .map_or_else(
+                || "none".to_owned(),
+                |surface| toplevel_app_id(surface).unwrap_or_else(|| "unnamed surface".to_owned()),
+            )
+    }
+
     /// Revoke client keyboard focus and retire every pressed seat key without
     /// delivering it to an application.
     ///
@@ -503,7 +531,14 @@ impl State {
             return;
         };
         let serial = mint_serial(self);
+        let previous_holder = self.keyboard_focus_holder();
         self.client_input.keyboard_focus = target.as_ref().map(|(id, _)| *id);
+        tracing::debug!(
+            target: "shell::selection",
+            from = %previous_holder,
+            to = %self.keyboard_focus_holder(),
+            "keyboard focus moved; selection focus follows"
+        );
         // Clipboard/primary selection follow the keyboard: smithay refuses `set_selection` from a client without keyboard focus.
         let selection_client = target.as_ref().and_then(|(_, surface)| surface.client());
         self.set_selection_focus(selection_client);
