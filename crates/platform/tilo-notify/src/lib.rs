@@ -49,7 +49,7 @@ pub mod windows_toasts {
     pub use crate::windows::{HostNotifications, ScheduledNotice, register_shortcut};
 }
 
-pub use caps::{Availability, CAPABILITIES, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability};
 pub use tilo_clock::SystemTime;
 
 /// One user-visible notification.
@@ -217,9 +217,7 @@ pub trait Notifier: Send + Sync {
     /// [`Feature::Schedule`] is unsupported here, or the platform refused.
     fn schedule(&self, notification: &Notification, at: SystemTime) -> Result<(), NotifyError> {
         let _ = (notification, at);
-        Err(NotifyError::Unsupported(caps::unsupported(
-            Feature::Schedule,
-        )))
+        Err(NotifyError::Unsupported(Unsupported::of(Feature::Schedule)))
     }
 
     /// Schedule a local-time alarm. Hosts that understand calendar alarms
@@ -254,9 +252,7 @@ pub trait Notifier: Send + Sync {
     /// # Errors
     /// As [`schedule`](Self::schedule).
     fn scheduled(&self) -> Result<Vec<Scheduled>, NotifyError> {
-        Err(NotifyError::Unsupported(caps::unsupported(
-            Feature::Schedule,
-        )))
+        Err(NotifyError::Unsupported(Unsupported::of(Feature::Schedule)))
     }
 
     /// Cancel the scheduled notification under `tag`, if any.
@@ -265,9 +261,7 @@ pub trait Notifier: Send + Sync {
     /// As [`schedule`](Self::schedule).
     fn cancel_scheduled(&self, tag: &str) -> Result<(), NotifyError> {
         let _ = tag;
-        Err(NotifyError::Unsupported(caps::unsupported(
-            Feature::Schedule,
-        )))
+        Err(NotifyError::Unsupported(Unsupported::of(Feature::Schedule)))
     }
 }
 
@@ -390,7 +384,7 @@ impl Notifier for UnavailableNotifier {
 fn schedule_refusal() -> NotifyError {
     match availability(Feature::Schedule) {
         Availability::Unsupported(_) => {
-            NotifyError::Unsupported(caps::unsupported(Feature::Schedule))
+            NotifyError::Unsupported(Unsupported::of(Feature::Schedule))
         }
         Availability::Available | Availability::Prompt => NotifyError::Unavailable,
     }
@@ -427,7 +421,7 @@ fn priority_contacts(app_id: &str, contacts: &[PriorityContact]) -> Result<(), N
 
 #[cfg(not(target_os = "linux"))]
 fn priority_contacts(_app_id: &str, _contacts: &[PriorityContact]) -> Result<(), NotifyError> {
-    Err(NotifyError::Unsupported(caps::unsupported(
+    Err(NotifyError::Unsupported(Unsupported::of(
         Feature::PriorityContacts,
     )))
 }

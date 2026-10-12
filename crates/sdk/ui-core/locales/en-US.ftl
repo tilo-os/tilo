@@ -232,7 +232,6 @@ history-files-error-unavailable = File history is temporarily unavailable
 history-files-error-too-large = Historical preview exceeds the supported size
 history-files-error-no-content = This version has no recorded content reference
 history-files-outcome-applied = Restored revision { $revision } (intent { $intent }). Current converged file content is shown separately. Prior reference: observed revision.
-history-files-outcome-applied-legacy = Restored revision { $revision } (intent { $intent }). Current converged file content is shown separately. Prior reference: legacy content representative; prior authorship unknown.
 history-files-outcome-unchanged = Selected content already matches; no new revision or undo entry
 history-files-outcome-pending = Restore is pending. Check result or retry the same intent
 history-files-outcome-review = Live file changed. Refresh review; the selected old version remains pinned

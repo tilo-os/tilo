@@ -1855,6 +1855,12 @@ impl FeedsApp {
         self.core.borrow_mut()
     }
 
+    /// The window's state, shared as its panes share it.
+    #[cfg(test)]
+    pub(crate) fn core_shared(&self) -> Shared {
+        Rc::clone(&self.core)
+    }
+
     #[cfg(test)]
     pub(crate) fn shell(&self) -> &NavShell {
         &self.shell

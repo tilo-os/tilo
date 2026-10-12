@@ -82,6 +82,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+pub mod accessibility;
 pub mod app_scope;
 pub mod appearance;
 pub mod continuity;
@@ -104,8 +105,8 @@ pub mod magnifier;
 pub mod notification_policy;
 pub mod person_displays;
 pub mod personal_dictionary;
+pub mod published;
 pub mod roaming_provenance;
-pub mod screen_reader;
 mod section_digest;
 mod session;
 mod source;
@@ -210,6 +211,7 @@ pub fn stamp() -> Option<SettingsStamp> {
 
 /// [`stamp`] of the document at `path`, ignoring any installed source.
 pub fn stamp_at(path: &Path) -> Option<SettingsStamp> {
+    published::note_file_read();
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     Some(SettingsStamp::Modified(modified))
 }
@@ -217,6 +219,7 @@ pub fn stamp_at(path: &Path) -> Option<SettingsStamp> {
 /// [`load`] from an explicit path. Exposed so tests can drive a scratch file without
 /// touching the configured settings file.
 pub fn load_at(path: &Path) -> Map<String, Value> {
+    published::note_file_read();
     let Ok(text) = std::fs::read_to_string(path) else {
         return Map::new();
     };

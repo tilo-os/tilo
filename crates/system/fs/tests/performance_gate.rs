@@ -11,9 +11,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use fs::document_media::DocumentMedia;
 use fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO, ThumbProvider};
 use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
+use runtime_fs::blobs::{BlobScope, MAX_BLOB_BYTES, MAX_READ_CHUNK, ReadOutcome};
 use thumbnail::FileCategory;
 
 const ENABLE_ENV: &str = "TILO_FS_PERF_GATE";
@@ -47,6 +49,17 @@ const RANGED_READ_SLO: Duration = Duration::from_millis(400); // p99 197.7, p50 
 const REMOTE_APPLY_RANGED_READ_SLO: Duration = Duration::from_millis(680); // p99 337.2, p50 231.1
 const COLD_THUMBNAIL_SLO: Duration = Duration::from_millis(550); // p99 271.3, p50 171.0
 const WARM_THUMBNAIL_SLO: Duration = Duration::from_millis(12); // p99 5.76, p50 2.85
+/// Document media on a cold store (reopened, as after a daemon restart): an
+/// app's status check, the empty range `state()` sends, and one 4 MiB range
+/// near the end of a 64 MiB attachment, the largest the capability accepts,
+/// as a seek to the end of a video asks for. Reads verify only the chunk
+/// groups they return; before, each loaded and verified the whole
+/// attachment, which the first `real-fuse` run measured at 464.5 ms.
+/// Provisional until CI runs give a p99: twice that first run, rounded up as
+/// above. The status ceiling stays above one scheduler slice, as for
+/// `IDLE_SYNC_SLO`.
+const MEDIA_STATUS_SLO: Duration = Duration::from_millis(5); // first run 0.75
+const MEDIA_TAIL_READ_SLO: Duration = Duration::from_millis(40); // first run 17.6
 
 /// Namespace changes behind the two writers of the idle anti-entropy pass.
 const IDLE_SYNC_HISTORY: u64 = 50_000;
@@ -486,6 +499,89 @@ async fn mount_ranged_read_under_remote_apply_performance_gate() {
     );
     drop(mount);
     router.shutdown().await.expect("stop local endpoint");
+}
+
+/// Document media an app reads after a daemon restart: the status check its
+/// draw path makes and a range near the end of the largest attachment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn document_media_cold_range_performance_gate() {
+    if !require_enabled() {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("media store tempdir");
+    let photos = BlobScope::new("room-1", "so.tilo.photos").expect("media scope");
+    let len = usize::try_from(MAX_BLOB_BYTES).expect("media limit fits usize");
+    let chunk = MAX_READ_CHUNK as usize;
+    let data = deterministic_bytes(len);
+    // Near the end, and not on a 16 KiB chunk-group boundary.
+    let offset = len - chunk - 12_345;
+    let tail = data[offset..offset + chunk].to_vec();
+    let hash = {
+        let store = Arc::new(
+            ContentStore::open(dir.path())
+                .await
+                .expect("open media store"),
+        );
+        let media = DocumentMedia::new(Arc::clone(&store));
+        let hash = media
+            .store(&photos, data)
+            .await
+            .expect("store media fixture");
+        store.store().shutdown().await.expect("close media store");
+        hash
+    };
+    let store = Arc::new(
+        ContentStore::open(dir.path())
+            .await
+            .expect("reopen media store"),
+    );
+    let media = DocumentMedia::new(Arc::clone(&store));
+
+    let started = Instant::now();
+    let status = media.read_range(photos.clone(), hash, 0, 0).await;
+    let status_time = started.elapsed();
+    assert_eq!(
+        status,
+        ReadOutcome::Ready {
+            bytes: Vec::new(),
+            total_len: MAX_BLOB_BYTES
+        }
+    );
+
+    let started = Instant::now();
+    let read = media
+        .read_range(photos, hash, offset as u64, MAX_READ_CHUNK)
+        .await;
+    let tail_time = started.elapsed();
+    assert_eq!(
+        read,
+        ReadOutcome::Ready {
+            bytes: tail,
+            total_len: MAX_BLOB_BYTES
+        }
+    );
+
+    // The same blob loaded whole, as every read was answered before ranges
+    // were verified on their own; reported, not gated.
+    let started = Instant::now();
+    let whole = store.local(hash).await.expect("whole media blob");
+    assert_eq!(whole.len(), len);
+    eprintln!(
+        "PERF document-media-whole-blob-load-64m: {:.3} ms (before ranged reads)",
+        started.elapsed().as_secs_f64() * 1_000.0
+    );
+    store.store().shutdown().await.expect("close media store");
+
+    report(
+        "document-media-cold-64m-status",
+        status_time,
+        MEDIA_STATUS_SLO,
+    );
+    report(
+        "document-media-cold-64m-tail-4m-read",
+        tail_time,
+        MEDIA_TAIL_READ_SLO,
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

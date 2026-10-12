@@ -5,10 +5,12 @@ from __future__ import annotations
 import gzip
 import hashlib
 import io
+import os
 import json
 import pathlib
 import sqlite3
 import struct
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -292,6 +294,65 @@ class Update(unittest.TestCase):
     def test_update_only_needs_an_old_image(self) -> None:
         self.assertEqual(image_size.main(["--oci-layout", str(self.directory / "new"), "--quiet",
                                           "--update-only"]), 1)
+
+    def test_the_full_report_records_the_update(self) -> None:
+        records = self.directory / "image.jsonl"
+        status = image_size.main(["--oci-layout", str(self.directory / "new"), "--quiet", "--records", str(records),
+                                  "--update-from", f"oci:{self.directory / 'old'}"])
+        self.assertEqual(status, 0)
+        lines = {line["kpi"]: line for line in map(json.loads, records.read_text().splitlines())}
+        update = lines["footprint.image.update_bytes.x86_64"]
+        self.assertEqual(update["p50"], len(self.app_v2))
+        self.assertEqual(update["unit"], "bytes")
+        self.assertEqual(update["commit"], REVISION)
+        self.assertEqual(update["meta"]["update_from_revision"], REVISION)
+        self.assertEqual(update["meta"]["new_layers"], "1")
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(["git", "-C", str(self.directory / "repo"), *args], check=True, capture_output=True,
+                              text=True, env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                                              "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}).stdout.strip()
+
+    def test_the_previous_build_is_the_newest_earlier_first_parent_with_an_image(self) -> None:
+        (self.directory / "repo").mkdir()
+        self.git("init", "-q", "-b", "main")
+        commits = []
+        for index in range(4):
+            self.git("commit", "-q", "--allow-empty", "-m", f"c{index}")
+            commits.append(self.git("rev-parse", "HEAD"))
+        # A merged branch's own commit is not a build of main.
+        self.git("checkout", "-q", "-b", "side", commits[1])
+        self.git("commit", "-q", "--allow-empty", "-m", "side")
+        side = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "main")
+        self.git("merge", "-q", "--no-ff", "-m", "merge", "side")
+        head = self.git("rev-parse", "HEAD")
+        listed = image_size.first_parents(head, self.directory / "repo", 10)
+        self.assertEqual(listed, [head, *reversed(commits)])
+        self.assertNotIn(side, listed)
+        new = image_size.layout_image(self.directory / "new", None)
+        old = image_size.layout_image(self.directory / "old", None)
+        asked = []
+
+        def lookup(tag: str):
+            asked.append(tag)
+            return old if tag == f"main-{commits[1][:7]}-x86_64" else None
+
+        self.assertIs(image_size.previous_image(new, "main-{sha7}-{arch}", listed, lookup), old)
+        self.assertEqual(asked, [f"main-{commit[:7]}-x86_64" for commit in (commits[3], commits[2], commits[1])])
+        # No earlier build, no number: the run fails rather than record nothing.
+        with self.assertRaisesRegex(ValueError, "has a main-"):
+            image_size.previous_image(new, "main-{sha7}-{arch}", listed, lambda tag: None)
+        with self.assertRaisesRegex(ValueError, "does not hold|rev-list"):
+            image_size.first_parents("f" * 40, self.directory / "repo", 10)
+        with self.assertRaisesRegex(ValueError, "no source revision"):
+            image_size.first_parents("", self.directory / "repo", 10)
+
+    def test_update_from_previous_needs_a_registry_image(self) -> None:
+        self.assertEqual(image_size.main(["--oci-layout", str(self.directory / "new"), "--quiet",
+                                          "--update-from-previous", "main-{sha7}-{arch}"]), 1)
+        self.assertEqual(image_size.main(["--oci-layout", str(self.directory / "new"), "--quiet",
+                                          "--update-from-previous", "x", "--update-from", "y"]), 1)
 
 
 class Resuming(unittest.TestCase):

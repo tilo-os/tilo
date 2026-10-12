@@ -94,6 +94,58 @@ thread_local! {
     static OUTER: std::cell::Cell<Affine> = const { std::cell::Cell::new(Affine::IDENTITY) };
 }
 
+thread_local! {
+    /// Embedded apps drawn now are drawn for a host that copies, and how
+    /// many of its target's pixels one unit of its scene is
+    /// ([`HostCopies`]).
+    static HOST_COPIES: std::cell::Cell<(bool, f64)> = const { std::cell::Cell::new((false, 1.0)) };
+}
+
+/// While held, every [`crate::app::EmbeddedApp`] drawn on this thread is
+/// drawn for a host that presents each frame over the pixels it last
+/// presented and can move them, as
+/// [`crate::app::EmbeddedApp::set_accepts_scroll_copies`] says; an app that
+/// learned so keeps handing out copies, which a host that cannot make them
+/// repaints where they land.
+pub struct HostCopies((bool, f64));
+
+impl HostCopies {
+    /// For a host whose target has one pixel per unit of its scene.
+    pub fn begin(copies: bool) -> Self {
+        Self::begin_scaled(copies, 1.0)
+    }
+
+    /// For a host whose target has `device_per_unit` pixels per unit of
+    /// its scene (a display at 200 % has 2): an app plans its copies in
+    /// those pixels, so a step of half a unit there is a whole pixel and
+    /// copies.
+    pub fn begin_scaled(copies: bool, device_per_unit: f64) -> Self {
+        let scale = if device_per_unit.is_finite() && device_per_unit > 0.0 {
+            device_per_unit
+        } else {
+            1.0
+        };
+        Self(HOST_COPIES.replace((copies, scale)))
+    }
+}
+
+impl Drop for HostCopies {
+    fn drop(&mut self) {
+        HOST_COPIES.set(self.0);
+    }
+}
+
+/// Whether the host drawing now copies ([`HostCopies`]).
+pub fn host_copies() -> bool {
+    HOST_COPIES.get().0
+}
+
+/// How many pixels of the target of the host drawing now one unit of its
+/// scene is ([`HostCopies::begin_scaled`]); 1 outside any.
+pub fn host_device_scale() -> f64 {
+    HOST_COPIES.get().1
+}
+
 /// Puts back the enclosing cache's transform even when drawing unwinds.
 struct Outer(Affine);
 
@@ -372,6 +424,112 @@ impl DeviceCopy {
     }
 }
 
+/// A copy as a host that composites the target elsewhere sees it: the
+/// rectangle it reads and how far it moves it, in the coordinates of the
+/// scene the target is drawn into (an embedded app's region in a desktop
+/// section), before that scene is rasterised.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MovedRegion {
+    pub source: Rect,
+    pub delta: Vec2,
+}
+
+impl MovedRegion {
+    /// `copy`, made in a target of `scale` device pixels per unit of the
+    /// scene it is drawn with.
+    pub fn of(copy: &DeviceCopy, scale: f64) -> Self {
+        let source = Rect::new(
+            f64::from(copy.x),
+            f64::from(copy.y),
+            f64::from(copy.x) + f64::from(copy.width),
+            f64::from(copy.y) + f64::from(copy.height),
+        );
+        Self {
+            source: Rect::new(
+                source.x0 / scale,
+                source.y0 / scale,
+                source.x1 / scale,
+                source.y1 / scale,
+            ),
+            delta: Vec2::new(f64::from(copy.dx) / scale, f64::from(copy.dy) / scale),
+        }
+    }
+
+    /// Where the copy lands.
+    pub fn destination(&self) -> Rect {
+        self.source + self.delta
+    }
+
+    /// Every pixel the copy reads or writes.
+    pub fn reach(&self) -> Rect {
+        self.source.union(self.destination())
+    }
+
+    /// The same copy in the coordinates `transform` maps into, or `None`
+    /// when it rotates or skews (a copy moves rows and columns as they are).
+    pub fn transformed(&self, transform: Affine) -> Option<Self> {
+        let [a, b, c, d, _, _] = transform.as_coeffs();
+        if b != 0.0 || c != 0.0 || a <= 0.0 || d <= 0.0 {
+            return None;
+        }
+        Some(Self {
+            source: transform.transform_rect_bbox(self.source),
+            delta: Vec2::new(self.delta.x * a, self.delta.y * d),
+        })
+    }
+
+    /// The copy in a `width` × `height` target that `to_device` maps this
+    /// region's coordinates into: the whole device pixels of the source
+    /// that land inside the target, and where the destination is not
+    /// covered by them (its antialiased edges, what would land outside),
+    /// to repaint. `None` when the delta is not a whole number of device
+    /// pixels, `to_device` rotates or skews, or nothing lands.
+    pub fn device(
+        &self,
+        to_device: Affine,
+        (width, height): (u32, u32),
+    ) -> Option<(DeviceCopy, Vec<Rect>)> {
+        let moved = self.transformed(to_device)?;
+        let target = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+        let (Some(dx), Some(dy)) = (
+            whole(moved.delta.x, target.width()),
+            whole(moved.delta.y, target.height()),
+        ) else {
+            return None;
+        };
+        if dx == 0 && dy == 0 {
+            return None;
+        }
+        let shift = Vec2::new(f64::from(dx), f64::from(dy));
+        let landed = (inner(moved.source.intersect(target)) + shift).intersect(target);
+        if empty(landed) {
+            return None;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "whole, non-negative device pixels inside the target, which a u32 holds"
+        )]
+        let copy = DeviceCopy {
+            x: (landed.x0 - shift.x) as u32,
+            y: (landed.y0 - shift.y) as u32,
+            width: landed.width() as u32,
+            height: landed.height() as u32,
+            dx,
+            dy,
+        };
+        copy.destination(width, height)?;
+        let fringe = without(
+            (moved.source + shift)
+                .expand()
+                .intersect(target)
+                .union(landed),
+            landed,
+        );
+        Some((copy, fringe))
+    }
+}
+
 /// What a host does with a frame's offers, in device pixels: the copies, in
 /// order; the damage they add where something does not move with the
 /// content (each copy's overlays, a refused offer's viewport), which the
@@ -483,13 +641,14 @@ fn whole(value: f64, extent: f64) -> Option<i32> {
 fn plan_one(
     offer: &ScrollOffer,
     tree: &[Node],
+    drawn: Affine,
     scale: f64,
     window: Rect,
 ) -> Result<(DeviceCopy, Vec<Rect>, Vec<Rect>), Rect> {
     let refused = device(offer.viewport, scale).expand().intersect(window);
     // Drawn under another transform than the window's (an ancestor that
     // scales or moves it), the viewport is not where the window shows it.
-    if offer.transform != crate::scale::composite_transform(scale) {
+    if offer.transform != drawn {
         return Err(window);
     }
     // The scroller: the deepest of the widgets at its address (a decorator
@@ -612,8 +771,23 @@ pub fn plan(
     offers: &[ScrollOffer],
     roots: &[&dyn Widget],
     scale: f64,
+    size: (u32, u32),
+) -> CopyPlan {
+    plan_scaled(offers, roots, (scale, 1.0), size)
+}
+
+/// [`plan`] for a window drawn at `drawn_scale` scene pixels per logical
+/// pixel into a host target of `device_per_scene` pixels per scene pixel
+/// (an app drawn into a desktop's logical scene, shown at 200 %): the plan
+/// is in those device pixels, for a `width` × `height` target of them.
+pub fn plan_scaled(
+    offers: &[ScrollOffer],
+    roots: &[&dyn Widget],
+    (drawn_scale, device_per_scene): (f64, f64),
     (width, height): (u32, u32),
 ) -> CopyPlan {
+    let drawn = crate::scale::composite_transform(drawn_scale);
+    let scale = drawn_scale * device_per_scene;
     let mut planned = CopyPlan::default();
     if offers.is_empty() {
         return planned;
@@ -625,7 +799,7 @@ pub fn plan(
     let mut claimed: Vec<Rect> = Vec::new();
     for offer in offers {
         let reach = device(offer.viewport, scale).expand().intersect(window);
-        match plan_one(offer, &tree, scale, window) {
+        match plan_one(offer, &tree, drawn, scale, window) {
             Ok((copy, overlays, exposed))
                 if copy.destination(width, height).is_some()
                     && claimed.iter().all(|area| empty(area.intersect(reach))) =>
@@ -650,7 +824,14 @@ pub fn plan(
 /// the copies exposed goes through here, the overlays the plan found
 /// included.
 pub fn carry(copies: &[DeviceCopy], damage: &mut Vec<Rect>) {
-    let changed = damage.len();
+    let taken = carried(copies, damage);
+    damage.extend(taken);
+}
+
+/// Where `copies` take the pixels `rects` cover (device pixels): each piece
+/// of a rect a copy reads, one delta away.
+pub fn carried(copies: &[DeviceCopy], rects: &[Rect]) -> Vec<Rect> {
+    let mut taken = Vec::new();
     for copy in copies {
         let source = Rect::new(
             f64::from(copy.x),
@@ -659,16 +840,41 @@ pub fn carry(copies: &[DeviceCopy], damage: &mut Vec<Rect>) {
             f64::from(copy.y) + f64::from(copy.height),
         );
         let shift = Vec2::new(f64::from(copy.dx), f64::from(copy.dy));
-        for index in 0..changed {
-            let Some(rect) = damage.get(index) else {
-                continue;
-            };
-            let taken = rect.intersect(source);
-            if !empty(taken) {
-                damage.push(taken + shift);
+        for rect in rects {
+            let piece = rect.intersect(source);
+            if !empty(piece) {
+                taken.push(piece + shift);
             }
         }
     }
+    taken
+}
+
+/// Add to `damage` what marks painted over a window's content without
+/// moving with it, and unseen by the planner (collaborators' pointers and
+/// names), cost its `copies` (device pixels, as each would be repainted):
+/// the target holds the marks of the frame on screen (`shown`), which a
+/// copy moves with the content, stale, one delta away; and this frame's
+/// marks (`painted`) must be repainted wherever a copy wrote under them.
+/// Where a mark changed in place is the frame's other damage, carried
+/// with it ([`carry`]).
+pub fn marks_over_copies(
+    copies: &[DeviceCopy],
+    shown: &[Rect],
+    painted: &[Rect],
+    damage: &mut Vec<Rect>,
+) {
+    if copies.is_empty() {
+        return;
+    }
+    damage.extend(carried(copies, shown));
+    let landed: Vec<Rect> = copies.iter().map(DeviceCopy::destination_rect).collect();
+    damage.extend(
+        painted
+            .iter()
+            .filter(|mark| landed.iter().any(|to| !empty(to.intersect(**mark))))
+            .copied(),
+    );
 }
 
 /// The most rows (or, for a sideways copy, columns) one piece of a copy

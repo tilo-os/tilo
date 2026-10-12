@@ -138,7 +138,6 @@ dependencies = [
  "cloud-source",
  "getrandom 0.4.3",
  "hex",
- "private-fs",
  "serde",
  "serde_json",
  "tilo-advisory-lock",
@@ -1383,7 +1382,6 @@ dependencies = [
  "fnv",
  "hex",
  "host-info",
- "private-fs",
  "reqwest 0.13.4",
  "runtime-dylib",
  "serde",
@@ -6917,6 +6915,7 @@ dependencies = [
  "cap-std",
  "crc32fast",
  "hex",
+ "install-profile-model",
  "libc",
  "reqwest 0.13.4",
  "runtime-dylib",
@@ -7074,12 +7073,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "install-profile-model"
+version = "0.1.0"
+
+[[package]]
 name = "installer"
 version = "0.1.0"
 dependencies = [
  "block-devices",
  "bounded-command",
  "console-control",
+ "install-profile-model",
  "libc",
  "os-actions",
  "serde",
@@ -11720,12 +11724,12 @@ dependencies = [
  "hex",
  "image",
  "os-actions",
- "private-fs",
  "runtime-dylib",
  "taffy",
  "tempfile",
  "tilo-app",
  "tilo-doc-pdf",
+ "tilo-files",
  "tilo-history",
  "tilo-ocr",
  "tilo-thumbnail",
@@ -11742,14 +11746,6 @@ dependencies = [
  "equivalent",
  "indexmap",
  "serde",
-]
-
-[[package]]
-name = "private-fs"
-version = "0.1.0"
-dependencies = [
- "tilo-files",
- "workspace-hack",
 ]
 
 [[package]]
@@ -14027,6 +14023,7 @@ dependencies = [
  "taffy",
  "tempfile",
  "test-http",
+ "tilo-accessibility-settings",
  "tilo-actions",
  "tilo-app",
  "tilo-app-package",
@@ -14264,6 +14261,7 @@ dependencies = [
  "emoji",
  "file-explorer",
  "fnv",
+ "fs-protocol",
  "futures-util",
  "gbm",
  "getrandom 0.4.3",
@@ -14295,7 +14293,6 @@ dependencies = [
  "pipewire",
  "pollster",
  "postcard",
- "private-fs",
  "qcms",
  "quick-xml 0.41.0",
  "rand_chacha 0.10.0",
@@ -14324,6 +14321,7 @@ dependencies = [
  "terminal",
  "thiserror 2.0.21",
  "threshold-identity",
+ "tilo-accessibility-settings",
  "tilo-action-broker",
  "tilo-action-policy",
  "tilo-actions",
@@ -15802,6 +15800,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-accessibility-settings"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "settings-store",
+ "tilo-resource",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-accesskit-winit"
 version = "0.34.0"
 dependencies = [
@@ -17034,7 +17043,6 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "postcard",
- "private-fs",
  "rand_core 0.10.0",
  "rustls",
  "serde",
@@ -17046,6 +17054,7 @@ dependencies = [
  "threshold-identity",
  "tilo-advisory-lock",
  "tilo-clock",
+ "tilo-files",
  "tilo-net",
  "tilo-seal",
  "tilo-test-env",
@@ -17155,6 +17164,7 @@ dependencies = [
  "tempfile",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-clock",
@@ -17289,7 +17299,6 @@ dependencies = [
  "chrono",
  "futures-util",
  "messages",
- "private-fs",
  "reqwest 0.13.4",
  "rustls",
  "rustls-native-certs",
@@ -17300,6 +17309,7 @@ dependencies = [
  "tilo-app",
  "tilo-clock",
  "tilo-contact-directory",
+ "tilo-files",
  "tilo-messaging",
  "tilo-net",
  "tilo-resource",
@@ -17754,7 +17764,6 @@ dependencies = [
  "neighbour-wire",
  "package-store",
  "postcard",
- "private-fs",
  "rand 0.10.1",
  "runtime-identity",
  "runtime-portal",
@@ -18129,9 +18138,9 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
  "hex",
- "private-fs",
  "tempfile",
  "tilo-advisory-lock",
+ "tilo-files",
  "tilo-seal",
  "tilo-secrets",
  "tracing",
@@ -18362,7 +18371,6 @@ dependencies = [
  "percent-encoding",
  "pollster",
  "postcard",
- "private-fs",
  "qrcode",
  "rand_core 0.10.0",
  "regex",
@@ -18494,7 +18502,6 @@ dependencies = [
  "hex",
  "libc",
  "postcard",
- "private-fs",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -22757,6 +22764,7 @@ version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
 dependencies = [
+ "serde",
  "zeroize_derive",
 ]
 

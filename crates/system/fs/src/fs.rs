@@ -47,16 +47,17 @@ use iroh_blobs::Hash;
 use serde::Serialize;
 
 use crate::acl::{Access, AclHandle};
-use crate::availability::{
-    AvailabilityPolicy, AvailabilityRegistry, RecordAvailability, RecordKind, Residency,
-    TransferPhase,
-};
+use crate::availability::{AvailabilityRegistry, RecordAvailability, RecordKind};
 use crate::clock::unix_now_ms as now_ms;
 use crate::eviction::{EvictionMode, EvictionQueue, EvictionRequestId, EvictionRequestState};
 use crate::hydration::Hydrator;
 use crate::namespace::{InodeQuery, InodeView, Namespace};
 use crate::smart::Heuristics;
 use crate::sync::SyncHandle;
+use fs_protocol::projection::{
+    RECORD_INDEX_PAGE_ENTRIES, RECORD_INDEX_V2_VERSION, RecordIndexEntryV1,
+};
+use fs_protocol::{AvailabilityPolicy, Residency, TransferPhase};
 
 const TTL: Duration = Duration::from_secs(10);
 // The pinned-hydration worker wakes for everything that can change its plan:
@@ -460,8 +461,8 @@ struct AclVisibleRecordIndex {
     source_revision: String,
     acl_revision: u64,
     revision: String,
-    records: Vec<crate::syncstate::RecordIndexEntryV1>,
-    by_id: HashMap<fs_protocol::FileRecordId, crate::syncstate::RecordIndexEntryV1>,
+    records: Vec<RecordIndexEntryV1>,
+    by_id: HashMap<fs_protocol::FileRecordId, RecordIndexEntryV1>,
     /// Rows this authority may not see, with the path they were judged at.
     /// With `by_id` it lets the next refresh under the same ACL revision
     /// re-evaluate only rows whose path changed.
@@ -1689,8 +1690,8 @@ impl QuickFS {
     /// `None` when the inode doesn't exist. Directories, CRDT documents and
     /// empty files are always [`SyncState::Local`]; a regular file's state
     /// comes from the hydrator (is every chunk in the cache?).
-    fn sync_state_for(&self, ino: u64) -> Option<crate::syncstate::SyncState> {
-        use crate::syncstate::SyncState;
+    fn sync_state_for(&self, ino: u64) -> Option<fs_protocol::SyncState> {
+        use fs_protocol::SyncState;
         let (exists, is_dir, is_doc, hash) = {
             let ns = self.ns();
             let attr = ns.getattr(ino);
@@ -2172,12 +2173,6 @@ impl QuickFS {
                 },
             )?;
         }
-        self.recover_legacy_restores(
-            &mut *journal.lock().map_err(|_| {
-                crate::record_publisher::RecordPublisherError::PublicationUnavailable
-            })?,
-            &namespace_path,
-        )?;
         self.replacement_transactions = Some(ReplacementTransactionRuntime {
             journal,
             namespace_path,
@@ -2449,14 +2444,13 @@ impl QuickFS {
             .ok()??
             .metadata?
             .properties?;
-        let projection = crate::syncstate::MetadataProjectionV1 {
-            schema_version: crate::syncstate::METADATA_PROJECTION_VERSION,
+        fs_protocol::MetadataProjectionV1 {
+            schema_version: fs_protocol::projection::METADATA_PROJECTION_VERSION,
             record_id,
             properties,
-        };
-        projection.validate().ok()?;
-        let bytes = serde_json::to_vec(&projection).ok()?;
-        (bytes.len() <= crate::syncstate::MAX_METADATA_XATTR_BYTES).then_some(bytes)
+        }
+        .to_xattr_bytes()
+        .ok()
     }
 
     fn replacement_snapshot(
@@ -2679,8 +2673,7 @@ impl QuickFS {
             }
             let mut rows = Vec::with_capacity(namespace.indexed_record_count());
             loop {
-                let page = namespace
-                    .indexed_record_page(rows.len(), crate::syncstate::RECORD_INDEX_PAGE_ENTRIES);
+                let page = namespace.indexed_record_page(rows.len(), RECORD_INDEX_PAGE_ENTRIES);
                 if page.is_empty() {
                     break;
                 }
@@ -2706,7 +2699,7 @@ impl QuickFS {
                     enforcement.is_none_or(|(acl, identity)| acl.visible(identity, &entry.path))
                 });
             if visible {
-                records.push(crate::syncstate::RecordIndexEntryV1 {
+                records.push(RecordIndexEntryV1 {
                     record_id: entry.record_id,
                     path: entry.path,
                     is_dir: entry.is_dir,
@@ -2773,7 +2766,7 @@ impl QuickFS {
     /// Legacy v1 projection retained for older Files clients. New clients use
     /// the revisioned page protocol below and therefore never lose late rows.
     fn record_index_projection(&self) -> Option<Vec<u8>> {
-        use crate::syncstate::{
+        use fs_protocol::projection::{
             MAX_RECORD_INDEX_ENTRIES, MAX_RECORD_INDEX_XATTR_BYTES,
             RECORD_INDEX_PROJECTION_VERSION, RecordIndexProjectionV1,
         };
@@ -2791,13 +2784,11 @@ impl QuickFS {
                 projection.truncated = true;
                 continue;
             }
-            projection
-                .records
-                .push(crate::syncstate::RecordIndexEntryV1 {
-                    record_id: entry.record_id,
-                    path: entry.path,
-                    is_dir: entry.is_dir,
-                });
+            projection.records.push(RecordIndexEntryV1 {
+                record_id: entry.record_id,
+                path: entry.path,
+                is_dir: entry.is_dir,
+            });
             let Ok(bytes) = serde_json::to_vec(&projection) else {
                 return None;
             };
@@ -2815,14 +2806,14 @@ impl QuickFS {
     fn record_index_manifest_v2(&self) -> Option<Vec<u8>> {
         let revision = self.record_catalog_revision();
         let records = self.ns().indexed_record_count();
-        let manifest = crate::syncstate::RecordIndexManifestV2 {
-            schema_version: crate::syncstate::RECORD_INDEX_V2_VERSION,
+        let manifest = fs_protocol::projection::RecordIndexManifestV2 {
+            schema_version: RECORD_INDEX_V2_VERSION,
             revision,
             // This is a bounded-cursor ceiling, not an ACL-visible count.
             // Pages apply ACL filtering locally and may be empty; publishing a
             // visible count would require an unbounded denied-row scan.
             records,
-            page_entries: crate::syncstate::RECORD_INDEX_PAGE_ENTRIES,
+            page_entries: RECORD_INDEX_PAGE_ENTRIES,
         };
         manifest.validate().ok()?;
         serde_json::to_vec(&manifest).ok()
@@ -2830,7 +2821,7 @@ impl QuickFS {
 
     fn record_index_page_v2(&self, revision: &str, offset: usize) -> Option<Vec<u8>> {
         (self.record_catalog_revision() == revision).then_some(())?;
-        let page_entries = crate::syncstate::RECORD_INDEX_PAGE_ENTRIES;
+        let page_entries = RECORD_INDEX_PAGE_ENTRIES;
         let namespace = self.ns();
         let records = namespace.indexed_record_count();
         if offset > records || !offset.is_multiple_of(page_entries) {
@@ -2839,15 +2830,15 @@ impl QuickFS {
         let end = offset.saturating_add(page_entries).min(records);
         let candidates = namespace.indexed_record_page(offset, page_entries);
         drop(namespace);
-        let page = crate::syncstate::RecordIndexPageV2 {
-            schema_version: crate::syncstate::RECORD_INDEX_V2_VERSION,
+        let page = fs_protocol::projection::RecordIndexPageV2 {
+            schema_version: RECORD_INDEX_V2_VERSION,
             revision: revision.to_string(),
             offset,
             next_offset: (end < records).then_some(end),
             records: candidates
                 .into_iter()
                 .filter(|entry| self.in_view(&entry.path))
-                .map(|entry| crate::syncstate::RecordIndexEntryV1 {
+                .map(|entry| RecordIndexEntryV1 {
                     record_id: entry.record_id,
                     path: entry.path,
                     is_dir: entry.is_dir,
@@ -2856,7 +2847,7 @@ impl QuickFS {
         };
         page.validate().ok()?;
         let bytes = serde_json::to_vec(&page).ok()?;
-        (bytes.len() <= crate::syncstate::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
+        (bytes.len() <= fs_protocol::projection::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
     }
 
     fn record_index_cursor(
@@ -2920,11 +2911,11 @@ impl QuickFS {
             initials.insert(key, cursor.clone());
             cursor
         });
-        let manifest = crate::syncstate::RecordIndexManifestV3 {
+        let manifest = fs_protocol::projection::RecordIndexManifestV3 {
             schema_version: 3,
             initial_cursor,
             revision: index.revision.clone(),
-            page_entries: crate::syncstate::RECORD_INDEX_PAGE_ENTRIES,
+            page_entries: RECORD_INDEX_PAGE_ENTRIES,
         };
         manifest.validate().ok()?;
         serde_json::to_vec(&manifest).ok()
@@ -2952,13 +2943,13 @@ impl QuickFS {
         (index.revision == revision && index.acl_revision == acl_revision).then_some(())?;
         let records = index.records.len();
         let end = offset
-            .saturating_add(crate::syncstate::RECORD_INDEX_PAGE_ENTRIES)
+            .saturating_add(RECORD_INDEX_PAGE_ENTRIES)
             .min(records);
         let candidates = index.records.get(offset..end)?.to_vec();
         let next_cursor = (end < records).then(|| {
             self.record_index_cursor(revision.to_string(), source_revision, acl_revision, end)
         });
-        let page = crate::syncstate::RecordIndexPageV3 {
+        let page = fs_protocol::projection::RecordIndexPageV3 {
             schema_version: 3,
             revision: revision.to_string(),
             next_cursor,
@@ -2966,20 +2957,20 @@ impl QuickFS {
         };
         page.validate().ok()?;
         let bytes = serde_json::to_vec(&page).ok()?;
-        (bytes.len() <= crate::syncstate::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
+        (bytes.len() <= fs_protocol::projection::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
     }
 
     fn record_index_by_id_v2(&self, record_id: fs_protocol::FileRecordId) -> Option<Vec<u8>> {
         let index = self.acl_visible_record_index()?;
         let entry = index.by_id.get(&record_id)?.clone();
-        let projection = crate::syncstate::RecordIndexExactV2 {
-            schema_version: crate::syncstate::RECORD_INDEX_V2_VERSION,
+        let projection = fs_protocol::projection::RecordIndexExactV2 {
+            schema_version: RECORD_INDEX_V2_VERSION,
             revision: index.revision.clone(),
             record: entry,
         };
         projection.validate().ok()?;
         let bytes = serde_json::to_vec(&projection).ok()?;
-        (bytes.len() <= crate::syncstate::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
+        (bytes.len() <= fs_protocol::projection::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
     }
 
     /// Read a bounded immutable version for an app-native history preview.
@@ -3870,24 +3861,22 @@ impl QuickFS {
         };
         record.parent = parent;
         match self.sync_state_for(ino)? {
-            crate::syncstate::SyncState::Local => {
+            fs_protocol::SyncState::Local => {
                 record.residency = Residency::Resident { bytes: size };
                 record.transfer.phase = TransferPhase::Idle;
             }
-            crate::syncstate::SyncState::Projected => {
+            fs_protocol::SyncState::Projected => {
                 record.residency = Residency::NotResident;
                 record.transfer.phase = TransferPhase::Idle;
             }
-            crate::syncstate::SyncState::Downloading => {
+            fs_protocol::SyncState::Downloading => {
                 record.transfer.phase = TransferPhase::Downloading;
             }
         }
-        crate::syncstate::AvailabilityProjectionV1::from_record_with_policy(
-            &record,
-            effective_policy,
-        )
-        .to_xattr_bytes()
-        .ok()
+        record
+            .projection_with_policy(effective_policy)
+            .to_xattr_bytes()
+            .ok()
     }
 
     #[allow(
@@ -3989,7 +3978,7 @@ impl QuickFS {
             record.transfer.last_error = None;
             record.transfer.retry_count = 0;
             record.transfer.retry_at_ms = None;
-            record.transfer.progress = Some(crate::availability::TransferProgress {
+            record.transfer.progress = Some(fs_protocol::TransferProgress {
                 completed_bytes: 0,
                 total_bytes: Some(size),
             });
@@ -4029,11 +4018,10 @@ impl QuickFS {
                         last_persisted = completed_bytes;
                         update_retry_state(&registry, record_id, |record| {
                             record.transfer.phase = TransferPhase::Downloading;
-                            record.transfer.progress =
-                                Some(crate::availability::TransferProgress {
-                                    completed_bytes,
-                                    total_bytes: Some(total_bytes),
-                                });
+                            record.transfer.progress = Some(fs_protocol::TransferProgress {
+                                completed_bytes,
+                                total_bytes: Some(total_bytes),
+                            });
                         });
                     },
                 )
@@ -4292,7 +4280,7 @@ impl QuickFS {
     /// cache); `None` otherwise, so making a preview never pulls content
     /// from the network.
     fn local_content_blocking(&self, hash: Hash) -> Option<Vec<u8>> {
-        use crate::syncstate::SyncState;
+        use fs_protocol::SyncState;
         let hydrator = self.hydrator.clone();
         let rt = hydrator.runtime_handle.clone();
         tokio::task::block_in_place(|| {
@@ -5695,7 +5683,7 @@ fn pinned_state_update(
                 Residency::Partial { resident_bytes }
             };
             record.transfer.phase = TransferPhase::Queued;
-            record.transfer.progress = Some(crate::availability::TransferProgress {
+            record.transfer.progress = Some(fs_protocol::TransferProgress {
                 completed_bytes: resident_bytes,
                 total_bytes: Some(candidate.size),
             });
@@ -5900,7 +5888,7 @@ async fn reconcile_pinned_hydration(
         let Some(hash) = candidate.hash else {
             continue;
         };
-        let probe = if hydrator.sync_state(hash).await == crate::syncstate::SyncState::Local {
+        let probe = if hydrator.sync_state(hash).await == fs_protocol::SyncState::Local {
             PinnedProbe::Local
         } else {
             PinnedProbe::Missing {
@@ -5957,7 +5945,7 @@ async fn hydrate_pinned_candidate(
             last_persisted = completed;
             update_candidate_state(&registry, &candidate, |record| {
                 record.transfer.phase = TransferPhase::Downloading;
-                record.transfer.progress = Some(crate::availability::TransferProgress {
+                record.transfer.progress = Some(fs_protocol::TransferProgress {
                     completed_bytes: completed,
                     total_bytes: Some(total),
                 });
@@ -6648,7 +6636,7 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(crate::syncstate::AVAILABILITY_CONTROL_XATTR) {
+        if name.to_str() == Some(fs_protocol::AVAILABILITY_CONTROL_XATTR) {
             let result = match value {
                 b"retry" => self.retry_transfer(ino.0),
                 b"evict" => self.free_local_space(ino.0, EvictionMode::Safe),
@@ -6666,7 +6654,7 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(crate::history::HISTORY_CONTROL_XATTR) {
+        if name.to_str() == Some(fs_protocol::HISTORY_CONTROL_XATTR) {
             if value.len() > fs_protocol::MAX_HISTORY_CONTROL_BYTES {
                 reply.error(to_errno(libc::E2BIG));
                 return;
@@ -6692,7 +6680,7 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() != Some(crate::syncstate::PIN_XATTR) {
+        if name.to_str() != Some(fs_protocol::PIN_XATTR) {
             reply.error(to_errno(libc::ENOTSUP));
             return;
         }
@@ -6811,7 +6799,7 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(crate::syncstate::SHARE_CONTROL_XATTR) {
+        if name.to_str() == Some(fs_protocol::SHARE_CONTROL_XATTR) {
             match (
                 ino.0 == crate::namespace::ROOT_INO,
                 &self.share_control_path,
@@ -6823,7 +6811,7 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(crate::syncstate::THUMB_XATTR) {
+        if name.to_str() == Some(fs_protocol::THUMB_XATTR) {
             match self.thumbnail_for(ino.0) {
                 // The kernel caps a single xattr value at 64 KiB — report an
                 // oversize preview as absent so the client falls back, rather than
@@ -6835,7 +6823,7 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(crate::syncstate::CONTENT_HASH_XATTR) {
+        if name.to_str() == Some(fs_protocol::CONTENT_HASH_XATTR) {
             let hash = self.ns().hash_for(ino.0);
             match hash {
                 Some(hash) => reply_xattr_bytes(reply, hash.as_bytes(), size),
@@ -6843,7 +6831,7 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(crate::syncstate::RECORD_ID_XATTR) {
+        if name.to_str() == Some(fs_protocol::RECORD_ID_XATTR) {
             let record_id = self.ns().record_id_for(ino.0);
             match record_id {
                 Some(record_id) => reply_xattr_bytes(reply, record_id.0.as_bytes(), size),
@@ -6851,14 +6839,14 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(crate::syncstate::METADATA_XATTR) {
+        if name.to_str() == Some(fs_protocol::METADATA_XATTR) {
             match self.metadata_projection_for(ino.0) {
                 Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
                 None => reply.error(to_errno(libc::ENODATA)),
             }
             return;
         }
-        if name.to_str() == Some(crate::syncstate::RECORD_INDEX_V2_XATTR) {
+        if name.to_str() == Some(fs_protocol::projection::RECORD_INDEX_V2_XATTR) {
             if ino.0 != crate::namespace::ROOT_INO {
                 reply.error(to_errno(libc::ENODATA));
                 return;
@@ -6875,7 +6863,7 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(crate::syncstate::RECORD_INDEX_V3_XATTR) {
+        if name.to_str() == Some(fs_protocol::projection::RECORD_INDEX_V3_XATTR) {
             if ino.0 != crate::namespace::ROOT_INO || self.enforcement.is_none() {
                 reply.error(to_errno(libc::ENODATA));
                 return;
@@ -6903,7 +6891,9 @@ impl Filesystem for QuickFS {
         }
         if let Some(record_id) = name
             .to_str()
-            .and_then(|name| name.strip_prefix(crate::syncstate::RECORD_INDEX_BY_ID_XATTR_PREFIX))
+            .and_then(|name| {
+                name.strip_prefix(fs_protocol::projection::RECORD_INDEX_BY_ID_XATTR_PREFIX)
+            })
             .and_then(|value| uuid::Uuid::parse_str(value).ok())
             .map(fs_protocol::FileRecordId)
         {
@@ -6940,7 +6930,7 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(crate::syncstate::RECORD_INDEX_XATTR) {
+        if name.to_str() == Some(fs_protocol::projection::RECORD_INDEX_XATTR) {
             if ino.0 != crate::namespace::ROOT_INO || self.enforcement.is_some() {
                 reply.error(to_errno(libc::ENODATA));
                 return;
@@ -6951,28 +6941,28 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(crate::syncstate::AVAILABILITY_XATTR) {
+        if name.to_str() == Some(fs_protocol::AVAILABILITY_XATTR) {
             match self.availability_for(ino.0) {
                 Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
                 None => reply.error(to_errno(libc::ENODATA)),
             }
             return;
         }
-        if name.to_str() == Some(crate::syncstate::SHARE_XATTR) {
+        if name.to_str() == Some(fs_protocol::SHARE_XATTR) {
             match self.share_projection_for(ino.0, now_ms()) {
                 Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
                 None => reply.error(to_errno(libc::ENODATA)),
             }
             return;
         }
-        if name.to_str() == Some(crate::history::HISTORY_XATTR) {
+        if name.to_str() == Some(fs_protocol::HISTORY_XATTR) {
             match self.history_projection_for(ino.0) {
                 Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
                 None => reply.error(to_errno(libc::ENODATA)),
             }
             return;
         }
-        if name.to_str() == Some(crate::syncstate::PIN_XATTR) {
+        if name.to_str() == Some(fs_protocol::PIN_XATTR) {
             let Some(registry) = &self.availability else {
                 reply.error(to_errno(libc::ENODATA));
                 return;
@@ -6999,7 +6989,7 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() != Some(crate::syncstate::SYNC_XATTR) {
+        if name.to_str() != Some(fs_protocol::SYNC_XATTR) {
             reply.error(to_errno(libc::ENODATA));
             return;
         }
@@ -7030,8 +7020,8 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(ENOENT));
             return;
         }
-        let mut buf = Vec::with_capacity(crate::syncstate::SYNC_XATTR.len().saturating_add(1));
-        buf.extend_from_slice(crate::syncstate::SYNC_XATTR.as_bytes());
+        let mut buf = Vec::with_capacity(fs_protocol::SYNC_XATTR.len().saturating_add(1));
+        buf.extend_from_slice(fs_protocol::SYNC_XATTR.as_bytes());
         buf.push(0);
         // Cheap extension check, no generation — a `getxattr` of it may
         // still be `ENODATA` if the content isn't local yet.
@@ -7040,43 +7030,43 @@ impl Filesystem for QuickFS {
                 thumbnail::category_for_path(std::path::Path::new(n)).has_preview()
             });
         if previewable {
-            buf.extend_from_slice(crate::syncstate::THUMB_XATTR.as_bytes());
+            buf.extend_from_slice(fs_protocol::THUMB_XATTR.as_bytes());
             buf.push(0);
         }
         if self.ns().hash_for(ino.0).is_some() {
-            buf.extend_from_slice(crate::syncstate::CONTENT_HASH_XATTR.as_bytes());
+            buf.extend_from_slice(fs_protocol::CONTENT_HASH_XATTR.as_bytes());
             buf.push(0);
         }
         if self.ns().record_id_for(ino.0).is_some() {
-            buf.extend_from_slice(crate::syncstate::RECORD_ID_XATTR.as_bytes());
+            buf.extend_from_slice(fs_protocol::RECORD_ID_XATTR.as_bytes());
             buf.push(0);
         }
         if self.metadata_projection_for(ino.0).is_some() {
-            buf.extend_from_slice(crate::syncstate::METADATA_XATTR.as_bytes());
+            buf.extend_from_slice(fs_protocol::METADATA_XATTR.as_bytes());
             buf.push(0);
         }
         if ino.0 == crate::namespace::ROOT_INO {
-            buf.extend_from_slice(crate::syncstate::RECORD_INDEX_V2_XATTR.as_bytes());
+            buf.extend_from_slice(fs_protocol::projection::RECORD_INDEX_V2_XATTR.as_bytes());
             buf.push(0);
-            buf.extend_from_slice(crate::syncstate::RECORD_INDEX_XATTR.as_bytes());
+            buf.extend_from_slice(fs_protocol::projection::RECORD_INDEX_XATTR.as_bytes());
             buf.push(0);
         }
         if self.availability.is_some() {
-            buf.extend_from_slice(crate::syncstate::AVAILABILITY_XATTR.as_bytes());
+            buf.extend_from_slice(fs_protocol::AVAILABILITY_XATTR.as_bytes());
             buf.push(0);
-            buf.extend_from_slice(crate::syncstate::PIN_XATTR.as_bytes());
+            buf.extend_from_slice(fs_protocol::PIN_XATTR.as_bytes());
             buf.push(0);
-            buf.extend_from_slice(crate::syncstate::AVAILABILITY_CONTROL_XATTR.as_bytes());
+            buf.extend_from_slice(fs_protocol::AVAILABILITY_CONTROL_XATTR.as_bytes());
             buf.push(0);
         }
         if self.share_authority.is_some() && self.ns().record_id_for(ino.0).is_some() {
-            buf.extend_from_slice(crate::syncstate::SHARE_XATTR.as_bytes());
+            buf.extend_from_slice(fs_protocol::SHARE_XATTR.as_bytes());
             buf.push(0);
         }
         if self.history.is_some() && self.ns().record_id_for(ino.0).is_some() {
-            buf.extend_from_slice(crate::history::HISTORY_XATTR.as_bytes());
+            buf.extend_from_slice(fs_protocol::HISTORY_XATTR.as_bytes());
             buf.push(0);
-            buf.extend_from_slice(crate::history::HISTORY_CONTROL_XATTR.as_bytes());
+            buf.extend_from_slice(fs_protocol::HISTORY_CONTROL_XATTR.as_bytes());
             buf.push(0);
             if self.replacement_transactions.is_some() {
                 buf.extend_from_slice(fs_protocol::files::CHECKED_HISTORY_REVIEW_XATTR.as_bytes());
@@ -7086,7 +7076,7 @@ impl Filesystem for QuickFS {
             }
         }
         if ino.0 == crate::namespace::ROOT_INO && self.share_control_path.is_some() {
-            buf.extend_from_slice(crate::syncstate::SHARE_CONTROL_XATTR.as_bytes());
+            buf.extend_from_slice(fs_protocol::SHARE_CONTROL_XATTR.as_bytes());
             buf.push(0);
         }
         if size == 0 {

@@ -213,7 +213,10 @@ jobs:
               "workflow": os.environ["WORKFLOW"],
               "run": int(os.environ["RUN_NUMBER"]), "run_id": int(os.environ["RUN_ID"]),
               "commit": os.environ["GITHUB_SHA"], "ref": os.environ["GITHUB_REF_NAME"],
-              "artifact": os.environ["ARTIFACT"], "rpms": rpms, "artifacts": artifacts}, indent=1) + "\n")
+              "artifact": os.environ["ARTIFACT"], "rpms": rpms, "artifacts": artifacts,
+              "artifact_purpose": "host-session-acceptance-only",
+              "release_signing_claim": "none",
+              "signature_verification": "not-performed-by-this-source-report"}, indent=1) + "\n")
           EOF
           cat source.json
 

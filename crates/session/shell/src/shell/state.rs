@@ -506,6 +506,42 @@ pub struct GovernedPeerIdentity {
     /// remove an already-governed revocation.
     #[serde(default)]
     pub revocations: Vec<tilo_user_identity::RevocationEntry>,
+    /// Set when governance admitted the device as a delegated agent of its
+    /// person (`tilo-peer-state`'s agent members). Absent from every other
+    /// identity's bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<GovernedAgentRow>,
+}
+
+/// The delegation a governed agent identity carries, as room governance
+/// records it beside the agent's certificate.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GovernedAgentRow {
+    /// The person's root-signed delegation naming the device an agent.
+    pub delegation: tilo_relay_protocol::agents::AgentDelegation,
+    /// When the governor withdrew it. Its earlier work stays attributed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub withdrawn_at_ns: Option<u64>,
+}
+
+impl GovernedPeerIdentity {
+    /// How the agent this device is is shown, when governance admitted it
+    /// as one: only when its person's root signed the delegation for exactly
+    /// this device. Withdrawn and expired agents are still named, so the
+    /// work they did stays attributed to them.
+    fn projected_agent(&self) -> Option<tilo_user_identity::GovernedAgentIdentityV2> {
+        let delegation = &self.agent.as_ref()?.delegation;
+        let cert = &self.device_cert;
+        (delegation.agent_device_public_key == cert.device_public_key
+            && delegation
+                .verify(&cert.user_public_key, delegation.issued_at_ns)
+                .is_ok())
+        .then(|| tilo_user_identity::GovernedAgentIdentityV2 {
+            agent_id: delegation.agent_id.clone(),
+            label: delegation.label.clone(),
+            color: delegation.color,
+        })
+    }
 }
 
 /// Former name of [`WorkspaceAuthority`], still imported (`as _`) by
@@ -1393,9 +1429,15 @@ impl WorkspaceTree {
         governed_revocations
             .sort_by_key(|entry| (entry.revoked_device_public_key, entry.revoked_at_ns));
         governed_revocations.dedup_by_key(|entry| entry.revoked_device_public_key);
+        // Re-certifying a device keeps what governance knows it as.
+        let agent = identities
+            .get(peer_id)
+            .filter(|known| known.device_cert == device_cert)
+            .and_then(|known| known.agent.clone());
         let row = GovernedPeerIdentity {
             device_cert,
             revocations: governed_revocations,
+            agent,
         };
         let changed = identities.insert(peer_id.to_string(), row.clone()).as_ref() != Some(&row);
         if changed {
@@ -1426,14 +1468,31 @@ impl WorkspaceTree {
                 bool,
             ),
         > = std::collections::BTreeMap::new();
+        // A delegated agent is named by its delegation, not by a governed
+        // peer name, and shown under the person it acts for.
+        let mut agents: std::collections::BTreeMap<
+            [u8; 32],
+            Vec<tilo_user_identity::GovernedDeviceIdentityV2>,
+        > = std::collections::BTreeMap::new();
         for (peer, identity) in identities {
-            let Some(name) = names.get(&peer) else {
-                continue;
-            };
             let root_key = identity.device_cert.user_public_key;
             if revoked.contains(&(root_key, identity.device_cert.device_public_key)) {
                 continue;
             }
+            if identity.agent.is_some() {
+                if let Some(agent) = identity.projected_agent() {
+                    agents.entry(root_key).or_default().push(
+                        tilo_user_identity::GovernedDeviceIdentityV2 {
+                            certificate: identity.device_cert,
+                            agent: Some(agent),
+                        },
+                    );
+                }
+                continue;
+            }
+            let Some(name) = names.get(&peer) else {
+                continue;
+            };
             let entry = grouped
                 .entry(root_key)
                 .or_insert_with(|| (name.clone(), Vec::new(), true));
@@ -1443,12 +1502,14 @@ impl WorkspaceTree {
             }
             entry.1.push(tilo_user_identity::GovernedDeviceIdentityV2 {
                 certificate: identity.device_cert,
+                agent: None,
             });
         }
         let humans = grouped
             .into_iter()
             .filter(|(_, (_, devices, consistent))| *consistent && !devices.is_empty())
             .map(|(root_public_key, (display_name, mut devices, _))| {
+                devices.extend(agents.remove(&root_public_key).unwrap_or_default());
                 devices.sort_by_key(|device| device.certificate.device_public_key);
                 tilo_user_identity::GovernedHumanIdentityV2 {
                     root_public_key,
@@ -7374,6 +7435,7 @@ mod automerge_foundation_tests {
                 let bytes = serde_json::to_vec(&GovernedPeerIdentity {
                     device_cert: spoofed,
                     revocations: Vec::new(),
+                    agent: None,
                 })
                 .unwrap();
                 doc.put(&identities, endpoint.to_string(), ScalarValue::Bytes(bytes))
@@ -7443,6 +7505,113 @@ mod automerge_foundation_tests {
             ));
             assert!(host.trusted_identity_projection(room).humans.is_empty());
         }
+    }
+
+    /// A device governance admitted as a delegated agent is projected to
+    /// Files as that agent, under the person it acts for, so the versions
+    /// it signs read as the agent's on behalf of that person; a forged
+    /// delegation names nothing, and the person stays projected either way.
+    #[test]
+    fn governed_agents_are_projected_as_agents_of_their_person() {
+        let (mut host, mut guest, room) = two_in_a_room();
+        let root_key = ed25519_dalek::SigningKey::from_bytes(&[97; 32]);
+        let laptop = iroh::SecretKey::generate().public();
+        let mut certificate = tilo_user_identity::DeviceCert {
+            user_public_key: root_key.verifying_key().to_bytes(),
+            device_public_key: *laptop.as_bytes(),
+            device_label: "Studio laptop".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
+        assert!(host.name_peer(
+            room,
+            &"ada".to_string(),
+            &laptop.to_string(),
+            "Ada Lovelace"
+        ));
+        assert!(host.certify_peer_identity(room, &laptop.to_string(), certificate));
+
+        let agent_device = iroh::SecretKey::generate().public();
+        let mut agent_certificate = tilo_user_identity::DeviceCert {
+            user_public_key: root_key.verifying_key().to_bytes(),
+            device_public_key: *agent_device.as_bytes(),
+            device_label: "Agent: Scribe".into(),
+            capabilities: tilo_user_identity::CertificationPolicy::agent().ceiling,
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut agent_certificate, &root_key).unwrap();
+        let delegation = |signer: &ed25519_dalek::SigningKey| {
+            tilo_relay_protocol::agents::AgentDelegation::sign(
+                signer,
+                *agent_device.as_bytes(),
+                "scribe",
+                "Scribe",
+                [10, 20, 30],
+                tilo_relay_protocol::agents::AgentScope {
+                    rooms: vec![uuid::Uuid::from_u128(7).to_string()],
+                    apps: Vec::new(),
+                },
+                1,
+                2,
+            )
+            .unwrap()
+        };
+        let govern_agent = |host: &mut WorkspaceTree, signer: &ed25519_dalek::SigningKey| {
+            host.room_peer_identities.entry(room).or_default().insert(
+                agent_device.to_string(),
+                GovernedPeerIdentity {
+                    device_cert: agent_certificate.clone(),
+                    revocations: Vec::new(),
+                    agent: Some(GovernedAgentRow {
+                        delegation: delegation(signer),
+                        withdrawn_at_ns: None,
+                    }),
+                },
+            );
+            host.sync_room_doc(room);
+        };
+
+        // A delegation another root signed is no agent of this person.
+        govern_agent(&mut host, &ed25519_dalek::SigningKey::from_bytes(&[98; 32]));
+        let projection = host.trusted_identity_projection(room);
+        assert_eq!(projection.humans.len(), 1, "the person stays projected");
+        assert_eq!(projection.humans[0].devices.len(), 1);
+
+        // Its person's: the agent's device is projected as the agent, even
+        // after its window closed, so its work stays attributed.
+        govern_agent(&mut host, &root_key);
+        let projection = host.trusted_identity_projection(room);
+        assert_eq!(projection.humans.len(), 1);
+        let human = &projection.humans[0];
+        assert_eq!(human.display_name, "Ada Lovelace");
+        let agent = human
+            .devices
+            .iter()
+            .find(|device| device.certificate.device_public_key == *agent_device.as_bytes())
+            .expect("the agent is projected under its person");
+        assert_eq!(
+            agent.agent,
+            Some(tilo_user_identity::GovernedAgentIdentityV2 {
+                agent_id: "scribe".into(),
+                label: "Scribe".into(),
+                color: [10, 20, 30],
+            })
+        );
+        assert!(
+            human
+                .devices
+                .iter()
+                .filter(|device| device.agent.is_none())
+                .all(|device| device.certificate.device_public_key == *laptop.as_bytes())
+        );
+
+        ship(&mut host, &mut guest, room, 1);
+        assert_eq!(guest.trusted_identity_projection(room), projection);
     }
 
     #[test]

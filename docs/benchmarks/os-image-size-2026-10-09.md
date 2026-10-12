@@ -2,7 +2,7 @@
 
 This is a historical investigation. The nightly records
 `footprint.image.*` in `tilo-perf-results` hold the current values
-(DEVELOPMENT.md, "OS image size").
+(docs/measurements/os-image-size.md).
 
 ## Method
 

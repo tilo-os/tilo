@@ -277,6 +277,56 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         assert_eq!(after, Some(long));
     }
 
+    // Case `a_session_that_marks_its_runs_opens_and_keeps_the_key`.
+    {
+        use std::io::BufRead as _;
+        use std::os::fd::AsRawFd;
+
+        // The supervisor's reply byte for byte as `ServeResponse::Session`
+        // serialises it for a bash session whose request named a key (ush's
+        // `a_session_reply_keeps_its_wire_form` pins this form). Every Terminal
+        // open names a key, so this is the reply of every default-environment open.
+        const REPLY: &[u8] = b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"runs\":true}\n";
+        let (terminal_end, supervisor_end) =
+            std::os::unix::net::UnixStream::pair().expect("socket pair");
+        let supervisor = std::thread::spawn(move || {
+            let mut request = String::new();
+            std::io::BufReader::new(&supervisor_end)
+                .read_line(&mut request)
+                .unwrap();
+            let pair = portable_pty::native_pty_system()
+                .openpty(PtySize::default())
+                .unwrap();
+            runtime_portal::fd_transport::send_with_fd(
+                supervisor_end.as_raw_fd(),
+                REPLY,
+                pair.master.as_raw_fd().unwrap(),
+            )
+            .unwrap();
+            (request, supervisor_end, pair)
+        });
+        let opened = crate::inner::ush_backend_on(
+            &terminal_end,
+            &[],
+            &crate::target::SessionTarget::default_environment(),
+            crate::Requester::Person,
+            None,
+        );
+        let (request, _supervisor_end, _pair) = supervisor.join().unwrap();
+        let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+        let backend = match opened {
+            Ok(backend) => backend,
+            Err(error) => panic!("a session reply that marks runs must open: {error:?}"),
+        };
+        assert_eq!(backend.shell_name, "ush");
+        assert_eq!(
+            backend.runs.as_deref(),
+            request["runs"].as_str(),
+            "the session marks its runs with the key the request named"
+        );
+        assert!(backend.runs.is_some());
+    }
+
     // Case `service_fd_is_detected_only_when_the_descriptor_is_actually_open`.
     {
         // The service path is selected on a *live* descriptor, not on the mere
@@ -638,6 +688,57 @@ fn typed_text_reaches_the_pty_without_keyevent_text() {
         b"e  \r",
         "letters, both Space spellings, and Enter reach the PTY",
     );
+}
+
+/// Physical and named Space must preserve Readline's mark command.
+#[test]
+fn control_space_reaches_the_native_editor_as_nul() {
+    use winit::event::{ElementState, WindowEvent};
+    use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey, SmolStr};
+
+    let (mut widget, writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+    for alt in [false, true] {
+        let modifiers = if alt {
+            ModifiersState::CONTROL | ModifiersState::ALT
+        } else {
+            ModifiersState::CONTROL
+        };
+        for key in [
+            Key::Named(NamedKey::Space),
+            Key::Character(SmolStr::new_static(" ")),
+            Key::Unidentified(winit::keyboard::NativeKey::Unidentified),
+        ] {
+            let mut event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
+            event.physical_key = PhysicalKey::Code(KeyCode::Space);
+            assert!(
+                ui::testing::Dispatch::new()
+                    .modifiers(modifiers)
+                    .doc(&mut doc)
+                    .send(
+                        &mut widget,
+                        &WindowEvent::KeyboardInput {
+                            device_id: winit::event::DeviceId::dummy(),
+                            event,
+                            is_synthetic: false,
+                        },
+                    )
+                    .handled,
+                "the terminal must consume modified Space"
+            );
+            assert_eq!(
+                drain_writes(&writes),
+                if alt {
+                    b"\x1b\0".as_slice()
+                } else {
+                    b"\0".as_slice()
+                },
+                "all native key spellings must reach Readline's mark command"
+            );
+        }
+    }
 }
 
 /// Grid initialisation, printing through the performer, and the crate's widget surface.

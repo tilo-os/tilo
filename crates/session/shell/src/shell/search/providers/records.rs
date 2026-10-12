@@ -279,17 +279,11 @@ impl SearchProvider for RecordsProvider {
         }
         let exhausted = !found.more && shown == found.hits.len();
         let next = offset.saturating_add(shown);
-        SearchPage {
-            revision: revision.clone(),
+        SearchPage::continuing(
+            revision,
             results,
-            next_cursor: (!exhausted).then(|| SearchCursor {
-                revision,
-                token: format!("{needle}\u{1f}{next}"),
-            }),
-            exhausted,
-            stale_cursor: false,
-            budget_exhausted: !exhausted,
-        }
+            (!exhausted).then(|| format!("{needle}\u{1f}{next}")),
+        )
     }
 }
 

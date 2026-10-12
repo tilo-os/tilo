@@ -7,11 +7,8 @@
 use tilo_app::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
 
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("resource-journey.ftl"))],
-    "journey-draft",
-);
+static CATALOG: EmbeddedCatalog =
+    EmbeddedCatalog::new("en-US", &[("en-US", include_str!("resource-journey.ftl"))]);
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 /// One task, with the platform-provided author of its creation.

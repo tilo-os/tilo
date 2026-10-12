@@ -43,9 +43,6 @@ pub mod time_date;
 pub mod updates;
 pub mod users;
 
-/// Why this process cannot tell which programs the device has installed,
-/// when it cannot: no directory on `PATH` is visible to it. A lookup would
-/// then report every program as missing, which says nothing about the device.
 /// A pane's own node: a full-width column around its composed `child`,
 /// registered for `pane`.
 pub(crate) fn pane_node(
@@ -67,6 +64,35 @@ pub(crate) fn pane_node(
     taffy.widget_node(style, &[child], node_map, pane)
 }
 
+/// `build_layout` for a pane whose content is `self.build_composition()`
+/// held in `self.composed`, wrapped in [`pane_node`], plus forwarding the
+/// rest of the widget to that composition.
+macro_rules! composed_pane {
+    () => {
+        fn build_layout(
+            &mut self,
+            taffy: &mut ui::taffy::TaffyTree<()>,
+            theme: &ui::theme::Theme,
+            node_map: &mut std::collections::HashMap<
+                ui::taffy::NodeId,
+                *mut dyn ui::widget::Widget,
+            >,
+        ) -> ui::taffy::NodeId {
+            let composition = self.build_composition();
+            let child = self
+                .composed
+                .build_layout(composition, taffy, theme, node_map);
+            crate::panes::pane_node(taffy, child, node_map, self)
+        }
+
+        ui::forward_to_composed!(composed);
+    };
+}
+pub(crate) use composed_pane;
+
+/// Why this process cannot tell which programs the device has installed,
+/// when it cannot: no directory on `PATH` is visible to it. A lookup would
+/// then report every program as missing, which says nothing about the device.
 pub(crate) fn installed_programs_unreadable() -> Option<String> {
     programs_unreadable_on(std::env::var_os("PATH").as_deref())
 }

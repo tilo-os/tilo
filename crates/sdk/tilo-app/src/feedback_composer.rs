@@ -10,11 +10,8 @@ use crate::feedback::{Composer, Consent, DeliveryState};
 use crate::i18n::EmbeddedCatalog;
 use crate::prelude::*;
 
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("feedback_composer.ftl"))],
-    "feedback-title",
-);
+static CATALOG: EmbeddedCatalog =
+    EmbeddedCatalog::new("en-US", &[("en-US", include_str!("feedback_composer.ftl"))]);
 
 /// Supplied by the desktop host, never resolved from a URL or draft content.
 #[derive(Clone)]

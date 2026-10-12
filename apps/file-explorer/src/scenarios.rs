@@ -227,7 +227,7 @@ fn write_sync(workspace: &Path) -> std::io::Result<PathBuf> {
     ] {
         let path = workspace.join(name);
         write_file(&path, b"")?;
-        mark(&path, crate::model::SYNC_XATTR, state.as_bytes());
+        mark(&path, fs_protocol::SYNC_XATTR, state.as_bytes());
     }
     make_dir(&workspace.join("shared-assets"))?;
     Ok(workspace.to_path_buf())
@@ -260,8 +260,8 @@ fn write_history(workspace: &Path) -> std::io::Result<PathBuf> {
         "conflicts": []
     }))
     .map_err(std::io::Error::other)?;
-    mark(&path, crate::model::HISTORY_XATTR, &history);
-    mark(&path, crate::model::SYNC_XATTR, b"local");
+    mark(&path, fs_protocol::HISTORY_XATTR, &history);
+    mark(&path, fs_protocol::SYNC_XATTR, b"local");
     Ok(workspace.to_path_buf())
 }
 
@@ -352,15 +352,15 @@ fn write_host_previews(workspace: &Path) -> std::io::Result<PathBuf> {
         // attribute to its node size.
         mark(
             &path,
-            crate::model::THUMB_XATTR,
+            fs_protocol::THUMB_XATTR,
             &gradient_png(112, 84, kind),
         );
-        mark(&path, crate::model::SYNC_XATTR, sync.as_bytes());
+        mark(&path, fs_protocol::SYNC_XATTR, sync.as_bytes());
     }
     for (name, sync) in [("dataset.parquet", "projected"), ("notes.md", "local")] {
         let path = workspace.join(name);
         write_file(&path, b"")?;
-        mark(&path, crate::model::SYNC_XATTR, sync.as_bytes());
+        mark(&path, fs_protocol::SYNC_XATTR, sync.as_bytes());
     }
     Ok(workspace.to_path_buf())
 }
@@ -542,7 +542,7 @@ mod tests {
 
         let sync = write_scene(root.path(), Some("sync")).unwrap();
         assert_eq!(sync.workspace_roots, std::slice::from_ref(&sync.start));
-        let state = xattr::get(sync.start.join("Q3 budget.ods"), crate::model::SYNC_XATTR);
+        let state = xattr::get(sync.start.join("Q3 budget.ods"), fs_protocol::SYNC_XATTR);
         // A temporary filesystem without user attributes cannot carry the
         // projection; the scene is still written.
         if let Ok(state) = state {

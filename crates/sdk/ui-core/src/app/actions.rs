@@ -475,8 +475,7 @@ impl App {
                     crate::widget::ControlBindingKind::SemanticAction(_) => {
                         ControlBindingStatus::SemanticAction
                     }
-                    crate::widget::ControlBindingKind::LegacyDocumentPath(_)
-                    | crate::widget::ControlBindingKind::LegacyCallback => {
+                    crate::widget::ControlBindingKind::LegacyCallback => {
                         ControlBindingStatus::ExplicitLegacy
                     }
                 };

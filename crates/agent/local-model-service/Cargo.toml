@@ -24,6 +24,12 @@ whistle-aot-review = []
 # Production handler requires the immutable image runtime and signed weights.
 # Preparing a package does not enable this feature or admit a catalogue entry.
 whistle-aot = ["whisper"]
+# Public PCM detector review only; no worker/capture or catalogue activation.
+audio-evidence-review = ["whisper"]
+
+[[example]]
+name = "speech_activity_review"
+required-features = ["audio-evidence-review"]
 
 [[bin]]
 name = "tilo-speech-worker"

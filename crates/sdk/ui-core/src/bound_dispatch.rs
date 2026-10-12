@@ -1406,20 +1406,20 @@ pub(crate) fn discover_cached_bound_resources(
                 // The snapshot this one replaces: its controls' derivation
                 // and its filter token carry over, so what the two forests
                 // share is neither filtered nor surveyed again.
-                let (filter_token, controls) = cache
+                let (filter_token, controls, last) = cache
                     .0
                     .borrow()
                     .iter()
                     .find(|entry| entry.snapshot.binding.same_component(binding))
                     .map_or_else(
-                        || (crate::published::fresh_token(), Rc::default()),
+                        || (crate::published::fresh_token(), Rc::default(), None),
                         |entry| {
-                            let token = if entry.permissions == permissions {
-                                entry.filter_token
+                            let (token, last) = if entry.permissions == permissions {
+                                (entry.filter_token, entry.snapshot.shared_forest().cloned())
                             } else {
-                                crate::published::fresh_token()
+                                (crate::published::fresh_token(), None)
                             };
-                            (token, Rc::clone(&entry.snapshot.controls))
+                            (token, Rc::clone(&entry.snapshot.controls), last)
                         },
                     );
                 let resources: Rc<[SharedResource]> = binding
@@ -1428,7 +1428,16 @@ pub(crate) fn discover_cached_bound_resources(
                         owned(widget, doc, binding, &mut resources, &mut Vec::new(), true);
                         resources
                             .iter()
-                            .filter_map(|resource| filter_shared(binding, filter_token, resource))
+                            .filter_map(|resource| {
+                                // A root rebuilt as it was takes the last one's
+                                // filtering: its actions are not asked about again.
+                                if let Some(last) = last.as_ref().and_then(|last| {
+                                    last.iter().find(|last| last.id() == resource.id())
+                                }) {
+                                    inherit_filtered(binding, filter_token, last, resource);
+                                }
+                                filter_shared(binding, filter_token, resource)
+                            })
                             .collect()
                     })
                     .map_err(|error| format!("{error:?}"))?;
@@ -1522,6 +1531,32 @@ pub(crate) fn filter_shared(
         Filtered::Same => Some(resource.clone()),
         Filtered::Pruned => None,
         Filtered::Kept(kept) => Some(kept),
+    }
+}
+
+/// Let `next` take `last`'s filtering under `token` when every action of
+/// `last` was permitted and `next` offers the same (a root head rebuilt as
+/// it was for a new publication): only its children are filtered, each
+/// from what it kept, and nobody is asked about its actions again.
+fn inherit_filtered(
+    binding: &CallbackBinding,
+    token: u64,
+    last: &SharedResource,
+    next: &SharedResource,
+) {
+    use crate::published::Filtered;
+    if next.filtered(token).is_some()
+        || !matches!(last.filtered(token), Some(Filtered::Same))
+        || !same_offer(last, next)
+        || (next.head().actions.is_empty() && next.children().is_empty())
+    {
+        return;
+    }
+    if matches!(
+        filter_shared_children(binding, token, next.children()),
+        Filtered::Same
+    ) {
+        next.remember_filtered(token, Filtered::Same);
     }
 }
 
@@ -4041,6 +4076,43 @@ impl CallbackBinding {
             .action_generation(&self.checkout.id)
             .map_err(BoundDispatchError::Record)
     }
+    fn document_edit_stamp(
+        &self,
+        outer: &AutoCommit,
+    ) -> Result<DocumentEditStamp, BoundDispatchError> {
+        let active = self.check_record()?;
+        let _scope = self.enter()?;
+        if let Some(document) = active {
+            if !std::ptr::eq(document, outer) {
+                return Err(BoundDispatchError::Record(RecordOpenError::Busy));
+            }
+            return ACTIVE.with_borrow(|active| {
+                let handle = active
+                    .as_ref()
+                    .and_then(|entry| entry.3.as_ref())
+                    .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+                let owned = handle
+                    .try_borrow()
+                    .map_err(|_| BoundDispatchError::Record(RecordOpenError::Busy))?;
+                let frame = owned
+                    .as_ref()
+                    .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+                if frame.state.generation.is_none_or(|value| value == u64::MAX)
+                    || frame.history.revision() == u64::MAX
+                {
+                    return Err(BoundDispatchError::Record(RecordOpenError::Busy));
+                }
+                Ok(DocumentEditStamp::for_owned_document(
+                    outer,
+                    self.lifetime_id,
+                    frame.history.revision(),
+                ))
+            });
+        }
+        self.records
+            .document_edit_stamp(&self.checkout.id, self.lifetime_id)
+            .map_err(BoundDispatchError::Record)
+    }
     pub(crate) fn drain_widget_actions(
         &self,
         widget: &mut dyn Widget,
@@ -4509,6 +4581,7 @@ pub(crate) fn restore_legacy_history(
 /// write authority; an unavailable stamp must invalidate deferred insertion.
 #[derive(Clone, PartialEq, Eq)]
 pub struct DocumentEditStamp {
+    // Exact owner lifetime and undo/redo revision, never callback admission.
     owner: Option<(uuid::Uuid, u64)>,
     frontier: Vec<ChangeHash>,
     pending: usize,
@@ -4525,9 +4598,9 @@ impl DocumentEditStamp {
         let mut hash = blake3::Hasher::new_keyed(key);
         hash.update(b"tilo.ime.embedded-edit.v1");
         hash.update(&u64::from(node).to_le_bytes());
-        if let Some((owner, generation)) = self.owner {
+        if let Some((owner, history_revision)) = self.owner {
             hash.update(owner.as_bytes());
-            hash.update(&generation.to_le_bytes());
+            hash.update(&history_revision.to_le_bytes());
         }
         hash.update(&self.pending.to_le_bytes());
         for head in &self.frontier {
@@ -4535,6 +4608,18 @@ impl DocumentEditStamp {
         }
         hash.update(&field);
         *hash.finalize().as_bytes()
+    }
+
+    pub(crate) fn for_owned_document(
+        document: &AutoCommit,
+        lifetime: uuid::Uuid,
+        history_revision: u64,
+    ) -> Self {
+        Self {
+            owner: Some((lifetime, history_revision)),
+            frontier: document.base_heads(),
+            pending: document.pending_ops(),
+        }
     }
 
     /// Snapshot an unbound host document without committing its open action.
@@ -4557,7 +4642,7 @@ pub struct BoundNodeMap {
     a11y_aliases: a11y_owner::OwnerAliases,
 }
 impl BoundNodeMap {
-    /// Read the nearest canonical record owner's monotonic edit generation.
+    /// Read the nearest canonical record owner's document and history stamp.
     /// Local writes, remote merges and undo/redo invalidate it, including an
     /// edit followed by its inverse. Reading does not open an action or commit.
     /// # Errors
@@ -4573,38 +4658,22 @@ impl BoundNodeMap {
             .get(&node)
             .filter(|entry| !entry.inactive)
             .ok_or(BoundDispatchError::MissingNode)?;
-        let owner = if let Some(binding) = &entry.binding {
-            let generation = binding
-                .generation()?
-                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
-            Some((binding.lifetime_id, generation))
+        if let Some(binding) = &entry.binding {
+            binding.document_edit_stamp(document)
         } else if let Some(legacy) = &entry.legacy {
             legacy
                 .validate()
                 .map_err(|_| BoundDispatchError::ClosedLifetime)?;
             let (store, checkout) = legacy.store_checkout();
-            let generation = store
-                .action_generation(&checkout.id)
-                .map_err(BoundDispatchError::Record)?
-                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
-            Some((
-                legacy
-                    .lifetime_id()
-                    .ok_or(BoundDispatchError::ClosedLifetime)?,
-                generation,
-            ))
+            let lifetime = legacy
+                .lifetime_id()
+                .ok_or(BoundDispatchError::ClosedLifetime)?;
+            store
+                .document_edit_stamp(&checkout.id, lifetime)
+                .map_err(BoundDispatchError::Record)
         } else {
-            None
-        };
-        Ok(if owner.is_some() {
-            DocumentEditStamp {
-                owner,
-                frontier: Vec::new(),
-                pending: 0,
-            }
-        } else {
-            DocumentEditStamp::for_document(document)
-        })
+            Ok(DocumentEditStamp::for_document(document))
+        }
     }
     /// Current admitted layout ancestry, including structural non-widget nodes.
     pub(crate) fn is_descendant(&self, mut node: NodeId, ancestor: NodeId) -> bool {

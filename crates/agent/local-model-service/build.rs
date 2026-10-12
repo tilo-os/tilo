@@ -193,13 +193,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &output.join("speech-install.log"),
         CONFIGURE_BOUND,
     )?;
-    cc::Build::new()
+    let mut bridge = cc::Build::new();
+    bridge
         .cpp(true)
         .std("c++17")
         .include(source.join("include"))
         .include(source.join("ggml/include"))
         .file(root.join("native/speech.cpp"))
-        .compile("tilo-speech-bridge");
+        .file(root.join("native/activity.cpp"));
+    bridge.compile("tilo-speech-bridge");
     println!(
         "cargo:rustc-link-search=native={}",
         destination.join("lib").display()

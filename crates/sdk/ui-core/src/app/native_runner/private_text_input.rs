@@ -122,6 +122,16 @@ impl Bridge {
     }
 
     pub(super) fn service(&mut self, app: &App, window: &impl Transport, allowed: bool) {
+        // Start cannot retain an old field's authority while its renderer reply
+        // is pending. Revalidate before accepting even an already queued reply.
+        if let Some(pending) = self.pending.as_ref()
+            && pending.kind == PrivateImeKind::Start
+            && (!allowed || self.scope(app) != Some(pending.scope))
+        {
+            let serial = pending.serial;
+            self.cancel();
+            window.acknowledge(serial, 1);
+        }
         // Deliver the actual private outcome before post-commit field retirement.
         if let Some(result) = self
             .pending
@@ -149,6 +159,7 @@ impl Bridge {
         // Natural retirement during an asynchronous transaction is settled by its
         // receipt. A focus move still revokes the original scope immediately.
         if let Some(pending) = self.pending.as_ref()
+            && pending.kind == PrivateImeKind::Final
             && allowed
             && app.focused_node == Some(pending.scope.node)
         {
@@ -172,6 +183,11 @@ impl Bridge {
                 grant.serial == event.serial && grant.scope.stamp == event.snapshot
             }) || self.pending.as_ref().is_some_and(|pending| {
                 pending.serial == event.serial && pending.scope.stamp == event.snapshot
+            }) || self.final_delivery.as_ref().is_some_and(|delivery| {
+                delivery.serial == event.serial
+                    && delivery
+                        .scope
+                        .is_some_and(|scope| scope.stamp == event.snapshot)
             });
             if matches {
                 self.cancel();

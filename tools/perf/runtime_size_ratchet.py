@@ -44,7 +44,7 @@ Three gates, as for the per-app tapp budgets (tapp_size_ratchet.py):
 `tools/perf/runtime-size-budget/budget.toml` holds the budgets: a measurement
 plus `headroom`, rounded up to 64 KiB (counts to 64). Intended growth adds one
 `raises/<change>.toml` per change. When the runtime shrinks, both gates print
-the lower budget to commit. DEVELOPMENT.md ("Runtime size") has the steps.
+the lower budget to commit. docs/measurements/runtime-size.md has the steps.
 """
 
 from __future__ import annotations
@@ -312,7 +312,7 @@ def judge(stats: ElfStats, budget: Budget) -> tuple[int, list[str]]:
                      "through tools/ci/runtime-dylib-lazy-link.py")
     if over:
         lines += [f"A deliberate growth adds one raise file for the change, {DIRECTORY}/raises/<change>.toml",
-                  "(the other architecture's job prints its own lines; DEVELOPMENT.md, \"Runtime size\"):",
+                  "(the other architecture's job prints its own lines; docs/measurements/runtime-size.md):",
                   '    reason = "<why the runtime grew, at least 20 characters>"',
                   f"    run = {run_label()}",
                   f"    [runtime.{arch}]"]

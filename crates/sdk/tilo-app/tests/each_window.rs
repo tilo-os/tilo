@@ -14,7 +14,6 @@ static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
         "en-US",
         "window-draft = Next task\nwindow-done = Completed\n",
     )],
-    "window-draft",
 );
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]

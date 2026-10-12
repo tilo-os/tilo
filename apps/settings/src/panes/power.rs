@@ -15,11 +15,9 @@
 //!   compositor's idle layer reads.
 
 use std::cell::OnceCell;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use os_actions::{BatteryInfo, ChargeCapBackend, ChargeCapCapability, PowerProfile};
-use taffy::{NodeId, TaffyTree};
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::theme::Theme;
@@ -939,24 +937,7 @@ impl Widget for PowerPane {
         self.composed.sync(shared, root);
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let composition = self.build_composition();
-        let child = self
-            .composed
-            .build_layout(composition, taffy, theme, node_map);
-        // `child` was just created in this same `taffy` tree, so wrapping it
-        // cannot fail in practice; falling back to the child node itself
-        // (skipping the wrapper style) is a real degraded behaviour rather
-        // than a panic if that invariant is ever broken.
-        crate::panes::pane_node(taffy, child, node_map, self)
-    }
-
-    ui::forward_to_composed!(composed);
+    crate::panes::composed_pane!();
 
     fn name(&self) -> &'static str {
         "PowerPane"
@@ -968,6 +949,8 @@ mod tests {
     use super::*;
     use crate::effects::SettingsEffect;
     use crate::resource::SettingsShell;
+    use std::collections::HashMap;
+    use taffy::{NodeId, TaffyTree};
     use ui::prelude::TestApp;
 
     fn sample_battery() -> BatteryInfo {

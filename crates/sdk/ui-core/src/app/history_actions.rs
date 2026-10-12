@@ -367,10 +367,22 @@ fn entry_json(entry: &HistoryEntry) -> serde_json::Value {
         .map_or(0, |elapsed| {
             u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
         });
+    // Who acted and for whom, as data: an agent's change is the agent's, on
+    // behalf of its person, for a script or a screen reader as on screen.
+    let attribution = entry.author.attribution.as_ref().map(|attribution| {
+        serde_json::json!({
+            "actor": attribution.actor,
+            "kind": attribution.kind,
+            "actor_name": attribution.actor_name,
+            "on_behalf_of": attribution.on_behalf_of,
+            "on_behalf_of_name": attribution.on_behalf_of_name,
+        })
+    });
     serde_json::json!({
         "entry": encode_entry(entry.id),
         "summary": entry.summary,
         "author": entry.author.name,
+        "attribution": attribution,
         "time_ms": time_ms,
     })
 }

@@ -448,6 +448,70 @@ impl NativeRedrawReasons {
             || (!session_locked && self.keepalive)
             || (session_locked && (self.lock_clock || self.lock_animation || self.lock_osd))
     }
+
+    /// The reasons [`Self::content_changed`] counts, as frame-trace
+    /// [`metrics::paint_reason`] bits, gated exactly as it gates them.
+    /// `transition` separates a compositor transition's frame run from the
+    /// other animations folded into `hidden_desktop_animation`.
+    fn paint_reason_bits(self, session_locked: bool, transition: bool) -> u16 {
+        use metrics::paint_reason as r;
+        let desktop = !session_locked;
+        [
+            (self.force, r::FORCE),
+            (self.backend_event, r::INPUT),
+            (self.visible_input, r::CURSOR),
+            (self.session, r::SESSION),
+            (self.revision, r::REVISION),
+            (desktop && self.hidden_desktop_animation, r::ANIMATION),
+            (
+                desktop && self.hidden_desktop_animation && transition,
+                r::TRANSITION,
+            ),
+            (desktop && self.apps, r::APPS),
+            (desktop && self.peers, r::PEERS),
+            (desktop && self.presentation, r::PRESENTATION),
+            (desktop && self.capture, r::CAPTURE),
+            (desktop && self.keepalive, r::KEEPALIVE),
+            (session_locked && self.lock_clock, r::LOCK_CLOCK),
+            (session_locked && self.lock_animation, r::LOCK_ANIMATION),
+            (session_locked && self.lock_osd, r::LOCK_OSD),
+        ]
+        .into_iter()
+        .filter(|(held, _)| *held)
+        .fold(0, |bits, (_, bit)| bits | bit)
+    }
+}
+
+/// `+`-joined app ids of the tiles whose surfaces committed since the last
+/// painted tick, for the frame trace. Characters that would break the CSV
+/// row or the join are replaced; a surface no tab has adopted yet is named
+/// by its id.
+fn paint_client_label(
+    tree: &crate::shell::state::WorkspaceTree,
+    surfaces: &[crate::shell::foreign::SurfaceId],
+) -> &'static str {
+    let mut names: Vec<String> = surfaces
+        .iter()
+        .map(|surface| {
+            crate::shell::tab_binding::app_id_for_surface(tree, *surface).map_or_else(
+                || format!("surface-{surface}"),
+                |app| {
+                    app.chars()
+                        .map(|c| {
+                            if c == ',' || c == '+' || c.is_control() {
+                                '_'
+                            } else {
+                                c
+                            }
+                        })
+                        .collect()
+                },
+            )
+        })
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    metrics::intern_clients(&names.join("+"))
 }
 
 /// An animation's resting frame is owed after its demand clears. The last
@@ -812,6 +876,14 @@ fn release_idle_client_callback(locked: bool, content_changed: bool, presented: 
 /// the presenter's retirement ping wakes calloop as soon as capacity returns.
 fn cadence_wait_needed(pipe_ready: bool, frame_pending: bool) -> bool {
     pipe_ready && frame_pending
+}
+
+/// Whether a tick that is about to park leaves its inputs answered without a
+/// frame: it painted nothing, nothing is dirty (a frame held back by a full
+/// presenter is dirty), and no frame is awaited (no cadence wait is armed and
+/// no redraw was asked for after the paint decision).
+fn unpainted_input_settled(painted: bool, content_changed: bool, frame_awaited: bool) -> bool {
+    !(painted || content_changed || frame_awaited)
 }
 
 /// A transition the presenter could not take stays pending. The park while
@@ -8575,6 +8647,7 @@ pub fn run() {
         backend.pixel_aligned_strip_pan(),
         backend.composites_strip_layers(),
     );
+    frame_builder.set_scroll_copy_presenter(backend.copies_scrolls());
     let clipboard_store = state.selection_store();
     frame_builder
         .host_mut()
@@ -9404,6 +9477,11 @@ pub fn run() {
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
     let mut animation_settle = AnimationSettle::default();
+    // When the frame being made was first wanted, for its trace lateness.
+    let mut demand_onset = metrics::DemandOnset::default();
+    // Each foreign surface's frame counter at the last traced paint, so a
+    // painted tick can name the apps whose commits it carries.
+    let mut trace_surface_frames = std::collections::HashMap::new();
     // `output_presentation_frame_changed` observes live foreign-frame
     // sequences, but removal leaves no live entry to report. Keep a local
     // repaint edge until its full-frame boundary is actually submitted.
@@ -9528,6 +9606,22 @@ pub fn run() {
     // in the model with nothing presented.
     let mut transition_hold_sleep = Duration::ZERO;
     let mut credit_transition_hold;
+    // Every session transition reaches the backend, presenter, logind lifecycle,
+    // dimmer and output management alike.
+    macro_rules! apply_session_transitions {
+        ($transitions:expr) => {
+            for t in $transitions {
+                apply_session_transition(
+                    t,
+                    backend.as_mut(),
+                    present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
+                    &mut screen_dimmer,
+                    Some(&mut state.output_management),
+                );
+            }
+        };
+    }
     while !close_requested {
         dictation_vocabulary.refresh(&mut state);
         if termination.requested() {
@@ -9926,16 +10020,7 @@ pub fn run() {
                     // backend; the first painted frame after closes the input-to-present measurement.
                     metrics.note_input(Instant::now());
                     // Any input is activity — reset the idle timer and wake the display if it was blanked.
-                    for t in session.note_activity(Instant::now()) {
-                        apply_session_transition(
-                            t,
-                            backend.as_mut(),
-                            present_pipe.as_ref(),
-                            local_session_lifecycle.as_ref(),
-                            &mut screen_dimmer,
-                            Some(&mut state.output_management),
-                        );
-                    }
+                    apply_session_transitions!(session.note_activity(Instant::now()));
                     if let Some(steps) = key_steps.as_mut() {
                         steps.steps.mark("activity");
                     }
@@ -10049,16 +10134,7 @@ pub fn run() {
                                 power_bridge.request_suspend();
                             }
                             Some(tilo_power_mgmt::PowerAction::Lock) => {
-                                for t in session.request_lock(Instant::now()) {
-                                    apply_session_transition(
-                                        t,
-                                        backend.as_mut(),
-                                        present_pipe.as_ref(),
-                                        local_session_lifecycle.as_ref(),
-                                        &mut screen_dimmer,
-                                        Some(&mut state.output_management),
-                                    );
-                                }
+                                apply_session_transitions!(session.request_lock(Instant::now()));
                             }
                             Some(tilo_power_mgmt::PowerAction::Ignore) | None => {}
                         }
@@ -10102,16 +10178,7 @@ pub fn run() {
                         session_changed = true;
                     } else if route == PriorityRoute::LockSession {
                         // Super+L locks immediately.
-                        for t in session.request_lock(Instant::now()) {
-                            apply_session_transition(
-                                t,
-                                backend.as_mut(),
-                                present_pipe.as_ref(),
-                                local_session_lifecycle.as_ref(),
-                                &mut screen_dimmer,
-                                Some(&mut state.output_management),
-                            );
-                        }
+                        apply_session_transitions!(session.request_lock(Instant::now()));
                     } else if route == PriorityRoute::ToggleMouseKeys {
                         // The compositor applies the flipped preference on its
                         // next settings poll; the readout confirms it now.
@@ -10382,16 +10449,7 @@ pub fn run() {
                     // A 3/4-finger gesture, already resolved into its navigation meaning —
                     // never also delivered to a client, so no double-handling to guard against.
                     if !session.is_locked() && client_input_allowed(&frame_builder) {
-                        for t in session.note_activity(Instant::now()) {
-                            apply_session_transition(
-                                t,
-                                backend.as_mut(),
-                                present_pipe.as_ref(),
-                                local_session_lifecycle.as_ref(),
-                                &mut screen_dimmer,
-                                Some(&mut state.output_management),
-                            );
-                        }
+                        apply_session_transitions!(session.note_activity(Instant::now()));
                         apply_shell_gesture(&mut frame_builder, action);
                         session_changed = true;
                     }
@@ -10539,16 +10597,7 @@ pub fn run() {
             session.is_locked(),
         ) {
             session_changed = true;
-            for t in session.note_activity(Instant::now()) {
-                apply_session_transition(
-                    t,
-                    backend.as_mut(),
-                    present_pipe.as_ref(),
-                    local_session_lifecycle.as_ref(),
-                    &mut screen_dimmer,
-                    Some(&mut state.output_management),
-                );
-            }
+            apply_session_transitions!(session.note_activity(Instant::now()));
         }
         for wake in controller_nav.take_wakes() {
             use crate::compositor::controller_nav::ControllerWake;
@@ -10866,16 +10915,7 @@ pub fn run() {
             shell_lock_requested = chrome.take_session_lock_request();
         });
         if shell_lock_requested {
-            for t in session.request_lock(Instant::now()) {
-                apply_session_transition(
-                    t,
-                    backend.as_mut(),
-                    present_pipe.as_ref(),
-                    local_session_lifecycle.as_ref(),
-                    &mut screen_dimmer,
-                    Some(&mut state.output_management),
-                );
-            }
+            apply_session_transitions!(session.request_lock(Instant::now()));
             session_changed = true;
         }
 
@@ -10916,32 +10956,14 @@ pub fn run() {
             session_changed = true;
             match sig {
                 tilo_power_mgmt::PowerSignal::Lock => {
-                    for t in session.request_lock(Instant::now()) {
-                        apply_session_transition(
-                            t,
-                            backend.as_mut(),
-                            present_pipe.as_ref(),
-                            local_session_lifecycle.as_ref(),
-                            &mut screen_dimmer,
-                            Some(&mut state.output_management),
-                        );
-                    }
+                    apply_session_transitions!(session.request_lock(Instant::now()));
                 }
                 tilo_power_mgmt::PowerSignal::PreparingForSleep => {
                     // Preserve a lock that was already present at request
                     // time, and also observe a manual/lid lock that arrived
                     // while the async suspend request was in flight.
                     sleep_lock_was_locked |= session.is_locked();
-                    for t in session.prepare_for_sleep(Instant::now()) {
-                        apply_session_transition(
-                            t,
-                            backend.as_mut(),
-                            present_pipe.as_ref(),
-                            local_session_lifecycle.as_ref(),
-                            &mut screen_dimmer,
-                            Some(&mut state.output_management),
-                        );
-                    }
+                    apply_session_transitions!(session.prepare_for_sleep(Instant::now()));
                     sleep_lock_frame_pending = true;
                     sleep_lock_frame_serial = None;
                     sleep_lock_frame_failed = false;
@@ -10960,32 +10982,14 @@ pub fn run() {
                     // sleep actually installed; never unlock an unrelated
                     // user lock when CanSuspend is refused.
                     if should_unlock_after_suspend_failure(was_prepared, sleep_lock_was_locked) {
-                        for t in session.request_unlock(Instant::now()) {
-                            apply_session_transition(
-                                t,
-                                backend.as_mut(),
-                                present_pipe.as_ref(),
-                                local_session_lifecycle.as_ref(),
-                                &mut screen_dimmer,
-                                Some(&mut state.output_management),
-                            );
-                        }
+                        apply_session_transitions!(session.request_unlock(Instant::now()));
                     }
                     sleep_lock_was_locked = false;
                     tracing::warn!(target: "tilo::power", "suspend request failed; session remains awake");
                 }
                 tilo_power_mgmt::PowerSignal::ResumedFromSleep => {
                     // Reset the idle timer so a stale pre-sleep timestamp doesn't immediately re-blank/re-suspend on resume.
-                    for t in session.resume_from_sleep(Instant::now()) {
-                        apply_session_transition(
-                            t,
-                            backend.as_mut(),
-                            present_pipe.as_ref(),
-                            local_session_lifecycle.as_ref(),
-                            &mut screen_dimmer,
-                            Some(&mut state.output_management),
-                        );
-                    }
+                    apply_session_transitions!(session.resume_from_sleep(Instant::now()));
                     // Put the display back — a suspend doesn't pause the seat, so the DRM device
                     // returns with no mode/framebuffer/cursor plane; without this, lid close/open is an unrecoverable black screen.
                     backend.reset_display();
@@ -11049,16 +11053,7 @@ pub fn run() {
         // `SessionLocker` confirms after the overlay paints, below, so `locked` fires only once content is hidden.
         if state.session_lock.take_lock_requested() {
             session_changed = true;
-            for t in session.request_lock(Instant::now()) {
-                apply_session_transition(
-                    t,
-                    backend.as_mut(),
-                    present_pipe.as_ref(),
-                    local_session_lifecycle.as_ref(),
-                    &mut screen_dimmer,
-                    Some(&mut state.output_management),
-                );
-            }
+            apply_session_transitions!(session.request_lock(Instant::now()));
         }
         // Async unlock: pick up an in-flight credential verify's result from the
         // worker thread (started by lock-screen Enter). The loop never blocks —
@@ -11071,16 +11066,7 @@ pub fn run() {
                 // The next lock starts without the keyboard and its layer.
                 lock_keyboard = lock_screen::LockTouchKeyboard::default();
                 frame_builder.set_lock_keyboard_keys(Vec::new());
-                for t in session.request_unlock(Instant::now()) {
-                    apply_session_transition(
-                        t,
-                        backend.as_mut(),
-                        present_pipe.as_ref(),
-                        local_session_lifecycle.as_ref(),
-                        &mut screen_dimmer,
-                        Some(&mut state.output_management),
-                    );
-                }
+                apply_session_transitions!(session.request_unlock(Instant::now()));
             }
         }
 
@@ -12207,7 +12193,7 @@ pub fn run() {
         }
         // Is there anything new to show? This redraw gating lets a static desktop
         // idle at near-zero CPU, orthogonal to *when* a frame may show (the clock's job below).
-        let content_changed = NativeRedrawReasons {
+        let redraw_reasons = NativeRedrawReasons {
             force: force_first_paint,
             backend_event: had_backend_events,
             visible_input: visible_input_changed,
@@ -12241,8 +12227,9 @@ pub fn run() {
             )
             .is_some_and(|deadline| iter_t0 >= deadline),
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
-        }
-        .content_changed(session.is_locked());
+        };
+        let content_changed = redraw_reasons.content_changed(session.is_locked());
+        demand_onset.note_tick(content_changed, iter_t0);
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
         let cadence_due = force_first_paint || frame_clock.due(iter_t0);
@@ -12364,6 +12351,21 @@ pub fn run() {
             }
         }
 
+        if should_paint && metrics.is_enabled() {
+            let advanced =
+                crate::shell::foreign::store().surfaces_advanced(&mut trace_surface_frames);
+            let clients = if advanced.is_empty() {
+                ""
+            } else {
+                let chrome = frame_builder.chrome();
+                let tree = chrome.tree();
+                paint_client_label(&tree, &advanced)
+            };
+            metrics.mark_paint_reasons(
+                redraw_reasons.paint_reason_bits(session.is_locked(), transition_run),
+                clients,
+            );
+        }
         if should_paint {
             frame_builder.with_chrome(
                 super::super::shell::chrome_state::ChromeState::consume_transition_paint,
@@ -12861,8 +12863,9 @@ pub fn run() {
             // this afterwards would compare against the *next* interval and
             // hide an overrun by roughly one refresh period.
             metrics.mark_deadline_lateness(
-                submit_done.saturating_duration_since(frame_clock.next_deadline()),
+                demand_onset.lateness(submit_done, frame_clock.next_deadline()),
             );
+            demand_onset.painted();
             metrics.mark_submit(
                 submit_done.saturating_duration_since(t_submit_start),
                 async_present,
@@ -13058,16 +13061,7 @@ pub fn run() {
             // An agent at work is the person's activity on a hosted machine:
             // without this it locks under its agents after the idle timeout.
             if injected && conn.agent {
-                for t in session.note_activity(Instant::now()) {
-                    apply_session_transition(
-                        t,
-                        backend.as_mut(),
-                        present_pipe.as_ref(),
-                        local_session_lifecycle.as_ref(),
-                        &mut screen_dimmer,
-                        Some(&mut state.output_management),
-                    );
-                }
+                apply_session_transitions!(session.note_activity(Instant::now()));
             }
         }
         if let Some(watching) = test_control_ctx.watch_request.take() {
@@ -13228,6 +13222,17 @@ pub fn run() {
         // left to wake the loop; its frame is due on the next cadence.
         let cadence_needed =
             cadence_needed || cadence_wait_needed(pipe_ready, injected_redraw_pending);
+        // Nothing changed on screen and no frame is waiting, here or behind
+        // the presenter: the inputs handled so far are done without a frame.
+        // Their latency ends here rather than at the next painted frame,
+        // which answers a later input.
+        if unpainted_input_settled(
+            should_paint,
+            content_changed,
+            cadence_needed || injected_redraw_pending,
+        ) {
+            metrics.settle_unpainted_input();
+        }
         // The desktop rested since a frame changed it: draw it as layers for
         // the presenter to warm while nothing else is drawn, so the next
         // strip pan starts by copying. Never under a frame on its way, and
@@ -13739,7 +13744,8 @@ mod tests {
 
     #[test]
     fn pointer_hover_preserves_touch_keyboard_until_pointer_activation() {
-        use crate::compositor::input_method::{OskInput, OskPreference, osk_wanted};
+        use crate::compositor::input_method::{OskInput, osk_wanted};
+        use tilo_accessibility_settings::OnScreenKeyboard;
 
         let mut ctx = TestControlCtx::new();
         let mut fb = FrameBuilder::new((800, 600));
@@ -13754,17 +13760,20 @@ mod tests {
             &mut fb,
         );
         assert!(osk_wanted(
-            OskPreference::Auto,
+            OnScreenKeyboard::Auto,
             OskInput::from_environment(&ctx.input)
         ));
         ctx.note_injected_input(&PlannedAction::CursorMoved { x: 110.0, y: 100.0 }, &mut fb);
         assert!(
-            osk_wanted(OskPreference::Auto, OskInput::from_environment(&ctx.input)),
+            osk_wanted(
+                OnScreenKeyboard::Auto,
+                OskInput::from_environment(&ctx.input)
+            ),
             "incidental pointer hover must not dismiss a touch-started keyboard"
         );
         ctx.note_injected_input(&PlannedAction::MouseLeftButton { pressed: true }, &mut fb);
         assert!(!osk_wanted(
-            OskPreference::Auto,
+            OnScreenKeyboard::Auto,
             OskInput::from_environment(&ctx.input)
         ));
     }
@@ -14179,6 +14188,34 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn presenter_backpressure_and_deadlines_schedule_work() {
+        // Phase `an_input_that_changes_nothing_settles_without_a_frame`.
+        assert!(
+            unpainted_input_settled(false, false, false),
+            "a key release that changes nothing is answered when the loop parks"
+        );
+        assert!(
+            !unpainted_input_settled(true, false, false),
+            "a painted tick closes the latency on its own frame"
+        );
+        assert!(
+            !unpainted_input_settled(false, true, cadence_wait_needed(false, true)),
+            "a frame held back by a full presenter still owes the input its latency"
+        );
+        assert!(
+            !unpainted_input_settled(false, false, cadence_wait_needed(true, true)),
+            "a frame waiting for its cadence still owes the input its latency"
+        );
+        // A redraw a control-socket input asked for after the paint decision,
+        // behind a full presenter (so no cadence wait is armed for it).
+        let control_redraw = true;
+        assert!(
+            !unpainted_input_settled(
+                false,
+                false,
+                cadence_wait_needed(false, control_redraw) || control_redraw
+            ),
+            "a redraw asked for after the paint decision is still owed"
+        );
         // Phase `prepaint_stall_threshold_reports_fifty_milliseconds_and_above`.
         assert!(!slow_prepaint_phase(Duration::from_millis(49)));
         assert!(slow_prepaint_phase(Duration::from_millis(50)));
@@ -14344,6 +14381,44 @@ mod tests {
             );
             assert_eq!(dimmer.overlay_alpha(), None);
         }
+    }
+
+    #[test]
+    fn paint_reasons_name_exactly_what_content_changed_counts() {
+        use crate::compositor::metrics::paint_reason as r;
+        let quiet = NativeRedrawReasons::default();
+        assert!(!quiet.content_changed(false));
+        assert_eq!(quiet.paint_reason_bits(false, false), 0);
+        let commit = NativeRedrawReasons {
+            apps: true,
+            ..NativeRedrawReasons::default()
+        };
+        assert_eq!(commit.paint_reason_bits(false, false), r::APPS);
+        assert_eq!(
+            commit.paint_reason_bits(true, false),
+            0,
+            "a hidden desktop's commit is not why a locked tick paints"
+        );
+        let fade = NativeRedrawReasons {
+            hidden_desktop_animation: true,
+            revision: true,
+            ..NativeRedrawReasons::default()
+        };
+        assert_eq!(
+            fade.paint_reason_bits(false, true),
+            r::REVISION | r::ANIMATION | r::TRANSITION
+        );
+        assert_eq!(
+            fade.paint_reason_bits(false, false),
+            r::REVISION | r::ANIMATION,
+            "an animation that is not a compositor transition is not named one"
+        );
+        let lock = NativeRedrawReasons {
+            lock_clock: true,
+            ..NativeRedrawReasons::default()
+        };
+        assert_eq!(lock.paint_reason_bits(true, false), r::LOCK_CLOCK);
+        assert_eq!(lock.paint_reason_bits(false, false), 0);
     }
 
     #[test]
@@ -14852,7 +14927,11 @@ mod tests {
             let mut services = std::collections::BTreeMap::new();
             services.insert(
                 launcher::services::COLLAB_SERVICE.to_string(),
-                "required@1".to_string(),
+                tilo_app_package::ServiceReq {
+                    protocol: launcher::services::COLLAB_SERVICE.to_string(),
+                    requirement: tilo_app_package::Requirement::Required,
+                    version: 1,
+                },
             );
             let resolved = launcher::services::resolve_service_binds_for_launch(
                 &services,

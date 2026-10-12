@@ -58,6 +58,7 @@ NON_COMPILING_DOCS = {
     "AGENTS.md",
     "DEVELOPMENT.md",
     "docs/ci-performance.md",
+    "tools/dev/remote-source-prepare.md",
     "docs/ci-emergency-relief.md",
     "docs/headless-testing.md",
 }
@@ -79,6 +80,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/recorded_test_time.json": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_test_time.py": "tools/tests/test_ci_recorded_test_time.py",
     "tools/rust_feedback.py": "tools/tests/test_rust_feedback.py",
+    "tools/dev/remote_source_prepare.py": "tools/tests/test_remote_source_prepare.py",
     "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
     "tools/ci/nextest_report.py": "tools/tests/test_nextest_report.py",
     "tools/ci/run_scoped_tests.py": "tools/tests/test_ci_scoped_tests.py",
@@ -224,13 +226,13 @@ MAX_TEST_SHARDS = 4
 # balanced shards instead of lengthening one of them.
 DEDICATED_TEST_WEIGHT = 1_000
 # Suites whose tests fsync heavily: fs's durability, checked-restore and
-# release-matrix tests over real FUSE (with fs-native and private-fs), and the
+# release-matrix tests over real FUSE (with fs-native), and the
 # host suites that commit a durable Store, owner journal or relay journal on
 # every step. On one runner their fsyncs queue behind each other until the host
 # suites' handshake bounds expire, so test shards keep them apart whenever
 # there is more than one shard.
 TEST_SHARD_APART = (
-    frozenset({"tilo-fs", "fs-native", "private-fs"}),
+    frozenset({"tilo-fs", "fs-native"}),
     frozenset({
         "tilo-action-broker",
         "tilo-peer-state",

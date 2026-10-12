@@ -160,7 +160,7 @@ def violations(tree: str, apps: list[str], target: str) -> list[str]:
             f"{RUNTIME} reaches {name}, {ENGINES[name]}, for {target}: an engine with a library "
             "of its own stays out of the runtime every app maps; keep it out of the runtime's "
             "dependencies, and out of the workspace-hack by building it with one feature set "
-            "across the workspace (DEVELOPMENT.md, \"Runtime size\")"
+            "across the workspace (docs/measurements/runtime-size.md)"
         )
     absent = sorted(set(apps) - set(roots))
     if absent:

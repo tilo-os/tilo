@@ -1413,3 +1413,30 @@ fn an_agent_delegation_bounds_its_person_by_the_editor_preset() {
         Answer::Allow
     );
 }
+
+/// An agent's role is the least of its person's, what its admission grants
+/// and the agent cap: it never holds more than either, and never governs.
+#[test]
+fn an_agents_role_never_exceeds_its_person_its_admission_or_the_cap() {
+    use roles::agent_policy;
+    for person in Role::ALL {
+        for granted in Role::ALL {
+            let role = agent_policy::role(person, granted);
+            assert!(person.includes(role), "{person} / {granted} gave {role}");
+            assert!(granted.includes(role), "{person} / {granted} gave {role}");
+            assert!(agent_policy::ROLE_CAP.includes(role));
+            assert_ne!(role, Role::Owner, "an agent never governs");
+        }
+    }
+    assert_eq!(agent_policy::role(Role::Owner, Role::Editor), Role::Editor);
+    assert_eq!(agent_policy::role(Role::Owner, Role::Owner), Role::Editor);
+    assert_eq!(
+        agent_policy::role(Role::Owner, Role::Commenter),
+        Role::Commenter
+    );
+    assert_eq!(
+        agent_policy::role(Role::Commenter, Role::Editor),
+        Role::Commenter
+    );
+    assert_eq!(agent_policy::role(Role::Viewer, Role::Editor), Role::Viewer);
+}

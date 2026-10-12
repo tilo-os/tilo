@@ -10,18 +10,18 @@
 //!   system themes against, also editable from the Appearance pane, through
 //!   the same [`AppearanceEffect`]s); and
 //! - the **pointer, typing, hearing, and screen-reader** assists in
-//!   [`crate::prefs::AccessibilityPrefs`], read by the compositor's input +
-//!   accessibility layer, each set by an [`AccessibilityEffect`].
-
-use std::collections::HashMap;
+//!   [`AccessibilitySettings`], read by the compositor's input + accessibility
+//!   layer, each set by an [`AccessibilityEffect`].
 
 use settings_store::dictation::DictationLanguage;
 use settings_store::magnifier;
-use settings_store::screen_reader::ScreenReaderVoice;
-use taffy::{NodeId, TaffyTree};
+use tilo_accessibility_settings::{
+    ColorFilter, OnScreenKeyboard, ScreenReaderVoice, SwitchKeyPair,
+};
+
+use crate::accessibility_settings::AccessibilitySettings;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus};
-use ui::theme::Theme;
 use ui::tilo_resource::{self, ActionRef};
 use ui::widget::{AppModel, Dropdown, ModelPath, Widget};
 
@@ -29,9 +29,7 @@ use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::panes::appearance::{text_size_label, text_size_options};
-use crate::prefs::{
-    AccessibilityPrefs, AppearancePrefs, ColorFilter, OnScreenKeyboard, SwitchKeyPair,
-};
+use crate::prefs::AppearancePrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{El, caption, card, error_row, rows, setting_row, value_row};
@@ -110,7 +108,7 @@ fn magnifier_view(label: &str) -> Result<magnifier::MagnifierView, String> {
 
 /// The cursor size a shown label stands for.
 fn cursor_size(label: &str) -> Result<u32, String> {
-    AccessibilityPrefs::cursor_size_px(label)
+    AccessibilitySettings::cursor_size_px(label)
         .ok_or_else(|| format!("`{label}` is not a cursor size"))
 }
 
@@ -122,7 +120,7 @@ fn osk_mode(label: &str) -> Result<OnScreenKeyboard, String> {
 
 /// The bounce delay a shown label stands for.
 fn bounce_delay(label: &str) -> Result<u32, String> {
-    AccessibilityPrefs::bounce_delay_ms(label)
+    AccessibilitySettings::bounce_delay_ms(label)
         .ok_or_else(|| format!("`{label}` is not a bounce keys delay"))
 }
 
@@ -176,7 +174,7 @@ pub(crate) fn answer(
 ) -> EffectAnswer {
     use AccessibilityEffect as E;
     let not = |value: &str, what: &str| format!("`{value}` is not a {what}");
-    let change: Box<dyn FnOnce(&mut AccessibilityPrefs)> = match effect {
+    let change: Box<dyn FnOnce(&mut AccessibilitySettings)> = match effect {
         E::SetScreenReader { on } => Box::new(move |p| p.screen_reader = on),
         E::SetSpeechRate { rate } => {
             let wpm = SPEECH_RATES
@@ -253,7 +251,7 @@ struct Shown {
 }
 
 impl Shown {
-    fn of(appearance: &AppearancePrefs, access: &AccessibilityPrefs) -> Self {
+    fn of(appearance: &AppearancePrefs, access: &AccessibilitySettings) -> Self {
         let flag = || LocalState::new(false);
         let text = || LocalState::new(String::new());
         let shown = Self {
@@ -295,7 +293,7 @@ impl Shown {
         self.text_size.set(text_size_label(appearance.text_scale));
     }
 
-    fn show_access(&self, access: &AccessibilityPrefs) {
+    fn show_access(&self, access: &AccessibilitySettings) {
         self.color_filter
             .set(access.color_filter.label().to_owned());
         self.magnifier
@@ -305,14 +303,14 @@ impl Shown {
         self.mouse_keys.set(access.mouse_keys);
         self.large_cursor.set(access.large_cursor);
         self.cursor_size
-            .set(AccessibilityPrefs::cursor_size_label(access.cursor_size).to_owned());
+            .set(AccessibilitySettings::cursor_size_label(access.cursor_size).to_owned());
         self.cursor_crosshair.set(access.cursor_crosshair);
         self.thick_text_caret.set(access.thick_text_caret);
         self.sticky_keys.set(access.sticky_keys);
         self.slow_keys.set(access.slow_keys);
         self.bounce_keys.set(access.bounce_keys);
         self.bounce_delay
-            .set(AccessibilityPrefs::bounce_delay_label(access.bounce_keys_delay_ms).to_owned());
+            .set(AccessibilitySettings::bounce_delay_label(access.bounce_keys_delay_ms).to_owned());
         self.bounce_alert.set(access.bounce_keys_alert);
         self.on_screen_keyboard
             .set(access.on_screen_keyboard.label().to_owned());
@@ -336,7 +334,7 @@ impl Shown {
 pub struct AccessibilityPane {
     cx: PaneCx,
     appearance: Followed<AppearancePrefs>,
-    access: Followed<AccessibilityPrefs>,
+    access: Followed<AccessibilitySettings>,
     shown: Shown,
     /// The speech engine the screen reader would speak through.
     speech: Option<&'static str>,
@@ -378,7 +376,7 @@ impl Software {
 impl AccessibilityPane {
     pub fn new(cx: PaneCx, software: Software) -> Self {
         let appearance = cx.follow::<AppearancePrefs>();
-        let access = cx.follow::<AccessibilityPrefs>();
+        let access = cx.follow::<AccessibilitySettings>();
         let shown = Shown::of(appearance.get(), access.get());
         Self {
             cx,
@@ -390,7 +388,7 @@ impl AccessibilityPane {
         }
     }
 
-    pub fn access(&self) -> &AccessibilityPrefs {
+    pub fn access(&self) -> &AccessibilitySettings {
         self.access.get()
     }
 
@@ -439,7 +437,7 @@ impl AccessibilityPane {
                     .choice(
                         ColorFilter::OPTIONS.iter().copied(),
                         &shown.color_filter,
-                        AccessibilityPrefs::paths().color_filter,
+                        AccessibilitySettings::paths().color_filter,
                         |label: String| colour_filter(&label),
                     ),
                 self.cx
@@ -448,7 +446,7 @@ impl AccessibilityPane {
                     .choice(
                         magnifier::ZOOM_LABELS,
                         &shown.magnifier,
-                        AccessibilityPrefs::paths().magnifier_zoom,
+                        AccessibilitySettings::paths().magnifier_zoom,
                         |label: String| magnifier_zoom(&label),
                     ),
                 self.cx
@@ -457,7 +455,7 @@ impl AccessibilityPane {
                     .choice(
                         magnifier::MagnifierView::ALL.map(magnifier::MagnifierView::label),
                         &shown.magnifier_view,
-                        AccessibilityPrefs::paths().magnifier_view,
+                        AccessibilitySettings::paths().magnifier_view,
                         |label: String| magnifier_view(&label),
                     ),
             ]),
@@ -474,7 +472,7 @@ impl AccessibilityPane {
                     .row(t("a11y-mouse-keys"))
                     .described(t("a11y-mouse-keys-desc"))
                     .id("a11y.mouse_keys")
-                    .toggle(&shown.mouse_keys, AccessibilityPrefs::paths().mouse_keys),
+                    .toggle(&shown.mouse_keys, AccessibilitySettings::paths().mouse_keys),
                 caption(&t("a11y-mouse-keys-caption")),
                 self.cx
                     .row(t("a11y-large-cursor"))
@@ -482,15 +480,15 @@ impl AccessibilityPane {
                     .id("a11y.large_cursor")
                     .toggle(
                         &shown.large_cursor,
-                        AccessibilityPrefs::paths().large_cursor,
+                        AccessibilitySettings::paths().large_cursor,
                     ),
                 self.cx
                     .row(t("a11y-cursor-size"))
                     .id("a11y.cursor_size")
                     .choice(
-                        labels(AccessibilityPrefs::CURSOR_SIZES),
+                        labels(AccessibilitySettings::CURSOR_SIZES),
                         &shown.cursor_size,
-                        AccessibilityPrefs::paths().cursor_size,
+                        AccessibilitySettings::paths().cursor_size,
                         |label: String| cursor_size(&label),
                     ),
                 self.cx
@@ -499,7 +497,7 @@ impl AccessibilityPane {
                     .id("a11y.cursor_crosshair")
                     .toggle(
                         &shown.cursor_crosshair,
-                        AccessibilityPrefs::paths().cursor_crosshair,
+                        AccessibilitySettings::paths().cursor_crosshair,
                     ),
                 self.cx
                     .row(t("a11y-thick-caret"))
@@ -507,7 +505,7 @@ impl AccessibilityPane {
                     .id("a11y.thick_text_caret")
                     .toggle(
                         &shown.thick_text_caret,
-                        AccessibilityPrefs::paths().thick_text_caret,
+                        AccessibilitySettings::paths().thick_text_caret,
                     ),
             ]),
         )
@@ -524,7 +522,7 @@ impl AccessibilityPane {
             .choice(
                 OnScreenKeyboard::OPTIONS.iter().copied(),
                 &shown.on_screen_keyboard,
-                AccessibilityPrefs::paths().on_screen_keyboard,
+                AccessibilitySettings::paths().on_screen_keyboard,
                 |label: String| osk_mode(&label),
             );
         card(
@@ -534,24 +532,30 @@ impl AccessibilityPane {
                     .row(t("a11y-sticky-keys"))
                     .described(t("a11y-sticky-keys-desc"))
                     .id("a11y.sticky_keys")
-                    .toggle(&shown.sticky_keys, AccessibilityPrefs::paths().sticky_keys),
+                    .toggle(
+                        &shown.sticky_keys,
+                        AccessibilitySettings::paths().sticky_keys,
+                    ),
                 self.cx
                     .row(t("a11y-slow-keys"))
                     .described(t("a11y-slow-keys-desc"))
                     .id("a11y.slow_keys")
-                    .toggle(&shown.slow_keys, AccessibilityPrefs::paths().slow_keys),
+                    .toggle(&shown.slow_keys, AccessibilitySettings::paths().slow_keys),
                 self.cx
                     .row(t("a11y-bounce-keys"))
                     .described(t("a11y-bounce-keys-desc"))
                     .id("a11y.bounce_keys")
-                    .toggle(&shown.bounce_keys, AccessibilityPrefs::paths().bounce_keys),
+                    .toggle(
+                        &shown.bounce_keys,
+                        AccessibilitySettings::paths().bounce_keys,
+                    ),
                 self.cx
                     .row(t("a11y-bounce-delay"))
                     .id("a11y.bounce_delay")
                     .choice(
-                        labels(AccessibilityPrefs::BOUNCE_DELAYS),
+                        labels(AccessibilitySettings::BOUNCE_DELAYS),
                         &shown.bounce_delay,
-                        AccessibilityPrefs::paths().bounce_keys_delay_ms,
+                        AccessibilitySettings::paths().bounce_keys_delay_ms,
                         |label: String| bounce_delay(&label),
                     ),
                 self.cx
@@ -560,7 +564,7 @@ impl AccessibilityPane {
                     .id("a11y.bounce_keys_alert")
                     .toggle(
                         &shown.bounce_alert,
-                        AccessibilityPrefs::paths().bounce_keys_alert,
+                        AccessibilitySettings::paths().bounce_keys_alert,
                     ),
                 osk_row,
                 self.cx
@@ -569,7 +573,7 @@ impl AccessibilityPane {
                     .id("a11y.switch_control")
                     .toggle(
                         &shown.switch_control,
-                        AccessibilityPrefs::paths().switch_control,
+                        AccessibilitySettings::paths().switch_control,
                     ),
                 self.cx
                     .row(t("a11y-switch-keys"))
@@ -577,7 +581,7 @@ impl AccessibilityPane {
                     .choice(
                         SwitchKeyPair::OPTIONS.iter().copied(),
                         &shown.switch_keys,
-                        AccessibilityPrefs::paths().switch_key_pair,
+                        AccessibilitySettings::paths().switch_key_pair,
                         |label: String| switch_keys(&label),
                     ),
                 self.cx
@@ -586,7 +590,7 @@ impl AccessibilityPane {
                     .choice(
                         labels(&SWITCH_SCANS),
                         &shown.switch_scan,
-                        AccessibilityPrefs::paths().switch_scan_ms,
+                        AccessibilitySettings::paths().switch_scan_ms,
                         |label: String| switch_scan(&label),
                     ),
             ]),
@@ -654,7 +658,7 @@ impl AccessibilityPane {
                             .id("a11y.dictation_literal")
                             .toggle(
                                 &shown.dictation_literal,
-                                AccessibilityPrefs::paths().dictation_literal,
+                                AccessibilitySettings::paths().dictation_literal,
                             ),
                         self.cx
                             .row(t("a11y-visual-alerts"))
@@ -662,7 +666,7 @@ impl AccessibilityPane {
                             .id("a11y.visual_alerts")
                             .toggle(
                                 &shown.visual_alerts,
-                                AccessibilityPrefs::paths().visual_alerts,
+                                AccessibilitySettings::paths().visual_alerts,
                             ),
                         value_row(
                             &t("a11y-focus-highlight"),
@@ -712,20 +716,7 @@ impl Widget for AccessibilityPane {
         self.composed.sync(state, root);
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let composition = self.build_composition();
-        let child = self
-            .composed
-            .build_layout(composition, taffy, theme, node_map);
-        crate::panes::pane_node(taffy, child, node_map, self)
-    }
-
-    ui::forward_to_composed!(composed);
+    crate::panes::composed_pane!();
 
     fn name(&self) -> &'static str {
         "AccessibilityPane"
@@ -738,7 +729,10 @@ mod tests {
     use super::*;
     use crate::host::testing::{ACCESSIBILITY, edit_field};
     use crate::resource::SettingsShell;
+    use std::collections::HashMap;
+    use taffy::{NodeId, TaffyTree};
     use ui::prelude::TestApp;
+    use ui::theme::Theme;
 
     fn set(app: &mut TestApp<SettingsShell>, effect: impl Into<SettingsEffect>) {
         app.effect(&effect.into())
@@ -755,9 +749,14 @@ mod tests {
                 language: "de".into(),
             },
         );
-        let preferences = app.settings::<AccessibilityPrefs>();
+        let preferences = app.settings::<AccessibilitySettings>();
         let section = preferences.document().section("accessibility");
-        assert_eq!(DictationLanguage::from_section(&section).code(), "de");
+        assert_eq!(
+            AccessibilitySettings::from_section(&section)
+                .dictation_language
+                .code(),
+            "de"
+        );
         assert!(preferences.get().sticky_keys);
         let before = preferences.get();
         assert!(
@@ -768,7 +767,7 @@ mod tests {
             ))
             .is_err()
         );
-        assert_eq!(app.settings::<AccessibilityPrefs>().get(), before);
+        assert_eq!(app.settings::<AccessibilitySettings>().get(), before);
         for language in DictationLanguage::ALL {
             assert_ne!(t(&language.label_key()), language.label_key());
         }
@@ -785,7 +784,7 @@ mod tests {
             },
         );
         edit_field(&mut app, ACCESSIBILITY, "dictation_literal", true).unwrap();
-        let preferences = app.settings::<AccessibilityPrefs>();
+        let preferences = app.settings::<AccessibilitySettings>();
         assert!(preferences.get().dictation_literal);
         assert!(preferences.get().sticky_keys);
         assert_eq!(preferences.get().dictation_language.code(), "en");
@@ -797,7 +796,11 @@ mod tests {
             Some(&serde_json::json!(true))
         );
         edit_field(&mut app, ACCESSIBILITY, "dictation_literal", false).unwrap();
-        assert!(!app.settings::<AccessibilityPrefs>().get().dictation_literal);
+        assert!(
+            !app.settings::<AccessibilitySettings>()
+                .get()
+                .dictation_literal
+        );
     }
 
     /// The vision comforts are the appearance section's (one stored value,
@@ -840,7 +843,7 @@ mod tests {
                 rate: "Fast".into(),
             },
         );
-        let access = app.settings::<AccessibilityPrefs>().get();
+        let access = app.settings::<AccessibilitySettings>().get();
         assert!(access.large_cursor);
         assert_eq!(access.cursor_size, 64);
         assert!(access.sticky_keys);
@@ -851,7 +854,7 @@ mod tests {
         assert_eq!(access.screen_reader_rate, 140);
 
         assert!(edit_field(&mut app, ACCESSIBILITY, "cursor_size", 9999).is_err());
-        assert_eq!(app.settings::<AccessibilityPrefs>().get(), access);
+        assert_eq!(app.settings::<AccessibilitySettings>().get(), access);
     }
 
     /// The magnifier's zoom and view land where the compositor's magnifier
@@ -859,7 +862,7 @@ mod tests {
     #[test]
     fn magnifier_effects_reach_the_compositor_section() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        let document = app.settings::<AccessibilityPrefs>().document().clone();
+        let document = app.settings::<AccessibilitySettings>().document().clone();
         let mut remembered = serde_json::Map::new();
         remembered.insert("magnifier_last_zoom".into(), 3.into());
         document
@@ -885,11 +888,11 @@ mod tests {
     fn the_pane_follows_both_sections() {
         let profile = tempfile::tempdir().unwrap();
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
-        cx.settings::<AccessibilityPrefs>()
-            .set(&AccessibilityPrefs {
+        cx.settings::<AccessibilitySettings>()
+            .set(&AccessibilitySettings {
                 magnifier_zoom: 5,
                 cursor_size: 64,
-                ..AccessibilityPrefs::default()
+                ..AccessibilitySettings::default()
             })
             .unwrap();
         let mut pane = AccessibilityPane::new(cx.clone(), Software::installed());
@@ -899,7 +902,7 @@ mod tests {
         cx.settings::<AppearancePrefs>()
             .update(|prefs| prefs.high_contrast = true)
             .unwrap();
-        cx.settings::<AccessibilityPrefs>()
+        cx.settings::<AccessibilitySettings>()
             .update(|prefs| prefs.sticky_keys = true)
             .unwrap();
         let doc = ui::automerge::AutoCommit::new();

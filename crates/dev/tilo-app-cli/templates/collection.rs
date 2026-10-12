@@ -68,8 +68,11 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn view(cx: &mut ViewCx<Items>) -> Element {
-        crate::install_catalog();
         // The next item's title is a form: this window's own, never synced or
         // undone, until Add submits it as one invocation of `add`.
         let next = cx.form::<items::Add>();
