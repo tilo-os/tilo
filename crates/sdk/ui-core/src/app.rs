@@ -1,3 +1,4 @@
+// Measurement: a framework change that shifts panic locations.
 use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, MouseButton, WindowEvent},
