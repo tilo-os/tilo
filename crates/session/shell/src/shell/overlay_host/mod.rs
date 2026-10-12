@@ -6506,7 +6506,7 @@ impl ShellOverlayHost {
     /// This is read-only presentation state. The developer control transport
     /// serialises it when that transport is enabled, while normal production
     /// sessions never bind the transport at all.
-    pub fn active_window_control_rects(&self) -> Option<(Rect, Rect)> {
+    pub fn active_window_bounds(&self) -> Option<ui::widget::WindowGroupBounds> {
         let chrome = self.chrome.clone()?;
         let (strip_id, group_id) = {
             let st = chrome.borrow();
@@ -6522,8 +6522,17 @@ impl ShellOverlayHost {
         // SAFETY: same ownership contract as `group_at_for_tests` above.
         let row: &GroupRow = unsafe { &*ptr };
         let group = row.groups.iter().find(|group| group.id == group_id)?;
-        let maximize = group.active_maximize_rect().unwrap_or(Rect::ZERO);
-        Some((maximize, group.restore_rect()))
+        Some(group.presentation_bounds())
+    }
+
+    /// Compatibility view for the existing developer transport.
+    pub fn active_window_control_rects(&self) -> Option<(Rect, Rect)> {
+        self.active_window_bounds().map(|bounds| {
+            (
+                bounds.maximize.unwrap_or(Rect::ZERO),
+                bounds.restore.unwrap_or(Rect::ZERO),
+            )
+        })
     }
 
     /// Test-only: runs the per-frame active-group reconcile outside `update`.
