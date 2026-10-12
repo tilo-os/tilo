@@ -42,10 +42,10 @@ const CHECKS_PER_ANNOUNCEMENT: usize = 4;
 /// Blocking wakeups per second of the broker's thread while its readers
 /// idle with every change announced and nothing announces: 0.2 measured
 /// (focused runs 101274, 101558); 21-24 on the unannounced re-check.
-const ANNOUNCED_BROKER_WAKEUPS_PER_S_BUDGET: f64 = 1.0;
+const ANNOUNCED_BROKER_WAKEUPS_PER_S_BUDGET: u32 = 1;
 /// What one announcement may add to them: each waiting reader's check and
 /// the broker's answer to it (about 8 measured, focused run 101557).
-const BROKER_WAKEUPS_PER_ANNOUNCEMENT: f64 = 10.0;
+const BROKER_WAKEUPS_PER_ANNOUNCEMENT: u32 = 10;
 
 /// The same idle journey with identity directories to watch, in a child
 /// process so its environment is its own: the broker holds each reader's
@@ -281,8 +281,8 @@ pub(super) async fn run(device: &Device, mounted: &mut Mounted, announced: bool)
                     .saturating_add(1),
             "with every change announced the broker checked an idle read {idle_checks} times in {WINDOW:?} for {announced_count} announcements: is it re-checking on a clock?"
         );
-        let wakeup_budget = ANNOUNCED_BROKER_WAKEUPS_PER_S_BUDGET
-            + BROKER_WAKEUPS_PER_ANNOUNCEMENT * per_second(announced_count);
+        let wakeup_budget = f64::from(ANNOUNCED_BROKER_WAKEUPS_PER_S_BUDGET)
+            + f64::from(BROKER_WAKEUPS_PER_ANNOUNCEMENT) * per_second(announced_count);
         assert!(
             broker_wakeups <= wakeup_budget,
             "the broker thread woke {broker_wakeups:.2} times a second while its readers idled with every change announced ({announced_count} announcements; budget {wakeup_budget:.2}/s)"
