@@ -585,7 +585,16 @@ impl NavModel {
         openings: &mut Openings,
     ) {
         let id = keys.id(&format!("item:{}", item.id));
+        let under_section = self
+            .nodes
+            .get(&parent)
+            .is_some_and(|node| match &node.kind {
+                NavNodeKind::Section { .. } => true,
+                NavNodeKind::Item { spec, .. } => spec.under_section,
+                _ => false,
+            });
         let spec = NavItemSpec {
+            under_section,
             icon: item.icon,
             count: item.count,
             depth,
@@ -1484,13 +1493,6 @@ pub(crate) fn take_navigation(widget: &mut dyn crate::widget::Widget) -> bool {
 
 impl crate::widget::Decorator for NavList {
     type Inner = TreeView<(), NavModel>;
-
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
 
     fn inner(&self) -> &Self::Inner {
         &self.tree

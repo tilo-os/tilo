@@ -26,6 +26,7 @@ const DEVICE_ID_FILE: &str = ".tilo-device-id";
 pub struct NativeProcessHost {
     host: ApplicationHost,
     instance_id: InstanceId,
+    default_record: RecordId,
     workspace_scoped: bool,
 }
 
@@ -53,6 +54,7 @@ impl NativeProcessHost {
         environment: NativeProcessEnvironment,
         author: UserId,
     ) -> Result<Self, LaunchError> {
+        let launcher_instance = environment.continuity_instance.is_some();
         let resolved = environment.resolve(definition.app_id, &author)?;
         let mut host = ApplicationHost::with_store(
             Rc::new(app_state::FsStore::new(resolved.profile_root)),
@@ -69,6 +71,11 @@ impl NativeProcessHost {
         Ok(Self {
             host,
             instance_id: resolved.instance_id,
+            default_record: if launcher_instance {
+                RecordId::derived("default", &RecordId::for_tab(resolved.instance_id))
+            } else {
+                RecordId::room_default()
+            },
             workspace_scoped: resolved.workspace_scoped,
         })
     }
@@ -81,6 +88,37 @@ impl NativeProcessHost {
         self.instance_id
     }
 
+    /// Prepare this native window's named record or saved continuation.
+    /// A launcher-issued fresh instance has its own durable fallback record;
+    /// standalone profiles retain the room default. Room-record applications
+    /// still use their package primary through the normal host policy.
+    ///
+    /// # Errors
+    /// Refuses contested writers, invalid saved views and denied authority.
+    pub fn prepare_launch(
+        &mut self,
+        definition: &ApplicationDefinition,
+        named: Option<RecordId>,
+        inputs: ComponentRunnerInputs,
+    ) -> Result<PreparedComponentInputs, LaunchError> {
+        let kind = definition.record_kind.clone();
+        match named {
+            Some(id) => self.host.prepare_record(
+                definition,
+                self.instance_id,
+                RecordCheckout::new(id, kind),
+                inputs,
+            ),
+            None => self.host.prepare_default(
+                definition,
+                self.instance_id,
+                RecordCheckout::new(self.default_record.clone(), kind),
+                None,
+                inputs,
+            ),
+        }
+    }
+
     pub fn workspace_scoped(&self) -> bool {
         self.workspace_scoped
     }
@@ -89,9 +127,12 @@ impl NativeProcessHost {
 #[derive(Default)]
 struct NativeProcessEnvironment {
     package_id: Option<String>,
+    /// The app's `surface.toml` whoever started it named
+    /// ([`crate::app_surface::SURFACE_FILE_ENV`]), and its hex hash.
+    surface: Option<PathBuf>,
+    surface_hash: Option<String>,
     quick_app_id: Option<String>,
     workspace_id: Option<String>,
-    quick_workspace_id: Option<String>,
     participation: Option<String>,
     continuity_instance: Option<String>,
     person_dir: Option<PathBuf>,
@@ -130,9 +171,10 @@ impl NativeProcessEnvironment {
         }
         Self {
             package_id: string("TILO_PACKAGE_ID"),
+            surface: path(crate::app_surface::SURFACE_FILE_ENV),
+            surface_hash: string(crate::app_surface::SURFACE_HASH_ENV),
             quick_app_id: string("QUICK_APP_ID"),
             workspace_id: string("TILO_WORKSPACE_ID"),
-            quick_workspace_id: string("QUICK_CLUSTER_ID"),
             participation: string("TILO_PARTICIPATION"),
             continuity_instance: string("TILO_CONTINUITY_INSTANCE"),
             person_dir: path(PERSON_DIR_ENV),
@@ -141,8 +183,8 @@ impl NativeProcessEnvironment {
             user_profile: path("USERPROFILE"),
             home: path("HOME"),
             action_authority: Some(tilo_host::action_authority::source(
-                collab_types::caps::action_authority::PROJECTION_PATH.into(),
-                collab_types::caps::action_authority::MAX_PROJECTION_BYTES,
+                collab_types::action_authority::PROJECTION_PATH.into(),
+                collab_types::action_authority::MAX_PROJECTION_BYTES,
             )),
         }
     }
@@ -160,15 +202,30 @@ impl NativeProcessEnvironment {
         if package_id != app_id {
             return Err(LaunchError::BindingMismatch);
         }
+        if let Some(file) = &self.surface {
+            let named = |error: String| {
+                LaunchError::Operation(format!("surface {}: {error}", file.display()))
+            };
+            let bytes = tilo_files::file_at(file)
+                .and_then(|(dir, name)| tilo_files::blocking::read(&dir, &name))
+                .map_err(|error| named(error.to_string()))?;
+            let hash = self.surface_hash.as_deref().ok_or_else(|| {
+                named(format!(
+                    "named without {}",
+                    crate::app_surface::SURFACE_HASH_ENV
+                ))
+            })?;
+            crate::app_surface::register_named(app_id, &bytes, hash).map_err(named)?;
+        }
         let profile_root = self.persistent_profile_root()?;
         let device_id = persistent_device_id(&profile_root)?;
-        let workspace = self
-            .workspace_id
-            .as_deref()
-            .or(self.quick_workspace_id.as_deref());
-        let (workspace_id, workspace_scoped) = launcher_workspace(workspace)?;
-        let mut permissions =
-            permissions_for_participation(author, workspace_scoped, self.participation.as_deref())?;
+        let (workspace_id, workspace_scoped) = launcher_workspace(self.workspace_id.as_deref())?;
+        let mut permissions = permissions_for_participation(
+            author,
+            &workspace_id,
+            workspace_scoped,
+            self.participation.as_deref(),
+        )?;
         if workspace_scoped
             && let Some(source) = self.action_authority
             && source().ok().flatten().is_some()
@@ -292,11 +349,7 @@ impl NativeProfile {
         let environment = NativeProcessEnvironment::capture();
         let instance = environment.continuity_instance.as_deref()?.parse().ok()?;
         let root = environment.persistent_profile_root().ok()?;
-        let room = environment
-            .workspace_id
-            .as_deref()
-            .or(environment.quick_workspace_id.as_deref());
-        Self::open(&root, room)
+        Self::open(&root, environment.workspace_id.as_deref())
             .ok()
             .map(|profile| (profile, instance))
     }
@@ -350,6 +403,7 @@ impl NativeProfile {
 
 fn permissions_for_participation(
     author: &UserId,
+    room: &str,
     workspace_scoped: bool,
     participation: Option<&str>,
 ) -> Result<PermissionContext, LaunchError> {
@@ -364,10 +418,7 @@ fn permissions_for_participation(
             ));
         }
     };
-    Ok(PermissionContext::from_capabilities(
-        crate::permissions::Actor::person(Some(role), author.0.clone()),
-        Vec::new(),
-    ))
+    Ok(PermissionContext::member_of(room, author.0.clone(), role))
 }
 
 fn action_authority_context(
@@ -377,25 +428,20 @@ fn action_authority_context(
     person: &UserId,
 ) -> Result<PermissionContext, String> {
     let projection = read_action_authority_projection(source, room, app, person)?;
-    let now = crate::time::wall()
-        .duration_since(crate::time::UNIX_EPOCH)
-        .map_err(|_| "host action policy time is unavailable")?;
-    let now_ms =
-        u64::try_from(now.as_millis()).map_err(|_| "host action policy time is unavailable")?;
+    let now_ms = crate::time::try_unix_now_ms().ok_or("host action policy time is unavailable")?;
     if !projection.is_current_at(now_ms) {
         return Err("host action policy is not current".into());
     }
-    let role = tilo_desktop_model::Workspace::role_for_membership_at(
-        projection.owner.as_deref(),
-        &projection.capabilities,
-        &person.0,
-        now.as_secs(),
-    );
-    Ok(PermissionContext::from_capabilities(
-        crate::permissions::Actor::person(role, person.0.clone()).in_room(room),
-        projection.capabilities,
+    let mut standing = crate::permissions::Standing::person(projection.policy, person.0.clone());
+    if projection.foreign {
+        standing = standing.on_foreign_device();
+    }
+    Ok(PermissionContext::new(
+        crate::permissions::Actor::person(person.0.clone()).in_room(room),
+        Vec::new(),
+        standing,
     )
-    .at_unix_time(now.as_secs()))
+    .at_unix_time(now_ms / 1000))
 }
 
 fn read_action_authority_projection(
@@ -403,8 +449,8 @@ fn read_action_authority_projection(
     room: &str,
     app: &str,
     person: &UserId,
-) -> Result<collab_types::caps::action_authority::AppActionAuthorityProjection, String> {
-    use collab_types::caps::action_authority::AppActionAuthorityProjection;
+) -> Result<collab_types::action_authority::AppActionAuthorityProjection, String> {
+    use collab_types::action_authority::AppActionAuthorityProjection;
     let bytes = source()?.ok_or("host action policy is unavailable")?;
     let projection: AppActionAuthorityProjection =
         serde_json::from_slice(&bytes).map_err(|_| "host action policy is invalid")?;
@@ -499,6 +545,12 @@ pub struct ApplicationHost {
     /// Where the person's own records are kept: the host's store unless the
     /// host names another ([`Self::keep_person_records_in`]).
     person: RecordOwners,
+    lent_services: Vec<RegisteredLoan>,
+}
+
+struct RegisteredLoan {
+    package_id: String,
+    provide: Box<dyn Fn(&mut HostContext)>,
 }
 
 impl ApplicationHost {
@@ -582,7 +634,29 @@ impl ApplicationHost {
             permissions,
             author,
             action_context,
+            lent_services: Vec::new(),
         })
+    }
+
+    /// Register a host-owned service for one package and the host's exact person.
+    /// Every prepared launch receives a fresh loan; other packages receive none.
+    /// This binds an already authorized service and creates no credential grant.
+    /// # Errors
+    /// Refuses a different principal or empty package.
+    pub fn register_service<T: Clone + 'static>(
+        &mut self,
+        package_id: &str,
+        principal: &str,
+        service: T,
+    ) -> Result<(), LaunchError> {
+        if principal != self.author.0 || package_id.trim().is_empty() {
+            return Err(LaunchError::BindingMismatch);
+        }
+        self.lent_services.push(RegisteredLoan {
+            package_id: package_id.into(),
+            provide: Box::new(move |context| context.lend(service.clone())),
+        });
+        Ok(())
     }
 
     /// Keep the person's own records ([`crate::record::person`]) in `store`
@@ -606,6 +680,13 @@ impl ApplicationHost {
         ) {
             Ok(records) => context.provide_person_records(records),
             Err(error) => tracing::warn!(%error, "the person's records are unavailable"),
+        }
+        for loan in self
+            .lent_services
+            .iter()
+            .filter(|loan| loan.package_id == package_id)
+        {
+            (loan.provide)(&mut context);
         }
         context
     }
@@ -895,28 +976,157 @@ mod native_process_tests {
     }
 
     #[test]
-    fn native_host_action_authority_is_current_scoped_and_preserves_record_participation() {
-        use crate::permissions::{ResourceRef, Verb};
-        use collab_types::caps::action_authority::AppActionAuthorityProjection;
+    fn fresh_native_window_records_do_not_contest_an_existing_writer() {
+        use crate::application_test_support as probe;
+        let temp = tempfile::tempdir().unwrap();
+        let definition = definition(probe::APP);
+        let room = "3f2b1c00-0000-4000-8000-00000000000a";
+        let launch = |instance: u64| {
+            NativeProcessHost::open_with(
+                &definition,
+                NativeProcessEnvironment {
+                    workspace_id: Some(room.into()),
+                    participation: Some("author".into()),
+                    continuity_instance: Some(instance.to_string()),
+                    ..environment(temp.path())
+                },
+                probe::author(),
+            )
+            .unwrap()
+        };
+        let prepare = |native: &mut NativeProcessHost| {
+            native.prepare_launch(&definition, None, probe::runner_inputs())
+        };
+        let mut first = launch(41);
+        let mut first_record = prepare(&mut first).unwrap();
+        first_record
+            .context
+            .initialize_new_record(|_| Ok(()))
+            .unwrap();
+        let mut second = launch(42);
+        let second_record = prepare(&mut second).unwrap();
+        assert_ne!(
+            first_record.context.record(),
+            second_record.context.record()
+        );
+        // Naming the first record explicitly still contends with its actual
+        // live writer: distinct defaults must never weaken the storage lock.
+        assert!(
+            second
+                .prepare_launch(
+                    &definition,
+                    Some(first_record.context.record().id.clone()),
+                    probe::runner_inputs(),
+                )
+                .is_err()
+        );
+        let first_id = first_record.context.record().id.clone();
+        first
+            .host
+            .views
+            .save(&first_record.context.envelope(View::default(), None))
+            .unwrap();
+        drop(first_record);
+        drop(first);
+        let mut restored = launch(41);
+        let restored_record = prepare(&mut restored).unwrap();
+        assert_eq!(restored_record.context.record().id, first_id);
+        assert!(matches!(
+            restored_record.target,
+            LaunchTarget::Record { .. }
+        ));
+    }
+
+    #[test]
+    fn native_window_defaults_preserve_standalone_primary_and_saved_records() {
+        use crate::application_test_support as probe;
+        let temp = tempfile::tempdir().unwrap();
+        let definition = definition(probe::APP);
+        let mut standalone =
+            NativeProcessHost::open_with(&definition, environment(temp.path()), probe::author())
+                .unwrap();
+        let standalone_record = standalone
+            .prepare_launch(&definition, None, probe::runner_inputs())
+            .unwrap();
+        assert_eq!(
+            standalone_record.context.record().id,
+            RecordId::room_default()
+        );
+        drop(standalone_record);
+        drop(standalone);
+
+        let room = "3f2b1c00-0000-4000-8000-00000000000b";
+        let launch = || {
+            NativeProcessHost::open_with(
+                &definition,
+                NativeProcessEnvironment {
+                    workspace_id: Some(room.into()),
+                    participation: Some("author".into()),
+                    continuity_instance: Some("51".into()),
+                    ..environment(temp.path())
+                },
+                probe::author(),
+            )
+            .unwrap()
+        };
+        // A saved pre-fix window can still name the old room-default record.
+        // Changing the fresh fallback must not replace its existing data.
+        let mut legacy = launch();
+        let mut old = legacy
+            .host_mut()
+            .prepare_default(
+                &definition,
+                51,
+                RecordCheckout::new(RecordId::room_default(), definition.record_kind.clone()),
+                None,
+                probe::runner_inputs(),
+            )
+            .unwrap();
+        old.context.initialize_new_record(|_| Ok(())).unwrap();
+        legacy
+            .host
+            .views
+            .save(&old.context.envelope(View::default(), None))
+            .unwrap();
+        drop(old);
+        drop(legacy);
+        let mut restored = launch();
+        let old = restored
+            .prepare_launch(&definition, None, probe::runner_inputs())
+            .unwrap();
+        assert_eq!(old.context.record().id, RecordId::room_default());
+        assert!(matches!(old.target, LaunchTarget::Record { .. }));
+        drop(old);
+        drop(restored);
+
+        let mut primary_definition = self::definition(probe::APP);
+        primary_definition.room_record = true;
+        let mut primary = launch();
+        let prepared = primary
+            .prepare_launch(&primary_definition, None, probe::runner_inputs())
+            .unwrap();
+        assert!(prepared.context.record().id.is_package_primary());
+        assert!(matches!(prepared.target, LaunchTarget::PrimaryNew));
+    }
+
+    #[test]
+    fn native_host_action_authority_is_current_and_scoped_to_the_app() {
+        use crate::permissions::{ActionKind, Answer, TreePath};
+        use collab_types::action_authority::AppActionAuthorityProjection;
         use std::sync::{Arc, Mutex};
         let temp = tempfile::tempdir().unwrap();
         let room = "3f2b1c00-0000-4000-8000-000000000001";
         let app = "so.tilo.store";
         let author = UserId("person-a".into());
-        let now = crate::time::wall()
-            .duration_since(crate::time::UNIX_EPOCH)
-            .unwrap();
-        let now_ms = u64::try_from(now.as_millis()).unwrap();
-        let original = AppActionAuthorityProjection {
-            schema_version: 1,
-            room: room.into(),
-            app_id: app.into(),
-            person: author.0.clone(),
-            owner: Some(author.0.clone()),
-            capabilities: vec![],
-            issued_at_unix_ms: now_ms,
-            valid_until_unix_ms: now_ms + 3_000,
-        };
+        let now_ms = crate::time::try_unix_now_ms().unwrap();
+        let original = AppActionAuthorityProjection::project(
+            &tilo_action_policy::RoomPolicy::new(room, author.0.clone()),
+            app,
+            &author.0,
+            false,
+            now_ms,
+            now_ms + 3_000,
+        );
         let bytes = Arc::new(Mutex::new(Some(serde_json::to_vec(&original).unwrap())));
         let source: tilo_host::action_authority::AuthoritySource = {
             let bytes = bytes.clone();
@@ -930,37 +1140,28 @@ mod native_process_tests {
         };
         let resolved = environment.resolve(app, &author).unwrap();
         let permissions = resolved.permissions;
-        let own = ResourceRef::App(app.into());
+        let own = TreePath::root().app(app).action("buy");
         assert_eq!(permissions.role(), Some(crate::permissions::Role::Viewer));
+        assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Allow);
         assert_eq!(
-            permissions.decide(&own, Verb::Admin),
-            crate::permissions::CapDecision::Allow
-        );
-        assert_ne!(
-            permissions.decide(&own, Verb::Write),
-            crate::permissions::CapDecision::Allow
-        );
-        assert_ne!(
-            permissions.decide(&ResourceRef::App("so.tilo.settings".into()), Verb::Admin),
-            crate::permissions::CapDecision::Allow
+            permissions.answer(
+                &TreePath::root().app("so.tilo.settings").action("reset"),
+                ActionKind::Outside
+            ),
+            Answer::Deny,
+            "another app's actions keep the launch participation"
         );
         let allowed = permissions.directory_witness().unwrap();
         let mut revoked = original.clone();
-        revoked.owner = None;
+        revoked.policy.owner = None;
         *bytes.lock().unwrap() = Some(serde_json::to_vec(&revoked).unwrap());
         assert_ne!(permissions.directory_witness().unwrap(), allowed);
-        assert_ne!(
-            permissions.decide(&own, Verb::Admin),
-            crate::permissions::CapDecision::Allow
-        );
+        assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
         {
             let mut invalid = original.clone();
             invalid.valid_until_unix_ms = invalid.issued_at_unix_ms;
             *bytes.lock().unwrap() = Some(serde_json::to_vec(&invalid).unwrap());
-            assert_ne!(
-                permissions.decide(&own, Verb::Admin),
-                crate::permissions::CapDecision::Allow
-            );
+            assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
         }
         for (field, value) in [
             ("room", "foreign-room"),
@@ -970,41 +1171,26 @@ mod native_process_tests {
             let mut invalid = serde_json::to_value(&original).unwrap();
             invalid[field] = value.into();
             *bytes.lock().unwrap() = Some(serde_json::to_vec(&invalid).unwrap());
-            assert_ne!(
-                permissions.decide(&own, Verb::Admin),
-                crate::permissions::CapDecision::Allow
-            );
+            assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
             assert!(permissions.directory_witness().is_err());
         }
         for invalid in [None, Some(b"invalid".to_vec())] {
             *bytes.lock().unwrap() = invalid;
-            assert_ne!(
-                permissions.decide(&own, Verb::Admin),
-                crate::permissions::CapDecision::Allow
-            );
+            assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
             assert!(permissions.directory_witness().is_err());
         }
         let mut expired = original.clone();
         expired.issued_at_unix_ms = now_ms - 4_000;
         expired.valid_until_unix_ms = now_ms - 1_000;
         *bytes.lock().unwrap() = Some(serde_json::to_vec(&expired).unwrap());
-        assert_ne!(
-            permissions.decide(&own, Verb::Admin),
-            crate::permissions::CapDecision::Allow
-        );
+        assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
         let mut future = original.clone();
         future.issued_at_unix_ms = now_ms + 30_000;
         future.valid_until_unix_ms = now_ms + 33_000;
         *bytes.lock().unwrap() = Some(serde_json::to_vec(&future).unwrap());
-        assert_ne!(
-            permissions.decide(&own, Verb::Admin),
-            crate::permissions::CapDecision::Allow
-        );
+        assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
         *bytes.lock().unwrap() = Some(serde_json::to_vec(&original).unwrap());
-        assert_eq!(
-            permissions.decide(&own, Verb::Admin),
-            crate::permissions::CapDecision::Allow
-        );
+        assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Allow);
         assert_eq!(permissions.directory_witness().unwrap(), allowed);
     }
 
@@ -1222,5 +1408,79 @@ mod native_process_tests {
             foreign_package.resolve("so.tilo.notes", &author),
             Err(LaunchError::BindingMismatch)
         ));
+    }
+}
+
+#[cfg(test)]
+mod service_loan_tests {
+    use super::*;
+    use crate::record::RecordKind;
+    use crate::widget::IconDescriptor;
+
+    fn definition(app_id: &'static str) -> ApplicationDefinition {
+        ApplicationDefinition {
+            app_id,
+            title: "Service probe",
+            icon: IconDescriptor::Glyph("P"),
+            record_kind: RecordKind::new("service-probe"),
+            required: Vec::new(),
+            optional: Vec::new(),
+            opens: &[],
+            room_record: false,
+            create: |_, _, _| Err(LaunchError::BindingMismatch),
+        }
+    }
+
+    fn launch_context(host: &mut ApplicationHost, app: &ApplicationDefinition) -> HostContext {
+        let records = host.records_for(app).expect("checked app namespace");
+        let context = HostContext::prepare(
+            app,
+            HostContextInputs {
+                records,
+                views: host.views.clone(),
+                device_id: host.device_id.clone(),
+                instance_id: 1,
+                permissions: host.permissions.clone(),
+                author: host.author.clone(),
+                action_context: host.action_context.clone(),
+            },
+            &LaunchTarget::New,
+        )
+        .expect("checked launch");
+        host.with_person_records(app, context)
+    }
+
+    #[test]
+    fn registered_services_require_exact_person_and_only_reach_the_named_package() {
+        let mut host = ApplicationHost::with_store(
+            Rc::new(durable_store::MemoryStore::default()),
+            "device-a".into(),
+            "room-a",
+            UserId("person-a".into()),
+            Rc::new(RefCell::new(PermissionContext::permissive())),
+            tilo_actions::ActionContext::default(),
+        )
+        .expect("host");
+        assert!(
+            host.register_service("so.tilo.messages", "person-b", 7u64)
+                .is_err()
+        );
+        assert!(host.register_service("", "person-a", 7u64).is_err());
+        host.register_service("so.tilo.messages", "person-a", 7u64)
+            .expect("explicit owned service");
+        let mut other = launch_context(&mut host, &definition("so.tilo.other"));
+        assert!(other.take_lent().is_empty());
+        drop(other);
+        let mut messages = launch_context(&mut host, &definition("so.tilo.messages"));
+        let loans = messages.take_lent();
+        assert_eq!(loans.len(), 1);
+        assert_eq!(
+            loans.first().and_then(|loan| loan.downcast_ref::<u64>()),
+            Some(&7)
+        );
+        assert!(
+            messages.take_lent().is_empty(),
+            "a launch loan is taken only once"
+        );
     }
 }

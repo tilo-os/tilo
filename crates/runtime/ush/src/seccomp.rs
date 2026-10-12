@@ -100,7 +100,12 @@ mod tests {
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn the_compiled_guest_program_matches_the_pinned_golden_file() {
-        let golden: &[u8] = include_bytes!("../tests/fixtures/seccomp/ush.x86_64.bpf");
+        let golden = hex::decode(
+            include_str!("../tests/fixtures/seccomp/ush.x86_64.bpf.hex")
+                .lines()
+                .collect::<String>(),
+        )
+        .expect("decode pinned guest BPF hex fixture");
         let compiled = compile_guest_filter().unwrap();
         assert!(
             compiled == golden,

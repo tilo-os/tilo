@@ -35,6 +35,9 @@
 //! container routes all events to it exclusively — how the out-of-layout
 //! list becomes hit-testable and click-outside dismissal works.
 
+use crate::num::f32_of_f64;
+use crate::num::f64_of_usize;
+use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{AppModel, ModelPath};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -57,7 +60,7 @@ use crate::text_selection::Selection;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Widget;
-use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
+use crate::widget::{ActionEmitter, ControlBindingMetadata};
 
 /// Height of the closed control before the first layout: a Regular control.
 const CONTROL_HEIGHT: f64 = crate::tokens::Metrics::BASE.min_pointer_target as f64;
@@ -85,24 +88,6 @@ fn menu_min_width() -> f64 {
 }
 
 type SelectionChangeCallback = Box<dyn FnMut(&str)>;
-
-/// Widens a row/option count to `f64` for layout math, through `u32` (exact
-/// in `f64`) with a saturating fallback rather than an `as` cast — a
-/// dropdown never approaches `u32::MAX` options.
-fn count_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
-/// Narrows a bounded screen-space `f64` (row/pixel geometry) to `f32` for
-/// vello/taffy; dropdown content stays far below `f32::MAX`.
-#[inline]
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen-space pixel values in this widget never approach f32::MAX"
-)]
-fn px(v: f64) -> f32 {
-    v as f32
-}
 
 /// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
 /// `f64` matrix math with no overflow trap, so it cannot panic regardless of
@@ -140,6 +125,8 @@ pub struct Dropdown {
     /// Mirror of the bound value. Empty when unset.
     selected: String,
     open: bool,
+    /// An accepted interaction opened this popup, rather than a shot seed.
+    interactive_open: bool,
     /// Position (0-based) into the *filtered* list of the highlighted row.
     highlight: usize,
     /// Incremental substring filter; empty shows every option.
@@ -147,6 +134,10 @@ pub struct Dropdown {
     filter_selection: Selection,
     filter_composition: QueryComposition,
     scroll: f32,
+    scrollbar: Scrollbar,
+    scrollbar_gutter: f64,
+    scrollbar_track: Rect,
+    query_rect: Rect,
 
     /// One-shot: align `highlight` to the selected option on the next
     /// `sync`. Set by the `open()` builder, where `selected` isn't known
@@ -207,6 +198,8 @@ pub struct Dropdown {
     list_width: f64,
     /// One row of the open list: a menu row, grown with its text.
     item_h: f64,
+    /// Host-owned pointer precision controls direct-touch target geometry.
+    interaction: crate::interaction::InteractionEnvironment,
     /// An option, the placeholder, the caption or the icon changed since the
     /// last layout, so the measured width may have.
     layout_dirty: bool,
@@ -293,11 +286,16 @@ impl Dropdown {
             placeholder: String::new(),
             selected: String::new(),
             open: false,
+            interactive_open: false,
             highlight: 0,
             filter: String::new(),
             filter_selection: Selection::collapsed(0),
             filter_composition: QueryComposition::new(),
             scroll: 0.0,
+            scrollbar: Scrollbar::vertical(),
+            scrollbar_gutter: 0.0,
+            scrollbar_track: Rect::ZERO,
+            query_rect: Rect::ZERO,
             align_highlight_on_sync: false,
             rect: Rect::ZERO,
             outer: Rect::ZERO,
@@ -322,6 +320,7 @@ impl Dropdown {
             chooser_cap: f64::from(crate::tokens::Metrics::BASE.chooser_width),
             list_width: 0.0,
             item_h: ITEM_HEIGHT,
+            interaction: crate::interaction::InteractionEnvironment::default(),
             layout_dirty: true,
             drawn: None,
         }
@@ -347,6 +346,9 @@ impl Dropdown {
         [self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y1]
             .map(f64::to_bits)
             .hash(&mut hasher);
+        self.item_h.to_bits().hash(&mut hasher);
+        self.scrollbar.is_active().hash(&mut hasher);
+        (self.filter_selection.anchor, self.filter_selection.cursor).hash(&mut hasher);
         crate::i18n::I18nManager::revision().hash(&mut hasher);
         hasher.finish()
     }
@@ -641,16 +643,28 @@ impl Dropdown {
     /// the styles the width is measured with.
     fn adopt_theme(&mut self, theme: &Theme) {
         self.field_height = self.control_size.height(theme);
+        // Preserve compact pointer controls; coarse direct input needs real
+        // non-overlapping targets, not inflated neighbouring hit rectangles.
+        let touch_minimum =
+            if self.interaction.pointer_precision == crate::interaction::PointerPrecision::Coarse {
+                f64::from(self.interaction.minimum_target())
+            } else {
+                0.0
+            };
+        self.field_height = self.field_height.max(touch_minimum);
         self.label_style = self.control_size.label_style(theme);
         self.caption_style = theme.text(TextRole::Caption);
         self.theme_caption_height =
             caption_height_in(&self.caption_style, f64::from(theme.tokens.spacing.s1));
         self.chooser_cap = f64::from(theme.tokens.metrics.chooser_width * theme.text_growth());
-        self.item_h = f64::from(theme.tokens.metrics.menu_row_height).max(
-            (f64::from(theme.text(TextRole::Body).line_height_px())
-                + 2.0 * f64::from(theme.tokens.spacing.s1))
-            .ceil(),
-        );
+        self.item_h = f64::from(theme.tokens.metrics.menu_row_height)
+            .max(
+                (f64::from(theme.text(TextRole::Body).line_height_px())
+                    + 2.0 * f64::from(theme.tokens.spacing.s1))
+                .ceil(),
+            )
+            .max(touch_minimum);
+        self.scroll = self.scroll.min(self.max_scroll(self.visible_count()));
     }
 
     /// The narrowest field that shows every option, the placeholder and the
@@ -746,6 +760,10 @@ impl Dropdown {
             .unwrap_or(0)
     }
 
+    fn has_selected_value(&self) -> bool {
+        !self.selected.is_empty() || self.values.contains(&self.selected)
+    }
+
     /// Presentation label for the selected stable value.
     fn selected_label(&self) -> &str {
         self.values
@@ -758,21 +776,46 @@ impl Dropdown {
     /// Height of the open list box for `n` filtered rows (>=1 so the
     /// "no matches" row has a box to live in).
     fn list_box_height(&self, n: usize) -> f64 {
-        self.rows_height(n) + 2.0 * LIST_PAD
+        let inset = self.viewport.map_or(2.0 * LIST_PAD, |viewport| {
+            [
+                crate::widget::PopoverSide::Above,
+                crate::widget::PopoverSide::Below,
+            ]
+            .into_iter()
+            .map(|side| {
+                crate::widget::floating_surface::anchored_room(self.rect, side, LIST_GAP, viewport)
+            })
+            .fold(0.0, f64::max)
+            .min(2.0 * LIST_PAD)
+        });
+        self.rows_height(n) + inset
     }
 
     /// Height of the visible rows of the open list, inside its inset.
     fn rows_height(&self, n: usize) -> f64 {
-        (count_f64(n.max(1)) * self.item_h).min(MAX_LIST_HEIGHT.max(self.item_h))
+        let authored = (f64_of_usize(n.max(1)) * self.item_h).min(MAX_LIST_HEIGHT.max(self.item_h));
+        let Some(viewport) = self.viewport else {
+            return authored;
+        };
+        let room = [
+            crate::widget::PopoverSide::Above,
+            crate::widget::PopoverSide::Below,
+        ]
+        .into_iter()
+        .map(|side| {
+            crate::widget::floating_surface::anchored_room(self.rect, side, LIST_GAP, viewport)
+        })
+        .fold(0.0, f64::max);
+        authored.min((room - 2.0 * LIST_PAD).max(0.0))
     }
 
     /// The rows' box inside the open `list`.
     fn rows_rect(list: Rect) -> Rect {
         Rect::new(
             list.x0 + LIST_PAD,
-            list.y0 + LIST_PAD,
+            list.y0 + LIST_PAD.min(list.height() / 2.0),
             list.x1 - LIST_PAD,
-            list.y1 - LIST_PAD,
+            list.y1 - LIST_PAD.min(list.height() / 2.0),
         )
     }
 
@@ -821,18 +864,36 @@ impl Dropdown {
             .iter()
             .map(|option| f64::from(text.measure_style(option, None, &style).0))
             .fold(0.0, f64::max);
+        let hint = crate::i18n!("dropdown-no-matches");
+        let widest = widest.max(f64::from(text.measure_style(&hint, None, &style).0));
         let check = f64::from(theme.tokens.metrics.icon_sm);
         self.list_width = (widest + 3.0 * LIST_PAD + check + 2.0 * LIST_PAD).ceil();
     }
 
     fn max_scroll(&self, n: usize) -> f32 {
-        let content = count_f64(n) * self.item_h;
-        px((content - self.rows_height(n)).max(0.0))
+        let content = f64_of_usize(n) * self.item_h;
+        f32_of_f64((content - self.rows_height(n)).max(0.0))
+    }
+
+    fn scroll_metrics(&self, n: usize) -> ScrollMetrics {
+        ScrollMetrics::new(
+            f64_of_usize(n) * self.item_h,
+            self.rows_height(n),
+            f64::from(self.scroll),
+        )
+    }
+
+    fn option_rows(&self, list: Rect, n: usize) -> Rect {
+        let mut rows = Self::rows_rect(list);
+        if self.scroll_metrics(n).overflows() {
+            rows.x1 = (rows.x1 - self.scrollbar_gutter).max(rows.x0);
+        }
+        rows
     }
 
     /// Filtered-list row index under `pos`, or `None` outside `list`/`n` rows.
     fn row_at(&self, pos: Point, list: Rect, n: usize) -> Option<usize> {
-        let rows = Self::rows_rect(list);
+        let rows = self.option_rows(list, n);
         if !rows.contains(pos) {
             return None;
         }
@@ -852,9 +913,9 @@ impl Dropdown {
 
     /// Scroll so the row at filtered-position `vi` is fully visible.
     fn ensure_visible(&mut self, vi: usize, n: usize) {
-        let box_h = px(self.rows_height(n));
-        let top = px(count_f64(vi) * self.item_h);
-        let bottom = top + px(self.item_h);
+        let box_h = f32_of_f64(self.rows_height(n));
+        let top = f32_of_f64(f64_of_usize(vi) * self.item_h);
+        let bottom = top + f32_of_f64(self.item_h);
         if top < self.scroll {
             self.scroll = top;
         } else if bottom > self.scroll + box_h {
@@ -887,6 +948,7 @@ impl Dropdown {
     /// Open the list and align highlight + scroll to the current value.
     fn do_open(&mut self) {
         self.open = true;
+        self.interactive_open = true;
         self.filter.clear();
         self.filter_selection = Selection::collapsed(0);
         self.filter_composition.clear();
@@ -920,6 +982,9 @@ impl Dropdown {
     /// Close the options overlay without changing its selected value.
     pub fn close(&mut self) {
         self.open = false;
+        self.interactive_open = false;
+        self.scrollbar.release();
+        self.scrollbar_track = Rect::ZERO;
         self.filter.clear();
         self.filter_selection = Selection::collapsed(0);
         self.filter_composition.clear();
@@ -980,6 +1045,14 @@ impl Dropdown {
         if self.open {
             let filtered = self.filtered();
             let list = self.list_rect(filtered.len());
+            let metrics = self.scroll_metrics(filtered.len());
+            if let Some(offset) = self.scrollbar.drag_to(self.scrollbar_track, metrics, pos) {
+                self.scroll = f32_of_f64(offset);
+                *handled = true;
+                return;
+            }
+            self.scrollbar
+                .update_hover(self.scrollbar_track, metrics, pos);
             if let Some(vi) = self.row_at(pos, list, filtered.len())
                 && vi != self.highlight
             {
@@ -1004,14 +1077,38 @@ impl Dropdown {
             let filtered = self.filtered();
             let list = self.list_rect(filtered.len());
             if list.contains(pos) {
+                match self.scrollbar.press(
+                    self.scrollbar_track,
+                    self.scroll_metrics(filtered.len()),
+                    pos,
+                ) {
+                    PressOutcome::Thumb => {
+                        *handled = true;
+                        return;
+                    }
+                    PressOutcome::Page(offset) => {
+                        self.scroll = f32_of_f64(offset);
+                        *handled = true;
+                        return;
+                    }
+                    PressOutcome::Miss => {}
+                }
                 if let Some(vi) = self.row_at(pos, list, filtered.len()) {
                     self.highlight = vi;
                     self.select_highlighted(state, root);
                 }
                 *handled = true;
             } else if self.rect.contains(pos) {
-                // Click the control again → close.
-                self.close();
+                if self.supports_filter() && self.query_rect.contains(pos) {
+                    *focus_target = Some(node_id);
+                    if let Some(selection) =
+                        self.filter_composition.pointer_selection(&self.filter, pos)
+                    {
+                        self.filter_selection = selection;
+                    }
+                } else {
+                    self.close();
+                }
                 *handled = true;
             } else {
                 // Click-outside dismissal.
@@ -1029,7 +1126,7 @@ impl Dropdown {
     fn on_wheel(&mut self, delta: &MouseScrollDelta, handled: &mut bool) {
         let dy = match delta {
             MouseScrollDelta::LineDelta(_, y) => *y * -LINE_PX,
-            MouseScrollDelta::PixelDelta(p) => px(-p.y),
+            MouseScrollDelta::PixelDelta(p) => f32_of_f64(-p.y),
         };
         let n = self.filtered().len();
         self.scroll = (self.scroll + dy).clamp(0.0, self.max_scroll(n));
@@ -1121,6 +1218,21 @@ impl Dropdown {
 impl Widget for Dropdown {
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        if self.interaction != environment {
+            self.interaction = environment;
+            self.is_hovered &= environment.supports_hover();
+            self.layout_dirty = true;
+        }
+    }
+
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -1157,7 +1269,7 @@ impl Widget for Dropdown {
         // overlay pass, so it doesn't reserve layout space.
         //
         // The control is as wide as its widest option (measured in
-        // `adjust_layout_with_measure`), or the row's width with `fill`. In
+        // `adjust_layout_style`), or the row's width with `fill`. In
         // both cases it is the item that gives when the row is short of
         // room, like `TextInput` and unlike fixed-size leaves such as
         // `Toggle`: with `flex_shrink: 0` a dropdown claimed the whole row
@@ -1168,7 +1280,7 @@ impl Widget for Dropdown {
         if self.menu.is_some() {
             // A menu button is an icon-only control of its size.
             self.caption_height = 0.0;
-            let side = px(self.control_size.height(theme));
+            let side = f32_of_f64(self.control_size.height(theme));
             let node = taffy.leaf_node(Style {
                 size: Size {
                     width: Dimension::length(side),
@@ -1190,34 +1302,27 @@ impl Widget for Dropdown {
         let width = if self.fill {
             Dimension::percent(1.0)
         } else if self.measured > 0.0 {
-            Dimension::length(px(self.field_width(self.measured)))
+            Dimension::length(f32_of_f64(self.field_width(self.measured)))
         } else {
             Dimension::auto()
         };
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width,
-                height: Dimension::length(px(self.field_height + self.caption_height)),
+                height: Dimension::length(f32_of_f64(self.field_height + self.caption_height)),
             },
             min_size: Size {
-                width: Dimension::length(px(PAD_X + CHEVRON_W)),
+                width: Dimension::length(f32_of_f64(PAD_X + CHEVRON_W)),
                 height: Dimension::auto(),
             },
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.place(Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        ));
+        self.place(crate::widget::layout_rect(taffy, node, origin));
         self.layout_dirty = false;
     }
 
@@ -1232,7 +1337,7 @@ impl Widget for Dropdown {
         if self.menu.is_some() {
             // A menu button is the square of its size laid out in
             // `build_layout`.
-            let side = px(self.field_height);
+            let side = f32_of_f64(self.field_height);
             return Size {
                 width: known.width.unwrap_or(side),
                 height: known.height.unwrap_or(side),
@@ -1245,14 +1350,14 @@ impl Widget for Dropdown {
             self.field_width(self.measured)
         };
         Size {
-            width: known.width.unwrap_or(px(width)),
+            width: known.width.unwrap_or(f32_of_f64(width)),
             height: known
                 .height
-                .unwrap_or(px(self.field_height + self.caption_height)),
+                .unwrap_or(f32_of_f64(self.field_height + self.caption_height)),
         }
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
@@ -1266,7 +1371,7 @@ impl Widget for Dropdown {
             return false;
         };
         let mut style = current.clone();
-        style.size.width = Dimension::length(px(self.field_width(self.measured)));
+        style.size.width = Dimension::length(f32_of_f64(self.field_width(self.measured)));
         if style == *current {
             return false;
         }
@@ -1305,10 +1410,10 @@ impl Widget for Dropdown {
         }
         let disabled = !self.effectively_enabled();
         let filtering = self.open && self.supports_filter();
-        let (label, placeholder) = if self.selected.is_empty() {
-            (self.placeholder.clone(), true)
-        } else {
+        let (label, placeholder) = if self.has_selected_value() {
             (self.selected_label().to_string(), false)
+        } else {
+            (self.placeholder.clone(), true)
         };
         let content = paint_face(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
@@ -1329,6 +1434,7 @@ impl Widget for Dropdown {
                 disabled,
             },
         );
+        self.query_rect = if filtering { content } else { Rect::ZERO };
         if filtering {
             self.filter_composition.draw(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
@@ -1378,18 +1484,26 @@ impl Widget for Dropdown {
         crate::surface::panel(scene, transform, list, radius, theme);
 
         // Rows sit inside the menu inset and scroll inside it.
-        let rows = Self::rows_rect(list);
+        self.scrollbar_gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        let inset = Self::rows_rect(list);
+        let rows = self.option_rows(list, filtered.len());
+        self.scrollbar_track = if self.scroll_metrics(filtered.len()).overflows() {
+            self.scrollbar
+                .track_in(Rect::new(rows.x1, inset.y0, inset.x1, inset.y1), theme)
+        } else {
+            Rect::ZERO
+        };
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &rows);
 
         if filtered.is_empty() {
             // Centre on the measured line, not the font size (the face's
             // ascent/descent otherwise sits the label low in the row).
-            let (_, hint_h) =
-                text_renderer.measure_style("No matches", None, &theme.text(TextRole::Body));
+            let hint = crate::i18n!("dropdown-no-matches");
+            let (_, hint_h) = text_renderer.measure_style(&hint, None, &theme.text(TextRole::Body));
             let ty = rows.y0 + (self.item_h - f64::from(hint_h)) / 2.0;
             text_renderer.draw_style(
                 scene,
-                "No matches",
+                &hint,
                 theme.text_dim,
                 translated(transform, rows.x0 + LIST_PAD, ty),
                 None,
@@ -1397,7 +1511,7 @@ impl Widget for Dropdown {
             );
         } else {
             for (vi, &opt_idx) in filtered.iter().enumerate() {
-                let row_top = rows.y0 + (count_f64(vi) * self.item_h) - f64::from(self.scroll);
+                let row_top = rows.y0 + (f64_of_usize(vi) * self.item_h) - f64::from(self.scroll);
                 let row_bottom = row_top + self.item_h;
                 // Cull rows scrolled out of the box (hundreds of zones).
                 if row_bottom < rows.y0 || row_top > rows.y1 {
@@ -1472,7 +1586,7 @@ impl Widget for Dropdown {
                 // rather than wrapping into the row beneath it.
                 let shown = text_renderer.elide_to_width_style(
                     opt,
-                    px((label_end - row.x0 - LIST_PAD).max(0.0)),
+                    f32_of_f64((label_end - row.x0 - LIST_PAD).max(0.0)),
                     &theme.text(TextRole::Body),
                 );
                 let (_, opt_h) =
@@ -1489,6 +1603,14 @@ impl Widget for Dropdown {
             }
         }
         scene.pop_layer();
+        self.scrollbar.draw(
+            scene,
+            transform,
+            self.scrollbar_track,
+            self.scroll_metrics(filtered.len()),
+            theme,
+            false,
+        );
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1524,6 +1646,8 @@ impl Widget for Dropdown {
             // resting hover veneer would otherwise stay painted.
             WindowEvent::CursorLeft { .. } => {
                 self.is_hovered = false;
+                self.scrollbar
+                    .update_hover(Rect::ZERO, self.scroll_metrics(0), self.last_cursor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1537,6 +1661,13 @@ impl Widget for Dropdown {
                     ctx.focus_target,
                     ctx.node_id,
                 );
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.open => {
+                *ctx.handled |= self.scrollbar.release();
             }
             WindowEvent::MouseWheel { delta, .. } if self.open => {
                 self.on_wheel(delta, ctx.handled);
@@ -1621,7 +1752,7 @@ impl Widget for Dropdown {
             })
         } else if let Some(caption) = &self.caption {
             Some(caption.clone())
-        } else if !self.selected.is_empty() {
+        } else if self.has_selected_value() {
             Some(self.selected_label().to_string())
         } else if !self.placeholder.is_empty() {
             Some(self.placeholder.clone())
@@ -1631,7 +1762,8 @@ impl Widget for Dropdown {
         let value = if self.open && !self.filter.is_empty() {
             Some(self.filter.clone())
         } else {
-            (!self.selected.is_empty()).then(|| self.selected_label().to_string())
+            self.has_selected_value()
+                .then(|| self.selected_label().to_string())
         };
         let role = if self.menu.is_some() {
             Role::Button
@@ -1670,6 +1802,7 @@ impl Widget for Dropdown {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
@@ -1695,7 +1828,12 @@ impl Widget for Dropdown {
                 true
             }
             Action::SetValue(value) => {
-                let Some(index) = self.options.iter().position(|option| option == value) else {
+                let Some(index) = self
+                    .values
+                    .iter()
+                    .position(|option| option == value)
+                    .or_else(|| self.options.iter().position(|option| option == value))
+                else {
                     return false;
                 };
                 let Some(value) = self.values.get(index).cloned() else {
@@ -1709,6 +1847,13 @@ impl Widget for Dropdown {
         }
     }
 
+    // An open selector is a foreground query/list, so navigation containers
+    // defer Escape and other global shortcuts to it before going back.
+    fn modal_capture(&self) -> Option<Rect> {
+        self.open
+            .then(|| self.rect.union(self.list_rect(self.visible_count())))
+    }
+
     /// While open, grabs every event — see module docs.
     fn wants_pointer_capture(&self) -> bool {
         self.open
@@ -1716,38 +1861,14 @@ impl Widget for Dropdown {
 }
 
 impl crate::widget::controls::ActionControls for Dropdown {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!(custody);
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let control_id = self.test_id().unwrap_or("dropdown");
-        if let Some(action) = &self.action {
-            vec![action.metadata(control_id)]
-        } else if let Some(key) = self.binding.as_ref().and_then(|b| b.document_key()) {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::CollaborativeDocument(key.to_owned()),
-            }]
-        } else if self.on_change.is_some() {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyCallback,
-            }]
-        } else {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
-            }]
-        }
+        crate::widget::controls::value_control_bindings(
+            self.test_id().unwrap_or("dropdown"),
+            self.action.as_ref(),
+            self.binding.as_ref().and_then(|b| b.document_key()),
+            self.on_change.is_some(),
+        )
     }
     fn refresh_control_action_availability(
         &mut self,
@@ -1755,6 +1876,9 @@ impl crate::widget::controls::ActionControls for Dropdown {
     ) {
         if let Some(action) = &mut self.action {
             action.refresh_availability(allowed);
+        }
+        if self.interactive_open && !self.effectively_enabled() {
+            self.close();
         }
     }
 }
@@ -1838,9 +1962,11 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) -> Rect {
     let style = face.size.label_style(theme);
     if let Some(caption) = face.caption {
         let caption_style = theme.text(TextRole::Caption);
-        let shown =
-            ctx.text
-                .elide_to_width_style(caption, px(face.outer.width().max(1.0)), &caption_style);
+        let shown = ctx.text.elide_to_width_style(
+            caption,
+            f32_of_f64(face.outer.width().max(1.0)),
+            &caption_style,
+        );
         ctx.text(
             &shown,
             &caption_style,
@@ -1916,7 +2042,7 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) -> Rect {
         // One line, elided to the room left of the chevron: a max width
         // handed to `draw_text` wraps instead, and a wrapped second line
         // lands under the control's bottom edge.
-        let room = px(content.width().max(0.0) + 0.5);
+        let room = f32_of_f64(content.width().max(0.0) + 0.5);
         let shown = ctx.text.elide_to_width_style(label, room, &style);
         let (_, th) = ctx.text.measure_style(&shown, None, &style);
         let ty = face.field.y0 + (face.field.height() - f64::from(th)) / 2.0;
@@ -2143,9 +2269,8 @@ impl<'a> DropdownFace<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, transaction::Transactable};
-    use winit::event::Modifiers;
-    use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
 
     fn opts() -> Vec<String> {
         ["UTC", "Europe/Amsterdam", "America/New_York", "Asia/Tokyo"]
@@ -2176,6 +2301,251 @@ mod tests {
         options
     }
 
+    #[test]
+    fn dropdown_touch_choices_use_host_targets_and_select_stable_values() {
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            for scale in [1.0, 1.5] {
+                let selected = crate::LocalState::new(String::new());
+                let mut frame = crate::headless::FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    Box::new(Dropdown::from_state(zones(), &selected).with_id("language-picker")),
+                    (420, 320),
+                    theme.clone().with_ui_scale(scale),
+                );
+                let pointer_geometry = frame
+                    .with_widget_mut::<Dropdown, _>(|dropdown| {
+                        (dropdown.rect.height(), dropdown.item_h)
+                    })
+                    .unwrap();
+                frame.tap_named("language-picker").unwrap();
+                let point = frame
+                    .with_widget_mut::<Dropdown, _>(|dropdown| {
+                        assert!(dropdown.is_open());
+                        let minimum = f64::from(crate::InteractionEnvironment::TOUCH.minimum_target());
+                        assert!(dropdown.rect.height() >= minimum,
+                            "the actual touch field must use the host minimum target");
+                        assert!(dropdown.item_h >= minimum,
+                            "each actual painted and hit-tested choice must use the host touch target");
+                        let rows = dropdown.option_rows(dropdown.list_rect(dropdown.visible_count()), dropdown.visible_count());
+                        Point::new(rows.center().x, rows.y0 + dropdown.item_h * 1.5)
+                    })
+                    .unwrap();
+                frame.tap_at(point.x, point.y);
+                frame
+                    .with_widget_mut::<Dropdown, _>(|dropdown| {
+                        assert!(!dropdown.is_open());
+                        assert_eq!(dropdown.selected(), "Europe/Amsterdam");
+                    })
+                    .unwrap();
+                assert_eq!(selected.get(), "Europe/Amsterdam");
+                frame.set_interaction_environment(crate::InteractionEnvironment::default());
+                frame
+                    .with_widget_mut::<Dropdown, _>(|dropdown| {
+                        assert_eq!(
+                            (dropdown.rect.height(), dropdown.item_h),
+                            pointer_geometry,
+                            "returning to a fine pointer restores the theme's compact geometry"
+                        );
+                        assert_eq!(dropdown.selected(), "Europe/Amsterdam");
+                    })
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn dropdown_language_popup_stays_visible_in_a_short_scaled_window() {
+        let mut frame = crate::headless::FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(
+                Dropdown::from_state(zones(), &crate::LocalState::new(String::new()))
+                    .with_id("language-picker"),
+            ),
+            (420, 180),
+            Theme::light().with_ui_scale(1.5),
+        );
+        frame.click_named("language-picker").unwrap();
+        frame.render_png(
+            &std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("dropdown-review/shared-short.png"),
+        );
+        let popup = frame
+            .with_widget_mut::<Dropdown, _>(|dropdown| {
+                assert!(dropdown.is_open());
+                dropdown.list_rect(dropdown.visible_count())
+            })
+            .unwrap();
+        assert!(
+            popup.y0 >= 0.0 && popup.y1 <= 180.0,
+            "the actual painted and hit-tested popup must fit its viewport: {popup:?}"
+        );
+    }
+
+    #[test]
+    fn dropdown_language_shared_scrollbar_and_search_field_are_interactive() {
+        let mut frame = crate::headless::FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(
+                Dropdown::from_state(zones(), &crate::LocalState::new(String::new()))
+                    .with_id("language-picker"),
+            ),
+            (420, 180),
+            Theme::dark().with_ui_scale(1.5),
+        );
+        frame.click_named("language-picker").unwrap();
+        let (thumb, track) = frame
+            .with_widget_mut::<Dropdown, _>(|dropdown| {
+                let metrics = dropdown.scroll_metrics(dropdown.visible_count());
+                (
+                    dropdown
+                        .scrollbar
+                        .thumb_rect(dropdown.scrollbar_track, metrics)
+                        .unwrap(),
+                    dropdown.scrollbar_track,
+                )
+            })
+            .unwrap();
+        frame.drag_at(
+            (thumb.center().x, thumb.center().y),
+            (track.center().x, track.y1),
+        );
+        frame
+            .with_widget_mut::<Dropdown, _>(|dropdown| {
+                assert!(
+                    dropdown.scroll > 0.0,
+                    "the actual shared scrollbar must scroll the list"
+                );
+                assert!(!dropdown.scrollbar.is_dragging());
+                assert!(dropdown.is_open(), "dragging must not select an option");
+            })
+            .unwrap();
+        frame.type_text("Europe");
+        let query = frame
+            .with_widget_mut::<Dropdown, _>(|dropdown| dropdown.query_rect)
+            .unwrap();
+        frame.click_at(query.x0 + 1.0, query.center().y);
+        frame.type_text("X");
+        let mut text = TextRenderer::new();
+        let hint_width = f64::from(
+            text.measure_style(
+                &crate::i18n!("dropdown-no-matches"),
+                None,
+                &frame.theme().text(TextRole::Body),
+            )
+            .0,
+        );
+        frame
+            .with_widget_mut::<Dropdown, _>(|dropdown| {
+                assert!(
+                    dropdown.is_open(),
+                    "the painted search field remains editable when clicked"
+                );
+                assert_eq!(
+                    dropdown.filter, "XEurope",
+                    "pointer caret uses the shaped query layout"
+                );
+                assert_eq!(dropdown.visible_count(), 0);
+                let rows = dropdown.option_rows(dropdown.list_rect(0), 0);
+                assert!(
+                    rows.width() - LIST_PAD >= hint_width,
+                    "the localized empty-result text must fit its actual painted clip"
+                );
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn dropdown_language_accessibility_selects_stable_ids_with_duplicate_labels() {
+        let state = crate::LocalState::new(String::new());
+        let mut dropdown = Dropdown::from_state(Vec::new(), &state);
+        dropdown.set_value_options(vec![
+            ("first".into(), "Same label".into()),
+            ("second".into(), "Same label".into()),
+        ]);
+        let (mut document, root) = doc_with_tz("");
+        assert!(Widget::perform_action(
+            &mut dropdown,
+            &crate::a11y::Action::SetValue("second".into()),
+            &[],
+            &mut crate::widget::Edits::lend(&mut document),
+            &root
+        ));
+        assert_eq!(state.get(), "second");
+        assert!(!Widget::perform_action(
+            &mut dropdown,
+            &crate::a11y::Action::SetValue("foreign".into()),
+            &[],
+            &mut crate::widget::Edits::lend(&mut document),
+            &root
+        ));
+        assert_eq!(state.get(), "second");
+    }
+
+    #[test]
+    fn dropdown_language_empty_stable_value_keeps_its_human_label() {
+        let state = crate::LocalState::new(String::new());
+        let mut dropdown = Dropdown::from_state(Vec::new(), &state);
+        dropdown.set_value_options(vec![
+            (String::new(), "Session language".into()),
+            ("de_DE".into(), "German".into()),
+        ]);
+        let mut frame =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(dropdown), (420, 180));
+        frame
+            .with_widget_mut::<Dropdown, _>(|dropdown| {
+                assert!(dropdown.has_selected_value());
+                assert_eq!(dropdown.selected_label(), "Session language");
+                let node = Widget::accessibility(dropdown).unwrap();
+                assert_eq!(node.value.as_deref(), Some("Session language"));
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn dropdown_language_revoked_action_releases_modal_capture() {
+        let mut dropdown =
+            Dropdown::new(opts(), "legacy").on_action(crate::widget::test_string_action_binding());
+        let allowed = std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+            "test:control",
+            "set",
+        )]);
+        crate::widget::controls::refresh_control_action_availability(&mut dropdown, &allowed);
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_action(
+            &mut dropdown,
+            &crate::a11y::Action::Expand,
+            &[],
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert!(Widget::modal_capture(&dropdown).is_some());
+        crate::widget::controls::refresh_control_action_availability(
+            &mut dropdown,
+            &std::collections::HashSet::new(),
+        );
+        assert!(!Widget::is_enabled(&dropdown));
+        assert!(!dropdown.is_open());
+        assert!(Widget::modal_capture(&dropdown).is_none());
+        assert!(crate::widget::controls::take_control_invocation(&mut dropdown).is_none());
+
+        // Unavailable capture-only fixtures retain their authored open state.
+        let mut capture = Dropdown::new(opts(), "legacy")
+            .on_action(crate::widget::test_string_action_binding())
+            .open();
+        crate::widget::controls::refresh_control_action_availability(
+            &mut capture,
+            &std::collections::HashSet::new(),
+        );
+        assert!(capture.is_open());
+    }
+
     /// The open list's rows sit inside the menu inset every menu shares,
     /// so its armed row runs concentric with the panel: the inset is not a
     /// row, and the first row starts after it.
@@ -2198,7 +2568,7 @@ mod tests {
             Some(0)
         );
         assert!(
-            (list.height() - (count_f64(n) * ITEM_HEIGHT + 2.0 * LIST_PAD)).abs() < 1e-9,
+            (list.height() - (f64_of_usize(n) * ITEM_HEIGHT + 2.0 * LIST_PAD)).abs() < 1e-9,
             "the list hugs its rows plus the inset: {list:?}"
         );
     }
@@ -2228,43 +2598,11 @@ mod tests {
         (doc, root)
     }
 
-    /// Synthesise a `Pressed` `KeyboardInput` (winit keeps `KeyEvent`'s
-    /// extra field `pub(crate)`, so a struct literal isn't possible).
-    fn key(logical_key: Key, text: Option<&str>) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = text.map(SmolStr::new);
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::key_press;
 
     /// Drive a key through a focused dropdown with a throwaway taffy node.
     fn feed_key(dd: &mut Dropdown, ev: &WindowEvent, doc: &mut AutoCommit, root: &ObjId) -> bool {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        dd.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(doc),
-                path: root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        Dispatch::new().doc(doc).path(root).send(dd, ev).handled
     }
 
     #[test]
@@ -2284,7 +2622,7 @@ mod tests {
             dd.set_focus(true);
             assert!(feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::ArrowDown), None),
+                &key_press(Key::Named(NamedKey::ArrowDown), None),
                 &mut doc,
                 &root
             ));
@@ -2301,20 +2639,20 @@ mod tests {
             dd.do_open();
             feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::ArrowDown), None),
+                &key_press(Key::Named(NamedKey::ArrowDown), None),
                 &mut doc,
                 &root,
             );
             feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::ArrowDown), None),
+                &key_press(Key::Named(NamedKey::ArrowDown), None),
                 &mut doc,
                 &root,
             );
             assert_eq!(dd.highlight_index(), 2);
             feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::ArrowUp), None),
+                &key_press(Key::Named(NamedKey::ArrowUp), None),
                 &mut doc,
                 &root,
             );
@@ -2338,19 +2676,19 @@ mod tests {
             // Move to "America/New_York" (index 2) and select it.
             feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::ArrowDown), None),
+                &key_press(Key::Named(NamedKey::ArrowDown), None),
                 &mut doc,
                 &root,
             );
             feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::ArrowDown), None),
+                &key_press(Key::Named(NamedKey::ArrowDown), None),
                 &mut doc,
                 &root,
             );
             assert!(feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::Enter), None),
+                &key_press(Key::Named(NamedKey::Enter), None),
                 &mut doc,
                 &root
             ));
@@ -2377,13 +2715,13 @@ mod tests {
             dd.do_open();
             feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::ArrowDown), None),
+                &key_press(Key::Named(NamedKey::ArrowDown), None),
                 &mut doc,
                 &root,
             );
             assert!(feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::Escape), None),
+                &key_press(Key::Named(NamedKey::Escape), None),
                 &mut doc,
                 &root
             ));
@@ -2427,19 +2765,19 @@ mod tests {
             // "ame" matches only "America/New_York".
             feed_key(
                 &mut dd,
-                &key(Key::Character("a".into()), Some("a")),
+                &key_press(Key::Character("a".into()), Some("a")),
                 &mut doc,
                 &root,
             );
             feed_key(
                 &mut dd,
-                &key(Key::Character("m".into()), Some("m")),
+                &key_press(Key::Character("m".into()), Some("m")),
                 &mut doc,
                 &root,
             );
             feed_key(
                 &mut dd,
-                &key(Key::Character("e".into()), Some("e")),
+                &key_press(Key::Character("e".into()), Some("e")),
                 &mut doc,
                 &root,
             );
@@ -2448,7 +2786,7 @@ mod tests {
             // Enter selects the sole filtered match.
             feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::Enter), None),
+                &key_press(Key::Named(NamedKey::Enter), None),
                 &mut doc,
                 &root,
             );
@@ -2468,7 +2806,7 @@ mod tests {
                 (Key::Named(NamedKey::Space), None),
                 (Key::Character("Y".into()), Some("Y")),
             ] {
-                feed_key(&mut dd, &key(key_value, text), &mut doc, &root);
+                feed_key(&mut dd, &key_press(key_value, text), &mut doc, &root);
             }
             assert_eq!(dd.filter_query(), "New Y");
             assert_eq!(dd.visible_count(), 1);
@@ -2482,20 +2820,20 @@ mod tests {
             dd.do_open();
             feed_key(
                 &mut dd,
-                &key(Key::Character("a".into()), Some("a")),
+                &key_press(Key::Character("a".into()), Some("a")),
                 &mut doc,
                 &root,
             );
             feed_key(
                 &mut dd,
-                &key(Key::Character("z".into()), Some("z")),
+                &key_press(Key::Character("z".into()), Some("z")),
                 &mut doc,
                 &root,
             );
             assert_eq!(dd.visible_count(), 0); // "az" matches nothing
             feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::Backspace), None),
+                &key_press(Key::Named(NamedKey::Backspace), None),
                 &mut doc,
                 &root,
             );
@@ -2513,14 +2851,14 @@ mod tests {
             let cluster = "👩🏽‍💻";
             feed_key(
                 &mut dd,
-                &key(Key::Character(cluster.into()), Some(cluster)),
+                &key_press(Key::Character(cluster.into()), Some(cluster)),
                 &mut doc,
                 &root,
             );
             assert_eq!(dd.filter_query(), cluster);
             feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::Backspace), None),
+                &key_press(Key::Named(NamedKey::Backspace), None),
                 &mut doc,
                 &root,
             );
@@ -2541,7 +2879,7 @@ mod tests {
             };
             feed_key(
                 &mut dd,
-                &key(Key::Character("亜".into()), Some("亜")),
+                &key_press(Key::Character("亜".into()), Some("亜")),
                 &mut doc,
                 &root,
             );
@@ -2638,7 +2976,7 @@ mod tests {
             dd.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
             let (mut doc, root) = doc_with_tz("UTC");
             let enter = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(20.0, 20.0),
             };
             assert!(
@@ -2647,7 +2985,7 @@ mod tests {
             );
             assert!(dd.is_hovered, "the pointer is over the control");
             let leave = WindowEvent::CursorLeft {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
             };
             feed_key(&mut dd, &leave, &mut doc, &root);
             assert!(!dd.is_hovered, "CursorLeft clears the resting hover");
@@ -2822,6 +3160,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &crate::a11y::Action::SetValue(String::from("Europe/Amsterdam")),
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
@@ -2867,27 +3206,27 @@ mod tests {
         menu.set_focus(true);
         assert!(feed_key(
             &mut menu,
-            &key(Key::Named(NamedKey::Enter), None),
+            &key_press(Key::Named(NamedKey::Enter), None),
             &mut document,
             &root
         ));
         assert!(menu.is_open());
         feed_key(
             &mut menu,
-            &key(Key::Character("a".into()), Some("a")),
+            &key_press(Key::Character("a".into()), Some("a")),
             &mut document,
             &root,
         );
         assert_eq!(menu.visible_count(), opts().len());
         feed_key(
             &mut menu,
-            &key(Key::Named(NamedKey::ArrowDown), None),
+            &key_press(Key::Named(NamedKey::ArrowDown), None),
             &mut document,
             &root,
         );
         feed_key(
             &mut menu,
-            &key(Key::Named(NamedKey::Enter), None),
+            &key_press(Key::Named(NamedKey::Enter), None),
             &mut document,
             &root,
         );
@@ -2912,6 +3251,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &Action::Expand,
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
@@ -2919,6 +3259,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &Action::Collapse,
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
@@ -2926,6 +3267,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut dropdown,
                 &Action::SetValue(String::from("not an option")),
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
@@ -2952,7 +3294,7 @@ mod tests {
             dd.set_focus(true);
             let handled = feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::ArrowDown), None),
+                &key_press(Key::Named(NamedKey::ArrowDown), None),
                 &mut doc,
                 &root,
             );
@@ -3032,6 +3374,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &crate::a11y::Action::SetValue("Asia/Tokyo".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
@@ -3083,7 +3426,8 @@ mod tests {
                 )])),
             ],
         );
-        let app = crate::headless::Driver::new(crate::State::new(), Box::new(section), (900, 400));
+        let app =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(section), (900, 400));
         let targets = app.targets();
         let target = |id: &str| *targets.get(id).expect(id);
         let (zone, size) = (target("zone"), target("size"));
@@ -3109,7 +3453,8 @@ mod tests {
                     .with_id("device"),
             ),
         ]);
-        let app = crate::headless::Driver::new(crate::State::new(), Box::new(section), (900, 400));
+        let app =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(section), (900, 400));
         let targets = app.targets();
         let target = |id: &str| *targets.get(id).expect(id);
         for id in ["size", "device"] {
@@ -3130,7 +3475,8 @@ mod tests {
                 .push(Box::new(
                     Dropdown::new(vec!["A".into(), "B".into()], "ab").with_id("tiny"),
                 ));
-            let app = crate::headless::Driver::new(crate::State::new(), Box::new(row), (900, 200));
+            let app =
+                crate::headless::FrameHarness::new(crate::State::new(), Box::new(row), (900, 200));
             let targets = app.targets();
             let hug = targets.get("hug").expect("hugging dropdown");
             let tiny = targets.get("tiny").expect("short dropdown");
@@ -3151,8 +3497,11 @@ mod tests {
 
             let filled = crate::widget::Row::new()
                 .push(Box::new(Dropdown::new(opts(), "tz").with_id("fill").fill()));
-            let app =
-                crate::headless::Driver::new(crate::State::new(), Box::new(filled), (900, 200));
+            let app = crate::headless::FrameHarness::new(
+                crate::State::new(),
+                Box::new(filled),
+                (900, 200),
+            );
             let fill = *app.targets().get("fill").expect("filling dropdown");
             assert!(fill.width() > 600.0, "fill spans the row: {fill:?}");
         }
@@ -3166,7 +3515,7 @@ mod tests {
             assert_eq!(dd.highlight_index(), 0);
             assert!(feed_key(
                 &mut dd,
-                &key(Key::Character("a".into()), Some("a")),
+                &key_press(Key::Character("a".into()), Some("a")),
                 &mut doc,
                 &root,
             ));
@@ -3175,7 +3524,7 @@ mod tests {
             assert_eq!(dd.highlight_index(), 2, "the next option starting with a");
             feed_key(
                 &mut dd,
-                &key(Key::Character("a".into()), Some("a")),
+                &key_press(Key::Character("a".into()), Some("a")),
                 &mut doc,
                 &root,
             );

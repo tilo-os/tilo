@@ -10,6 +10,9 @@ impl SpotifyBackend {
         operation: &SpotifyOperation,
     ) -> Result<SpotifyReply, BackendError> {
         use SpotifyOperation as Op;
+        if let Some(required) = operation_scope(operation) {
+            self.require_scope(required)?;
+        }
         let state = match operation {
             Op::Queue => self.read_remote_queue()?,
             Op::LibraryPage {
@@ -23,34 +26,7 @@ impl SpotifyBackend {
                     state: self.get("me/player", &[])?,
                 });
             }
-            Op::Save { uri, saved } => {
-                valid_library_uri(uri)?;
-                self.request_for(
-                    USE,
-                    ACCOUNT,
-                    if *saved {
-                        &Method::PUT
-                    } else {
-                        &Method::DELETE
-                    },
-                    "me/library",
-                    &[("uris", uri)],
-                    None,
-                )?;
-                let checked = self.get("me/library/contains", &[("uris", uri)])?;
-                if checked
-                    .as_array()
-                    .and_then(|items| items.first())
-                    .and_then(Value::as_bool)
-                    != Some(*saved)
-                {
-                    return Err(BackendError(
-                        "Spotify has not confirmed the library change. Refresh before retrying."
-                            .into(),
-                    ));
-                }
-                json!({"uri":uri,"saved":saved})
-            }
+            Op::Save { uri, saved } => self.save_library(uri, *saved)?,
             Op::RenamePlaylist { playlist, name } => {
                 let id = raw_id(playlist, "playlist")?;
                 valid_playlist_name(name)?;
@@ -110,6 +86,42 @@ impl SpotifyBackend {
         })
     }
 
+    fn save_library(&self, uri: &str, saved: bool) -> Result<Value, BackendError> {
+        valid_library_uri(uri)?;
+        self.request_for(
+            USE,
+            ACCOUNT,
+            if saved { &Method::PUT } else { &Method::DELETE },
+            "me/library",
+            &[("uris", uri)],
+            None,
+        )?;
+        let checked = self.get("me/library/contains", &[("uris", uri)])?;
+        if checked
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(Value::as_bool)
+            != Some(saved)
+        {
+            return Err(BackendError(
+                "Spotify has not confirmed the library change. Refresh before retrying.".into(),
+            ));
+        }
+        Ok(json!({"uri":uri,"saved":saved}))
+    }
+
+    fn require_scope(&self, required: &str) -> Result<(), BackendError> {
+        if let Some(scope) = self
+            .custody
+            .oauth_scopes(&super::AccountId::from(ACCOUNT.to_string()))
+            .map_err(|_| BackendError("Connect Spotify again to use this action".into()))?
+            && !scope.split_whitespace().any(|scope| scope == required)
+        {
+            return Err(BackendError("This Spotify connection has not granted this permission. Enable full library and device controls from Music sources to grant additional permissions.".into()));
+        }
+        Ok(())
+    }
+
     fn read_remote_queue(&self) -> Result<Value, BackendError> {
         let mut queue = self.get("me/player/queue", &[])?;
         let entries = queue
@@ -134,8 +146,28 @@ impl SpotifyBackend {
             artist_params.push(("after", after));
         }
         let albums = self.get("me/albums", &[("limit", "50"), ("offset", &offset_arg)])?;
-        let playlists = self.get("me/playlists", &[("limit", "50"), ("offset", &offset_arg)])?;
-        let followed = self.get("me/following", &artist_params)?;
+        let scope = self
+            .custody
+            .oauth_scopes(&super::AccountId::from(ACCOUNT.to_string()))
+            .map_err(|_| BackendError("Connect Spotify again to browse your library".into()))?;
+        let playlists = if scope.as_deref().is_none_or(|scope| {
+            scope
+                .split_whitespace()
+                .any(|scope| scope == "playlist-read-private")
+        }) {
+            self.get("me/playlists", &[("limit", "50"), ("offset", &offset_arg)])?
+        } else {
+            json!({"items":[],"next":null})
+        };
+        let followed = if scope.as_deref().is_none_or(|scope| {
+            scope
+                .split_whitespace()
+                .any(|scope| scope == "user-follow-read")
+        }) {
+            self.get("me/following", &artist_params)?
+        } else {
+            json!({"artists":{"items":[],"next":null}})
+        };
         let artists = followed
             .get("artists")
             .ok_or_else(|| BackendError("Spotify did not provide followed artists".into()))?;
@@ -241,6 +273,13 @@ impl SpotifyBackend {
             .and_then(Value::as_str)
             .ok_or_else(|| BackendError("Spotify account identity is unavailable".into()))?;
         let playlist = self.get(&format!("playlists/{id}"), &[])?;
+        self.require_scope(
+            if playlist.get("public").and_then(Value::as_bool) == Some(true) {
+                "playlist-modify-public"
+            } else {
+                "playlist-modify-private"
+            },
+        )?;
         let owner = playlist
             .get("owner")
             .and_then(|owner| owner.get("id"))
@@ -397,4 +436,22 @@ fn valid_library_uri(uri: &str) -> Result<(), BackendError> {
     Err(BackendError(
         "This item cannot be saved to a Spotify library".into(),
     ))
+}
+
+fn operation_scope(operation: &SpotifyOperation) -> Option<&'static str> {
+    use SpotifyOperation as Op;
+    match operation {
+        Op::Save { uri, .. } if uri.starts_with("spotify:artist:") => Some("user-follow-modify"),
+        Op::Save { .. } => Some("user-library-modify"),
+        Op::CreatePlaylist { .. } => Some("playlist-modify-private"),
+        Op::Queue | Op::Devices => Some("user-read-playback-state"),
+        Op::Transfer { .. } | Op::RemotePlay { .. } | Op::RemotePause { .. } => {
+            Some("user-modify-playback-state")
+        }
+        // Playlist edits inspect the playlist visibility before choosing a scope.
+        Op::LibraryPage { .. }
+        | Op::RenamePlaylist { .. }
+        | Op::PlaylistAdd { .. }
+        | Op::PlaylistRemove { .. } => None,
+    }
 }

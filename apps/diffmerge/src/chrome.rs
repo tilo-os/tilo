@@ -12,7 +12,7 @@ use std::rc::Rc;
 use ui::LocalState;
 use ui::icons::Icon;
 use ui::widget::toggle_group::{Segment, SegmentedStyle};
-use ui::widget::{Button, ButtonRole, ControlSize, Element, ModelView, Row, ToggleGroup};
+use ui::widget::{Button, ButtonRole, ControlSize, Element, ModelView, ToggleGroup};
 
 use crate::app::Mode;
 use crate::i18n::t;
@@ -75,23 +75,24 @@ impl Chrome {
         move || commands.borrow_mut().push_back(command)
     }
 
-    /// The mode switch, which leads the header row: the content's mode,
-    /// with no title beside it.
-    pub(crate) fn mode_switch(&self) -> Element {
-        let chrome = self.clone();
-        Box::new(ModelView::from_state(&self.header, move |header| {
-            chrome.mode(*header)
-        }))
-    }
-
     /// The header's actions, in the order they read: change navigation,
     /// then the file actions with the one primary action last.
     pub(crate) fn actions(&self) -> Vec<Element> {
-        let chrome = self.clone();
-        vec![Box::new(ModelView::from_state(
-            &self.header,
-            move |header| chrome.controls(*header),
-        ))]
+        [
+            Command::Mode(Mode::Diff),
+            Command::Previous,
+            Command::Next,
+            Command::LoadSample,
+            Command::Open,
+        ]
+        .into_iter()
+        .map(|command| {
+            let chrome = self.clone();
+            Box::new(ModelView::from_state(&self.header, move |header| {
+                chrome.control(*header, command)
+            })) as Element
+        })
+        .collect()
     }
 
     fn mode(&self, header: Header) -> Element {
@@ -106,7 +107,11 @@ impl Chrome {
                 usize::from(header.mode == Mode::Merge),
             )
             .with_style(SegmentedStyle::Segmented)
-            .control_size(ControlSize::Small)
+            .control_size(if header.compact {
+                ControlSize::Large
+            } else {
+                ControlSize::Small
+            })
             .on_view("diffmerge.mode", {
                 let mut diff = self.request(Command::Mode(Mode::Diff));
                 let mut merge = self.request(Command::Mode(Mode::Merge));
@@ -121,49 +126,51 @@ impl Chrome {
         )
     }
 
-    fn controls(&self, header: Header) -> Element {
-        let compact = header.compact;
-        let step = |id: &str, icon: Icon, name: String, command: Command| {
-            Button::icon_only(id, icon, &name)
-                .control_size(ControlSize::Small)
-                .with_enabled(header.changes)
-                .on_view(self.request(command))
-        };
-        let sample_label = if compact {
-            t("toolbar-sample-short")
+    fn control(&self, header: Header, command: Command) -> Element {
+        let size = if header.compact {
+            ControlSize::Large
         } else {
-            t("toolbar-sample")
+            ControlSize::Small
         };
-        let sample = Button::new("diffmerge.load-sample", &sample_label)
-            .control_size(ControlSize::Small)
-            .on_effect(self.request(Command::LoadSample));
-        // The one primary action: a labelled button, or its icon when the
-        // window is narrow.
-        let open = if compact {
-            Button::icon_only("diffmerge.open-files", Icon::FolderOpen, &t("toolbar-open"))
-        } else {
-            Button::new("diffmerge.open-files", &t("toolbar-open"))
-        }
-        .role(ButtonRole::Primary)
-        .control_size(ControlSize::Small)
-        .on_effect(self.request(Command::Open));
-        Box::new(
-            Row::new()
-                .no_wrap()
-                .push(Box::new(step(
-                    "diffmerge.previous-change",
-                    Icon::ChevronUp,
-                    t("toolbar-previous"),
-                    Command::Previous,
-                )))
-                .push(Box::new(step(
-                    "diffmerge.next-change",
-                    Icon::ChevronDown,
-                    t("toolbar-next"),
-                    Command::Next,
-                )))
-                .push(Box::new(sample))
-                .push(Box::new(open)),
-        )
+        let button = match command {
+            Command::Previous | Command::Next => {
+                let (id, icon, name) = if command == Command::Previous {
+                    (
+                        "diffmerge.previous-change",
+                        Icon::ChevronUp,
+                        t("toolbar-previous"),
+                    )
+                } else {
+                    (
+                        "diffmerge.next-change",
+                        Icon::ChevronDown,
+                        t("toolbar-next"),
+                    )
+                };
+                Button::icon_only(id, icon, &name)
+                    .with_enabled(header.changes)
+                    .on_view(self.request(command))
+            }
+            Command::LoadSample => {
+                let label = t(if header.compact {
+                    "toolbar-sample-short"
+                } else {
+                    "toolbar-sample"
+                });
+                Button::new("diffmerge.load-sample", &label).on_effect(self.request(command))
+            }
+            Command::Open => {
+                let button = if header.compact {
+                    Button::icon_only("diffmerge.open-files", Icon::FolderOpen, &t("toolbar-open"))
+                } else {
+                    Button::new("diffmerge.open-files", &t("toolbar-open"))
+                };
+                button
+                    .role(ButtonRole::Primary)
+                    .on_effect(self.request(command))
+            }
+            Command::Mode(_) => return self.mode(header),
+        };
+        Box::new(button.control_size(size))
     }
 }

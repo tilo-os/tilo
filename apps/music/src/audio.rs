@@ -49,37 +49,28 @@
 
 #[cfg(feature = "spotify-native")]
 pub(crate) use tilo_spotify as spotify_audio;
+#[cfg(feature = "audio")]
+mod pipeline_controls;
 
 /// A bounded initialization job. Cancellation drops its result receiver without
 /// joining a potentially slow native initializer. A replacement waits for this
 /// worker to finish, so repeated load/stop never creates parallel initializers.
 struct Initialization<T> {
     result: Option<std::sync::mpsc::Receiver<Result<T, String>>>,
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(
-            dead_code,
-            reason = "only the GStreamer backend initializes on a worker"
-        )
-    )]
+    #[cfg(any(feature = "audio", test))]
     finished: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl<T> Initialization<T> {
     /// A job that already finished on the caller's thread: a backend that
     /// needs no native initialization (the page's media element).
-    #[cfg_attr(
-        feature = "audio",
-        allow(
-            dead_code,
-            reason = "the GStreamer build always initializes on a worker"
-        )
-    )]
+    #[cfg(not(feature = "audio"))]
     fn ready(result: Result<T, String>) -> Self {
         let (sender, receiver) = std::sync::mpsc::channel();
         let _ = sender.send(result);
         Self {
             result: Some(receiver),
+            #[cfg(test)]
             finished: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
@@ -98,26 +89,14 @@ impl<T> Initialization<T> {
         self.result = None;
     }
 
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(
-            dead_code,
-            reason = "only the GStreamer backend initializes on a worker"
-        )
-    )]
+    #[cfg(any(feature = "audio", test))]
     fn canceled_and_finished(&self) -> bool {
         self.result.is_none() && self.finished.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
 impl<T: Send + 'static> Initialization<T> {
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(
-            dead_code,
-            reason = "only the GStreamer backend initializes on a worker"
-        )
-    )]
+    #[cfg(any(feature = "audio", test))]
     fn spawn(initialize: impl FnOnce() -> Result<T, String> + Send + 'static) -> Self {
         let (sender, receiver) = std::sync::mpsc::channel();
         let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -195,10 +174,7 @@ pub struct CapturedPcm {
 pub struct PcmCapture(std::sync::Arc<(std::sync::Mutex<CapturedPcm>, std::sync::Condvar)>);
 
 impl PcmCapture {
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(dead_code, reason = "only the native sink records")
-    )]
+    #[cfg(feature = "audio")]
     fn record(&self, bytes: &[u8]) {
         let (state, changed) = &*self.0;
         let mut pcm = state
@@ -216,10 +192,7 @@ impl PcmCapture {
         changed.notify_all();
     }
 
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(dead_code, reason = "only the native sink renders")
-    )]
+    #[cfg(feature = "audio")]
     fn note_rendered(&self) {
         let (state, changed) = &*self.0;
         state
@@ -351,6 +324,20 @@ impl AudioEngine {
         }
     }
 
+    /// Safe, device-local diagnostics for the resource action door.
+    pub fn spotify_startup_stage(&self) -> Option<&'static str> {
+        #[cfg(feature = "spotify-native")]
+        {
+            self.native
+                .as_ref()
+                .map(spotify_audio::NativeAudio::startup_stage)
+        }
+        #[cfg(not(feature = "spotify-native"))]
+        {
+            None
+        }
+    }
+
     pub fn prepare_spotify_next(&self, uri: Option<&str>) {
         #[cfg(feature = "spotify-native")]
         if let Some(native) = &self.native {
@@ -358,12 +345,6 @@ impl AudioEngine {
         }
         #[cfg(not(feature = "spotify-native"))]
         let _ = uri;
-    }
-
-    pub fn uses_spotify(&self) -> bool {
-        self.current_uri
-            .as_ref()
-            .is_some_and(|uri| uri.starts_with("spotify:track:"))
     }
 
     pub fn take_spotify_transition(&mut self) -> Option<String> {
@@ -452,6 +433,22 @@ impl AudioEngine {
             && (self.backend.is_none()
                 || self.pending_seek.is_some()
                 || self.frames_rendered() == 0)
+    }
+
+    /// Whether governed native controls are still being applied by the worker.
+    /// Callers can distinguish accepted transport intent from settled output.
+    pub fn is_control_pending(&self) -> bool {
+        #[cfg(feature = "audio")]
+        {
+            self.backend
+                .as_ref()
+                .and_then(|backend| backend.inner.controls.as_ref())
+                .is_some_and(|controls| !controls.ready())
+        }
+        #[cfg(not(feature = "audio"))]
+        {
+            false
+        }
     }
 
     pub fn play(&mut self) {
@@ -583,8 +580,8 @@ impl AudioEngine {
     }
     pub fn duration_ms(&self) -> Option<u64> {
         #[cfg(feature = "spotify-native")]
-        if self.native.is_some() {
-            return None;
+        if let Some(native) = &self.native {
+            return native.duration_ms();
         }
         self.backend.as_ref()?.duration_ms()
     }
@@ -605,10 +602,7 @@ impl AudioEngine {
     }
 
     /// A settled PLAYING state, excluding a pipeline merely transitioning there.
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(dead_code, reason = "only the GStreamer backend confirms playback")
-    )]
+    #[cfg(feature = "audio")]
     pub(crate) fn is_playing_confirmed(&self) -> bool {
         #[cfg(feature = "spotify-native")]
         if let Some(native) = &self.native {
@@ -751,7 +745,8 @@ impl AudioEngine {
     }
 
     /// Where a source stands on its way to audio, for a test's failure message.
-    #[cfg(all(test, feature = "audio"))]
+    #[cfg(test)]
+    #[cfg(feature = "audio")]
     pub fn diagnostics(&self) -> String {
         use gstreamer::prelude::*;
         let pipeline = self.backend.as_ref().map(|backend| {
@@ -934,6 +929,8 @@ impl OfflineDownload {
 #[cfg(feature = "audio")]
 struct Inner {
     playbin: gstreamer::Element,
+    controls: Option<pipeline_controls::Controls>,
+    governed_output: Option<std::sync::Arc<media::audio_output::gst::Bridge>>,
     /// The `autoaudiosink` at the tail of our explicit sink chain, when it was
     /// built. `autoaudiosink` auto-plugs the concrete real sink
     /// (`pipewiresink`/`pulsesink`/`alsasink`) at READY; introspecting its child
@@ -984,9 +981,10 @@ struct Pending {
     /// that as a finished download. Whether the bytes are all here is
     /// `fetched`/`expected`, not this.
     done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Bytes written to `path` so far, published live by the download thread.
     fetched: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    /// The source's declared content length (`clen=`), or 0 when it did not
+    /// The source's declared HTTP total (or `clen=` hint), or 0 when it did not
     /// declare one. With `fetched` this is the only honest answer to "is a seek
     /// to a late position backed by bytes on disk?".
     expected: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -1017,7 +1015,6 @@ impl AudioBackend {
     #[cfg_attr(
         not(feature = "audio"),
         allow(
-            dead_code,
             clippy::unnecessary_wraps,
             reason = "the silent build never starts a backend"
         )
@@ -1036,19 +1033,47 @@ impl AudioBackend {
             // output is audible and verifiable. `autoaudiosink` selects
             // the concrete system sink (pipewire/pulse/alsa); the pad
             // probe lets us confirm real buffers flow.
-            let sink = build_audio_sink(&playbin, &frames, output);
+            let (sink, governed_output) =
+                if matches!(output, AudioOutput::System) && media::audio_output::is_governed() {
+                    let (bin, bridge) = media::audio_output::gst::host_clocked_sink_bin(
+                        "tilo_audiosink",
+                        "tilo_governed_gain",
+                    )?;
+                    let sink = bin.by_name("tilo_audiosink");
+                    playbin.set_property("audio-sink", &bin);
+                    (sink, Some(bridge))
+                } else {
+                    (build_audio_sink(&playbin, &frames, output), None)
+                };
             let errored = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             // Defensive: never leave the transport muted, and start at a
             // sane volume so "no sound" is never a stuck property.
             playbin.set_property("mute", false);
             playbin.set_property("volume", 0.8f64);
+            let error_msg = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let eos = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let controls = governed_output
+                .as_ref()
+                .map(|output| {
+                    pipeline_controls::Controls::spawn(pipeline_controls::Pipeline {
+                        element: playbin.clone(),
+                        output: output.clone(),
+                        frames: frames.clone(),
+                        eos: eos.clone(),
+                        failed: errored.clone(),
+                        error: error_msg.clone(),
+                    })
+                })
+                .transpose()?;
             Inner {
                 playbin,
+                controls,
+                governed_output,
                 sink,
                 frames,
                 errored,
-                error_msg: std::sync::Arc::new(std::sync::Mutex::new(None)),
-                eos: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                error_msg,
+                eos,
                 #[cfg(feature = "live")]
                 pending: None,
             }
@@ -1079,7 +1104,14 @@ impl AudioBackend {
             use gstreamer::prelude::*;
             // Fully reset the pipeline before re-pointing it, so a fast skip
             // never leaves the previous stream decoding underneath the new one.
-            let _ = self.inner.playbin.set_state(gstreamer::State::Null);
+            if let Some(controls) = &self.inner.controls {
+                controls.source(None, self.volume);
+            } else {
+                let _ = self.inner.playbin.set_state(gstreamer::State::Null);
+                if let Some(output) = &self.inner.governed_output {
+                    output.reset();
+                }
+            }
             self.inner
                 .frames
                 .store(0, std::sync::atomic::Ordering::Relaxed);
@@ -1106,11 +1138,15 @@ impl AudioBackend {
             #[cfg(feature = "live")]
             self.clear_pending();
 
-            self.inner.playbin.set_property("uri", uri);
-            self.inner.playbin.set_property("mute", false);
-            self.inner
-                .playbin
-                .set_property("volume", f64::from(self.volume));
+            if let Some(controls) = &self.inner.controls {
+                controls.source(Some(uri), self.volume);
+            } else {
+                self.inner.playbin.set_property("uri", uri);
+                self.inner.playbin.set_property("mute", false);
+                self.inner
+                    .playbin
+                    .set_property("volume", f64::from(self.volume));
+            }
         }
         #[cfg(not(feature = "audio"))]
         if let Some(engine) = &mut self.inner.engine {
@@ -1136,7 +1172,11 @@ impl AudioBackend {
                     return;
                 }
             }
-            let _ = self.inner.playbin.set_state(gstreamer::State::Playing);
+            if let Some(controls) = &self.inner.controls {
+                controls.playing(true);
+            } else {
+                let _ = self.inner.playbin.set_state(gstreamer::State::Playing);
+            }
         }
         #[cfg(not(feature = "audio"))]
         if let Some(engine) = &mut self.inner.engine {
@@ -1155,7 +1195,11 @@ impl AudioBackend {
                     return;
                 }
             }
-            let _ = self.inner.playbin.set_state(gstreamer::State::Paused);
+            if let Some(controls) = &self.inner.controls {
+                controls.playing(false);
+            } else {
+                let _ = self.inner.playbin.set_state(gstreamer::State::Paused);
+            }
         }
         #[cfg(not(feature = "audio"))]
         if let Some(engine) = &mut self.inner.engine {
@@ -1169,7 +1213,14 @@ impl AudioBackend {
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
-            let _ = self.inner.playbin.set_state(gstreamer::State::Null);
+            if let Some(controls) = &self.inner.controls {
+                controls.source(None, self.volume);
+            } else {
+                let _ = self.inner.playbin.set_state(gstreamer::State::Null);
+                if let Some(output) = &self.inner.governed_output {
+                    output.reset();
+                }
+            }
             self.inner
                 .eos
                 .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -1207,6 +1258,9 @@ impl AudioBackend {
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
+            if let Some(controls) = &self.inner.controls {
+                return controls.seek(ms).then_some(Ok(()));
+            }
             if !matches!(
                 self.inner.playbin.current_state(),
                 gstreamer::State::Paused | gstreamer::State::Playing
@@ -1253,9 +1307,13 @@ impl AudioBackend {
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
-            self.inner
-                .playbin
-                .set_property("volume", f64::from(self.volume));
+            if let Some(controls) = &self.inner.controls {
+                controls.volume(self.volume);
+            } else {
+                self.inner
+                    .playbin
+                    .set_property("volume", f64::from(self.volume));
+            }
         }
         #[cfg(not(feature = "audio"))]
         if let Some(engine) = &mut self.inner.engine {
@@ -1271,6 +1329,14 @@ impl AudioBackend {
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
+            if self
+                .inner
+                .controls
+                .as_ref()
+                .is_some_and(|controls| !controls.ready())
+            {
+                return None;
+            }
             self.inner
                 .playbin
                 .query_position::<gstreamer::ClockTime>()
@@ -1291,6 +1357,14 @@ impl AudioBackend {
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
+            if self
+                .inner
+                .controls
+                .as_ref()
+                .is_some_and(|controls| !controls.ready())
+            {
+                return None;
+            }
             self.inner
                 .playbin
                 .query_duration::<gstreamer::ClockTime>()
@@ -1313,7 +1387,13 @@ impl AudioBackend {
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
-            if self.current_uri.is_none() {
+            if self.current_uri.is_none()
+                || self
+                    .inner
+                    .controls
+                    .as_ref()
+                    .is_some_and(|controls| !controls.ready())
+            {
                 return false;
             }
             // A pipeline that errored (a forbidden fetch, an undecodable stream)
@@ -1340,27 +1420,21 @@ impl AudioBackend {
         }
     }
 
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(dead_code, reason = "only the GStreamer backend confirms playback")
-    )]
+    #[cfg(feature = "audio")]
     fn is_playing_confirmed(&self) -> bool {
-        #[cfg(feature = "audio")]
-        {
-            use gstreamer::prelude::*;
-            self.current_uri.is_some()
-                && !self.reached_eos()
-                && !self
-                    .inner
-                    .errored
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                && self.inner.playbin.state(gstreamer::ClockTime::ZERO).1
-                    == gstreamer::State::Playing
-        }
-        #[cfg(not(feature = "audio"))]
-        {
-            self.is_playing_real() && !self.inner.eos
-        }
+        use gstreamer::prelude::*;
+        self.current_uri.is_some()
+            && self
+                .inner
+                .controls
+                .as_ref()
+                .is_none_or(pipeline_controls::Controls::ready)
+            && !self.reached_eos()
+            && !self
+                .inner
+                .errored
+                .load(std::sync::atomic::Ordering::Relaxed)
+            && self.inner.playbin.state(gstreamer::ClockTime::ZERO).1 == gstreamer::State::Playing
     }
 
     /// Service the `GStreamer` bus (non-blocking): drain pending messages so they
@@ -1402,16 +1476,21 @@ impl AudioBackend {
                         };
                         let bytes = crate::files::metadata(&path).map_or(0, |m| m.len);
                         tracing::info!(target: "music::audio", %uri, bytes, want_play = want, "staged file ready — switching playbin to local file and rolling");
-                        let _ = self.inner.playbin.set_state(gstreamer::State::Null);
-                        self.inner.playbin.set_property("uri", &uri);
-                        self.inner.playbin.set_property("mute", false);
-                        self.inner
-                            .playbin
-                            .set_property("volume", f64::from(self.volume));
-                        if want {
-                            let _ = self.inner.playbin.set_state(gstreamer::State::Playing);
+                        if let Some(controls) = &self.inner.controls {
+                            controls.source(Some(&uri), self.volume);
+                            controls.playing(want);
                         } else {
-                            let _ = self.inner.playbin.set_state(gstreamer::State::Paused);
+                            let _ = self.inner.playbin.set_state(gstreamer::State::Null);
+                            self.inner.playbin.set_property("uri", &uri);
+                            self.inner.playbin.set_property("mute", false);
+                            self.inner
+                                .playbin
+                                .set_property("volume", f64::from(self.volume));
+                            let _ = self.inner.playbin.set_state(if want {
+                                gstreamer::State::Playing
+                            } else {
+                                gstreamer::State::Paused
+                            });
                         }
                     } else {
                         // The fetch was forbidden before any bytes landed: honest
@@ -1430,6 +1509,14 @@ impl AudioBackend {
                         p.started = true;
                     }
                 }
+            }
+            if self
+                .inner
+                .controls
+                .as_ref()
+                .is_some_and(|controls| !controls.ready())
+            {
+                return false;
             }
             if let Some(bus) = self.inner.playbin.bus() {
                 while let Some(msg) = bus.pop() {
@@ -1462,6 +1549,19 @@ impl AudioBackend {
                     }
                 }
             }
+            if let Some(error) = self
+                .inner
+                .governed_output
+                .as_ref()
+                .and_then(|output| output.error())
+            {
+                self.inner
+                    .errored
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                if let Ok(mut message) = self.inner.error_msg.lock() {
+                    *message = Some(error);
+                }
+            }
             self.inner
                 .errored
                 .load(std::sync::atomic::Ordering::Relaxed)
@@ -1482,7 +1582,9 @@ impl AudioBackend {
                             *error = Some(message);
                         }
                     }
-                    media::MediaEvent::Position { .. } | media::MediaEvent::Buffering { .. } => {}
+                    media::MediaEvent::Position { .. }
+                    | media::MediaEvent::Buffering { .. }
+                    | media::MediaEvent::MissingDecoder { .. } => {}
                 }
             }
             failed
@@ -1512,7 +1614,20 @@ impl AudioBackend {
     pub fn reached_eos(&self) -> bool {
         #[cfg(feature = "audio")]
         {
+            if self
+                .inner
+                .controls
+                .as_ref()
+                .is_some_and(|controls| !controls.ready())
+            {
+                return false;
+            }
             self.inner.eos.load(std::sync::atomic::Ordering::Relaxed)
+                && self
+                    .inner
+                    .governed_output
+                    .as_ref()
+                    .is_none_or(|output| output.drained())
         }
         #[cfg(not(feature = "audio"))]
         {
@@ -1532,8 +1647,8 @@ impl AudioBackend {
     /// downstream then believes a seek to a late position is backed by bytes
     /// that are not there.
     ///
-    /// A source that declares no length cannot be checked this way; there,
-    /// "the fetch ran to its end" is the best available answer.
+    /// An unknown length cannot establish completeness, even when fetching
+    /// has stopped. Failed or rejected requests therefore stay incomplete.
     #[cfg_attr(
         not(all(feature = "audio", feature = "live")),
         allow(
@@ -1549,7 +1664,7 @@ impl AudioBackend {
                 Some(p) => {
                     let expected = p.expected.load(Relaxed);
                     if expected == 0 {
-                        return p.done.load(Relaxed);
+                        return false;
                     }
                     p.fetched.load(Relaxed) >= expected
                 }
@@ -1618,6 +1733,17 @@ impl AudioBackend {
     pub fn frames_rendered(&self) -> u64 {
         #[cfg(feature = "audio")]
         {
+            if self
+                .inner
+                .controls
+                .as_ref()
+                .is_some_and(|controls| !controls.ready())
+            {
+                return 0;
+            }
+            if let Some(output) = &self.inner.governed_output {
+                return output.observation().rendered_frames;
+            }
             self.inner.frames.load(std::sync::atomic::Ordering::Relaxed)
         }
         #[cfg(not(feature = "audio"))]
@@ -1642,6 +1768,12 @@ impl AudioBackend {
         #[cfg(feature = "audio")]
         {
             use gstreamer::prelude::*;
+            if let Some(output) = &self.inner.governed_output {
+                return output
+                    .observation()
+                    .ready
+                    .then(|| "tilo-governed-pipewire".into());
+            }
             let sink = self.inner.sink.as_ref()?;
             // `autoaudiosink` is a bin that owns the concrete sink as its child;
             // reach it via the `ChildProxy` interface (stable across versions).
@@ -1671,7 +1803,8 @@ impl AudioBackend {
     /// Block until the pipeline reaches `PLAYING` (or `timeout` elapses),
     /// returning whether it got there. Used by the audio-pipeline test to prove
     /// real decode reaches the sink; never called on the live UI thread.
-    #[cfg(all(test, feature = "audio"))]
+    #[cfg(test)]
+    #[cfg(feature = "audio")]
     pub fn wait_until_playing(&self, timeout: std::time::Duration) -> bool {
         use gstreamer::prelude::*;
         let deadline = ui::time::now() + timeout;
@@ -1710,6 +1843,7 @@ impl AudioBackend {
         ));
         let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let fetched = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let expected = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         spawn_stream_download(
@@ -1720,11 +1854,13 @@ impl AudioBackend {
             done.clone(),
             fetched.clone(),
             expected.clone(),
+            cancel.clone(),
         );
         self.inner.pending = Some(Pending {
             path,
             ready,
             done,
+            cancel,
             fetched,
             expected,
             want_play: false,
@@ -1736,6 +1872,7 @@ impl AudioBackend {
     #[cfg(all(feature = "audio", feature = "live"))]
     fn clear_pending(&mut self) {
         if let Some(p) = self.inner.pending.take() {
+            p.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
             crate::files::remove(&p.path);
         }
     }
@@ -1776,7 +1913,7 @@ fn ua_for_uri(uri: &str) -> &'static str {
             _ => IOS_UA,
         };
     }
-    crate::backend::proxy::BROWSER_UA
+    tilo_invidious::BROWSER_UA
 }
 
 /// Parse the `clen=` (content-length) query param off a googlevideo url, so the
@@ -1795,6 +1932,79 @@ fn next_stream_id() -> u64 {
     N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Retry a transient connection/server failure once. Authentication, access
+/// restrictions and rate limits are returned unchanged, never retried.
+#[cfg(all(feature = "audio", feature = "live"))]
+fn request_range(
+    client: &reqwest::blocking::Client,
+    uri: &str,
+    off: u64,
+    end: u64,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Option<reqwest::blocking::Response> {
+    for attempt in 0..2 {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        match client
+            .get(uri)
+            .header(reqwest::header::RANGE, format!("bytes={off}-{end}"))
+            .send()
+        {
+            Ok(response) if response.status().is_server_error() && attempt == 0 => {}
+            Ok(response) => return Some(response),
+            Err(_) if attempt == 0 => {}
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+/// A range must identify exactly the bytes requested. Use HTTP metadata for
+/// completeness even when the URL carries no provider-specific length hint.
+#[cfg(all(feature = "audio", feature = "live"))]
+fn response_range_length(
+    response: &reqwest::blocking::Response,
+    off: u64,
+    end: u64,
+    total: &mut Option<u64>,
+) -> Option<u64> {
+    if response.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+        let value = response
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)?
+            .to_str()
+            .ok()?;
+        let (range, size) = value.strip_prefix("bytes ")?.split_once('/')?;
+        let (start, last) = range.split_once('-')?;
+        let start = start.parse::<u64>().ok()?;
+        let last = last.parse::<u64>().ok()?;
+        let size = size.parse::<u64>().ok()?;
+        if start != off
+            || last < start
+            || last > end
+            || last >= size
+            || total.is_some_and(|known| known != size)
+        {
+            return None;
+        }
+        *total = Some(size);
+        let length = last - start + 1;
+        return response
+            .content_length()
+            .is_none_or(|n| n == length)
+            .then_some(length);
+    }
+    // A server may ignore Range only on the initial request, and only for a
+    // complete body fitting the bound. Appending that response would corrupt it.
+    let length = response.content_length()?;
+    if off != 0 || length == 0 || length > end + 1 || total.is_some_and(|known| known != length) {
+        return None;
+    }
+    *total = Some(length);
+    Some(length)
+}
+
 /// Download an http(s) media stream into `path` on a background thread, using
 /// **bounded** `Range` requests (`bytes=off-off+chunk`) — the only form
 /// googlevideo serves (it 403s the open-ended range playbin's `souphttpsrc`
@@ -1810,13 +2020,20 @@ fn spawn_stream_download(
     done: std::sync::Arc<std::sync::atomic::AtomicBool>,
     fetched: std::sync::Arc<std::sync::atomic::AtomicU64>,
     expected: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     use std::sync::atomic::Ordering::Relaxed;
     let _ = ui::rt::spawn_thread("tilo-music-stream-dl", move || {
         let finish = || {
+            if cancel.load(Relaxed) {
+                crate::files::remove(&path);
+            }
             ready.store(true, Relaxed);
             done.store(true, Relaxed);
         };
+        if cancel.load(Relaxed) {
+            return finish();
+        }
         let Ok(mut file) = crate::files::Growing::create(&path) else {
             return finish();
         };
@@ -1826,9 +2043,9 @@ fn spawn_stream_download(
         // segment). Both stream progressively: `ready` flips after the first
         // staged chunk so audio starts without waiting for the full download.
         tracing::info!(target: "music::audio", %uri, has_fallback = fallback.is_some(), "stream staging: begin (primary source)");
-        let never_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mut wrote = download_into(&uri, &mut file, &ready, &fetched, &expected, &never_cancel);
+        let mut wrote = download_into(&uri, &mut file, &ready, &fetched, &expected, &cancel);
         if wrote == 0
+            && !cancel.load(Relaxed)
             && let Some(fb) = fallback
         {
             tracing::info!(target: "music::audio", fallback = %fb, "stream staging: primary yielded no media, trying fallback (direct)");
@@ -1839,7 +2056,7 @@ fn spawn_stream_download(
             fetched.store(0, Relaxed);
             expected.store(0, Relaxed);
             let _ = file.reset();
-            wrote = download_into(&fb, &mut file, &ready, &fetched, &expected, &never_cancel);
+            wrote = download_into(&fb, &mut file, &ready, &fetched, &expected, &cancel);
         }
         let want = expected.load(Relaxed);
         if want > 0 && wrote < want {
@@ -1887,7 +2104,7 @@ fn download_into(
     else {
         return 0;
     };
-    let clen = parse_clen(uri);
+    let mut clen = parse_clen(uri);
     expected.store(clen.unwrap_or(0), Relaxed);
     let mut off = 0u64;
     loop {
@@ -1903,12 +2120,7 @@ fn download_into(
             Some(c) => (off + CHUNK - 1).min(c - 1),
             None => off + CHUNK - 1,
         };
-        let want = end - off + 1;
-        let resp = client
-            .get(uri)
-            .header(reqwest::header::RANGE, format!("bytes={off}-{end}"))
-            .send();
-        let Ok(mut resp) = resp else {
+        let Some(mut resp) = request_range(&client, uri, off, end, cancel) else {
             tracing::debug!(target: "music::audio", %uri, off, "stream fetch: request failed");
             break;
         };
@@ -1916,6 +2128,10 @@ fn download_into(
             tracing::debug!(target: "music::audio", %uri, off, status = %resp.status(), "stream fetch: non-success status");
             break;
         }
+        let Some(want) = response_range_length(&resp, off, end, &mut clen) else {
+            break;
+        };
+        expected.store(clen.unwrap_or(0), Relaxed);
         // Guard against a proxy that answers 2xx with an HTML anti-bot / error
         // page instead of media: staging that into the pipeline makes GStreamer
         // error out and the transport freeze at 0:00. On the very first chunk we
@@ -1927,7 +2143,7 @@ fn download_into(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        if off == 0 && !ct.is_empty() && !crate::backend::proxy::content_type_is_media(&ct) {
+        if off == 0 && !ct.is_empty() && !tilo_invidious::content_type_is_media(&ct) {
             tracing::warn!(target: "music::audio", %uri, content_type = %ct, "stream fetch: non-media Content-Type — discarding, will try fallback");
             break;
         }
@@ -1946,9 +2162,7 @@ fn download_into(
             let Some(read_buffer) = buffer.get_mut(..cap) else {
                 return 0;
             };
-            let Ok(read) = resp.read(read_buffer) else {
-                return 0;
-            };
+            let read = resp.read(read_buffer).unwrap_or(0);
             if read == 0 {
                 break;
             }
@@ -1965,7 +2179,7 @@ fn download_into(
                 tracing::warn!(target: "music::audio", %uri, off, "stream fetch: source ignored bounded range");
                 return 0;
             }
-            if off == 0 && crate::backend::proxy::body_sniffs_as_html(&first) {
+            if off == 0 && tilo_invidious::body_sniffs_as_html(&first) {
                 tracing::warn!(target: "music::audio", %uri, "stream fetch: body sniffs as HTML — discarding, will try fallback");
                 return 0;
             }
@@ -2090,9 +2304,15 @@ fn build_audio_sink_bin(
 impl Drop for AudioBackend {
     fn drop(&mut self) {
         use gstreamer::prelude::*;
-        let _ = self.inner.playbin.set_state(gstreamer::State::Null);
+        if let Some(output) = &self.inner.governed_output {
+            output.close();
+        }
+        if self.inner.controls.is_none() {
+            let _ = self.inner.playbin.set_state(gstreamer::State::Null);
+        }
         #[cfg(feature = "live")]
         if let Some(p) = self.inner.pending.take() {
+            p.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
             crate::files::remove(&p.path);
         }
     }
@@ -2100,6 +2320,190 @@ impl Drop for AudioBackend {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "audio")]
+    fn isolated_governed_control_child() -> bool {
+        const CHILD: &str = "TILO_TEST_MUSIC_GOVERNED_CONTROLS";
+        if std::env::var_os(CHILD).is_none() {
+            // The admitted output factory is process-global. Exercise production
+            // controls in a fresh process without changing other tests' route.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "audio::tests::governed_controls_remain_responsive_and_fence_replaced_sources",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return true;
+        }
+        false
+    }
+
+    #[cfg(feature = "audio")]
+    fn install_blocked_output() -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        use media::audio_output::{Factory, Observation, Output};
+        use std::sync::{Arc, Mutex, mpsc};
+        struct GateFactory {
+            entered: mpsc::Sender<()>,
+            release: Mutex<Option<mpsc::Receiver<()>>>,
+        }
+        struct GateOutput {
+            entered: mpsc::Sender<()>,
+            release: Option<mpsc::Receiver<()>>,
+            frames: u64,
+        }
+        impl Factory for GateFactory {
+            fn open(&self) -> Result<Box<dyn Output>, String> {
+                Ok(Box::new(GateOutput {
+                    entered: self.entered.clone(),
+                    release: self.release.lock().unwrap().take(),
+                    frames: 0,
+                }))
+            }
+        }
+        impl Output for GateOutput {
+            fn write(&mut self, samples: &[i16]) -> Result<Observation, String> {
+                if let Some(release) = self.release.take() {
+                    self.entered.send(()).unwrap();
+                    release
+                        .recv_timeout(std::time::Duration::from_secs(2))
+                        .map_err(|e| e.to_string())?;
+                }
+                self.frames += samples.len() as u64 / 2;
+                Ok(self.cached_observation())
+            }
+            fn observation(&mut self) -> Result<Observation, String> {
+                Ok(self.cached_observation())
+            }
+            fn cached_observation(&self) -> Observation {
+                Observation {
+                    rendered_frames: self.frames,
+                    queued_frames: 0,
+                    ready: true,
+                }
+            }
+            fn cached_error(&self) -> Option<String> {
+                None
+            }
+            fn pause(&mut self, _: bool) -> Result<(), String> {
+                Ok(())
+            }
+            fn flush(&mut self) -> Result<(), String> {
+                Ok(())
+            }
+            fn volume(&mut self, _: u8) -> Result<(), String> {
+                Ok(())
+            }
+            fn close(&mut self) {}
+        }
+        let (entered, entering) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        media::audio_output::install(Arc::new(GateFactory {
+            entered,
+            release: Mutex::new(Some(released)),
+        }));
+        (entering, release)
+    }
+
+    #[test]
+    #[cfg(feature = "audio")]
+    #[serial_test::serial(audio_backend)]
+    fn governed_controls_remain_responsive_and_fence_replaced_sources() {
+        use std::sync::{Arc, Mutex, mpsc};
+        use std::time::Duration;
+        if isolated_governed_control_child() {
+            return;
+        }
+        let (entering, release) = install_blocked_output();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blocked-output.wav");
+        std::fs::write(&path, sine_wav(2, 48_000)).unwrap();
+        let mut backend = super::AudioBackend::try_new(&super::AudioOutput::System).unwrap();
+        backend.load_with_fallback(url::Url::from_file_path(path).unwrap().as_str(), None);
+        backend.play();
+        entering
+            .recv_timeout(tilo_test_env::hang_bound())
+            .expect("real decoder entered governed write");
+        let backend = Arc::new(Mutex::new(backend));
+        let query_backend = backend.clone();
+        let (answered, answer) = mpsc::channel();
+        let query = std::thread::spawn(move || {
+            let mut backend = query_backend.lock().unwrap();
+            backend.pause();
+            answered
+                .send((
+                    backend.position_ms(),
+                    backend.duration_ms(),
+                    backend.try_seek_ms(1000),
+                    backend.is_playing_confirmed(),
+                ))
+                .unwrap();
+        });
+        let observed = answer.recv_timeout(Duration::from_millis(250));
+        release.send(()).unwrap();
+        query.join().unwrap();
+        let mut owner =
+            Arc::try_unwrap(backend).unwrap_or_else(|_| panic!("query released backend"));
+        let backend = owner.get_mut().unwrap();
+        wait_for(|| {
+            backend
+                .inner
+                .controls
+                .as_ref()
+                .unwrap()
+                .seek_result()
+                .is_some()
+        });
+        assert_eq!(
+            backend.inner.controls.as_ref().unwrap().seek_result(),
+            Some(Ok(()))
+        );
+        // A queued old seek must never apply after a replacement URI is installed.
+        assert_eq!(backend.try_seek_ms(1000), Some(Ok(())));
+        let replacement = dir.path().join("replacement.wav");
+        std::fs::write(&replacement, sine_wav(4, 48_000)).unwrap();
+        backend.load_with_fallback(
+            url::Url::from_file_path(&replacement).unwrap().as_str(),
+            None,
+        );
+        backend.pause();
+        wait_for(|| {
+            use gstreamer::prelude::*;
+            backend.inner.controls.as_ref().unwrap().ready()
+                && backend.inner.playbin.current_state() == gstreamer::State::Paused
+                && backend.duration_ms() == Some(4000)
+        });
+        assert_eq!(
+            backend.position_ms(),
+            Some(0),
+            "old seek cannot move the replacement"
+        );
+        assert_eq!(
+            backend.inner.controls.as_ref().unwrap().seek_result(),
+            None,
+            "the replacement cannot inherit an old seek result"
+        );
+        // Dropping a paused backend must stop its worker and native pipeline.
+        let pipeline = backend.inner.playbin.clone();
+        drop(owner);
+        wait_for(|| {
+            use gstreamer::prelude::*;
+            pipeline.current_state() == gstreamer::State::Null
+        });
+        assert!(
+            matches!(observed, Ok((_, _, Some(Ok(())), false))),
+            "pause, observations and seek submission must return promptly while PCM delivery is blocked: {observed:?}"
+        );
+    }
+
     use super::*;
 
     fn wait_for(mut condition: impl FnMut() -> bool) {
@@ -2515,7 +2919,8 @@ mod tests {
                     body.len()
                 )
                 .expect("headers");
-                stream.write_all(&body).expect("body");
+                // Rejection based on headers can close before this body lands.
+                let _ = stream.write_all(&body);
             });
             let path = std::env::temp_dir()
                 .join(format!("tilo-music-oversize-{}.part", std::process::id()));
@@ -2563,6 +2968,7 @@ mod tests {
                 path: path.clone(),
                 ready: Arc::new(AtomicBool::new(true)),
                 done: Arc::new(AtomicBool::new(true)),
+                cancel: Arc::new(AtomicBool::new(false)),
                 fetched: Arc::new(AtomicU64::new(wav.len() as u64)),
                 expected: Arc::new(AtomicU64::new(wav.len() as u64)),
                 want_play: true,
@@ -2592,6 +2998,271 @@ mod tests {
                 "stopped staged audio releases its temporary file"
             );
         }
+    }
+
+    #[test]
+    #[cfg(all(feature = "audio", feature = "live"))]
+    #[serial_test::serial(audio_backend)]
+    fn stopping_staged_playback_cancels_fetch_and_never_starts_fallback() {
+        use std::io::{Read, Write};
+        use std::sync::atomic::Ordering::Acquire;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_listener = listener.try_clone().unwrap();
+        let body = sine_wav(20, 44_100);
+        let total = body.len();
+        let (received, request) = std::sync::mpsc::channel();
+        let (release, response) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = server_listener.accept().unwrap();
+            let mut bytes = [0u8; 2048];
+            assert!(stream.read(&mut bytes).unwrap() > 0);
+            received.send(()).unwrap();
+            response.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 206 Partial Content\r\nContent-Type: audio/wav\r\nContent-Length: 1048576\r\nContent-Range: bytes 0-1048575/{total}\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream.write_all(&body[..1_048_576]);
+        });
+        let mut engine =
+            AudioBackend::try_new(&AudioOutput::Capture(PcmCapture::default())).unwrap();
+        engine.load_with_fallback(
+            &format!("http://{address}/track?clen={total}"),
+            Some(&format!("http://{address}/fallback?clen={total}")),
+        );
+        let done = engine.inner.pending.as_ref().unwrap().done.clone();
+        request.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+        engine.stop();
+        release.send(()).unwrap();
+        server.join().unwrap();
+        wait_for(|| done.load(Acquire));
+        listener.set_nonblocking(true).unwrap();
+        assert!(
+            matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "Stop must cancel subsequent ranges and fallback requests"
+        );
+        assert!(engine.current_uri.is_none());
+    }
+
+    #[test]
+    #[cfg(all(feature = "audio", feature = "live"))]
+    fn staging_learns_total_from_content_range_without_url_length() {
+        use std::io::{Read, Write};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicU64, Ordering::Acquire},
+        };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let body = sine_wav(1, 44_100);
+        let total = body.len() as u64;
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 2048];
+            assert!(stream.read(&mut request).unwrap() > 0);
+            write!(stream, "HTTP/1.1 206 Partial Content\r\nContent-Type: audio/wav\r\nContent-Length: {total}\r\nContent-Range: bytes 0-{}/{total}\r\nConnection: close\r\n\r\n", total-1).unwrap();
+            stream.write_all(&body).unwrap();
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let mut file = crate::files::Growing::create(&temp.path().join("stage.wav")).unwrap();
+        let ready = Arc::new(AtomicBool::new(false));
+        let fetched = Arc::new(AtomicU64::new(0));
+        let expected = Arc::new(AtomicU64::new(0));
+        let cancel = Arc::new(AtomicBool::new(false));
+        assert_eq!(
+            download_into(
+                &format!("http://{address}/track"),
+                &mut file,
+                &ready,
+                &fetched,
+                &expected,
+                &cancel
+            ),
+            total
+        );
+        server.join().unwrap();
+        assert_eq!(
+            expected.load(Acquire),
+            total,
+            "completeness must use the actual HTTP range metadata"
+        );
+        assert_eq!(fetched.load(Acquire), total);
+    }
+
+    #[cfg(all(feature = "audio", feature = "live"))]
+    fn download_responses(responses: Vec<Vec<u8>>) -> (u64, u64, u64) {
+        use std::io::{Read, Write};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
+        };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let observation = listener.try_clone().unwrap();
+        let server = std::thread::spawn(move || {
+            for response in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0u8; 2048];
+                assert!(stream.read(&mut request).unwrap() > 0);
+                assert!(
+                    String::from_utf8_lossy(&request).contains("Range: bytes=")
+                        || String::from_utf8_lossy(&request).contains("range: bytes=")
+                );
+                let _ = stream.write_all(&response);
+            }
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let mut file = crate::files::Growing::create(&temp.path().join("stage.wav")).unwrap();
+        let ready = Arc::new(AtomicBool::new(false));
+        let fetched = Arc::new(AtomicU64::new(0));
+        let expected = Arc::new(AtomicU64::new(0));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let wrote = download_into(
+            &format!("http://{address}/track"),
+            &mut file,
+            &ready,
+            &fetched,
+            &expected,
+            &cancel,
+        );
+        server.join().unwrap();
+        observation.set_nonblocking(true).unwrap();
+        assert!(
+            matches!(observation.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "no extra requests beyond the permitted transient retry"
+        );
+        (wrote, fetched.load(Relaxed), expected.load(Relaxed))
+    }
+
+    #[test]
+    #[cfg(all(feature = "audio", feature = "live"))]
+    fn range_transfer_retries_transient_failure_and_rejects_denial_mismatch_and_truncation() {
+        let body = sine_wav(1, 44_100);
+        let total = body.len() as u64;
+        let media = |range: String, bytes: &[u8]| {
+            let mut response = format!("HTTP/1.1 206 Partial Content\r\nContent-Type: audio/wav\r\nContent-Length: {total}\r\nContent-Range: {range}\r\nConnection: close\r\n\r\n").into_bytes();
+            response.extend_from_slice(bytes);
+            response
+        };
+        let success = media(format!("bytes 0-{}/{total}", total - 1), &body);
+        let failure =
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_vec();
+        assert_eq!(
+            download_responses(vec![failure, success]),
+            (total, total, total)
+        );
+        for status in [401, 403, 429] {
+            let denied = format!(
+                "HTTP/1.1 {status} Denied\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .into_bytes();
+            assert_eq!(download_responses(vec![denied]), (0, 0, 0));
+        }
+        let wrong = media(format!("bytes 1-{total}/{}", total + 1), &body);
+        assert_eq!(download_responses(vec![wrong]), (0, 0, 0));
+        let partial = media(format!("bytes 0-{}/{total}", total - 1), &body[..4096]);
+        let (wrote, fetched, expected) = download_responses(vec![partial]);
+        assert_eq!((wrote, fetched, expected), (4096, 4096, total));
+        assert!(fetched < expected, "truncation cannot look complete");
+
+        let body = sine_wav(20, 44_100);
+        let size = body.len();
+        let mut first = format!("HTTP/1.1 206 Partial Content\r\nContent-Type: audio/wav\r\nContent-Length: 1048576\r\nContent-Range: bytes 0-1048575/{size}\r\nConnection: close\r\n\r\n").into_bytes();
+        first.extend_from_slice(&body[..1_048_576]);
+        assert_eq!(
+            download_responses(vec![first.clone(), first]),
+            (1_048_576, 1_048_576, size as u64),
+            "a repeated initial range must never be appended as later bytes"
+        );
+    }
+
+    /// The same production staging/decoder journey runs with a generated WAV
+    /// normally, or a permitted public media URL supplied explicitly by the
+    /// operator. A failed live observation fails this test; it never skips.
+    #[test]
+    #[cfg(all(feature = "audio", feature = "live"))]
+    #[serial_test::serial(audio_backend)]
+    fn complete_http_track_decodes_to_eos_and_supports_pause_and_seek() {
+        use std::io::{Read, Write};
+        let source = std::env::var("TILO_MUSIC_PUBLIC_MEDIA_URL").ok();
+        let mut server = None;
+        let uri = source.unwrap_or_else(|| {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            server = Some(std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0u8; 2048];
+                assert!(stream.read(&mut request).unwrap() > 0);
+                let body = sine_wav(2, 44_100);
+                let size = body.len();
+                write!(stream, "HTTP/1.1 206 Partial Content\r\nContent-Type: audio/wav\r\nContent-Length: {size}\r\nContent-Range: bytes 0-{}/{size}\r\nConnection: close\r\n\r\n", size-1).unwrap();
+                stream.write_all(&body).unwrap();
+            }));
+            format!("http://{address}/track")
+        });
+        let capture = PcmCapture::default();
+        let mut engine = AudioBackend::try_new(&AudioOutput::Capture(capture.clone())).unwrap();
+        engine.load_with_fallback(&uri, None);
+        // Stage completely before decoding to prove full-file EOS, independent
+        // of network timing. This is the ordinary production staged file path.
+        wait_for(|| engine.staging_finished());
+        assert!(
+            engine.staging_complete(),
+            "public media must arrive completely: {:?}",
+            engine.staged_progress()
+        );
+        let progress = engine.staged_progress().unwrap();
+        assert_eq!(Some(progress.0), progress.1);
+        assert!(progress.0 > 0);
+        engine.play();
+        wait_for(|| {
+            assert!(!engine.pump());
+            capture.snapshot().peak > 0
+                && capture.snapshot().rendered > 0
+                && engine.is_playing_confirmed()
+                && engine.duration_ms().is_some()
+                && engine.position_ms().is_some()
+        });
+        engine.pause();
+        wait_for(|| {
+            assert!(!engine.pump());
+            !engine.is_playing_real() && engine.position_ms().is_some()
+        });
+        let paused = engine.position_ms().unwrap();
+        capture.wait_for_more(std::time::Duration::from_millis(200));
+        assert!(engine.position_ms().unwrap().abs_diff(paused) < 100);
+        let duration = engine.duration_ms().unwrap();
+        engine.play();
+        let deadline = ui::time::now() + std::time::Duration::from_millis(duration + 30_000);
+        while !engine.reached_eos() && ui::time::now() < deadline {
+            assert!(!engine.pump());
+            capture.wait_for_more(std::time::Duration::from_millis(100));
+        }
+        let pcm = capture.snapshot();
+        assert!(engine.reached_eos(), "whole track must reach EOS: {pcm:?}");
+        assert!(
+            pcm.samples > duration * 40,
+            "decoded the whole duration: {pcm:?}"
+        );
+        assert_eq!(
+            engine.try_seek_ms(duration.saturating_sub(1500)),
+            Some(Ok(()))
+        );
+        engine.play();
+        wait_for(|| {
+            assert!(!engine.pump());
+            capture.snapshot().samples > pcm.samples
+        });
+        engine.stop();
+        assert!(engine.inner.pending.is_none());
+        if let Some(server) = server {
+            server.join().unwrap();
+        }
+        eprintln!(
+            "complete media: bytes={progress:?}, duration_ms={duration}, pcm={pcm:?}; pause, resume, seek and stop passed"
+        );
     }
 
     /// **Real audible-output proof** (under `--features audio`): a locally
@@ -2684,8 +3355,81 @@ mod tests {
         );
         eprintln!("[audio test] rendered {frames} buffers to real sink `{sink_name}`");
 
+        // Tearing the real sink down once hung in CI until the runner killed
+        // the test, with nothing to say where. Bound it by the hang bound and
+        // report where every thread waits and each element's state.
+        let elements = engine
+            .backend
+            .as_ref()
+            .map(|backend| backend.inner.playbin.clone());
+        let (torn_down, watched) = std::sync::mpsc::channel::<()>();
+        let watchdog = std::thread::spawn(move || {
+            if watched.recv_timeout(tilo_test_env::hang_bound())
+                != Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            {
+                return;
+            }
+            // Threads first: reading an element's state takes its lock,
+            // which a stuck state change may hold.
+            eprintln!("tearing down the real sink hung:\n{}", thread_waits());
+            eprintln!("{}", element_states(elements.as_ref()));
+            std::process::abort();
+        });
         engine.stop();
+        drop(engine);
+        let _ = torn_down.send(());
+        watchdog.join().unwrap();
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Where each thread of this process waits (Linux `/proc`): what a hung
+    /// teardown is stuck on.
+    #[cfg(feature = "audio")]
+    fn thread_waits() -> String {
+        use std::fmt::Write as _;
+        let mut report = String::new();
+        for task in std::fs::read_dir("/proc/self/task")
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let read = |name: &str| {
+                std::fs::read_to_string(task.path().join(name))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned()
+            };
+            let _ = writeln!(
+                report,
+                "thread {:?} {}: wchan {}, syscall {}",
+                task.file_name(),
+                read("comm"),
+                read("wchan"),
+                read("syscall")
+            );
+        }
+        report
+    }
+
+    /// The state of each element of `pipeline`.
+    #[cfg(feature = "audio")]
+    fn element_states(pipeline: Option<&gstreamer::Element>) -> String {
+        use gstreamer::prelude::*;
+        use std::fmt::Write as _;
+        let mut report = String::new();
+        if let Some(bin) = pipeline.and_then(|pipeline| pipeline.downcast_ref::<gstreamer::Bin>()) {
+            let elements = std::iter::once(bin.clone().upcast::<gstreamer::Element>())
+                .chain(bin.iterate_recurse().into_iter().flatten());
+            for element in elements {
+                let (result, current, pending) = element.state(gstreamer::ClockTime::ZERO);
+                let _ = writeln!(
+                    report,
+                    "{}: {result:?} {current:?} -> {pending:?}",
+                    element.path_string()
+                );
+            }
+        }
+        report
     }
 
     /// Build a minimal PCM WAV: `secs` seconds of a 220 Hz sine, 16-bit mono.

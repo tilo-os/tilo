@@ -2,11 +2,10 @@
 //! and addresses enter the shared calendar; person and sender IDs stay local.
 use tilo_contact_directory::{ContactDirectory, canonical_email_hint};
 use ui::framework::LiveRow;
-use ui::tilo_resource::{Effect, SearchEntry};
+use ui::tilo_resource::{Effect, Invoke, SearchEntry};
 
 use super::CalendarApp;
-use crate::actions::{AttendeeData, CalendarAction};
-use crate::model::Id;
+use crate::model::{Calendar, Id, key};
 use crate::resource::CalendarEffect;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -196,7 +195,21 @@ impl CalendarApp {
             });
             rows.insert(scope, row.row(choice.row()));
         }
-        rows.into_values().collect()
+        let mut rows: Vec<_> = rows.into_values().collect();
+        rows.extend(self.model.events.iter().map(|event| {
+            let mut action = CalendarEffect::ContactAttendees {
+                event_id: event.id.to_string(),
+            }
+            .bound();
+            action.label = crate::i18n::t("calendar-contact-attendees");
+            LiveRow::new(
+                crate::actions::event_resource_id(event.id),
+                "calendar.event",
+                event.display_title(),
+            )
+            .operation(action)
+        }));
+        rows
     }
 
     pub(crate) fn contact_operation_entries(&self) -> Vec<SearchEntry> {
@@ -204,11 +217,7 @@ impl CalendarApp {
             .into_iter()
             .map(|choice| {
                 let mut entry = SearchEntry::new(choice.label(), choice.label())
-                    .anchored(choice.id())
-                    .invoking(ui::tilo_actions::ActionAddress::new(
-                        choice.id(),
-                        choice.effect().id(),
-                    ));
+                    .opening(choice.id(), &choice.effect());
                 entry.within = Some(choice.scope());
                 entry
             })
@@ -262,7 +271,10 @@ impl CalendarApp {
         Ok(())
     }
 
-    pub(crate) fn contact_attendee_action(&self, payload: &str) -> Result<CalendarAction, String> {
+    pub(crate) fn contact_attendee_action(
+        &self,
+        payload: &str,
+    ) -> Result<Invoke<Calendar>, String> {
         let Choice::Attendee {
             event,
             label,
@@ -272,15 +284,10 @@ impl CalendarApp {
         else {
             return Err(crate::i18n::t("calendar-contact-stale"));
         };
-        Ok(CalendarAction::UpsertAttendee {
-            event_id: event,
-            attendee: AttendeeData {
-                id: uuid::Uuid::new_v4().to_string(),
-                name: label,
-                email,
-                status: "NEEDS-ACTION".into(),
-            },
-        })
+        let event = event
+            .parse::<Id>()
+            .map_err(|_| crate::i18n::t("calendar-contact-event-missing"))?;
+        Ok(Calendar::INVITE.with((key(event), email, label)))
     }
 
     pub(crate) fn prepare_reviewed_invitation(
@@ -313,7 +320,7 @@ pub(super) mod tests {
     use super::*;
     use accounts::person::PersonAccounts;
     use ui::framework::{ResourceApp, ViewCx, testing::TestApp};
-    use ui::tilo_resource::{Id as ResourceId, Invoke};
+    use ui::tilo_resource::Id as ResourceId;
     use ui::widget::{Element, Text};
 
     struct ContactsOwner;
@@ -412,12 +419,14 @@ pub(super) mod tests {
         data.attendees.clear();
         data.project.clear();
         data.calendar_id.clear();
-        app.invoke(Invoke::apply(&CalendarAction::UpsertEvent(data)).unwrap())
-            .unwrap();
+        app.invoke(Calendar::NEW_EVENT.with(data)).unwrap();
         app.settle();
-        app.effect(&CalendarEffect::ContactAttendees {
-            event_id: event.id.to_string(),
-        })
+        app.effect_on(
+            &crate::actions::event_resource_id(event.id),
+            &CalendarEffect::ContactAttendees {
+                event_id: event.id.to_string(),
+            },
+        )
         .unwrap();
         (profile, source, app, event.id)
     }
@@ -490,7 +499,8 @@ pub(super) mod tests {
                 .all(|(_, person)| person.endpoints.is_empty()),
             "adding an attendee establishes no identity proof"
         );
-        assert!(app.read_document(|doc| crate::doc::CalDoc::outbox(doc).is_empty()));
+        assert!(app.state().uploads.is_empty());
+        assert!(app.state().deletes.is_empty());
         drop(consumer);
         let attendee_id = attendees[0].id;
         let mut reopened = app.reopen().unwrap();
@@ -630,16 +640,13 @@ pub(super) mod tests {
             .merge_peer_document(source.record().document().unwrap())
             .unwrap();
         mailbox.settle();
-        let spec = mail::actions::MailEffect::specs();
-        let mut root = ui::tilo_actions::Resource::new("mail.mailbox", "mail.mailbox", "Mail");
-        root.actions = spec;
-        let args = handoff["arguments"].as_object().unwrap().clone();
-        let encoded = ui::tilo_actions::door::encode_json(
-            &[root],
-            &ui::tilo_actions::ActionAddress::new("mail.mailbox", "prepare-calendar-invitation"),
-            &args,
-        )
-        .unwrap();
+        let specs = mail::actions::MailEffect::specs();
+        let spec = specs
+            .iter()
+            .find(|spec| Some(spec.id.as_str()) == handoff["target"]["action"].as_str())
+            .unwrap();
+        let args = handoff["arguments"].as_object().unwrap();
+        let encoded = spec.build_json(args).unwrap();
         let effect = mail::actions::MailEffect::from_payload(&encoded.payload).unwrap();
         assert!(
             mailbox.effect(&effect).is_err(),
@@ -647,14 +654,14 @@ pub(super) mod tests {
         );
         mailbox.effect_confirmed(&effect).unwrap();
         mailbox.settle();
-        let draft = mailbox.read_document(mail::doc::MailDoc::load_draft);
+        let draft = mailbox.state().draft.draft();
         assert_eq!(draft.to, "Alex@example.test");
         assert_eq!(draft.sender.unwrap().account, "sender-personal");
         assert_eq!(
             draft.calendar_ics.as_deref(),
             handoff["arguments"]["calendar_ics"].as_str()
         );
-        assert!(mailbox.read_document(|doc| mail::doc::MailDoc::outbox(doc).is_empty()));
+        assert!(mailbox.state().outbox.is_empty());
         assert!(
             mailbox.effect_confirmed(&effect).is_err(),
             "an existing invitation draft cannot be overwritten"
@@ -685,8 +692,7 @@ pub(super) mod tests {
         let mut data = crate::actions::EventData::from_event(app.state().event(event).unwrap());
         data.id = uuid::Uuid::new_v4().to_string();
         let other = data.id.clone();
-        app.invoke(Invoke::apply(&CalendarAction::UpsertEvent(data)).unwrap())
-            .unwrap();
+        app.invoke(Calendar::NEW_EVENT.with(data)).unwrap();
         app.settle();
         app.effect(&CalendarEffect::ContactAttendees { event_id: other })
             .unwrap();
@@ -710,14 +716,12 @@ pub(super) mod tests {
         .unwrap();
         let (row, effect) = selected_sender(&mut app);
         app.invoke(
-            Invoke::apply(&CalendarAction::PatchEvent {
-                id: event.to_string(),
-                patch: crate::actions::EventPatch {
-                    title: Some("Changed event".into()),
-                    ..Default::default()
-                },
-            })
-            .unwrap(),
+            Calendar::paths()
+                .events
+                .item(&key(event))
+                .title
+                .set("Changed event".into())
+                .into(),
         )
         .unwrap();
         app.settle();
@@ -727,15 +731,14 @@ pub(super) mod tests {
         );
         let (row, effect) = selected_sender(&mut app);
         app.invoke(
-            Invoke::apply(&CalendarAction::PatchAttendee {
-                event_id: event.to_string(),
-                attendee_id: attendee.to_string(),
-                patch: crate::actions::AttendeePatch {
-                    email: Some("changed@example.test".into()),
-                    ..Default::default()
-                },
-            })
-            .unwrap(),
+            Calendar::paths()
+                .events
+                .item(&key(event))
+                .attendees
+                .item(&key(attendee))
+                .email
+                .set("changed@example.test".into())
+                .into(),
         )
         .unwrap();
         app.settle();

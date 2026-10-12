@@ -23,6 +23,10 @@ pub(crate) struct ReplayTicket {
 impl Drop for ReplayTicket {
     fn drop(&mut self) {
         self.authority.cancelled.store(true, Ordering::SeqCst);
+        // The owner holding this replay's entry can reclaim it now.
+        if let Some(reclaim) = self.authority.reclaim.get() {
+            reclaim.notify_one();
+        }
     }
 }
 pub(crate) struct Authority {
@@ -31,6 +35,9 @@ pub(crate) struct Authority {
     cancelled: AtomicBool,
     connection: Option<Arc<AtomicBool>>,
     session: Mutex<Option<Arc<AtomicBool>>>,
+    /// The wake of the owner whose table took this replay's entry
+    /// ([`Replays::reclaim_wake`]), set when it took it.
+    reclaim: OnceLock<Arc<tokio::sync::Notify>>,
     // The owner keeps admission during abandoned-spool reclamation.
     _permit: OwnedSemaphorePermit,
 }
@@ -112,6 +119,7 @@ impl ReplayTicket {
                 cancelled: AtomicBool::new(false),
                 connection,
                 session: Mutex::new(None),
+                reclaim: OnceLock::new(),
                 _permit: permit,
             }),
         })
@@ -153,10 +161,23 @@ struct Entry {
 pub(super) struct Replays {
     entries: HashMap<[u8; 16], Entry>,
     next_reclaim: usize,
+    /// Notified when a session drops the ticket of an entry here: the entry
+    /// turns reclaimable then, outside the owner, so the owner sleeps on this
+    /// instead of polling its table.
+    reclaim: Arc<tokio::sync::Notify>,
 }
 impl Replays {
+    #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+    /// Whether a session has let go of an entry, so
+    /// [`State::reclaim_replay_step`] has work.
+    pub(super) fn reclaimable(&self) -> bool {
+        self.entries.values().any(|entry| !entry.authority.active())
+    }
+    pub(super) fn reclaim_wake(&self) -> Arc<tokio::sync::Notify> {
+        self.reclaim.clone()
     }
 }
 pub(crate) fn output_budget() -> &'static ReplayBudget {
@@ -340,6 +361,9 @@ impl State {
                     .start_replay_capture(authority.id, authority.device)
                     .map(|build| build.skipping(skip))
             };
+            // Its ticket's drop wakes this owner to reclaim the entry. One
+            // ticket names one workspace's replay, so it has one owner.
+            let _ = authority.reclaim.set(self.replays.reclaim.clone());
             // Register even a failed start so its known reserved root is reclaimed.
             self.replays.entries.insert(
                 authority.id.0,
@@ -491,24 +515,29 @@ impl State {
         reason = "the entry is a borrow of the owner table, not a lock guard"
     )]
     pub(super) fn reclaim_replay_step(&mut self) -> Result<(), StoreError> {
-        // The process-wide permit bounds this table. Select only one entry per
+        // The process-wide permit bounds this table. Step only one entry per
         // quantum, including idle time; cancellation never queues another job.
+        // Take the next released entry in turn, past any still in use.
         let n = self.replays.entries.len();
         if n == 0 {
             return Ok(());
         }
-        self.replays.next_reclaim = self.replays.next_reclaim.checked_rem(n).unwrap_or(0);
-        let id = *self
+        let start = self.replays.next_reclaim.checked_rem(n).unwrap_or(0);
+        let Some((offset, id)) = self
             .replays
             .entries
-            .keys()
-            .nth(self.replays.next_reclaim)
-            .invariant("next reclaim missing")?;
-        self.replays.next_reclaim = self.replays.next_reclaim.saturating_add(1);
-        let entry = self.replays.entries.get_mut(&id).invariant("id missing")?;
-        if entry.authority.active() {
+            .iter()
+            .cycle()
+            .skip(start)
+            .take(n)
+            .enumerate()
+            .find(|(_, (_, entry))| !entry.authority.active())
+            .map(|(offset, (id, _))| (offset, *id))
+        else {
             return Ok(());
-        }
+        };
+        self.replays.next_reclaim = start.saturating_add(offset).saturating_add(1);
+        let entry = self.replays.entries.get_mut(&id).invariant("id missing")?;
         if !matches!(entry.cursor, Some(Cursor::Discard(_))) {
             let discard = match entry.cursor.take() {
                 Some(Cursor::Capture(build)) => (*build).into_discard(),

@@ -41,6 +41,47 @@ fn not_a_content_size(c: &Captures<'_>) -> bool {
     !c[1].contains("CONTENT_PX")
 }
 
+/// `TextRenderer::measure` has three arguments. Widget layout measurement
+/// accepts four (width, height, theme, renderer) and carries no pixel text size.
+/// Incomplete/multiline calls stay counted unless the four arguments are visible.
+fn is_pixel_text_call(line: &str, c: &Captures<'_>) -> bool {
+    if &c[1] != "measure" {
+        return true;
+    }
+    let mut depth = 0_u32;
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut commas = 0_u32;
+    let mut last = None;
+    let end = c.get(0).expect("matched call").end();
+    for ch in line[end..].chars() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                quoted = false;
+            }
+            continue;
+        }
+        if ch == ')' && depth == 0 {
+            break;
+        }
+        if !ch.is_whitespace() {
+            last = Some(ch);
+        }
+        match ch {
+            '"' => quoted = true,
+            '(' | '[' | '{' => depth = depth.saturating_add(1),
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => commas = commas.saturating_add(1),
+            _ => {}
+        }
+    }
+    commas.saturating_sub(u32::from(last == Some(','))) < 3
+}
+
 pub fn typography_ratchet() -> Ratchet {
     Ratchet {
         name: "typography",
@@ -58,10 +99,10 @@ pub fn typography_ratchet() -> Ratchet {
             ),
             Pattern::new(
                 "legacy_size_api",
-                r"\.(?:draw_text|draw_text_weighted|measure|measure_weighted|measure_styled|elide_to_width|elide_to_width_weighted)\(",
+                r"\.(draw_text|draw_text_weighted|measure|measure_weighted|measure_styled|elide_to_width|elide_to_width_weighted)\(",
                 "pixel-size text API — measure, draw and elide through the role-based text \
                  API, or compose a Text widget",
-            ),
+            ).keep_line(is_pixel_text_call),
             Pattern::new(
                 "font_size_const",
                 r"^\s*(?:pub(?:\([a-z]+\))?\s+)?const\s+([A-Z0-9_]*(?:FONT|TEXT|SIZE|TITLE|LABEL|CAPTION|HEADING)[A-Z0-9_]*)\s*:\s*f32\s*=\s*\d",
@@ -212,6 +253,33 @@ fn typography_patterns_match_exactly_the_shapes_they_name() {
         assert!(exempt(Path::new(path)), "{path} is the type engine");
     }
     assert!(!exempt(Path::new("apps/mail/src/app.rs")));
+}
+
+#[test]
+fn layout_measurement_does_not_hide_pixel_text_calls() {
+    let ratchet = typography_ratchet();
+    let legacy = ratchet.pattern("legacy_size_api");
+    for line in [
+        "tr.measure(format!(\"{}, {}\", a, b).as_str(), size, Some(w))",
+        "tr.measure(",
+        "tr.measure(s, size, None,)",
+    ] {
+        assert_eq!(legacy.hits(line), 1);
+    }
+    for line in [
+        "composer.measure(width, max_height, theme, text)",
+        "host.measure(width, f32::INFINITY, theme, tr);",
+    ] {
+        assert_eq!(legacy.hits(line), 0);
+    }
+    assert_eq!(
+        legacy.hits("composer.measure(w, h, theme, tr); tr.measure(s, px, None)"),
+        1
+    );
+    assert_eq!(
+        legacy.hits("tr.measure(a, px, None); tr.measure(b, px, None)"),
+        2
+    );
 }
 
 /// Literal sizes, size constants and pixel-size text calls may not grow.

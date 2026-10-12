@@ -21,9 +21,7 @@ pub mod background;
 pub mod brushes;
 pub mod content;
 pub mod content_geometry;
-pub mod described;
 pub mod detail;
-pub mod doc;
 pub mod document;
 pub mod fonts;
 pub mod gesture;
@@ -50,9 +48,7 @@ pub mod tools;
 pub mod view_ops;
 pub mod wand;
 
-pub use actions::CanvasAction;
 pub use model::Artwork;
-pub use resource::ArtworkResource;
 
 use panels::pane::Group;
 use ui::LocalState;
@@ -62,9 +58,14 @@ use ui::widget::ControlSize;
 pub struct App;
 
 impl ResourceApp for App {
-    type Resource = ArtworkResource;
+    type Resource = Artwork;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         if scenario == Some("inspector-narrow") {
             (800, 600)
@@ -73,20 +74,13 @@ impl ResourceApp for App {
         }
     }
 
-    fn view(cx: &mut ViewCx<ArtworkResource>) -> Element {
-        locales::install();
+    fn view(cx: &mut ViewCx<Artwork>) -> Element {
         let recents = cx.settings::<document::RecentArtworks>();
         let tools = tools::Tools {
             recents: recents.state(),
             ..tools::Tools::default()
         };
-        let canvas = cx.surface(surface::CanvasSurface::new(tools.clone()));
-        let canvas: Element = Box::new(preview::VersionPreview::new(
-            canvas,
-            tools.preview.clone(),
-            cx.content(),
-        ));
-        let canvas = menu::over(canvas, &tools, cx.live(), cx.dispatcher());
+        let compact = LocalState::new(false);
         let dock = LocalState::new(Dock::Layers);
         let staged = dock.clone();
         cx.on_stage(move |scenario| {
@@ -94,18 +88,10 @@ impl ResourceApp for App {
                 staged.set(Dock::History);
             }
         });
-        // The tools stand at the canvas's leading edge; the strip of what to
-        // do with a selection lies over its top.
-        let work = Row::new()
-            .no_wrap()
-            .with_gap(0.0)
-            .with_fill_remaining_height()
-            .push(rail(&tools))
-            .push(Box::new(
-                ui::widget::Stack::new()
-                    .push(canvas)
-                    .push(panels::header::context_bar(cx, &tools)),
-            ));
+        let work_tools = tools.clone();
+        let work = cx.switch(&compact, move |cx, compact| {
+            work_area(cx, &work_tools, *compact)
+        });
         // The narrow capture shows the inspector as the drawer it is there.
         let inspector_open = tools.sidebar.clone();
         let stage_open = inspector_open.clone();
@@ -118,24 +104,26 @@ impl ResourceApp for App {
             NavShell::new()
                 .with_id("canvas-shell")
                 .with_inspector_state(&inspector_open)
-                .content(Box::new(work))
-                .content_header("", panels::header::header(cx, &tools))
+                .content(work)
+                .content_header_leading(panels::header::title(cx, &tools, &compact))
+                .content_header("", panels::header::header(cx, &tools, &compact))
                 .inspector(Box::new(Group::new(sidebar(cx, &tools, &dock)))),
         );
         // Over a blank artwork, a welcome saying what can be done here and
         // by whom; then the dialogs.
-        let mut layers = Stack::new()
-            .push(window)
-            .push(panels::start::welcome(cx, &tools));
+        let mut layers = Stack::new().push(window);
         for sheet in sheets(cx, &tools) {
             layers = layers.push(sheet);
         }
-        Box::new(panels::files::FileDesk::new(
-            Box::new(layers),
-            tools,
-            recents,
-            cx.live().clone(),
-            cx.dispatcher(),
+        Box::new(panels::layout::ViewportMode::new(
+            panels::files::FileDesk::new(
+                Box::new(layers),
+                tools,
+                recents,
+                cx.live().clone(),
+                cx.dispatcher(),
+            ),
+            compact,
         ))
     }
 
@@ -171,7 +159,7 @@ impl ResourceApp for App {
     /// A record made for the file starts as it; opened again, it is as it
     /// was left. A file handed to the window's artwork (no path) replaces
     /// it as one step, Undo away from what was there.
-    fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<ArtworkResource>> {
+    fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Artwork>> {
         let Some(file) = input.file() else {
             return Vec::new();
         };
@@ -188,7 +176,7 @@ impl ResourceApp for App {
             ) else {
                 return Vec::new();
             };
-            CanvasAction::OpenArtwork(actions::OpenArtwork {
+            Artwork::OPEN_ARTWORK.with(actions::OpenArtwork {
                 file: String::from_utf8_lossy(&artwork.to_json()).into_owned(),
             })
         } else {
@@ -197,7 +185,7 @@ impl ResourceApp for App {
                 Err(_) => return Vec::new(),
             }
         };
-        Invoke::apply(&open).into_iter().collect()
+        vec![open]
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -215,16 +203,12 @@ impl ResourceApp for App {
     /// The screenshots paint their samples through the same actions an
     /// agent would; a plain `--shots` shows the empty sheet a new artwork
     /// is.
-    fn scenario(name: Option<&str>) -> Vec<Invoke<ArtworkResource>> {
-        let actions = match name {
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Artwork>> {
+        match name {
             Some("landscape" | "close-up" | "history" | "inspector-narrow") => sample::landscape(),
             Some("selection" | "turned" | "points") => sample::shapes(),
-            _ => return Vec::new(),
-        };
-        actions
-            .iter()
-            .filter_map(|action| Invoke::apply(action).ok())
-            .collect()
+            _ => Vec::new(),
+        }
     }
 
     fn label(art: &Artwork) -> String {
@@ -238,7 +222,7 @@ impl ResourceApp for App {
 
 /// The dialogs over the window: starting a new artwork, exporting it, and
 /// the keyboard shortcuts.
-fn sheets(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools) -> Vec<Element> {
+fn sheets(cx: &ViewCx<Artwork>, tools: &tools::Tools) -> Vec<Element> {
     use tools::{FileRequest, Sheet};
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let close = |tools: &tools::Tools| {
@@ -251,7 +235,7 @@ fn sheets(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools) -> Vec<Element> {
         let tools = tools.clone();
         let (cancel, dismiss) = (close(&tools), close(&tools));
         ui::widget::ModalDialog::new(
-            lookup("canvas-new-artwork"),
+            lookup("canvas-command-new-artwork"),
             body(panels::start::body(cx, &tools)),
         )
         .with_test_id("canvas-new-dialog")
@@ -366,14 +350,83 @@ impl ui::widget::Decorator for Shown {
 enum Dock {
     #[default]
     Layers,
+    Objects,
     History,
+}
+
+/// The tool rail's width.
+pub(crate) const RAIL: f32 =
+    ui::tokens::Metrics::BASE.min_pointer_target + 2.0 * ui::tokens::Spacing::BASE.s2; // a pointer target and its inset, laid out before a theme is known
+
+/// Recommended tools follow the document; a person can override the suggestion.
+fn rail(cx: &ViewCx<Artwork>, tools: &tools::Tools, compact: bool) -> Element {
+    let inferred = cx.value(tools::Workspace::of);
+    let tools = tools.clone();
+    cx.switch(&inferred, move |cx, inferred| {
+        let tools = tools.clone();
+        let inferred = *inferred;
+        cx.switch(&tools.workspace.clone(), move |cx, wanted| {
+            let workspace = if *wanted == tools::Workspace::Auto {
+                inferred
+            } else {
+                *wanted
+            };
+            let tools = tools.clone();
+            cx.switch(&tools.all_tools.clone(), move |cx, _| {
+                let tools = tools.clone();
+                cx.switch(&tools.tool.clone(), move |_cx, _| {
+                    rail_choices(&tools, workspace, compact)
+                })
+            })
+        })
+    })
+}
+
+/// On a phone the artwork keeps the full width and tools sit below it.
+/// Every tool remains the same shared control and local view action.
+fn work_area(cx: &ViewCx<Artwork>, tools: &tools::Tools, compact: bool) -> Element {
+    let canvas = cx.surface(surface::CanvasSurface::new(tools.clone()));
+    let canvas: Element = Box::new(preview::VersionPreview::new(
+        canvas,
+        tools.preview.clone(),
+        cx.content(),
+    ));
+    let canvas = menu::over(canvas, tools, cx.live(), cx.dispatcher());
+    let canvas: Element = Box::new(
+        Stack::new()
+            .push(canvas)
+            .push(panels::header::context_bar(cx, tools))
+            .push(panels::start::welcome(cx, tools, compact)),
+    );
+    if compact {
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_gap(0.0)
+                .with_fill_remaining_height()
+                .push(canvas)
+                .push(rail(cx, tools, true)),
+        )
+    } else {
+        Box::new(
+            Row::new()
+                .no_wrap()
+                .with_gap(0.0)
+                .with_fill_remaining_height()
+                .push(rail(cx, tools, false))
+                .push(canvas),
+        )
+    }
 }
 
 /// The tools, top to bottom, each with its key, and at the foot the paint
 /// the brush is loaded with.
-fn rail(tools: &tools::Tools) -> Element {
+fn rail_choices(tools: &tools::Tools, workspace: tools::Workspace, compact: bool) -> Element {
     let choices = tools::Tool::ALL
         .iter()
+        .filter(|tool| {
+            tools.all_tools.get() || workspace.tools().contains(tool) || **tool == tools.tool.get()
+        })
         .map(|tool| {
             let segment = ui::widget::toggle_group::Segment::new(
                 ui::i18n::I18nManager::lookup_plain(tool.label()),
@@ -383,26 +436,121 @@ fn rail(tools: &tools::Tools) -> Element {
             (*tool, segment)
         })
         .collect();
-    let rail = ui::widget::ToggleGroup::from_state(choices, &tools.tool)
-        .vertical()
-        .on_view("Tool", |_| {});
+    let rail = ui::widget::ToggleGroup::from_state(choices, &tools.tool).on_view("Tool", |_| {});
+    if compact {
+        return Box::new(
+            Scrollable::new_horizontal()
+                .fit_content_height()
+                .with_child(Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .with_padding_rhythm(
+                            ui::tokens::Rhythm::Related,
+                            ui::tokens::Rhythm::Related,
+                        )
+                        .push(panels::header::add_picture(tools, ControlSize::Large))
+                        .push(Box::new(rail.control_size(ControlSize::Large)))
+                        .push(Box::new(panels::well::Well::new(tools.clone()))),
+                )),
+        );
+    }
+    let rail = rail.vertical();
+    Box::new(
+        Container::new()
+            .with_no_padding()
+            .with_width(RAIL)
+            .filling()
+            .with_child(Box::new(
+                Column::new()
+                    .with_vertical_padding(8.0)
+                    .with_horizontal_padding(6.0, 6.0)
+                    .with_gap(0.0)
+                    .push(Box::new(
+                        Scrollable::new_vertical()
+                            .fill_parent_height()
+                            .with_scrollbar(false)
+                            .with_child(Box::new(rail)),
+                    ))
+                    .push(Box::new(panels::well::Well::new(tools.clone()))),
+            )),
+    )
+}
+
+fn workspace_controls(tools: &tools::Tools) -> Element {
+    use tools::Workspace;
+    let choices = [
+        (Workspace::Auto, "canvas-workspace-auto"),
+        (Workspace::Vector, "canvas-workspace-vector"),
+        (Workspace::Photo, "canvas-workspace-photo"),
+        (Workspace::Pixel, "canvas-workspace-pixel"),
+    ]
+    .into_iter()
+    .map(|(value, label)| {
+        (
+            value,
+            ui::widget::toggle_group::Segment::new(ui::i18n::I18nManager::lookup_plain(label)),
+        )
+    })
+    .collect();
+    let held = tools.clone();
+    let choose = ui::widget::ToggleGroup::from_state(choices, &tools.workspace)
+        .fill()
+        .on_view("canvas-workspace", move |_| {
+            let workspace = held.workspace.get();
+            held.tool.set(if workspace == Workspace::Pixel {
+                tools::Tool::Brush
+            } else {
+                tools::Tool::Select
+            });
+            held.choose_preset(if workspace == Workspace::Pixel {
+                brushes::Preset::Pixel
+            } else {
+                brushes::Preset::Round
+            });
+            if workspace == Workspace::Photo {
+                held.layer_adjust.set(true);
+            }
+        });
     Box::new(
         Column::new()
-            .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
-            .with_gap(0.0)
-            .push(Box::new(rail))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(panels::well::Well::new(tools.clone()))),
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_rhythm(ui::tokens::Rhythm::Tight)
+            .push(Box::new(
+                Text::new("canvas-workspace").with_role(TextRole::Label),
+            ))
+            .push(Box::new(choose))
+            .push(Box::new(
+                ui::widget::ToggleGroup::from_state(
+                    vec![
+                        (
+                            false,
+                            ui::widget::toggle_group::Segment::new(
+                                ui::i18n::I18nManager::lookup_plain("canvas-tools-focused"),
+                            ),
+                        ),
+                        (
+                            true,
+                            ui::widget::toggle_group::Segment::new(
+                                ui::i18n::I18nManager::lookup_plain("canvas-tools-all"),
+                            ),
+                        ),
+                    ],
+                    &tools.all_tools,
+                )
+                .on_view("canvas-tools-scope", |_| {}),
+            )),
     )
 }
 
 /// The inspector above; under it the layers or the history.
-fn sidebar(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, dock: &LocalState<Dock>) -> Element {
+fn sidebar(cx: &ViewCx<Artwork>, tools: &tools::Tools, dock: &LocalState<Dock>) -> Element {
     // A dense tool panel: one `s3` inset on every side.
     let inspector = Column::new()
         .with_intrinsic_height()
         .with_rhythm(ui::tokens::Rhythm::Sibling)
         .with_padding_rhythm(ui::tokens::Rhythm::Sibling, ui::tokens::Rhythm::Sibling)
+        .push(workspace_controls(tools))
         .push(panels::inspector::panel(cx, tools));
     // The dock folds away to its tabs, giving the inspector the height.
     let open = LocalState::new(true);
@@ -414,10 +562,15 @@ fn sidebar(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, dock: &LocalState
                 return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
             }
             let tools = tools.clone();
-            cx.switch(&dock, move |cx, dock| match dock {
-                Dock::Layers => panels::layers::panel(cx, &tools),
-                Dock::History => panels::history::panel(cx, &tools),
-            })
+            Box::new(
+                Scrollable::new_vertical()
+                    .fill_parent_height()
+                    .with_child(cx.switch(&dock, move |cx, dock| match dock {
+                        Dock::Layers => panels::layers::panel(cx, &tools),
+                        Dock::Objects => panels::layers::objects_panel(cx, &tools),
+                        Dock::History => panels::history::panel(cx, &tools),
+                    })),
+            ) as Element
         })
     };
     Box::new(
@@ -438,7 +591,7 @@ fn sidebar(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, dock: &LocalState
 
 /// The layers and history tabs, and beside the layers adding one.
 fn dock_tabs(
-    cx: &ViewCx<ArtworkResource>,
+    cx: &ViewCx<Artwork>,
     tools: &tools::Tools,
     dock: &LocalState<Dock>,
     open: &LocalState<bool>,
@@ -452,6 +605,7 @@ fn dock_tabs(
     let tabs = ui::widget::ToggleGroup::from_state(
         vec![
             tab(Dock::Layers, "canvas-layers"),
+            tab(Dock::Objects, "canvas-objects"),
             tab(Dock::History, "canvas-history"),
         ],
         dock,
@@ -463,6 +617,7 @@ fn dock_tabs(
     let action = cx.switch(dock, move |cx, dock| match dock {
         Dock::Layers => panels::layers::add_menu(cx, &tools),
         Dock::History => panels::history::checkpoint_button(cx),
+        Dock::Objects => ui::widget::optional(None),
     });
     Box::new(
         Row::new()
@@ -483,7 +638,7 @@ fn dock_tabs(
 }
 
 /// Folding the dock away to its tabs, or opening it again.
-fn fold(cx: &ViewCx<ArtworkResource>, open: &LocalState<bool>) -> Element {
+fn fold(cx: &ViewCx<Artwork>, open: &LocalState<bool>) -> Element {
     let flip = open.clone();
     cx.switch(open, move |_, shown| {
         let (icon, id) = if *shown {

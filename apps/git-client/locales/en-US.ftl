@@ -170,3 +170,18 @@ git-action-commit-description = Create a commit from the currently staged change
 git-action-stash = Stash working changes
 git-action-stash-message = Stash message
 git-collection-repository = Repository
+
+git-section-worktrees = Working directories
+git-create-worktree = Create worktree
+git-worktree-branch = New worktree branch
+git-worktree-path = Absolute destination path
+git-worktree-start = Start point (branch, tag or commit)
+git-worktree-host-required = Worktree creation requires a live repository.
+git-worktree-running = Creating worktree…
+git-worktree-read-failed = Could not read working directories
+git-worktree-read-error = Could not read working directories: { $error }
+
+## History of the record
+
+git-client-git-client-repository = Opened the repository { $new }
+git-client-record-repository = Recorded the repository's branches and history

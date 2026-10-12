@@ -36,19 +36,12 @@ use crate::categories::Category;
 use crate::panes;
 use crate::sidebar;
 use ui::tokens::Metrics;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{Column, Container, NavPane, NavShell, Scrollable, Widget};
 use ui::widget::{NavMode, SearchField};
 use ui::{AppKind, AppWidget, IconDescriptor};
 const MEASURE: f32 = ui::tokens::Metrics::BASE.panel_width_sheet;
-
-/// At or above this allocated width (logical px) the sidebar docks beside the
-/// content; below it the shell switches to the narrow list-vs-content screens.
-/// The toolkit's `compact_breakpoint` (HIG §9.6): a typical settings window is
-/// docked while a narrow / split-screen placement gets the phone layout. At a
-/// large-text preference the live breakpoint is this times the text scale
-/// (see `SettingsApp::build_shell`).
-pub const NAV_BREAKPOINT: f64 = ui::tokens::Metrics::BASE.compact_breakpoint as f64;
 
 /// One scroller's offset, shared with every scroller rebuilt in its place.
 type ScrollOffset = std::rc::Rc<std::cell::Cell<(f32, f32)>>;
@@ -111,11 +104,14 @@ pub struct SettingsApp {
     time_date: panes::time_date::TimeDateArea,
     /// The installed input sources and the attached input devices.
     input: panes::mouse_keyboard::InputArea,
+    keyboard_map_input: ui::KeyboardMapInput,
+    keyboard_map_cache: crate::panes::mouse_keyboard::KeyboardPreviewCacheHandle,
     /// This device's battery, power profile and charge cap.
     power: panes::power::PowerArea,
     /// This device's system image, firmware and codec pack.
     updates: panes::updates::UpdatesArea,
     storage: panes::storage::StorageArea,
+    disk_unlock: panes::disk_unlock::DiskUnlockArea,
     printers: panes::printers::PrintersArea,
     users: panes::users::UsersArea,
     bluetooth: panes::bluetooth::BluetoothArea,
@@ -126,6 +122,8 @@ pub struct SettingsApp {
     accounts: panes::accounts::AccountsArea,
     displays: panes::display::DisplayArea,
     network: panes::network::NetworkArea,
+    /// When the areas above read what their live rows show.
+    area_reads: crate::effects::AreaReads,
     /// The text scale the shell was built for. A large-text preference widens
     /// the docked sidebar and its breakpoint with the type (the same policy
     /// the Store applies to its card grid), so a change rebuilds the shell.
@@ -157,14 +155,20 @@ impl SettingsApp {
         let cx = crate::host::PaneCx::detached(ui::storage::AppStorage::for_app(
             <crate::resource::SettingsShell as ui::framework::ResourceApp>::ID,
         ));
+        // A detached app reaches no device, so it probes for no installed
+        // software either: what a host reaches is read when it attaches.
+        let software = panes::accessibility::Software::for_host(&cx);
         Self {
             notifications: panes::notifications::NotificationsArea::new(&cx),
             default_apps: panes::personal_apps::DefaultAppsArea::new(&cx),
             time_date: panes::time_date::TimeDateArea::new(&cx),
             input: panes::mouse_keyboard::InputArea::new(&cx),
+            keyboard_map_input: ui::KeyboardMapInput::default(),
+            keyboard_map_cache: std::rc::Rc::default(),
             power: panes::power::PowerArea::new(&cx),
             updates: panes::updates::UpdatesArea::new(&cx),
             storage: panes::storage::StorageArea::new(&cx),
+            disk_unlock: panes::disk_unlock::DiskUnlockArea::new(&cx),
             printers: panes::printers::PrintersArea::new(&cx),
             users: panes::users::UsersArea::new(&cx),
             bluetooth: panes::bluetooth::BluetoothArea::new(&cx),
@@ -176,6 +180,7 @@ impl SettingsApp {
                 .with_account_root(account_root.clone()),
             displays: panes::display::DisplayArea::new(&cx),
             network: panes::network::NetworkArea::new(&cx),
+            area_reads: crate::effects::AreaReads::of(&cx),
             selected: Category::DEFAULT,
             structure_dirty: false,
             cx,
@@ -190,7 +195,7 @@ impl SettingsApp {
             shell: None,
             shell_text_scale: 1.0,
             wallpaper_status: ui::LocalState::new(None),
-            software: panes::accessibility::Software::installed(),
+            software,
         }
     }
 
@@ -233,6 +238,16 @@ impl SettingsApp {
         self.sidebar_selection.set(Some(category));
     }
 
+    /// Open the pane a search hit or an agent's `open` names by its row.
+    pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
+        let selection = self.sidebar_selection.clone();
+        move |anchor| {
+            if let Some(category) = crate::effects::pane_of_row(anchor) {
+                selection.set(Some(category));
+            }
+        }
+    }
+
     /// Switch the active category. Flags `structure_dirty`, swaps the shell's
     /// nav + content, and (on a narrow layout) navigates from the list screen
     /// to the selected category's content screen.
@@ -241,6 +256,9 @@ impl SettingsApp {
     /// narrow list screen that row is the checked one, and choosing it must
     /// show its content rather than do nothing.
     pub fn select(&mut self, category: Category) {
+        if category != Category::MouseKeyboard {
+            self.keyboard_map_input.clear();
+        }
         if self.selected != category {
             self.selected = category;
             self.structure_dirty = true;
@@ -349,14 +367,7 @@ impl SettingsApp {
     pub(crate) fn publish_browser_identity(&self, origin: String) -> Result<(), String> {
         let identity =
             ui::local_identity::bound().ok_or("Sign in before publishing this identity")?;
-        let root = identity
-            .group_public_key
-            .iter()
-            .fold(String::new(), |mut text, byte| {
-                use std::fmt::Write as _;
-                let _ = write!(text, "{byte:02x}");
-                text
-            });
+        let root = hex::encode(identity.group_public_key);
         self.account_root
             .publish_browser_identity(root, origin, identity.display_name)
     }
@@ -375,11 +386,13 @@ impl SettingsApp {
             self.account_root = self.account_root.clone().with_person(record);
             // What the device's file held before it followed the record is
             // taken in once; then the services outside any app read the file
-            // as the record's projection.
-            if let Err(error) = self
-                .account_root
-                .take_in_device_accounts()
-                .and_then(|()| self.account_root.project())
+            // as the record's projection. A window that does not reach this
+            // device (a test's) leaves the device's file alone.
+            if cx.reaches_devices()
+                && let Err(error) = self
+                    .account_root
+                    .take_in_device_accounts()
+                    .and_then(|()| self.account_root.project())
             {
                 tracing::warn!(%error, "the device's account file could not follow the person's accounts");
             }
@@ -391,6 +404,7 @@ impl SettingsApp {
         self.power = panes::power::PowerArea::new(&cx);
         self.updates = panes::updates::UpdatesArea::new(&cx);
         self.storage = panes::storage::StorageArea::new(&cx);
+        self.disk_unlock = panes::disk_unlock::DiskUnlockArea::new(&cx);
         self.printers = panes::printers::PrintersArea::new(&cx);
         self.users = panes::users::UsersArea::new(&cx);
         self.bluetooth = panes::bluetooth::BluetoothArea::new(&cx);
@@ -402,10 +416,31 @@ impl SettingsApp {
             panes::accounts::AccountsArea::new(&cx).with_account_root(self.account_root.clone());
         self.displays = panes::display::DisplayArea::new(&cx);
         self.network = panes::network::NetworkArea::new(&cx);
+        self.area_reads = crate::effects::AreaReads::of(&cx);
         self.software = panes::accessibility::Software::for_host(&cx);
         self.cx = cx;
         self.structure_dirty = true;
         self.refresh_shell_children();
+    }
+
+    /// Whether the published live rows include `area`'s: those of an area
+    /// that has read and of the pane shown, which reads it anyway — every
+    /// area's when reading is not put off ([`crate::effects::AreaReads`]).
+    pub(crate) fn publishes_area(&self, area: &crate::effects::LiveArea) -> bool {
+        !self.area_reads.deferred() || area.pane == self.selected || (area.is_open)(self)
+    }
+
+    /// Read on after the first frame, so the published rows fill in an area
+    /// at a time: the device reads that block run on the background
+    /// executor ([`crate::effects::AreaReads::step`]). Once every area has
+    /// read, the input sources are read the same way, last, so the Mouse &
+    /// Keyboard pane opens on them.
+    fn read_on(&self) {
+        match self.area_reads.step(self) {
+            crate::effects::Step::Read => self.area_reads.wake(),
+            crate::effects::Step::Waiting => {}
+            crate::effects::Step::Done => self.input.prefetch_catalog(),
+        }
     }
 
     /// Where the last wallpaper request stands.
@@ -446,6 +481,10 @@ impl SettingsApp {
     /// This device's system image, firmware and codec pack.
     pub(crate) fn updates(&self) -> &panes::updates::UpdatesArea {
         &self.updates
+    }
+
+    pub(crate) fn disk_unlock(&self) -> &panes::disk_unlock::DiskUnlockArea {
+        &self.disk_unlock
     }
 
     pub(crate) fn storage(&self) -> &panes::storage::StorageArea {
@@ -537,10 +576,11 @@ impl SettingsApp {
             Category::Displays => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.displays.model(),
             ))),
-            Category::MouseKeyboard => Box::new(panes::mouse_keyboard::MouseKeyboardPane::new(
-                self.cx.clone(),
-                &self.input,
-            )),
+            Category::MouseKeyboard => Box::new(
+                panes::mouse_keyboard::MouseKeyboardPane::new(self.cx.clone(), &self.input)
+                    .with_map_input(self.keyboard_map_input.clone())
+                    .with_map_cache(self.keyboard_map_cache.clone()),
+            ),
             Category::KeyboardShortcuts => Box::new(panes::keyboard_shortcuts::ShortcutPane::new(
                 self.cx.clone(),
             )),
@@ -581,7 +621,12 @@ impl SettingsApp {
                 self.agent_models.model(),
             ))),
             Category::RegionFormats => Box::new(panes::region::RegionPane::new(self.cx.clone())),
-            Category::Permissions => panes::permissions::build(&self.cx),
+            Category::Permissions => panes::permissions::build_with_disk_unlock(
+                &self.cx,
+                Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
+                    self.disk_unlock.model(),
+                ))),
+            ),
             Category::Updates => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.updates.model(),
             ))),
@@ -638,6 +683,31 @@ impl SettingsApp {
             shell.set_content(content);
             shell.set_content_title(self.selected.label());
         }
+    }
+}
+
+impl SettingsApp {
+    pub(crate) fn keyboard_inspection(&self) -> Result<serde_json::Value, String> {
+        fn mounted_map(widget: &dyn Widget) -> Option<&ui::KeyboardMap> {
+            if let Some(map) = widget
+                .as_any()
+                .and_then(|value| value.downcast_ref::<ui::KeyboardMap>())
+            {
+                return Some(map);
+            }
+            widget.children().into_iter().find_map(mounted_map)
+        }
+        if self.selected == Category::MouseKeyboard
+            && let Some(map) = mounted_map(self)
+        {
+            return map.inspection_snapshot();
+        }
+        Ok(serde_json::json!({
+            "available": false, "page_visible": false, "foreground": false,
+            "mode": null, "source": null, "model": null, "inspected_key": null,
+            "selected_symbols": [], "native_layout_available": false,
+            "native_group": null, "native_modifiers": null, "pressed_physical_keys": [],
+        }))
     }
 }
 
@@ -738,12 +808,19 @@ impl Widget for SettingsApp {
         // is open.
         self.updates.poll();
         self.storage.poll();
+        self.disk_unlock.poll();
         self.printers.poll();
         self.speakers.poll();
         self.device_mesh.poll();
         self.accounts.poll();
         self.displays.poll();
         self.network.poll();
+        self.bluetooth.poll();
+        // After the first frame, the areas read one at a time until every
+        // area's rows are published.
+        if self.area_reads.take_due() {
+            self.read_on();
+        }
         // A sidebar row opens its pane through the pane row's open effect;
         // only a bare app outside a host selects here. Search is local
         // presentation state: no CRDT text, collaboration traffic or undo.
@@ -815,11 +892,7 @@ impl Widget for SettingsApp {
         // different tree, which never happens here — see
         // `ui::widget::TaffyTreeExt`. Fall back to the child directly rather
         // than panic, on the off chance that ever changes.
-        let node = taffy
-            .new_with_children(style, &[shell_node])
-            .unwrap_or(shell_node);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &[shell_node], node_map, self)
     }
 
     fn apply_layout(
@@ -830,13 +903,7 @@ impl Widget for SettingsApp {
     ) {
         // `taffy.layout(...)` only errors for a `NodeId` from a different
         // tree, which never happens here — see `ui::widget::TaffyTreeExt`.
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = vello::kurbo::Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let origin = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
         if let (Ok(children), Some(shell)) = (taffy.children(node), &mut self.shell)
             && let Some(&shell_node) = children.first()
@@ -856,26 +923,33 @@ impl Widget for SettingsApp {
         if let Some(shell) = &mut self.shell {
             shell.draw(scene, transform, text_renderer, theme, presence);
         }
+        self.area_reads.presented();
+        self.area_reads.wake();
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        if let Some(shell) = &mut self.shell {
-            shell.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                permissions,
-            );
+    fn observe_physical_input(&mut self, input: ui::widget::PhysicalInput) {
+        fn observe_map(widget: &mut dyn Widget, input: ui::widget::PhysicalInput) -> bool {
+            if let Some(map) = widget
+                .as_any_mut()
+                .and_then(|widget| widget.downcast_mut::<ui::KeyboardMap>())
+            {
+                map.observe_physical_input(input);
+                return true;
+            }
+            let mut visible = false;
+            for child in widget.children_mut() {
+                visible |= observe_map(child, input.clone());
+            }
+            visible
+        }
+        let visible = self.selected == Category::MouseKeyboard
+            && self
+                .shell
+                .as_mut()
+                .is_some_and(|shell| observe_map(shell, input.clone()));
+        if !visible {
+            self.keyboard_map_input.observe_configuration(&input);
+            self.keyboard_map_input.clear();
         }
     }
 
@@ -884,6 +958,25 @@ impl Widget for SettingsApp {
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
+        // Observe only the mounted foreground page, before its search/picker
+        // can consume editing events. This never changes handling or focus.
+        fn observe_map(widget: &mut dyn Widget, event: &winit::event::WindowEvent) {
+            if let Some(map) = widget
+                .as_any_mut()
+                .and_then(|widget| widget.downcast_mut::<ui::KeyboardMap>())
+            {
+                map.observe_foreground_event(event);
+                return;
+            }
+            for child in widget.children_mut() {
+                observe_map(child, event);
+            }
+        }
+        if self.selected == Category::MouseKeyboard
+            && let Some(shell) = &mut self.shell
+        {
+            observe_map(shell, event);
+        }
         if let (Ok(children), Some(shell)) = (ctx.taffy.children(ctx.node_id), &mut self.shell)
             && let Some(&shell_node) = children.first()
         {
@@ -908,6 +1001,14 @@ impl Widget for SettingsApp {
             .as_mut()
             .map(|s| vec![s as &mut (dyn Widget + '_)])
             .unwrap_or_default()
+    }
+
+    fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
+        // This root only delegates painting. Keep the shell's visual bounds
+        // instead of expanding every control hover to the whole app window.
+        if let Some(shell) = &self.shell {
+            shell.collect_damage(regions);
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -979,6 +1080,121 @@ impl AppWidget for SettingsApp {
 mod tests {
     use super::*;
     use ui::headless::Framed;
+
+    struct DamageWitness {
+        app: SettingsApp,
+        frames: std::rc::Rc<std::cell::RefCell<Vec<Vec<vello::kurbo::Rect>>>>,
+    }
+
+    impl ui::widget::Decorator for DamageWitness {
+        type Inner = SettingsApp;
+
+        fn inner(&self) -> &SettingsApp {
+            &self.app
+        }
+
+        fn inner_mut(&mut self) -> &mut SettingsApp {
+            &mut self.app
+        }
+
+        fn mark_drawn(&mut self) {
+            let mut regions = Vec::new();
+            self.app.collect_damage(&mut regions);
+            self.frames.borrow_mut().push(regions);
+            self.app.mark_drawn();
+        }
+    }
+
+    #[test]
+    fn settings_sidebar_hover_damage_covers_changed_pixels_without_the_whole_window() {
+        for theme in [
+            ui::Theme::dark(),
+            ui::Theme::light(),
+            ui::Theme::high_contrast(),
+        ] {
+            sidebar_hover_damage_for_theme(theme);
+        }
+    }
+
+    fn sidebar_hover_damage_for_theme(theme: ui::Theme) {
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let frames = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut harness = ui::headless::FrameHarness::for_root(
+            ui::State::new(),
+            DamageWitness {
+                app: config.app(),
+                frames: std::rc::Rc::clone(&frames),
+            },
+            (1200, 700),
+            theme.with_reduce_motion(true),
+        );
+        let bounds = harness
+            .a11y_nodes()
+            .into_iter()
+            .find_map(|(_, node)| {
+                (node.role() == ui::accesskit::Role::Button && node.label() == Some("Hide sidebar"))
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .expect("the real shared sidebar toggle is exposed");
+        let pointer = |x, y| winit::event::WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        };
+        harness.send(&pointer(1190.0, 690.0));
+        let mut renderer =
+            ui::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(1200, 700)
+                .expect("the pixel oracle requires the production GPU fine rasterizer");
+        let background = harness.theme().tokens.colors.surfaces.content;
+        let before = harness.render_rgba_with(&mut renderer, background);
+        assert!(
+            before == harness.render_rgba_with(&mut renderer, background),
+            "an unchanged frame must rasterize identically"
+        );
+        frames.borrow_mut().clear();
+        harness.send(&pointer(
+            f64::midpoint(bounds.x0, bounds.x1),
+            f64::midpoint(bounds.y0, bounds.y1),
+        ));
+        let after = harness.render_rgba_with(&mut renderer, background);
+        assert_eq!(before.len(), 1200 * 700 * 4);
+        assert_eq!(after.len(), before.len());
+        let regions = frames
+            .borrow()
+            .last()
+            .cloned()
+            .expect("hover paints a frame");
+        assert!(!regions.is_empty(), "hover publishes real visual damage");
+        let area: f64 = regions.iter().map(vello::kurbo::Rect::area).sum();
+        assert!(
+            area < 1200.0 * 700.0 / 2.0,
+            "a sidebar control must qualify for local repaint: {regions:?}"
+        );
+        let mut changed = 0_usize;
+        for (index, (old, new)) in before
+            .chunks_exact(4)
+            .zip(after.chunks_exact(4))
+            .enumerate()
+        {
+            if old == new {
+                continue;
+            }
+            changed = changed.saturating_add(1);
+            let x = u32::try_from(index % 1200).expect("pixel column");
+            let y = u32::try_from(index / 1200).expect("pixel row");
+            let point = vello::kurbo::Point::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
+            assert!(
+                regions
+                    .iter()
+                    .any(|region| region.inflate(16.0, 16.0).contains(point)),
+                "hover changed pixel {point:?} {old:?}->{new:?} outside submitted damage {regions:?}"
+            );
+        }
+        assert!(
+            changed > 0,
+            "the production pointer route visibly changes the toggle"
+        );
+    }
 
     fn layout_at(app: SettingsApp, w: f32, h: f32) -> Framed<SettingsApp> {
         layout_at_with_theme(app, w, h, &ui::Theme::dark())

@@ -1,0 +1,7 @@
+[
+  {
+    "path": "crates/session/shell/tests/snapshots/e2e/e2e-open-close-overview-settled.png",
+    "oid": "7a7696681bad4f83fd92680fe7699ea263549022",
+    "reason": "Original visual regression reference; must remain unchanged until genuine overview mismatch is fixed. Replacement plan: repair production or harness cause, then reuse pinned original PNG artifact; never refresh baseline to silence failure."
+  }
+]

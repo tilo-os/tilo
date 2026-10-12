@@ -14,12 +14,6 @@ pub const APP_TITLE: &str = "App Publisher";
 
 pub mod locales;
 
-/// Install the catalog once per process, before the first view reads it.
-fn install_catalog() {
-    static INSTALLED: std::sync::Once = std::sync::Once::new();
-    INSTALLED.call_once(locales::install);
-}
-
 use registry_client::{RegistryClient, key};
 use registry_types::application::{NamespaceClaim, proof_token};
 use ui::prelude::*;
@@ -27,8 +21,10 @@ use ui::secrets::SecretStore;
 use ui::widget::{BannerKind, Field};
 
 /// What to apply for, and where. Stored, synced and undoable; the key is not
-/// part of it.
+/// part of it. Each field is edited at its path; the registry must stay an
+/// address the client accepts, however it is changed.
 #[derive(Model, Debug, Clone, PartialEq)]
+#[model(check = Publisher::valid)]
 pub struct Publisher {
     /// The registry the key publishes to.
     pub registry: String,
@@ -51,38 +47,15 @@ impl Default for Publisher {
     }
 }
 
-#[resource(kind = "so.tilo.publisher.profile", label = "App Publisher")]
+#[resource(kind = "publisher.profile", label = "App Publisher")]
+impl Publisher {}
+
 impl Publisher {
-    /// Change the registry to publish to.
-    #[action]
-    pub fn set_registry(
-        &mut self,
-        #[param("Registry URL")] registry: String,
-    ) -> Result<(), String> {
-        RegistryClient::validate_url(&registry).map_err(|error| error.to_string())?;
-        self.registry = registry;
-        Ok(())
-    }
-
-    /// Change the domain to claim.
-    #[action]
-    pub fn set_domain(&mut self, #[param("Domain, such as example.com")] domain: String) {
-        self.domain = domain;
-    }
-
-    /// Change the forge account to claim.
-    #[action]
-    pub fn set_forge_account(
-        &mut self,
-        #[param("Forge account, such as github:ada")] account: String,
-    ) {
-        self.forge_account = account;
-    }
-
-    /// Change the contact address.
-    #[action]
-    pub fn set_contact(&mut self, #[param("Contact address")] contact: String) {
-        self.contact = contact;
+    /// The registry is HTTPS or this machine.
+    fn valid(&self) -> Result<(), Refusal> {
+        RegistryClient::validate_url(&self.registry)
+            .map(drop)
+            .map_err(|error| Refusal::new(error.to_string()))
     }
 }
 
@@ -175,12 +148,12 @@ struct Pane {
 #[effect(operation = "so.tilo.publisher.key", device_only)]
 pub enum KeyEffect {
     /// Create publisher key.
-    #[effect(privileged, permission = "admin")]
+    #[effect(privileged)]
     CreateKey,
     /// Copy namespace proof.
     CopyProof,
     /// Copy key for CI.
-    #[effect(privileged, permission = "admin")]
+    #[effect(privileged)]
     CopySecret,
     /// Apply for namespaces.
     #[effect(job)]
@@ -321,7 +294,13 @@ fn value_group(label: &str, value: &str, id: &str, help: Option<&str>) -> Elemen
         .with_intrinsic_height()
         .push(Box::new(Text::new(label).with_role(TextRole::Caption)))
         .push(Box::new(
-            Text::new(value).with_id(id).with_role(TextRole::Body),
+            Scrollable::new_horizontal()
+                .fit_content_height()
+                .always_visible()
+                .with_semantic_key(format!("{id}-well"))
+                .with_child(Box::new(
+                    Text::new(value).with_id(id).with_role(TextRole::Code),
+                )),
         ));
     if let Some(help) = help {
         column = column.push(Box::new(Text::new(help).with_role(TextRole::Caption)));
@@ -335,9 +314,12 @@ fn key_section(pane: &Pane, actions: &Actions<Publisher>) -> Element {
     let button = |id: &str, label: &str, effect: &KeyEffect| {
         actions.bind_effect_invocation(Button::new(id, label), effect)
     };
-    let mut column = Column::new().with_no_padding().push(Box::new(
-        Text::new("publisher-key-heading").with_role(TextRole::Heading),
-    ));
+    let mut column = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(Box::new(
+            Text::new("publisher-key-heading").with_role(TextRole::Heading),
+        ));
     match &pane.key {
         KeyState::Missing => {
             column = column
@@ -386,6 +368,35 @@ fn key_section(pane: &Pane, actions: &Actions<Publisher>) -> Element {
     Box::new(column)
 }
 
+/// The namespace claims, each input bound to its field.
+fn namespace_form(cx: &ViewCx<Publisher>) -> Column {
+    let paths = cx.paths();
+    let registry = cx.input(paths.registry).with_id("registry-input");
+    let domain = cx
+        .input(paths.domain)
+        .with_id("domain-input")
+        .with_placeholder("publisher-domain-placeholder");
+    let forge = cx
+        .input(paths.forge_account)
+        .with_id("forge-input")
+        .with_placeholder("publisher-forge-placeholder");
+    let contact = cx
+        .input(paths.contact)
+        .with_id("contact-input")
+        .with_placeholder("publisher-contact-placeholder");
+    ui::column![
+        Text::new("publisher-namespace-heading")
+            .with_id("namespaces-heading")
+            .with_role(TextRole::Heading),
+        Text::new("publisher-namespace-help"),
+        labeled_field("publisher-domain-label", domain),
+        labeled_field("publisher-forge-label", forge),
+        labeled_field("publisher-contact-label", contact),
+        labeled_field("publisher-registry-label", registry),
+    ]
+    .with_intrinsic_height()
+}
+
 /// The app: the key on this machine, and an application for namespaces.
 pub struct App;
 
@@ -393,8 +404,9 @@ impl ResourceApp for App {
     type Resource = Publisher;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -418,41 +430,19 @@ impl ResourceApp for App {
         if name == Some("no-key") {
             return Vec::new();
         }
-        vec![
-            Publisher::SET_DOMAIN.with("lovelace.dev".into()),
-            Publisher::SET_FORGE_ACCOUNT.with("codeberg:ada".into()),
-            Publisher::SET_CONTACT.with("ada@lovelace.dev".into()),
+        let paths = Publisher::paths();
+        [
+            paths.domain.replace("lovelace.dev"),
+            paths.forge_account.replace("codeberg:ada"),
+            paths.contact.replace("ada@lovelace.dev"),
         ]
+        .iter()
+        .filter_map(|edit| Invoke::edit(edit).ok())
+        .collect()
     }
 
     fn view(cx: &mut ViewCx<Publisher>) -> Element {
-        crate::install_catalog();
-        let registry = cx
-            .input(|profile| profile.registry.clone(), Publisher::SET_REGISTRY)
-            .with_id("registry-input");
-        let domain = cx
-            .input(|profile| profile.domain.clone(), Publisher::SET_DOMAIN)
-            .with_id("domain-input")
-            .with_placeholder("publisher-domain-placeholder");
-        let forge = cx
-            .input(
-                |profile| profile.forge_account.clone(),
-                Publisher::SET_FORGE_ACCOUNT,
-            )
-            .with_id("forge-input")
-            .with_placeholder("publisher-forge-placeholder");
-        let contact = cx
-            .input(|profile| profile.contact.clone(), Publisher::SET_CONTACT)
-            .with_id("contact-input")
-            .with_placeholder("publisher-contact-placeholder");
-        let form = ui::column![
-            Text::new("publisher-namespace-heading").with_role(TextRole::Heading),
-            Text::new("publisher-namespace-help"),
-            labeled_field("publisher-domain-label", domain),
-            labeled_field("publisher-forge-label", forge),
-            labeled_field("publisher-contact-label", contact),
-            labeled_field("publisher-registry-label", registry),
-        ];
+        let form = namespace_form(cx);
         // The key is this machine's, not the version's: a past version shows
         // the application it held and nothing that acts on the key.
         let secrets = cx.storage().secrets();
@@ -525,7 +515,13 @@ impl ResourceApp for App {
             }
             Box::new(column)
         });
-        Box::new(ui::column![key, form, apply_button, notice])
+        Box::new(
+            Scrollable::new_vertical()
+                .fill_parent_height()
+                .with_child(Box::new(
+                    ui::column![key, form, apply_button, notice].with_intrinsic_height(),
+                )),
+        )
     }
 }
 

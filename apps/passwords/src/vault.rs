@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use accounts::{CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem, SecretItemKind};
 use ui::widget::NavPane;
-use vello::kurbo::{Point, Rect};
+use vello::kurbo::Rect;
 use zeroize::Zeroizing;
 
 use crate::actions::PasswordsEffect;
@@ -29,9 +29,6 @@ const REVEAL_FOR: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// How long a copied secret stays on the clipboard.
 const CLIPBOARD_FOR: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// How long a toast stays on screen.
-const TOAST_FOR: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// Which items the list shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -157,6 +154,10 @@ pub(crate) enum Dialog {
         id: SecretId,
         title: String,
     },
+    AccessConfirm {
+        proposal: String,
+        lifetime: String,
+    },
 }
 
 impl Dialog {
@@ -167,6 +168,7 @@ impl Dialog {
             Self::Backup { .. } => "backup",
             Self::Restore { .. } => "restore",
             Self::DeleteConfirm { .. } => "delete",
+            Self::AccessConfirm { .. } => "access",
         }
     }
 }
@@ -200,7 +202,13 @@ pub(crate) enum Request {
     ConfirmBackup,
     Restore,
     ConfirmRestore,
-    Revoke(usize),
+    Revoke(String),
+    ReviewAccess {
+        proposal: String,
+        lifetime: String,
+    },
+    ConfirmAccess,
+    DenyAccess(String),
 }
 
 /// A finding of the password review for one item.
@@ -335,40 +343,6 @@ pub(crate) fn origins_match(item: &SecretItem, candidate: &str) -> bool {
             .is_some_and(|origin| item.origins.contains(origin))
 }
 
-/// What the painted item list laid out last frame, for hit-testing,
-/// scrolling and accessibility.
-pub(crate) struct ListState {
-    pub(crate) rect: Rect,
-    pub(crate) scroll: f64,
-    /// Scroll the open item into view on the next paint.
-    pub(crate) reveal: bool,
-    pub(crate) content: f64,
-    pub(crate) line: f64,
-    /// Each row's rect and item.
-    pub(crate) rows: Vec<(Rect, SecretId)>,
-    /// The favorite toggle of each row that shows one: the favorites, and
-    /// the row under the pointer.
-    pub(crate) stars: Vec<(Rect, SecretId)>,
-    pub(crate) bar: ui::widget::Scrollbar,
-    pub(crate) empty_action: Option<Rect>,
-}
-
-impl Default for ListState {
-    fn default() -> Self {
-        Self {
-            rect: Rect::ZERO,
-            scroll: 0.0,
-            reveal: true,
-            content: 0.0,
-            line: 0.0,
-            rows: Vec::new(),
-            stars: Vec::new(),
-            bar: ui::widget::Scrollbar::vertical(),
-            empty_action: None,
-        }
-    }
-}
-
 pub(crate) struct Core {
     /// The vault; `None` for the fixture captures show.
     pub(crate) model: Option<crate::PasswordsModel>,
@@ -392,10 +366,13 @@ pub(crate) struct Core {
     /// Explicit, short-lived disclosure. The value zeroizes when it expires,
     /// when focus leaves the window, or when another item is revealed.
     pub(crate) revealed: Option<(SecretId, Zeroizing<String>, ui::time::Instant)>,
-    pub(crate) toast: Option<(String, ui::time::Instant)>,
+    /// A notice for the window to hand its shell, which shows and expires it.
+    pub(crate) toast: Option<String>,
     pub(crate) health: crate::VaultHealth,
     pub(crate) findings: Vec<Finding>,
     pub(crate) app_grants: Vec<CredentialGrant>,
+    pub(crate) app_proposals: Vec<accounts::CredentialProposal>,
+    model_revision: Option<u64>,
     pub(crate) custody: Option<&'static str>,
     pub(crate) recovery_error: Option<String>,
     pub(crate) import_portal: Option<ui::portal::OpenFileChannel>,
@@ -409,8 +386,8 @@ pub(crate) struct Core {
     pub(crate) dialog: Option<Dialog>,
     /// A narrow window should bring this pane to the front.
     pub(crate) show_pane: Option<NavPane>,
-    pub(crate) list: ListState,
-    pub(crate) pointer: Point,
+    /// Scroll the open item into view when the list next shows.
+    pub(crate) reveal_open: bool,
     pub(crate) window: Rect,
     /// Bumped whenever the content page must be built again.
     pub(crate) page_revision: u64,
@@ -441,6 +418,8 @@ impl Core {
             health: crate::VaultHealth::default(),
             findings: Vec::new(),
             app_grants: Vec::new(),
+            app_proposals: Vec::new(),
+            model_revision: None,
             custody: None,
             recovery_error: None,
             import_portal: None,
@@ -453,8 +432,7 @@ impl Core {
             backup_confirmation: Zeroizing::new(String::new()),
             dialog: None,
             show_pane: None,
-            list: ListState::default(),
-            pointer: Point::ZERO,
+            reveal_open: true,
             window: Rect::ZERO,
             page_revision: 0,
             list_revision: 0,
@@ -498,7 +476,7 @@ impl Core {
     pub(crate) fn extend_demo_for_scrolling(&mut self) {
         self.items.extend(crate::demo::more_items());
         self.items.sort_by_key(|item| item.title.to_lowercase());
-        self.list.reveal = true;
+        self.reveal_open = true;
         self.touch();
     }
 
@@ -513,16 +491,14 @@ impl Core {
     }
 
     pub(crate) fn toast(&mut self, message: impl Into<String>) {
-        let until = ui::time::now()
-            .checked_add(TOAST_FOR)
-            .unwrap_or_else(ui::time::now);
-        self.toast = Some((message.into(), until));
+        self.toast = Some(message.into());
     }
 
     pub(crate) fn refresh(&mut self) {
         let Some(model) = &self.model else {
             return;
         };
+        self.model_revision = model.revision();
         self.recovery_error = model.recovery_error().map(|_| {
             "Your vault could not be unlocked. Restore access to its key, then reopen Passwords."
                 .to_owned()
@@ -531,6 +507,7 @@ impl Core {
         let full = model.items();
         self.findings = crate::findings(&full);
         self.app_grants = model.app_grants();
+        self.app_proposals = model.app_proposals();
         self.custody = Some(model.custody().label());
         self.items = full
             .into_iter()
@@ -596,7 +573,6 @@ impl Core {
     pub(crate) fn select_filter(&mut self, filter: VaultFilter) {
         self.filter = filter;
         self.screen = Screen::Vault;
-        self.list.scroll = 0.0;
         self.select_first_visible();
         self.show_pane = Some(NavPane::Overview);
         self.touch();
@@ -620,7 +596,7 @@ impl Core {
             self.selected = Some(id.clone());
             self.revealed = None;
         }
-        self.list.reveal = true;
+        self.reveal_open = true;
         self.show_pane = Some(NavPane::Content);
         self.touch();
         true
@@ -773,13 +749,6 @@ impl Core {
             .is_some_and(|(_, _, until)| *until <= ui::time::now())
         {
             self.hide_revealed();
-        }
-        if self
-            .toast
-            .as_ref()
-            .is_some_and(|(_, until)| *until <= ui::time::now())
-        {
-            self.toast = None;
         }
     }
 
@@ -1113,7 +1082,7 @@ impl Core {
                 self.refresh();
                 self.close_editor();
                 self.show_pane = Some(NavPane::Content);
-                self.list.reveal = true;
+                self.reveal_open = true;
                 self.touch();
                 self.toast("Saved");
             }
@@ -1179,22 +1148,55 @@ impl Core {
 
     // --- app access ----------------------------------------------------
 
-    pub(crate) fn revoke(&mut self, index: usize) {
-        let Some(grant) = self.app_grants.get(index).cloned() else {
-            return;
-        };
+    pub(crate) fn revoke(&mut self, id: &str) -> Result<(), String> {
+        let grant = self
+            .app_grants
+            .iter()
+            .find(|grant| grant.id() == id)
+            .cloned()
+            .ok_or_else(|| crate::CATALOG.t("passwords-permission-expired"))?;
         let name = app_name(&grant.app_id);
         if let Some(model) = &mut self.model {
             match model.revoke_app_grant(&grant) {
-                Ok(_) => {
+                Ok(true) => {
                     self.refresh();
                     self.toast(format!("{name} can no longer use this item"));
                 }
-                Err(error) => self.toast(error),
+                Ok(false) => return Err(crate::CATALOG.t("passwords-permission-expired")),
+                Err(error) => {
+                    self.toast(error.clone());
+                    return Err(error);
+                }
             }
         } else {
-            self.app_grants.remove(index);
+            self.app_grants.retain(|grant| grant.id() != id);
             self.touch();
+        }
+        Ok(())
+    }
+    pub(crate) fn model_changed(&self) -> bool {
+        if self
+            .model
+            .as_ref()
+            .and_then(crate::PasswordsModel::proposal_wake_after)
+            .is_some_and(|after| after.is_zero())
+        {
+            return true;
+        }
+        self.model
+            .as_ref()
+            .and_then(crate::PasswordsModel::revision)
+            .is_some_and(|revision| Some(revision) != self.model_revision)
+    }
+    pub(crate) fn refresh_model(&mut self) {
+        let proposals_changed = !self.app_proposals.is_empty()
+            && self
+                .model
+                .as_ref()
+                .is_some_and(|model| model.app_proposals() != self.app_proposals);
+        if proposals_changed || self.model_changed() {
+            self.revealed = None;
+            self.refresh();
         }
     }
 
@@ -1578,8 +1580,8 @@ impl Core {
         }
     }
 
-    /// When the window next needs to wake: a pending transfer to poll, a
-    /// disclosure or a toast to hide.
+    /// When the window next needs to wake: a pending transfer to poll or a
+    /// disclosure to hide.
     pub(crate) fn next_wake(&self) -> Option<ui::time::Instant> {
         let transfer = if self.transfers_pending() {
             // Keep the deadline fixed until sync consumes the tick. Returning
@@ -1597,8 +1599,11 @@ impl Core {
         };
         [
             transfer,
+            self.model
+                .as_ref()
+                .and_then(crate::PasswordsModel::proposal_wake_after)
+                .and_then(|after| ui::time::now().checked_add(after)),
             self.revealed.as_ref().map(|(_, _, until)| *until),
-            self.toast.as_ref().map(|(_, until)| *until),
         ]
         .into_iter()
         .flatten()
@@ -1637,7 +1642,34 @@ impl Core {
             Request::ConfirmBackup => self.begin_encrypted_backup(),
             Request::Restore => self.request_restore(),
             Request::ConfirmRestore => self.apply_encrypted_restore(),
-            Request::Revoke(index) => self.revoke(index),
+            Request::Revoke(id) => {
+                let _ = self.revoke(&id);
+            }
+            Request::ReviewAccess { proposal, lifetime } => {
+                if self
+                    .app_proposals
+                    .iter()
+                    .any(|pending| pending.id == proposal)
+                {
+                    self.dialog = Some(Dialog::AccessConfirm { proposal, lifetime });
+                    self.touch_page();
+                }
+            }
+            Request::ConfirmAccess => {
+                if let Some(Dialog::AccessConfirm { proposal, lifetime }) = self.dialog.take() {
+                    if let Err(error) =
+                        self.perform(PasswordsEffect::ApproveAccess { proposal, lifetime })
+                    {
+                        self.toast(error);
+                    }
+                    self.touch_page();
+                }
+            }
+            Request::DenyAccess(proposal) => {
+                if let Err(error) = self.perform(PasswordsEffect::DenyAccess { proposal }) {
+                    self.toast(error);
+                }
+            }
         }
     }
 
@@ -1678,6 +1710,7 @@ impl Core {
     /// Answer an effect invoked by the palette, an agent, a script or a
     /// search hit.
     pub(crate) fn perform(&mut self, effect: PasswordsEffect) -> Result<(), String> {
+        self.refresh_model();
         let open = |core: &mut Self, id: String| {
             if core.open(&SecretId(id)) {
                 Ok(())
@@ -1686,6 +1719,27 @@ impl Core {
             }
         };
         match effect {
+            PasswordsEffect::ShowAccess => self.navigate("app-access"),
+            PasswordsEffect::RevokeAccess { grant } => self.revoke(&grant)?,
+            PasswordsEffect::ApproveAccess { proposal, lifetime } => {
+                let decision = match lifetime.as_str() {
+                    "session" => accounts::AccessDecision::AllowForSession,
+                    "persistent" => accounts::AccessDecision::AllowAlways,
+                    _ => return Err(crate::CATALOG.t("passwords-request-expired")),
+                };
+                self.model
+                    .as_ref()
+                    .ok_or_else(|| crate::CATALOG.t("passwords-request-expired"))?
+                    .decide_app_proposal(&proposal, decision)?;
+                self.refresh();
+            }
+            PasswordsEffect::DenyAccess { proposal } => {
+                self.model
+                    .as_ref()
+                    .ok_or_else(|| crate::CATALOG.t("passwords-request-expired"))?
+                    .decide_app_proposal(&proposal, accounts::AccessDecision::Deny)?;
+                self.refresh();
+            }
             PasswordsEffect::Add => self.begin_add(),
             PasswordsEffect::Save => {
                 if !self.is_editing() {
@@ -1698,7 +1752,7 @@ impl Core {
                         .draft_error
                         .as_ref()
                         .map(|(_, message)| message.clone())
-                        .or_else(|| self.toast.as_ref().map(|(message, _)| message.clone()))
+                        .or_else(|| self.toast.clone())
                         .unwrap_or_else(|| "The item was not saved".to_owned()));
                 }
             }
@@ -1744,11 +1798,30 @@ impl Core {
     /// may do with it. A row names the item by its opaque id and kind only;
     /// its title, account and addresses stay in the vault.
     pub(crate) fn item_rows(&self) -> Vec<ui::framework::LiveRow> {
-        self.items.iter().map(crate::actions::item_row).collect()
+        self.items
+            .iter()
+            .map(crate::actions::item_row)
+            .chain(self.app_grants.iter().map(crate::actions::grant_row))
+            .chain(self.app_proposals.iter().map(crate::actions::proposal_row))
+            .collect()
     }
 
     /// The live row of item `id` (a published row id).
     pub(crate) fn item_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        if let Some(id) = id.strip_prefix(crate::actions::PROPOSAL_PREFIX) {
+            return self
+                .app_proposals
+                .iter()
+                .find(|proposal| proposal.id == id)
+                .map(crate::actions::proposal_row);
+        }
+        if let Some(id) = id.strip_prefix(crate::actions::GRANT_PREFIX) {
+            return self
+                .app_grants
+                .iter()
+                .find(|grant| grant.id() == id)
+                .map(crate::actions::grant_row);
+        }
         let id = id.strip_prefix(crate::actions::ITEM_PREFIX)?;
         self.items
             .iter()

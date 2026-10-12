@@ -118,23 +118,21 @@ impl Widget for ResponsiveRoot {
             .iter_mut()
             .map(|child| child.build_layout(taffy, theme, map))
             .collect();
-        let node = taffy.parent_node(
-            taffy::Style {
-                flex_direction: taffy::FlexDirection::Column,
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::length(if self.editing {
-                        400.0
-                    } else if self.oscillate.get() && self.rect.height() == 100.0 {
-                        101.0
-                    } else {
-                        100.0
-                    }),
-                },
-                ..Default::default()
+        let style = taffy::Style {
+            flex_direction: taffy::FlexDirection::Column,
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::length(if self.editing {
+                    400.0
+                } else if self.oscillate.get() && self.rect.height() == 100.0 {
+                    101.0
+                } else {
+                    100.0
+                }),
             },
-            &self.nodes,
-        );
+            ..Default::default()
+        };
+        let node = taffy.parent_node(style, &self.nodes);
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -672,4 +670,29 @@ impl crate::widget::NativeViewBackend for CountingNativeBackend {
     }
     fn set_focus(&mut self, _: bool) {}
     fn set_enabled(&mut self, _: bool) {}
+}
+
+#[test]
+fn native_slider_rebuilds_its_target_style_when_input_capabilities_change() {
+    let value = crate::LocalState::new(0.5);
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(crate::widget::Slider::from_state(&value)),
+    );
+    app.init_layout();
+    frame(&mut app, 600);
+    for environment in [
+        crate::InteractionEnvironment::TOUCH,
+        crate::InteractionEnvironment::POINTER,
+    ] {
+        app.set_interaction_environment(environment);
+        frame(&mut app, 600);
+        assert_eq!(
+            app.root_widget.get_rect().height(),
+            f64::from(environment.minimum_target()),
+            "the native host applies the current input target, not its old cached style"
+        );
+        assert!(!app.root_widget.layout_needs_measure());
+        assert_eq!(value.get(), 0.5, "layout never changes the value");
+    }
 }

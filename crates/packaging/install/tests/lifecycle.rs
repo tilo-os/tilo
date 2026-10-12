@@ -726,3 +726,76 @@ fn desktop_contract_keeps_both_archive_size_limits() {
         assert!(env.registry_toml().is_empty());
     }
 }
+
+#[test]
+fn cohort_selection_preserves_user_holds_pins_and_state_through_the_real_installer() {
+    let env = Env::new();
+    let first = env.tapp("0.1.73018", b"public selected app", None);
+    let next = env.tapp("0.1.0", b"paired current cohort app", None);
+    let (ok, out, err) = env.cmd(&["install", "--pinned", first.to_str().unwrap()]);
+    assert!(ok, "{out}{err}");
+    let store = package_store::PackageStore::at(env.tilo_apps());
+    store
+        .update_row("so.tilo.lifecycle", |row| row.held = true)
+        .unwrap();
+    let held = store
+        .registry()
+        .unwrap()
+        .find("so.tilo.lifecycle")
+        .unwrap()
+        .clone();
+    let before = env.registry_toml();
+    let (ok, out, err) = env.cmd(&[
+        "install",
+        "--force",
+        "--preserve-held",
+        next.to_str().unwrap(),
+    ]);
+    assert!(ok, "{out}{err}");
+    assert!(out.contains("\"preserved\":true"), "{out}");
+    assert!(out.contains(&held.package_id_hex), "{out}");
+    assert_eq!(env.registry_toml(), before);
+    assert_eq!(
+        std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+        b"public selected app"
+    );
+    store
+        .update_row("so.tilo.lifecycle", |row| row.held = false)
+        .unwrap();
+    let (ok, out, err) = env.cmd(&[
+        "install",
+        "--force",
+        "--preserve-held",
+        next.to_str().unwrap(),
+    ]);
+    assert!(ok, "{out}{err}");
+    assert!(out.contains("\"preserved\":false"), "{out}");
+    let selected = store
+        .registry()
+        .unwrap()
+        .find("so.tilo.lifecycle")
+        .unwrap()
+        .clone();
+    assert!(selected.pinned);
+    assert!(!selected.held);
+    assert_ne!(selected.package_id_hex, held.package_id_hex);
+    assert_eq!(selected.version, "0.1.0");
+    assert_eq!(
+        std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+        b"paired current cohort app"
+    );
+    assert!(out.contains(&selected.package_id_hex), "{out}");
+    let before = env.registry_toml();
+    let wrong = "00".repeat(32);
+    let (ok, out, _) = env.cmd(&[
+        "install",
+        "--force",
+        "--preserve-held",
+        "--require-publisher",
+        &wrong,
+        first.to_str().unwrap(),
+    ]);
+    assert!(!ok);
+    assert!(!out.contains("cohort-selection:"));
+    assert_eq!(env.registry_toml(), before);
+}

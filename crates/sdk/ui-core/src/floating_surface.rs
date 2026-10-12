@@ -165,6 +165,11 @@ pub struct FloatingSurfaceProtocolRequest {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FloatingSurfaceClientMessage {
+    /// A typed Settings request on the existing authenticated app connection.
+    MoveDeviceDisplay {
+        request: u64,
+        placement: settings_store::device_displays::DeviceDisplayMove,
+    },
     /// Bounded response to a trusted owner operation on this same connection.
     DeviceShellOutcome {
         request: u64,
@@ -273,12 +278,25 @@ pub enum DeviceShellOperation {
     Read { session: String },
 }
 
+/// Sanitized host network hints. Unknown is distinct from known unmetered;
+/// this carries no connection name, device, address or network permission.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostNetworkStatus {
+    pub available: Option<bool>,
+    pub metered: Option<bool>,
+}
+
 /// Shell → app lifecycle. The shell supplies one authoritative combined
 /// desktop coordinate space and explicitly acknowledges ownership changes;
 /// transports must not infer either from timing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FloatingSurfaceHostMessage {
+    /// Admission/delivery result. The owner's published topology confirms application.
+    DeviceDisplayMoveResult {
+        request: u64,
+        result: Result<(), String>,
+    },
     /// The authenticated device owner selected Terminal's device-shell target.
     /// This requests its ordinary permission flow; it is not a grant.
     DeviceShellOperation {
@@ -343,6 +361,13 @@ pub enum FloatingSurfaceHostMessage {
     /// new wallpaper, a window moved to another workspace, a colour chosen
     /// in Settings.
     Appearance {
+        /// The host's configured palette; apps cannot read its settings file
+        /// through their private sandbox configuration directory.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        theme: Option<crate::theme_document::ThemeDocument>,
+        /// Absent on older hosts or launches without network access.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        network_status: Option<HostNetworkStatus>,
         /// OKLCH degrees; absent while the workspace has no temperature.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace_hue: Option<f32>,
@@ -357,9 +382,40 @@ impl FloatingSurfaceHostMessage {
     #[must_use]
     pub fn appearance(appearance: &crate::theme::WindowAppearance) -> Self {
         Self::Appearance {
+            theme: None,
+            network_status: None,
             workspace_hue: appearance.workspace_hue.filter(|hue| hue.is_finite()),
             your_colour: appearance.your_colour.map(|hue| hue.id().to_owned()),
         }
+    }
+
+    /// The host's configured theme and the window's workspace appearance.
+    #[must_use]
+    pub fn appearance_with_theme(
+        appearance: &crate::theme::WindowAppearance,
+        theme: &crate::Theme,
+    ) -> Self {
+        let mut message = Self::appearance(appearance);
+        if let Self::Appearance {
+            theme: document, ..
+        } = &mut message
+        {
+            *document = Some(theme.document.clone());
+        }
+        message
+    }
+
+    /// Validate the host's authored palette before applying it.
+    #[must_use]
+    pub fn configured_theme(&self) -> Option<crate::Theme> {
+        let Self::Appearance {
+            theme: Some(document),
+            ..
+        } = self
+        else {
+            return None;
+        };
+        crate::Theme::from_document(document)
     }
 
     /// What an [`Self::Appearance`] message says, `None` for any other. A
@@ -370,6 +426,7 @@ impl FloatingSurfaceHostMessage {
         let Self::Appearance {
             workspace_hue,
             your_colour,
+            ..
         } = self
         else {
             return None;
@@ -407,6 +464,9 @@ pub struct FloatingSurfaceServiceClient {
 impl FloatingSurfaceServiceClient {
     /// Discover the optional session service. Outside Tilo (or on an older
     /// shell) this returns `None`; apps retain their ordinary attached UI.
+    /// The inherited descriptor belongs to one app launch. Transport loss is
+    /// terminal for this client; only a fresh launcher-mediated launch supplies
+    /// a new connection. Discovery never opens a privileged host socket.
     #[cfg(feature = "local-daemons")]
     pub fn discover() -> Option<Self> {
         let fd = runtime_portal::service_fd(FLOATING_SURFACE_SERVICE)?;
@@ -1143,12 +1203,6 @@ impl FloatingPlacement {
         self.return_pending = false;
         self.desktop_adopted = false;
         self.desktop_covered = false;
-    }
-
-    /// Convenience for non-drag programmatic adoption.
-    pub fn adopt_desktop_rect(&mut self, rect: Rect) {
-        self.prepare_desktop_rect(rect);
-        self.confirm_desktop_adoption();
     }
 
     pub fn is_handoff_animating(&self) -> bool {

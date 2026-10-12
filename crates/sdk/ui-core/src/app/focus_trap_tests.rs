@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::TaffyTreeExt;
 use crate::widget::modal_dialog::ModalDialog;
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Widget};
@@ -31,21 +32,7 @@ impl Widget for TwoKids {
             .iter_mut()
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
-        let node = taffy
-            .new_with_children(taffy::Style::default(), &kids)
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
+        taffy.widget_node(taffy::Style::default(), &kids, node_map, self)
     }
     fn children(&self) -> Vec<&dyn Widget> {
         self.kids.iter().map(Box::as_ref).collect()
@@ -58,9 +45,6 @@ impl Widget for TwoKids {
     }
     fn name(&self) -> &'static str {
         "two-kids"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 }
 
@@ -104,21 +88,7 @@ impl Widget for ModalHost {
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
         kids.push(self.modal.build_layout(taffy, theme, node_map));
-        let node = taffy
-            .new_with_children(taffy::Style::default(), &kids)
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
+        taffy.widget_node(taffy::Style::default(), &kids, node_map, self)
     }
     fn children(&self) -> Vec<&dyn Widget> {
         let mut v: Vec<&dyn Widget> = self.outer.iter().map(Box::as_ref).collect();
@@ -136,9 +106,6 @@ impl Widget for ModalHost {
     }
     fn name(&self) -> &'static str {
         "modal-host"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 }
 

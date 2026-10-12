@@ -23,7 +23,7 @@ pub(crate) fn draw_action_presence(
         }
         let user = crate::permissions::UserId(interaction.actor.id.clone());
         let label = presence.interaction_status_label(&interaction);
-        presence.draw_peer_outline_labeled_within(
+        presence.draw_action_outline_labeled_within(
             paint,
             &user,
             &label,

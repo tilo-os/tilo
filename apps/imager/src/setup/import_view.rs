@@ -4,6 +4,7 @@ use crate::page;
 use crate::page::Frame;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use ui::widget::TaffyTreeExt;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -15,16 +16,11 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::TextKind;
 use ui::a11y::Politeness;
 use ui::icons::Icon;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     Button, ButtonRole, Column, ControlSize, ListRow, ProgressBar, Property, PropertyList, Row,
     Section, SectionHeader, Spacer, Text, ToggleGroup, Widget, toggle_group::Segment,
 };
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
 
 use super::desktop_continuation::{self, ChoiceMode, Continuation};
 use super::folders;
@@ -40,7 +36,7 @@ use super::migration_worker::{
 };
 use super::view::system_folder_reason;
 // Page rhythm (HIG §7b): the crate's steps and the shared page sections.
-use crate::resource::{Imager, ImagerState};
+use crate::resource::Imager;
 
 use ui::framework::{
     EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LiveRow, ResourceSurface,
@@ -161,6 +157,8 @@ struct PendingPrepareInvocation {
 pub struct ImportApp {
     continuation: Option<Continuation>,
     identity_ready: bool,
+    navigation: super::journey_navigation::Navigation,
+    actions: Option<ui::framework::Actions<Imager>>,
     review_request: Option<(usize, mpsc::Receiver<Result<Continuation, String>>)>,
     gate_request: Option<(ImportCommand, mpsc::Receiver<Result<(), String>>)>,
     batch: Vec<usize>,
@@ -182,9 +180,7 @@ pub struct ImportApp {
     commands: CommandSink,
     status: String,
     status_is_error: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
-    structure_dirty: bool,
+    composed: ui::widget::Composed,
     expanded_details: HashSet<usize>,
     shot_temp: Option<tempfile::TempDir>,
     /// The caller of the running job, answered when it settles.
@@ -230,6 +226,8 @@ impl ImportApp {
         Self {
             continuation: None,
             identity_ready: false,
+            navigation: super::journey_navigation::Navigation::default(),
+            actions: None,
             gate_request: None,
             review_request: None,
             batch: Vec::new(),
@@ -251,9 +249,7 @@ impl ImportApp {
             commands: Rc::new(RefCell::new(Vec::new())),
             status: format!("Folder imports are unavailable: {error}"),
             status_is_error: true,
-            composed: None,
-            rect: Rect::ZERO,
-            structure_dirty: true,
+            composed: ui::widget::Composed::default(),
             expanded_details: HashSet::new(),
             shot_temp: None,
             reply: None,
@@ -362,7 +358,7 @@ impl ImportApp {
                 app.wait_for_shot_terminal(ui::time::now() + SHOT_WAIT_BOUND)?;
             }
         }
-        app.structure_dirty = true;
+        app.composed.invalidate();
         Ok(app)
     }
 
@@ -580,6 +576,8 @@ impl ImportApp {
         Ok(Self {
             continuation,
             identity_ready: false,
+            navigation: super::journey_navigation::Navigation::default(),
+            actions: None,
             gate_request: None,
             review_request: None,
             batch: Vec::new(),
@@ -601,9 +599,7 @@ impl ImportApp {
             commands: Rc::new(RefCell::new(Vec::new())),
             status,
             status_is_error: false,
-            composed: None,
-            rect: Rect::ZERO,
-            structure_dirty: true,
+            composed: ui::widget::Composed::default(),
             expanded_details: HashSet::new(),
             shot_temp: None,
             reply: None,
@@ -824,6 +820,9 @@ impl ImportApp {
             }
         });
         ImportProjection {
+            journey_available: self.identity_ready
+                && self.continuation.is_some()
+                && self.navigation.available(),
             phase: self.import_phase(),
             status_is_error: self.status_is_error,
             selection: SelectionProjection {
@@ -905,7 +904,7 @@ impl ImportApp {
     fn refuse_semantic<T>(&mut self, message: String) -> Result<T, String> {
         self.status.clone_from(&message);
         self.status_is_error = true;
-        self.structure_dirty = true;
+        self.composed.invalidate();
         Err(message)
     }
 
@@ -928,6 +927,25 @@ impl ImportApp {
         operation: ImportEffect,
     ) -> Result<tilo_actions::ActionOutput, String> {
         let command = match operation {
+            ImportEffect::OpenAccounts | ImportEffect::OpenStore => {
+                if !self.identity_ready || self.continuation.is_none() {
+                    return self
+                        .refuse_semantic(super::strings::t("imager-journey-identity-required"));
+                }
+                let uri = if matches!(operation, ImportEffect::OpenAccounts) {
+                    super::journey_navigation::ACCOUNTS
+                } else {
+                    super::journey_navigation::STORE
+                };
+                self.navigation.request(uri)?;
+                self.status = super::strings::t("imager-journey-navigation-pending");
+                self.status_is_error = false;
+                self.composed.invalidate();
+                return Ok(tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({"requested": true})),
+                    resources: Vec::new(),
+                });
+            }
             ImportEffect::ReadStatus => {
                 return Ok(tilo_actions::ActionOutput {
                     value: Some(self.local_status_value()),
@@ -1262,10 +1280,8 @@ impl ImportApp {
         let id = format!(
             "{}-{}-{}",
             std::process::id(),
-            ui::time::wall()
-                .duration_since(ui::time::UNIX_EPOCH)
-                .map_err(|_| "system time is before the Unix epoch".to_string())?
-                .as_nanos(),
+            ui::time::try_unix_now_ns()
+                .ok_or_else(|| "system time is before the Unix epoch".to_string())?,
             NEXT_OPERATION.fetch_add(1, Ordering::Relaxed)
         );
         let journal = store.root().join(format!("{id}.journal"));
@@ -1279,7 +1295,7 @@ impl ImportApp {
         self.destination_parent = None;
         self.status = "Review the source, destination, and one-time copy.".into();
         self.status_is_error = false;
-        self.structure_dirty = true;
+        self.composed.invalidate();
         Ok(())
     }
 
@@ -1401,7 +1417,7 @@ impl ImportApp {
             pending.cancelled = true;
             pending.finished = true;
             self.status = "Folder review stopped before it was saved.".into();
-            self.structure_dirty = true;
+            self.composed.invalidate();
             return true;
         }
         let previous_save_count = self.pending_saves.len();
@@ -1434,7 +1450,7 @@ impl ImportApp {
                 self.status_is_error = true;
             }
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
         true
     }
 
@@ -1536,7 +1552,7 @@ impl ImportApp {
                 self.worker = Some((index, worker));
                 self.status = "Copying and checking files…".into();
                 self.status_is_error = false;
-                self.structure_dirty = true;
+                self.composed.invalidate();
                 Ok(())
             }
             Err(error) => {
@@ -1601,7 +1617,7 @@ impl ImportApp {
                 self.worker = Some((index, worker));
                 self.status = "Continuing after checking saved progress…".into();
                 self.status_is_error = false;
-                self.structure_dirty = true;
+                self.composed.invalidate();
                 Ok(())
             }
             Err(error) => {
@@ -1624,12 +1640,12 @@ impl ImportApp {
             self.batch.clear();
             self.status = "Stopping at the next safe copy boundary…".into();
             self.status_is_error = false;
-            self.structure_dirty = true;
+            self.composed.invalidate();
             true
         } else {
             self.status = "File checks are finished; waiting for the final result.".into();
             self.status_is_error = false;
-            self.structure_dirty = true;
+            self.composed.invalidate();
             false
         }
     }
@@ -1794,7 +1810,7 @@ impl ImportApp {
                                 }
                                 self.status = e;
                                 self.status_is_error = true;
-                                self.structure_dirty = true;
+                                self.composed.invalidate();
                                 return true;
                             }
                         }
@@ -1829,6 +1845,14 @@ impl ImportApp {
 
     fn poll_background(&mut self) -> bool {
         let mut changed = self.poll_continued_review();
+        if let Some(outcome) = self.navigation.poll() {
+            self.status_is_error = outcome.is_err();
+            self.status = outcome
+                .err()
+                .unwrap_or_else(|| super::strings::t("imager-journey-navigation-opened"));
+            self.composed.invalidate();
+            changed = true;
+        }
         self.poll_identity_gate(&mut changed);
         let mut terminal = false;
         // At most one latest progress update and one terminal event per frame.
@@ -1908,7 +1932,7 @@ impl ImportApp {
 
         changed |= self.poll_folder_picker();
         if changed {
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
         changed
     }
@@ -1929,7 +1953,7 @@ impl ImportApp {
                 self.status = e;
                 self.status_is_error = true;
             }
-            self.structure_dirty = true;
+            self.composed.invalidate();
             return;
         }
         self.apply_authorized_command(command);
@@ -2067,7 +2091,7 @@ impl ImportApp {
             self.status = error;
             self.status_is_error = true;
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
     }
 
     fn drain_commands(&mut self) -> bool {
@@ -2088,6 +2112,34 @@ impl ImportApp {
 
     /// Copy one more folder: where from, where to, and the review that
     /// prepares the copy.
+    fn journey_choices(&self) -> Section {
+        let t = super::strings::t;
+        let button = |id: &str, key: &str, effect: ImportEffect| {
+            let control = Button::new(id, &t(key)).control_size(ui::widget::ControlSize::Regular);
+            match &self.actions {
+                Some(actions) => actions.bind_effect_invocation(control, &effect),
+                None => control.with_enabled(false),
+            }
+        };
+        Section::new(vec![
+            Box::new(Text::new(&t("imager-journey-body"))),
+            Box::new(
+                Row::new()
+                    .push(Box::new(button(
+                        "import.journey.accounts",
+                        "imager-journey-accounts",
+                        ImportEffect::OpenAccounts,
+                    )))
+                    .push(Box::new(button(
+                        "import.journey.store",
+                        "imager-journey-store",
+                        ImportEffect::OpenStore,
+                    ))),
+            ),
+        ])
+        .with_header(SectionHeader::heading(t("imager-journey-heading")))
+    }
+
     fn selection_card(&self) -> Section {
         let source = self
             .source
@@ -2517,6 +2569,9 @@ impl ImportApp {
                 Section::new(copies).with_header(SectionHeader::heading("Copies")),
             ));
         }
+        if self.continuation.is_some() {
+            body = body.push(Box::new(self.journey_choices()));
+        }
         body = body.push(Box::new(self.selection_card()));
         // A copy's own outcome already stands on its row; the notice is for
         // problems the page shows nowhere else.
@@ -2662,15 +2717,13 @@ impl Widget for ImportApp {
         self.poll_background();
         self.drain_commands();
         self.answer_job();
-        if let Some(composed) = &mut self.composed {
-            composed.sync(state, path);
-        }
+        self.composed.sync(state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = self.poll_background() || self.drain_commands();
         self.answer_job();
-        if let Some(composed) = &mut self.composed {
+        if let Some(composed) = self.composed.element_mut() {
             changed |= composed.update(state, path);
         }
         changed
@@ -2682,87 +2735,26 @@ impl Widget for ImportApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let composition = self.build_composition();
+        let child = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&child) = children.first()
-        {
-            composed.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if let Some(composed) = &mut self.composed {
-            composed.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(composed) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&child) = children.first()
-        {
-            composed.handle_event(event, &mut ctx.reborrow(ctx.path, child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|child| child.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|child| child.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
+    ui::forward_to_composed!(composed);
 
     fn name(&self) -> &'static str {
         "ImportApp"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -2775,14 +2767,6 @@ impl Widget for ImportApp {
             || self.pending_prepare_invocation.is_some()
             || !self.pending_saves.is_empty()
             || self.detail_request.is_some()
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.structure_dirty)
-            || self
-                .composed
-                .as_mut()
-                .is_some_and(|child| child.take_structure_dirty())
     }
 }
 
@@ -2824,7 +2808,7 @@ impl ImportApp {
                         .get_or_insert(pending.destination_parent);
                     self.status = format!("Folder review could not be saved: {message}");
                     self.status_is_error = true;
-                    self.structure_dirty = true;
+                    self.composed.invalidate();
                     JobOutcome::Failed {
                         error: tilo_actions::ActionFailure {
                             code: "imager.review_save_failed".into(),
@@ -2900,7 +2884,7 @@ impl ImportApp {
             if let Some(Err(message)) = &save_result {
                 self.status = format!("Folder review could not be saved: {message}");
                 self.status_is_error = true;
-                self.structure_dirty = true;
+                self.composed.invalidate();
             }
             let update = if pending.cancelled {
                 JobOutcome::Cancelled {
@@ -3162,19 +3146,22 @@ pub const SCENARIOS: &[&str] = &[
 ];
 
 impl ResourceSurface<Imager, ImportEffect> for ImportApp {
-    fn present(&mut self, _state: &Rc<ImagerState>) {}
+    fn present(&mut self, _state: &Rc<Imager>) {}
 
     fn attach(&mut self, cx: SurfaceCx<Imager>) {
         if cx.mode().is_live() && self.opens_when_live {
             self.open_live();
         }
+        self.actions = Some(cx.actions());
     }
 
     /// Pose the scenario's imports from real worker runs over disposable
     /// fixture folders; nothing of this computer's own imports is read.
     fn stage(&mut self, scenario: Option<&str>) {
         if let Some(scenario) = scenario.filter(|name| SCENARIOS.contains(name)) {
+            let actions = self.actions.take();
             *self = Self::for_shot(scenario);
+            self.actions = actions;
         }
     }
 
@@ -3230,6 +3217,8 @@ mod tests {
 
     use super::import_actions::IMPORT_ROW_ID;
     use super::*;
+
+    include!("journey_import_tests.rs");
 
     fn fixture() -> (tempfile::TempDir, ImportApp, PathBuf, PathBuf) {
         let temp = super::disposable_fixture_dir().unwrap();
@@ -4850,20 +4839,25 @@ mod tests {
         assert!(!destination_parent.join("source").exists());
         app.poll_background();
         assert!(app.cancel_active());
+        let ownership_released = super::super::migration_store::test_support::ownership_release(
+            app.store.as_deref().unwrap(),
+        );
         drop(app);
         assert!(MigrationStore::open_at(&root).is_err());
+        assert_eq!(
+            ownership_released.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty),
+            "the held checkpoint still owns the store"
+        );
         release
             .send(())
             .expect("the start checkpoint was still held when the UI calls returned");
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            if let Ok(store) = MigrationStore::open_at(&root) {
-                assert_eq!(store.load().unwrap()[0].state(), OperationState::Cancelled);
-                break;
-            }
-            assert!(ui::time::now() < deadline);
-            std::thread::yield_now();
-        }
+        tilo_test_env::recv(
+            "the cancelled copy store's ownership release",
+            &ownership_released,
+        );
+        let store = MigrationStore::open_at(&root).unwrap();
+        assert_eq!(store.load().unwrap()[0].state(), OperationState::Cancelled);
         assert!(!destination_parent.join("source").exists());
     }
 

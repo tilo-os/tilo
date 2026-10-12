@@ -3,7 +3,7 @@
 
 pub mod custody {
     pub use account_custody::{
-        Capability, ClientTable, Custodian, OAuthIssuer, OAuthUse, TokenSet,
+        Authorization, Capability, ClientTable, Custodian, OAuthIssuer, OAuthUse, TokenSet,
     };
 }
 pub use accounts::AccountId;
@@ -16,4 +16,4 @@ pub const STREAMING_USE: account_custody::OAuthUse = account_custody::OAuthUse::
 #[cfg(feature = "native")]
 mod native;
 #[cfg(feature = "native")]
-pub use native::{CaptureOutput, NativeAudio, Output};
+pub use native::{CaptureOutput, NativeAudio, Output, self_check};

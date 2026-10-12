@@ -7,7 +7,7 @@
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::Key;
 
 use ui::ColorCompat;
 use ui::text_render::TextRenderer;
@@ -49,6 +49,8 @@ pub struct QuickSettingsWifiPane {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WifiPaneOutcome {
     DrillIn(DrillInOutcome),
+    /// The host admits this typed operation and owns its completion.
+    RequestWifi(bool),
     /// A synchronous radio mutation succeeded; refresh authoritative OS state.
     Reconcile,
     ActionFailed {
@@ -119,7 +121,9 @@ impl QuickSettingsWifiPane {
     }
 
     fn status_message(state: &QuickSettingsState) -> Option<String> {
-        let key = if !state.wifi {
+        let key = if state.radio_change_pending {
+            "display-confirm-applying"
+        } else if !state.wifi {
             "qs-wifi-off"
         } else if state.wifi_scanning {
             "qs-wifi-scanning"
@@ -137,7 +141,7 @@ impl QuickSettingsWifiPane {
     /// an already-connected network remain visible, but keyboard and
     /// accessibility traversal must not land on inert targets.
     fn focusable_indices(state: &QuickSettingsState) -> Vec<usize> {
-        let busy = state.wifi_joining.is_some();
+        let busy = state.wifi_joining.is_some() || state.radio_change_pending;
         let mut indices = vec![Self::BACK_FOCUS];
         if !busy {
             indices.push(Self::WIFI_FOCUS);
@@ -426,23 +430,12 @@ impl QuickSettingsWifiPane {
         state: &mut QuickSettingsState,
         actions: &dyn QsActions,
     ) -> Option<WifiPaneOutcome> {
-        match logical_key {
-            Key::Named(NamedKey::Tab) => {
+        match super::PaneKey::of(logical_key, backwards)? {
+            super::PaneKey::Focus(backwards) => {
                 self.focus_next(panel, state, backwards);
                 Some(WifiPaneOutcome::DrillIn(DrillInOutcome::None))
             }
-            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowLeft) => {
-                self.focus_next(panel, state, true);
-                Some(WifiPaneOutcome::DrillIn(DrillInOutcome::None))
-            }
-            Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight) => {
-                self.focus_next(panel, state, false);
-                Some(WifiPaneOutcome::DrillIn(DrillInOutcome::None))
-            }
-            Key::Named(NamedKey::Enter | NamedKey::Space) => {
-                Some(self.activate_focused(panel, state, actions))
-            }
-            _ => None,
+            super::PaneKey::Activate => Some(self.activate_focused(panel, state, actions)),
         }
     }
 
@@ -461,12 +454,21 @@ impl QuickSettingsWifiPane {
             return WifiPaneOutcome::DrillIn(DrillInOutcome::Back);
         }
 
-        let busy = state.wifi_joining.is_some();
+        let busy = state.wifi_joining.is_some() || state.radio_change_pending;
         if Self::wifi_toggle_rect(panel).contains(point) {
             if busy {
                 return WifiPaneOutcome::DrillIn(DrillInOutcome::None);
             }
             let next = !state.wifi;
+            // Preparation is pure: the owning host starts the same typed
+            // operation and keeps its receipt. Explicit synchronous fixture
+            // dispatchers retain their original immediate contract.
+            if actions
+                .prepare_radio_change(os_actions::RadioChange::Wifi(next))
+                .is_some()
+            {
+                return WifiPaneOutcome::RequestWifi(next);
+            }
             let result = actions.set_wifi(next);
             if let Err(error) = result {
                 log_qs_result("set_wifi", Err(error.clone()));
@@ -561,7 +563,7 @@ impl QuickSettingsWifiPane {
         state: &QuickSettingsState,
     ) {
         let networks = &state.wifi_networks;
-        let busy = state.wifi_joining.is_some();
+        let busy = state.wifi_joining.is_some() || state.radio_change_pending;
         let displayed_networks = Self::displayed_network_count(state);
         self.list
             .layout_from(panel, displayed_networks, Self::LIST_TOP);
@@ -624,7 +626,8 @@ impl QuickSettingsWifiPane {
                 trailing_toggle(row, CONTROL_INSET, TOGGLE_W, TOGGLE_H),
                 state.radios.hotspot_active,
             )
-            .hovered(hovered),
+            .hovered(hovered)
+            .disabled(busy),
         );
         if let Some(message) = Self::status_message(state) {
             DrillInList::draw_empty_from(
@@ -739,6 +742,7 @@ impl QuickSettingsWifiPane {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use winit::keyboard::NamedKey;
 
     #[derive(Default)]
     struct RecordingActions {
@@ -781,6 +785,11 @@ mod tests {
             ssid: ssid.into(),
             signal: 3,
             secure,
+            security: if secure {
+                os_actions::WifiSecurity::Wpa2
+            } else {
+                os_actions::WifiSecurity::Open
+            },
             connected: false,
         }
     }

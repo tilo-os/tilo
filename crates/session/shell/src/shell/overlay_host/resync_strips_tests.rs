@@ -6,8 +6,8 @@ use super::*;
 use crate::shell::build_tilo_overlay_host_with_chrome;
 use crate::shell::state::FreshId as _;
 use crate::shell::state::{
-    AppKind, GroupId, PeerOrigin, SharedSurfaces, Strip, StripId, Tab, TileContent,
-    WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
+    AppKind, GroupId, PeerOrigin, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+    WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
 };
 use std::collections::HashMap as StdHashMap;
 
@@ -35,23 +35,10 @@ fn one_group_seed() -> (WorkspaceTree, StripId, GroupId) {
         }],
     };
     let ws = Workspace {
-        owner: None,
-        pending_ownership_transfer: None,
-        ownership_transfer_audit: Vec::new(),
-        ownership_transfer_cancellations: Vec::new(),
-        permission_profiles: Vec::new(),
-        capabilities: Vec::new(),
-        default_apps: desktop_policy::WorkspaceDefaults::default(),
-        tasks: Vec::new(),
-        effect_receipts: Vec::new(),
-        shortcuts: Vec::new(),
-        schedule_claims: Vec::new(),
         id: ws_id,
-        room: crate::shell::state::RoomId::new(),
         name: "Test".into(),
         strips: vec![strip],
-        collaborators: vec![],
-        shared_surfaces: SharedSurfaces::default(),
+        ..Workspace::new(ws_id, String::new())
     };
     let mut active_strip = StdHashMap::new();
     active_strip.insert(ws_id, strip_id);
@@ -313,7 +300,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
                         "/untouched/different.txt".into();
                 }
                 if cancellation == "room" {
-                    tree.desktop.workspaces[0].room = crate::shell::state::RoomId::new();
+                    tree.desktop.workspaces[0].set_room(crate::shell::state::RoomId::new());
                 }
                 if cancellation == "app" {
                     for tab in tree
@@ -1153,6 +1140,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
         group.active_tab = 1;
         tree.seed_doc_from_cache();
 
+        crate::shell::foreign::store().note_adopted(41);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         assert!(host.close_tab_in_group(group_id, Some(1)));
         assert_eq!(
@@ -1160,6 +1148,25 @@ fn group_actions_target_exactly_their_group_or_surface() {
             vec![41],
             "close requests are keyed by surface, never by shared app id"
         );
+        let _ = host.take_structure_dirty();
+        let retained = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("live close decision");
+        assert_eq!(
+            retained.active_tab_id(),
+            1,
+            "a deferred close retains focus"
+        );
+        assert_eq!(retained.tab_count(), 2, "both client hosts remain visible");
+        assert!(
+            chrome.borrow_mut().reopen_closed_tab().is_none(),
+            "no Undo before destruction"
+        );
+        crate::shell::tab_binding::close_tab_for_destroyed_surface_and_persist(
+            &mut chrome.borrow_mut().tree_mut(),
+            41,
+        );
+        crate::shell::foreign::store().forget(41);
         let remaining = chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
             .tabs
             .iter()

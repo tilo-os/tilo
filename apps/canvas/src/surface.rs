@@ -11,8 +11,10 @@
     reason = "kurbo's geometry operators (Affine, Point, Vec2) are float geometry, not overflowing integer arithmetic"
 )]
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::tilo_resource::Invoke;
 
 use serde_json::{Value, json};
 use ui::a11y::{AccessNode, Role};
@@ -30,7 +32,7 @@ use ui::winit::keyboard::{Key, ModifiersState, NamedKey};
 use ui::winit::window::CursorIcon;
 use ui::{PresenceCtx, TextRenderer, Theme};
 
-use crate::actions::{CanvasAction, Draw, EditMarks, NewMark, NewStroke, Paint, RemoveMarks};
+use crate::actions::{Draw, EditMarks, NewMark, NewStroke, Paint, RemoveMarks};
 use crate::gesture::area::{self, AreaGesture};
 use crate::gesture::brush::BrushDraft;
 use crate::gesture::outline::{Part, PenDraft, PointRef, constrain_45};
@@ -40,7 +42,7 @@ use crate::gesture::text::{TextSession, Typed};
 use crate::gesture::{Ink, edit};
 use crate::model::{Artwork, Mark, Shape};
 use crate::render::{Options, Renderer};
-use crate::resource::{ArtworkResource, ExportSvg, ViewOp};
+use crate::resource::{ExportSvg, ViewOp};
 use crate::view_ops;
 
 /// The largest SVG `export-svg` also answers inline, in bytes.
@@ -51,6 +53,26 @@ const CLICKED_SHAPE: f64 = 100.0; // the size of a mark in the artwork, not on-s
 const TEXT_SIZE: f64 = 32.0; // a size of lettering in the artwork, not on-screen spacing
 /// How much one wheel notch of a pinch or a zoom key zooms.
 const ZOOM_STEP: f64 = 1.25;
+
+/// Whole-cell enlargement and reciprocal reductions; choosing down keeps a
+/// fitted sheet wholly visible. Rounding near exact steps avoids float drift.
+fn pixel_zoom(desired: f64, up: bool) -> f64 {
+    let desired = desired.clamp(0.05, 64.0);
+    if desired >= 1.0 {
+        if up {
+            (desired - 1e-9).ceil()
+        } else {
+            (desired + 1e-9).floor()
+        }
+    } else {
+        let inverse = 1.0 / desired;
+        1.0 / if up {
+            (inverse + 1e-9).floor()
+        } else {
+            (inverse - 1e-9).ceil()
+        }
+    }
+}
 
 pub use crate::tools::{Tool, Tools, ViewRequest};
 
@@ -122,6 +144,20 @@ struct PointEdit {
     active: Option<PointRef>,
 }
 
+/// Keep the view busy only while the framework owns its finder completion.
+/// Cancellation and retirement drop the callback without calling it.
+struct Finding {
+    active: Rc<Cell<bool>>,
+    notice: ui::LocalState<Option<String>>,
+}
+
+impl Drop for Finding {
+    fn drop(&mut self) {
+        self.active.set(false);
+        self.notice.set(None);
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "permission, focus, a held space key and a hand-moved view are independent states"
@@ -129,17 +165,22 @@ struct PointEdit {
 pub struct CanvasSurface {
     rect: Rect,
     art: Rc<Artwork>,
-    dispatcher: Option<Dispatcher<ArtworkResource>>,
+    dispatcher: Option<Dispatcher<Artwork>>,
     read_only: bool,
     viewport: ui::widget::ViewportState,
     /// The viewport and artwork sizes the view was last fitted to; the
     /// view follows them until the person zooms or pans.
     fitted_to: Option<(f64, f64, f64, f64)>,
     moved_by_hand: bool,
+    /// Mouse-wheel notches use the shared motion driver; trackpad input
+    /// follows the hand directly. This is view state, never document history.
+    zoom_motion: Option<(ui::animation::Animated<f64>, Point)>,
+    zoom_duration: ui::time::Duration,
+    motion_reduced: bool,
     /// Shapes text for looks and exports, which run outside a frame.
     look_text: Option<TextRenderer>,
     pictures: crate::background::Pictures,
-    finding: bool,
+    finding: Rc<Cell<bool>>,
     tools: Tools,
     /// The tool the modes below belong to; a change of tool ends them.
     tool: Tool,
@@ -199,9 +240,12 @@ impl CanvasSurface {
                 ),
             fitted_to: None,
             moved_by_hand: false,
+            zoom_motion: None,
+            zoom_duration: ui::tokens::Durations::default().fast(),
+            motion_reduced: false,
             look_text: None,
             pictures: crate::background::Pictures::default(),
-            finding: false,
+            finding: Rc::default(),
             tools,
             tool,
             drag: None,
@@ -228,24 +272,24 @@ impl CanvasSurface {
         }
     }
 
-    fn dispatch(&self, action: &CanvasAction) {
+    fn dispatch(&self, action: &Invoke<Artwork>) {
         if self.read_only {
             return;
         }
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(action);
+            dispatcher.submit(action.clone());
         }
     }
 
     /// Several actions as one step of history.
-    fn dispatch_all(&self, actions: &[CanvasAction]) {
+    fn dispatch_all(&self, actions: &[Invoke<Artwork>]) {
         if self.read_only {
             return;
         }
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.group(|| {
                 for action in actions {
-                    dispatcher.apply(action);
+                    dispatcher.submit(action.clone());
                 }
             });
         }
@@ -369,7 +413,7 @@ impl CanvasSurface {
         let ink = self.ink();
         let id = edit::fresh_id(&self.art, "path", &[]);
         let closed = pen.contour.closed;
-        self.dispatch(&CanvasAction::Draw(Draw {
+        self.dispatch(&Artwork::DRAW.with(Draw {
             layer: ink.layer,
             marks: vec![NewMark {
                 id: Some(id.clone()),
@@ -510,7 +554,7 @@ impl CanvasSurface {
         };
         let id = edit::fresh_id(&self.art, "picture", &[]);
         let ink = self.ink();
-        self.dispatch(&CanvasAction::Draw(Draw {
+        self.dispatch(&Artwork::DRAW.with(Draw {
             layer: ink.layer,
             marks: vec![NewMark {
                 id: Some(id.clone()),
@@ -575,7 +619,7 @@ impl CanvasSurface {
         if points.outline.is_empty() {
             let id = points.id.clone();
             self.points = None;
-            self.dispatch(&CanvasAction::RemoveMarks(RemoveMarks {
+            self.dispatch(&Artwork::REMOVE_MARKS.with(RemoveMarks {
                 ids: vec![id],
                 ..RemoveMarks::default()
             }));
@@ -583,7 +627,7 @@ impl CanvasSurface {
         }
         let shape = points.outline.to_shape(&points.shape);
         if shape != points.shape {
-            let action = CanvasAction::edit(EditMarks {
+            let action = Artwork::EDIT_MARKS.with(EditMarks {
                 ids: vec![points.id.clone()],
                 shape: Some(crate::actions::Taught(shape.clone())),
                 ..EditMarks::default()
@@ -786,6 +830,11 @@ impl CanvasSurface {
     /// The brush or eraser lands at `at`: a stroke, carried on from the
     /// selected stroke when it lands on its end; or the stroke eraser.
     fn press_brush(&self, at: Point, tool: Tool) -> Drag {
+        let at = if self.tools.preset.with(|preset| preset.pixel()) {
+            Point::new((at.x + 1e-9).floor(), (at.y + 1e-9).floor())
+        } else {
+            at
+        };
         let erase = tool == Tool::Eraser || self.stylus.is_some_and(|stylus| stylus.eraser);
         let ink = self.ink();
         if erase && self.tools.erasing.with(|erasing| *erasing) == crate::tools::Erasing::Strokes {
@@ -852,7 +901,7 @@ impl CanvasSurface {
                 let at = points.affine * cut;
                 let id = points.id.clone();
                 self.points = None;
-                self.dispatch(&CanvasAction::edit(EditMarks {
+                self.dispatch(&Artwork::EDIT_MARKS.with(EditMarks {
                     ids: vec![id],
                     split: Some([at.x, at.y]),
                     ..EditMarks::default()
@@ -994,6 +1043,11 @@ impl CanvasSurface {
                 *now = at;
             }
             Some(Drag::Stroke { draft, .. }) => {
+                let at = if self.tools.preset.with(|preset| preset.pixel()) {
+                    Point::new((at.x + 1e-9).floor(), (at.y + 1e-9).floor())
+                } else {
+                    at
+                };
                 draft.push(at, seconds, zoom, pressure);
             }
             Some(Drag::Sweep { path, crossed }) => {
@@ -1257,7 +1311,7 @@ impl CanvasSurface {
                 ..EditMarks::default()
             }
         };
-        self.dispatch(&CanvasAction::edit(edit));
+        self.dispatch(&Artwork::EDIT_MARKS.with(edit));
     }
 
     /// The brush or eraser lifts: its stroke is laid, carried on from the
@@ -1273,7 +1327,7 @@ impl CanvasSurface {
             } => {
                 let points = draft.finish();
                 if let Some(extended) = extends {
-                    self.dispatch(&CanvasAction::edit(EditMarks {
+                    self.dispatch(&Artwork::EDIT_MARKS.with(EditMarks {
                         ids: vec![extended],
                         extend: Some(points),
                         ..EditMarks::default()
@@ -1281,7 +1335,7 @@ impl CanvasSurface {
                     return;
                 }
                 let stroke = self.new_stroke(id, points, &ink, erase);
-                self.dispatch(&CanvasAction::Paint(Paint {
+                self.dispatch(&Artwork::PAINT.with(Paint {
                     layer: ink.layer,
                     strokes: vec![stroke],
                     group: None,
@@ -1289,7 +1343,7 @@ impl CanvasSurface {
             }
             Drag::Sweep { crossed, .. } if !crossed.is_empty() => {
                 self.selection.retain(|id| !crossed.contains(id));
-                self.dispatch(&CanvasAction::RemoveMarks(RemoveMarks {
+                self.dispatch(&Artwork::REMOVE_MARKS.with(RemoveMarks {
                     ids: crossed,
                     ..RemoveMarks::default()
                 }));
@@ -1407,7 +1461,7 @@ impl CanvasSurface {
         };
         let id = edit::fresh_id(&self.art, shape.kind(), &[]);
         let line = tool == Tool::Line;
-        self.dispatch(&CanvasAction::Draw(Draw {
+        self.dispatch(&Artwork::DRAW.with(Draw {
             layer: ink.layer,
             marks: vec![NewMark {
                 id: Some(id.clone()),
@@ -1423,27 +1477,76 @@ impl CanvasSurface {
     }
 
     fn zoom_by(&mut self, factor: f64, focal: Option<Point>) {
+        self.zoom_motion = None;
+        let old = self.zoom();
+        let target = if self.tools.preset.with(|preset| preset.pixel()) {
+            pixel_zoom(old * factor, factor > 1.0)
+        } else {
+            old * factor
+        };
         match focal {
-            Some(focal) => self.viewport.zoom_at(factor, focal),
-            None => self.viewport.zoom_by(factor),
-        }
-        if self.tools.preset.with(|preset| preset.pixel()) {
-            let zoom = self.zoom();
-            self.viewport.set_zoom(if factor > 1.0 {
-                zoom.ceil()
-            } else {
-                zoom.floor().max(1.0)
-            });
+            Some(focal) => self.viewport.zoom_at(target / old, focal),
+            None => self.viewport.zoom_by(target / old),
         }
         self.moved_by_hand = true;
     }
 
+    fn wheel(
+        &mut self,
+        delta: &ui::winit::event::MouseScrollDelta,
+        modifiers: ModifiersState,
+        scale: f64,
+    ) -> bool {
+        if let ui::winit::event::MouseScrollDelta::LineDelta(_, y) = delta
+            && (modifiers.control_key() || modifiers.super_key())
+            && !self.motion_reduced
+            && *y != 0.0
+        {
+            self.advance_zoom();
+            let raw = f64::from(*y) * 56.0;
+            let factor = if raw > 0.0 {
+                1.0 + raw / 240.0
+            } else {
+                1.0 / (1.0 - raw / 240.0)
+            };
+            let from = self.zoom().ln();
+            let target = self
+                .zoom_motion
+                .as_ref()
+                .map_or_else(|| self.zoom(), |(motion, _)| motion.to().exp());
+            let (min, max) = self.viewport.zoom_bounds();
+            let target = (target * factor).clamp(min, max).ln();
+            self.zoom_motion = Some((
+                ui::animation::Animated::new(
+                    from,
+                    target,
+                    self.zoom_duration,
+                    ui::animation::Curve::EaseOut,
+                ),
+                self.cursor,
+            ));
+            self.moved_by_hand = true;
+            return true;
+        }
+        self.zoom_motion = None;
+        if !self
+            .viewport
+            .on_wheel(delta, &modifiers, self.cursor, scale)
+        {
+            return false;
+        }
+        self.moved_by_hand = true;
+        true
+    }
+
     fn zoom_to_fit(&mut self) {
+        self.zoom_motion = None;
         self.viewport.reset_to_fit();
         self.moved_by_hand = false;
     }
 
     fn zoom_to_selection(&mut self) {
+        self.zoom_motion = None;
         if let Some((bounds, _)) = edit::frame(&self.art, &self.selection) {
             let margin = bounds.width().max(bounds.height()) * 0.1;
             self.viewport.zoom_to_rect(bounds.inflate(margin, margin));
@@ -1456,6 +1559,15 @@ impl CanvasSurface {
     /// Carry out the canvas's keys pressed while something else had the
     /// focus.
     fn follow_keys(&mut self) {
+        if let Some(ids) = self.tools.pick_objects.with(Clone::clone) {
+            self.tools.pick_objects.set(None);
+            self.selection = ids
+                .into_iter()
+                .filter(|id| self.art.mark(id).is_some())
+                .collect();
+            self.tools.tool.set(Tool::Select);
+            self.tools.selection.set(self.selection.clone());
+        }
         if self.tools.keys.with(Vec::is_empty) {
             return;
         }
@@ -1470,24 +1582,30 @@ impl CanvasSurface {
         if self.rect.width() > 1.0
             && let Some(request) = self.tools.view.with(|view| *view)
         {
+            self.zoom_motion = None;
             self.tools.view.set(None);
             match request {
                 ViewRequest::ZoomIn => self.zoom_by(ZOOM_STEP, None),
                 ViewRequest::ZoomOut => self.zoom_by(1.0 / ZOOM_STEP, None),
                 ViewRequest::Fit => self.zoom_to_fit(),
                 ViewRequest::Pixel => {
-                    self.viewport.set_zoom(self.zoom().floor().max(1.0));
+                    self.viewport.set_zoom(pixel_zoom(self.zoom(), false));
                     self.moved_by_hand = true;
                 }
                 ViewRequest::Actual => {
+                    self.zoom_motion = None;
                     self.viewport.set_zoom(1.0);
                     self.moved_by_hand = true;
                 }
             }
         }
         self.follow_width();
-        if self.tools.preset.with(|preset| preset.pixel()) {
-            self.viewport.set_zoom(self.zoom().floor().max(1.0));
+        if self.tools.preset.with(|preset| preset.pixel()) && !self.moved_by_hand {
+            self.viewport.set_zoom(pixel_zoom(self.zoom(), false));
+        }
+        if self.tools.preset.with(|preset| preset.pixel())
+            && (self.zoom() - self.zoom().round()).abs() < 1e-9
+        {
             let origin = self.viewport.content_point_to_screen(Point::ORIGIN);
             self.viewport
                 .pan_by(origin.x - origin.x.round(), origin.y - origin.y.round());
@@ -1514,6 +1632,18 @@ impl CanvasSurface {
         });
         if self.rect.width() > 1.0 && moved {
             self.tools.visible.set(Some(shown));
+        }
+    }
+
+    fn advance_zoom(&mut self) {
+        let Some((motion, focal)) = self.zoom_motion else {
+            return;
+        };
+        let now = ui::time::now();
+        self.viewport
+            .zoom_at(motion.current(now).exp() / self.zoom(), focal);
+        if motion.done(now) {
+            self.zoom_motion = None;
         }
     }
 
@@ -1552,6 +1682,7 @@ impl CanvasSurface {
             ("-" | "_", _, _) => self.zoom_by(1.0 / ZOOM_STEP, None),
             ("0", true, _) | ("!" | "1", false, true) => self.zoom_to_fit(),
             ("1", true, _) | ("0" | ")", false, true) => {
+                self.zoom_motion = None;
                 self.viewport.set_zoom(1.0);
                 self.moved_by_hand = true;
             }
@@ -1616,7 +1747,7 @@ impl CanvasSurface {
         };
         match key {
             _ if step.is_some() && !self.selection.is_empty() => {
-                self.dispatch(&CanvasAction::edit(EditMarks {
+                self.dispatch(&Artwork::EDIT_MARKS.with(EditMarks {
                     ids: self.selection.clone(),
                     move_by: step,
                     ..EditMarks::default()
@@ -1625,7 +1756,7 @@ impl CanvasSurface {
             }
             Key::Named(NamedKey::Delete | NamedKey::Backspace) if !self.selection.is_empty() => {
                 let ids = std::mem::take(&mut self.selection);
-                self.dispatch(&CanvasAction::RemoveMarks(RemoveMarks {
+                self.dispatch(&Artwork::REMOVE_MARKS.with(RemoveMarks {
                     ids,
                     ..RemoveMarks::default()
                 }));
@@ -1718,13 +1849,13 @@ impl CanvasSurface {
         match named {
             NamedKey::Escape => self.dispatch(&area::none()),
             NamedKey::Delete | NamedKey::Backspace => {
-                self.dispatch(&CanvasAction::UseSelection(
-                    crate::selection::UseSelection {
+                self.dispatch(
+                    &Artwork::USE_SELECTION.with(crate::selection::UseSelection {
                         what: "clear".into(),
                         layer: self.ink().layer,
                         ..crate::selection::UseSelection::default()
-                    },
-                ));
+                    }),
+                );
             }
             _ => return false,
         }
@@ -1755,7 +1886,7 @@ impl CanvasSurface {
                 self.pastes = 0;
                 if ch == "x" {
                     let ids = std::mem::take(&mut self.selection);
-                    self.dispatch(&CanvasAction::RemoveMarks(RemoveMarks {
+                    self.dispatch(&Artwork::REMOVE_MARKS.with(RemoveMarks {
                         ids,
                         ..RemoveMarks::default()
                     }));
@@ -1784,10 +1915,10 @@ impl CanvasSurface {
                 self.dispatch(&area::none());
             }
             ("i", true) if self.art.selection.is_some() => {
-                self.dispatch(&CanvasAction::Select(Box::new(crate::selection::Select {
+                self.dispatch(&Artwork::SELECT.with(crate::selection::Select {
                     invert: Some(true),
                     ..crate::selection::Select::default()
-                })));
+                }));
             }
             ("d", false) => {
                 if self.selection.is_empty() {
@@ -2015,14 +2146,14 @@ impl CanvasSurface {
                 .document()
                 .ok_or_else(|| "the artwork is not open here".to_owned())?;
             return Ok((
-                crate::doc::read(&document),
+                Artwork::from_doc(&document).map_err(|error| error.to_string())?,
                 Self::revision(&cx.heads()),
                 None,
             ));
         };
         let past = cx.version(version)?;
         Ok((
-            crate::doc::read(&past.doc),
+            Artwork::from_doc(&past.doc).map_err(|error| error.to_string())?,
             Self::revision(&past.heads),
             Some(past.name),
         ))
@@ -2118,12 +2249,12 @@ impl CanvasSurface {
     /// while its settled picture is being rendered.
     fn picture_job(&self, op: ViewOp, cx: &mut Reading) -> ui::framework::EffectAnswer {
         let version = match &op {
-            ViewOp::Look(look) => look.version.as_deref(),
+            ViewOp::Look { look } => look.version.as_deref(),
             _ => None,
         };
         let (art, revision, shown) = Self::at_version(cx, version)?;
         let path = match &op {
-            ViewOp::Export(export) => export.path.clone(),
+            ViewOp::Export { export } => export.path.clone(),
             _ => None,
         };
         let pictures = self.pictures.clone();
@@ -2182,14 +2313,14 @@ impl CanvasSurface {
     /// The model and edge filter share the framework's progress, permission
     /// checks and attributed completion for buttons and semantic callers.
     fn area_job(
-        &mut self,
+        &self,
         select: crate::selection::Select,
         cx: &mut Reading,
     ) -> ui::framework::EffectAnswer {
         if ui::rt::availability(ui::rt::Feature::Threads) != ui::rt::Availability::Available {
             return Err("image area finding needs background threads on this platform".into());
         }
-        if self.finding {
+        if self.finding.get() {
             return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-busy"));
         }
         if select.subject != Some(true) && select.refine.is_none() {
@@ -2198,7 +2329,7 @@ impl CanvasSurface {
             );
         }
         let (art, _, _) = Self::at_version(cx, None)?;
-        let mut document = cx
+        let document = cx
             .document()
             .ok_or_else(|| "the artwork is not open here".to_owned())?
             .clone();
@@ -2216,16 +2347,19 @@ impl CanvasSurface {
         } else {
             "canvas-refining-edge"
         });
-        self.finding = true;
+        self.finding.set(true);
         self.tools.notice.set(Some(phase.clone()));
+        let finding = Finding {
+            active: Rc::clone(&self.finding),
+            notice: self.tools.notice.clone(),
+        };
         Ok(cx.thread(
             move |progress| {
                 progress.report(phase, None, None);
                 pictures.prepare(&sampled, content, &request)?.finish()
             },
-            move |surface, result, cx| {
-                surface.finding = false;
-                surface.tools.notice.set(None);
+            move |_surface, result, cx| {
+                drop(finding);
                 let (area, matte, found) = result?;
                 if cx.live().with(|current| current != &art) {
                     return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-changed"));
@@ -2234,16 +2368,15 @@ impl CanvasSurface {
                     return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-read-only"));
                 }
                 let subject = select.subject == Some(true);
-                let action = crate::author::found(select, area, matte);
-                ui::tilo_actions::Action::apply(&action, &mut document).map_err(|error| error.to_string())?;
-                let mut answer = json!({"selection": crate::answer::selection(&crate::doc::read(&document))});
+                let select = crate::author::found(select, area, matte);
+                let mut selected = Artwork::from_doc(&document).map_err(|error| error.to_string())?;
+                let before = selected.clone();
+                select.apply(&mut selected, &before).map_err(|refusal| refusal.0)?;
+                let mut answer = json!({"selection": crate::answer::selection(&selected)});
                 if subject && let Value::Object(fields) = &mut answer {
                     fields.insert("found_by".into(), json!({"model": found.model, "load_ms": found.load_ms, "infer_ms": found.infer_ms, "refine_ms": found.refine_ms}));
                 }
-                let CanvasAction::Select(select) = action else {
-                    return Err("the finder did not produce a selection".into());
-                };
-                cx.invoke(ArtworkResource::SELECT_FOUND.with((select.d, select.matte, select.mode, select.feather)));
+                cx.submit(Artwork::SELECT.with(crate::selection::Select { d: select.d, matte: select.matte, mode: select.mode, feather: select.feather, ..Default::default() }));
                 Ok(ui::framework::Effected::value(answer))
             },
         ))
@@ -2251,8 +2384,8 @@ impl CanvasSurface {
 
     fn answer(&mut self, op: &ViewOp, cx: &Reading) -> Result<ActionOutput, String> {
         let version = match op {
-            ViewOp::Look(look) => look.version.as_deref(),
-            ViewOp::Inspect(inspect) => inspect.version.as_deref(),
+            ViewOp::Look { look } => look.version.as_deref(),
+            ViewOp::Inspect { inspect } => inspect.version.as_deref(),
             _ => None,
         };
         let (art, revision, shown) = Self::at_version(cx, version)?;
@@ -2291,19 +2424,19 @@ impl CanvasSurface {
         };
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
         match op {
-            ViewOp::Look(look) => picture(some(view_ops::look(
+            ViewOp::Look { look } => picture(some(view_ops::look(
                 &mut self.tools.renderer.borrow_mut(),
                 text,
                 &art,
                 look,
             ))),
-            ViewOp::Export(export) => picture(some(view_ops::export(
+            ViewOp::Export { export } => picture(some(view_ops::export(
                 &mut self.tools.renderer.borrow_mut(),
                 text,
                 &art,
                 export,
             ))),
-            ViewOp::Diff(diff) => {
+            ViewOp::CompareVersions { diff } => {
                 let versions = Self::versions(cx, &art, diff)?;
                 let look = diff.look.unwrap_or(false);
                 picture(view_ops::diff(
@@ -2313,14 +2446,14 @@ impl CanvasSurface {
                     look,
                 ))
             }
-            ViewOp::Compare(compare) => picture(some(view_ops::compare(
+            ViewOp::Compare { compare } => picture(some(view_ops::compare(
                 &mut self.tools.renderer.borrow_mut(),
                 text,
                 &art,
                 compare,
             ))),
-            ViewOp::ExportSvg(export) => self.export_svg(&art, &revision, export),
-            ViewOp::Inspect(inspect) => {
+            ViewOp::ExportSvg { svg: export } => self.export_svg(&art, &revision, export),
+            ViewOp::Inspect { inspect } => {
                 let mut value = view_ops::inspect(&art, inspect)?;
                 if let Some(ids) = &inspect.measure {
                     let measured =
@@ -2347,8 +2480,8 @@ impl CanvasSurface {
                 value: Some(view_ops::media(&art)),
                 resources: Vec::new(),
             }),
-            ViewOp::SaveArtwork(save) => saved(crate::document::save(&art, save), &stamp),
-            ViewOp::FindArea(_) => Err("area finding is handled as a job".into()),
+            ViewOp::SaveArtwork { save } => saved(crate::document::save(&art, save), &stamp),
+            ViewOp::FindArea { .. } => Err("area finding is handled as a job".into()),
         }
     }
 
@@ -2903,8 +3036,8 @@ pub(crate) fn embedded_picture(
         ..mark.clone()
     };
     let solo = Artwork {
-        layers: vec![layer],
-        marks: vec![alone],
+        layers: vec![layer].into(),
+        marks: vec![alone].into(),
         ..art.clone()
     };
     let options = Options {
@@ -2966,6 +3099,14 @@ fn draw_anchor(
 }
 
 impl Widget for CanvasSurface {
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.motion_reduced = reduced;
+        if reduced && let Some((motion, focal)) = self.zoom_motion.take() {
+            self.viewport
+                .zoom_at(motion.to().exp() / self.zoom(), focal);
+        }
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -2975,11 +3116,13 @@ impl Widget for CanvasSurface {
         use ui::widget::TaffyTreeExt as _;
         self.metrics = theme.tokens.metrics;
         self.spacing = theme.tokens.spacing;
+        self.set_motion_reduced(theme.reduce_motion);
+        self.zoom_duration = theme.tokens.motion.durations.fast();
         // Room for a selection frame's handles and the rotation handle.
         let least = taffy::Dimension::length(self.metrics.min_pointer_target * 4.0);
         // The room its parent leaves along either axis: in a column under
         // the header it takes the width and the height left over.
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
                 height: taffy::Dimension::percent(1.0),
@@ -2992,21 +3135,12 @@ impl Widget for CanvasSurface {
                 height: least,
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         self.viewport.set_rect(self.rect);
         self.viewport
             .set_content_size(self.art.width, self.art.height);
@@ -3036,6 +3170,7 @@ impl Widget for CanvasSurface {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.advance_zoom();
         self.follow_tool();
         self.follow_keys();
         self.follow_view();
@@ -3119,6 +3254,7 @@ impl Widget for CanvasSurface {
             }
             WindowEvent::MouseInput { state, button, .. } => match (state, button) {
                 (ElementState::Pressed, MouseButton::Left) if self.rect.contains(self.cursor) => {
+                    self.zoom_motion = None;
                     self.stylus = ctx.pen();
                     if !self.focused {
                         self.pressed_into_focus = true;
@@ -3153,6 +3289,7 @@ impl Widget for CanvasSurface {
                     }
                 }
                 (ElementState::Pressed, MouseButton::Middle) if self.rect.contains(self.cursor) => {
+                    self.zoom_motion = None;
                     self.viewport.begin_pan(self.cursor);
                     self.drag = Some(Drag::Pan);
                     *ctx.handled = true;
@@ -3166,18 +3303,14 @@ impl Widget for CanvasSurface {
                 _ => {}
             },
             WindowEvent::MouseWheel { delta, .. } if self.rect.contains(self.cursor) => {
-                if self.viewport.on_wheel(
-                    delta,
-                    &ctx.modifiers.state(),
-                    self.cursor,
-                    ctx.scale_factor,
-                ) {
-                    self.moved_by_hand = true;
+                if self.wheel(delta, ctx.modifiers.state(), ctx.scale_factor) {
                     *ctx.handled = true;
                 }
             }
             WindowEvent::PinchGesture { delta, .. } if self.rect.contains(self.cursor) => {
-                self.zoom_by((1.0 + delta).max(0.1), Some(self.cursor));
+                self.zoom_motion = None;
+                self.viewport.zoom_at((1.0 + delta).max(0.1), self.cursor);
+                self.moved_by_hand = true;
                 *ctx.handled = true;
             }
             WindowEvent::Ime(ime) if self.text.is_some() => {
@@ -3254,15 +3387,26 @@ impl Widget for CanvasSurface {
             .then(|| self.ime_caret.get().unwrap_or(self.rect))
     }
 
+    fn has_pending_visual_work(&self) -> bool {
+        // Still captures must await the requested image and paint work;
+        // asking for frames alone does not declare an unfinished placeholder.
+        let renderer = self.tools.renderer.borrow();
+        self.finding.get()
+            || renderer.pictures.decoding()
+            || renderer.detail_pending()
+            || renderer.settling()
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // A slow medium previews the stroke behind the pointer: keep
         // drawing until it has caught up. A picture being chosen, or
         // decoded, is waited for. Close up, the finer tiles of a painted
         // layer arrive as they are simulated, and a painted layer's
         // simulation catches up with a stroke just laid.
-        self.wet().is_some()
+        self.zoom_motion.is_some()
+            || self.wet().is_some()
             || self.tools.picking.borrow().is_some()
-            || self.finding
+            || self.finding.get()
             || self.tools.renderer.borrow().pictures.decoding()
             || self.tools.renderer.borrow().detail_pending()
             || self.tools.renderer.borrow().settling()
@@ -3342,28 +3486,37 @@ impl Widget for CanvasSurface {
 }
 
 /// What a canvas view reads the artwork through.
-type Reading = ui::framework::EffectCx<ArtworkResource, CanvasSurface>;
+type Reading = ui::framework::EffectCx<Artwork, CanvasSurface>;
 
-impl ResourceSurface<ArtworkResource, ViewOp> for CanvasSurface {
+impl ResourceSurface<Artwork, ViewOp> for CanvasSurface {
     /// Settled pictures and image areas run as jobs; other views answer
     /// directly from the current artwork or the version the caller named.
     fn effect(
         &mut self,
         op: ViewOp,
-        cx: &mut ui::framework::EffectCx<ArtworkResource, Self>,
+        cx: &mut ui::framework::EffectCx<Artwork, Self>,
     ) -> ui::framework::EffectAnswer {
-        if matches!(op, ViewOp::Look(_) | ViewOp::Export(_))
+        if matches!(op, ViewOp::Look { .. } | ViewOp::Export { .. })
             && ui::rt::availability(ui::rt::Feature::Threads) == ui::rt::Availability::Available
         {
             return self.picture_job(op, cx);
         }
-        if let ViewOp::FindArea(select) = op {
+        if let ViewOp::FindArea { area: select } = op {
             return self.area_job(select.into(), cx);
         }
         self.answer(&op, cx).map(ui::framework::Effected::Done)
     }
 
     fn present(&mut self, state: &Rc<Artwork>) {
+        // A differently sized sheet needs its own fit; keeping a hand-panned
+        // sprite view can otherwise put a newly opened photograph off screen.
+        if self.art.width.to_bits() != state.width.to_bits()
+            || self.art.height.to_bits() != state.height.to_bits()
+        {
+            self.moved_by_hand = false;
+            self.fitted_to = None;
+            self.zoom_motion = None;
+        }
         self.expected.retain(|id| state.mark(id).is_none());
         let expected = &self.expected;
         self.selection
@@ -3395,7 +3548,7 @@ impl ResourceSurface<ArtworkResource, ViewOp> for CanvasSurface {
         crate::author::see(&self.tools.renderer, &self.art);
     }
 
-    fn attach(&mut self, cx: SurfaceCx<ArtworkResource>) {
+    fn attach(&mut self, cx: SurfaceCx<Artwork>) {
         if let Some(content) = cx.content() {
             self.tools.renderer.borrow_mut().pictures.read_from(content);
         }
@@ -3477,6 +3630,31 @@ mod tests {
     use super::*;
     use crate::panels::shortcuts::{GROUPS, tools};
 
+    #[test]
+    fn capture_waits_for_requested_artwork_painting() {
+        let mut doc = ui::tilo_resource::Doc::new();
+        <Artwork as ui::tilo_resource::Resource>::initialize(&mut doc).unwrap();
+        for action in crate::sample::landscape() {
+            Artwork::apply_to(&mut doc, action);
+        }
+        let art = Artwork::from_doc(&doc).unwrap();
+        assert!(art.layers.iter().any(|layer| !layer.medium.is_empty()));
+        assert!(!art.marks.is_empty());
+        let tools = Tools::default();
+        let mut surface = CanvasSurface::new(tools.clone());
+        surface.present(&Rc::new(art));
+        let mut harness =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(surface), (390, 844));
+        harness
+            .wait_for_visuals(std::time::Duration::from_secs(30))
+            .expect("the production capture wait completes");
+        let renderer = tools.renderer.borrow();
+        assert!(
+            !renderer.settling() && !renderer.detail_pending() && !renderer.pictures.decoding(),
+            "capture must await the requested painting, detail tiles and pictures"
+        );
+    }
+
     /// Keys the window's host answers (undo, redo, history, the palette)
     /// or that need the pointer: the canvas is not where they land.
     fn elsewhere(keys: &str) -> bool {
@@ -3535,9 +3713,9 @@ mod tests {
     fn every_shortcut_the_overview_lists_does_something() {
         let mut doc = ui::tilo_resource::Doc::new();
         for action in crate::sample::shapes() {
-            ui::tilo_actions::Action::apply(&action, &mut doc).unwrap();
+            Artwork::apply_to(&mut doc, action);
         }
-        let art = crate::doc::read(&doc);
+        let art = Artwork::from_doc(&doc).unwrap();
         let first = art.marks.first().unwrap().id.clone();
         let mut listed: Vec<String> = GROUPS
             .iter()
@@ -3572,8 +3750,8 @@ mod tests {
                 } else if keys == "Ctrl+Shift+G" {
                     let mut grouped = doc.clone();
                     let group = edit::group(&art, &edit::everything(&art)).unwrap();
-                    ui::tilo_actions::Action::apply(&group, &mut grouped).unwrap();
-                    surface.art = Rc::new(crate::doc::read(&grouped));
+                    Artwork::apply_to(&mut grouped, group);
+                    surface.art = Rc::new(Artwork::from_doc(&grouped).unwrap());
                 }
                 if keys == "Ctrl+V" {
                     ui::clipboard_copy(&edit::copy(&art, &surface.selection).unwrap());

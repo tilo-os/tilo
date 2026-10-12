@@ -8,15 +8,15 @@ use super::*;
 use crate::shell::build_tilo_overlay_host_with_chrome;
 use crate::shell::state::FreshId as _;
 use crate::shell::state::{
-    AppKind, GroupId, SharedSurfaces, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+    AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
     WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
 };
 use std::collections::HashMap as StdHashMap;
 use taffy::{NodeId, TaffyTree};
 use ui::a11y::{AccessNode, Role};
 use winit::dpi::PhysicalPosition;
-use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 const TAB_A: u64 = 0xa1;
 const TAB_B: u64 = 0xa2;
@@ -56,23 +56,10 @@ fn tree_with_tabs(tabs: usize) -> (WorkspaceTree, StripId) {
         }],
     };
     let ws = Workspace {
-        owner: None,
-        pending_ownership_transfer: None,
-        ownership_transfer_audit: Vec::new(),
-        ownership_transfer_cancellations: Vec::new(),
-        permission_profiles: Vec::new(),
-        capabilities: Vec::new(),
-        default_apps: desktop_policy::WorkspaceDefaults::default(),
-        tasks: Vec::new(),
-        effect_receipts: Vec::new(),
-        shortcuts: Vec::new(),
-        schedule_claims: Vec::new(),
         id: ws_id,
-        room: crate::shell::state::RoomId::new(),
         name: "Home".into(),
         strips: vec![strip],
-        collaborators: vec![],
-        shared_surfaces: SharedSurfaces::default(),
+        ..Workspace::new(ws_id, String::new())
     };
     let mut active_strip = StdHashMap::new();
     active_strip.insert(ws_id, strip_id);
@@ -188,22 +175,12 @@ impl Harness {
     }
 
     fn send_with_modifiers(&mut self, event: &WindowEvent, modifiers: Modifiers) -> bool {
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        self.host.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut self.doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: self.root,
-                taffy: &self.taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .modifiers(modifiers)
+            .doc(&mut self.doc)
+            .layout(&self.taffy, self.root)
+            .send(&mut self.host, event)
+            .handled
     }
 
     fn move_to(&mut self, p: Point) {
@@ -237,14 +214,8 @@ impl Harness {
         modifiers: winit::keyboard::ModifiersState,
         repeat: bool,
     ) -> bool {
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = key;
-        event.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
+        let mut event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
         event.repeat = repeat;
-        event.text = None;
         self.send_with_modifiers(
             &WindowEvent::KeyboardInput {
                 device_id: DeviceId::dummy(),
@@ -1250,4 +1221,180 @@ fn tab_drag_cancel_action_clears_the_gesture_and_refuses_locked_requests() {
         Err(crate::shell::search::action_api::ActionError::Refused(_))
     ));
     assert!(!h.chrome.borrow_mut().take_tab_drag_cancel_request());
+}
+
+fn tab_menu_output_scene(
+    menu: &mut super::tab_menu::TabMenuLayer,
+    viewport: Rect,
+    theme: &Theme,
+) -> vello::Scene {
+    use super::layers::{LayerGeometry, LayerPaint, ShellLayer as _};
+    let mut scene = vello::Scene::new();
+    let mut text = ui::text_render::TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let outputs = [viewport];
+    menu.draw(&mut LayerPaint {
+        scene: &mut scene,
+        transform: vello::kurbo::Affine::IDENTITY,
+        text_renderer: &mut text,
+        theme,
+        presence: &ui::presence::PresenceCtx::default(),
+        geometry: LayerGeometry {
+            viewport,
+            outputs: &outputs,
+            focused_output: Some(viewport),
+        },
+        thumbnails: &mut tilo_desktop::window_switcher::NoThumbnails,
+    });
+    scene
+}
+
+fn menu_opened_near_the_output_edge() -> super::tab_menu::TabMenuLayer {
+    let mut menu = super::tab_menu::TabMenuLayer::default();
+    menu.open(
+        super::tab_menu::TabMenuTarget {
+            strip: StripId::new(),
+            group: GROUP,
+            tab: TAB_A,
+        },
+        2,
+        Point::new(620.0, 300.0),
+        "Files".into(),
+        Rect::new(0.0, 0.0, 1280.0, 800.0),
+    );
+    menu
+}
+
+#[test]
+fn tab_menu_current_output_resize_keeps_the_armed_action_visible() {
+    use super::layers::{LayerGeometry, ShellLayer as _};
+    let mut menu = menu_opened_near_the_output_edge();
+    assert!(menu.focus_accessibility(&[1]));
+    let viewport = Rect::new(0.0, 0.0, 640.0, 480.0);
+    let outputs = [viewport];
+    let geometry = LayerGeometry {
+        viewport,
+        outputs: &outputs,
+        focused_output: Some(viewport),
+    };
+    let before = menu.accessibility(geometry).unwrap().children[1]
+        .action_target
+        .clone();
+    assert!(
+        before.is_some(),
+        "the armed action must expose its semantic target"
+    );
+    let _ = tab_menu_output_scene(&mut menu, viewport, &Theme::dark());
+    let rect = menu.rect().unwrap();
+    assert!(rect.x0 >= viewport.x0 && rect.y0 >= viewport.y0);
+    assert!(
+        rect.x1 <= viewport.x1 && rect.y1 <= viewport.y1,
+        "a resized output must not leave the shared menu outside its visible bounds: {rect:?}"
+    );
+    let after = menu.accessibility(geometry).unwrap();
+    assert!(after.children[1].state.focused);
+    assert_eq!(after.children[1].action_target, before);
+    let row = menu.accessibility_rect(geometry, &[1]).unwrap();
+    assert!(viewport.contains(row.center()));
+    assert!(menu.dismiss());
+    assert!(!menu.is_open());
+}
+
+#[test]
+fn tab_menu_current_output_removal_reanchors_without_reopening() {
+    use super::layers::{LayerGeometry, LayerPaint, ShellLayer as _};
+    let old_output = Rect::new(640.0, 0.0, 1280.0, 800.0);
+    let mut menu = menu_opened_near_the_output_edge();
+    menu.open(
+        super::tab_menu::TabMenuTarget {
+            strip: StripId::new(),
+            group: GROUP,
+            tab: TAB_A,
+        },
+        2,
+        Point::new(1100.0, 300.0),
+        "Files".into(),
+        old_output,
+    );
+    assert!(menu.focus_accessibility(&[1]));
+    let viewport = Rect::new(0.0, 0.0, 640.0, 480.0);
+    let outputs = [viewport];
+    let geometry = LayerGeometry {
+        viewport,
+        outputs: &outputs,
+        focused_output: Some(viewport),
+    };
+    let mut scene = vello::Scene::new();
+    menu.draw(&mut LayerPaint {
+        scene: &mut scene,
+        transform: vello::kurbo::Affine::IDENTITY,
+        text_renderer: &mut ui::text_render::TextRenderer::new(),
+        theme: &Theme::dark(),
+        presence: &ui::presence::PresenceCtx::default(),
+        geometry,
+        thumbnails: &mut tilo_desktop::window_switcher::NoThumbnails,
+    });
+    let rect = menu.rect().unwrap();
+    assert!(
+        rect.x0 >= viewport.x0 && rect.x1 <= viewport.x1,
+        "the shared menu must follow the remaining focused output: {rect:?}"
+    );
+    assert!(
+        menu.accessibility(geometry).unwrap().children[1]
+            .state
+            .focused
+    );
+    assert!(menu.is_open(), "relocation must preserve the open flow");
+}
+
+#[test]
+fn tab_menu_current_output_capture_matrix_is_written() {
+    use super::layers::ShellLayer as _;
+    let out = std::env::var_os("TILO_TAB_MENU_SHOTS").map_or_else(
+        || std::path::PathBuf::from("target/tab-menu-current-output"),
+        std::path::PathBuf::from,
+    );
+    std::fs::create_dir_all(&out).unwrap();
+    for (name, theme, width) in [
+        ("dark", Theme::dark(), 640_u32),
+        ("light", Theme::light(), 640),
+        ("high-contrast", Theme::high_contrast(), 640),
+        ("large-text", Theme::dark().with_text_scale(2.0), 640),
+        (
+            "ui-text-scaled",
+            Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+            640,
+        ),
+        ("narrow", Theme::dark().with_text_scale(2.0), 320),
+    ] {
+        let mut menu = menu_opened_near_the_output_edge();
+        menu.open(
+            super::tab_menu::TabMenuTarget {
+                strip: StripId::new(),
+                group: GROUP,
+                tab: TAB_A,
+            },
+            2,
+            Point::new(f64::from(width) - 20.0, 300.0),
+            "Files".into(),
+            Rect::new(0.0, 0.0, 1280.0, 800.0),
+        );
+        assert!(menu.focus_accessibility(&[1]));
+        let viewport = Rect::new(0.0, 0.0, f64::from(width), 480.0);
+        let scene = tab_menu_output_scene(&mut menu, viewport, &theme);
+        let pixels = ui::offscreen::OffscreenRenderer::new(width, 480)
+            .render(&scene, theme.tokens.colors.surfaces.base);
+        assert!(
+            pixels.chunks_exact(4).any(|pixel| pixel != &pixels[..4]),
+            "the production menu must be observable in the capture"
+        );
+        image::save_buffer(
+            out.join(format!("{name}-resized-output.png")),
+            &pixels,
+            width,
+            480,
+            image::ColorType::Rgba8,
+        )
+        .unwrap();
+    }
 }

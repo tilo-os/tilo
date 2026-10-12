@@ -3,6 +3,7 @@
 //! `on_hover_enter`/`on_hover_leave`/`tick` drive the timing state so the
 //! primitive is unit-testable without a winit event loop or a wall clock.
 
+use crate::num::f32_of_f64;
 use crate::time::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -35,23 +36,44 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
 }
 
-/// Narrows a screen-space length (`f64`) to the `f32` taffy consumes.
-/// The tooltip's fixed layout size never approaches `f32`'s range, so
-/// this never truncates in practice.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "tooltip layout dimensions are small fixed constants, far below f32's range"
-)]
-fn px_f32(v: f64) -> f32 {
-    v as f32
+/// The chip's size for `label`: wrapped `Caption` text plus the chip's pads.
+pub fn chip_size(label: &str, text_renderer: &mut TextRenderer, theme: &Theme) -> (f64, f64) {
+    chip_size_with_width(label, text_renderer, theme, CHIP_MAX_W)
 }
 
-/// The chip's size for `label`: a `Caption` line plus the chip's pads.
-pub fn chip_size(label: &str, text_renderer: &mut TextRenderer, theme: &Theme) -> (f64, f64) {
-    let (tw, th) = text_renderer.measure_style(label, None, &theme.text(TextRole::Caption));
-    let w = (f64::from(tw) + 2.0 * CHIP_PAD_X).min(CHIP_MAX_W);
+/// Measure the complete hint at the width its viewport can actually hold.
+pub fn chip_size_in_viewport(
+    label: &str,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    viewport: Rect,
+) -> (f64, f64) {
+    let width = (viewport.width() - 2.0 * CHIP_MARGIN).clamp(0.0, CHIP_MAX_W);
+    fit_size(
+        chip_size_with_width(label, text_renderer, theme, width),
+        viewport,
+    )
+}
+
+fn chip_size_with_width(
+    label: &str,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    width: f64,
+) -> (f64, f64) {
+    let content_width = f32_of_f64((width - 2.0 * CHIP_PAD_X).max(0.0));
+    let (tw, th) =
+        text_renderer.measure_style(label, Some(content_width), &theme.text(TextRole::Caption));
+    let w = (f64::from(tw) + 2.0 * CHIP_PAD_X).min(width);
     let h = (f64::from(th) + 2.0 * CHIP_PAD_Y).max(CHIP_MIN_H);
     (w, h)
+}
+
+fn fit_size(size: (f64, f64), viewport: Rect) -> (f64, f64) {
+    (
+        size.0.min((viewport.width() - 2.0 * CHIP_MARGIN).max(0.0)),
+        size.1.min((viewport.height() - 2.0 * CHIP_MARGIN).max(0.0)),
+    )
 }
 
 /// Which side of its control a tooltip prefers. A control in a row has
@@ -78,7 +100,7 @@ pub fn chip_rect_on(side: TooltipSide, anchor: Rect, size: (f64, f64), viewport:
 /// Centred on the anchor vertically, just after it; flipped before it
 /// when that would spill past the right edge, clamped when neither fits.
 fn chip_rect_beside(anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {
-    let (w, h) = size;
+    let (w, h) = fit_size(size, viewport);
     let min_y = viewport.y0 + CHIP_MARGIN;
     let max_y = (viewport.y1 - CHIP_MARGIN - h).max(min_y);
     let y0 = (anchor.center().y - h / 2.0).clamp(min_y, max_y);
@@ -101,7 +123,7 @@ fn chip_rect_beside(anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {
 /// neither side has room. Clamped horizontally too, so a control at the
 /// far edge gets a chip that hugs it instead of painting off-screen.
 pub fn chip_rect(anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {
-    let (w, h) = size;
+    let (w, h) = fit_size(size, viewport);
     // Horizontal: centre under the anchor, then clamp within the viewport.
     let min_x = viewport.x0 + CHIP_MARGIN;
     let max_x = (viewport.x1 - CHIP_MARGIN - w).max(min_x);
@@ -164,16 +186,34 @@ pub fn draw_chip(
     // Centre on the measured line, not the font size: the chip's box is
     // sized from the font size, so the label otherwise sits low by half the
     // face's ascent/descent difference.
-    let (_, label_h) = text_renderer.measure_style(label, None, &text_style);
+    let content = Rect::new(
+        rect.x0 + CHIP_PAD_X,
+        rect.y0 + CHIP_PAD_Y,
+        rect.x1 - CHIP_PAD_X,
+        rect.y1 - CHIP_PAD_Y,
+    );
+    if content.width() <= 0.0 || content.height() <= 0.0 {
+        return;
+    }
+    let content_width = f32_of_f64(content.width());
+    let (_, label_h) = text_renderer.measure_style(label, Some(content_width), &text_style);
+    scene.push_layer(
+        vello::peniko::Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        1.0,
+        transform,
+        &content,
+    );
     let text_y = rect.y0 + (rect.height() - f64::from(label_h)) / 2.0;
     text_renderer.draw_style(
         scene,
         label,
         on_panel.tokens.colors.text_primary,
         translated(transform, rect.x0 + CHIP_PAD_X, text_y),
-        None,
+        Some(content_width),
         &text_style,
     );
+    scene.pop_layer();
 }
 
 /// Composes [`chip_size`], [`chip_rect`] and [`draw_chip`] — the one call
@@ -208,9 +248,30 @@ pub fn draw_hover_tooltip_on(
     label: &str,
     viewport: Rect,
 ) {
-    let size = chip_size(label, text_renderer, theme);
-    let rect = chip_rect_on(anchor.1, anchor.0, size, viewport);
+    let rect = hover_chip_rect_on(text_renderer, theme, anchor, label, viewport);
     draw_chip(scene, transform, text_renderer, theme, rect, label);
+}
+
+/// Where [`draw_hover_tooltip_on`] places the chip for `label`.
+pub fn hover_chip_rect_on(
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    anchor: (Rect, TooltipSide),
+    label: &str,
+    viewport: Rect,
+) -> Rect {
+    let size = chip_size_in_viewport(label, text_renderer, theme, viewport);
+    chip_rect_on(anchor.1, anchor.0, size, viewport)
+}
+
+/// Every pixel [`draw_chip`] can paint for a chip at `rect`: the chip, its
+/// edge and snapping, and the floating shadow under it.
+pub fn chip_paint_bounds(rect: Rect, theme: &Theme) -> Rect {
+    // The chip snaps to whole pixels and strokes its edge on the outline:
+    // two pixels cover both, antialiasing included.
+    let chip = rect.inflate(2.0, 2.0);
+    crate::surface::shadow_bounds(rect, &theme.tokens.elevation.floating)
+        .map_or(chip, |shadow| shadow.union(chip))
 }
 
 use crate::presence::PresenceCtx;
@@ -325,29 +386,22 @@ impl Widget for Tooltip {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let (w, h) = if self.is_visible {
-            (px_f32(TOOLTIP_WIDTH), px_f32(TOOLTIP_HEIGHT))
+            (f32_of_f64(TOOLTIP_WIDTH), f32_of_f64(TOOLTIP_HEIGHT))
         } else {
             (0.0, 0.0)
         };
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(w),
                 height: Dimension::length(h),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -368,13 +422,13 @@ impl Widget for Tooltip {
             return;
         }
 
-        let size = chip_size(&self.label, text_renderer, theme);
         // Generous fallback so an unclamped chip still renders in bare test
         // harnesses that never push a viewport.
         let viewport = presence
             .viewport
             .get()
             .unwrap_or(Rect::new(0.0, 0.0, 100_000.0, 100_000.0));
+        let size = chip_size_in_viewport(&self.label, text_renderer, theme, viewport);
         if self.anchor != Rect::ZERO {
             self.rect = chip_rect(self.anchor, size, viewport);
         }
@@ -754,32 +808,13 @@ mod host_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
 
     fn feed(t: &mut Tooltip, p: Point) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
         let ev = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: (p.x, p.y).into(),
         };
-        t.handle_event(
-            &ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
+        crate::testing::dispatch(t, &ev);
     }
 
     #[test]
@@ -838,6 +873,54 @@ mod tests {
             t.on_hover_enter(Duration::ZERO);
             t.tick(Duration::from_millis(700));
             assert!(t.is_visible());
+        }
+    }
+    #[test]
+    fn tooltip_long_hint_wraps_inside_the_scaled_viewport() {
+        let label = "Close applications and end this session, then return to the login screen.";
+        for (theme, width) in [
+            (Theme::dark(), 800.0),
+            (Theme::light(), 280.0),
+            (Theme::dark().with_text_scale(2.0), 320.0),
+            (Theme::high_contrast().with_ui_scale(1.5), 360.0),
+        ] {
+            let viewport = Rect::new(0.0, 0.0, width, 480.0);
+            let mut tip = Tooltip::new(label)
+                .with_delay(Duration::ZERO)
+                .with_anchor(Rect::new(width - 60.0, 100.0, width - 20.0, 132.0));
+            let pointer = tip.anchor.center();
+            feed(&mut tip, pointer);
+            let presence = PresenceCtx::default();
+            presence.viewport.set(Some(viewport));
+            let mut text = TextRenderer::new();
+            tip.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &presence,
+            );
+            let rect = tip.get_rect();
+            assert!(
+                viewport.contains_rect(rect),
+                "tooltip exceeds viewport: {rect:?}"
+            );
+            let (_, height) = text.measure_style(
+                label,
+                Some(f32_of_f64((rect.width() - 2.0 * CHIP_PAD_X).max(0.0))),
+                &theme.text(TextRole::Caption),
+            );
+            assert!(
+                rect.height() + 0.01 >= f64::from(height) + 2.0 * CHIP_PAD_Y,
+                "complete wrapped hint must fit its painted box: {rect:?}, text height {height}"
+            );
+            assert_eq!(
+                tip.accessibility()
+                    .expect("tooltip semantics")
+                    .name
+                    .as_deref(),
+                Some(label)
+            );
         }
     }
 }

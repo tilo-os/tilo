@@ -3,6 +3,7 @@
 //! only thing the app draws itself is nothing.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use ui::TextRole;
@@ -64,12 +65,85 @@ pub(crate) fn build(
                 )),
         ));
     }
-    let page = page.push(Box::new(columns));
+    let page = page.push(Box::new(TestColumns {
+        row: columns,
+        preferred_minimum: min_column,
+    }));
     Box::new(
         Scrollable::new_vertical()
             .with_persisted_offset(Rc::clone(scroll))
             .with_child(Box::new(page)),
     )
+}
+
+/// The preferred two-column measure is capped by the actual available row.
+/// At phone widths the shared composites must see the viewport width, so
+/// their own wrapping (result tiles and progress stations) can operate.
+struct TestColumns {
+    row: Row,
+    preferred_minimum: f32,
+}
+
+impl Decorator for TestColumns {
+    type Inner = Row;
+
+    fn inner(&self) -> &Row {
+        &self.row
+    }
+    fn inner_mut(&mut self) -> &mut Row {
+        &mut self.row
+    }
+
+    fn build_layout(
+        &mut self,
+        tree: &mut ui::taffy::TaffyTree<()>,
+        theme: &Theme,
+        nodes: &mut HashMap<ui::taffy::NodeId, *mut dyn Widget>,
+    ) -> ui::taffy::NodeId {
+        self.preferred_minimum = theme.tokens.metrics.content_min_width;
+        let node = self.row.build_layout(tree, theme, nodes);
+        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn adjust_layout_style(
+        &mut self,
+        tree: &mut ui::taffy::TaffyTree<()>,
+        node: ui::taffy::NodeId,
+        text: &mut ui::TextRenderer,
+    ) -> bool {
+        let Ok(layout) = tree.layout(node) else {
+            return false;
+        };
+        // Intrinsic descendants may initially widen the row beyond its
+        // Scrollable. Cap against the enclosing layout's measured viewport,
+        // rather than accepting that overflow as the available space.
+        let mut available = layout.size.width;
+        let mut ancestor = tree.parent(node);
+        while let Some(parent) = ancestor {
+            if let Ok(layout) = tree.layout(parent) {
+                available = available.min(layout.size.width);
+            }
+            ancestor = tree.parent(parent);
+        }
+        let minimum = ui::taffy::Dimension::length(self.preferred_minimum.min(available));
+        let children = tree.children(node).unwrap_or_default();
+        let mut changed = false;
+        for child in children {
+            let Ok(style) = tree.style(child) else {
+                continue;
+            };
+            if style.min_size.width == minimum && style.size.width == minimum {
+                continue;
+            }
+            let mut style = style.clone();
+            style.min_size.width = minimum;
+            style.size.width = minimum;
+            changed |= tree.set_style(child, style).is_ok();
+        }
+        // This adapter stands in for the row's node; the row adjusts it too.
+        self.row.adjust_layout_style(tree, node, text) | changed
+    }
 }
 
 /// The dial, what it is doing, and the one action.

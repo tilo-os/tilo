@@ -3,22 +3,18 @@
 //! Picks a [`Mode`] from `--mode`, then delegates to the matching
 //! `compositor::*::run` function. [`Mode::Native`] is the default (real
 //! smithay server, vello+wgpu winit backend); [`Mode::Hosted`] is an
-//! explicit dev opt-in (`--mode hosted`) for the legacy iced-on-winit path.
+//! explicit dev opt-in (`--mode hosted`) for the legacy winit-hosted path.
 //!
-//! Side-channel modes are resolved before `parse_mode`: `--portal-server-only`
-//! runs only the `xdg-desktop-portal` D-Bus backend (so it doesn't race the
-//! compositor for `wayland-N`); `--firstboot-only` runs machine setup and
-//! exits, while the host-session `--firstboot` hook performs that idempotent
-//! setup and continues into the compositor.
+//! Side-channel modes are resolved before `parse_mode`: a removed run mode
+//! (`--portal-server-only`) is refused with exit code 2 before any setup, so a
+//! stale unit fails loudly instead of starting a compositor; `--firstboot-only`
+//! runs machine setup and exits, while the host-session `--firstboot` hook
+//! performs that idempotent setup and continues into the compositor.
 
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -26,8 +22,8 @@
 
 use shell::compositor::hosted::HostedOptions;
 use shell::compositor::{self, Mode};
+use shell::firstboot;
 use shell::shell::identity_provisioning;
-use shell::{firstboot, portal};
 
 const SECRET_SERVICE_STARTUP_ATTEMPTS: usize = 8;
 const SECRET_SERVICE_STARTUP_RETRY_DELAY: std::time::Duration =
@@ -332,6 +328,33 @@ fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::p
 /// settings document. Readers and writers in this process go through them;
 /// `settings.json` becomes the copy other processes read and write, which
 /// the session keeps current and takes their writes in from.
+fn dictionary_identity_owner() -> Option<[u8; 32]> {
+    let store = identity_provisioning::DiskIdentityStore::from_env().ok()?;
+    runtime_identity::load_metadata_from_path(store.path())
+        .ok()
+        .map(|identity| identity.group_public_key)
+}
+
+fn session_host_view(
+    session: std::sync::Arc<settings_store::SessionSettings>,
+    copy_watched: bool,
+) -> std::sync::Arc<dyn settings_store::SettingsSource> {
+    // With the copy watched, its watch takes other processes' writes in and
+    // the view sleeps between reads; without it the view looks on a timer.
+    let view = if copy_watched {
+        session.host_view()
+    } else {
+        session.host_view_polling_copy(settings_store::live::POLL_INTERVAL)
+    };
+    match view {
+        Ok(source) => source,
+        Err(error) => {
+            tracing::warn!(%error, "settings read view unavailable; using synchronous records");
+            session
+        }
+    }
+}
+
 fn install_session_settings() {
     let Some(paths) = settings_store::SessionPaths::configured() else {
         tracing::warn!("no config directory; settings are not kept this session");
@@ -344,7 +367,7 @@ fn install_session_settings() {
             // Another process writing the copy (Settings, a CLI) is taken in
             // as it lands, which wakes every app following its settings.
             let taken_in = std::sync::Arc::downgrade(&session);
-            match settings_store::watch::watch_settings_at(&copy, move || {
+            let copy_watched = match settings_store::watch::watch_settings_at(&copy, move || {
                 if let Some(session) = taken_in.upgrade() {
                     session.refresh();
                 }
@@ -352,14 +375,55 @@ fn install_session_settings() {
                 Ok(watch) => {
                     static COPY_WATCH: std::sync::OnceLock<settings_store::watch::SettingsWatch> =
                         std::sync::OnceLock::new();
-                    let _ = COPY_WATCH.set(watch);
+                    // Only the first session's watch is kept; a later one
+                    // would be dropped here and watch nothing.
+                    COPY_WATCH.set(watch).is_ok()
                 }
-                Err(error) => tracing::warn!(
-                    %error,
-                    "settings copy watch unavailable; other processes' writes reach apps when the session next reads"
-                ),
-            }
-            settings_store::install_source(Some(session));
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "settings copy watch unavailable; other processes' writes reach apps within a second"
+                    );
+                    false
+                }
+            };
+            let source = session_host_view(session, copy_watched);
+            let dictionary_root = copy.parent().map(|root| root.join("personal-dictionary"));
+            let source = match dictionary_root
+                .and_then(|root| settings_store::personal_dictionary::Service::new(root).ok())
+            {
+                Some(service) => {
+                    let host =
+                        std::sync::Arc::new(settings_store::personal_dictionary::host::Host::new(
+                            source,
+                            std::sync::Arc::new(service),
+                            std::sync::Arc::new(dictionary_identity_owner),
+                        ));
+                    if let Ok(store) = identity_provisioning::DiskIdentityStore::from_env()
+                        && let Some(directory) =
+                            store.path().parent().filter(|directory| directory.is_dir())
+                    {
+                        let weak = std::sync::Arc::downgrade(&host);
+                        if let Ok(watch) =
+                            settings_store::watch::watch_identity_at(directory, move || {
+                                if let Some(host) = weak.upgrade() {
+                                    settings_store::SettingsSource::dictionary_service(
+                                        host.as_ref(),
+                                    );
+                                }
+                            })
+                        {
+                            static IDENTITY_WATCH: std::sync::OnceLock<
+                                settings_store::watch::SettingsWatch,
+                            > = std::sync::OnceLock::new();
+                            let _ = IDENTITY_WATCH.set(watch);
+                        }
+                    }
+                    host as std::sync::Arc<dyn settings_store::SettingsSource>
+                }
+                None => source,
+            };
+            settings_store::install_source(Some(source));
         }
         Err(error) => tracing::error!(
             %error,
@@ -378,11 +442,36 @@ pub fn run() -> std::process::ExitCode {
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return std::process::ExitCode::from(code);
     }
+    let early_args: Vec<String> = std::env::args().collect();
+    if let Some(code) = shell::shader_seed::dispatch(&early_args) {
+        return code;
+    }
     // Answered before identity, GPU or session setup, so asking a host what
     // it has installed touches none of them.
     if let Some(version) = version_request(std::env::args().skip(1)) {
         println!("{version}");
         return std::process::ExitCode::SUCCESS;
+    }
+    // Refused before any setup: a removed run mode must neither start a
+    // compositor nor claim anything a running session owns.
+    if let Some(refusal) = removed_run_mode_refusal(&early_args) {
+        eprintln!("error: {refusal}");
+        return std::process::ExitCode::from(2);
+    }
+    shell::shell::decide_receipt_against_surfaces();
+    if let Err(error) = shell::shell::install_approved_checks_from_args(std::env::args_os().skip(1))
+    {
+        eprintln!("approved project check configuration refused: {error}");
+        return std::process::ExitCode::FAILURE;
+    }
+    if !early_args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--firstboot-only" | "--provision-identity" | "--verify-collaboration-identity"
+        )
+    }) && let Err(error) = shell::shader_seed::prepare_session()
+    {
+        eprintln!("session shader seed unavailable ({error}); compiling normally");
     }
     // `init()` is a no-op unless the env var is set, so production boots pay
     // zero cost; the scope guard dumps recorded events to disk when `main` returns.
@@ -418,12 +507,25 @@ pub fn run() -> std::process::ExitCode {
         }
     }
 
+    let firstboot_requested = compositor::parse_firstboot_from_args();
+    let firstboot_only_requested = compositor::parse_firstboot_only_from_args();
+    let provision_identity_requested = compositor::parse_provision_identity_from_args();
+    let verify_identity_requested = compositor::parse_verify_collaboration_identity_from_args();
+    // Systemd also invokes this binary for setup and identity checks. Those
+    // commands never paint: font discovery and shader warmup only compete
+    // with the greeter and the session they are preparing.
+    let paints =
+        !(firstboot_only_requested || provision_identity_requested || verify_identity_requested);
+
     // Decide which GPU this session runs on before anything opens one — the
     // warmup thread below builds a wgpu context, and on a multi-GPU box its
     // adapter may disagree with what the compositor advertises to clients.
     // Pinning here, while `main` is still single-threaded, makes the
     // compositor and every launched app agree on one device.
-    let gpu_pin = compositor::render_node::pin_process();
+    let gpu_pin = paints.then(compositor::render_node::pin_process).flatten();
+    // The single-threaded start is over: startup marks are written from their
+    // own thread from here on, never by the thread that marks.
+    tilo_startup_metrics::start_writer();
 
     // Cold-start warmup on a background thread, as early as possible.
     // cosmic-text's `FontSystem::new` (mmaps every face, up to ~1s) and
@@ -444,9 +546,17 @@ pub fn run() -> std::process::ExitCode {
                 "" | "0" | "off" | "false" | "no"
             )
         });
-    let _warmup_handle = ui::warmup::spawn_warmup(!want_vello);
+    let _warmup_handle = paints
+        .then(|| ui::warmup::spawn_warmup(!want_vello))
+        .flatten();
 
-    tracing_subscriber::fmt::init();
+    // RUST_LOG as `fmt::init` reads it, with the per-launch timing lines kept:
+    // the open-latency gate reads them from the session log.
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            tilo_startup_metrics::log_directives(std::env::var("RUST_LOG").ok().as_deref()),
+        ))
+        .init();
     shell::crash_log::install("tilo shell panic");
     // After the crash log: a panic outside a helper's panic boundary still
     // ends the compositor, in every build. Inside one (the collaboration
@@ -455,30 +565,12 @@ pub fn run() -> std::process::ExitCode {
     log_gpu_pin(gpu_pin.as_ref());
     compositor::dev_env::report_build_mode();
 
-    let portal_only = compositor::parse_portal_server_only_from_args();
-    let firstboot_requested = compositor::parse_firstboot_from_args();
-    let firstboot_only_requested = compositor::parse_firstboot_only_from_args();
-    let provision_identity_requested = compositor::parse_provision_identity_from_args();
-    let verify_identity_requested = compositor::parse_verify_collaboration_identity_from_args();
-
-    if portal_only && (firstboot_requested || firstboot_only_requested) {
-        eprintln!(
-            "error: --portal-server-only and first-boot modes are mutually exclusive; \
-             pick one (the systemd units never combine them)."
-        );
-        return std::process::ExitCode::from(2);
-    }
-
     if firstboot_requested && firstboot_only_requested {
         eprintln!(
             "error: --firstboot and --firstboot-only are mutually exclusive; \
              --firstboot continues into the compositor while --firstboot-only exits."
         );
         return std::process::ExitCode::from(2);
-    }
-
-    if portal_only {
-        return run_portal_server_only();
     }
 
     if firstboot_only_requested {
@@ -517,7 +609,7 @@ pub fn run() -> std::process::ExitCode {
     }
 
     // The handle deliberately lives until the compositor exits. Start it only
-    // for the actual desktop path: portal-only, first-boot-only, verification,
+    // for the actual desktop path: first-boot-only, verification,
     // and repair commands must not bind the user's collaboration endpoint.
     // Startup is fail-closed when the administrator supplied a broken
     // bind/advertise configuration, so the UI never mints unreachable URLs.
@@ -555,61 +647,11 @@ pub fn run() -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-/// Run only the `xdg-desktop-portal` D-Bus backend — no compositor, no
-/// rendering. Bootstraps a minimal tokio runtime, owns the session-bus
-/// connection the `org.freedesktop.impl.portal.desktop.tilo` name
-/// resolves to, and blocks until torn down (SIGTERM from systemd). Used
-/// by `tilo-desktop-portal.service` so the portal backend doesn't compete with the compositor for `wayland-N`.
-fn run_portal_server_only() -> std::process::ExitCode {
-    tracing::info!("tilo portal server starting (--portal-server-only)");
-
-    let served = tilo_rt::daemon("tilo-portal").workers(2).run(async move {
-        // Fresh GrantStoreHandle on an empty WorkspaceTree + a Channel-mode
-        // PromptQueueHandle — every prompt buffers (no compositor to drain it);
-        // until per-workspace state is wired for this mode, the unit's job is just to own the bus name.
-        let tree_handle = shell::shell::state::WorkspaceTree::default().shared();
-        let grants = portal::GrantStoreHandle::new(tree_handle);
-        let prompts = portal::PromptQueueHandle::new(portal::PromptResolver::Channel);
-        let ctx = portal::PortalContext::new_with_null_spawners(
-            grants,
-            prompts,
-            portal::CallerMap::new(),
-        );
-
-        let connection = match zbus::connection::Builder::session() {
-            Ok(builder) => match builder.build().await {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("error: portal-only mode could not open the session bus: {e}");
-                    return std::process::ExitCode::FAILURE;
-                }
-            },
-            Err(e) => {
-                eprintln!("error: portal-only mode could not build session connection: {e}");
-                return std::process::ExitCode::FAILURE;
-            }
-        };
-
-        let _handle = match portal::serve(connection, ctx).await {
-            Ok(h) => h,
-            Err(e) => {
-                eprintln!("error: portal::serve failed: {e}");
-                return std::process::ExitCode::FAILURE;
-            }
-        };
-
-        tracing::info!(
-            "tilo portal server: owning {} on session bus; blocking until shutdown",
-            portal::BUS_NAME
-        );
-
-        // Block forever — systemd sends SIGTERM to tear us down; the ServerHandle keeps the connection alive in the meantime.
-        std::future::pending::<std::process::ExitCode>().await
-    });
-    served.unwrap_or_else(|e| {
-        eprintln!("error: failed to start the runtime for portal-only mode: {e}");
-        std::process::ExitCode::FAILURE
-    })
+/// The refusal for a removed run-mode flag among the process arguments
+/// (`args[0]` is the program name).
+fn removed_run_mode_refusal(args: &[String]) -> Option<&'static str> {
+    let flags: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
+    compositor::removed_run_mode_refusal(&flags)
 }
 
 /// The session release, as packaged (`dist/VERSION`), for a lone

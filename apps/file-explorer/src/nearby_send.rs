@@ -166,10 +166,6 @@ impl NearbySendState {
         &self.snapshot.destinations
     }
 
-    pub fn history(&self) -> &VecDeque<NearbyTransferStatus> {
-        &self.history
-    }
-
     pub fn cancel(&mut self, handle: NearbyTransferHandle) {
         self.queue(NearbyTransferCommand::Cancel { handle }, Pending::Cancel);
     }
@@ -234,6 +230,18 @@ impl NearbySendState {
         let reply = match result {
             Ok(reply) => reply,
             Err(error) => {
+                if pending == (Pending::Snapshot { open_picker: false }) {
+                    // Discovery may be disabled by the person's privacy settings.
+                    // Withdraw old targets without interrupting unrelated work;
+                    // an explicit picker/send still reports its own refusal.
+                    let changed = self.snapshot != NearbyTransferSnapshot::default();
+                    self.apply_snapshot(NearbyTransferSnapshot::default(), false);
+                    return if changed {
+                        vec![NearbyUiEffect::AvailabilityChanged]
+                    } else {
+                        Vec::new()
+                    };
+                }
                 if pending == Pending::AirDropAvailability {
                     if self.airdrop_available {
                         self.airdrop_available = false;
@@ -464,6 +472,60 @@ mod tests {
                 .send_airdrop(Path::new("/fixture"), "127.0.0.1".into(), 443)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn background_discovery_refusal_withdraws_targets_and_explicit_picker_reports_failure() {
+        for had_targets in [false, true] {
+            let mut state = NearbySendState::default();
+            if had_targets {
+                state.snapshot.targets.push(NearbyTransferTarget {
+                    handle: NearbyTargetHandle::from_issued_bytes([4; 16]),
+                    label: "Desk".into(),
+                    online: true,
+                });
+            }
+            state.poll_if_due(ui::time::now());
+            let request_id = state
+                .take_requests()
+                .into_iter()
+                .find_map(|request| match request {
+                    CollabRequest::NearbyTransferCommand {
+                        request_id,
+                        command: NearbyTransferCommand::Snapshot,
+                        ..
+                    } => Some(request_id),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(
+                state.handle_event(&CollabEvent::NearbyTransferCommandResult {
+                    request_id,
+                    result: Err("privacy refusal".into()),
+                }),
+                if had_targets {
+                    vec![NearbyUiEffect::AvailabilityChanged]
+                } else {
+                    Vec::new()
+                }
+            );
+            assert!(state.targets().is_empty());
+            state.open_picker();
+            let CollabRequest::NearbyTransferCommand { request_id, .. } =
+                state.take_requests().pop().unwrap()
+            else {
+                panic!("picker request")
+            };
+            assert_eq!(
+                state.handle_event(&CollabEvent::NearbyTransferCommandResult {
+                    request_id,
+                    result: Err("privacy refusal".into()),
+                }),
+                vec![NearbyUiEffect::Status(
+                    "Nearby Send unavailable: privacy refusal".into()
+                )]
+            );
+        }
     }
 
     #[test]

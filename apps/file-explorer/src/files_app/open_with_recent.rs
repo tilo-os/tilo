@@ -253,15 +253,23 @@ impl FileExplorerWidget {
         if !self.app_chooser_open() {
             return;
         }
-        ui::overlay::scrim::modal(scene, transform, self.rect, 1.0, theme);
         let (width, height) = self.app_chooser.desired_size();
         let gutter = f64::from(theme.tokens.spacing.s4);
         let width = width.min((self.rect.width() - 2.0 * gutter).max(0.0));
         let height = height.min((self.rect.height() - 2.0 * gutter).max(0.0));
         let x = self.rect.center().x - width / 2.0;
-        let y = self.rect.y0 + (self.rect.height() * 0.12).max(gutter);
-        self.app_chooser
-            .set_rect(vello::kurbo::Rect::new(x, y, x + width, y + height));
+        let y = (self.rect.y0 + (self.rect.height() * 0.12).max(gutter))
+            .min(self.rect.y1 - height - gutter)
+            .max(self.rect.y0 + gutter);
+        let card = vello::kurbo::Rect::new(x, y, x + width, y + height);
+        ui::overlay::scrim::behind_panel(
+            scene,
+            transform,
+            self.rect,
+            vello::kurbo::RoundedRect::from_rect(card, ui::widget::floating_surface::radius(theme)),
+            theme,
+        );
+        self.app_chooser.set_rect(card);
         self.app_chooser
             .draw(scene, transform, text_renderer, theme, presence);
     }
@@ -410,7 +418,7 @@ impl FileExplorerWidget {
         if crate::archive::location(path).is_some() {
             return;
         }
-        let at = crate::recent::now_ms();
+        let at = ui::time::unix_now_ms();
         self.edit_recent(|recent| recent.note(path, last_use, at));
     }
 
@@ -470,6 +478,7 @@ impl FileExplorerWidget {
                     share: None,
                     history: None,
                     rich_metadata: None,
+                    observed: host_fs::ObservedObject::from_metadata(&meta),
                 })
             })
             .collect()
@@ -487,6 +496,7 @@ impl FileExplorerWidget {
             .position(|entry| entry.path == path)
         {
             self.selection.select_only(index);
+            self.retain_shown_selection();
         }
         true
     }

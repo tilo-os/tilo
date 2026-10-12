@@ -11,6 +11,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "linux")]
 mod linux_header;
+mod private_text_input;
+#[cfg(any(windows, target_os = "linux"))]
+pub(super) mod startup;
 
 #[cfg(not(target_os = "android"))]
 type PrimaryA11yAdapter = accesskit_winit::Adapter;
@@ -82,6 +85,7 @@ struct AppHandler {
     /// Last text-input-v3 state applied to winit. Edge-triggering this avoids
     /// emitting a protocol commit on every idle loop.
     ime_state: Option<ImeWindowState>,
+    private_input: private_text_input::Bridge,
     #[cfg(target_os = "android")]
     text_input: super::android_text_input::TextInputSession,
     /// The field with the keyboard was touched since the last IME sync.
@@ -92,6 +96,12 @@ struct AppHandler {
     /// The last submitted frame painted something over the widgets that
     /// their damage does not describe; the next frame must erase it.
     top_layer_drawn: bool,
+    /// The collaborators' marks painted over the widgets, as last submitted,
+    /// so a frame damages only the marks that changed.
+    presence_layer: crate::presence::PresenceLayer,
+    /// Bounds what the presence layer draws outside its parts, so scrolls
+    /// beneath peer marks still copy ([`peer_marks`]).
+    mark_bounds: crate::scene_parts::DrawBounds,
     last_primary_frame_presented: u64,
     primary_retry: crate::render_thread::retry::RenderRetryState,
     /// `None` waits for the next primary submission; `Some(sequence)` waits
@@ -107,12 +117,6 @@ struct AppHandler {
     /// Synthetic mouse events must retain touch modality rather than making
     /// the host immediately classify them as a fine pointer.
     dispatching_touch_pointer: bool,
-    /// Where the pointer last moved over the primary window, until it left.
-    last_pointer: Option<PhysicalPosition<f64>>,
-    /// The widgets moved or were rebuilt since the pointer last moved: a
-    /// control now under a still pointer has never seen it arrive, so a
-    /// press there replays the position first instead of being lost.
-    pointer_unsettled: bool,
     /// Per-window state handed to the next in-place reload. Keyed by the
     /// window id that stays for the life of the process.
     dev_window_state: std::collections::HashMap<String, Vec<u8>>,
@@ -226,21 +230,8 @@ mod floating_source_focus_tests {
             taffy.leaf_node(taffy::Style::default())
         }
 
-        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "FocusProbe"
-        }
-        fn get_rect(&self) -> KurboRect {
-            KurboRect::ZERO
         }
     }
 
@@ -520,7 +511,7 @@ fn apply_native_ime(
     }
     match next {
         Some(intent) => {
-            window.set_ime_purpose(intent.purpose);
+            apply_native_ime_content(window, intent);
             window.set_ime_allowed(true);
             window.set_ime_cursor_area(
                 winit::dpi::LogicalPosition::new(intent.x, intent.y),
@@ -530,6 +521,11 @@ fn apply_native_ime(
         None => window.set_ime_allowed(false),
     }
     *previous = next;
+}
+
+fn apply_native_ime_content(window: &Window, intent: ImeWindowState) {
+    tilo_presentation::text_input::set_multiline(window, intent.multiline);
+    window.set_ime_purpose(intent.purpose);
 }
 
 fn secondary_ime_state(
@@ -632,79 +628,138 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
     );
 }
 
+/// Whether this windowing system shows a window icon the app sets. winit's
+/// Wayland backend drops it (`set_window_icon` is empty there; compositors
+/// take the icon from the app id), so reading and decoding one before the
+/// first frame would be wasted.
+fn takes_window_icon(event_loop: &ActiveEventLoop) -> bool {
+    use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    !event_loop
+        .display_handle()
+        .is_ok_and(|display| matches!(display.as_raw(), RawDisplayHandle::Wayland(_)))
+}
+
+/// The Wayland application id (X11 `WM_CLASS`) of the primary window: the
+/// app's own (`explicit`, an input surface's), else its package's. See
+/// `resolve_app_id`: a shared id collapses per-app compositor lookups.
+fn primary_window_app_id(explicit: Option<&str>) -> String {
+    let package_id = std::env::var("TILO_PACKAGE_ID").ok();
+    resolve_app_id(
+        explicit.or(package_id.as_deref()),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .as_deref(),
+    )
+}
+
+/// How the primary window is made, whether by `resumed` or before the app
+/// is constructed (`startup`).
+fn primary_window_attributes(
+    title: String,
+    icon: Option<winit::window::Icon>,
+    app_id: &str,
+) -> winit::window::WindowAttributes {
+    let window_attributes = Window::default_attributes()
+        .with_title(title)
+        .with_window_icon(icon)
+        // Draggable title bar on compositors with no server-side
+        // decorations (e.g. GNOME/mutter); explicit though it's the
+        // winit default, so the intent is unmistakable.
+        .with_decorations(true)
+        .with_visible(false)
+        .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
+    // Optional profiling placement keeps concurrent benchmark windows from
+    // completely occluding one another. Platform window managers may ignore it.
+    let window_attributes = match std::env::var("TILO_PROFILE_WINDOW_POSITION")
+        .ok()
+        .and_then(|value| crate::profiling::profile_window_position(&value))
+    {
+        Some((x, y)) => window_attributes.with_position(winit::dpi::LogicalPosition::new(x, y)),
+        None => window_attributes,
+    };
+    // Benchmarks can keep their own windows above unrelated desktop apps.
+    // This does not change normal application window ordering.
+    let window_attributes = if std::env::var("TILO_PROFILE_WINDOW_FRONT").as_deref() == Ok("1") {
+        window_attributes.with_window_level(winit::window::WindowLevel::AlwaysOnTop)
+    } else {
+        window_attributes
+    };
+    #[cfg(target_os = "linux")]
+    let window_attributes = {
+        use winit::platform::wayland::WindowAttributesExtWayland;
+        window_attributes.with_name(app_id, "")
+    };
+    // `resolve_app_id` falls back to a generic id rather than none; Linux
+    // announces it, other platforms name windows by their process.
+    debug_assert!(
+        !app_id.is_empty(),
+        "the primary window always has an app id"
+    );
+    window_attributes
+}
+
 fn create_window_render(
     window: &Arc<Window>,
     transparent: bool,
     proxy: EventLoopProxy<UserEvent>,
 ) -> Result<RenderThreadHandle, String> {
-    create_window_render_prepared(window, transparent, None, proxy)
+    create_window_render_prepared(window, transparent, None, None, proxy)
 }
 
 pub(crate) use crate::render_thread::PreparedRenderer;
 
-#[cfg(windows)]
-pub(crate) type RendererPreparation = mpsc::Receiver<Result<PreparedRenderer, String>>;
+/// Something the launch made for the primary window before the app was
+/// constructed (`startup`), judged against what the app wants.
+#[derive(Debug, PartialEq, Eq)]
+enum Early<T> {
+    /// It was made for exactly this: use it.
+    Kept(T),
+    /// It was made for another window (an input surface announces its own
+    /// app id): never use it, make the real one.
+    Discarded,
+    /// Nothing was made early.
+    Absent,
+}
 
-/// Start only for a real native launch, before loading app state and fonts.
-/// This owns no window/surface and can safely finish if construction fails:
-/// dropping the receiving end drops the prepared GPU resources at send.
-#[cfg(windows)]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "native host runner: GPU preparation overlaps app start on its own thread"
-)]
-pub(crate) fn prepare_native_renderer() -> Option<RendererPreparation> {
-    if std::env::var_os("TILO_SERIAL_RENDER_INIT").is_some() {
-        return None;
-    }
-    let (sender, receiver) = mpsc::channel();
-    match std::thread::Builder::new()
-        .name("native-render-prepare".into())
-        .spawn(move || {
-            let prepare = || {
-                tilo_startup_metrics::mark("native-render-prepare-start");
-                let mut context = RenderContext::new();
-                let device_id = pollster::block_on(context.device(None))
-                    .ok_or_else(|| "could not prepare a drawing device".to_string())?;
-                let device = context
-                    .devices
-                    .get(device_id)
-                    .ok_or_else(|| "prepared drawing device index out of range".to_string())?;
-                let renderer = create_native_renderer(device)?;
-                tilo_startup_metrics::mark("native-render-prepare-done");
-                Ok(PreparedRenderer {
-                    context,
-                    device_id,
-                    renderer,
-                })
-            };
-            let _ = sender.send(prepare());
-        }) {
-        Ok(_) => Some(receiver),
-        Err(error) => {
-            tracing::warn!(%error, "could not prepare renderer in parallel");
-            None
-        }
+/// `early` made under `made_for`, kept only when that is `wanted`.
+fn early_for<K: PartialEq, T>(early: Option<(K, T)>, wanted: &K) -> Early<T> {
+    match early {
+        Some((made_for, thing)) if made_for == *wanted => Early::Kept(thing),
+        Some(_) => Early::Discarded,
+        None => Early::Absent,
     }
 }
 
-fn create_window_render_prepared(
-    window: &Arc<Window>,
+thread_local! {
+    /// The event loop the launch built before constructing the app
+    /// (`startup`), until `App::run_with_setup` takes it.
+    static EARLY_EVENT_LOOP: std::cell::RefCell<Option<EventLoop<UserEvent>>> =
+        const { std::cell::RefCell::new(None) };
+    /// The primary window made with it and the app id it announces, until
+    /// `resumed` takes it.
+    static EARLY_WINDOW: std::cell::RefCell<Option<(String, Arc<Window>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn take_early_event_loop() -> Option<EventLoop<UserEvent>> {
+    EARLY_EVENT_LOOP.with(|slot| slot.borrow_mut().take())
+}
+
+fn take_early_window() -> Option<(String, Arc<Window>)> {
+    EARLY_WINDOW.with(|slot| slot.borrow_mut().take())
+}
+
+/// A configured surface for `window` on a device of `render_cx` that can
+/// present to it, sized to the window now.
+fn window_surface(
+    render_cx: &mut RenderContext,
+    window: Arc<Window>,
     transparent: bool,
-    prepared: Option<PreparedRenderer>,
-    proxy: EventLoopProxy<UserEvent>,
-) -> Result<RenderThreadHandle, String> {
-    tilo_startup_metrics::mark("window-render-context-start");
+) -> Result<vello::util::RenderSurface<'static>, String> {
     let size = window.inner_size();
-    let (mut render_cx, prepared_renderer) = match prepared {
-        Some(prepared) => (
-            prepared.context,
-            Some((prepared.device_id, prepared.renderer)),
-        ),
-        None => (RenderContext::new(), None),
-    };
-    let mut surface = pollster::block_on(render_cx.create_surface(
-        window.clone(),
+    let mut surface = pollster::block_on(render_cx.create_surface_unconfigured(
+        window,
         size.width.max(1),
         size.height.max(1),
         vello::wgpu::PresentMode::AutoVsync,
@@ -739,11 +794,52 @@ fn create_window_render_prepared(
         return Err(format!("could not configure the drawing surface: {err}"));
     }
     tilo_startup_metrics::mark("window-surface-validation-scope-done");
+    Ok(surface)
+}
+
+fn create_window_render_prepared(
+    window: &Arc<Window>,
+    transparent: bool,
+    prepared: Option<PreparedRenderer>,
+    prepared_surface: Option<(WindowId, vello::util::RenderSurface<'static>)>,
+    proxy: EventLoopProxy<UserEvent>,
+) -> Result<RenderThreadHandle, String> {
+    tilo_startup_metrics::mark("window-render-context-start");
+    let (mut render_cx, prepared_renderer) = match prepared {
+        Some(prepared) => (
+            prepared.context,
+            Some((prepared.device_id, prepared.renderer)),
+        ),
+        None => (RenderContext::new(), None),
+    };
+    let surface = match early_for(prepared_surface, &window.id()) {
+        Early::Kept(surface) => {
+            tilo_startup_metrics::mark("window-surface-prepared");
+            surface
+        }
+        early => {
+            if matches!(early, Early::Discarded) {
+                // Made for an early window this app did not keep; already
+                // dropped, before a surface is made for this one.
+                tilo_startup_metrics::mark("window-surface-prepared-discarded");
+            }
+            window_surface(&mut render_cx, window.clone(), transparent)?
+        }
+    };
+    let device_handle = render_cx
+        .devices
+        .get(surface.dev_id)
+        .ok_or_else(|| "render device index out of range".to_string())?;
     // create_surface checks presentation support and selects another device
     // if necessary. Never use pipelines built for a different device.
     let renderer = match prepared_renderer {
         Some((device_id, renderer)) if device_id == surface.dev_id => renderer,
-        _ => create_native_renderer(device_handle)?,
+        Some(_) => {
+            // The preparation's work is wasted; the startup file says so.
+            tilo_startup_metrics::mark("native-render-prepare-discarded");
+            create_native_renderer(device_handle)?
+        }
+        None => create_native_renderer(device_handle)?,
     };
     // After this, every GPU call happens on its render worker.
     let window_id = window.id();
@@ -774,7 +870,19 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
         .and_then(std::num::NonZeroUsize::new)
         .unwrap_or(std::num::NonZeroUsize::MIN.saturating_add(1));
     tilo_startup_metrics::mark("window-vello-init-start");
-    let renderer = Renderer::new(
+    // This app's own pipelines from its last launch, else the session's.
+    let pipelines = crate::pipeline_cache::AppPipelineCache::open(device_handle);
+    // The first frame waits for this. Build only what it dispatches; the
+    // render worker starts the rest once that frame is presented. On a
+    // software adapter the worker rasterizes frames on the CPU and vello draws
+    // only backdrop blurs, so none of its pipelines are on the way there.
+    let software = crate::render_thread::rasterizes_on_cpu(&device_handle.adapter.get_info());
+    let deferral = if software {
+        vello::PipelineDeferral::All
+    } else {
+        vello::PipelineDeferral::Unused
+    };
+    let mut renderer = Renderer::new_deferring(
         device,
         RendererOptions {
             // Diagnostic/low-end fallback: CPU coarse stages with the same
@@ -787,13 +895,31 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
             // memory pressure on exactly the low-end devices we target.
             antialiasing_support: vello::AaSupport::area_only(),
             num_init_threads: Some(shader_threads),
-            // The session's compiled pipelines, so an app's first launch
-            // does not compile vello again for its own empty shader cache.
-            pipeline_cache: crate::pipeline_seed::seeded(device_handle),
+            // Pipelines already compiled, so a launch does not compile vello
+            // again for its own empty shader cache.
+            pipeline_cache: pipelines
+                .as_ref()
+                .map(|pipelines| pipelines.cache().clone()),
         },
+        deferral,
     )
     .map_err(|e| format!("could not create the renderer: {e}"))?;
     tilo_startup_metrics::mark("window-vello-init-done");
+    // Kept once the deferred pipelines are built too.
+    if let Some(pipelines) = pipelines {
+        pipelines.keep_until_built();
+    }
+    // A frame that draws a backdrop blur renders with vello even on a
+    // software adapter. When this app's first frame did last time, build at
+    // once, on the init threads and default-path pipelines first, so that
+    // frame waits on a build well under way instead of compiling each
+    // pipeline it dispatches alone. A first frame the CPU rasterizes waits on
+    // nothing, so its app constructs without LLVM compiling beside it; its
+    // render worker starts the build with the first frame that draws a
+    // backdrop, or after the first present.
+    if software && crate::pipeline_cache::first_frame_backdrop::expected() {
+        renderer.start_deferred_pipelines(device, crate::pipeline_cache::persist_unsaved);
+    }
     #[cfg(all(windows, feature = "dx12-shader-cache"))]
     device_handle.finish_shader_cache();
     Ok(renderer)
@@ -832,51 +958,6 @@ fn begin_window_render_init(
 /// rather than taking the window's quiet event loop for an answer.
 fn announce_frame(window: &Window) {
     window.announce_frame();
-}
-
-fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) {
-    for cursor in app.state.collab.cursors.values() {
-        let mut path = vello::kurbo::BezPath::new();
-        path.move_to(Point::new(0.0, 0.0));
-        path.line_to(Point::new(14.0, 14.0));
-        path.line_to(Point::new(6.0, 16.0));
-        path.line_to(Point::new(0.0, 22.0));
-        path.close_path();
-
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
-        )]
-        let cursor_transform =
-            transform * Affine::translate((f64::from(cursor.x), f64::from(cursor.y)));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            cursor_transform,
-            cursor.color,
-            None,
-            &path,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.5),
-            cursor_transform,
-            app.theme.tokens.colors.on_surface(cursor.color).ink,
-            None,
-            &path,
-        );
-
-        app.text_renderer.draw_text(
-            scene,
-            &cursor.name,
-            10.0,
-            app.theme.tokens.colors.on_surface(cursor.color).ink,
-            {
-                #[allow(clippy::arithmetic_side_effects, reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow")]
-                let name_transform = cursor_transform * Affine::translate((10.0, 20.0));
-                name_transform
-            },
-            None,
-        );
-    }
 }
 
 impl AppHandler {
@@ -1006,6 +1087,7 @@ impl AppHandler {
                 window,
                 false,
                 Some(retained),
+                None,
                 self.a11y_proxy.clone(),
             ) {
                 Ok(render) => {
@@ -1017,14 +1099,16 @@ impl AppHandler {
                 }
             }
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         if let Some(preparation) = self.app.startup_renderer.take() {
-            match preparation.recv() {
-                Ok(Ok(prepared)) => {
+            // How long the first redraw still waits on the preparation.
+            match tilo_startup_metrics::span("native-render-prepare-wait", || preparation.wait()) {
+                Ok(Ok(startup)) => {
                     self.render = Some(create_window_render_prepared(
                         window,
                         false,
-                        Some(prepared),
+                        Some(startup.prepared),
+                        startup.surface,
                         self.a11y_proxy.clone(),
                     )?);
                     return Ok(());
@@ -1269,6 +1353,7 @@ impl AppHandler {
                 height: size.height.max(1),
                 base_color: self.app.theme.tokens.colors.surfaces.content,
                 damage_regions,
+                scroll_copies: Vec::new(),
                 full_redraw: true,
                 backdrop: crate::backdrop::BackdropFrame::default(),
             })
@@ -1306,10 +1391,20 @@ impl AppHandler {
 
     fn sync_ime(&mut self, window: &Window) {
         let _entry = self.app.enter_wake_scope();
+        self.private_input.service(
+            &self.app,
+            window,
+            !self.floating_windows.iter().any(|surface| surface.focused),
+        );
         let next = if self.floating_windows.iter().any(|surface| surface.focused) {
             None
         } else {
-            self.app.ime_window_state()
+            self.app.ime_window_state().filter(|_| {
+                if !self.app.focused_ime_requires_deferred_ack() {
+                    return true;
+                }
+                self.private_input.admitted()
+            })
         };
         #[cfg(target_os = "android")]
         if super::android_text_input::bridge::installed() {
@@ -1348,7 +1443,7 @@ impl AppHandler {
                 // must already carry the right content type. Cursor geometry
                 // follows enable because winit intentionally ignores cursor
                 // updates while IME is disabled.
-                window.set_ime_purpose(intent.purpose);
+                apply_native_ime_content(window, intent);
                 window.set_ime_allowed(true);
                 window.set_ime_cursor_area(
                     winit::dpi::LogicalPosition::new(intent.x, intent.y),
@@ -1552,6 +1647,9 @@ impl AppHandler {
                 | crate::floating_surface::FloatingSurfaceHostMessage::Appearance { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintKeyframe
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop
+                | crate::floating_surface::FloatingSurfaceHostMessage::DeviceDisplayMoveResult {
+                    ..
+                }
                 | crate::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed {
                     ..
                 } => {}
@@ -1759,6 +1857,7 @@ impl AppHandler {
                 height: inner.height.max(1),
                 base_color: Color::TRANSPARENT,
                 damage_regions,
+                scroll_copies: Vec::new(),
                 full_redraw: true,
                 // The compositor puts this window over the desktop; nothing
                 // under its surfaces is in this scene to blur.
@@ -1810,7 +1909,9 @@ impl AppHandler {
         };
         let mut handled = false;
         let mut focus_target = None;
-        app.refresh_control_action_availability();
+        app.track_pointer_buttons(&event);
+        app.refresh_controls_before_input(&event);
+        let resources_before = app.resource_input_mark(&event);
         app.root_widget.handle_event(
             &event,
             &mut crate::widget::EventCtx {
@@ -1825,8 +1926,14 @@ impl AppHandler {
             },
         );
         // `handle_event` may change presentation-only resource declarations
-        // without touching the CRDT (selected tab, open media, local mode).
-        app.invalidate_widget_resource_cache();
+        // without touching the CRDT (selected tab, open media, local mode);
+        // only bare hover that changed nothing keeps the published tree.
+        app.invalidate_resources_after_input(
+            &event,
+            handled || focus_target.is_some(),
+            &resources_before,
+            false,
+        );
         if let Some(id) = focus_target {
             app.set_focused_node(Some(id));
         }
@@ -2027,6 +2134,10 @@ impl AppHandler {
         // cannot describe repaints the whole window: a rebuilt tree, moved
         // geometry, a resized surface, and layers drawn over the widgets.
         let mut full_redraw_required = app.layout.structure_dirty;
+        // Armed for this frame: each rebuild it does clears it unless the
+        // widgets behind it described the change (a long list mounting the
+        // rows a scroll brought near).
+        app.layout.frame_rebuilds_described = true;
 
         // Records first: if the root widget opened a different
         // record, sync against that record's document, not the
@@ -2043,7 +2154,7 @@ impl AppHandler {
         // synchronization. A worker's `Wake` event reaches this pass without
         // requiring the app to own a proxy or poll inside its model.
         mark_first_frame("first-frame-update-start");
-        if app.update_model() {
+        if app.update_native_model() {
             floating_content_changed = true;
         }
         mark_first_frame("first-frame-update-done");
@@ -2080,7 +2191,7 @@ impl AppHandler {
         // taffy tree from scratch so new widgets get node ids the
         // layout pass below can see.
         mark_first_frame("first-frame-build-layout-start");
-        app.layout.structure_dirty |= app.root_widget.take_structure_dirty();
+        app.layout.structure_dirty |= app.take_root_structure_dirty();
         // Captured BEFORE `rebuild_structure` clears it — a fresh
         // taffy tree always needs a full solve regardless of the
         // scroll fast path below.
@@ -2103,6 +2214,19 @@ impl AppHandler {
             return;
         };
         mark_first_frame("first-frame-layout-start");
+        // Every widget's box before a relayout that rebuilds nothing, and
+        // what says whether the layout pass rebuilt or resized: a frame
+        // whose only moves are scrolls this window copies stays sparse.
+        let boxes_before = (!structure_rebuilt
+            && app.layout.layout_dirty
+            && app
+                .history
+                .as_ref()
+                .is_none_or(|history| history.live_interactive())
+            && app.history_layout.is_none()
+            && app.close_admission.dialog.is_none())
+        .then(|| crate::scroll_copy::placed(app.root_widget.as_ref()));
+        let layout_before = (app.layout.rebuilds, app.layout.last_layout_logical);
         let Some((geometry_changed, t_compute_us, t_apply_us)) = run_layout_pass(
             app,
             root_node,
@@ -2118,8 +2242,19 @@ impl AppHandler {
             return;
         };
         mark_first_frame("first-frame-layout-done");
-        full_redraw_required |= structure_rebuilt || geometry_changed;
-        self.pointer_unsettled |= structure_rebuilt || geometry_changed;
+        // A relayout that moved widgets and rebuilt or resized nothing may be
+        // scrolls this window copies; that is decided with the frame's damage.
+        let moved_from = boxes_before.filter(|_| {
+            geometry_changed
+                && app.layout.last_layout_logical == layout_before.1
+                && (app.layout.rebuilds == layout_before.0 || app.layout.frame_rebuilds_described)
+        });
+        full_redraw_required |= structure_rebuilt || (geometry_changed && moved_from.is_none());
+        if geometry_changed {
+            // A rebuild marks it in `rebuild_structure`; a moved control
+            // under a still pointer has not seen it either.
+            app.input.pointer_replay.mark_unsettled();
+        }
         // Read before `draw_frame_content` drains widget dirty flags via
         // `mark_drawn`. Clean compositor/exposure redraws do not invalidate
         // independent native floating surfaces.
@@ -2143,7 +2278,6 @@ impl AppHandler {
             || app.actions.action_palette.is_some()
             || app.input.tooltip_host.needs_frame()
             || app.input.tooltip_host.visible().is_some()
-            || !app.presence_ctx.remote_cursors.is_empty()
             || app
                 .profiler
                 .as_ref()
@@ -2158,61 +2292,39 @@ impl AppHandler {
         // backdrop under the material before the frame renders.
         let backdrop_recording = crate::backdrop::BackdropRecording::begin();
         crate::backdrop::layer_scene(&scene, 0);
-        let (transform, window_rect, t_draw_us, mut top_layer) =
-            draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
+        let drawn = draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
+        let (transform, window_rect, t_draw_us) =
+            (drawn.transform, drawn.window_rect, drawn.draw_us);
+        // The tooltip's material blurs what is under it, which repaints this
+        // window in full on the render worker whatever damage says; until it
+        // takes damage there too, a tooltip is a layer like the others here.
+        let mut top_layer = drawn.top_layer.is_some() || drawn.tooltip.is_some();
+        // What paints over the widgets without moving with a scroll and is no
+        // widget the copy planner sees: the header bar another desktop gets.
+        let before_decorations = scene.encoding().draw_tags.len();
         #[cfg(target_os = "linux")]
         {
             self.decorations.draw(app, &mut scene, transform);
             full_redraw_required |= self.decorations.take_repaint();
         }
+        let decorated = scene.encoding().draw_tags.len() != before_decorations;
         let backdrop =
             crate::backdrop::BackdropFrame::from_single_scene(backdrop_recording.finish());
-        let content_draw_tags = scene.encoding().draw_tags.len();
-
         let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
-        draw_legacy_cursors(app, &mut scene, transform);
-
-        // A pointer that arrived on a desktop scope is the
-        // compositor's to draw, and the helper skips it — see
-        // `presence::PointerOwner`. Only the *painting* has one
-        // owner; the shell threads this same context into its own
-        // overlay too.
-        let interaction_now = crate::time::now();
-        app.presence_ctx.prune_interactions(interaction_now);
-        crate::presence::draw_remote_presence(
-            &mut scene,
+        // Peer pointers, names and activity paint over the widgets and damage
+        // only the marks that changed. Carets, selections and marks widgets
+        // paint from presence carry no widget damage: a change to them (or
+        // unprovable layer damage) repaints the window.
+        let presence_damage = draw_presence_layer(
+            app,
+            &mut self.presence_layer,
             transform,
             window_rect,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
+            crate::time::now(),
         );
-        // Resolve canonical actions against this layout; never match resource
-        // labels or retain an arrival-time control id through a rebuild.
-        let visible_interactions = app.presence_ctx.visible_interactions(interaction_now);
-        let bindings = if visible_interactions.is_empty() {
-            Vec::new()
-        } else {
-            app.refresh_semantic_tree();
-            app.with_native_presentation(|root, _, _, _, _| {
-                crate::widget::controls::control_action_bindings(root)
-            })
-            .unwrap_or_default()
-        };
-        crate::action_locus::draw_action_presence(
-            &mut crate::paint::PaintCtx::new(
-                &mut scene,
-                transform,
-                &mut app.text_renderer,
-                &app.theme,
-            ),
-            &mut app.presence_ctx,
-            &app.accessibility.semantic_tree,
-            &bindings,
-            window_rect,
-            app.window.app_id.as_deref().unwrap_or("native-primary"),
-            interaction_now,
-        );
+        scene.append(self.presence_layer.scene(), None);
+        full_redraw_required |= presence_damage.is_none();
+        let content_draw_tags = scene.encoding().draw_tags.len();
 
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::PresenceOverlay, __prof_presence);
@@ -2256,9 +2368,9 @@ impl AppHandler {
         }
         record_main_stage(&mut native_main_stages, MainStage::AfterDebugOutlines);
 
-        // Cursors, presence and the HUD paint over the widgets too. A layer
-        // drawn this frame, or one erased since the last, covers pixels no
-        // widget's damage reports.
+        // Debug outlines paint over the widgets too. A layer drawn this
+        // frame, or one erased since the last, covers pixels no widget's
+        // damage reports. (The presence layer reports its own.)
         top_layer |= scene.encoding().draw_tags.len() != content_draw_tags;
         full_redraw_required |=
             top_layer || std::mem::replace(&mut self.top_layer_drawn, top_layer);
@@ -2269,21 +2381,85 @@ impl AppHandler {
         // `mark_drawn` clears regular dirty flags. This makes the submitted
         // scene and its damage describe the same frame rather than trailing
         // animation by one frame.
+        let mut scroll_copies = Vec::new();
         if !full_redraw_required {
-            collect_submitted_widget_damage(app.root_widget.as_ref(), &mut damage_regions);
-            let physical_viewport = KurboRect::new(0.0, 0.0, f64::from(width), f64::from(height));
-            let scale = f64::from(scale_factor);
-            for rect in &mut damage_regions {
-                *rect = KurboRect::new(
-                    rect.x0 * scale,
-                    rect.y0 * scale,
-                    rect.x1 * scale,
-                    rect.y1 * scale,
-                )
-                .inflate(16.0 * scale, 16.0 * scale)
-                .intersect(physical_viewport);
+            let root = app.root_widget.as_ref();
+            // The retained target holds the last presented frame, so a scroll
+            // copies what stays on screen (`crate::scroll_copy`).
+            let mut offers = crate::scroll_copy::accepting(|| {
+                collect_submitted_widget_damage(root, &mut damage_regions);
+            });
+            // Moved geometry repaints the window unless every move is a
+            // scroll's content moving with it; rows a long list mounted or
+            // let go of in it are damage beside the copy.
+            if let Some(before) = &moved_from {
+                let moves = (!offers.is_empty()).then(|| {
+                    crate::scroll_copy::moves_besides(
+                        before,
+                        &crate::scroll_copy::placed(root),
+                        &offers,
+                    )
+                });
+                match moves {
+                    Some(moves) if moves.besides.is_empty() => {
+                        damage_regions.extend(moves.carried);
+                    }
+                    _ => full_redraw_required = true,
+                }
             }
-            damage_regions.retain(|rect| !rect.is_zero_area());
+            // Peer marks and a header bar paint over the content without
+            // moving with it, where the planner cannot see them. The marks
+            // are damage around the copies where they can be bounded; the
+            // header bar, or marks that cannot, repaint the scrollers.
+            let window = KurboRect::new(0.0, 0.0, f64::from(width), f64::from(height));
+            let marks = if offers.is_empty() {
+                None
+            } else {
+                peer_marks(&self.presence_layer, &mut self.mark_bounds, window)
+            };
+            if !offers.is_empty() && (decorated || marks.is_none()) {
+                damage_regions.extend(offers.iter().map(crate::scroll_copy::ScrollOffer::viewport));
+                offers.clear();
+            }
+            if full_redraw_required {
+                offers.clear();
+            }
+            let history = app.history.as_deref().map(|history| history as &dyn Widget);
+            let planned = crate::scroll_copy::plan(
+                &offers,
+                &std::iter::once(root).chain(history).collect::<Vec<_>>(),
+                f64::from(scale_factor),
+                (width, height),
+            );
+            if full_redraw_required
+                || !submit_presence_damage(
+                    &mut damage_regions,
+                    presence_damage.as_deref().unwrap_or_default(),
+                    self.presence_layer.widgets_place_content_marks(),
+                    f64::from(scale_factor),
+                    window,
+                )
+            {
+                full_redraw_required = true;
+                damage_regions.clear();
+            } else {
+                // Already in device pixels, and exact: no effect margin. What
+                // changed in place where a copy reads it lands one delta
+                // away, as do the peer marks the copies took; what the
+                // copies exposed is repainted as it is.
+                damage_regions.extend(planned.damage);
+                crate::scroll_copy::carry(&planned.copies, &mut damage_regions);
+                if let Some(marks) = &marks {
+                    crate::scroll_copy::marks_over_copies(
+                        &planned.copies,
+                        &marks.shown,
+                        &marks.painted,
+                        &mut damage_regions,
+                    );
+                }
+                damage_regions.extend(planned.exposed);
+                scroll_copies = planned.copies;
+            }
         }
         if !app.capture_frame_ready() {
             scene.reset();
@@ -2332,7 +2508,7 @@ impl AppHandler {
         }
         if crate::render_thread::retry::submit_redraw_frame(
             full_redraw_required,
-            !damage_regions.is_empty(),
+            !damage_regions.is_empty() || !scroll_copies.is_empty(),
         ) {
             let cpu_frame_id = app
                 .profiler
@@ -2359,6 +2535,7 @@ impl AppHandler {
                 height,
                 base_color: app.theme.tokens.colors.surfaces.content,
                 damage_regions,
+                scroll_copies,
                 full_redraw: full_redraw_required,
                 backdrop,
                 on_present: self.dev_reload_timing.take().map(|timing| {
@@ -2418,6 +2595,7 @@ impl AppHandler {
                 return;
             }
             mark_first_frame("first-frame-submitted");
+            self.presence_layer.presented();
             self.primary_frames_sent = self.primary_frames_sent.saturating_add(1);
             let submitted = self.primary_frames_sent;
             app.capture_frame_submitted(submitted);
@@ -2483,51 +2661,6 @@ impl AppHandler {
 
 impl AppHandler {
     /// `UserEvent` injection keeps the ordinary window dispatch after admission.
-    /// Before a press on the primary window, the pointer's last position
-    /// once more when the widgets moved or were rebuilt since it moved:
-    /// controls learn they are under the pointer from its moves, and one
-    /// swapped in under a still pointer would otherwise drop the click.
-    fn replay_unsettled_pointer(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        window_id: WindowId,
-        event: &WindowEvent,
-    ) {
-        if self
-            .window
-            .as_ref()
-            .is_none_or(|window| window.id() != window_id)
-        {
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.last_pointer = Some(*position);
-                self.pointer_unsettled = false;
-            }
-            WindowEvent::CursorLeft { .. } => self.last_pointer = None,
-            WindowEvent::MouseInput {
-                device_id,
-                state: ElementState::Pressed,
-                ..
-            } if self.pointer_unsettled => {
-                self.pointer_unsettled = false;
-                if let Some(position) = self.last_pointer {
-                    self.route_window_event(
-                        event_loop,
-                        window_id,
-                        WindowEvent::CursorMoved {
-                            device_id: *device_id,
-                            position,
-                        },
-                        native_input_isolation::EventOrigin::Platform,
-                    );
-                }
-            }
-            _ => {}
-        }
-    }
-
     fn injected_window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -2765,25 +2898,25 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         match event {
             UserEvent::Hover { x, y } => {
                 let ev = WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: PhysicalPosition::new(x, y),
                 };
                 self.injected_window_event(event_loop, window_id, ev);
             }
             UserEvent::Click { x, y } => {
                 let moved = WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: PhysicalPosition::new(x, y),
                 };
                 self.injected_window_event(event_loop, window_id, moved);
                 let press = WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 };
                 self.injected_window_event(event_loop, window_id, press);
                 let release = WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 };
@@ -2794,13 +2927,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     self.injected_window_event(
                         event_loop,
                         window_id,
-                        crate::synthetic_input::key_event(&key, state),
+                        crate::synthetic_input::key_input(&key, state),
                     );
                 }
             }
             UserEvent::Wheel { dx, dy } => {
                 let ev = WindowEvent::MouseWheel {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
                     phase: winit::event::TouchPhase::Moved,
                 };
@@ -2880,18 +3013,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                                 let scale = window.scale_factor();
                                 let (px, py) = (x * scale, y * scale);
                                 let moved = WindowEvent::CursorMoved {
-                                    device_id: unsafe { std::mem::zeroed() },
+                                    device_id: winit::event::DeviceId::dummy(),
                                     position: PhysicalPosition::new(px, py),
                                 };
                                 self.injected_window_event(event_loop, window_id, moved);
                                 let press = WindowEvent::MouseInput {
-                                    device_id: unsafe { std::mem::zeroed() },
+                                    device_id: winit::event::DeviceId::dummy(),
                                     state: ElementState::Pressed,
                                     button: MouseButton::Left,
                                 };
                                 self.injected_window_event(event_loop, window_id, press);
                                 let release = WindowEvent::MouseInput {
-                                    device_id: unsafe { std::mem::zeroed() },
+                                    device_id: winit::event::DeviceId::dummy(),
                                     state: ElementState::Released,
                                     button: MouseButton::Left,
                                 };
@@ -2931,56 +3064,40 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // AccessKit's adapter asserts it's created while the window is
         // hidden, so build invisible, create the adapter, show.
         let title = resolve_window_title(self.app.window.title.as_deref());
-        let icon = crate::window_icon::resolve();
-        let window_attributes = Window::default_attributes()
-            .with_title(title)
-            .with_window_icon(icon.clone())
-            // Draggable title bar on compositors with no server-side
-            // decorations (e.g. GNOME/mutter); explicit though it's the
-            // winit default, so the intent is unmistakable.
-            .with_decorations(true)
-            .with_visible(false)
-            .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
-        // Optional profiling placement keeps concurrent benchmark windows from
-        // completely occluding one another. Platform window managers may ignore it.
-        let window_attributes = match std::env::var("TILO_PROFILE_WINDOW_POSITION")
-            .ok()
-            .and_then(|value| crate::profiling::profile_window_position(&value))
-        {
-            Some((x, y)) => window_attributes.with_position(winit::dpi::LogicalPosition::new(x, y)),
-            None => window_attributes,
-        };
-        // Benchmarks can keep their own windows above unrelated desktop apps.
-        // This does not change normal application window ordering.
-        let window_attributes = if std::env::var("TILO_PROFILE_WINDOW_FRONT").as_deref() == Ok("1")
-        {
-            window_attributes.with_window_level(winit::window::WindowLevel::AlwaysOnTop)
+        let icon = if takes_window_icon(event_loop) {
+            crate::window_icon::resolve()
         } else {
-            window_attributes
+            None
         };
-        // See `resolve_app_id`: a shared id collapses per-app compositor
-        // lookups.
-        #[cfg(target_os = "linux")]
-        let window_attributes = {
-            use winit::platform::wayland::WindowAttributesExtWayland;
-            let package_id = std::env::var("TILO_PACKAGE_ID").ok();
-            let app_id = resolve_app_id(
-                self.app.window.app_id.as_deref().or(package_id.as_deref()),
-                std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                    .as_deref(),
-            );
-            window_attributes.with_name(app_id, "")
+        let app_id = primary_window_app_id(self.app.window.app_id.as_deref());
+        // The window the launch made before constructing the app, when it
+        // announces the id this app's window must have. Its surface may
+        // already be configured on the renderer-preparation thread.
+        let early = match early_for(take_early_window(), &app_id) {
+            Early::Kept(window) => {
+                tilo_startup_metrics::mark("startup-window-adopted");
+                window.set_title(&title);
+                Some(window)
+            }
+            Early::Discarded => {
+                // An input surface announces its own id: its window is made
+                // below, and `init_render` discards the early surface.
+                tilo_startup_metrics::mark("startup-window-discarded");
+                None
+            }
+            Early::Absent => None,
         };
-        // `resumed` is a winit `ApplicationHandler` callback returning `()`,
-        // so a `create_window` failure (compositor gone) has nowhere to
-        // propagate to; there is no window to run without it either way.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "fixed () trait signature; window-creation failure at startup is unrecoverable"
-        )]
-        let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+        let window = early.unwrap_or_else(|| {
+            let window_attributes = primary_window_attributes(title, icon.clone(), &app_id);
+            // `resumed` is a winit `ApplicationHandler` callback returning `()`,
+            // so a `create_window` failure (compositor gone) has nowhere to
+            // propagate to; there is no window to run without it either way.
+            #[allow(
+                clippy::unwrap_used,
+                reason = "fixed () trait signature; window-creation failure at startup is unrecoverable"
+            )]
+            Arc::new(event_loop.create_window(window_attributes).unwrap())
+        });
         #[cfg(target_os = "macos")]
         {
             use winit::platform::macos::ActiveEventLoopExtMacOS;
@@ -3101,6 +3218,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        if let Some(window) = self
+            .window
+            .clone()
+            .filter(|window| window.id() == window_id)
+            && self
+                .private_input
+                .event(&mut self.app, window.as_ref(), &event)
+        {
+            self.sync_ime(&window);
+            return;
+        }
         #[cfg(target_os = "android")]
         if let WindowEvent::Touch(touch) = &event
             && touch.phase == winit::event::TouchPhase::Started
@@ -3134,7 +3262,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             None
         };
         self.note_host_appearance_event(&event);
-        self.replay_unsettled_pointer(event_loop, window_id, &event);
         self.route_window_event(
             event_loop,
             window_id,
@@ -3230,6 +3357,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             request_primary_redraw();
         }
         self.sync_ime(&window);
+        if self.private_input.pending() {
+            request_primary_redraw();
+        }
         if self.last_primary_frame_presented > 0
             && let Some(scenario) = self.native_scenario.take()
         {
@@ -3328,6 +3458,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if app.poll_model_invocations() {
             request_primary_redraw();
         }
+        // Reveal requests must not wait on rendering an occluded/minimized
+        // window: consume them as soon as its admitted actions are polled.
+        if crate::component_lifecycle::take_window_activation_intent(app.root_widget.as_ref()) {
+            window.set_minimized(false);
+            window.focus_window();
+            window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
+            tracing::debug!(target: "tilo.app.activation", "existing native window activation requested");
+        }
         app.publish_playback_handoff();
 
         // Keep pumping frames while any "just typed" highlighter mark is
@@ -3339,7 +3477,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             request_primary_redraw();
         }
 
-        let idle_model = app.service_idle_model();
+        let idle_model = app.service_native_idle_model();
         if idle_model.changed {
             request_primary_redraw();
         }
@@ -3412,7 +3550,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             // spellcheck), not "commit a buffer". Files' 750ms metadata
             // poll found nothing and still presented at ~2 Hz because
             // `needs_sync` forced a full redraw.
-            let updated = app.update_model();
+            let updated = app.update_native_model();
             let _ = app.sync_model(true);
             let structure = app.forget_replaced_widgets();
             if present_after_deadline_sync(
@@ -3512,7 +3650,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             auxiliary_startup: awaiting_floating_pixels,
             retry_due: retry_due || auxiliary_retry_due,
         };
-        match crate::render_thread::retry::next_wake(
+        let deadline = crate::render_thread::retry::next_wake(
             crate::time::now(),
             primary_blocked_until,
             any_render_available,
@@ -3520,7 +3658,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             scheduled_deadline,
             retry_at,
             animation_deadline,
-        ) {
+        );
+        // A native field lease can retire and become ready during an idle sync.
+        // Republish its admission even when no model/layout change needs paint;
+        // otherwise a canceled recording's successor waits on a stale stamp.
+        if scheduled_due {
+            self.sync_ime(&window);
+        }
+        let deadline = deadline
+            .into_iter()
+            .chain(
+                self.private_input
+                    .busy()
+                    .then(|| crate::time::now() + Duration::from_millis(50)),
+            )
+            .min();
+        match deadline {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
@@ -3845,8 +3998,11 @@ impl App {
         self.run_with_setup(|_| {});
     }
 
-    #[cfg(windows)]
-    pub(crate) fn with_startup_renderer(mut self, renderer: Option<RendererPreparation>) -> Self {
+    #[cfg(any(windows, target_os = "linux"))]
+    pub(crate) fn with_startup_renderer(
+        mut self,
+        renderer: Option<startup::RendererPreparation>,
+    ) -> Self {
         self.startup_renderer = renderer;
         self
     }
@@ -3897,7 +4053,9 @@ impl App {
                     .clone(),
             );
         }
-        let event_loop = event_loop_builder.build().unwrap();
+        // The launch may have built it already, to make the window early.
+        let event_loop =
+            take_early_event_loop().unwrap_or_else(|| event_loop_builder.build().unwrap());
         tilo_host_search::forward_to_runtime();
         let proxy = event_loop.create_proxy();
         super::install_dev_session_stop(proxy.clone());
@@ -3959,6 +4117,7 @@ impl App {
             a11y_adapter: None,
             a11y_proxy,
             ime_state: None,
+            private_input: private_text_input::Bridge::default(),
             #[cfg(target_os = "android")]
             text_input: super::android_text_input::TextInputSession::default(),
             #[cfg(target_os = "android")]
@@ -3966,14 +4125,14 @@ impl App {
             primary_frames_sent: 0,
             primary_frames_completed: 0,
             top_layer_drawn: false,
+            presence_layer: crate::presence::PresenceLayer::new(),
+            mark_bounds: crate::scene_parts::DrawBounds::default(),
             last_primary_frame_presented: 0,
             primary_retry: crate::render_thread::retry::RenderRetryState::default(),
             floating_source_clear_frames: std::collections::HashMap::new(),
             floating_destination_present_frames: std::collections::HashMap::new(),
             touch_pointer: crate::interaction::TouchPointerEmulator::default(),
             dispatching_touch_pointer: false,
-            last_pointer: None,
-            pointer_unsettled: false,
             native_scenario,
             native_input_ids: Vec::new(),
             physical_input_trace: std::env::var("TILO_PROFILE_PRESENTATION")
@@ -4114,5 +4273,38 @@ mod deadline_present_tests {
         // the first flag at the call site (keeps clippy's bool limit).
         assert!(present_after_deadline_sync(false, true));
         assert!(present_after_deadline_sync(true, false));
+    }
+}
+
+#[cfg(test)]
+mod early_window_tests {
+    use super::{Early, early_for};
+
+    #[test]
+    fn an_early_window_is_kept_only_for_the_app_id_it_announces() {
+        let made = Some(("so.tilo.notes".to_string(), "window"));
+        assert_eq!(
+            early_for(made.clone(), &"so.tilo.notes".to_string()),
+            Early::Kept("window")
+        );
+        // An input surface announces its own id, never the package's: the
+        // early window must not become its window.
+        assert_eq!(
+            early_for(made, &"so.tilo.keyboard".to_string()),
+            Early::Discarded
+        );
+        assert_eq!(
+            early_for(None::<(String, &str)>, &"so.tilo.notes".to_string()),
+            Early::Absent
+        );
+    }
+
+    #[test]
+    fn a_prepared_surface_is_used_only_by_the_window_it_was_made_for() {
+        assert_eq!(
+            early_for(Some((7_u64, "surface")), &7),
+            Early::Kept("surface")
+        );
+        assert_eq!(early_for(Some((7_u64, "surface")), &8), Early::Discarded);
     }
 }

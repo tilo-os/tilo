@@ -21,7 +21,7 @@ impl DeliveryOriginLocatorV1 {
                 "invalid delivery origin locator".into(),
             ));
         }
-        crate::delivery_v3::descriptor::validate_origin(&self.origin)
+        crate::descriptor::validate_origin(&self.origin)
             .map_err(|_| WorkspaceJoinError::Protocol("invalid delivery origin".into()))
     }
     /// Sign inert discovery bytes with the named host key. Installation is the

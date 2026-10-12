@@ -396,6 +396,10 @@ impl DesktopSurface {
     pub fn workspace_context(&self) -> Option<(tilo_desktop_model::WorkspaceId, RoomId)> {
         self.context
     }
+    /// The tabs this surface hosts.
+    pub fn tab_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.tiles.keys().copied()
+    }
     pub fn strip_ids(&self) -> Vec<StripId> {
         self.order.clone()
     }
@@ -666,9 +670,14 @@ impl DesktopSurface {
                 let Some(live) = row.groups.iter_mut().find(|g| g.id == group.id) else {
                     continue;
                 };
-                changed |=
-                    live.width() != ui_width(group.width) || live.maximized != group.maximized;
-                live.set_width(ui_width(group.width));
+                // Width is a local intent committed on release. An unrelated
+                // snapshot revision must not reset a captured edge to its saved
+                // width or re-arm the width spring underneath the pointer.
+                if !live.edge_resize_in_flight() || live.maximized != group.maximized {
+                    changed |= live.width() != ui_width(group.width);
+                    live.set_width(ui_width(group.width));
+                }
+                changed |= live.maximized != group.maximized;
                 live.maximized = group.maximized;
                 let stale: Vec<_> = live
                     .tabs()
@@ -1057,15 +1066,5 @@ pub fn ui_width(width: WindowWidth) -> ui::widget::WindowWidth {
         WindowWidth::Normal => ui::widget::WindowWidth::Normal,
         WindowWidth::Wide => ui::widget::WindowWidth::Wide,
         WindowWidth::Fraction(p) => ui::widget::WindowWidth::Fraction(p),
-    }
-}
-
-/// The persisted width for a toolkit width.
-pub fn model_width(width: ui::widget::WindowWidth) -> WindowWidth {
-    match width {
-        ui::widget::WindowWidth::Narrow => WindowWidth::Narrow,
-        ui::widget::WindowWidth::Normal => WindowWidth::Normal,
-        ui::widget::WindowWidth::Wide => WindowWidth::Wide,
-        ui::widget::WindowWidth::Fraction(p) => WindowWidth::Fraction(p),
     }
 }

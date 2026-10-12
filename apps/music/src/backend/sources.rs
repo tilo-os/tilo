@@ -69,6 +69,16 @@ impl MusicBackend for Sources {
         self.selected.store(spotify, Ordering::Relaxed);
         Ok(())
     }
+    fn connect_spotify_read_only(&self) -> Result<(), BackendError> {
+        let source = self
+            .spotify
+            .as_ref()
+            .ok_or_else(|| BackendError("Spotify is unavailable".into()))?;
+        source.sign_in_read_only()?;
+        source.check_connected()?;
+        self.selected.store(true, Ordering::Relaxed);
+        Ok(())
+    }
     fn disconnect_spotify(&self) -> Result<(), BackendError> {
         self.spotify
             .as_ref()

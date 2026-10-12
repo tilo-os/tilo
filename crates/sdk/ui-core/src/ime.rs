@@ -21,6 +21,8 @@ pub fn scoped_fingerprint(scope: &[u8], field: [u8; 32], key: &[u8; 32]) -> [u8;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImeWindowState {
     pub purpose: winit::window::ImePurpose,
+    /// The original editable field accepts line feeds, independently of its pixels.
+    pub multiline: bool,
     pub x: u32,
     pub y: u32,
     pub width: u32,
@@ -31,7 +33,9 @@ impl ImeWindowState {
     pub fn from_widget(widget: &dyn crate::Widget) -> Option<Self> {
         let purpose = widget.ime_purpose()?;
         let rect = widget.ime_cursor_rect()?;
-        Some(Self::from_rect(purpose, rect))
+        let mut intent = Self::from_rect(purpose, rect);
+        intent.multiline = purpose == winit::window::ImePurpose::Normal && widget.ime_multiline();
+        Some(intent)
     }
 
     #[must_use]
@@ -52,6 +56,7 @@ impl ImeWindowState {
         };
         ImeWindowState {
             purpose,
+            multiline: false,
             x: bounded(rect.x0),
             y: bounded(rect.y0),
             width: bounded(rect.width()).max(1),
@@ -117,6 +122,7 @@ mod tests {
                 anchor: 6,
                 focus: 11
             },
+            &[],
             &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
             &automerge::ROOT,
         ));
@@ -143,6 +149,7 @@ mod tests {
                 anchor: 0,
                 focus: 5
             },
+            &[],
             &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
             &automerge::ROOT,
         ));

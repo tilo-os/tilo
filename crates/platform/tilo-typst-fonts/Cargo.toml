@@ -12,12 +12,17 @@ description = "Typst's bundled fonts on every target: embedded in native builds,
 name = "tilo_typst_fonts"
 path = "src/lib.rs"
 
-[dependencies]
-
 # A page fetches the fonts as host data (`HOST_FONTS`) instead of carrying
-# megabytes of font tables in its module; every other build embeds them.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# megabytes of font tables in its module; every other build embeds them. The
+# dependency is the same on every target all the same: the page never calls
+# `typst_assets::fonts()`, so the linker drops the tables there. One feature
+# set everywhere keeps typst-assets out of the workspace-hack, which is linked
+# into the shared runtime every app maps; the fonts belong to Typst's engine
+# library (crates/runtime/engines/typst).
+[dependencies]
 typst-assets = { version = "0.15", features = ["fonts"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 

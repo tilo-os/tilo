@@ -11,6 +11,7 @@
 )]
 
 use std::collections::HashMap;
+use tilo_ui::widget::TaffyTreeExt;
 
 use taffy::{AvailableSpace, Dimension, Style};
 use taffy::{NodeId, Size, TaffyTree};
@@ -43,8 +44,10 @@ fn focus_trap_cycles_only_within_members() {
 // `modal_dialog_{dark,light}.png` and `popover_{dark,light}.png`.
 // ---------------------------------------------------------------------------
 
-const CANVAS_W: u32 = 640;
-const CANVAS_H: u32 = 420;
+// Both axes must fit a desktop panel. Short landscape windows intentionally
+// present full-window sheets, which have no floating panel edge.
+const CANVAS_W: u32 = 960;
+const CANVAS_H: u32 = 720;
 
 fn luminance_of(px: (u8, u8, u8, u8)) -> f64 {
     tilo_ui::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
@@ -114,17 +117,14 @@ impl Widget for FixedContent {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(self.size.width),
-                    height: Dimension::length(self.size.height),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::length(self.size.width),
+                height: Dimension::length(self.size.height),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(

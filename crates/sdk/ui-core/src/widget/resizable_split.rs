@@ -350,7 +350,7 @@ impl SplitHandle {
                 .trim_end_matches('%')
                 .trim()
                 .parse::<f32>()
-                .is_ok_and(|percent| self.ratio.set(percent / 100.0)),
+                .is_ok_and(|percent| percent.is_finite() && self.ratio.set(percent / 100.0)),
             _ => return false,
         };
         self.place();
@@ -435,12 +435,15 @@ impl Widget for SplitHandle {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(self.layout_style());
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(self.layout_style(), node_map, self)
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let style = self.layout_style();
         if taffy.style(node).is_ok_and(|current| *current != style) {
             return taffy.set_style(node, style).is_ok();
@@ -451,9 +454,6 @@ impl Widget for SplitHandle {
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty
     }
-
-    // The split owns the whole pane bounds needed to place this divider.
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
 
     fn draw(
         &mut self,
@@ -478,6 +478,7 @@ impl Widget for SplitHandle {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &crate::widget::ModelPath,
     ) -> bool {
@@ -504,10 +505,25 @@ impl Widget for SplitHandle {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         let mut node = SplitHandle::accessibility(self);
         if let Some(id) = &self.test_id {
-            node = node.with_semantic_key(id);
+            node = node.with_action_target(id);
         }
         Some(node)
     }
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &crate::widget::ModelPath,
+    ) -> bool {
+        if self.test_id.as_deref() != Some(target) {
+            return false;
+        }
+        let moved = SplitHandle::perform_action(self, action);
+        self.layout_dirty |= moved;
+        moved
+    }
+
     fn get_rect(&self) -> Rect {
         self.divider
     }
@@ -610,17 +626,9 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         &self.left
     }
 
-    pub fn left_mut(&mut self) -> &mut L {
-        &mut self.left
-    }
-
     /// The second (trailing or bottom) pane.
     pub fn right(&self) -> &R {
         &self.right
-    }
-
-    pub fn right_mut(&mut self) -> &mut R {
-        &mut self.right
     }
 
     fn moved(&mut self) {
@@ -841,27 +849,28 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             children.push(self.handle.build_layout(taffy, theme, node_map));
         }
         self.style_panes(taffy, left_node, right_node);
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: match self.orientation {
-                    SplitOrientation::Horizontal => taffy::FlexDirection::Row,
-                    SplitOrientation::Vertical => taffy::FlexDirection::Column,
-                },
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: match self.orientation {
+                SplitOrientation::Horizontal => taffy::FlexDirection::Row,
+                SplitOrientation::Vertical => taffy::FlexDirection::Column,
             },
-            &children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: percent(1.0_f32),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     /// The panes follow a moved divider without rebuilding the tree.
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let Ok(children) = taffy.children(node) else {
             return false;
         };
@@ -873,7 +882,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         }
         let mut changed = self.style_panes(taffy, left, right);
         if let Some(&divider) = children.get(2) {
-            changed |= self.handle.adjust_layout_style(taffy, divider);
+            changed |= self.handle.adjust_layout_style(taffy, divider, text);
         }
         changed
     }
@@ -886,13 +895,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         let children = taffy.children(node).unwrap_or_default();
         // The Taffy children deliberately match `Widget::children`.
@@ -929,10 +932,23 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         presence: &PresenceCtx,
     ) {
         // Children first — the divider paints on top.
-        self.left
-            .draw(scene, transform, text_renderer, theme, presence);
-        self.right
-            .draw(scene, transform, text_renderer, theme, presence);
+        use crate::widget::draw_child;
+        draw_child(
+            &mut self.left,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
+        draw_child(
+            &mut self.right,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
         self.handle.paint(
             scene,
             transform,
@@ -977,8 +993,11 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        if self.handle.test_id.is_some() {
-            Some(crate::a11y::AccessNode::new(crate::a11y::Role::Group))
+        if let Some(id) = &self.handle.test_id {
+            Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                    .with_semantic_key(format!("resizable-split:{id}")),
+            )
         } else {
             Some(self.handle.accessibility())
         }
@@ -987,6 +1006,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &crate::widget::ModelPath,
     ) -> bool {
@@ -1051,42 +1071,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             || self.left.wants_pointer_capture()
             || self.right.wants_pointer_capture()
     }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.left.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-        self.right.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-        self.handle.paint(
-            scene,
-            transform,
-            theme.tokens.colors.surfaces.content,
-            theme,
-        );
-    }
 }
 
 impl<L: Widget + 'static, R: Widget + 'static> crate::presence::capability::PublishesPresence
@@ -1108,6 +1092,7 @@ impl<L: Widget + 'static, R: Widget + 'static> crate::permissions::capability::P
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use automerge::AutoCommit;
 
     /// Bare-minimum `Widget` for use as a `ResizableSplit` child in tests.
@@ -1136,15 +1121,14 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style {
+            let style = Style {
                 size: taffy::Size {
                     width: self.width.map_or(taffy::Dimension::auto(), length),
                     height: taffy::Dimension::auto(),
                 },
                 ..Style::default()
-            });
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
 
         fn update(
@@ -1157,23 +1141,7 @@ mod tests {
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let l = taffy.layout(node).copied().unwrap_or_default();
-            self.rect = Rect::new(
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-                origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-                origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-            );
-        }
-
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
         fn name(&self) -> &'static str {
@@ -1206,7 +1174,7 @@ mod tests {
         width: f32,
         height: f32,
     ) {
-        split.adjust_layout_style(tree, node);
+        split.adjust_layout_style(tree, node, &mut crate::text_render::TextRenderer::new());
         tree.compute_layout(
             node,
             taffy::Size {
@@ -1218,28 +1186,11 @@ mod tests {
         split.apply_layout(tree, node, Point::ZERO);
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
-    fn mouse_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_release;
 
     fn dispatch<L: Widget + 'static, R: Widget + 'static>(
         s: &mut ResizableSplit<L, R>,
@@ -1247,23 +1198,7 @@ mod tests {
         node: NodeId,
         event: &WindowEvent,
     ) {
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        s.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: tree,
-            },
-        );
+        Dispatch::new().layout(tree, node).send(s, event);
     }
 
     fn split(orientation: SplitOrientation) -> ResizableSplit<TestLeaf, TestLeaf> {
@@ -1445,6 +1380,39 @@ mod tests {
                 crate::a11y::Role::Separator
             );
             assert!(!root.is_focusable());
+            let resources = harness.resources();
+            let separator = resources
+                .iter()
+                .find(|resource| {
+                    resource
+                        .actions
+                        .iter()
+                        .any(|action| action.id == "set-value")
+                })
+                .expect("named shared divider publishes its canonical resize door");
+            for verb in ["increment", "decrement", "set-value"] {
+                assert!(separator.actions.iter().any(|action| action.id == verb));
+            }
+            harness
+                .perform_named(
+                    "request-divider",
+                    &crate::a11y::Action::SetValue("40%".into()),
+                )
+                .expect("canonical named divider dispatch");
+            assert!(
+                (harness
+                    .root::<ResizableSplit<TestLeaf, TestLeaf>>()
+                    .split_position()
+                    - 0.4)
+                    .abs()
+                    < f32::EPSILON
+            );
+            harness
+                .perform_named(
+                    "request-divider",
+                    &crate::a11y::Action::SetValue("50%".into()),
+                )
+                .expect("restore through the same public control");
             harness.click_named("request-divider").unwrap();
             harness.key(if orientation == SplitOrientation::Horizontal {
                 "ArrowRight"
@@ -1568,7 +1536,7 @@ mod tests {
         let (tree, node) = solve(&mut s, 400.0, 300.0);
         assert!(s.is_focusable());
         s.set_focus(true);
-        let right = crate::synthetic_input::key_event(
+        let right = crate::synthetic_input::key_input(
             &Key::Named(NamedKey::ArrowRight),
             ElementState::Pressed,
         );
@@ -1581,6 +1549,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         assert!(s.perform_action(
             &crate::a11y::Action::Decrement,
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));

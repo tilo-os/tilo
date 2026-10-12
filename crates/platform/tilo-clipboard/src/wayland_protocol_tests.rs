@@ -789,3 +789,58 @@ fn expired_copy_does_not_publish_on_current_or_later_focus() {
         "expired copy must never publish"
     );
 }
+
+#[test]
+fn explicit_plain_paste_survives_a_delayed_transfer_without_blocking_the_worker() {
+    let h = Harness::new();
+    h.select(0, Some("slow"), true);
+    h.enter(0, 0);
+    h.fence();
+    let result = h.backend().request_text(crate::ClipboardTarget::Clipboard);
+    h.wait(
+        || h.query(|state| state.held.len() >= 3),
+        "explicit plain receive",
+    );
+    assert!(matches!(
+        result.recv_timeout(Duration::from_millis(60)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    h.fence(); // A pending clipboard transfer must not stall protocol dispatch.
+    h.query(|state| {
+        let (_, fd) = state.held.pop().expect("explicit paste pipe");
+        std::fs::File::from(fd)
+            .write_all(b"delayed selection")
+            .unwrap();
+    });
+    assert_eq!(
+        result.recv_timeout(h.remaining()).unwrap(),
+        Some("delayed selection".into())
+    );
+}
+
+#[test]
+fn explicit_plain_paste_is_revoked_on_keyboard_leave() {
+    let h = Harness::new();
+    h.select(0, Some("private"), true);
+    h.enter(0, 0);
+    h.fence();
+    let result = h.backend().request_text(crate::ClipboardTarget::Clipboard);
+    h.wait(
+        || h.query(|state| state.held.len() >= 3),
+        "explicit plain receive",
+    );
+    h.leave(0);
+    h.fence();
+    assert_eq!(result.recv_timeout(h.remaining()).unwrap(), None);
+    let pipes = h.query(|state| std::mem::take(&mut state.held));
+    assert_eq!(pipes.len(), 3);
+    for (_, fd) in pipes {
+        assert_eq!(
+            std::fs::File::from(fd)
+                .write_all(b"late")
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+    }
+}

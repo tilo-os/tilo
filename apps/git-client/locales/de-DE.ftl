@@ -170,3 +170,18 @@ git-action-commit-description = Einen Commit aus den vorgemerkten Änderungen er
 git-action-stash = Änderungen im Arbeitsverzeichnis stashen
 git-action-stash-message = Stash-Nachricht
 git-collection-repository = Repository
+
+git-section-worktrees = Arbeitsverzeichnisse
+git-create-worktree = Worktree erstellen
+git-worktree-branch = Neuer Worktree-Branch
+git-worktree-path = Absoluter Zielpfad
+git-worktree-start = Ausgangspunkt (Branch, Tag oder Commit)
+git-worktree-host-required = Ein Worktree benötigt ein aktives Repository.
+git-worktree-running = Worktree wird erstellt…
+git-worktree-read-failed = Arbeitsverzeichnisse konnten nicht gelesen werden
+git-worktree-read-error = Arbeitsverzeichnisse konnten nicht gelesen werden: { $error }
+
+## History of the record
+
+git-client-git-client-repository = Repository { $new } geöffnet
+git-client-record-repository = Zweige und Verlauf des Repositorys festgehalten

@@ -83,6 +83,7 @@ pub struct QueryComposition {
     signature: u64,
     layout_epoch: Option<Arc<()>>,
     caret: Option<Rect>,
+    origin: Point,
 }
 
 impl Default for QueryComposition {
@@ -107,6 +108,7 @@ impl QueryComposition {
             signature: u64::MAX,
             layout_epoch: None,
             caret: None,
+            origin: Point::ZERO,
         }
     }
 
@@ -121,6 +123,29 @@ impl QueryComposition {
         self.caret = None;
         self.signature = u64::MAX;
         self.layout_epoch = None;
+    }
+
+    /// Place an inline query caret using its last shaped, painted layout.
+    /// Stale text or active IME composition keeps the existing selection.
+    pub fn pointer_selection(&self, text: &str, position: Point) -> Option<Selection> {
+        if self.is_composing()
+            || self.layout_text != text
+            || !position.x.is_finite()
+            || !position.y.is_finite()
+        {
+            return None;
+        }
+        let relative = position - self.origin;
+        let layout = self.layout.as_ref()?;
+        if relative.x.abs() > f64::from(f32::MAX) || relative.y.abs() > f64::from(f32::MAX) {
+            return None;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "finite local text-layout pixel coordinates fit the f32 shaping API"
+        )]
+        let position = layout.hit_position(relative.x as f32, relative.y as f32);
+        Some(Selection::collapsed(position.byte.min(text.len())))
     }
 
     /// Load the owner's selection into the core, clamped onto `text`.
@@ -399,6 +424,7 @@ impl QueryComposition {
             rect.x0 - scroll_x,
             rect.center().y - f64::from(layout.height()) / 2.0,
         );
+        self.origin = origin;
         let caret = Rect::new(
             origin.x + f64::from(caret_x),
             origin.y + f64::from(caret_top),
@@ -514,17 +540,13 @@ mod tests {
     use vello::kurbo::Affine;
 
     fn key(logical_key: Key, text: Option<&str>) -> WindowEvent {
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
+        let event = crate::synthetic_input::key_event(
+            logical_key,
+            text.map(Into::into),
+            ElementState::Pressed,
         );
-        event.logical_key = logical_key;
-        event.text = text.map(Into::into);
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }
@@ -932,7 +954,7 @@ mod tests {
 
     #[test]
     fn unchanged_browser_query_reshapes_after_font_failure_and_install() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        let root = crate::font_catalog::checkout_root();
         let fonts = crate::font_catalog::FontCatalog::product("", "en-US")
             .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
             .unwrap();

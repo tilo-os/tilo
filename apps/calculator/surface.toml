@@ -1,0 +1,69 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "calculator.document"
+label = "Calculator"
+version = 1
+fields = [
+  { path = "history", type = "Collection<HistoryEntry>", readonly = true, stored = "collection" },
+  { path = "history.*.expr", type = "String", label = true },
+  { path = "history.*.result", type = "String" },
+  { path = "funcs", type = "Collection<PlotFn>", stored = "collection" },
+  { path = "funcs.*.expr", type = "String", label = true },
+  { path = "funcs.*.visible", type = "bool" },
+  { path = "surfaces", type = "Collection<PlotFn>", stored = "collection" },
+  { path = "surfaces.*.expr", type = "String", label = true },
+  { path = "surfaces.*.visible", type = "bool" },
+]
+
+[[resources.verbs]]
+id = "commit-history"
+kind = "undoable"
+params = [
+  { name = "expr", required = true, schema = { type = "string" } },
+  { name = "result", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete-history-entry"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "entry", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "clear-history"
+destructive = true
+kind = "undoable"
+
+[[resources.verbs]]
+id = "add-function"
+kind = "undoable"
+params = [
+  { name = "formula", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "add-surface"
+kind = "undoable"
+params = [
+  { name = "formula", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete-function"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "function", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete-surface"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "surface", required = true, schema = { type = "string" } },
+]
+

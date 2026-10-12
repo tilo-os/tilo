@@ -36,6 +36,7 @@ pub enum StreamRequest {
         operation: crate::backend::SpotifyOperation,
     },
     ConnectSpotifyPlayback,
+    ConnectSpotify,
     NativeSpotify {
         track_id: String,
         source_id: String,
@@ -285,7 +286,7 @@ impl StreamWorker {
     }
 }
 
-fn valid_native_track(id: &str) -> bool {
+pub(crate) fn valid_native_track(id: &str) -> bool {
     id.strip_prefix("spotify:track:")
         .is_some_and(|id| id.len() == 22 && id.bytes().all(|byte| byte.is_ascii_alphanumeric()))
 }
@@ -332,7 +333,8 @@ fn validate_request(request: &StreamRequest) -> Result<(), String> {
         StreamRequest::Home
         | StreamRequest::Source { .. }
         | StreamRequest::DisconnectSpotify
-        | StreamRequest::ConnectSpotifyPlayback => {}
+        | StreamRequest::ConnectSpotifyPlayback
+        | StreamRequest::ConnectSpotify => {}
     }
     Ok(())
 }
@@ -386,7 +388,7 @@ fn handle_request(
         StreamRequest::ConnectSpotifyPlayback => {
             let result = backend
                 .spotify_playback(true)
-                .map(|_| (ui::i18n!("music-spotify-playback-authorized"), true))
+                .map(|_| (crate::i18n::t("music-spotify-playback-authorized"), true))
                 .map_err(|error| error.to_string());
             let _ = up_tx.send(StreamUpdate::SourceSelected { result });
         }
@@ -418,6 +420,13 @@ fn handle_request(
         StreamRequest::DisconnectSpotify => {
             let result = backend
                 .disconnect_spotify()
+                .map(|()| (backend.name().to_string(), backend.is_live()))
+                .map_err(|error| error.to_string());
+            let _ = up_tx.send(StreamUpdate::SourceSelected { result });
+        }
+        StreamRequest::ConnectSpotify => {
+            let result = backend
+                .connect_spotify_read_only()
                 .map(|()| (backend.name().to_string(), backend.is_live()))
                 .map_err(|error| error.to_string());
             let _ = up_tx.send(StreamUpdate::SourceSelected { result });

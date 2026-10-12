@@ -182,10 +182,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         arg("--out").unwrap_or_else(|| "target/look/distinct-letters-specimen".into()),
     );
     std::fs::create_dir_all(&dir)?;
-    let catalog = FontCatalog::controlled_fixture(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts"),
-        "en-US",
-    );
+    let catalog = FontCatalog::controlled_fixture(tilo_ui::font_catalog::checkout_root(), "en-US");
     for (theme, dark) in [("light", false), ("dark", true)] {
         sheet(
             &catalog,

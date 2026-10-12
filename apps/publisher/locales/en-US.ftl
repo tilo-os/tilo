@@ -9,6 +9,7 @@ publisher-copy-proof = Copy proof line
 publisher-copy-secret = Copy key for CI
 publisher-check-status = Check application
 publisher-namespace-heading = Namespaces
+publisher-namespace-help = Claim the domains and forge accounts whose apps you publish.
 publisher-domain-label = Domain
 publisher-domain-help = Proved with a DNS TXT record or a .well-known file on the domain.
 publisher-domain-placeholder = example.com
@@ -30,3 +31,10 @@ publisher-no-application = This registry has no application from this key yet.
 publisher-failed-title = That didn’t work
 publisher-key-unreadable-title = The publisher key can’t be read
 publisher-key-unreadable = publisher-key.json is not a valid publisher key. Restore it from a backup, or move it aside and create a new key.
+
+## History
+
+publisher-publisher-registry = Changed the registry to publish to
+publisher-publisher-domain = Changed the domain to claim
+publisher-publisher-forge-account = Changed the forge account to claim
+publisher-publisher-contact = Changed the contact address

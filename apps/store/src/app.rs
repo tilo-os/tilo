@@ -36,14 +36,13 @@ use ui::framework::{Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, 
 use ui::tilo_actions::{ActionSpec, ResourcePresentation};
 use ui::tilo_resource::Effect as _;
 use ui::widget::Widget;
-use ui::{Theme, permissions::PermissionContext, presence::PresenceCtx, text_render::TextRenderer};
+use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-use crate::bindings;
-use crate::doc_actions::StoreDocumentAction;
 use crate::model::{ActionKind, SourceFilter, StoreItem, StoreSource};
-use crate::resource::{ReportProjection, Store, StoreEffect};
+use crate::reports::{Reports as Store, reports as verbs};
+use crate::resource::{ReportProjection, StoreEffect};
 use crate::sources::distinct_categories;
 use crate::worker::{Outcome, Request, StoreWorker};
 mod view;
@@ -350,6 +349,7 @@ fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> Li
 
 fn review_label(item: &StoreItem) -> String {
     match item.trust {
+        crate::StoreTrust::TrustedAttestor => ui::i18n!("store-package-local-trust"),
         crate::StoreTrust::PublisherSigned => {
             "Signature verified, no independent review".to_string()
         }
@@ -391,6 +391,8 @@ pub struct StoreApp {
     dispatcher: Option<Dispatcher<Store>>,
     /// The serialized package and catalogue worker of a live window.
     worker: Option<StoreWorker>,
+    pub(crate) package_content: Option<ui::framework::content::ContentStore>,
+    pub(crate) imported_review: Option<(String, String, String)>,
     launch_requests: Vec<ui::collaboration::CollabRequest>,
     pending_launches: HashMap<u64, std::sync::mpsc::Sender<Result<String, String>>>,
     next_launch_request: Option<u64>,
@@ -440,6 +442,10 @@ pub struct StoreApp {
     /// Marked dirty when a chip / category selection flips so the
     /// host re-runs `build_layout`.
     structure_dirty: bool,
+    /// Survives the host consuming `structure_dirty` before its layout pass.
+    composition_dirty: bool,
+    /// Composition captures page measures and eager localized labels.
+    composition_context: Option<(Theme, String, ui::i18n::PseudoLocale)>,
     /// The rect the toplevel container resolves into during
     /// `apply_layout` — needed for `get_rect`.
     rect: Rect,
@@ -486,6 +492,8 @@ impl StoreApp {
         Self {
             dispatcher: None,
             worker: None,
+            package_content: None,
+            imported_review: None,
             launch_requests: Vec::new(),
             pending_launches: HashMap::new(),
             next_launch_request: Some(1),
@@ -507,6 +515,8 @@ impl StoreApp {
             focused_detail: None,
             technical_details_open: false,
             structure_dirty: true,
+            composition_dirty: true,
+            composition_context: None,
             rect: Rect::ZERO,
             root: None,
             can_go_back: Rc::new(Cell::new(false)),
@@ -772,6 +782,14 @@ impl StoreApp {
         let (detail, open_reference) = match update {
             crate::worker::DetailUpdate::Requested { item, .. } => (item, false),
             crate::worker::DetailUpdate::OpenedReference(item) => (Some(item), true),
+            crate::worker::DetailUpdate::ImportedPackage {
+                item,
+                root,
+                version,
+            } => {
+                self.imported_review = Some((item.id.clone(), root, version));
+                (Some(item), true)
+            }
         };
         let Some(detail) = detail else {
             return;
@@ -1026,11 +1044,19 @@ impl Widget for StoreApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        let locale = ui::i18n::I18nManager::current_locale();
+        let pseudo = ui::i18n::I18nManager::pseudo_locale();
+        let recompose = self.structure_dirty
+            || self.composition_dirty
+            || self.root.is_none()
+            || self.composition_context.as_ref().is_none_or(
+                |(previous_theme, previous_locale, previous_pseudo)| {
+                    previous_theme != theme
+                        || previous_locale != &locale
+                        || *previous_pseudo != pseudo
+                },
+            );
         self.structure_dirty = false;
-        let page = self.compose(theme);
-        self.can_go_back
-            .set(self.safety_open || self.remotes_open || self.focused_detail.is_some());
-        let title = self.page_title();
         let mut root = self.root.take().unwrap_or_else(|| {
             let can = Rc::clone(&self.can_go_back);
             let requested = Rc::clone(&self.back_requested);
@@ -1040,16 +1066,23 @@ impl Widget for StoreApp {
                     .on_back(move || can.get(), move || requested.set(true)),
             )
         });
-        // The catalogue's actions share the header row with History; a page
-        // opened from it carries its own title and actions in its body.
-        let catalogue = !self.safety_open && !self.remotes_open && self.focused_detail.is_none();
-        let actions = if catalogue {
-            Self::catalogue_actions()
-        } else {
-            Vec::new()
-        };
-        root.set_content_header(title, actions);
-        root.set_content(page);
+        if recompose {
+            // A resize only reflows retained controls. Replacing them here
+            // discards input state and their text/layout caches.
+            self.can_go_back
+                .set(self.safety_open || self.remotes_open || self.focused_detail.is_some());
+            let catalogue =
+                !self.safety_open && !self.remotes_open && self.focused_detail.is_none();
+            let actions = if catalogue {
+                Self::catalogue_actions()
+            } else {
+                Vec::new()
+            };
+            root.set_content_header(self.page_title(), actions);
+            root.set_content(self.compose(theme));
+            self.composition_context = Some((theme.clone(), locale, pseudo));
+            self.composition_dirty = false;
+        }
         let child = root.build_layout(taffy, theme, node_map);
         self.root = Some(root);
         // A column, so the page's scroller can absorb the window's height.
@@ -1071,15 +1104,7 @@ impl Widget for StoreApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node))
             && let Some(&child_node) = children.first()
         {
@@ -1097,27 +1122,6 @@ impl Widget for StoreApp {
     ) {
         if let Some(root) = self.root.as_mut() {
             root.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &PermissionContext,
-    ) {
-        if let Some(root) = self.root.as_mut() {
-            root.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                permissions,
-            );
         }
     }
 
@@ -1201,6 +1205,7 @@ impl Widget for StoreApp {
 
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
+        self.composition_dirty |= own;
         let child = self.root.as_mut().is_some_and(|r| r.take_structure_dirty());
         own || child
     }
@@ -1246,6 +1251,8 @@ pub enum Finish {
     Submitted { app_id: String },
     /// The registry confirmed the app's case: record its status.
     Case { app_id: String },
+    /// The reviewed local file was installed.
+    ImportedPackage,
     /// Nothing beside the status line.
     Status,
 }
@@ -1277,7 +1284,8 @@ impl StoreApp {
             .as_deref()
             .is_none_or(|query| query == self.query());
         let current_detail = snap.detail.as_ref().is_none_or(|update| match update {
-            crate::worker::DetailUpdate::OpenedReference(_) => true,
+            crate::worker::DetailUpdate::OpenedReference(_)
+            | crate::worker::DetailUpdate::ImportedPackage { .. } => true,
             crate::worker::DetailUpdate::Requested { id, .. } => {
                 self.focused_detail.as_deref() == Some(id.as_str())
             }
@@ -1321,7 +1329,7 @@ impl StoreApp {
     pub(crate) fn inspect_catalogue(&self, app: Option<&str>) -> Result<serde_json::Value, String> {
         let detail = app
             .map(|id| {
-                if !crate::doc_actions::valid_app_id(id) {
+                if !crate::reports::valid_app_id(id) {
                     return Err("invalid app identity".to_string());
                 }
                 self.items
@@ -1396,6 +1404,7 @@ impl StoreApp {
             "error": self.operation_error.as_deref().map(resource_detail_excerpt),
             "remote_count": self.remotes.len(), "remotes_truncated": remotes.len() < self.remotes.len(),
             "remotes": remotes,
+            "imported_package": self.imported_review.as_ref().map(|(app,root,version)| serde_json::json!({"app":app,"root":root,"version":version})),
         }))
     }
 
@@ -1408,6 +1417,40 @@ impl StoreApp {
     ) -> EffectAnswer {
         if let StoreEffect::InspectCatalogue { app } = &effect {
             return self.inspect_catalogue(app.as_deref()).map(Effected::value);
+        }
+        if matches!(
+            &effect,
+            StoreEffect::ImportPackage {
+                path: None,
+                content: None,
+                reported_size: None,
+            }
+        ) {
+            return Ok(cx.choose_file(
+                ui::portal::PickRequest::open(
+                    &ui::i18n!("store-package-choose"),
+                    &ui::i18n!("store-package-review"),
+                )
+                .filter(
+                    ui::portal::FileFilter::new(&ui::i18n!("store-package-file-type"))
+                        .glob("*.tapp"),
+                ),
+                |app, chosen, cx| {
+                    let Some(chosen) = chosen else {
+                        return Ok(Effected::done());
+                    };
+                    app.imported_review = None;
+                    app.start_job(
+                        Job {
+                            request: Request::ImportPackage(crate::package_import::Input::Bytes(
+                                chosen.bytes,
+                            )),
+                            finish: Finish::Status,
+                        },
+                        cx,
+                    )
+                },
+            ));
         }
         match self.admit(effect)? {
             Admitted::Done => Ok(Effected::done()),
@@ -1502,7 +1545,7 @@ impl StoreApp {
                 self.set_active_category(None);
             }
             StoreEffect::ShowDetails { app } => {
-                if !crate::doc_actions::valid_app_id(&app) {
+                if !crate::reports::valid_app_id(&app) {
                     return Err("invalid app identity".into());
                 }
                 self.status_line = self.items.iter().find(|item| item.id == app).map_or_else(
@@ -1511,6 +1554,54 @@ impl StoreApp {
                 );
                 self.focus_detail(&app);
                 self.pending_detail = Some(app);
+            }
+            StoreEffect::ImportPackage {
+                path,
+                content,
+                reported_size,
+            } => {
+                if reported_size
+                    .is_some_and(|size| size > crate::package_import::MAX_IMPORT_BYTES as u64)
+                {
+                    let error = ui::i18n!("store-package-size-refused");
+                    self.set_operation_error(Some(error.clone()));
+                    return Err(error);
+                }
+                self.reserve_job()?;
+                let input = match (path, content) {
+                    (Some(path), None) if path.len() <= 4096 => {
+                        crate::package_import::Input::Path(path.into())
+                    }
+                    (None, Some(hash)) if ui::framework::content::valid_hash(&hash) => {
+                        crate::package_import::Input::Content(
+                            self.package_content
+                                .clone()
+                                .ok_or_else(|| ui::i18n!("store-package-unavailable"))?,
+                            hash,
+                        )
+                    }
+                    _ => return Err(ui::i18n!("store-package-source-required")),
+                };
+                self.imported_review = None;
+                self.status_line = ui::i18n!("store-package-reviewing");
+                self.structure_dirty = true;
+                return Ok(Job::admitted(Request::ImportPackage(input), Finish::Status));
+            }
+            StoreEffect::InstallImportedPackage { app, root } => {
+                self.reserve_job()?;
+                if self
+                    .imported_review
+                    .as_ref()
+                    .is_none_or(|(id, expected, _)| id != &app || expected != &root)
+                {
+                    return Err(ui::i18n!("store-package-review-required"));
+                }
+                self.status_line = ui::i18n!("store-package-installing");
+                self.structure_dirty = true;
+                return Ok(Job::admitted(
+                    Request::InstallImported { app, root },
+                    Finish::ImportedPackage,
+                ));
             }
             StoreEffect::OpenReference { path, contents } => {
                 if path.is_none() && contents.is_none() {
@@ -1559,17 +1650,6 @@ impl StoreApp {
                 self.reserve_job()?;
                 return Ok(Job::admitted(Request::RefreshRemotes, Finish::Status));
             }
-            StoreEffect::UseFlathubForAccount { remote } => {
-                let source = self.flathub_account_source(&remote)?;
-                self.reserve_job()?;
-                return Ok(Job::admitted(
-                    Request::RemoteAdd {
-                        name: source.name.clone(),
-                        url: "https://dl.flathub.org/repo/flathub.flatpakrepo".into(),
-                    },
-                    Finish::Status,
-                ));
-            }
             StoreEffect::AddRemote { name, url } => {
                 if let Err(error) =
                     validate_remote_name(&name).and_then(|()| validate_remote_url(&url))
@@ -1616,7 +1696,7 @@ impl StoreApp {
                     return Err("this report was already submitted".into());
                 }
                 let note = report.note.trim().chars().count();
-                if !(8..=crate::doc_actions::MAX_REPORT_NOTE_CHARS).contains(&note) {
+                if !(8..=crate::reports::MAX_REPORT_NOTE_CHARS).contains(&note) {
                     return Err("Add a concern of 8–4096 characters before submitting".into());
                 }
                 let (item, registry_name) = self.reported_app(&report)?;
@@ -1670,7 +1750,7 @@ impl StoreApp {
                 let item = self.items.iter().find(|item| item.id == report.app_id);
                 return Ok(Admitted::Export(report_envelope(&report, item)));
             }
-            StoreEffect::Open { .. }
+            StoreEffect::OpenApp { .. }
             | StoreEffect::Update { .. }
             | StoreEffect::Remove { .. }
             | StoreEffect::Pin { .. }
@@ -1726,7 +1806,7 @@ impl StoreApp {
     /// The report about `app`, once the registry has a case for it.
     fn case(&self, app: &str) -> Result<ReportProjection, String> {
         let report = self.report(app)?;
-        if !report.is_case() || !crate::doc_actions::valid_case_id(&report.id) {
+        if !report.is_case() || !crate::reports::valid_case_id(&report.id) {
             return Err("this report has no moderation case yet".into());
         }
         Ok(report)
@@ -1780,7 +1860,7 @@ impl StoreApp {
         &mut self,
         finish: &Finish,
         outcome: Outcome,
-        parent: Option<tilo_actions::InvocationId>,
+        parent: Option<ui::tilo_actions::InvocationId>,
         cx: &mut EffectCx<Store, Self>,
     ) -> EffectAnswer {
         if let Ok(finished) = &outcome
@@ -1795,6 +1875,9 @@ impl StoreApp {
         }
         self.structure_dirty = true;
         let finished = outcome?;
+        if *finish == Finish::ImportedPackage {
+            self.imported_review = None;
+        }
         if let Some(case) = &finished.case {
             match finish {
                 Finish::Submitted { app_id } => {
@@ -1813,7 +1896,7 @@ impl StoreApp {
                     moderation_status_label(case.status),
                     cx,
                 )?,
-                Finish::Package | Finish::Status => {}
+                Finish::Package | Finish::Status | Finish::ImportedPackage => {}
             }
         }
         self.set_status_line(finished.status);
@@ -1823,7 +1906,7 @@ impl StoreApp {
     fn start_application_launch(
         &mut self,
         launch: crate::actions::ApplicationLaunch,
-        parent: Option<tilo_actions::InvocationId>,
+        parent: Option<ui::tilo_actions::InvocationId>,
         cx: &mut EffectCx<Store, Self>,
     ) -> EffectAnswer {
         let Some(request_id) = self.next_launch_request.take() else {
@@ -1889,7 +1972,7 @@ impl StoreApp {
     ) -> Result<(), String> {
         match case_record(app_id, package_id, case_id, status) {
             Ok(record) => {
-                cx.apply(&record);
+                cx.submit(Store::RECORD_MODERATION_CASE.with(record));
                 self.status_line = format!("Moderation case {case_id} is {status}.");
                 Ok(())
             }
@@ -1954,22 +2037,33 @@ impl StoreApp {
 
     /// The effects that cannot run on this device now.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
-        if self.flatpak_available {
-            return Vec::new();
+        let mut statuses = Vec::new();
+        if self.imported_review.is_none() {
+            statuses.push(EffectStatus::unavailable(
+                StoreEffect::INSTALL_IMPORTED_PACKAGE,
+                "package_review_required",
+                ui::i18n!("store-package-review-required"),
+            ));
         }
-        let reason = flatpak_unavailable_reason(self.flatpak_error.as_deref());
-        [
-            StoreEffect::FLATPAK_INSTALL,
-            StoreEffect::FLATPAK_UPDATE,
-            StoreEffect::FLATPAK_OPEN,
-            StoreEffect::FLATPAK_REMOVE,
-            StoreEffect::FLATPAK_SETUP,
-            StoreEffect::ENABLE_REMOTE,
-            StoreEffect::DISABLE_REMOTE,
-        ]
-        .into_iter()
-        .map(|effect| EffectStatus::unavailable(effect, "flatpak_host_unavailable", reason))
-        .collect()
+        if !self.flatpak_available {
+            let reason = flatpak_unavailable_reason(self.flatpak_error.as_deref());
+            statuses.extend(
+                [
+                    StoreEffect::FLATPAK_INSTALL,
+                    StoreEffect::FLATPAK_UPDATE,
+                    StoreEffect::FLATPAK_OPEN,
+                    StoreEffect::FLATPAK_REMOVE,
+                    StoreEffect::FLATPAK_SETUP,
+                    StoreEffect::ENABLE_REMOTE,
+                    StoreEffect::DISABLE_REMOTE,
+                ]
+                .into_iter()
+                .map(|effect| {
+                    EffectStatus::unavailable(effect, "flatpak_host_unavailable", reason)
+                }),
+            );
+        }
+        statuses
     }
 
     /// The live rows the Store publishes: a bounded page of the catalogue
@@ -2051,7 +2145,7 @@ impl StoreApp {
                 .remotes
                 .iter()
                 .find(|remote| remote.resource_id() == id)
-                .map(|remote| self.remote_live_row(remote));
+                .map(Self::remote_live_row);
         }
         match id {
             REMOTES_ID => Some(self.remotes_row()),
@@ -2079,46 +2173,6 @@ impl StoreApp {
         )
     }
 
-    fn flathub_account_source(&self, id: &str) -> Result<&crate::flathub_client::Remote, String> {
-        let source = self
-            .remotes
-            .iter()
-            .find(|remote| remote.resource_id() == id)
-            .ok_or_else(|| ui::i18n!("store-flathub-account-missing"))?;
-        if source.user_managed
-            || source.disabled
-            || source.name != "flathub"
-            || source.url != "https://dl.flathub.org/repo/"
-        {
-            return Err(ui::i18n!("store-flathub-account-source"));
-        }
-        validate_remote_url(&source.url)?;
-        if self
-            .remotes
-            .iter()
-            .any(|remote| remote.user_managed && remote.name == source.name)
-        {
-            return Err(ui::i18n!("store-flathub-account-existing"));
-        }
-        Ok(source)
-    }
-
-    fn flathub_account_button(&self) -> Option<Box<dyn Widget>> {
-        let source = self
-            .remotes
-            .iter()
-            .find(|remote| self.flathub_account_source(&remote.resource_id()).is_ok())?;
-        let effect = StoreEffect::UseFlathubForAccount {
-            remote: source.resource_id(),
-        };
-        let binding = bindings::effect(&effect)?;
-        Some(Box::new(
-            ui::widget::Button::new("store.flathub.account", &ui::i18n!("store-flathub-account"))
-                .on_action(binding)
-                .control_size(ui::widget::ControlSize::Small),
-        ))
-    }
-
     fn package_label(&self, action: ActionKind) -> String {
         package_action_label(action, self.flatpak_error.as_deref())
     }
@@ -2141,30 +2195,21 @@ impl StoreApp {
         ))
     }
 
-    fn remote_live_row(&self, remote: &crate::flathub_client::Remote) -> LiveRow {
+    fn remote_live_row(remote: &crate::flathub_client::Remote) -> LiveRow {
         let mut row = remote_row(remote);
         if remote.user_managed {
             row = row.effect(&remote_enabled_effect(remote));
         }
-        if self.flathub_account_source(&remote.resource_id()).is_ok() {
-            row.effect(&StoreEffect::UseFlathubForAccount {
-                remote: remote.resource_id(),
-            })
-        } else {
-            row
-        }
+        row
     }
 
     fn remotes_row(&self) -> LiveRow {
-        self.remotes
-            .iter()
-            .map(|remote| self.remote_live_row(remote))
-            .fold(
-                LiveRow::new(REMOTES_ID, "store.remote-list", "Flatpak remotes")
-                    .effect(&StoreEffect::ShowRemotes)
-                    .effect(&StoreEffect::RefreshRemotes),
-                LiveRow::row,
-            )
+        self.remotes.iter().map(Self::remote_live_row).fold(
+            LiveRow::new(REMOTES_ID, "store.remote-list", "Flatpak remotes")
+                .effect(&StoreEffect::ShowRemotes)
+                .effect(&StoreEffect::RefreshRemotes),
+            LiveRow::row,
+        )
     }
 
     fn moderation_row(&self) -> LiveRow {
@@ -2217,14 +2262,14 @@ fn case_record(
     package_id: &str,
     case_id: &str,
     status: &str,
-) -> Result<StoreDocumentAction, &'static str> {
+) -> Result<verbs::RecordModerationCase, &'static str> {
     if package_id != app_id
         || !case_id.starts_with("case-")
-        || !crate::doc_actions::valid_case_id(case_id)
+        || !crate::reports::valid_case_id(case_id)
     {
         return Err("Registry returned an invalid moderation case identifier.");
     }
-    Ok(StoreDocumentAction::RecordModerationCase {
+    Ok(verbs::RecordModerationCase {
         app_id: app_id.to_owned(),
         case_id: case_id.to_owned(),
         status: status.to_owned(),
@@ -2555,12 +2600,258 @@ mod tests {
     }
 
     #[test]
+    fn completed_empty_search_offers_the_declared_filter_reset() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.show_capture_catalogue(crate::fixture::fixture_catalog());
+            store.set_worker_busy(false);
+        })
+        .unwrap();
+        app.effect(&StoreEffect::SetSearch {
+            query: "no-matching-app".into(),
+        })
+        .unwrap();
+        app.with_surface(|store: &mut StoreApp| {
+            store.apply_worker_snapshot(crate::worker::Snapshot {
+                items: Vec::new(),
+                status_line: "0 search results".into(),
+                query: Some("no-matching-app".into()),
+                detail: None,
+                remotes: Vec::new(),
+                flatpak_available: true,
+                flatpak_error: None,
+                operation_error: None,
+            });
+        })
+        .unwrap();
+        for role in [ui::permissions::Role::Owner, ui::permissions::Role::Viewer] {
+            app.set_role(role);
+            let visible = app.harness().inspection_json().unwrap();
+            assert!(
+                visible.contains("No apps found"),
+                "empty completed search is not a missing catalogue: {visible}"
+            );
+            assert!(!visible.contains("Add or enable a catalogue"));
+            let reset = app
+                .harness()
+                .controls()
+                .into_iter()
+                .find(|control| control.name.as_deref() == Some("Clear filters"))
+                .expect("the empty result publishes its recovery control");
+            assert!(!reset.disabled);
+            let audit = app.harness().native_app_audit();
+            assert!(
+                !audit
+                    .issues
+                    .iter()
+                    .any(|issue| issue.code == "stale-action-binding"),
+                "{audit:?}"
+            );
+        }
+        app.effect(&StoreEffect::ClearFilters).unwrap();
+        let snapshot = app
+            .effect(&StoreEffect::InspectCatalogue { app: None })
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(snapshot["query"], "");
+        app.with_surface(|store: &mut StoreApp| {
+            assert_eq!(store.pending_search.as_deref(), Some(""));
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn empty_search_preserves_loading_failure_and_unfiltered_empty_states() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.effect(&StoreEffect::SetSearch {
+            query: "no-matching-app".into(),
+        })
+        .unwrap();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.apply_worker_snapshot(crate::worker::Snapshot {
+                items: Vec::new(),
+                status_line: String::new(),
+                query: Some("no-matching-app".into()),
+                detail: None,
+                remotes: Vec::new(),
+                flatpak_available: true,
+                flatpak_error: None,
+                operation_error: None,
+            });
+            store.set_worker_busy(true);
+        })
+        .unwrap();
+        let visible = app.harness().inspection_json().unwrap();
+        assert!(visible.contains("Loading apps"));
+        assert!(!visible.contains("No apps found"));
+        app.with_surface(|store: &mut StoreApp| {
+            store.set_worker_busy(false);
+            store.set_operation_error(Some("Repository unavailable".into()));
+        })
+        .unwrap();
+        let visible = app.harness().inspection_json().unwrap();
+        assert!(visible.contains("Catalogues offline"));
+        assert!(visible.contains("Repository unavailable"));
+        assert!(!visible.contains("No apps found"));
+        app.with_surface(|store: &mut StoreApp| store.set_operation_error(None))
+            .unwrap();
+        app.effect(&StoreEffect::ClearFilters).unwrap();
+        let visible = app.harness().inspection_json().unwrap();
+        assert!(visible.contains("No apps available"));
+        assert!(!visible.contains("No apps found"));
+    }
+
+    #[test]
+    fn resizing_remotes_preserves_the_active_input_selection() {
+        fn input(widget: &mut dyn Widget) -> Option<&mut dyn Widget> {
+            if widget.test_id() == Some("store.remote.name") {
+                return Some(widget);
+            }
+            for child in widget.children_mut() {
+                if let Some(found) = input(child) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.stage_scene(Some("remotes"));
+            store.remote_name_state.set("fedora-origin".to_owned());
+        })
+        .unwrap();
+        app.harness().resize((1472, 920)).unwrap();
+        app.with_surface(|store: &mut StoreApp| {
+            let input = input(store).expect("the real remote-name input is mounted");
+            ui::undo::set_state(input, "3:b:0");
+            assert_eq!(ui::undo::get_state(input).as_deref(), Some("3:b:0"));
+        })
+        .unwrap();
+        app.harness().resize((520, 820)).unwrap();
+        app.with_surface(|store: &mut StoreApp| {
+            assert_eq!(
+                ui::undo::get_state(input(store).expect("remote name stays mounted")).as_deref(),
+                Some("3:b:0"),
+                "ordinary reflow must retain the person's selection in the live input"
+            );
+        })
+        .unwrap();
+        app.effect(&StoreEffect::ShowCatalogue).unwrap();
+        app.harness().resize((1472, 920)).unwrap();
+        app.with_surface(|store: &mut StoreApp| {
+            assert!(
+                input(store).is_none(),
+                "actual navigation must replace the retained remote form"
+            );
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn retained_store_repaints_each_theme_and_reflows_larger_text() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.stage_scene(Some("remotes"));
+        })
+        .unwrap();
+        app.harness().resize((520, 820)).unwrap();
+        app.harness().set_theme(Theme::light());
+        let mut previous = app.harness().scene().encoding().draw_data.clone();
+        assert!(!previous.is_empty(), "the actual Store must paint");
+        let input_height = app.harness().targets()["store.remote.name"].height();
+        for theme in [Theme::dark(), Theme::high_contrast(), Theme::light()] {
+            app.harness().set_theme(theme);
+            let current = app.harness().scene().encoding().draw_data.clone();
+            assert_ne!(current, previous, "the Store must paint the new theme");
+            previous = current;
+        }
+        let mut scaled = Theme::light();
+        scaled.text_scale = 1.5;
+        app.harness().set_theme(scaled);
+        assert!(
+            app.harness().targets()["store.remote.name"].height() > input_height,
+            "the retained form must accommodate the larger text"
+        );
+        assert!(
+            app.harness()
+                .controls()
+                .iter()
+                .any(|control| control.name.as_deref() == Some("Add remote") && !control.disabled),
+            "the normal owner can still use the scaled form"
+        );
+    }
+
+    #[test]
+    fn readable_store_failure_and_build_metadata_have_reviewable_layouts() {
+        let output =
+            std::env::var_os("TILO_STORE_PRESENTATION_REVIEW_DIR").map(std::path::PathBuf::from);
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            let mut items = crate::fixture::fixture_catalog();
+            let native = items
+                .iter_mut()
+                .find(|item| matches!(item.source, StoreSource::Tilo { .. }))
+                .unwrap();
+            native.versions[0].version =
+                "0.1.79285+g4b07574f432de8ca4fc7f108e07c0237b75b4b05".into();
+            store.set_items(items);
+            let remote = crate::flathub_client::Remote {
+                name: "fedora".into(),
+                url: "https://example.invalid/fedora".into(),
+                title: "Fedora Flatpaks".into(),
+                disabled: false,
+                user_managed: false,
+            };
+            store.set_worker_busy(false);
+            store.set_operation_error(Some(crate::flathub_client::remote_error(
+                &remote,
+                "Failed: remote exception: remote exception: command timed out after 8000 ms",
+            )));
+        })
+        .unwrap();
+        for (name, theme) in [
+            ("light", Theme::light()),
+            ("dark", Theme::dark()),
+            ("high-contrast", Theme::high_contrast().with_text_scale(1.5)),
+        ] {
+            for width in [480, 1280] {
+                app.harness().resize((width, 900)).unwrap();
+                app.harness().set_theme(theme.clone());
+                let targets = app.harness().targets();
+                let retry = targets
+                    .get("store.error.refresh")
+                    .expect("the real source retry control must be observable");
+                assert!(retry.x0 >= 0.0 && retry.x1 <= f64::from(width));
+                assert!(retry.y0 >= 0.0 && retry.y1 <= 900.0);
+                assert!(
+                    app.harness()
+                        .controls()
+                        .iter()
+                        .any(|control| control.name.as_deref() == Some("Refresh apps")
+                            && !control.disabled)
+                );
+                if let Some(directory) = &output {
+                    std::fs::create_dir_all(directory).unwrap();
+                    app.harness()
+                        .render_png(&directory.join(format!("{name}-{width}-source-preview.png")));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn ordinary_owner_store_controls_and_optional_offscreen_review() {
         let output = std::env::var_os("TILO_STORE_REVIEW_DIR").map(std::path::PathBuf::from);
         for (scenario, action) in [
             ("wide", "Refresh catalogues"),
-            ("account-setup", "Use Flathub for my apps"),
-            ("account-remotes", "Use Flathub for my apps"),
+            ("account-setup", "Refresh catalogues"),
+            ("account-remotes", "Browse apps"),
             ("remotes", "Browse apps"),
             ("remotes-disabled", "Enable source"),
             ("search-notes", "Notes"),
@@ -2596,7 +2887,7 @@ mod tests {
                         "{scenario}: the ordinary owner can use {action} at {width} in {theme}"
                     );
                     let additional = match scenario {
-                        "account-remotes" => &["Browse apps"][..],
+                        "account-remotes" => &["Refresh remotes"][..],
                         "remotes" => &["Disable source"][..],
                         "wide" => &["Search"][..],
                         "detail" => &["Open"][..],
@@ -2727,7 +3018,7 @@ mod tests {
         // Admin effects are removed from a viewer's public door; unlike a
         // retained read effect submitting a forbidden edit, lookup itself refuses.
         assert!(
-            matches!(&refused, tilo_actions::DoorError::Unknown(_)),
+            matches!(&refused, ui::tilo_actions::DoorError::Unknown(_)),
             "{refused:?}"
         );
         assert!(!app.harness().controls().iter().any(|control| matches!(
@@ -2800,7 +3091,98 @@ mod tests {
     }
 
     #[test]
-    fn flathub_account_control_is_enabled_on_the_live_owner_surface_and_inspection_is_truthful() {
+    fn default_flathub_browsing_has_no_account_opt_in_for_owner_editor_or_viewer() {
+        for role in [
+            ui::permissions::Role::Owner,
+            ui::permissions::Role::Editor,
+            ui::permissions::Role::Viewer,
+        ] {
+            let (_environment, _directory, mut app) = inspected_store();
+            app.with_surface(|store: &mut StoreApp| {
+                store.worker = None;
+                store.show_capture_catalogue(crate::fixture::fixture_catalog());
+                store.set_flatpak_available(true);
+                store.set_remotes(vec![crate::flathub_client::Remote {
+                    name: "flathub".into(),
+                    title: "Flathub".into(),
+                    url: "https://dl.flathub.org/repo/".into(),
+                    disabled: false,
+                    user_managed: false,
+                }]);
+            })
+            .unwrap();
+            app.set_role(role);
+            let audit = app.harness().native_app_audit();
+            assert!(
+                !audit
+                    .issues
+                    .iter()
+                    .any(|issue| issue.code == "stale-action-binding"),
+                "default source bindings resolve on the complete native surface for {role:?}: {:?}",
+                audit.issues
+            );
+            assert!(
+                !app.harness()
+                    .controls()
+                    .iter()
+                    .any(|control| control.name.as_deref() == Some("Use Flathub for my apps")),
+                "Flathub browsing is the normal default, not an account opt-in for {role:?}"
+            );
+            let inspected = app
+                .effect(&StoreEffect::InspectCatalogue { app: None })
+                .unwrap()
+                .value
+                .unwrap();
+            assert_eq!(inspected["flatpak_available"], true);
+            assert_eq!(inspected["remote_count"], 1);
+            assert_eq!(inspected["remotes"][0]["disabled"], false);
+        }
+    }
+
+    #[test]
+    fn configured_flathub_controls_have_complete_app_and_host_action_bindings() {
+        for role in [
+            ui::permissions::Role::Viewer,
+            ui::permissions::Role::Editor,
+            ui::permissions::Role::Owner,
+        ] {
+            let (_environment, _directory, mut app) = inspected_store();
+            app.with_surface(|store: &mut StoreApp| {
+                store.worker = None;
+                store.show_capture_catalogue(crate::fixture::fixture_catalog());
+                store.set_flatpak_available(true);
+                store.set_remotes(vec![crate::flathub_client::Remote {
+                    name: "flathub".into(),
+                    title: "Flathub".into(),
+                    url: "https://dl.flathub.org/repo/".into(),
+                    disabled: false,
+                    user_managed: false,
+                }]);
+            })
+            .unwrap();
+            app.set_role(role);
+            let audit = app.harness().native_app_audit();
+            assert!(
+                !audit
+                    .issues
+                    .iter()
+                    .any(|issue| issue.code == "stale-action-binding"),
+                "default source bindings resolve on the complete native surface for {role:?}: {:?}",
+                audit.issues
+            );
+            let inspected = app
+                .effect(&StoreEffect::InspectCatalogue { app: None })
+                .unwrap()
+                .value
+                .unwrap();
+            assert_eq!(inspected["flatpak_available"], true);
+            assert_eq!(inspected["remote_count"], 1);
+            assert_eq!(inspected["remotes"][0]["disabled"], false);
+        }
+    }
+
+    #[test]
+    fn flatpak_observation_errors_are_truthful_on_the_live_owner_surface() {
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
             store.worker = None;
@@ -2816,18 +3198,6 @@ mod tests {
             store.flatpak_error = Some("The app service is unavailable.".into());
         })
         .unwrap();
-        let control = app
-            .harness()
-            .controls()
-            .into_iter()
-            .find(|control| {
-                control.name.as_deref() == Some(ui::i18n!("store-flathub-account").as_str())
-            })
-            .unwrap();
-        assert!(
-            !control.disabled,
-            "the normal owner can use the declared account setup control"
-        );
         assert!(
             app.harness().controls().iter().any(|control| {
                 control.name.as_deref() == Some(ui::i18n!("store-flatpak-unavailable").as_str())
@@ -3095,10 +3465,7 @@ mod tests {
                 .iter()
                 .find(|action| action.id == expected)
                 .unwrap();
-            assert_eq!(
-                action.contract.permission,
-                tilo_actions::PermissionRequirement::Admin
-            );
+            assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Outside);
             let job = admitted_job(&mut app, remote_enabled_effect(&remote));
             assert!(
                 matches!(job.request, Request::RemoteSetEnabled { ref name, enabled: value } if name == "custom-tools" && value == enabled)
@@ -3167,7 +3534,7 @@ mod tests {
     }
 
     #[test]
-    fn flathub_account_setup_uses_declared_authorized_descriptor_without_device_mutation() {
+    fn default_flathub_browsing_preserves_disabled_and_managed_source_authority() {
         let mut app = seeded_app();
         let source = crate::flathub_client::Remote {
             name: "flathub".into(),
@@ -3177,79 +3544,70 @@ mod tests {
             user_managed: false,
         };
         app.set_remotes(vec![source.clone()]);
-        let row = app
-            .live_row("remote:system:flathub")
-            .unwrap()
-            .into_resource();
-        let setup = row
-            .actions
-            .iter()
-            .find(|action| action.id == "use-flathub-for-account")
-            .unwrap();
-        assert_eq!(
-            setup.contract.permission,
-            StoreEffect::AddRemote {
-                name: "flathub".into(),
-                url: source.url.clone()
-            }
-            .bound()
-            .contract
-            .permission
-        );
-        assert!(app.flathub_account_button().is_some());
-        let job = admitted_job(
-            &mut app,
-            StoreEffect::UseFlathubForAccount {
-                remote: source.resource_id(),
-            },
-        );
+        let row = app.live_row(&source.resource_id()).unwrap().into_resource();
         assert!(
-            matches!(job.request, Request::RemoteAdd { ref name, ref url }
-            if name == "flathub" && url == "https://dl.flathub.org/repo/flathub.flatpakrepo")
-        );
-        assert!(
-            !row.actions
+            row.actions
                 .iter()
-                .any(|action| action.id == "remove-remote")
+                .any(|action| action.id == "browse-remote")
         );
-        for changed in [
-            crate::flathub_client::Remote {
-                disabled: true,
-                ..source.clone()
-            },
-            crate::flathub_client::Remote {
-                url: "https://example.com/repo/".into(),
-                ..source.clone()
-            },
-            crate::flathub_client::Remote {
-                name: "other".into(),
-                ..source.clone()
-            },
-        ] {
-            app.set_remotes(vec![changed.clone()]);
-            assert!(app.flathub_account_button().is_none());
-            assert!(
-                app.admit(StoreEffect::UseFlathubForAccount {
-                    remote: changed.resource_id()
-                })
-                .is_err()
-            );
-        }
-        app.set_remotes(vec![
-            source.clone(),
-            crate::flathub_client::Remote {
-                user_managed: true,
-                url: "https://example.com/".into(),
-                ..source.clone()
-            },
-        ]);
-        assert!(app.flathub_account_button().is_none());
+        assert!(!row.actions.iter().any(|action| matches!(
+            action.id.as_str(),
+            "remove-remote" | "enable-remote" | "disable-remote" | "use-flathub-for-account"
+        )));
+        app.admit(StoreEffect::BrowseRemote {
+            remote: source.resource_id(),
+        })
+        .unwrap();
         assert!(
-            app.admit(StoreEffect::UseFlathubForAccount {
+            app.admit(StoreEffect::RemoveRemote {
+                name: source.name.clone()
+            })
+            .is_err()
+        );
+        assert!(
+            app.admit(StoreEffect::EnableRemote {
                 remote: source.resource_id()
             })
             .is_err()
         );
+        let disabled = crate::flathub_client::Remote {
+            disabled: true,
+            ..source
+        };
+        app.set_remotes(vec![disabled.clone()]);
+        assert!(
+            !app.live_row(&disabled.resource_id())
+                .unwrap()
+                .into_resource()
+                .actions
+                .iter()
+                .any(|action| action.id == "browse-remote")
+        );
+        assert!(
+            app.admit(StoreEffect::BrowseRemote {
+                remote: disabled.resource_id()
+            })
+            .is_err()
+        );
+        let account = crate::flathub_client::Remote {
+            user_managed: true,
+            ..disabled
+        };
+        app.set_remotes(vec![account.clone()]);
+        let row = app
+            .live_row(&account.resource_id())
+            .unwrap()
+            .into_resource();
+        let enable = row
+            .actions
+            .iter()
+            .find(|action| action.id == "enable-remote")
+            .unwrap();
+        assert_eq!(enable.contract.kind, ui::tilo_actions::ActionKind::Outside);
+        assert!(matches!(
+            admitted_job(&mut app, remote_enabled_effect(&account)).request,
+            Request::RemoteSetEnabled { enabled: true, .. }
+        ));
     }
 
     #[test]
@@ -3403,12 +3761,12 @@ mod tests {
         let open = row
             .actions
             .iter()
-            .find(|action| action.id == "open")
+            .find(|action| action.id == "open-app")
             .unwrap();
         assert!(
             matches!(&open.contract.availability, ui::tilo_actions::Availability::Unavailable { code, .. } if code == "device_version_unavailable")
         );
-        assert!(app.admit(StoreEffect::Open { app: id }).is_err());
+        assert!(app.admit(StoreEffect::OpenApp { app: id }).is_err());
     }
 
     #[test]
@@ -3932,11 +4290,7 @@ mod tests {
     }
 
     fn has_test_id(widget: &dyn Widget, id: &str) -> bool {
-        widget.test_id() == Some(id)
-            || widget
-                .children()
-                .into_iter()
-                .any(|child| has_test_id(child, id))
+        ui::widget::find_test_id(widget, id).is_some()
     }
 
     /// Mount a composed tree and run one frame at `width` × 900.
@@ -4102,36 +4456,29 @@ mod tests {
                     let mut doc = AutoCommit::new();
                     let mut focus = None;
                     let cursor = WindowEvent::CursorMoved {
-                        device_id: unsafe { std::mem::zeroed() },
+                        device_id: winit::event::DeviceId::dummy(),
                         position: winit::dpi::PhysicalPosition::new(center.x, center.y),
                     };
                     let events = [
                         cursor,
                         WindowEvent::MouseInput {
-                            device_id: unsafe { std::mem::zeroed() },
+                            device_id: winit::event::DeviceId::dummy(),
                             state: winit::event::ElementState::Pressed,
                             button: winit::event::MouseButton::Left,
                         },
                         WindowEvent::MouseInput {
-                            device_id: unsafe { std::mem::zeroed() },
+                            device_id: winit::event::DeviceId::dummy(),
                             state: winit::event::ElementState::Released,
                             button: winit::event::MouseButton::Left,
                         },
                     ];
                     for event in events {
-                        grid.handle_event(
-                            &event,
-                            &mut ui::widget::EventCtx {
-                                scale_factor: 1.0,
-                                modifiers: &winit::event::Modifiers::default(),
-                                state: ui::widget::Edits::lend(&mut doc),
-                                path: &automerge::ROOT,
-                                handled: &mut false,
-                                focus_target: &mut focus,
-                                node_id: node,
-                                taffy: &tree,
-                            },
-                        );
+                        focus = ui::testing::Dispatch::new()
+                            .doc(&mut doc)
+                            .layout(&tree, node)
+                            .focus_target(focus)
+                            .send(&mut grid, &event)
+                            .focus_target;
                     }
                     let details = ui::widget::controls::take_control_invocation(&mut grid)
                         .expect("pressing the card shows its details");
@@ -4143,6 +4490,7 @@ mod tests {
                     assert_eq!(
                         primary.perform_action(
                             &ui::a11y::Action::Activate,
+                            &[],
                             &mut ui::widget::Edits::lend(&mut doc),
                             &automerge::ROOT
                         ),
@@ -4152,7 +4500,10 @@ mod tests {
                     if busy {
                         assert!(invoked.is_none());
                     } else {
-                        assert_eq!(invoked.unwrap().address.action, action_code(action));
+                        assert_eq!(
+                            invoked.unwrap().address.action,
+                            crate::resource::StoreEffect::package(action, String::new()).id()
+                        );
                     }
                 }
             }
@@ -4240,12 +4591,30 @@ mod tests {
 
             app.set_worker_busy(false);
             app.set_operation_error(Some("signature mismatch".into()));
-            let error = app
+            let mut notice = app
                 .operation_notice()
-                .and_then(|notice| notice.accessibility())
                 .expect("failure has a semantic notice");
-            assert_eq!(error.name.as_deref(), Some("The last operation failed"));
+            let error = notice
+                .accessibility()
+                .expect("failure has a semantic notice");
+            assert_eq!(
+                error.name.as_deref(),
+                Some(ui::i18n!("store-operation-failed").as_str())
+            );
             assert_eq!(error.live, Some(Politeness::Assertive));
+            assert_eq!(error.description.as_deref(), Some("signature mismatch"));
+            let mut state = AutoCommit::new();
+            let retry = control_mut(notice.as_mut(), "store.error.refresh")
+                .expect("failure offers the real catalogue refresh control");
+            assert!(retry.perform_action(
+                &ui::a11y::Action::Activate,
+                &[],
+                &mut ui::widget::Edits::lend(&mut state),
+                &automerge::ROOT,
+            ));
+            let invoked = ui::widget::controls::take_control_invocation(notice.as_mut())
+                .expect("refresh uses the resource action door");
+            assert_eq!(invoked.address.action, StoreEffect::Refresh.id());
         }
 
         // Case `root_accessibility_is_a_named_window_not_an_empty_generic`.
@@ -4324,7 +4693,7 @@ mod tests {
         app.present_reports(&[ReportProjection {
             id: "report:id.notes".into(),
             app_id: "id.notes".into(),
-            status: crate::doc_actions::DRAFT_STATUS.into(),
+            status: crate::reports::DRAFT_STATUS.into(),
             note: note.into(),
         }]);
     }
@@ -4381,7 +4750,7 @@ mod tests {
         // Case `app_operation_locks_the_target_card_until_it_finishes`.
         {
             let mut app = seeded_app();
-            let open = StoreEffect::Open {
+            let open = StoreEffect::OpenApp {
                 app: "id.notes".into(),
             };
             let job = admitted_job(&mut app, open.clone());
@@ -4715,13 +5084,14 @@ mod tests {
 
         // Case `only_a_well_formed_case_about_the_reported_app_is_recorded`.
         {
+            let record = case_record("id.notes", "id.notes", "case-authoritative", "Open").unwrap();
             assert_eq!(
-                case_record("id.notes", "id.notes", "case-authoritative", "Open"),
-                Ok(StoreDocumentAction::RecordModerationCase {
-                    app_id: "id.notes".into(),
-                    case_id: "case-authoritative".into(),
-                    status: "Open".into(),
-                })
+                (
+                    record.app_id.as_str(),
+                    record.case_id.as_str(),
+                    record.status.as_str()
+                ),
+                ("id.notes", "case-authoritative", "Open")
             );
             assert!(case_record("id.notes", "id.notes", "case-../../outside", "Open").is_err());
             assert!(case_record("id.notes", "id.other", "case-authoritative", "Open").is_err());

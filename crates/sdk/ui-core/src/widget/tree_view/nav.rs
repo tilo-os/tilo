@@ -61,6 +61,7 @@ pub(crate) struct NavItemSpec {
     pub icon: Option<Icon>,
     pub count: Option<NavCount>,
     pub depth: usize,
+    pub under_section: bool,
     pub secondary: Option<String>,
     pub meta: Option<String>,
     pub status: Option<NavStatus>,
@@ -78,6 +79,7 @@ impl NavItemSpec {
     /// The face of this row over `row`, labelled `label`, without state.
     pub(crate) fn face<'a>(&'a self, row: Rect, label: &'a str, theme: &Theme) -> NavRowFace<'a> {
         let mut face = NavRowFace::new(row, label).depth(self.depth);
+        face.under_section = self.under_section;
         face.icon = self.icon;
         face.count = self.count;
         face.secondary = self.secondary.as_deref();

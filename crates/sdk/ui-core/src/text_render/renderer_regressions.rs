@@ -5,13 +5,9 @@ use crate::font_catalog::{FontCatalog, configured_font_system_with_catalog};
 use crate::richtext::{RichSpan, RichTextLayout, TextAlign};
 use cosmic_text::fontdb::{ID, Source};
 use skrifa::{FontRef, MetadataProvider, Tag};
-use std::path::PathBuf;
 
 fn catalog() -> FontCatalog {
-    FontCatalog::controlled_fixture(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
-        "en-US",
-    )
+    FontCatalog::controlled_fixture(crate::font_catalog::checkout_root(), "en-US")
 }
 
 fn renderer() -> TextRenderer {
@@ -123,10 +119,8 @@ fn font_sources_and_collection_indices_are_shared_with_emitted_runs() {
         for id in ids {
             renderer.font_system.db_mut().remove_face(id);
         }
-        let bytes = std::fs::read(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/fonts/NotoSansCJK-VF.ttc"),
-        )
-        .unwrap();
+        let bytes =
+            std::fs::read(crate::font_catalog::checkout_root().join("NotoSansCJK-VF.ttc")).unwrap();
         let owner: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(bytes);
         assert_eq!(
             renderer
@@ -1062,7 +1056,11 @@ fn the_generic_sans_follows_the_theme_ui_face() {
 fn features_renderer() -> TextRenderer {
     let mut renderer = renderer();
     renderer.font_system.db_mut().load_font_data(
-        include_bytes!("../../tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf").to_vec(),
+        include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/TiloSansFeaturesFixture-Regular.ttf"
+        ))
+        .to_vec(),
     );
     renderer
 }

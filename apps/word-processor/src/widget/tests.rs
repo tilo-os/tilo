@@ -7,7 +7,7 @@ fn seed_text(wp: &mut WordProcessorWidget, state: &mut ui::State, text: &str) {
 }
 use std::fmt::Write as _;
 use ui::headless::Framed;
-use ui::permissions::PermissionContext;
+use ui::testing::Dispatch;
 
 /// Minimal, valid 2×3 RGB PNG shared by image layout, accessibility, portal,
 /// and inspector tests.
@@ -857,22 +857,19 @@ fn tool_actions(wp: &WordProcessorWidget) -> Vec<ToolAction> {
         .collect()
 }
 
-/// The action the edit `id` bound to the window's view builds, as the
-/// palette or an agent would invoke it without arguments.
-fn bound_encoded(
-    wp: &mut WordProcessorWidget,
+/// The edit `effect` makes at the window's own view, as the palette or an
+/// agent invoking it there submits it.
+fn effect_edit(
+    wp: &WordProcessorWidget,
     doc: &AutoCommit,
-    id: &str,
-) -> tilo_actions::EncodedAction {
-    wp.resolve_bound_edits(doc);
-    let edit = wp
-        .bound_edits()
-        .into_iter()
-        .find(|edit| edit.id == id)
-        .unwrap_or_else(|| panic!("edit {id} is bound to the view"));
-    let action = (edit.build)(&tilo_actions::ActionArgs::none(), 0).expect("the edit builds");
-    tilo_actions::EncodedAction::encode(crate::actions::WORD_PROCESSOR_ACTION_TYPE, &action)
-        .unwrap()
+    effect: &crate::effects::WordProcessorEffect,
+) -> crate::actions::RichTextAction {
+    let (actions, _) = effect
+        .edit(&wp.local_edit_view(), doc, wp.inner.content_store())
+        .expect("an edit effect")
+        .expect("the edit builds");
+    assert_eq!(actions.len(), 1, "one edit");
+    actions[0].clone()
 }
 
 /// The toolbar's insert-table matches the palette spec; panel align dispatches the action; find and replace all works; the styles panel toggles off; the link button requests the
@@ -896,7 +893,15 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         wp.refresh_blocks(&state.doc);
 
         // What the palette would dispatch, resolved before the button fires.
-        let from_palette = bound_encoded(&mut wp, &state.doc, "insert-table");
+        let from_palette = effect_edit(
+            &wp,
+            &state.doc,
+            &crate::effects::WordProcessorEffect::InsertTableHere {
+                rows: None,
+                columns: None,
+                at: None,
+            },
+        );
 
         // The toolbar button drives the same operation.
         wp.apply_tool(&mut edits(&mut state.doc), ToolAction::InsertTable);
@@ -905,10 +910,9 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
             .cloned()
             .expect("the toolbar dispatched an action");
 
-        assert_eq!(from_toolbar.type_id, from_palette.type_id);
         assert_eq!(
-            from_toolbar.payload, from_palette.payload,
-            "toolbar affordance and palette spec build the same EncodedAction"
+            from_toolbar, from_palette,
+            "toolbar affordance and palette effect build the same edit"
         );
         // And the affordance really created the table (a 2x2 = four cells).
         wp.refresh_blocks(&state.doc);
@@ -944,10 +948,17 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         );
 
         // It is the same EncodedAction the palette's align-center spec builds.
-        let from_palette = bound_encoded(&mut wp, &state.doc, "align-center");
+        let from_palette = effect_edit(
+            &wp,
+            &state.doc,
+            &crate::effects::WordProcessorEffect::Align {
+                align: "center".into(),
+                at: None,
+            },
+        );
         assert_eq!(
-            dispatched.payload, from_palette.payload,
-            "panel align and palette spec build the same EncodedAction"
+            dispatched, from_palette,
+            "panel align and palette effect build the same edit"
         );
         // The block really carries the centre alignment.
         wp.refresh_blocks(&state.doc);
@@ -1096,7 +1107,7 @@ fn character_marks_shape_their_spans() {
             .iter()
             .find(|b| b.text == "hello world")
             .expect("block present");
-        let (runs, _, _) = block_runs(b);
+        let (runs, _, _) = block_runs(b, false);
         // The first run ("hello") carries the highlight as a background band.
         let first = &runs[0];
         assert_eq!(first.text, "hello");
@@ -1127,7 +1138,7 @@ fn character_marks_shape_their_spans() {
             .iter()
             .find(|b| b.text == "x2")
             .expect("block present");
-        let (runs, _, _) = block_runs(b);
+        let (runs, _, _) = block_runs(b, false);
         let sup = runs.iter().find(|r| r.text == "2").expect("the '2' run");
         assert_eq!(
             sup.baseline,
@@ -1257,7 +1268,7 @@ fn headings_draw_bold_and_unchanged_blocks_reuse_their_layout() {
     {
         use tilo_doc_codecs::{FormatProvider, MarkdownCodec};
         let mut state = crate::initialized_state();
-        let c = tilo_doc::model::init(&mut state.doc, &state.root);
+        let c = crate::model::init(&mut state.doc).unwrap();
         let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
         {
             let mut dm = tilo_doc::DocMut {
@@ -1342,6 +1353,7 @@ fn the_styles_panel_picks_edits_and_commits_styles() {
         assert!(Widget::perform_action(
             &mut slot.input,
             &ui::a11y::Action::SetValue((before + 5.0).to_string()),
+            &[],
             &mut edits(&mut state.doc),
             &state.root
         ));
@@ -1380,6 +1392,7 @@ fn the_styles_panel_picks_edits_and_commits_styles() {
         assert!(Widget::perform_action(
             &mut slot.input,
             &ui::a11y::Action::SetValue("40".into()),
+            &[],
             &mut edits(&mut state.doc),
             &state.root
         ));
@@ -1714,7 +1727,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             ToolAction::TextColor(Some(STYLE_PALETTE[4])),
         );
         wp.open_compact_swatch_palette(PaletteKind::Text);
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Focus,
             &[ui::a11y::hash_key(&"compact-swatch:clear")],
@@ -1727,7 +1740,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             wp.compact_swatch_palette.clear_rect(),
             true,
         );
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&"compact-swatch:clear")],
@@ -1761,7 +1774,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             ToolAction::Highlight(Some(HIGHLIGHT_PALETTE[4])),
         );
         wp.open_compact_swatch_palette(PaletteKind::Highlight);
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&"compact-swatch:clear")],
@@ -1797,6 +1810,567 @@ fn assert_compact_clear_footer(
 
 /// Alignment and line spacing apply to the paragraph via the panel, and the panel owns paragraph
 /// alignment and the style editor.
+#[test]
+fn painted_paragraph_alignment_swipes_edit_the_real_document_and_undo() {
+    use winit::event::TouchPhase::{Cancelled, Ended, Started};
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    let before = app.peer_document().get_heads();
+    let start = app
+        .with_surface::<WordProcessorWidget, _>(|widget| {
+            assert_eq!(widget.current_align(), "left");
+            widget
+                .panel_hits
+                .iter()
+                .find_map(|(rect, hit)| {
+                    matches!(hit, PanelHit::ParaAlign("center")).then_some(rect.center())
+                })
+                .expect("the actual inspector paints Center")
+        })
+        .unwrap();
+    app.harness().touch(1, Started, start.x, start.y);
+    app.harness().touch(1, Ended, start.x - 90.0, start.y);
+    app.settle();
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.current_align())
+            .unwrap(),
+        "center"
+    );
+    assert_ne!(app.peer_document().get_heads(), before);
+    app.harness().touch(2, Started, start.x, start.y);
+    app.harness().touch(2, Cancelled, start.x - 90.0, start.y);
+    app.settle();
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.current_align())
+            .unwrap(),
+        "center"
+    );
+    assert!(
+        app.undo(),
+        "the admitted paragraph attribute is a real undo step"
+    );
+    app.settle();
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.current_align())
+            .unwrap(),
+        "left"
+    );
+    app.set_role(ui::permissions::Role::Viewer);
+    assert!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.claims_raw_touch(start))
+            .unwrap(),
+        "the viewer gesture reaches the actual painted strip"
+    );
+    let protected = app.peer_document().get_heads();
+    app.harness().touch(3, Started, start.x, start.y);
+    app.harness().touch(3, Ended, start.x - 90.0, start.y);
+    app.settle();
+    assert_eq!(
+        app.peer_document().get_heads(),
+        protected,
+        "touch grants no edit authority to a viewer"
+    );
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.current_align())
+            .unwrap(),
+        "left"
+    );
+}
+
+#[test]
+fn painted_font_swipes_edit_the_real_style_and_undo() {
+    for viewport in [(1280, 800), (390, 844)] {
+        assert_painted_font_swipe(viewport);
+    }
+}
+
+fn assert_painted_font_swipe(viewport: (u32, u32)) {
+    use winit::event::TouchPhase::{Cancelled, Ended, Started};
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.harness().resize(viewport).unwrap();
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    let current_font = |widget: &mut WordProcessorWidget| {
+        widget.sheet.get(&widget.focused_style_key().unwrap()).font
+    };
+    let before_style = app
+        .with_surface::<WordProcessorWidget, _>(|widget| {
+            widget.sheet.get(&widget.focused_style_key().unwrap())
+        })
+        .unwrap();
+    let before_font = before_style.font.clone();
+    let fonts = ["sans", "serif", "mono"];
+    let before_index = fonts.iter().position(|font| *font == before_font).unwrap();
+    let next_index = if before_index == 2 {
+        1
+    } else {
+        before_index + 1
+    };
+    let delta = if next_index > before_index {
+        -90.0
+    } else {
+        90.0
+    };
+    let start = app
+        .with_surface::<WordProcessorWidget, _>(|widget| {
+            widget
+                .panel_hits
+                .iter()
+                .find_map(|(rect, hit)| {
+                    matches!(hit, PanelHit::SetFont("serif")).then_some(rect.center())
+                })
+                .expect("the actual inspector paints the font strip")
+        })
+        .unwrap();
+    let before = app.peer_document().get_heads();
+    app.harness().touch(1, Started, start.x, start.y);
+    app.harness().touch(1, Ended, start.x + delta, start.y);
+    app.settle();
+    assert_eq!(app.with_surface(current_font).unwrap(), fonts[next_index]);
+    let mut expected_style = before_style;
+    expected_style.font = fonts[next_index].into();
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| {
+            widget.sheet.get(&widget.focused_style_key().unwrap())
+        })
+        .unwrap(),
+        expected_style,
+        "a granular font action preserves every other resolved style property"
+    );
+    assert_ne!(app.peer_document().get_heads(), before);
+    app.harness().touch(2, Started, start.x, start.y);
+    app.harness().touch(2, Cancelled, start.x - delta, start.y);
+    app.settle();
+    assert_eq!(app.with_surface(current_font).unwrap(), fonts[next_index]);
+    assert!(app.undo(), "the font change is a real attributed undo step");
+    app.settle();
+    assert_eq!(app.with_surface(current_font).unwrap(), before_font);
+    app.set_role(ui::permissions::Role::Viewer);
+    assert!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.claims_raw_touch(start))
+            .unwrap()
+    );
+    let protected = app.peer_document().get_heads();
+    app.harness().touch(3, Started, start.x, start.y);
+    app.harness().touch(3, Ended, start.x + delta, start.y);
+    app.settle();
+    assert_eq!(app.peer_document().get_heads(), protected);
+    assert_eq!(app.with_surface(current_font).unwrap(), before_font);
+}
+
+#[test]
+fn compact_styles_is_a_full_window_page_with_real_controls_and_no_typing_leak() {
+    for viewport in [(390, 844), (844, 390)] {
+        let mut app =
+            ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+        app.harness().resize(viewport).unwrap();
+        app.effect(&WordProcessorEffect::Styles).unwrap();
+        app.settle();
+        let (heading, close) = app
+            .with_surface::<WordProcessorWidget, _>(|widget| {
+                assert!(widget.styles_panel_full_window());
+                assert_eq!(
+                    widget.panel_rect, widget.rect,
+                    "the shared compact presentation leaves no underlying document gutter"
+                );
+                let close = widget
+                    .panel_hits
+                    .iter()
+                    .find_map(|(rect, hit)| matches!(hit, PanelHit::Close).then_some(*rect))
+                    .expect("the actual shared close control is painted");
+                assert!(
+                    close.x0 >= widget.rect.x0
+                        && close.x1 <= widget.rect.x1
+                        && close.y0 >= widget.rect.y0
+                        && close.y1 <= widget.rect.y1
+                );
+                (
+                    Point::new(widget.panel_rect.x0 + 16.0, close.center().y),
+                    close.center(),
+                )
+            })
+            .unwrap();
+        let heads = app.peer_document().get_heads();
+        app.harness().click_at(heading.x, heading.y);
+        app.harness()
+            .type_text("never insert this into the displaced page");
+        app.settle();
+        assert_eq!(app.peer_document().get_heads(), heads);
+        if viewport.1 < viewport.0 {
+            assert_styles_page_scrolls_to_its_last_real_action(&mut app);
+        }
+        assert!(
+            app.with_surface::<WordProcessorWidget, _>(|widget| widget.styles_panel_full_window())
+                .unwrap()
+        );
+        app.harness().click_at(close.x, close.y);
+        app.settle();
+        assert!(
+            !app.with_surface::<WordProcessorWidget, _>(|widget| widget.styles_panel_visible())
+                .unwrap()
+        );
+        app.effect(&WordProcessorEffect::Styles).unwrap();
+        app.settle();
+        app.harness().key("Escape");
+        app.settle();
+        assert!(
+            !app.with_surface::<WordProcessorWidget, _>(|widget| widget.styles_panel_visible())
+                .unwrap()
+        );
+        assert_eq!(
+            app.peer_document().get_heads(),
+            heads,
+            "closing either way is local presentation only"
+        );
+    }
+}
+
+#[test]
+fn compact_styles_blocks_document_shortcuts_after_real_document_typing() {
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.harness().resize((390, 844)).unwrap();
+    app.settle();
+    let body = app
+        .with_surface::<WordProcessorWidget, _>(|widget| widget.zoom_viewport.center())
+        .unwrap();
+    app.harness().click_at(body.x, body.y);
+    app.harness().type_text("protected document words");
+    app.settle();
+    let text = app
+        .with_surface::<WordProcessorWidget, _>(|widget| widget.blocks[0].text.clone())
+        .unwrap();
+    assert_eq!(text, "protected document words");
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    let heads = app.peer_document().get_heads();
+    for modifier in ["ctrl", "super"] {
+        app.harness().set_modifiers(&[modifier.into()]);
+        for key in ["Backspace", "b", "v", "Enter", "a", "Delete"] {
+            app.harness().key(key);
+            app.settle();
+            assert_eq!(
+                app.peer_document().get_heads(),
+                heads,
+                "{modifier}+{key} must not edit the displaced document"
+            );
+        }
+        app.harness().set_modifiers(&[]);
+    }
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.blocks[0].text.clone())
+            .unwrap(),
+        text
+    );
+}
+
+#[test]
+fn compact_styles_publishes_only_foreground_ui_and_retains_document_actions() {
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.harness().resize((390, 844)).unwrap();
+    app.settle();
+    let toolbar = t("a11y-group-formatting");
+    assert!(app.harness().a11y_node_named(&toolbar).is_some());
+    let bold = app
+        .harness()
+        .a11y_node_named(&tool_action_a11y_label(ToolAction::Bold))
+        .expect("the actual background formatting control is published before opening Styles");
+    let resources =
+        |app: &mut ui::framework::testing::TestApp<crate::framework::WordProcessorApp>| {
+            app.harness()
+                .resources()
+                .into_iter()
+                .filter(|resource| resource.kind != "tilo.control")
+                .map(|resource| {
+                    (
+                        resource.id,
+                        resource
+                            .actions
+                            .into_iter()
+                            .map(|action| action.id)
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+    let catalogue = resources(&mut app);
+    assert!(!catalogue.is_empty());
+    assert!(
+        app.harness()
+            .targets()
+            .keys()
+            .any(|path| path.contains("Toolbar"))
+    );
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    assert_eq!(resources(&mut app), catalogue);
+    assert!(app.harness().a11y_node_named(&toolbar).is_none());
+    assert!(
+        app.harness()
+            .a11y_node_named(&t("a11y-document-editor"))
+            .is_none()
+    );
+    assert!(
+        !app.harness()
+            .targets()
+            .keys()
+            .any(|path| path.contains("Toolbar"))
+    );
+    let heads = app.peer_document().get_heads();
+    assert!(
+        app.harness()
+            .perform_a11y_action(bold, &ui::a11y::Action::Activate)
+            .is_err()
+    );
+    assert_eq!(app.peer_document().get_heads(), heads);
+    let close = app
+        .harness()
+        .a11y_node_named(&t("panel-close"))
+        .expect("the foreground page publishes its actual Close control");
+    app.harness()
+        .perform_a11y_action(close, &ui::a11y::Action::Focus)
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(close, &ui::a11y::Action::Activate)
+        .unwrap();
+    app.settle();
+    assert!(
+        !app.with_surface::<WordProcessorWidget, _>(|widget| widget.styles_panel_visible())
+            .unwrap()
+    );
+    assert!(app.harness().a11y_node_named(&toolbar).is_some());
+    assert_eq!(app.peer_document().get_heads(), heads);
+}
+
+#[test]
+fn compact_styles_accessibility_edits_real_style_and_refuses_viewers() {
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.harness().resize((390, 844)).unwrap();
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    let audit = app.harness().native_app_audit();
+    assert!(audit.is_certified(), "{:?}", audit.issues);
+    let before = app.peer_document().get_heads();
+    let serif = app
+        .harness()
+        .a11y_node_named(&t("panel-font-serif"))
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(serif, &ui::a11y::Action::Focus)
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(serif, &ui::a11y::Action::Activate)
+        .unwrap();
+    app.settle();
+    assert_ne!(app.peer_document().get_heads(), before);
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.sheet.get("body").font)
+            .unwrap(),
+        "serif"
+    );
+    let size = app.harness().a11y_node_named(&t("panel-num-size")).unwrap();
+    app.harness()
+        .perform_a11y_action(size, &ui::a11y::Action::Focus)
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(size, &ui::a11y::Action::SetValue("26".into()))
+        .unwrap();
+    app.settle();
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.sheet.get("body").size)
+            .unwrap(),
+        26.0
+    );
+    app.harness().key("Enter");
+    app.settle();
+    assert!(app.undo());
+    app.settle();
+    assert_ne!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.sheet.get("body").size)
+            .unwrap(),
+        26.0
+    );
+    app.set_role(ui::permissions::Role::Viewer);
+    app.settle();
+    let protected = app.peer_document().get_heads();
+    let mono = app
+        .harness()
+        .a11y_node_named(&t("panel-font-mono"))
+        .unwrap();
+    assert!(
+        app.harness()
+            .perform_a11y_action(mono, &ui::a11y::Action::Activate)
+            .is_err()
+    );
+    let size = app.harness().a11y_node_named(&t("panel-num-size")).unwrap();
+    assert!(
+        app.harness()
+            .perform_a11y_action(size, &ui::a11y::Action::SetValue("40".into()))
+            .is_err()
+    );
+    app.settle();
+    assert_eq!(app.peer_document().get_heads(), protected);
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.sheet.get("body").font)
+            .unwrap(),
+        "serif"
+    );
+}
+
+#[test]
+fn compact_styles_accessibility_tracks_scrolled_foreground_controls() {
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.harness().resize((844, 390)).unwrap();
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    let align = app
+        .harness()
+        .a11y_node_named(&t("panel-align-left"))
+        .unwrap();
+    assert!(
+        app.harness()
+            .a11y_node_named(&t("panel-num-indent"))
+            .is_none()
+    );
+    let before = app.peer_document().get_heads();
+    let document_scroll = app
+        .with_surface::<WordProcessorWidget, _>(|widget| widget.scroll_y)
+        .unwrap();
+    let region = app
+        .harness()
+        .root_widget()
+        .primary_vertical_scroll()
+        .expect("the hosted root publishes the foreground scroll region");
+    assert_eq!(region.key, "styles");
+    assert!(region.metrics.max_scroll() > 0.0);
+    let result = app
+        .with_surface::<WordProcessorWidget, _>(|widget| {
+            widget.apply_primary_vertical_scroll(ui::widget::PrimaryScrollAction::End)
+        })
+        .unwrap();
+    assert!(matches!(
+        result,
+        ui::widget::PrimaryScrollResult::Changed(_)
+    ));
+    app.settle();
+    assert_eq!(app.peer_document().get_heads(), before);
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.scroll_y)
+            .unwrap(),
+        document_scroll
+    );
+    assert!(
+        app.harness()
+            .a11y_node_named(&t("panel-align-left"))
+            .is_none()
+    );
+    assert!(
+        app.harness()
+            .a11y_node_named(&t("panel-num-indent"))
+            .is_some()
+    );
+    assert!(
+        app.harness()
+            .a11y_node_named(&t("panel-new-style"))
+            .is_some()
+    );
+    let audit = app.harness().native_app_audit();
+    assert!(audit.is_certified(), "{:?}", audit.issues);
+    let heads = app.peer_document().get_heads();
+    assert!(
+        app.harness()
+            .perform_a11y_action(align, &ui::a11y::Action::Activate)
+            .is_err()
+    );
+    assert_eq!(app.peer_document().get_heads(), heads);
+}
+
+#[test]
+fn compact_styles_accessibility_focus_routes_the_real_spacing_dropdown() {
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.harness().resize((390, 844)).unwrap();
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    let before = app.peer_document().get_heads();
+    let spacing = app
+        .harness()
+        .a11y_node_named(&t("panel-line-spacing"))
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(spacing, &ui::a11y::Action::Focus)
+        .unwrap();
+    app.harness().key("ArrowDown");
+    app.settle();
+    assert!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.line_spacing.is_open())
+            .unwrap()
+    );
+    app.harness().key("Escape");
+    app.settle();
+    assert!(
+        !app.with_surface::<WordProcessorWidget, _>(|widget| widget.line_spacing.is_open())
+            .unwrap()
+    );
+    assert_eq!(app.peer_document().get_heads(), before);
+    let spacing = app
+        .harness()
+        .a11y_node_named(&t("panel-line-spacing"))
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(
+            spacing,
+            &ui::a11y::Action::SetValue(line_spacing_label(2.0)),
+        )
+        .unwrap();
+    app.settle();
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.current_line_spacing())
+            .unwrap(),
+        2.0
+    );
+    assert_ne!(app.peer_document().get_heads(), before);
+}
+
+fn assert_styles_page_scrolls_to_its_last_real_action(
+    app: &mut ui::framework::testing::TestApp<crate::framework::WordProcessorApp>,
+) {
+    let body = app
+        .with_surface::<WordProcessorWidget, _>(|widget| {
+            assert!(
+                widget.panel_max_scroll > 0.0,
+                "landscape genuinely needs scrolling"
+            );
+            widget.panel_body
+        })
+        .unwrap();
+    app.harness().send(&WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(body.center().x, body.center().y),
+    });
+    app.harness().scroll(0.0, -20.0);
+    app.settle();
+    app.with_surface::<WordProcessorWidget, _>(|widget| {
+        let action = widget
+            .panel_hits
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, PanelHit::NewStyle).then_some(*rect))
+            .expect("the real final style action is painted");
+        assert!(widget.panel_scroll > 0.0);
+        assert!(
+            action.y0 >= widget.panel_body.y0 && action.y1 <= widget.panel_body.y1,
+            "the full-window inspector scrolls its last action into view: {action:?}"
+        );
+    })
+    .unwrap();
+}
+
 #[test]
 fn the_panel_applies_paragraph_alignment_and_spacing() {
     // Phase: alignment_applies_to_the_paragraph_via_the_panel.
@@ -2028,7 +2602,7 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
 
 /// Build a doc directly in `state` from a closure over a `DocMut`.
 fn with_doc(state: &mut ui::State, f: impl FnOnce(&mut tilo_doc::DocMut)) {
-    let c = tilo_doc::model::init(&mut state.doc, &state.root);
+    let c = crate::model::init(&mut state.doc).unwrap();
     let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
     let mut dm = tilo_doc::DocMut {
         doc: &mut state.doc,
@@ -2041,15 +2615,22 @@ fn with_doc(state: &mut ui::State, f: impl FnOnce(&mut tilo_doc::DocMut)) {
 /// The saved form of [`build_large_body`], checked in because building it one
 /// operation at a time costs seconds of automerge work in every test process
 /// that needs it, while loading it is immediate.
-const LARGE_BODY: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/large-body.automerge"
-));
+static LARGE_BODY: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/large-body.automerge.hex"
+    ))
+    .split_ascii_whitespace()
+    .map(|byte| {
+        u8::from_str_radix(byte, 16).expect("checked-in fixture contains hexadecimal bytes")
+    })
+    .collect()
+});
 
 /// A document whose body holds `VIEWPORT_BLOCK_WINDOW * 4` paragraphs reading
 /// `Paragraph 0` to `Paragraph 767`, enough for the viewport window to move.
 fn large_body() -> ui::State {
-    ui::State::load(LARGE_BODY).expect(
+    ui::State::load(LARGE_BODY.as_slice()).expect(
         "the large-body fixture loads; regenerate it with UPDATE_WP_LARGE_BODY=1 \
          cargo test -p word-processor --lib large_body_fixture",
     )
@@ -2058,7 +2639,7 @@ fn large_body() -> ui::State {
 /// How the large-body fixture is made: the same edits a person's typing
 /// would produce, block by block.
 fn build_large_body() -> ui::State {
-    let mut state = crate::initialized_state();
+    let mut state = ui::State::new();
     with_doc(&mut state, |dm| {
         let mut after = None;
         for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
@@ -2074,9 +2655,25 @@ fn build_large_body() -> ui::State {
 fn large_body_fixture_holds_the_paragraphs_its_tests_expect() {
     if std::env::var_os("UPDATE_WP_LARGE_BODY").is_some() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/large-body.automerge");
+            .join("tests/fixtures/large-body.automerge.hex");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, build_large_body().doc.save()).unwrap();
+        std::fs::write(
+            &path,
+            build_large_body()
+                .doc
+                .save()
+                .chunks(16)
+                .map(|chunk| {
+                    chunk
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        + "\n"
+                })
+                .collect::<String>(),
+        )
+        .unwrap();
         eprintln!("updated {}", path.display());
         return;
     }
@@ -2638,35 +3235,19 @@ fn press_named_with_modifiers(
     key: NamedKey,
     mods: Modifiers,
 ) {
-    use winit::keyboard::{NativeKeyCode, PhysicalKey};
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let node = NodeId::new(0);
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.logical_key = Key::Named(key);
-    ev.text = None;
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    wp.handle_event(
-        &WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: edits(&mut state.doc),
-            path: &state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    let ev = ui::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
+    Dispatch::new()
+        .modifiers(mods)
+        .doc(&mut state.doc)
+        .path(&state.root)
+        .send(
+            wp,
+            &WindowEvent::KeyboardInput {
+                device_id: winit::event::DeviceId::dummy(),
+                event: ev,
+                is_synthetic: false,
+            },
+        );
 }
 
 fn pinch(
@@ -2675,25 +3256,18 @@ fn pinch(
     delta: f64,
     phase: winit::event::TouchPhase,
 ) -> bool {
-    let mut handled = false;
-    wp.handle_event(
-        &WindowEvent::PinchGesture {
-            device_id: unsafe { std::mem::zeroed() },
-            delta,
-            phase,
-        },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: edits(&mut state.doc),
-            path: &state.root,
-            handled: &mut handled,
-            focus_target: &mut None,
-            node_id: NodeId::new(0),
-            taffy: &TaffyTree::new(),
-        },
-    );
-    handled
+    Dispatch::new()
+        .doc(&mut state.doc)
+        .path(&state.root)
+        .send(
+            wp,
+            &WindowEvent::PinchGesture {
+                device_id: winit::event::DeviceId::dummy(),
+                delta,
+                phase,
+            },
+        )
+        .handled
 }
 
 /// Mouse selection across wrapped line boundaries keeps its column and between paragraphs stays near
@@ -2925,7 +3499,7 @@ fn native_text_shortcuts_delete_and_stop_at_visual_lines() {
                 .insert_str(&mut edits(&mut state.doc), "Hello café");
             let containers = wp.inner.containers.clone().unwrap();
             wp.lifecycle.focused = true;
-            let mut driver = ui::headless::Driver::new(state, Box::new(wp), (1000, 700));
+            let mut driver = ui::headless::FrameHarness::new(state, Box::new(wp), (1000, 700));
             driver.set_modifiers(&[modifier.into(), "shift".into()]);
             driver.key("ArrowLeft");
             driver.set_modifiers(&[]);
@@ -3519,6 +4093,7 @@ fn the_zoom_field_drives_zoom_and_the_scroll_range() {
         assert!(Widget::perform_action(
             &mut wp.zoom_input,
             &ui::a11y::Action::Increment,
+            &[],
             &mut edits(&mut state.doc),
             &state.root
         ));
@@ -3527,6 +4102,7 @@ fn the_zoom_field_drives_zoom_and_the_scroll_range() {
         assert!(Widget::perform_action(
             &mut wp.zoom_input,
             &ui::a11y::Action::SetValue("100".into()),
+            &[],
             &mut edits(&mut state.doc),
             &state.root
         ));
@@ -3747,9 +4323,9 @@ fn chrome_never_crowds_the_document_canvas() {
 
     // Phase: the_document_canvas_is_wider_than_the_styles_panel_at_every_tile_width.
     // A document editor shows the document. The contextual styles panel
-    // is an aid to that, not a co-equal half of the window: at every
-    // width the shell can hand this app, the canvas left for the
-    // document must be wider than the panel.
+    // is an aid to that, not a co-equal half of the window: beside the
+    // document, the remaining canvas must be wider. A phone instead shows
+    // the requested full-window foreground inspector until it is closed.
     //
     // Regression guard for a frame in which the panel took roughly half of a
     // tiled word-processor window, so
@@ -3779,6 +4355,14 @@ fn chrome_never_crowds_the_document_canvas() {
                 "precondition: the left-hand outline pane is closed, so the \
                  canvas is bounded only by the panel under test",
             );
+            if ui::widget::modal_dialog::uses_full_window(wp.rect, &Theme::dark()) {
+                assert!(wp.styles_panel_full_window());
+                assert_eq!(
+                    wp.panel_rect, wp.rect,
+                    "a phone uses the entire foreground page"
+                );
+                continue;
+            }
             let panel = wp.panel_rect.width();
             let canvas = if wp.styles_panel_overlay() {
                 wp.rect.width()
@@ -3990,10 +4574,8 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
         wp.model_mut().enter(&mut edits(&mut state.doc));
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "beta");
-        let ids = tilo_doc::model::blocks_in_order(
-            &state.doc,
-            &tilo_doc::model::open(&state.doc, &state.root).unwrap(),
-        );
+        let ids =
+            tilo_doc::model::blocks_in_order(&state.doc, &crate::model::open(&state.doc).unwrap());
         wp.model_mut().set_caret(Caret {
             block: ids[0].clone(),
             offset: 2,
@@ -4006,18 +4588,17 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
 
         wp.insert_text_via_action(&mut edits(&mut state.doc), "X");
 
-        let dispatched = wp.last_dispatched_for_test().expect("action dispatched");
-        let action: crate::actions::RichTextAction =
-            serde_json::from_slice(&dispatched.payload).unwrap();
+        let action = wp
+            .last_dispatched_for_test()
+            .cloned()
+            .expect("action dispatched");
         assert!(matches!(
             action,
             crate::actions::RichTextAction::ReplaceSelection { .. }
         ));
-        let blocks = tilo_doc::model::materialize(
-            &state.doc,
-            &tilo_doc::model::open(&state.doc, &state.root).unwrap(),
-        )
-        .blocks;
+        let blocks =
+            tilo_doc::model::materialize(&state.doc, &crate::model::open(&state.doc).unwrap())
+                .blocks;
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].text, "alXta");
     }
@@ -4438,13 +5019,9 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
         let dispatched = wp
             .last_dispatched_for_test()
             .expect("the suggestion dispatched an action");
-        assert_eq!(
-            dispatched.type_id,
-            crate::actions::WORD_PROCESSOR_ACTION_TYPE
-        );
         assert!(matches!(
-            serde_json::from_slice::<crate::actions::RichTextAction>(&dispatched.payload),
-            Ok(crate::actions::RichTextAction::SpliceText { at: 0, del: 3, ref ins, .. }) if ins == "the"
+            dispatched,
+            crate::actions::RichTextAction::SpliceText { at: 0, del: 3, ins, .. } if ins == "the"
         ));
         // The block text now reads "the end".
         let id = wp.blocks[0].id.clone();
@@ -4509,7 +5086,7 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
 /// constructed `ui::State`.
 fn author_doc_with_footnote(body: &str, ref_idx: usize, note_body: &str) -> ui::State {
     let mut state = crate::initialized_state();
-    let c = tilo_doc::model::init(&mut state.doc, &state.root);
+    let c = crate::model::init(&mut state.doc).unwrap();
     let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
     {
         let mut dm = tilo_doc::DocMut {
@@ -4591,7 +5168,7 @@ fn footnotes_render_in_the_page_area_numbered_in_document_order() {
         // Two footnote references in one paragraph; the FIRST reference (by source
         // position) must be number 1 regardless of the notes' id sort order.
         let mut state = crate::initialized_state();
-        let c = tilo_doc::model::init(&mut state.doc, &state.root);
+        let c = crate::model::init(&mut state.doc).unwrap();
         let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
         let (n_first, n_second);
         {
@@ -4644,7 +5221,7 @@ fn doc_with_paragraph(
     String,
 ) {
     let mut state = crate::initialized_state();
-    let c = tilo_doc::model::init(&mut state.doc, &state.root);
+    let c = crate::model::init(&mut state.doc).unwrap();
     let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
     let bid;
     {
@@ -4672,15 +5249,8 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
     // Phase: comment_range_computes_a_highlight_rect.
     {
         // "hello world" with a comment over the word "world" (chars 6..11).
-        let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
-        {
-            let mut dm = tilo_doc::DocMut {
-                doc: &mut state.doc,
-                c: &c,
-                ids: &mut ids,
-            };
-            dm.add_comment(&bid, 6, 11, "Ada", "Reword this");
-        }
+        let (wp, mut state, _, _, bid) = doc_with_paragraph("hello world");
+        crate::model::comment_by(&mut state.doc, "Ada", &bid, (6, 11), "Reword this");
         state.doc.commit();
         let mut framed = mount(state, wp, 1000, 900);
         let (wp, _) = Framed::split(&mut framed);
@@ -4726,18 +5296,21 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
 
     // Phase: review_reply_affordance_opens_the_durable_thread.
     {
-        let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
-        let comment;
-        {
-            let mut dm = tilo_doc::model::DocMut {
-                doc: &mut state.doc,
-                c: &c,
-                ids: &mut ids,
-            };
-            comment = dm.add_comment(&bid, 0, 5, "Ada", "Could this be clearer?");
-            let reply = dm.add_comment_reply(&comment, "Bea", "2026-09-07", "I will revise it.");
-            assert!(reply.is_some(), "reply attaches to the stable parent id");
-        }
+        let (wp, mut state, c, _, bid) = doc_with_paragraph("hello world");
+        let comment = crate::model::comment_by(
+            &mut state.doc,
+            "Ada",
+            &bid,
+            (0, 5),
+            "Could this be clearer?",
+        );
+        crate::model::reply_by(
+            &mut state.doc,
+            &comment,
+            "Bea",
+            "2026-09-07",
+            "I will revise it.",
+        );
         state.doc.commit();
         let mut framed = mount(state, wp, 1000, 700);
         let (wp, state) = Framed::split(&mut framed);
@@ -4812,15 +5385,8 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
     // Phase: deleting_comment_removes_it_and_clears_the_highlight.
     {
         // "hello world" with a comment over "world" (chars 6..11).
-        let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
-        let cid = {
-            let mut dm = tilo_doc::DocMut {
-                doc: &mut state.doc,
-                c: &c,
-                ids: &mut ids,
-            };
-            dm.add_comment(&bid, 6, 11, "Ada", "Reword this")
-        };
+        let (wp, mut state, c, _, bid) = doc_with_paragraph("hello world");
+        let cid = crate::model::comment_by(&mut state.doc, "Ada", &bid, (6, 11), "Reword this");
         state.doc.commit();
         let mut framed = mount(state, wp, 1000, 900);
         let (wp, state) = Framed::split(&mut framed);
@@ -4944,10 +5510,10 @@ fn tracked_changes_render_and_accept_individually() {
             "deletion strike has geometry"
         );
 
-        // Glyph tinting: `block_runs_markup` colours the ins run green and the del
+        // Glyph tinting: `block_runs` colours the ins run green and the del
         // run red (the standard review styling). With markup OFF those runs are
         // plain (no review colour).
-        let (runs_on, _, _) = block_runs_markup(b, true);
+        let (runs_on, _, _) = block_runs(b, true);
         assert!(
             runs_on
                 .iter()
@@ -4960,7 +5526,7 @@ fn tracked_changes_render_and_accept_individually() {
                 .any(|r| r.text.contains("gone") && r.color == Some(DELETION_RGB)),
             "the deleted run is tinted with the deletion review colour"
         );
-        let (runs_off, _, _) = block_runs_markup(b, false);
+        let (runs_off, _, _) = block_runs(b, false);
         assert!(
             runs_off
                 .iter()
@@ -5086,8 +5652,17 @@ fn tracked_changes_render_and_accept_individually() {
 /// Re-materialize the document straight from the CRDT (the production
 /// snapshot path) so a test asserts on what every reader sees — not on the
 /// widget's cached copy.
+/// The document as the editor draws it: its body, and the comment threads
+/// beside it marked on the text they are about.
 fn snapshot(state: &ui::State, c: &tilo_doc::Containers) -> tilo_doc::snapshot::DocSnapshot {
-    tilo_doc::model::materialize(&state.doc, c)
+    let mut snapshot = tilo_doc::model::materialize(&state.doc, c);
+    snapshot.comments = <crate::model::Document as ui::tilo_resource::Resource>::read(&state.doc)
+        .map(|document| document.comment_views(&state.doc))
+        .unwrap_or_default();
+    for block in &mut snapshot.blocks {
+        super::mark_comments(block, &snapshot.comments);
+    }
+    snapshot
 }
 
 /// Rejecting a tracked deletion keeps the text and drops the mark, and accept all clears every tracked
@@ -5153,6 +5728,8 @@ fn tracked_changes_reject_and_accept_all() {
         );
 
         wp.dispatch_review_action(ReviewAction::AcceptAllChanges, &mut edits(&mut state.doc));
+        // Accept All asks the person first; they agree.
+        confirm_asked(wp, &mut state.doc);
 
         // Every change is gone; accepting the insertion kept "keep" and accepting
         // the deletion removed "gone".
@@ -5195,10 +5772,10 @@ fn review_markup_registers_card_hits_and_toggles_off() {
                 c: &c,
                 ids: &mut ids,
             };
-            cid = dm.add_comment(&bid, 0, 4, "Ada", "look");
             ins_id = dm.insert_change(tilo_doc::ChangeKind::Ins, "Ada", "");
             dm.add_change_mark(tilo_doc::ChangeKind::Ins, &bid, 5, 9, &ins_id);
         }
+        cid = crate::model::comment_by(&mut state.doc, "Ada", &bid, (0, 4), "look");
         state.doc.commit();
         let mut framed = mount(state, wp, 1200, 900);
         let (wp, state) = Framed::split(&mut framed);
@@ -5249,7 +5826,7 @@ fn review_markup_registers_card_hits_and_toggles_off() {
 
         let resolve_target = review_action_target(&ReviewAction::ResolveComment(cid.clone()));
         let root = state.root.clone();
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&resolve_target)],
@@ -5274,10 +5851,10 @@ fn review_markup_registers_card_hits_and_toggles_off() {
                 c: &c,
                 ids: &mut ids,
             };
-            dm.add_comment(&bid, 0, 5, "Ada", "note");
             let ci = dm.insert_change(tilo_doc::ChangeKind::Ins, "Ada", "");
             dm.add_change_mark(tilo_doc::ChangeKind::Ins, &bid, 6, 11, &ci);
         }
+        crate::model::comment_by(&mut state.doc, "Ada", &bid, (0, 5), "note");
         state.doc.commit();
 
         // Default ON: a comment marker is collected for the right-margin card.
@@ -5295,7 +5872,7 @@ fn review_markup_registers_card_hits_and_toggles_off() {
         // draw path suppresses tracked-change styling.
         wp.toggle_markup();
         assert!(!wp.markup_enabled(), "toggle flips the flag");
-        let (runs_off, _, _) = block_runs_markup(&b, wp.review.is_visible());
+        let (runs_off, _, _) = block_runs(&b, wp.review.is_visible());
         assert!(
             runs_off.iter().all(|r| r.color != Some(INSERTION_RGB)),
             "no review colour is applied while markup is hidden"
@@ -5395,45 +5972,27 @@ fn the_outline_and_toc_follow_the_headings() {
 
 /// Drive a real left-click at `pt` through the production `handle_event`.
 pub(super) fn left_click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt: Point) {
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let node = NodeId::new(0);
-    let mods = Modifiers::default();
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
     // Move the pointer, then press.
-    wp.handle_event(
+    let moved = Dispatch::new().doc(&mut state.doc).path(&state.root).send(
+        wp,
         &WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: (pt.x, pt.y).into(),
         },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: edits(&mut state.doc),
-            path: &state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
     );
-    wp.handle_event(
-        &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: edits(&mut state.doc),
-            path: &state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    Dispatch::new()
+        .doc(&mut state.doc)
+        .path(&state.root)
+        .handled(moved.handled)
+        .focus_target(moved.focus_target)
+        .send(
+            wp,
+            &WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
 }
 
 #[test]
@@ -5526,10 +6085,10 @@ fn regenerating_the_toc_replaces_it_and_confirms() {
     {
         let mut framed = doc_with_headings(1000, 700);
         let (wp, state) = Framed::split(&mut framed);
-        assert!(wp.toast.is_none(), "no toast before the action");
+        assert!(!wp.toast.is_shown(), "no toast before the action");
         wp.apply_tool(&mut edits(&mut state.doc), ToolAction::InsertToc);
         assert!(
-            wp.toast.is_some(),
+            wp.toast.is_shown(),
             "generating a TOC surfaces a confirmation toast"
         );
         // And it actually produced TOC lines.
@@ -5563,22 +6122,10 @@ fn bound() -> (ui::State, WordProcessorWidget) {
 }
 
 fn send_ime(wp: &mut WordProcessorWidget, state: &mut ui::State, ime: winit::event::Ime) {
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
-    wp.handle_event(
-        &WindowEvent::Ime(ime),
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: edits(&mut state.doc),
-            path: &state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: NodeId::new(0),
-            taffy: &taffy,
-        },
-    );
+    Dispatch::new()
+        .doc(&mut state.doc)
+        .path(&state.root)
+        .send(wp, &WindowEvent::Ime(ime));
 }
 
 /// The input method's composition shows at the caret and reaches the
@@ -5726,36 +6273,50 @@ fn hosted_lookup_offers_caret_edits_not_a_second_document() {
         wp.search_rows().is_empty(),
         "nothing found, no search results"
     );
-    let edits: Vec<&str> = wp.bound_edits().iter().map(|edit| edit.id).collect();
+    let effects: Vec<String> =
+        <crate::effects::WordProcessorEffect as ui::tilo_resource::Effect>::specs()
+            .into_iter()
+            .map(|spec| spec.id)
+            .collect();
     for (id, what) in [
         (
             "type-text",
-            "typing is bound to the caret, not only a keypress",
+            "typing is an effect at the caret, not only a keypress",
         ),
         (
             "place-image",
-            "placing an image is bound to the caret, not only a toolbar click",
+            "placing an image is an effect at the caret, not only a toolbar click",
         ),
-        ("insert-table", "inserting a table is bound to the caret"),
+        (
+            "insert-table-here",
+            "inserting a table is an effect at the caret",
+        ),
     ] {
-        assert!(edits.contains(&id), "{what}: {edits:?}");
+        assert!(
+            effects.iter().any(|effect| effect == id),
+            "{what}: {effects:?}"
+        );
     }
 }
 
 #[test]
-fn a_selection_binds_set_hyperlink() {
+fn a_selection_can_be_linked() {
     let (mut state, mut wp) = bound();
     wp.inner.insert_str(&mut edits(&mut state.doc), "hello");
     wp.sync(&state.doc, &state.root);
     wp.inner.caret.offset = 0;
     wp.inner.set_anchor();
     wp.inner.caret.offset = 5;
-    wp.resolve_bound_edits(&state.doc);
+    let link = effect_edit(
+        &wp,
+        &state.doc,
+        &crate::effects::WordProcessorEffect::SetHyperlink {
+            target: "https://example.com".into(),
+        },
+    );
     assert!(
-        wp.bound_edits()
-            .iter()
-            .any(|edit| edit.id == "set-hyperlink"),
-        "a selection binds set-hyperlink to the document"
+        matches!(link, crate::actions::RichTextAction::SetMark { ref name, .. } if name == "link"),
+        "a selection is linked by the effect: {link:?}"
     );
 }
 
@@ -5795,24 +6356,18 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
                 .template_picker
                 .item_center(crate::Template::Report)
                 .expect("the Report row is laid out");
-            let mut handled = false;
             wp.lifecycle.dirty = false;
-            wp.handle_event(
-                &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: (point.x * 2.0, point.y * 2.0).into(),
-                },
-                &mut ui::widget::EventCtx {
-                    scale_factor: 2.0,
-                    modifiers: &Modifiers::default(),
-                    state: edits(&mut state.doc),
-                    path: &state.root,
-                    handled: &mut handled,
-                    focus_target: &mut None,
-                    node_id: NodeId::new(0),
-                    taffy: &TaffyTree::new(),
-                },
-            );
+            Dispatch::new()
+                .scale_factor(2.0)
+                .doc(&mut state.doc)
+                .path(&state.root)
+                .send(
+                    wp,
+                    &WindowEvent::CursorMoved {
+                        device_id: winit::event::DeviceId::dummy(),
+                        position: (point.x * 2.0, point.y * 2.0).into(),
+                    },
+                );
             let mut after = Scene::new();
             wp.draw_overlay(
                 &mut after,
@@ -5995,43 +6550,19 @@ fn templates_replace_the_document_only_when_chosen() {
     }
 }
 
-/// Drive a real keypress (single typed character) through the production
-/// `handle_event` keyboard path. winit's `KeyEvent` has a private
-/// `platform_specific` field, so (per the shell's `e2e_shell_flows` pattern)
-/// zero-init the whole struct and overwrite the public fields we read.
 fn type_char(wp: &mut WordProcessorWidget, state: &mut ui::State, ch: char) {
-    use winit::keyboard::{NativeKeyCode, PhysicalKey, SmolStr};
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let node = NodeId::new(0);
-    let mods = Modifiers::default();
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
-    // SAFETY: identical to the shell's KeyEvent synthesis — all public fields
-    // tolerate the zero bit pattern (Option → None, enums → first variant),
-    // and we overwrite the ones `handle_event` reads (`logical_key`/`text`/
-    // `state`). The private `platform_specific` field is plain/zero-sized.
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.logical_key = Key::Character(SmolStr::new(ch.to_string()));
-    ev.text = Some(SmolStr::new(ch.to_string()));
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    wp.handle_event(
+    use winit::keyboard::SmolStr;
+    let ev = ui::synthetic_input::key_event(
+        Key::Character(SmolStr::new(ch.to_string())),
+        Some(SmolStr::new(ch.to_string())),
+        ElementState::Pressed,
+    );
+    Dispatch::new().doc(&mut state.doc).path(&state.root).send(
+        wp,
         &WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: ev,
             is_synthetic: false,
-        },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: edits(&mut state.doc),
-            path: &state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
         },
     );
 }
@@ -6041,34 +6572,13 @@ fn type_char(wp: &mut WordProcessorWidget, state: &mut ui::State, ch: char) {
 /// Drive a real Tab keypress through the production `handle_event` keyboard
 /// path (no `text`, just the named key).
 fn press_tab(wp: &mut WordProcessorWidget, state: &mut ui::State) {
-    use winit::keyboard::{NativeKeyCode, PhysicalKey};
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let node = NodeId::new(0);
-    let mods = Modifiers::default();
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.logical_key = Key::Named(NamedKey::Tab);
-    ev.text = None;
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    wp.handle_event(
+    let ev = ui::synthetic_input::key_event(Key::Named(NamedKey::Tab), None, ElementState::Pressed);
+    Dispatch::new().doc(&mut state.doc).path(&state.root).send(
+        wp,
         &WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: ev,
             is_synthetic: false,
-        },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: edits(&mut state.doc),
-            path: &state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
         },
     );
 }
@@ -6633,7 +7143,7 @@ fn accessibility_exposes_and_activates_real_toolbar_buttons() {
         let (wp, state) = Framed::split(&mut framed);
         assert!(!wp.view.styles_panel_visible);
         let target = "word-processor.toolbar:toggle-styles".to_string();
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&target)],
@@ -6683,7 +7193,8 @@ fn semantic_text_caret_is_painted_without_a_selection_or_input() {
             sequence: 1,
             actor: tilo_actions::InteractionActor {
                 id: "synthetic-semantic-run".into(),
-                kind: tilo_actions::InteractionActorKind::Agent,
+                kind: tilo_actions::ActorKind::Agent,
+                for_person: None,
             },
             phase: tilo_actions::InteractionPhase::Applying,
             action: tilo_actions::InteractionAction {
@@ -7212,8 +7723,8 @@ fn remote_peers_resolve_independently_and_draw_through_production() {
         );
     }
 
-    // Phase: draw_with_presence_renders_remote_caret_through_production_path.
-    // The full `draw_with_presence` path consumes a populated `PresenceCtx`
+    // Phase: draw_renders_remote_caret_through_production_path.
+    // The full `draw` path consumes a populated `PresenceCtx`
     // without panicking AND the resolver agrees — i.e. the production draw and
     // the asserted helper are the same path, not a parallel re-implementation.
     {
@@ -7461,43 +7972,22 @@ fn dropped_and_selected_images_expose_their_controls() {
             .clone();
         let drop_pt = Point::new(target.text_x + 20.0, target.y_top + target.height / 2.0);
 
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let node = NodeId::new(0);
-        let mods = Modifiers::default();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
         // Move the pointer over the drop target (as a real drag-hover would), then
         // drop the file there.
-        wp.handle_event(
+        let hovered = Dispatch::new().doc(&mut state.doc).path(&state.root).send(
+            wp,
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: (drop_pt.x, drop_pt.y).into(),
-            },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: edits(&mut state.doc),
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
             },
         );
         let path = temp_png("drop");
-        wp.handle_event(
-            &WindowEvent::DroppedFile(path.clone()),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: edits(&mut state.doc),
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        Dispatch::new()
+            .doc(&mut state.doc)
+            .path(&state.root)
+            .handled(hovered.handled)
+            .focus_target(hovered.focus_target)
+            .send(wp, &WindowEvent::DroppedFile(path.clone()));
         let _ = std::fs::remove_file(&path);
         assert_eq!(
             image_block_count(wp, state),
@@ -7660,7 +8150,7 @@ fn image_controls_are_named_and_resize_and_flip() {
         }));
 
         let target = "word-processor.image-placement:left".to_string();
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&target)],
@@ -7811,44 +8301,26 @@ fn the_colour_picker_applies_and_cancels_previews() {
         let sv_pt = Point::new(sv.x0 + 20.0, sv.y0 + 20.0);
         let style_before = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
         // CursorMoved (to set the picker's internal cursor) then press.
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let node = NodeId::new(0);
-        let mods = Modifiers::default();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        wp.handle_event(
+        let moved = Dispatch::new().doc(&mut state.doc).path(&state.root).send(
+            wp,
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: (sv_pt.x, sv_pt.y).into(),
             },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: edits(&mut state.doc),
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
         );
-        wp.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: edits(&mut state.doc),
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        Dispatch::new()
+            .doc(&mut state.doc)
+            .path(&state.root)
+            .handled(moved.handled)
+            .focus_target(moved.focus_target)
+            .send(
+                wp,
+                &WindowEvent::MouseInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+            );
         let style_after = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
         assert_ne!(
             style_before, style_after,
@@ -7893,23 +8365,12 @@ fn preview_custom_colour(
         .expect("the picker lays out its SV square");
     left_click(wp, state, Point::new(sv.x0 + 20.0, sv.y0 + 20.0));
     // End the SV drag the press started, as the pointer would.
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
-    wp.handle_event(
+    Dispatch::new().doc(&mut state.doc).path(&state.root).send(
+        wp,
         &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
-        },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: edits(&mut state.doc),
-            path: &state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: NodeId::new(0),
-            taffy: &TaffyTree::new(),
         },
     );
     assert_ne!(
@@ -7989,10 +8450,9 @@ fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
             0,
             "Footnote remains associated with its page.",
         );
-        dm.add_comment(&first, 0, 9, "Reviewer", "Keep this comment.");
         let change = dm.insert_change(tilo_doc::ChangeKind::Ins, "Reviewer", "");
         dm.add_change_mark(tilo_doc::ChangeKind::Ins, &first, 12, 20, &change);
-        let mut after = first;
+        let mut after = first.clone();
         for i in 0..24 {
             let id = dm.insert_block(Some(&after), "paragraph");
             dm.splice_text(
@@ -8004,6 +8464,13 @@ fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
             after = id;
         }
     }
+    crate::model::comment_by(
+        &mut state.doc,
+        "Reviewer",
+        &first,
+        (0, 9),
+        "Keep this comment.",
+    );
     let (w, h) = (900, 1100);
     let mut framed = mount(state, wp, w, h);
     let (wp, _) = Framed::split(&mut framed);
@@ -8012,7 +8479,6 @@ fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
     let mut renderer = ui::offscreen::OffscreenRenderer::new(w, h);
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
     for (scroll, zoom) in [(0.0, 1.0), (932.25, 0.87), (5000.5, 1.25)] {
         wp.zoom.set(zoom);
         wp.scroll_y = scroll;
@@ -8021,14 +8487,7 @@ fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
         for reference in [true, false] {
             wp.reference_text_rendering = reference;
             let mut scene = Scene::new();
-            wp.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &permission,
-            );
+            wp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
             wp.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
             geometry.push(
                 wp.laid
@@ -8276,10 +8735,10 @@ fn render_review_shots() {
                 c: &c,
                 ids: &mut ids,
             };
-            doc.add_comment(&bid, 5, 17, "Ada", "This needs a source.");
             let change = doc.insert_change(tilo_doc::ChangeKind::Ins, "Lin", "");
             doc.add_change_mark(tilo_doc::ChangeKind::Ins, &bid, 29, 39, &change);
         }
+        crate::model::comment_by(&mut state.doc, "Ada", &bid, (5, 17), "This needs a source.");
         state.doc.commit();
         let mut framed = mount(state, wp, w, h);
         render_review_png(&mut framed, w, h, &dir, "review-overlay");
@@ -8339,10 +8798,6 @@ fn render_responsive_review_shots() {
 /// so the Writer selected by the host can receive it instead. When a
 /// non-Writer owns focus neither retained Writer may consume or mutate it.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one scenario covering pinch and Ctrl+wheel across focused and unfocused Writers"
-)]
 fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
     use winit::{
         dpi::PhysicalPosition,
@@ -8383,39 +8838,23 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
         delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, 24.0)),
         phase: TouchPhase::Moved,
     };
-    let mut first_handled = false;
-    first.handle_event(
-        &ctrl_wheel,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &ctrl,
-            state: edits(&mut first_state.doc),
-            path: &first_state.root,
-            handled: &mut first_handled,
-            focus_target: &mut None,
-            node_id: NodeId::new(0),
-            taffy: &TaffyTree::new(),
-        },
-    );
+    let first_handled = Dispatch::new()
+        .modifiers(ctrl)
+        .doc(&mut first_state.doc)
+        .path(&first_state.root)
+        .send(first, &ctrl_wheel)
+        .handled;
     assert!(
         !first_handled,
         "an unfocused Writer must leave browser Ctrl+wheel for the selected sibling"
     );
     assert_eq!(first.zoom.factor(), 1.0);
-    let mut second_handled = false;
-    second.handle_event(
-        &ctrl_wheel,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &ctrl,
-            state: edits(&mut second_state.doc),
-            path: &second_state.root,
-            handled: &mut second_handled,
-            focus_target: &mut None,
-            node_id: NodeId::new(0),
-            taffy: &TaffyTree::new(),
-        },
-    );
+    let second_handled = Dispatch::new()
+        .modifiers(ctrl)
+        .doc(&mut second_state.doc)
+        .path(&second_state.root)
+        .send(second, &ctrl_wheel)
+        .handled;
     assert!(second_handled, "the focused Writer owns Ctrl+wheel zoom");
     assert_eq!(
         second.zoom.factor(),
@@ -8445,20 +8884,11 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
         phase: TouchPhase::Moved,
     };
     let first_scroll_before = first.scroll_y;
-    let mut plain_handled = false;
-    first.handle_event(
-        &plain_wheel,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: edits(&mut first_state.doc),
-            path: &first_state.root,
-            handled: &mut plain_handled,
-            focus_target: &mut None,
-            node_id: NodeId::new(0),
-            taffy: &TaffyTree::new(),
-        },
-    );
+    let plain_handled = Dispatch::new()
+        .doc(&mut first_state.doc)
+        .path(&first_state.root)
+        .send(first, &plain_wheel)
+        .handled;
     assert!(plain_handled, "plain wheel remains pointer-routed");
     assert!(
         first.scroll_y > first_scroll_before,
@@ -8498,4 +8928,18 @@ fn a_digest_addressed_remote_caret_resolves_to_its_block() {
         1,
     );
     assert!(wp.remote_presence_overlays(&stray).0.is_empty());
+}
+
+/// Apply what `wp` asked the person to confirm, as the door does once they
+/// agree.
+fn confirm_asked(wp: &WordProcessorWidget, doc: &mut automerge::AutoCommit) {
+    let dispatch = wp.dispatch.as_ref().expect("the editor is hosted");
+    let mut document =
+        ui::tilo_resource::Replica::<crate::framework::Document>::from_doc(doc.clone());
+    for action in dispatch.take_asked().expect("what was asked builds") {
+        document
+            .apply_action(&action)
+            .expect("a confirmed change applies");
+    }
+    *doc = document.doc().clone();
 }

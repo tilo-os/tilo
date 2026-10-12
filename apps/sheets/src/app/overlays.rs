@@ -12,9 +12,9 @@
 use super::{
     Affine, ContextMenu, Currency, DATE_STYLES, MenuItem, MenuRow, Point, PresenceCtx, Rect, Scene,
     SettingChip, SettingKind, SettingsPanel, SheetsApp, TAB_MENU_ACTIONS, TAB_PALETTE_LEN,
-    TIME_STYLES, TabAction, TextRenderer, TextRole, Theme, Widget, WindowEvent, count_f64,
-    tab_action_label,
+    TIME_STYLES, TabAction, TextRenderer, TextRole, Theme, Widget, WindowEvent, tab_action_label,
 };
+use ui::num::f64_of_usize;
 use ui::widget::modal_dialog::{self, ModalAction, ModalHit, ModalLayout, ModalSpec};
 use ui::widget::{
     ChipFace, ChipLead, ColorSwatch, ColorSwatchPicker, ControlSize, EventCtx, MenuItem as Row,
@@ -389,12 +389,12 @@ impl SheetsApp {
             let labels: Vec<&str> = strip.iter().map(|(label, _)| *label).collect();
             let wanted = SegmentedFace::intrinsic_width(&labels, ControlSize::Small, tr, theme);
             let total = wanted.min(width);
-            let each = total / count_f64(strip.len().max(1));
+            let each = total / f64_of_usize(strip.len().max(1));
             let cells = strip
                 .iter()
                 .enumerate()
                 .map(|(i, (_, kind))| {
-                    let x0 = each * count_f64(i);
+                    let x0 = each * f64_of_usize(i);
                     (*kind, Rect::new(x0, y, x0 + each, y + strip_h))
                 })
                 .collect();
@@ -599,11 +599,26 @@ impl SheetsApp {
         self.paint_settings_sheet(scene, transform, tr, theme);
         // The command palette floats above everything else, over the scrim.
         if self.palette.is_open() {
-            ui::overlay::scrim::modal(scene, transform, self.rect, 1.0, theme);
             let (pw, ph) = self.palette.desired_size();
+            let gutter = f64::from(theme.tokens.spacing.s6);
+            let pw = pw.min((self.rect.width() - 2.0 * gutter).max(0.0));
+            let ph = ph.min((self.rect.height() - 2.0 * gutter).max(0.0));
             let x0 = self.rect.center().x - pw / 2.0;
-            let y0 = self.rect.y0 + (self.rect.height() * 0.12).max(self.metrics.s6);
-            self.palette.set_rect(Rect::new(x0, y0, x0 + pw, y0 + ph));
+            let y0 = (self.rect.y0 + (self.rect.height() * 0.12).max(gutter))
+                .min(self.rect.y1 - ph - gutter)
+                .max(self.rect.y0 + gutter);
+            let card = Rect::new(x0, y0, x0 + pw, y0 + ph);
+            ui::overlay::scrim::behind_panel(
+                scene,
+                transform,
+                self.rect,
+                vello::kurbo::RoundedRect::from_rect(
+                    card,
+                    ui::widget::floating_surface::radius(theme),
+                ),
+                theme,
+            );
+            self.palette.set_rect(card);
             self.palette.draw(scene, transform, tr, theme, presence);
         }
     }

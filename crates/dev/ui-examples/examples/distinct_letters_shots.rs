@@ -170,10 +170,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.to_str())
         .unwrap_or("specimen")
         .to_owned();
-    let catalog = FontCatalog::controlled_fixture(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts"),
-        "en-US",
-    );
+    let catalog = FontCatalog::controlled_fixture(tilo_ui::font_catalog::checkout_root(), "en-US");
     let faces = [
         ("default", UiFace::Default.name()),
         ("hyperlegible", UiFace::Hyperlegible.name()),

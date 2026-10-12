@@ -1,15 +1,10 @@
 name: Build / OS dev (aarch64)
 
-# Main's aarch64 dev image and its boards: Build / OS dev's build
-# (build-image.yml) for the other architecture. An ARM build outlasts the
-# time between main pushes, so main builds it one commit at a time, newest
-# first: a run that waited behind the one before skips its build when main
-# has moved past its commit, and the newer commit's run builds instead.
-# tilo-ci:main-<sha7>-aarch64 exists for the commits that built; the moving
-# tags follow the newest (os/dev/move-tag-forward.sh).
+# Explicit main dev-image request. Keep one build per architecture and skip
+# requests for a superseded main commit. Use os-dev.yml to target another ref
+# or select multiple architectures.
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: os-dev-aarch64-main
@@ -20,7 +15,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     outputs:
       build: ${{ steps.newest.outputs.build }}
     steps:

@@ -1,6 +1,6 @@
 //! Who the participants are, by name: what a view or surface shows for an
 //! id an action recorded ([`ActionCx::author`](tilo_resource::ActionCx::author))
-//! or the participant reading ([`ViewCx::me`](super::ViewCx::me)).
+//! or the participant reading ([`RecordEnv::me`](super::RecordEnv::me)).
 //!
 //! The document records ids — the same on every replica, whatever anyone is
 //! called — and the host knows the names: the room's roster announces them

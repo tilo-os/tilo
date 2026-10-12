@@ -24,7 +24,15 @@ pub fn f32_of_u32(value: u32) -> f32 {
     value as f32
 }
 
+pub fn f32_of_usize(value: usize) -> f32 {
+    value as f32
+}
+
 pub fn f64_of_i64(value: i64) -> f64 {
+    value as f64
+}
+
+pub fn f64_of_u64(value: u64) -> f64 {
     value as f64
 }
 
@@ -60,6 +68,10 @@ pub fn u32_of_i64(value: i64) -> u32 {
     u32::try_from(value).unwrap_or(if value < 0 { 0 } else { u32::MAX })
 }
 
+pub fn u32_of_f64(value: f64) -> u32 {
+    value as u32
+}
+
 pub fn u32_of_usize(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
@@ -81,6 +93,10 @@ pub fn usize_of_i32(value: i32) -> usize {
 }
 
 pub fn usize_of_i64(value: i64) -> usize {
+    usize::try_from(value).unwrap_or_default()
+}
+
+pub fn usize_of_isize(value: isize) -> usize {
     usize::try_from(value).unwrap_or_default()
 }
 

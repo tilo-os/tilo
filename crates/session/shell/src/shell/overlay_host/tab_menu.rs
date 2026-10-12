@@ -46,6 +46,12 @@ pub(crate) struct TabMenuLayer {
 }
 
 impl TabMenuLayer {
+    /// Every pixel the menu painted in its last draw, in the coordinates it
+    /// was drawn in; nothing while it is closed.
+    pub(crate) fn painted_bounds(&self, theme: &ui::theme::Theme) -> Vec<Rect> {
+        self.menu.painted_bounds(theme)
+    }
+
     /// Open for `target`, a tab in a group of `tab_count`, at the pointer.
     pub(crate) fn open(
         &mut self,
@@ -242,6 +248,9 @@ impl ShellLayer for TabMenuLayer {
         }
         // The menu is a floating Panel: this layer is the shell's top layer,
         // so it paints its whole Panel (shadow, material, rows) here.
+        let anchor = Rect::new(self.anchor.x, self.anchor.y, self.anchor.x, self.anchor.y);
+        self.menu
+            .constrain_to(cx.geometry.display_for(Some(anchor)));
         self.menu.draw_overlay(
             cx.scene,
             cx.transform,

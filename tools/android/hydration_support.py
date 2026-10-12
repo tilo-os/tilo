@@ -146,10 +146,10 @@ class ColdDocumentMount:
         self.state(b'projected')
         self.steps.append({'phase': 'recipient-restarted', 'projected': True})
 
-    def verify_restored(self):
+    def verify_restored(self, phase='actual-apk-relaunch-restored'):
         self.state(b'local')
         self.stop('viewer')
-        self.steps.append({'phase': 'actual-apk-relaunch-restored', 'observed': self.inspect(True)})
+        self.steps.append({'phase': phase, 'observed': self.inspect(True)})
         self.start_viewer()
         self.state(b'local')
 

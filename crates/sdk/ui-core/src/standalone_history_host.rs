@@ -115,6 +115,7 @@ pub(crate) struct StandaloneHistoryHost {
     /// The app draws the window's header row, which holds the History
     /// control, so the window draws no bar of its own.
     app_presents_button: bool,
+    in_window_history: bool,
     pane: StandaloneHistoryPane,
     content_target: Result<HistoryTarget, HistoryError>,
     content_focus: Option<CompositionFocus>,
@@ -157,6 +158,7 @@ impl StandaloneHistoryHost {
             search: None,
             search_enabled: false,
             app_presents_button: false,
+            in_window_history: true,
             pane: StandaloneHistoryPane::new(),
             content_target: Err(HistoryError::Unavailable),
             content_focus: None,
@@ -291,9 +293,8 @@ impl StandaloneHistoryHost {
     /// What the window's History control shows, or `None` where the host's
     /// own chrome (a menu bar, the Tilo shell) presents History.
     fn control(&self) -> Option<HistoryControl> {
-        self.toolbar
-            .as_ref()
-            .map(|_| HistoryControl::of(self.is_open()))
+        self.in_window_history
+            .then(|| HistoryControl::of(self.is_open()))
     }
 
     /// Offer the History control to the app's header row before the app is
@@ -321,6 +322,13 @@ impl StandaloneHistoryHost {
     /// buttons. Their actions stay, reachable from that chrome.
     #[cfg(any(feature = "native", test))]
     pub(crate) fn remove_in_window_controls(&mut self) {
+        self.in_window_history = false;
+        self.remove_fallback_bar();
+    }
+
+    /// Keep the app's integrated History control while dropping the redundant
+    /// standalone band. Header placement must not depend on a fallback button.
+    pub(crate) fn remove_fallback_bar(&mut self) {
         let had_toolbar = self.toolbar.take().is_some();
         let had_search = self.search.take().is_some();
         self.structure_dirty |= had_toolbar || had_search;
@@ -416,12 +424,12 @@ impl StandaloneHistoryHost {
         context: &HistoryReadContext<'_>,
     ) -> Result<Vec<Resource>, HistoryHostError> {
         self.refresh(context)?;
-        Ok(self.own_resources())
+        Ok(self.own_resources(context))
     }
 
     /// History, Search and the open session, each action available exactly
     /// when invoking it would do something.
-    fn own_resources(&self) -> Vec<Resource> {
+    fn own_resources(&self, context: &HistoryReadContext<'_>) -> Vec<Resource> {
         let mut resources = vec![history_resource(self.can_open(), self.is_open())];
         if self.has_search() {
             resources.push(search_resource());
@@ -437,9 +445,36 @@ impl StandaloneHistoryHost {
                 compare.contract.availability =
                     unavailable("selection_too_small", "host-history-compare-unavailable");
             }
+            self.set_restore_availability(&mut session, context);
             resources.push(session);
         }
         resources
+    }
+
+    fn set_restore_availability(&self, resource: &mut Resource, context: &HistoryReadContext<'_>) {
+        let can_review = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.can_restore(context));
+        let can_confirm = self.review.as_ref().is_some_and(|review| {
+            self.session
+                .as_ref()
+                .is_some_and(|session| session.validate_restore(context, review).is_ok())
+        });
+        for action in &mut resource.actions {
+            let enabled = match action.id.as_str() {
+                "review_restore" => can_review,
+                "restore" => can_confirm,
+                "cancel_restore" => self.review.is_some(),
+                _ => continue,
+            };
+            if !enabled {
+                action.contract.availability = unavailable(
+                    "restore_unavailable",
+                    "standalone-history-restore-unavailable",
+                );
+            }
+        }
     }
 
     /// Execute only after the host establishes trusted local dispatch. This
@@ -590,19 +625,41 @@ impl StandaloneHistoryHost {
         let Some(session) = &self.session else {
             return;
         };
-        let details = session
+        let selected: Vec<_> = session
             .selection()
             .iter()
             .filter_map(|id| session.rows().iter().find(|entry| entry.id == *id))
-            .map(|entry| format!("{}: {}", entry.author.name, entry.summary))
-            .collect::<Vec<_>>()
-            .join("\n");
-        // These are selected-change details. Exact comparison snapshots remain
-        // available through session(); a resource renderer owns diff display.
-        let summary = format!(
-            "{}\n{details}",
-            I18nManager::lookup_plain("standalone-history-selected-details")
-        );
+            .cloned()
+            .collect();
+        let Some(detail) = crate::HistorySelectionDetail::from_range(
+            &selected,
+            (0, selected.len().saturating_sub(1)),
+        ) else {
+            self.pane.set_comparison_summary(None);
+            return;
+        };
+        let mut lines = vec![detail.title];
+        if let Some(purpose) = detail.purpose
+            && !lines.contains(&purpose)
+        {
+            lines.push(purpose);
+        }
+        for resource in detail.resources {
+            lines.push(resource.app_label.map_or_else(
+                || resource.label.clone(),
+                |app| format!("{app}: {}", resource.label),
+            ));
+        }
+        let now = crate::time::wall();
+        for entry in selected {
+            let action = &entry.summary;
+            lines.push(format!("{}: {action}", entry.author.name));
+            lines.push(crate::widget::history::format_relative_time(
+                entry.timestamp,
+                now,
+            ));
+        }
+        let summary = lines.join("\n");
         self.pane.set_comparison_summary(Some(&summary));
     }
 
@@ -768,7 +825,7 @@ impl StandaloneHistoryHost {
         layout: HostHistoryLayout,
     ) -> Result<Vec<Resource>, HistoryHostError> {
         self.validate_presentation(context, layout)?;
-        let mut resources = self.own_resources();
+        let mut resources = self.own_resources(context);
         if self.is_open() {
             crate::widget::collect_widget_resources(&self.pane, context.document, &mut resources);
         }
@@ -932,8 +989,7 @@ impl StandaloneHistoryHost {
         taffy: &TaffyTree<()>,
         origin: Point,
     ) -> Point {
-        let outer = taffy.layout(layout.root).copied().unwrap_or_default();
-        let origin = origin + (f64::from(outer.location.x), f64::from(outer.location.y));
+        let origin = crate::widget::layout_rect(taffy, layout.root, origin).origin();
         let bar = layout
             .bar
             .and_then(|node| taffy.layout(node).ok())
@@ -950,16 +1006,8 @@ impl StandaloneHistoryHost {
         if let (Some(search), Some(node)) = (&mut self.search, layout.search) {
             search.apply_layout(taffy, node, toolbar_origin);
         }
-        let content = taffy.layout(layout.content).copied().unwrap_or_default();
-        let content_origin =
-            origin + (f64::from(content.location.x), f64::from(content.location.y));
-        self.content_rect = Rect::from_origin_size(
-            content_origin,
-            (
-                f64::from(content.size.width),
-                f64::from(content.size.height),
-            ),
-        );
+        self.content_rect = crate::widget::layout_rect(taffy, layout.content, origin);
+        let content_origin = self.content_rect.origin();
         if let Some(pane) = layout.pane {
             self.pane.apply_layout(taffy, pane, content_origin);
         }
@@ -1046,16 +1094,6 @@ impl Widget for PresentationRoots<'_> {
         _nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_root
-    }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
     fn children(&self) -> Vec<&dyn Widget> {
         self.children.clone()
@@ -1252,7 +1290,66 @@ fn session_resource(session: uuid::Uuid) -> Resource {
         "standalone-history-close",
         &HistoryCommand::Close { session },
     ))
+    .with_action(review_restore_operation(session))
+    .with_action(restore_operation(session))
+    .with_action(operation(
+        "cancel_restore",
+        "standalone-history-restore-cancel",
+        &HistoryCommand::CancelRestore { session },
+    ))
 }
+
+#[expect(
+    clippy::expect_used,
+    reason = "typed History command payload contains only a validated entry and session UUID"
+)]
+fn review_restore_operation(session: uuid::Uuid) -> ActionSpec {
+    ActionSpec::typed_operation(
+        "review_restore",
+        I18nManager::lookup_plain("standalone-history-restore"),
+        I18nManager::lookup_plain("standalone-history-select-hint"),
+        OperationKind::View,
+        HISTORY_OPERATION,
+        vec![
+            ActionParam::required_owned(
+                "entry",
+                ParamType::Text,
+                I18nManager::lookup_plain("standalone-history-entry-ids"),
+            )
+            .with_schema(serde_json::json!({"pattern": "^[0-9a-f]{32}$"})),
+        ],
+        move |args| {
+            EncodedAction::encode_operation(
+                HISTORY_OPERATION,
+                &HistoryCommand::ReviewRestore {
+                    session,
+                    entry: args.text("entry").unwrap_or_default().to_owned(),
+                },
+            )
+            .expect("validated history review serializes")
+        },
+    )
+    .of_kind(tilo_actions::ActionKind::Undoable)
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "fixed restore command contains only a serializable session UUID"
+)]
+fn restore_operation(session: uuid::Uuid) -> ActionSpec {
+    ActionSpec::operation(
+        "restore",
+        I18nManager::lookup_plain("standalone-history-restore-confirm"),
+        OperationKind::Effect,
+        HISTORY_OPERATION,
+        &HistoryCommand::Restore { session },
+    )
+    .expect("history restore serializes")
+    .of_kind(tilo_actions::ActionKind::Undoable)
+    .destructive()
+    .reversible()
+}
+
 pub(crate) fn encode_entry(id: HistoryEntryId) -> String {
     crate::widget::history_group::hex16(&id)
 }
@@ -1376,7 +1473,7 @@ mod tests {
                 resources
                     .iter()
                     .flat_map(|resource| &resource.actions)
-                    .all(|action| action.kind == OperationKind::View)
+                    .all(|action| action.kind == OperationKind::View || action.id == "restore")
             );
             context.document_identity = uuid::Uuid::new_v4();
             assert_eq!(
@@ -1649,6 +1746,196 @@ mod tests {
         }
     }
 
+    #[test]
+    fn published_history_restore_actions_review_cancel_and_confirm_without_writing() {
+        let (doc, entry, identity) = history_fixture();
+        let permissions = PermissionContext::permissive();
+        let context = HistoryReadContext {
+            document: &doc,
+            active_record: None,
+            document_identity: identity,
+            permissions: &permissions,
+        };
+        let before = doc.base_heads();
+        let mut host = StandaloneHistoryHost::new();
+        remember(&mut host, identity);
+        published_invoke(
+            &mut host,
+            &context,
+            tilo_actions::ActionAddress::new(HISTORY_RESOURCE, "open"),
+            None,
+            false,
+        )
+        .unwrap();
+        let resource = format!("tilo.host.history:{}", host.session_id.unwrap());
+        let specs = host.local_resources(&context).unwrap();
+        let session = specs
+            .iter()
+            .find(|item| item.id.as_str() == resource)
+            .unwrap();
+        assert_restore_contract(session);
+        let arguments = serde_json::json!({"entry": entry})
+            .as_object()
+            .unwrap()
+            .clone();
+        let review_address = tilo_actions::ActionAddress::new(&resource, "review_restore");
+        published_invoke(
+            &mut host,
+            &context,
+            review_address.clone(),
+            Some(&arguments),
+            false,
+        )
+        .unwrap();
+        assert!(host.pane.review_is_open());
+        published_invoke(
+            &mut host,
+            &context,
+            tilo_actions::ActionAddress::new(&resource, "cancel_restore"),
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(!host.pane.review_is_open());
+        assert!(host.take_confirmed_restore().is_none());
+        assert_eq!(doc.base_heads(), before);
+        published_invoke(&mut host, &context, review_address, Some(&arguments), false).unwrap();
+        let restore_address = tilo_actions::ActionAddress::new(&resource, "restore");
+        assert_eq!(
+            published_invoke(&mut host, &context, restore_address.clone(), None, false),
+            Err(tilo_actions::DoorError::ConfirmationRequired)
+        );
+        assert!(host.take_confirmed_restore().is_none());
+        published_invoke(&mut host, &context, restore_address, None, true).unwrap();
+        let confirmed = host.take_confirmed_restore().unwrap();
+        assert_eq!(encode_entry(confirmed.review.entry), entry);
+        assert!(matches!(confirmed.target, HistoryTarget::Legacy {
+            app_id, record: None, document_identity,
+        } if app_id == "notes" && document_identity == identity));
+        assert!(!confirmed.review.target_heads().is_empty());
+        assert_eq!(
+            doc.base_heads(),
+            before,
+            "only the owner may apply the reviewed restore"
+        );
+        assert_eq!(doc.pending_ops(), 0);
+    }
+
+    #[test]
+    fn published_history_restore_refuses_a_review_after_the_live_document_changes() {
+        let (mut doc, entry, identity) = history_fixture();
+        let permissions = PermissionContext::permissive();
+        let mut host = StandaloneHistoryHost::new();
+        remember(&mut host, identity);
+        let context = HistoryReadContext {
+            document: &doc,
+            active_record: None,
+            document_identity: identity,
+            permissions: &permissions,
+        };
+        published_invoke(
+            &mut host,
+            &context,
+            tilo_actions::ActionAddress::new(HISTORY_RESOURCE, "open"),
+            None,
+            false,
+        )
+        .unwrap();
+        let resource = format!("tilo.host.history:{}", host.session_id.unwrap());
+        let arguments = serde_json::json!({"entry": entry})
+            .as_object()
+            .unwrap()
+            .clone();
+        published_invoke(
+            &mut host,
+            &context,
+            tilo_actions::ActionAddress::new(&resource, "review_restore"),
+            Some(&arguments),
+            false,
+        )
+        .unwrap();
+        doc.put(ROOT, "value", "another collaborator's edit")
+            .unwrap();
+        doc.commit();
+        let context = HistoryReadContext {
+            document: &doc,
+            active_record: None,
+            document_identity: identity,
+            permissions: &permissions,
+        };
+        let specs = host.local_resources(&context).unwrap();
+        let restore = specs
+            .iter()
+            .find(|item| item.id.as_str() == resource)
+            .unwrap()
+            .actions
+            .iter()
+            .find(|action| action.id == "restore")
+            .unwrap();
+        assert!(!restore.contract.availability.is_available());
+        // Even an already encoded, confirmed request must revalidate the frontier.
+        let session = host.session_id.unwrap();
+        assert_eq!(
+            invoke(&mut host, &HistoryCommand::Restore { session }, &context),
+            Err(HistoryHostError::History(HistoryError::StaleReview))
+        );
+        assert!(host.take_confirmed_restore().is_none());
+        assert_eq!(
+            doc.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some("another collaborator's edit")
+        );
+    }
+
+    #[test]
+    fn published_history_selection_reads_action_resource_and_time_metadata() {
+        let (doc, entry, identity) = history_fixture();
+        let permissions = PermissionContext::permissive();
+        let context = HistoryReadContext {
+            document: &doc,
+            active_record: None,
+            document_identity: identity,
+            permissions: &permissions,
+        };
+        let mut host = StandaloneHistoryHost::new();
+        remember(&mut host, identity);
+        published_invoke(
+            &mut host,
+            &context,
+            tilo_actions::ActionAddress::new(HISTORY_RESOURCE, "open_at"),
+            Some(serde_json::json!({"entry": entry}).as_object().unwrap()),
+            false,
+        )
+        .unwrap();
+        host.sync(&doc, &ROOT);
+        let children = host.pane.children();
+        let summary = children
+            .iter()
+            .find(|child| child.test_id() == Some("standalone-history-summary"))
+            .unwrap()
+            .accessibility()
+            .unwrap()
+            .name
+            .unwrap();
+        assert!(summary.contains("Move meeting"), "{summary}");
+        assert!(summary.contains("Calendar: Planning"), "{summary}");
+        assert!(
+            summary.contains(&crate::widget::history::format_relative_time(
+                host.session
+                    .as_ref()
+                    .unwrap()
+                    .rows()
+                    .iter()
+                    .find(|row| row.id == decode_entry(&entry).unwrap())
+                    .unwrap()
+                    .timestamp,
+                crate::time::wall()
+            )),
+            "{summary}"
+        );
+        assert!(!summary.contains("event:one"), "{summary}");
+        assert_eq!(doc.pending_ops(), 0);
+    }
+
     use super::*;
     use crate::permissions::PermissionContext;
     use crate::widget::Text;
@@ -1661,6 +1948,80 @@ mod tests {
     ) -> Result<(), HistoryHostError> {
         let encoded = EncodedAction::encode_operation(HISTORY_OPERATION, command).unwrap();
         host.invoke_local(&encoded, context)
+    }
+
+    fn assert_restore_contract(session: &Resource) {
+        let review = session
+            .actions
+            .iter()
+            .find(|action| action.id == "review_restore")
+            .unwrap();
+        assert_eq!(review.kind, OperationKind::View);
+        assert_eq!(review.contract.kind, tilo_actions::ActionKind::Undoable);
+        assert!(review.contract.availability.is_available());
+        let restore = session
+            .actions
+            .iter()
+            .find(|action| action.id == "restore")
+            .unwrap();
+        assert_eq!(restore.kind, OperationKind::Effect);
+        assert_eq!(restore.contract.kind, tilo_actions::ActionKind::Undoable);
+        assert_eq!(
+            restore.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
+        assert!(!restore.contract.availability.is_available());
+        let cancel = session
+            .actions
+            .iter()
+            .find(|action| action.id == "cancel_restore")
+            .unwrap();
+        assert_eq!(cancel.kind, OperationKind::View);
+        assert!(!cancel.contract.availability.is_available());
+    }
+
+    fn history_fixture() -> (AutoCommit, String, uuid::Uuid) {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "value", "before").unwrap();
+        doc.commit();
+        doc.put(ROOT, "value", "after").unwrap();
+        let context =
+            tilo_actions::ActionContext::for_resource("event:one", "calendar.event", "Planning")
+                .with_app("calendar", "Calendar")
+                .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                    tilo_actions::ActionKey::new("calendar", "calendar.event", "move-meeting"),
+                    [],
+                )));
+        let hash = doc
+            .commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(context.change_message().unwrap())
+                    .with_time(1_700_000_000),
+            )
+            .unwrap();
+        let entry = encode_entry(crate::history_source::entry_id_from_hash(&hash.to_string()));
+        (doc, entry, uuid::Uuid::new_v4())
+    }
+
+    fn published_invoke(
+        host: &mut StandaloneHistoryHost,
+        context: &HistoryReadContext<'_>,
+        address: tilo_actions::ActionAddress,
+        arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+        confirmed: bool,
+    ) -> Result<(), tilo_actions::DoorError> {
+        let resources = host.local_resources(context).unwrap();
+        let (arguments, _, _) = crate::bound_dispatch::resolve_resource_invocation(
+            &resources, &address, None, arguments, confirmed,
+        )?;
+        let encoded = crate::bound_dispatch::encode_resource_action(
+            &resources,
+            &address,
+            arguments.as_ref(),
+            None,
+        )?;
+        host.invoke_local(&encoded, context)
+            .map_err(|error| tilo_actions::DoorError::InvalidArguments(format!("{error:?}")))
     }
 
     fn remember(host: &mut StandaloneHistoryHost, identity: uuid::Uuid) {

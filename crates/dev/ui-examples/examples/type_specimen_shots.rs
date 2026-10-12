@@ -329,10 +329,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .to_owned();
     // The checked-in catalog, without host fonts: the shots show the faces
     // Tilo ships, on any machine.
-    let catalog = FontCatalog::controlled_fixture(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts"),
-        "en-US",
-    );
+    let catalog = FontCatalog::controlled_fixture(tilo_ui::font_catalog::checkout_root(), "en-US");
     for (page_name, build) in [("scripts", scripts as fn() -> Element), ("kinds", kinds)] {
         for face in UiFace::ALL {
             for (theme_name, light) in [("dark", false), ("light", true)] {

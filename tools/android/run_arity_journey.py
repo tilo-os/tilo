@@ -21,6 +21,7 @@ import time
 import tomllib
 
 from qualify_apk import digest, pinned, verify_runtime
+from execution_host import add_architecture, native_architecture
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "scripts/headless-examples"))
@@ -222,12 +223,14 @@ def checked_output(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    add_architecture(parser)
     parser.add_argument("--payload", type=Path, required=True)
     parser.add_argument("--runtime-receipt", type=Path, required=True)
     parser.add_argument("--runtime-receipt-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--runtime-parent", type=Path, required=True)
     args = parser.parse_args()
+    native_architecture(args.architecture)
     output = checked_output(args.output)
     payload = args.payload.resolve(strict=True)
     pinned(payload / "app.apk", APK_SHA)
@@ -236,7 +239,7 @@ def main():
         raise RuntimeError("payload is not the signature-qualified Arity fixture")
     if report["runtime_receipt_sha256"] != args.runtime_receipt_sha256:
         raise RuntimeError("qualification and runtime receipt disagree")
-    verify_runtime(payload / "runtime", args.runtime_receipt, args.runtime_receipt_sha256, "x86_64")
+    verify_runtime(payload / "runtime", args.runtime_receipt, args.runtime_receipt_sha256, args.architecture)
     package = tomllib.loads((payload / "tilo.toml").read_text())["package"]["id"]
     if package != "so.tilo.android.qualify.h" + APK_SHA:
         raise RuntimeError("unexpected qualification identity")
@@ -288,7 +291,7 @@ def main():
                     raise RuntimeError("confinement probe failed")
                 if not re.search(r"landlock: fully enforced .*net_restricted=true", probe.stderr) or "no_new_privs: true" not in probe.stderr:
                     raise RuntimeError("confinement did not enforce mandatory Landlock")
-                result = {"schema": 1, "execution": "headless production Tilo compositor, x86_64 software graphics",
+                result = {"schema": 1, "execution": "headless production Tilo compositor, " + args.architecture + " software graphics",
                           "completed_at_utc": datetime.now(timezone.utc).isoformat(),
                           "production_binaries": {binary: digest(REPO / "target/debug" / binary)
                                                   for binary in ("shell", "tilo-launcher")},

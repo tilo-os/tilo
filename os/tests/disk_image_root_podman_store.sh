@@ -94,7 +94,7 @@ grep -Fxq -- '/var/lib/containers:/var/lib/containers' "$work/podman-argv"
 # Btrfs compression is in place before bootc writes any objects. The persistent
 # property survives the installation mount and applies to newly created dirs.
 head -3 "$work/storage-order" >"$work/actual-order"
-printf 'mount -o compress=zstd:1 /dev/loop-testp2 %s/out/.mnt\nbtrfs property set %s/out/.mnt compression zstd\nmount /dev/loop-testp1 %s/out/.mnt/boot\n' \
+printf 'mount -o compress=zstd:3 /dev/loop-testp2 %s/out/.mnt\nbtrfs property set %s/out/.mnt compression zstd\nmount /dev/loop-testp1 %s/out/.mnt/boot\n' \
   "$work" "$work" "$work" >"$work/expected-order"
 cmp "$work/expected-order" "$work/actual-order"
 [ "$(sed -n '4p' "$work/storage-order")" = bootc ]
@@ -120,5 +120,11 @@ grep -Fxq -- "$store/containers:/var/lib/containers" "$work/podman-argv"
 ! grep -Fxq -- '/var/lib/containers:/var/lib/containers' "$work/podman-argv"
 grep -Fxq -- "TMPDIR=$store/tmp" "$work/sudo-env-argv"
 [ -d "$store/containers/storage" ] && [ -d "$store/run" ] && [ -d "$store/tmp" ]
+
+# sudo strips the rootless storage environment: an explicit root configuration
+# must reach the same Podman invocation that installs the image.
+run_install env TILO_ROOT_PODMAN_STORE="$store" TILO_ROOT_PODMAN_STORAGE_CONF="$store/storage.conf"
+grep -Fxq -- "CONTAINERS_STORAGE_CONF=$store/storage.conf" "$work/sudo-env-argv"
+grep -Fxq -- "$store/containers/storage" "$work/podman-argv"
 
 printf 'ok: root podman keeps its store where TILO_ROOT_PODMAN_STORE says, and only there\n'

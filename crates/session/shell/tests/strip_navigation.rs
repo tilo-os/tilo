@@ -40,7 +40,7 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 const W: f32 = 1280.0;
@@ -247,25 +247,10 @@ impl Harness {
     }
 
     fn event(&mut self, event: &WindowEvent) -> bool {
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT.clone();
-        let modifiers = winit::event::Modifiers::default();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        self.host.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: self.child,
-                taffy: &self.taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .layout(&self.taffy, self.child)
+            .send(&mut self.host, event)
+            .handled
     }
 
     /// The per-frame reconcilers this file's subjects ride on, in the order
@@ -293,66 +278,43 @@ impl Harness {
 
     fn click(&mut self, p: Point) {
         self.event(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(p.x, p.y),
         });
         self.event(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
         self.event(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         });
     }
 
     fn key(&mut self, logical: Key, mods: ModifiersState) {
-        // winit's `KeyEvent` carries a private platform field, so the struct is
-        // zero-initialised and every public field overwritten.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
+        let ev = ui::synthetic_input::key_event(logical, None, ElementState::Pressed);
         let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: ev,
             is_synthetic: false,
         };
-        let modifiers = Modifiers::from(mods);
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT.clone();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        self.host.handle_event(
-            &event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: self.child,
-                taffy: &self.taffy,
-            },
-        );
+        ui::testing::Dispatch::new()
+            .modifiers(mods)
+            .layout(&self.taffy, self.child)
+            .send(&mut self.host, &event);
     }
 
     /// A horizontally-dominant wheel event over the strip, the way a
     /// two-finger sideways swipe arrives.
     fn scroll_horizontally(&mut self, dx: f32) {
         self.event(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(600.0, 500.0),
         });
         self.event(&WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             delta: MouseScrollDelta::LineDelta(dx, 0.0),
             phase: winit::event::TouchPhase::Moved,
         });
@@ -1670,5 +1632,131 @@ fn axis_gather_finishes_without_animation_in_reduced_motion() {
         h.scroll_x(),
         offset,
         "gather must not leave an animation tail"
+    );
+}
+
+#[test]
+fn ctrl_shift_t_restores_the_closed_window_and_its_existing_record() {
+    assert_closed_window_restore(false, false);
+}
+
+#[test]
+fn ctrl_shift_t_restores_the_last_window_with_its_existing_record() {
+    assert_closed_window_restore(true, false);
+}
+
+#[test]
+fn ctrl_shift_t_keeps_closed_windows_in_their_original_workspace() {
+    assert_closed_window_restore(true, true);
+}
+
+fn configure_terminal_group(
+    h: &Harness,
+    tab: u64,
+    binding: &shell::shell::state::LocalAppRecord,
+    last_window: bool,
+) {
+    let chrome = h.chrome.borrow_mut();
+    let mut tree = chrome.tree_mut();
+    let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+    group.tabs.retain(|candidate| candidate.id == tab);
+    group.active_tab = tab;
+    group.tabs[0].tile = TileContent::Foreign {
+        app_id: binding.app_id.clone(),
+        surface_id: 42,
+    };
+    if last_window {
+        tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .retain(|group| group.id == h.groups[0]);
+    }
+    tree.local_app_records.insert(tab, binding.clone());
+    tree.seed_doc_from_cache();
+}
+
+fn assert_closed_window_restore(last_window: bool, other_workspace: bool) {
+    let mut h = Harness::new();
+    let tab = h.tabs[0][0];
+    let room = h.chrome.borrow().tree().desktop.workspaces[0].room;
+    let checkout = shell::shell::tab_documents::scratch_tab_record(tab);
+    let records = h.chrome.borrow().records().clone();
+    let before = records.read(&checkout.id, ui::record::identity);
+    assert_eq!(before, Some(Some(checkout.clone())));
+    let binding = shell::shell::state::LocalAppRecord {
+        room,
+        app_id: "so.tilo.terminal".into(),
+        record_instance: tab,
+    };
+    configure_terminal_group(&h, tab, &binding, last_window);
+    h.lay_out();
+    shell::shell::window_actions::close_tab(&mut h.chrome.borrow_mut(), tab).unwrap();
+    assert!(
+        !h.chrome.borrow().tree().desktop.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .any(|group| group.id == h.groups[0])
+    );
+    assert_eq!(
+        records.read(&checkout.id, ui::record::identity),
+        before,
+        "closing a window keeps its old record handle alive"
+    );
+    h.lay_out();
+    if other_workspace {
+        let elsewhere = WorkspaceId::new();
+        let home = h.chrome.borrow().tree().desktop.active;
+        {
+            let chrome = h.chrome.borrow_mut();
+            let mut tree = chrome.tree_mut();
+            tree.desktop
+                .workspaces
+                .push(Workspace::new(elsewhere, "Elsewhere"));
+            tree.desktop.active = elsewhere;
+            tree.seed_doc_from_cache();
+        }
+        h.lay_out();
+        h.key(
+            Key::Character("t".into()),
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+        );
+        assert_eq!(h.chrome.borrow().tree().desktop.active, elsewhere);
+        assert!(
+            !h.chrome.borrow().tree().desktop.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .any(|group| group.id == h.groups[0]),
+            "another workspace must not reopen this frame"
+        );
+        h.chrome.borrow_mut().tree_mut().desktop.active = home;
+        h.lay_out();
+    }
+    h.key(
+        Key::Character("t".into()),
+        ModifiersState::CONTROL | ModifiersState::SHIFT,
+    );
+    let chrome = h.chrome.borrow();
+    let tree = chrome.tree();
+    let group = tree.desktop.workspaces[0].strips[0]
+        .window_groups
+        .iter()
+        .find(|group| group.id == h.groups[0])
+        .expect("the closed window is restored");
+    if last_window {
+        assert_eq!(
+            tree.desktop.workspaces[0].strips[0].window_groups.len(),
+            1,
+            "restoring the last window must not add a default duplicate"
+        );
+    }
+    assert_eq!(group.tabs.len(), 1);
+    assert_eq!(group.active_tab, tab);
+    assert!(
+        matches!(&group.tabs[0].tile, TileContent::LocalApp { app_id, .. } if app_id == "so.tilo.terminal")
+    );
+    assert_eq!(tree.local_app_records.get(&tab), Some(&binding));
+    assert_eq!(
+        records.read(&checkout.id, ui::record::identity),
+        before,
+        "restore reuses the existing record rather than creating a default"
     );
 }

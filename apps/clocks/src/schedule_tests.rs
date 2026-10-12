@@ -475,3 +475,30 @@ fn shell_activity_shows_the_floating_clock_first() {
         assert!(!unfloated.overlay);
     }
 }
+
+#[test]
+fn completed_one_shot_does_not_rearm_if_shared_settings_remain_enabled() {
+    let (clocks, _) = with_alarm(lunch(&[]));
+    let mut delivery = Delivery::default();
+    assert!(
+        ring(&clocks, &mut delivery, local(2026, 4, 14, 11, 0, 0))
+            .due
+            .is_empty()
+    );
+    assert_eq!(
+        ring(&clocks, &mut delivery, local(2026, 4, 14, 12, 0, 0))
+            .due
+            .len(),
+        1
+    );
+    assert!(
+        ring(
+            &clocks,
+            &mut restarted(&delivery),
+            local(2026, 4, 15, 12, 0, 0)
+        )
+        .due
+        .is_empty(),
+        "a read-only collaborator still delivers a one-shot only once per device"
+    );
+}

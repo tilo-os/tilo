@@ -45,7 +45,7 @@ support. A completed compile check alone is not a claim of hardware support.
 | Browser | Chromium engine runtime built per architecture from the pinned CEF distribution in the image build; the rootfs check resolves every library it loads | Real-boot page-load acceptance on ARM64 hardware |
 | Windows compatibility | Service crates compile on ARM64 | Fedora ARM64 lacks Wine/DXVK RPMs; pinned Proton and VM hardware definitions need an explicit ARM64 implementation |
 | Imager | Native Windows ARM64 executable builds, loads, and renders an offscreen fixture; library tests pass (138); file identity comes from the open native handle; ARM64 packaging checks PE architecture; both Windows release lanes and combined WinGet manifests required | Signed installer and live UI acceptance; investigate host Vulkan loader warnings separately from the successful offscreen render |
-| Desktop packaging | Build scripts contain ARM64 targets | Enable and validate native release lanes and architecture-specific assets |
+| Desktop packaging | Build scripts contain ARM64 targets; tagged and explicit `full_native` desktop runs select native ARM64 with `TILO_DESKTOP_ARM64_RELEASES="1"` | Qualify architecture-specific release assets and installed journeys; reconcile advertised ARM64 desktop support through the product decision |
 | CI | Both native architectures selected for affected packages and ordinary app builds by default; builder publication waits for native cache tests; native Vulkan paths | Run new lanes against published native builder/dependency indexes; extend remaining nightly coverage |
 | Speech | Unix socket backend scoped to Unix; portable speech tests pass on Linux ARM64 (31) and Windows ARM64 (28) | Live speech and accessibility acceptance on each supported host |
 | Media | Native media tests pass on Linux ARM64 (98) and Windows ARM64 (91); Linux decode/encode features and affected video apps compile; file URLs use native path conversion; Unix DMA buffers use the target's standard file ABI | Live GPU/media acceptance |
@@ -53,6 +53,17 @@ support. A completed compile check alone is not a claim of hardware support.
 | Android app host: build | Calculator and Notes `<app>-android` examples pass `clippy -D warnings` for `aarch64-linux-android` and `x86_64-linux-android`, required by CI whenever they are affected; debug APKs build for both ABIs with NDK r29 | No CI APK build (it needs the Android SDK); release signing; the other apps have no Android example |
 | Android app host: runtime | x86_64 debug APKs of both apps run on an API 36 x86_64 emulator: touch and tap-to-caret, the input method's initial selection (`dumpsys input_method`), a Storage Access Framework chooser returning to a redrawn app, and the landscape keypad layout | No arm64-v8a device acceptance; TalkBack explore-by-touch unverified (no TalkBack or hover injection on the emulator); hardware Enter does not reach text fields; no persisted pipeline cache, so each cold start compiles shaders |
 | Hosted identity | Remote broker client remains portable; Windows rejects unsupported local authority storage without creating files | Local authority ownership and permission enforcement remains a Unix service; native Windows authority storage is not implemented |
+
+Desktop lane selection is implemented in
+[`release-desktop.yml`](../../.forgejo/workflows/release-desktop.yml), as described in
+[the release pipeline](../release-pipeline.md#fast-validation-versus-release-gates).
+Weekly and default manual desktop builds select amd64; PRs run preflight only.
+[The install contract](../install-contract.json) still lists ARM64 desktop sessions as
+planned. Enabled build lanes are not a release-support or hardware acceptance receipt.
+The release surface/support-matrix decision remains with the product owner in
+[TIL-359](https://linear.app/tilo-os/issue/TIL-359); this source reconciliation does not
+change that contract, select a launch surface, or waive the two-architecture complete-OS
+and Imager requirements.
 
 Validation was performed on a native ARM64 Fedora WSL environment. It exposes
 software QEMU emulation but no `/dev/kvm`. Secure Boot, measured boot and

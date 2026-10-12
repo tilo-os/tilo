@@ -19,19 +19,22 @@ use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use std::sync::mpsc::{Receiver, TryRecvError};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::Key;
 
-use ui::framework::{Dispatcher, EffectCx, EffectStatus, Effected, LiveRow, RunMode, SurfaceCx};
+use ui::framework::{
+    Dispatcher, EffectCx, EffectStatus, Effected, LiveRow, RunMode, Submit, SurfaceCx,
+};
 use ui::icons::Icon;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::ControlInvocation;
+use ui::tilo_resource::Atom;
 use ui::tokens::Spacing;
 use ui::widget::{
     Button, Element, FilterCount, InspectorPlacement, NavShell, SearchField, TaffyTreeExt, Widget,
@@ -159,9 +162,6 @@ pub struct LogsApp {
     /// Pointer/keyboard controls publish inert resource addresses; the host
     /// re-resolves current availability and permissions before effects run.
     pending_control_invocation: Option<ControlInvocation>,
-    /// One-shot deterministic local view seeding used only by the offscreen
-    /// shot factory.
-    shot_filter: Option<Filter>,
 
     // ---- journal source ----
     /// Whether the journal controls are offered: everywhere but a past
@@ -227,7 +227,6 @@ impl LogsApp {
             reveal_detail: false,
             layout_dirty: true,
             pending_control_invocation: None,
-            shot_filter: None,
             allow_live,
             last_poll: ui::time::now(),
             reads: false,
@@ -242,51 +241,11 @@ impl LogsApp {
         app
     }
 
-    /// Construct a live-capable viewer whose initial read failed. Keeping the
-    /// capability enabled means Refresh remains available as a recovery path;
-    /// the error itself is safe, local-only presentation state.
-    pub fn new_with_source_error(
-        entries: Vec<LogEntry>,
-        allow_live: bool,
-        error: crate::journal::JournalLoadError,
-    ) -> Self {
-        let mut app = Self::with_entries(entries, allow_live);
-        app.source_error = Some(error);
-        app.publish();
-        app
-    }
-
     /// Show the selected entry for a capture: on a narrow window the
     /// inspector is a drawer, which this opens once the window is laid out.
     pub fn shots_show_detail(&mut self) {
         self.reveal_detail = true;
         self.layout_dirty = true;
-    }
-
-    /// Seed an errors-and-worse state for deterministic visual regression
-    /// captures.
-    pub fn shots_filter_errors(&mut self) {
-        self.shot_filter = Some(Filter {
-            min_priority: Priority::Err.level(),
-            ..Filter::default()
-        });
-        self.layout_dirty = true;
-    }
-
-    /// Seed a free-text filter for a capture (`--no-matches` captures the
-    /// state where nothing matches).
-    pub fn shots_search(&mut self, query: &str) {
-        self.shot_filter = Some(Filter {
-            search: query.to_owned(),
-            ..self.shot_filter.take().unwrap_or_default()
-        });
-        self.layout_dirty = true;
-    }
-
-    /// Deterministically capture the empty-source loading state.
-    pub fn shots_show_loading(&mut self) {
-        self.source_loading = true;
-        self.publish();
     }
 
     /// Recompute the distinct-unit and distinct-boot lists from entries.
@@ -498,10 +457,12 @@ impl LogsApp {
         let requests = self.shared.borrow_mut().take_requests();
         for request in requests {
             match request {
-                Request::Search(value) => self.edit(Logs::SET_SEARCH.with(Some(value))),
-                Request::Unit(value) => self.edit(Logs::SET_UNIT.with(Some(value))),
-                Request::Boot(value) => self.edit(Logs::SET_BOOT.with(Some(value))),
-                Request::Priority(value) => self.edit(Logs::SET_SEVERITY.with(value)),
+                Request::Search(value) => self.edit(Logs::paths().search.replace(value)),
+                Request::Unit(value) => self.edit(Logs::paths().unit.set(Atom(value))),
+                Request::Boot(value) => self.edit(Logs::paths().boot.set(Atom(value))),
+                Request::Priority(value) => {
+                    self.edit(Logs::paths().severity.set(Priority::from_level(value)));
+                }
                 Request::ClearFilters => self.edit(Logs::CLEAR_FILTERS.with(())),
                 Request::Select(entry_id) => self.request(&JournalEffect::SelectEntry { entry_id }),
             }
@@ -555,9 +516,9 @@ impl LogsApp {
     }
 
     /// Submit a filter edit; the document presents its result.
-    fn edit(&self, edit: ui::tilo_resource::Invoke<Logs>) {
+    fn edit(&self, edit: impl Submit<Logs>) {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.invoke(edit);
+            dispatcher.submit(edit);
         }
     }
 
@@ -742,22 +703,6 @@ fn shell_node(taffy: &TaffyTree<()>, node: NodeId) -> Option<NodeId> {
     taffy.children(node).ok()?.first().copied()
 }
 
-/// Build a single-child parent node that fills the window.
-fn fill_node(taffy: &mut TaffyTree<()>, child: NodeId) -> NodeId {
-    taffy.parent_node(
-        Style {
-            display: taffy::Display::Flex,
-            flex_grow: 1.0,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )
-}
-
 fn export_request() -> PickRequest {
     PickRequest::save("Export filtered logs", "Export", "journal-filtered.jsonl")
         .thread_name("logs-portal-export")
@@ -812,21 +757,13 @@ impl Widget for LogsApp {
             self.show_inspector(self.effective_selected());
         }
         let shell = self.shell.build_layout(taffy, theme, node_map);
-        let node = fill_node(taffy, shell);
+        let node = taffy.fill_node(shell);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if let Some(shell) = shell_node(taffy, node) {
             self.shell
                 .apply_layout(taffy, shell, Point::new(self.rect.x0, self.rect.y0));
@@ -848,19 +785,6 @@ impl Widget for LogsApp {
         presence: &PresenceCtx,
     ) {
         self.shell.draw(scene, transform, tr, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.shell
-            .draw_with_presence(scene, transform, tr, theme, presence, permissions);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -981,7 +905,7 @@ mod tests {
     use super::*;
     use crate::journal::sample_entries;
     use crate::resource::LogsShell;
-    use ui::prelude::TestApp;
+    use ui::prelude::{Invoke, TestApp};
 
     fn captured(viewport: (u32, u32)) -> TestApp<LogsShell> {
         let mut app = TestApp::new().unwrap();
@@ -1061,7 +985,7 @@ mod tests {
             assert_eq!(boots, ["Current boot", "Previous boot"]);
         });
         let total = surface(&mut app, |viewer| viewer.filtered.len());
-        app.invoke(Logs::SET_SEVERITY.with(Priority::Err.level()))
+        app.invoke(Invoke::edit(&Logs::paths().severity.set(Priority::Err)).unwrap())
             .unwrap();
         surface(&mut app, |viewer| {
             let errs = viewer.filtered.len();
@@ -1109,6 +1033,33 @@ mod tests {
             app.read_document(|doc| doc.clone().get_heads()),
             initial_heads,
             "document filter actions must write shared state"
+        );
+    }
+
+    #[test]
+    fn history_says_how_the_filter_changed() {
+        let mut app = captured((1280, 800));
+        request(&mut app, Request::Priority(Priority::Err.level()));
+        request(&mut app, Request::Unit("kernel".to_owned()));
+        request(&mut app, Request::Search("iroh".to_owned()));
+        app.invoke(Logs::CLEAR_FILTERS.with(())).unwrap();
+        let catalogue =
+            tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
+        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        let sentences: Vec<String> = app
+            .history()
+            .into_iter()
+            .filter(|entry| entry.what.is_some())
+            .map(|entry| reader.sentence(&entry))
+            .collect();
+        assert_eq!(
+            sentences,
+            [
+                "Showed errors and more severe entries",
+                "Showed the entries of unit kernel",
+                "Searched the journal",
+                "Cleared the journal filters",
+            ]
         );
     }
 

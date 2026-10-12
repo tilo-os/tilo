@@ -60,6 +60,7 @@ fn sample(preset: Preset, colour: &str) -> Artwork {
         height: SAMPLE.1,
         ground: Ground::default(),
         layers: vec![Layer {
+            group: String::new(),
             id: "sample".into(),
             name: String::new(),
             order: "a".into(),
@@ -74,7 +75,8 @@ fn sample(preset: Preset, colour: &str) -> Artwork {
             clip: false,
             unlinked: false,
             adjust: None,
-        }],
+        }]
+        .into(),
         marks: vec![Mark {
             id: format!("sample-{}", preset.name()),
             layer: "sample".into(),
@@ -91,7 +93,8 @@ fn sample(preset: Preset, colour: &str) -> Artwork {
             group: String::new(),
             clip: String::new(),
             area: String::new(),
-        }],
+        }]
+        .into(),
         ..Artwork::default()
     }
 }

@@ -183,14 +183,19 @@ pub fn remove_token(device: &Path) -> Result<()> {
 /// # Errors
 /// When cryptsetup refuses the token.
 pub fn import_token(device: &Path, token: &Token) -> Result<()> {
-    let json = serde_json::to_vec(token)?;
-    remove_token(device)?;
-    exec::check(
-        "cryptsetup",
-        ["token".as_ref(), "import".as_ref(), device.as_os_str()],
-        Some(&json),
-    )
-    .context("cryptsetup could not store the sibling-unlock token")
+    let json = zeroize::Zeroizing::new(serde_json::to_vec(token)?);
+    // An earlier token is replaced in one header write, so a failure leaves
+    // the old one in place rather than none.
+    let existing = token_id(&metadata(device)?)?;
+    let mut args: Vec<&std::ffi::OsStr> = vec!["token".as_ref(), "import".as_ref()];
+    if let Some(id) = &existing {
+        args.push("--token-replace".as_ref());
+        args.push("--token-id".as_ref());
+        args.push(id.as_ref());
+    }
+    args.push(device.as_os_str());
+    exec::check("cryptsetup", &args, Some(&json))
+        .context("cryptsetup could not store the sibling-unlock token")
 }
 
 fn token_id(metadata: &str) -> Result<Option<String>> {

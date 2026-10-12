@@ -410,12 +410,6 @@ impl EpochCapture {
         }
     }
 
-    /// Compares the whole room in the next epoch, for when the journal may
-    /// have missed changes.
-    pub fn request_rescan(&mut self) {
-        self.rescan_next = true;
-    }
-
     /// Keeps `rel` tracked but forgets that its current state was captured,
     /// for a change the consumer failed to publish: the next epoch captures
     /// the path again if it still exists, and its removal if it does not.

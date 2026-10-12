@@ -133,8 +133,23 @@ pub(crate) fn reload_from_library(
 }
 
 #[cfg(any(feature = "native", test))]
+struct ReloadSchemas {
+    accepted: bool,
+}
+
+#[cfg(any(feature = "native", test))]
+impl Drop for ReloadSchemas {
+    fn drop(&mut self) {
+        if !self.accepted {
+            tilo_resource::reset_type_schemas();
+        }
+    }
+}
+
+#[cfg(any(feature = "native", test))]
 fn reload_with(fns: &DevFns, windows: &[DevWindowSlot]) -> Result<DevReload, String> {
     let mut root = None;
+    let mut schemas = None;
     if let (Some(linked_ui), Some(publish)) = (fns.linked_ui, fns.publish) {
         // SAFETY: the symbol is the library's `tilo_dev_linked_ui`, which
         // returns the `ui` it linked and does not dereference caller state.
@@ -144,6 +159,9 @@ fn reload_with(fns: &DevFns, windows: &[DevWindowSlot]) -> Result<DevReload, Str
                 "reload library is linked to a different ui; keeping the running app".to_owned(),
             );
         }
+        // Nominal resource types keep their IDs across app-code reloads.
+        tilo_resource::reset_type_schemas();
+        schemas = Some(ReloadSchemas { accepted: false });
         let _ = take_dev_root();
         // SAFETY: the symbol is the library's `tilo_dev_publish_root`. It
         // builds a root into this process's `ui` slot and returns 1, or
@@ -193,6 +211,9 @@ fn reload_with(fns: &DevFns, windows: &[DevWindowSlot]) -> Result<DevReload, Str
             id: window.id.clone(),
             state: out,
         });
+    }
+    if let Some(schemas) = schemas.as_mut() {
+        schemas.accepted = true;
     }
     Ok(DevReload {
         windows: next,
@@ -463,30 +484,8 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
             node
         }
 
-        fn apply_layout(
-            &mut self,
-            _taffy: &taffy::TaffyTree<()>,
-            _node: taffy::NodeId,
-            _origin: vello::kurbo::Point,
-        ) {
-        }
-
-        fn draw(
-            &mut self,
-            _scene: &mut vello::Scene,
-            _transform: vello::kurbo::Affine,
-            _text_renderer: &mut crate::text_render::TextRenderer,
-            _theme: &crate::Theme,
-            _presence: &crate::presence::PresenceCtx,
-        ) {
-        }
-
         fn name(&self) -> &str {
             "reloaded"
-        }
-
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
         }
     }
 
@@ -506,6 +505,147 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
         fn permission_hint(&self) -> Option<crate::widget::AppKind> {
             None
         }
+    }
+
+    thread_local! {
+        static SCHEMA_REVISION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static PUBLISHED_SCHEMA: std::cell::RefCell<Option<crate::tilo_actions::Resource>> = const { std::cell::RefCell::new(None) };
+    }
+
+    #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+    struct SchemaEdit {
+        value: u8,
+    }
+
+    impl crate::tilo_actions::Action for SchemaEdit {
+        fn apply(
+            &self,
+            _doc: &mut crate::tilo_actions::Doc,
+        ) -> Result<(), crate::tilo_actions::ActionError> {
+            Ok(())
+        }
+    }
+
+    struct SchemaReload;
+
+    impl tilo_resource::Resource for SchemaReload {
+        const KIND: &'static str = "test.schema-reload";
+        const LABEL: &'static str = "Schema reload";
+        type State = ();
+        type Action = SchemaEdit;
+
+        fn read(_doc: &tilo_resource::Doc) -> Result<(), tilo_resource::ModelError> {
+            Ok(())
+        }
+
+        fn action_schema() -> Option<serde_json::Value> {
+            let maximum = SCHEMA_REVISION.with(|revision| if revision.get() { 255 } else { 15 });
+            Some(
+                serde_json::json!({"type":"object", "properties":{"value":{"type":"integer", "maximum":maximum}}, "required":["value"]}),
+            )
+        }
+    }
+
+    fn published_schema(
+        resource: &crate::tilo_actions::Resource,
+        action: &str,
+    ) -> serde_json::Value {
+        resource
+            .actions
+            .iter()
+            .find(|spec| spec.id == action)
+            .expect("generic operation")
+            .params()
+            .first()
+            .expect("operation argument")
+            .schema
+            .as_deref()
+            .cloned()
+            .expect("typed schema")
+    }
+
+    unsafe extern "C" fn publish_schema_revision() -> i32 {
+        let resource = tilo_resource::publish::<SchemaReload>("schema", "Schema", &());
+        PUBLISHED_SCHEMA.with(|slot| *slot.borrow_mut() = Some(resource));
+        let mut registry = crate::tilo_actions::ActionRegistry::new();
+        registry.register::<SchemaEdit>("test.schema-reload");
+        publish_dev_root(super::DevRoot {
+            view: Box::new(ReloadedProbe),
+            registry,
+        });
+        1
+    }
+
+    unsafe extern "C" fn reject_schema_revision() -> i32 {
+        let resource = tilo_resource::publish::<SchemaReload>("schema", "Schema", &());
+        PUBLISHED_SCHEMA.with(|slot| *slot.borrow_mut() = Some(resource));
+        0
+    }
+
+    #[test]
+    fn code_reload_refreshes_resource_schemas_before_publishing_the_view() {
+        SCHEMA_REVISION.with(|revision| revision.set(false));
+        let before = tilo_resource::publish::<SchemaReload>("schema", "Schema", &());
+        assert_eq!(
+            published_schema(&before, tilo_resource::APPLY)["properties"]["value"]["maximum"],
+            15
+        );
+        // Stand in for the new library's definition, with the same nominal resource type.
+        SCHEMA_REVISION.with(|revision| revision.set(true));
+        let reloaded = reload_with(
+            &DevFns {
+                apply: probe_apply,
+                linked_ui: Some(probe_linked),
+                publish: Some(publish_schema_revision),
+            },
+            &[],
+        )
+        .expect("matching UI reloads");
+        assert!(
+            reloaded
+                .root
+                .expect("new view")
+                .registry
+                .contains("test.schema-reload")
+        );
+        let after = PUBLISHED_SCHEMA.with(|slot| {
+            slot.borrow_mut()
+                .take()
+                .expect("new code published its resource")
+        });
+        assert_eq!(
+            published_schema(&after, tilo_resource::APPLY)["properties"]["value"]["maximum"],
+            255,
+            "agents see the reloaded edit's current argument limits"
+        );
+        assert_eq!(
+            published_schema(&after, tilo_resource::GROUP).pointer(
+                "/items/oneOf/0/properties/args/properties/action/properties/value/maximum"
+            ),
+            Some(&serde_json::json!(255)),
+            "grouped agent edits use the new schema too"
+        );
+        SCHEMA_REVISION.with(|revision| revision.set(false));
+        let rejected = reload_with(
+            &DevFns {
+                apply: probe_apply,
+                linked_ui: Some(probe_linked),
+                publish: Some(reject_schema_revision),
+            },
+            &[],
+        );
+        assert!(
+            rejected.is_err(),
+            "the candidate failed to publish its view"
+        );
+        // The accepted code still runs after the failed replacement.
+        SCHEMA_REVISION.with(|revision| revision.set(true));
+        let retained = tilo_resource::publish::<SchemaReload>("schema", "Schema", &());
+        assert_eq!(
+            published_schema(&retained, tilo_resource::APPLY)["properties"]["value"]["maximum"],
+            255,
+            "failed code cannot leave its schemas in the retained view"
+        );
     }
 
     #[test]

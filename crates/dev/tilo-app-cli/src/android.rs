@@ -1516,7 +1516,7 @@ fn checkout(app_dir: &Path) -> Result<Checkout> {
     }
     Ok(Checkout {
         android,
-        fonts: ui_core.join("assets/fonts"),
+        fonts: crate::font_assets::prepared_fonts(&root, "product")?,
         target_dir,
     })
 }
@@ -2664,7 +2664,11 @@ mod tests {
 
     #[test]
     fn an_apk_carries_only_the_standalone_font_catalog() {
-        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts");
+        let checkout = crate::font_assets::prepared_fonts(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
+            "fixtures",
+        )
+        .unwrap();
         let out = tempfile::tempdir().unwrap();
         copy_standalone_fonts(&checkout, out.path()).unwrap();
         let fonts = out.path();

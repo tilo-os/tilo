@@ -15,16 +15,19 @@ import tempfile
 import tomllib
 
 from qualify_apk import digest, pinned, verify_runtime
+from execution_host import add_architecture, native_architecture
 from run_arity_journey import REPO, Journey, wait_for, require_ok, checked_output
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    add_architecture(parser)
     for name in ('payload', 'runtime-receipt', 'runtime-parent', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     for name in ('apk', 'signer', 'runtime-receipt'):
         parser.add_argument('--' + name + '-sha256', required=True)
     args = parser.parse_args()
+    native_architecture(args.architecture)
     output = checked_output(args.output)
     payload = args.payload.resolve(strict=True)
     pinned(payload / 'app.apk', args.apk_sha256)
@@ -33,7 +36,7 @@ def main():
         raise RuntimeError('fixture signature qualification does not match')
     if qualification['runtime_receipt_sha256'] != args.runtime_receipt_sha256:
         raise RuntimeError('qualification runtime differs')
-    verify_runtime(payload / 'runtime', args.runtime_receipt, args.runtime_receipt_sha256, 'x86_64')
+    verify_runtime(payload / 'runtime', args.runtime_receipt, args.runtime_receipt_sha256, args.architecture)
     package = tomllib.loads((payload / 'tilo.toml').read_text())['package']['id']
     parent = args.runtime_parent.resolve(strict=True)
     if parent.stat().st_uid != os.geteuid() or parent.stat().st_mode & 0o077:
@@ -89,7 +92,7 @@ def main():
                 if 'landlock: fully enforced' not in runtime_log or 'no_new_privs: true' not in runtime_log:
                     raise RuntimeError('mandatory confinement evidence absent')
                 result = {'schema': 1, 'completed_at_utc': datetime.now(timezone.utc).isoformat(),
-                    'execution': 'headless production Tilo, actual Android ART, x86_64 software graphics',
+                    'execution': 'headless production Tilo, actual Android ART, ' + args.architecture + ' software graphics',
                     'production_binaries': {name: digest(REPO / 'target/debug' / name) for name in ('shell', 'tilo-launcher')},
                     'apk_sha256': args.apk_sha256, 'runtime_receipt_sha256': args.runtime_receipt_sha256,
                     'room': room, 'android_results': expected, 'lifecycle': stages, 'presented_frame': frame,

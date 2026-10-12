@@ -864,6 +864,11 @@ accounts-edit = Edit
 accounts-check-server = Check server
 accounts-verify = Verify sign-in
 accounts-remove = Remove
+accounts-status-paused = Sync paused
+accounts-sync-now = Sync now
+accounts-pause-sync = Pause sync
+accounts-resume-sync = Resume sync
+accounts-cloud-unavailable = The cloud account service is not running
 accounts-display-name = Display name
 accounts-email = Email address
 accounts-username = Username
@@ -980,6 +985,15 @@ agent-model-busy = That model cannot do this right now.
 agent-provider-not-default = Only an enabled provider with a model can be the default.
 agent-provider-details-required = A provider needs a name and an endpoint.
 agent-provider-saved = Provider details saved.
+agent-request-limits-title = Model request limits
+agent-request-limits-caption = Limit output per request and set a planning deadline ceiling up to 15 minutes. A caller can still request a shorter deadline. Runtime context describes your deployment; it does not prove that a prompt fits. Blank values restore defaults.
+agent-source-context = Model context capacity
+agent-runtime-context = Configured runtime context
+agent-plan-timeout = Planning deadline ceiling (milliseconds)
+agent-output-allowance = Maximum output tokens
+agent-context-unknown = Unspecified
+agent-request-limits-clear = Restore defaults
+agent-request-limits-invalid = Enter an output allowance from 1 to 65536. Runtime context must fit the model, be at most 1048576, and exceed the output allowance. Planning deadline must be between 1 and 900000 milliseconds.
 agent-provider-save-err = Provider details were not saved: { $error }
 agent-disable = Disable
 agent-enable = Enable
@@ -1164,6 +1178,7 @@ settings-bluetooth-forgot = Forgot { $name }.
 settings-bluetooth-forget-failed = Could not forget { $name }: { $error }
 settings-bluetooth-forget-ask = Forget { $name }? This removes its bond and keys.
 input-keyboard-title = Keyboard
+input-keyboard-caption = Choose how quickly held keys repeat.
 input-active-source = Active input source
 input-key-repeat = Key repeat speed
 input-key-repeat-off = Repeat is off — move the slider to turn it on
@@ -1215,6 +1230,8 @@ net-wifi-off = Wi-Fi is off
 net-connected-to = Connected to { $ssid }
 net-not-connected = Not connected
 net-no-wifi-adapter = No Wi-Fi adapter on this device
+net-no-modem = No mobile broadband modem on this device
+net-no-radio = No Wi-Fi or mobile broadband radio on this device
 net-applying = Applying network changes…
 net-refreshing = Refreshing…
 net-refresh = Refresh
@@ -1407,7 +1424,7 @@ perm-kind-action = App action
 perm-verb-rw = read & write
 perm-verb-ro = read-only
 perm-any-host = Any host
-perm-action-detail = Use “{ $action }” in { $app }
+perm-action-detail = Use “{ $action }” on { $resource } in { $app }
 perm-expiry-always = Always
 perm-expiry-temp = Temporary
 perm-expiry-logout = Until log out
@@ -1683,35 +1700,36 @@ upd-caveat-apps = Apps you installed yourself do NOT revert either, and one buil
 upd-roll-back-later = Roll back and restart later
 upd-help-title = How updates work
 upd-help-2 = If a new image fails to reach a login screen three times in a row, this machine goes back to the previous one by itself. If there is nothing to go back to, it starts in Repair Mode instead.
-upd-codecs = Additional codecs
-upd-codecs-explain = H.264, HEVC and other patented video and audio formats are not part of Tilo. Compatible packages enable hardware video on AMD and Intel graphics and H.264/HEVC playback and encoding for videos, screen sharing and calls. Hardware support waits for matching drivers. If you choose to install them, this device downloads them directly from RPM Fusion and from Cisco (OpenH264), under those projects' own licences. Tilo does not host or distribute these packages. OpenH264 Video Codec provided by Cisco Systems, Inc. You can remove this pack and install it again here. The complete Cisco binary license is in /usr/share/licenses/tilo-openh264/BINARY_LICENSE.txt and at https://www.openh264.org/BINARY_LICENSE.txt.
+upd-codecs = Play more video and audio formats
+upd-codecs-explain = Downloaded to this device from the formats' publishers. You can turn it off here at any time.
 upd-status = Status
 upd-progress = Progress: { $percent }%
-upd-installing-codecs = Installing media codecs
+upd-installing-codecs = Installing more formats
 upd-codecs-removing = Removing…
-upd-codecs-checking-driver = Checking for the hardware driver…
+upd-codecs-checking-driver = Checking for hardware support…
 upd-codecs-starting = Starting…
-upd-codecs-not-installed = Not installed
-upd-codecs-waiting = Waiting for an internet connection. Installation starts automatically once this device is online.
+upd-codecs-not-installed = Off
+upd-codecs-waiting = Waiting for an internet connection. It turns on by itself once this device is online.
 upd-codecs-step = { $label } (step { $step } of { $steps })…
-upd-codecs-downloading = Downloading and installing…
-upd-codecs-failed = Installation failed
-upd-codecs-failed-reason = Installation failed: { $error }
-upd-codecs-installed-hw = Installed, including hardware H.264/HEVC
-upd-codecs-installed-mesa = Installed. Hardware H.264/HEVC is waiting for a matching Mesa build from RPM Fusion.
-upd-codecs-installed-sw = Installed (software codecs)
-upd-codecs-refresh-failed = The last update of the codec pack failed: { $error }
-upd-codecs-applies-hw = Apps you open from now on can play and record H.264 and HEVC, with hardware acceleration. The desktop itself loads the new video driver when it starts: sign out and back in to use hardware H.264/HEVC for screen sharing and recording, and reopen apps that were already open.
-upd-codecs-applies-sw = New codecs work right away: calls, screen sharing and videos pick them up the next time they start. No restart is needed.
-upd-codecs-install = Install media codecs
+upd-codecs-step-bytes = { $label } { $done } of { $total } MB (step { $step } of { $steps })…
+upd-codecs-downloading = Downloading…
+upd-codecs-failed = Could not install
+upd-codecs-failed-reason = Could not install: { $error }
+upd-codecs-installed-hw = On, including hardware H.264/HEVC
+upd-codecs-installed-mesa = On. Hardware H.264/HEVC follows once a matching driver is published.
+upd-codecs-installed-sw = On
+upd-codecs-refresh-failed = The last update of the formats failed: { $error }
+upd-codecs-applies-hw = Apps you open from now on play and record H.264 and HEVC with hardware acceleration. Sign out and back in to use it for screen sharing and recording, and reopen apps that were already open.
+upd-codecs-applies-sw = Works right away: calls, screen sharing and videos pick it up the next time they start. No restart is needed.
+upd-codecs-install = Install
 upd-codecs-try-again = Try again
-upd-codecs-cancel = Cancel installation
-upd-codecs-remove = Remove media codecs
-upd-codecs-refresh = Check for the hardware driver again
+upd-codecs-cancel = Cancel
+upd-codecs-remove = Remove
+upd-codecs-refresh = Check for hardware support again
 upd-notice-schedule = Download schedule could not be changed: { $error }
 upd-notice-metered = Metered-network policy could not be changed: { $error }
-upd-notice-codecs-worker = The codec pack could not be changed: worker could not start
-upd-notice-codecs = The codec pack could not be changed: { $error }
+upd-notice-codecs-worker = The formats could not be changed: worker could not start
+upd-notice-codecs = The formats could not be changed: { $error }
 upd-notice-fw-reboot = Firmware installation finished. Restart to activate the update.
 upd-notice-fw-ok = Firmware installation finished successfully.
 upd-notice-fw-failed = Firmware installation failed: { $error }
@@ -1747,13 +1765,13 @@ net-profiles-error = Can't read saved networks: { $error }
 net-sims-error = Can't read SIM cards: { $error }
 upd-status-error = Can't check for updates: { $error }
 upd-rollback-error = Can't read the previous system image: { $error }
-time-clock-error = Can't read the clock: { $error }
 time-status-error = Can't read time settings: { $error }
 time-zones-error = Can't list time zones: { $error }
 time-zone-unread = Current time zone unknown
 settings-users-read-error = Can't read this device's accounts: { $error }
 settings-users-autologin-error = Can't read automatic login: { $error }
 settings-bluetooth-read-error = Can't read Bluetooth: { $error }
+settings-bluetooth-no-adapter = No Bluetooth adapter on this device
 sound-devices-error = Can't list audio devices: { $error }
 sound-volume-error = Can't read the output volume: { $error }
 sound-input-error = Can't read the input level: { $error }
@@ -1768,7 +1786,607 @@ settings-printers-jobs-read-error = Can't list print jobs: { $error }
 settings-printers-scanners-read-error = Can't list scanners: { $error }
 agent-key-read-error = Can't tell whether a key is saved: { $error }
 
+display-host-observation-timeout = The display preview status could not be refreshed. Inspect the current configuration before continuing.
 shortcut-name-dictation-toggle = Start or finish dictation
 shortcut-name-dictation-finish = Finish dictation
 shortcut-name-dictation-cancel = Cancel dictation
 shortcut-name-tab-menu = Show tab menu
+
+# Network connection guidance
+net-connectivity-caption = Shows whether this device can reach the internet.
+net-wifi-caption = Choose a network to connect. Refresh searches for nearby networks.
+net-diag-idle = Run diagnostics to check your connection, address and DNS.
+net-enterprise-caption = For work or school networks that require a username and certificate.
+net-hotspot-clients-caption = Devices currently connected to your hotspot.
+net-share-caption = Share a saved Wi-Fi network securely with your other devices.
+net-sim-pin-caption = Enter the PIN for the selected SIM to unlock mobile broadband.
+net-ipv4-caption = Use automatic addressing unless your network requires a fixed address.
+net-vpn-caption = Choose a saved VPN to connect. Add connections in VPN Studio.
+
+# Copy used by Settings panes and their status/error branches.
+a11y-mouse-keys-caption = Use the numeric keypad to move the pointer and click.
+a11y-shared-caption = Tilo apps use these shared accessibility settings.
+a11y-shared-title = Across Tilo
+a11y-text-size = Text size
+accounts-form-caption = These details are saved for this account.
+accounts-intro = Connect accounts for mail, calendars, contacts and cloud storage.
+accounts-kind-empty = No { $kind } accounts yet.
+accounts-reauth-caption = Replace the saved credential without removing the account.
+accounts-sync-none = No synchronization status is available yet.
+agent-accel-active-caption = Accelerator support is active on this device.
+agent-accel-available = Compatible accelerator support is available for this device.
+agent-accel-error-retry = Review the error above, then retry setup.
+agent-accel-queued-caption = Setup is queued. You can keep using Tilo while it waits.
+agent-accel-staging-caption = Support is being prepared for this device.
+agent-error-retry-caption = Review the error above and retry when ready.
+agent-hosted-intro = Connect a model provider to use hosted models.
+agent-hw-fit = Compatibility
+agent-private-caption = Local models run on this device. Hosted models send requests to the selected provider.
+agent-ready-running-caption = The model is ready and running on this device.
+agent-ready-stopped-caption = The model is downloaded. Start it when needed.
+agent-rec-waiting-caption = A recommendation will appear when the model service is available.
+display-caption-port = Connect another display to an available port to arrange it here.
+display-caption-second = Connect another display to extend your workspace.
+display-caption-switch = Drag displays to match their physical arrangement.
+display-card-title = Display arrangement
+display-night-light-caption = Warmer colors reduce blue light in the evening.
+mesh-activity-caption = Continue workspace and app activity on your other devices.
+mesh-add-personal = Add a personal device
+mesh-audit-caption = Recent changes show how device continuity was configured.
+mesh-audit-change = Change
+mesh-no-active-until = No continuation target is active yet.
+mesh-privacy-stay = Only the enabled categories are shared with your devices.
+mesh-roaming-caption = These settings follow your identity across connected devices.
+notif-app-verified = App identity
+notif-apps-caption = App-specific notification choices appear here when apps are available.
+notif-delivery = Delivery
+notif-dnd-title = Quiet notifications
+notif-focus-caption = Quiet hours use the days and times selected above.
+notif-how-caption = Choose which apps can show banners and play sounds. Quiet hours can hold both.
+notif-how-title = How notifications work
+notif-priority-caption = Priority contacts come from your contact preferences.
+notif-sounds = Notification sounds
+notif-sounds-pipewire = Available
+notif-status-active = Notifications active
+notif-status-banners-off = Banners off
+notif-status-silenced = Do Not Disturb
+perm-enforcement-caption = Tilo checks access at the workspace and host service boundaries. Removing a grant withdraws that access.
+perm-enforcement-title = How access is enforced
+perm-no-grants-caption = Access outside a workspace requires an explicit grant.
+perm-security-caption = Device security and workspace access are managed separately.
+perm-this-device = This device
+perm-this-device-body = These security settings describe this device. They do not change permissions in other workspaces.
+perm-workspace-intro-body = Review the access approved for apps in each workspace. Manage collaborators and roles inside that workspace.
+power-charge-cap-conservation = This device uses its battery conservation mode.
+power-charge-cap-huawei = This device controls charging through its supported charge limits.
+power-charge-cap-start-stop = Charging starts below the lower threshold and stops at the selected limit.
+power-charge-cap-stop = Charging stops at the selected limit.
+power-history-caption = Recent battery readings from this device.
+power-idle-caption = These timers apply when you are not interacting with this device.
+power-profile-caption = Choose how this device balances performance and energy use.
+power-profile-idle-caption = Suspend timing can differ for each power profile.
+settings-about-backup-caption = Back up your identity so you can recover it on another device.
+settings-about-identity-caption = This public fingerprint identifies your identity without revealing its secret keys.
+settings-appearance-active-theme = Active theme
+settings-appearance-applied-card = Current appearance
+settings-appearance-high-contrast = High contrast
+settings-appearance-off = Off
+settings-appearance-on = On
+settings-appearance-reduce-motion = Reduce motion
+settings-appearance-reduced-motion = Reduced motion
+settings-appearance-text-scale = Text scale
+settings-bluetooth-audio-caption = Manage sound output and input in Sound settings.
+settings-bluetooth-refresh-failed = Could not refresh Bluetooth devices: { $error }
+settings-bluetooth-trust-caption = Trusted devices can reconnect without pairing again.
+settings-personal-apps-applies-to = Applies to
+settings-personal-apps-applies-value = Your personal app choices
+settings-personal-apps-choice-follows = Your preferred app is used unless the workspace has its own choice.
+settings-personal-apps-scope = Personal defaults
+settings-personal-apps-scope-caption = Workspace app defaults are managed in that workspace.
+settings-printers-driverless = Driverless printer
+settings-region-preview-week = Week starts on
+settings-region-shared-body = Apps use these formats for dates, times, numbers and measurements.
+settings-region-shared-card = Shared formats
+settings-storage-cleanup-caption = Review the cache files below before removing them.
+settings-storage-item-meta = { $size } · { $category }
+settings-storage-tools-caption = Use Backups to protect files before making storage changes.
+settings-users-boundary-body = Device accounts control signing in here. Workspace membership and identity sharing are managed separately.
+settings-users-boundary-title = Accounts and identities
+settings-users-identity-detail = { $id } · { $key } · { $threshold } of { $total } shares · { $protection }
+settings-users-protection-hardware = Hardware-backed identities keep their key protection on the device.
+settings-users-protection-secret-service = Identity secrets can be protected by this account's secret service.
+settings-users-protection-title = Identity protection
+settings-users-signed-in = Signed in
+settings-users-uid-line = { $username } · user { $uid } · { $you }
+sound-echo-caption = Reduce playback sound picked up by the microphone.
+sound-mic-caption = Test the selected microphone without changing app permissions.
+sound-mono-caption = Combine left and right channels for the selected output.
+sound-notice-device-gone = This sound device is no longer available.
+sound-notice-event-missing = This system sound is no longer available.
+sound-notice-stream-gone = This audio stream has ended.
+sound-notice-theme-missing = This sound theme is no longer available.
+sound-system-caption = Choose which system events play a sound.
+speakers-name-join-note = The saved name identifies this speaker or room when joining it.
+time-clock-12h = 12-hour clock
+time-clock-24h = 24-hour clock
+time-clock-format = Clock format
+time-display-caption = Change regional date and time formats in Region & formats.
+time-display-title = Time display
+time-map-count = Time zones on the map: { $mapped }
+time-map-empty = No time-zone map locations are available.
+time-map-selected = Selected time zone: { $zone }
+time-source-caption = Synchronization status is reported by this device's time service.
+upd-details = Update details
+upd-firmware-available = Updates available
+upd-firmware-current = No updates reported
+upd-fw-caption = Firmware updates come from this device's firmware service. Follow its restart instructions when an update is ready.
+upd-fwupd-reported = The firmware service reported: { $error }
+upd-help-1 = An OS update prepares a new system image. The current image stays available until the new one is activated.
+upd-metered-short = Metered connection
+upd-metered-unavailable = Status unavailable
+upd-no-bootc-history = No system image history is available yet.
+upd-no-doc-url = No release-notes link was reported.
+upd-not-reported = Not reported
+upd-os = Operating system
+upd-overview = Update status
+upd-release-channel = Image source
+upd-release-channel-value = Configured for this device
+upd-restart-apply = Restart when convenient to apply the prepared system update.
+upd-unavailable = Unavailable
+upd-up-to-date = No update is ready to apply.
+settings-appearance-wallpaper-body = Choose the picture shown in your workspace and on the lock screen.
+settings-appearance-theme = Appearance
+settings-appearance-access-card = Accessibility
+settings-appearance-high-contrast-desc = Increase the contrast of text and controls
+settings-appearance-reduce-motion-desc = Limit movement and animated transitions
+settings-appearance-schedule-follow = Follow the day and night schedule
+settings-appearance-shared-body = Your appearance preferences follow you across your devices. Wallpaper can apply to one workspace or every workspace.
+settings-appearance-shared-card = Your preferences
+input-map-title = Keyboard layout map
+input-map-layout = Preview any installed layout
+input-map-model = Physical keyboard model
+input-map-ansi = 104-key ANSI
+input-map-iso = 105-key ISO
+input-map-instructions = Press keys while this page is open, including while searching layouts. The map highlights physical positions without changing what you type.
+input-map-levels = Preview levels can be selected or inspected. Live mode follows actual modifiers. The physical model is chosen explicitly, not detected.
+input-map-unavailable = This layout cannot be previewed with the native XKB compiler.
+input-map-apply = Use this layout
+input-map-extra-levels = Inspect XKB levels 5–8 when available
+input-map-dead-keys = Dead keys use a dotted circle.
+
+input-map-jis = 106-key Japanese
+input-map-korean = 106-key Korean
+input-map-live = Show live keyboard
+input-map-level = Modifier level
+
+input-map-live-description = While Settings is focused, this map follows the keyboard’s current layout and modifiers.
+input-map-preview-description = Previewing the selected layout. Choose a level or inspect a key to see its other symbols.
+
+input-map-inspect-key = Inspect a physical key
+input-map-inspection-unavailable = This physical key’s current symbols are unavailable. Focus Settings or choose a layout preview.
+input-map-current-symbols = Current symbols
+
+a11y-dictation-language = Dictation language
+a11y-dictation-language-desc = Choose a language to improve recognition and reduce waiting. Automatic detection covers other supported languages. Dictation uses your system microphone from Sound settings and asks before each recording.
+dictation-language-auto = Automatic detection
+dictation-language-en = English
+dictation-language-de = German
+dictation-language-fr = French
+dictation-language-es = Spanish
+dictation-language-ar = Arabic
+dictation-language-zh = Mandarin Chinese
+dictation-language-ja = Japanese
+dictation-language-it = Italian
+dictation-language-pt = Portuguese
+dictation-language-hi = Hindi
+dictation-language-ru = Russian
+dictation-language-uk = Ukrainian
+dictation-language-ko = Korean
+dictation-language-tr = Turkish
+dictation-language-pl = Polish
+dictation-language-id = Indonesian
+dictation-language-vi = Vietnamese
+dictation-language-nl = Dutch
+dictation-language-bn = Bengali
+dictation-language-he = Hebrew
+dictation-language-fa = Persian
+dictation-language-th = Thai
+dictation-language-sv = Swedish
+dictation-language-cs = Czech
+dictation-language-el = Greek
+dictation-language-ta = Tamil
+dictation-language-ur = Urdu
+dictation-language-hu = Hungarian
+dictation-language-ro = Romanian
+dictation-language-fi = Finnish
+display-devices-title = Screens on your devices
+display-device-screen = { $device } · { $screen } · { $status }
+display-device-online = Online
+display-device-offline = Offline
+display-devices-observed = Observed screen positions. Input access is granted separately.
+
+display-devices-arrange = Drag an online device screen beside yours. Screens on one device move together. Moving screens does not allow input.
+display-device-move-requested = Placement requested. The peer layout updates when it confirms its new position.
+display-device-move-pending = Sending display placement…
+display-device-move-unavailable = That screen is offline or its arrangement cannot be changed here.
+
+display-device-move-confirmed = The device confirmed its new display position.
+display-device-move-changed = The device layout changed before this position was confirmed. Try again.
+display-device-move-unconfirmed = The device did not confirm this position. Refresh and try again.
+
+a11y-dictation-literal = Literal dictation
+a11y-dictation-literal-desc = Keep recognised words as spoken. When off, explicit number corrections in English, German, French or Spanish are removed, such as “two, uh, no, three” becoming “three”. Names, quoted speech and other disfluencies stay unchanged.
+input-dictionary-title = Personal dictionary
+input-dictionary-caption = Words you add are available to spelling, the on-screen keyboard and on-device dictation. Your spelling and capitalization are preserved.
+input-dictionary-unavailable = Your local personal dictionary is unavailable in this session.
+input-dictionary-word = Word
+input-dictionary-language = Language
+input-dictionary-language-caption = Leave language empty for all languages, or enter a language tag such as en, nl or fr.
+input-dictionary-add = Add word
+input-dictionary-save = Save
+input-dictionary-remove = Remove
+input-dictionary-reset = Remove all words
+input-dictionary-word-placeholder = Enter a word
+input-dictionary-all-languages = All languages
+
+input-scope-all = All keyboards
+input-scope-inheritance = Physical keyboards share these sources until you change a keyboard's own list. The on-screen keyboard has its own sources.
+input-keyboard-scope = Keyboard
+input-source-activate = Make active
+input-sources-selection-description = Select a source to preview or edit. Drag to reorder.
+input-sources-back = Back to sources
+input-sources-cancel = Cancel
+input-sources-unavailable = The configured source list could not be displayed.
+input-osk-qwerty = English (QWERTY)
+input-osk-azerty = French (AZERTY)
+input-osk-preview-description = The touch keyboard uses this letter layout; physical compose and Caps Lock options are separate.
+input-source-options = Source options
+input-source-inspection = Key inspection
+
+input-keyboard-numbered = { $name } ({ $number })
+
+input-source-show = Show
+input-source-hide = Hide
+
+input-source-add-short = Add
+input-source-add-title = Add an input source
+
+# Keyboard source editing errors.
+input-error-keyboard-retained = the keyboard is no longer available; its assignment has been retained
+input-error-keyboard-unavailable = the keyboard is not currently available
+input-error-source-unconfigured = the source is not configured for this keyboard
+input-error-source-add-unavailable = the source is not available in the Add screen
+input-error-source-choose = choose a source to add
+input-error-source-physical-options = physical keyboard options do not apply to the on-screen keyboard
+input-error-source-compose = invalid compose key
+input-error-source-caps = invalid Caps Lock behaviour
+input-error-source-option = invalid keyboard option
+input-error-source-missing = the source is not configured
+input-error-source-add = the source cannot be added to this keyboard
+input-error-source-last = the last source cannot be removed
+input-error-source-empty = no source remains
+input-error-source-first = the source is already first
+input-error-source-end = the source is already last
+input-error-source-overflow = source index overflow
+input-error-source-operation = this is not a source operation
+input-error-live-map-physical = Live physical-keyboard inspection is unavailable for the on-screen keyboard.
+
+settings-disk-unlock-title = Disk unlock
+settings-disk-unlock-intro = After a restart, an encrypted disk enrolled here can open with the approval of one of your other devices instead of the passphrase.
+settings-disk-unlock-refresh = Refresh
+settings-disk-unlock-loading = Reading how this computer's disks unlock…
+settings-disk-unlock-read-error = Can't read how this computer's disks unlock: { $error }
+settings-disk-unlock-none = No encrypted disk on this computer unlocks with your other devices.
+settings-disk-unlock-volume = Encrypted disk { $id }
+settings-disk-unlock-secrets = Unlock secrets
+settings-disk-unlock-sealed = Sealed to the TPM
+settings-disk-unlock-sealed-body = This computer's half of the unlock key and the Wi-Fi passwords below are sealed to its TPM. Only this computer, starting software Tilo signed, can read them.
+settings-disk-unlock-cleartext = Cleartext in the disk header
+settings-disk-unlock-cleartext-body = This computer has no TPM it can use, so its half of the unlock key and the Wi-Fi passwords below are stored unencrypted in the disk header. Anyone holding this disk can read them. They cannot open the disk on their own: one of your devices still has to approve.
+settings-disk-unlock-siblings = Devices asked at startup
+settings-disk-unlock-no-siblings = None
+settings-disk-unlock-networks = Wi-Fi for unlocking
+settings-disk-unlock-networks-sealed = Wired connections are always tried. Startup joins only the Wi-Fi networks used here; their passwords are sealed to the TPM.
+settings-disk-unlock-networks-cleartext = Wired connections are always tried. Startup joins only the Wi-Fi networks used here. Anyone holding this disk can read their passwords.
+settings-disk-unlock-wifi-error = Can't list saved Wi-Fi networks: { $error }
+settings-disk-unlock-no-wifi = No saved Wi-Fi network. Join one first to use it for unlocking.
+settings-disk-unlock-use = Use
+settings-disk-unlock-stop = Stop using
+settings-disk-unlock-chosen = Used for unlock
+settings-disk-unlock-unsaved = No longer a saved network on this computer.
+settings-disk-unlock-changing = Changing the unlock networks…
+settings-disk-unlock-change-error = The unlock networks were not changed: { $error }
+settings-disk-unlock-saved = Startup can now unlock over { $networks } and wired connections.
+settings-disk-unlock-wired-only = Startup now unlocks over wired connections only.
+settings-disk-unlock-refreshed = Disk unlock refreshed.
+settings-disk-unlock-busy = Another change to the unlock networks is still running.
+settings-disk-unlock-not-authorised = Administrator approval was not given.
+settings-disk-unlock-gone = That disk no longer unlocks with your other devices.
+settings-disk-unlock-bad-request = That request names no usable disk or network.
+settings-disk-unlock-too-many = The disk unlock answer lists more disks than this computer can have.
+settings-disk-unlock-malformed = The disk unlock answer could not be read: { $error }
+
+# Shared display arrangement, independent of device input permission.
+display-shared-title = Your shared display layout
+display-shared-description = Displays keep their device's layout. Inclusion and order follow you across devices; remote input requires separate permission.
+display-shared-include = Include in the shared layout
+display-shared-order = Display number
+display-shared-read-only = Shared display inspection is read-only.
+display-shared-unavailable = That display is no longer observed.
+display-shared-stale = The arrangement changed. Refresh this display and try again.
+display-shared-order-invalid = Choose a display number from the current list.
+display-shared-save-failed = The arrangement could not be saved: { $error }
+display-shared-saved = Shared display arrangement saved.
+display-shared-move-stale = The device confirmed its position, but the shared arrangement changed. Refresh and try again.
+display-shared-auto-input = Allow automatic input from your devices
+display-shared-auto-description = While one of this device's displays is included, let your enrolled online devices control it. Continuity and Display/input must also be enabled. Devices you have declined stay declined. This choice applies only here.
+
+## History: what each change to a settings section did
+
+settings-appearance-prefs-high-contrast = { $new ->
+    [true] Turned on high contrast
+   *[false] Turned off high contrast
+}
+settings-appearance-prefs-reduce-motion = { $new ->
+    [true] Turned on reduced motion
+   *[false] Turned off reduced motion
+}
+settings-appearance-prefs-reduce-transparency = { $new ->
+    [true] Turned on reduced transparency
+   *[false] Turned off reduced transparency
+}
+settings-appearance-prefs-forced-colors = { $new ->
+    [true] Forced theme colours onto content
+   *[false] Stopped forcing theme colours onto content
+}
+settings-accessibility-settings-large-cursor = { $new ->
+    [true] Turned on the large cursor
+   *[false] Turned off the large cursor
+}
+settings-accessibility-settings-sticky-keys = { $new ->
+    [true] Turned on sticky keys
+   *[false] Turned off sticky keys
+}
+settings-accessibility-settings-slow-keys = { $new ->
+    [true] Turned on slow keys
+   *[false] Turned off slow keys
+}
+settings-accessibility-settings-bounce-keys = { $new ->
+    [true] Turned on bounce keys
+   *[false] Turned off bounce keys
+}
+settings-accessibility-settings-bounce-keys-alert = { $new ->
+    [true] Turned on the bounce keys alert
+   *[false] Turned off the bounce keys alert
+}
+settings-accessibility-settings-mouse-keys = { $new ->
+    [true] Turned on mouse keys
+   *[false] Turned off mouse keys
+}
+settings-accessibility-settings-visual-alerts = { $new ->
+    [true] Turned on visual alerts
+   *[false] Turned off visual alerts
+}
+settings-accessibility-settings-cursor-crosshair = { $new ->
+    [true] Turned on the pointer crosshair
+   *[false] Turned off the pointer crosshair
+}
+settings-accessibility-settings-thick-text-caret = { $new ->
+    [true] Turned on the thick text cursor
+   *[false] Turned off the thick text cursor
+}
+settings-accessibility-settings-switch-control = { $new ->
+    [true] Turned on switch control
+   *[false] Turned off switch control
+}
+settings-input-prefs-tap-to-click = { $new ->
+    [true] Turned on tap to click
+   *[false] Turned off tap to click
+}
+settings-input-prefs-tap-drag = { $new ->
+    [true] Turned on tap and drag
+   *[false] Turned off tap and drag
+}
+settings-input-prefs-tap-drag-lock = { $new ->
+    [true] Turned on the drag lock
+   *[false] Turned off the drag lock
+}
+settings-input-prefs-disable-while-typing = { $new ->
+    [true] Turned off the touchpad while typing
+   *[false] Kept the touchpad on while typing
+}
+settings-input-prefs-middle-emulation = { $new ->
+    [true] Turned on middle-click emulation
+   *[false] Turned off middle-click emulation
+}
+settings-input-prefs-left-handed = { $new ->
+    [true] Swapped the mouse buttons for the left hand
+   *[false] Set the mouse buttons for the right hand
+}
+settings-input-prefs-touchpad-gestures = { $new ->
+    [true] Turned on touchpad gestures
+   *[false] Turned off touchpad gestures
+}
+settings-input-prefs-touchpad-enabled = { $new ->
+    [true] Turned on the touchpad
+   *[false] Turned off the touchpad
+}
+settings-input-prefs-touchpad-disabled-on-external-mouse = { $new ->
+    [true] Turned off the touchpad while a mouse is connected
+   *[false] Kept the touchpad on with a mouse connected
+}
+settings-text-assistance-prefs-check-spelling = { $new ->
+    [true] Turned on spell checking
+   *[false] Turned off spell checking
+}
+settings-text-assistance-prefs-auto-correct = { $new ->
+    [true] Turned on auto-correct
+   *[false] Turned off auto-correct
+}
+settings-power-prefs-auto-suspend = { $new ->
+    [true] Turned on automatic suspend
+   *[false] Turned off automatic suspend
+}
+settings-notification-prefs-do-not-disturb = { $new ->
+    [true] Turned on Do Not Disturb
+   *[false] Turned off Do Not Disturb
+}
+settings-notification-prefs-show-banners = { $new ->
+    [true] Turned on notification banners
+   *[false] Turned off notification banners
+}
+settings-notification-prefs-show-previews = { $new ->
+    [true] Turned on notification previews
+   *[false] Turned off notification previews
+}
+settings-notification-prefs-play-sounds = { $new ->
+    [true] Turned on notification sounds
+   *[false] Turned off notification sounds
+}
+settings-notification-prefs-show-on-lock-screen = { $new ->
+    [true] Showed notifications on the lock screen
+   *[false] Hid notifications on the lock screen
+}
+settings-notification-prefs-show-badges = { $new ->
+    [true] Turned on notification badges
+   *[false] Turned off notification badges
+}
+settings-notification-prefs-per-app = Changed how an app notifies
+settings-app-notification-rule-banners = Changed an app's notification banners
+settings-app-notification-rule-sounds = Changed an app's notification sounds
+settings-app-notification-rule-badges = Changed an app's notification badges
+settings-app-notification-rule-previews = Changed an app's message previews
+settings-app-notification-rule-lock-screen = Changed an app's notifications on the lock screen
+settings-app-notification-rule-cross-device = Changed an app's notifications on other devices
+settings-app-notification-rule-priority = { $new ->
+    [true] Let an app through during focus
+   *[false] Stopped letting an app through during focus
+}
+settings-app-notification-rule-priority-contacts = { $new ->
+    [true] Let an app's priority contacts through during focus
+   *[false] Stopped letting an app's priority contacts through during focus
+}
+settings-app-notification-rule-muted-until = Changed how long an app is muted
+settings-focus-schedule-enabled = { $new ->
+    [true] Turned on the focus schedule
+   *[false] Turned off the focus schedule
+}
+settings-focus-schedule-allow-priority = { $new ->
+    [true] Let priority apps through during focus
+   *[false] Stopped letting priority apps through during focus
+}
+settings-system-sound-prefs-enabled = { $new ->
+    [true] Turned on system sounds
+   *[false] Turned off system sounds
+}
+settings-system-sound-events-notification = { $new ->
+    [true] Turned on the notification sound
+   *[false] Turned off the notification sound
+}
+settings-system-sound-events-message = { $new ->
+    [true] Turned on the message sound
+   *[false] Turned off the message sound
+}
+settings-system-sound-events-volume-change = { $new ->
+    [true] Turned on the volume change sound
+   *[false] Turned off the volume change sound
+}
+settings-system-sound-events-screenshot = { $new ->
+    [true] Turned on the screenshot sound
+   *[false] Turned off the screenshot sound
+}
+settings-system-sound-events-device-connected = { $new ->
+    [true] Turned on the device connected sound
+   *[false] Turned off the device connected sound
+}
+settings-system-sound-events-device-disconnected = { $new ->
+    [true] Turned on the device disconnected sound
+   *[false] Turned off the device disconnected sound
+}
+settings-system-sound-events-low-battery = { $new ->
+    [true] Turned on the low battery sound
+   *[false] Turned off the low battery sound
+}
+settings-system-sound-events-error = { $new ->
+    [true] Turned on the error sound
+   *[false] Turned off the error sound
+}
+settings-display-prefs-night-light = { $new ->
+    [true] Turned on night light
+   *[false] Turned off night light
+}
+settings-display-prefs-night-light-schedule = { $new ->
+    [true] Let night light follow day and night
+   *[false] Stopped night light following day and night
+}
+settings-desktop-controls-vim-mode = { $new ->
+    [true] Turned on Vim keys for the desktop
+   *[false] Turned off Vim keys for the desktop
+}
+settings-appearance-prefs-mode = Set the appearance to { $new }
+settings-appearance-prefs-dark-theme = Chose { $new } for dark mode
+settings-appearance-prefs-light-theme = Chose { $new } for light mode
+settings-appearance-prefs-density = Changed the spacing density
+settings-appearance-prefs-text-scale = Changed the text size
+settings-appearance-prefs-ui-scale = Changed the interface size
+settings-appearance-prefs-schedule = Changed when day and night begin
+settings-appearance-prefs-sunrise = Set day to begin at { $new }
+settings-appearance-prefs-sunset = Set night to begin at { $new }
+settings-appearance-prefs-wallpaper-scope = Changed which workspaces a new wallpaper covers
+settings-appearance-prefs-wallpaper-target = Changed where a new wallpaper shows
+settings-appearance-prefs-distinct-letters = Changed how similar letters are told apart
+settings-accessibility-settings-cursor-size = Set the cursor size to { $new }
+settings-accessibility-settings-on-screen-keyboard = Changed when the on-screen keyboard shows
+settings-accessibility-settings-bounce-keys-delay-ms = Changed the bounce keys delay
+settings-accessibility-settings-color-filter = Changed the colour filter
+settings-accessibility-settings-magnifier-zoom = Set the magnifier to { $new }×
+settings-accessibility-settings-magnifier-view = Changed how the magnifier shows the screen
+settings-accessibility-settings-switch-key-pair = Changed the switch control keys
+settings-accessibility-settings-switch-scan-ms = Changed the switch control scan
+settings-input-prefs-touchpad-natural-scroll = Changed the touchpad scroll direction
+settings-input-prefs-mouse-natural-scroll = Changed the mouse scroll direction
+settings-input-prefs-pointer-speed = Changed the pointer speed
+settings-input-prefs-touchpad-pointer-speed = Changed the touchpad speed
+settings-input-prefs-mouse-pointer-speed = Changed the mouse speed
+settings-input-prefs-key-repeat = Changed the key repeat
+settings-input-prefs-accel-profile = Changed the pointer acceleration
+settings-input-prefs-touchpad-click-method = Changed how the touchpad clicks
+settings-input-prefs-touchpad-scroll-method = Changed how the touchpad scrolls
+settings-input-prefs-scroll-speed = Changed the scroll speed
+settings-text-assistance-prefs-spelling-language = Changed the spelling language
+settings-power-prefs-suspend-minutes = Changed when the computer suspends
+settings-power-prefs-saver-suspend-minutes = Changed when the computer suspends in power saver
+settings-power-prefs-balanced-suspend-minutes = Changed when the computer suspends when balanced
+settings-power-prefs-performance-suspend-minutes = Changed when the computer suspends in performance
+settings-power-prefs-blank-minutes = Changed when the screen turns off
+settings-power-prefs-lock-minutes = Changed when the screen locks
+settings-power-prefs-lid-close-action = Changed what closing the lid does
+settings-power-prefs-power-key-action = Changed what the power key does
+settings-power-prefs-low-battery-percent = Set the low battery warning to { $new } %
+settings-power-prefs-critical-battery-percent = Set the critical battery level to { $new } %
+settings-power-prefs-critical-action = Changed what happens at critical battery
+settings-focus-schedule-start-minute = Changed when focus begins
+settings-focus-schedule-end-minute = Changed when focus ends
+settings-focus-schedule-weekdays = Changed the focus days
+settings-system-sound-prefs-volume = Changed the system sound volume
+settings-system-sound-prefs-theme = Changed the sound theme
+settings-audio-prefs-balance = Changed the left and right balance
+settings-display-prefs-night-light-temperature = Changed how warm night light is
+settings-display-prefs-scale = Changed the display scale
+settings-locale-currency = Changed the currency
+settings-locale-date-format = Changed the date format
+settings-locale-time-format = Changed the time format
+settings-locale-measurement = Changed the measurement system
+settings-locale-number-style = Changed the number format
+settings-locale-first-day-of-week = Changed the first day of the week
+settings-choose-theme = Chose the theme { $theme }
+settings-set-key-repeat = Changed the key repeat
+settings-mute-app = Changed how long an app is muted
+settings-allow-continuity = { $on ->
+    [true] Allowed Continuity between devices
+   *[false] Stopped Continuity between devices
+}
+settings-allow-capability = { $on ->
+    [true] Allowed { $capability } for Continuity
+   *[false] Stopped { $capability } for Continuity
+}

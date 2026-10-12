@@ -461,7 +461,7 @@ fn review(core: &Core, requests: &Requests) -> Element {
 // --- app access ---------------------------------------------------------
 
 fn app_access(core: &Core, requests: &Requests) -> Element {
-    if core.app_grants.is_empty() {
+    if core.app_grants.is_empty() && core.app_proposals.is_empty() {
         return Box::new(
             EmptyState::new("No app can use your vault without asking").with_icon(Icon::Shield),
         );
@@ -469,30 +469,133 @@ fn app_access(core: &Core, requests: &Requests) -> Element {
     let grants: Vec<Property> = core
         .app_grants
         .iter()
-        .enumerate()
-        .map(|(index, grant)| {
-            let item = core
-                .item(&grant.item_id)
-                .map_or_else(|| "A saved item".to_owned(), |item| item.title.clone());
-            let value = match &grant.origin {
-                Some(origin) => format!("{item}\n{}", crate::vault::host_of(origin)),
-                None => item,
-            };
-            Property::new(crate::vault::app_name(&grant.app_id), value).action(
-                Icon::Ban,
-                "Revoke access",
-                ask(requests, Request::Revoke(index)),
-            )
-        })
+        .map(|grant| grant_property(core, grant, requests))
         .collect();
     let count = grants.len();
+    let mut sections: Vec<Element> = Vec::new();
+    if !core.app_proposals.is_empty() {
+        let pending = core
+            .app_proposals
+            .iter()
+            .map(|proposal| {
+                let review = |lifetime: &str, label: &str| {
+                    button(
+                        &format!("passwords.review-request:{}:{lifetime}", proposal.id),
+                        &crate::CATALOG.t(label),
+                        ButtonRole::Secondary,
+                        requests,
+                        Request::ReviewAccess {
+                            proposal: proposal.id.clone(),
+                            lifetime: lifetime.into(),
+                        },
+                    )
+                };
+                let buttons = Actions::new(review("session", "passwords-allow-session"))
+                    .secondary(review("persistent", "passwords-allow-persistent"))
+                    .secondary(button(
+                        &format!("passwords.deny-request:{}", proposal.id),
+                        &crate::CATALOG.t("passwords-deny-access"),
+                        ButtonRole::Secondary,
+                        requests,
+                        Request::DenyAccess(proposal.id.clone()),
+                    ));
+                Box::new(
+                    Column::new()
+                        .with_intrinsic_height()
+                        .push(text(&proposal_details(core, proposal), TextRole::Body))
+                        .push(Box::new(buttons)),
+                ) as Element
+            })
+            .collect();
+        sections.push(Box::new(
+            Section::new(pending).with_header(
+                SectionHeader::group(crate::CATALOG.t("passwords-pending-access"))
+                    .count(core.app_proposals.len()),
+            ),
+        ));
+    }
+    if !grants.is_empty() {
+        sections.push(Box::new(
+            Section::new(vec![Box::new(PropertyList::new(grants))])
+                .with_header(SectionHeader::group("Allowed apps").count(count)),
+        ));
+    }
     titled_page(
         "App access",
         Some("Each app below can fill the item beside it without asking you first."),
-        vec![Box::new(
-            Section::new(vec![Box::new(PropertyList::new(grants))])
-                .with_header(SectionHeader::group("Allowed apps").count(count)),
-        )],
+        sections,
+    )
+}
+
+fn grant_property(core: &Core, grant: &accounts::CredentialGrant, requests: &Requests) -> Property {
+    let item = core
+        .item(&grant.item_id)
+        .map_or_else(|| "A saved item".to_owned(), |item| item.title.clone());
+    let relationship = match &grant.origin {
+        Some(origin) => format!("{item}\n{}", crate::vault::host_of(origin)),
+        None => item,
+    };
+    let lifetime = crate::CATALOG.t(match grant.lifetime {
+        accounts::GrantLifetime::Session => "passwords-session-access",
+        accounts::GrantLifetime::Persistent => "passwords-persistent-access",
+    });
+    let scope = grant.scope.as_ref().map(|scope| {
+        crate::CATALOG.t_args(
+            "passwords-account-scope",
+            &[
+                (
+                    "service",
+                    ui::i18n::ArgValue::Text(
+                        crate::CATALOG.t(&format!("passwords-service-{}", scope.service)),
+                    ),
+                ),
+                ("account", ui::i18n::ArgValue::Text(scope.account.clone())),
+                (
+                    "generation",
+                    ui::i18n::ArgValue::Text(scope.generation.to_string()),
+                ),
+            ],
+        )
+    });
+    let value = scope.map_or_else(
+        || format!("{relationship}\n{lifetime}"),
+        |scope| format!("{relationship}\n{scope}\n{lifetime}"),
+    );
+    Property::new(crate::vault::app_name(&grant.app_id), value).action(
+        Icon::Ban,
+        crate::CATALOG.t("passwords-revoke-access"),
+        ask(requests, Request::Revoke(grant.id().into())),
+    )
+}
+
+fn proposal_details(core: &Core, proposal: &accounts::CredentialProposal) -> String {
+    let item = core.item(&proposal.request.item_id).map_or_else(
+        || crate::CATALOG.t("passwords-request-item"),
+        |item| item.title.clone(),
+    );
+    let fields = [
+        ("app", crate::vault::app_name(&proposal.request.app_id)),
+        ("item", item),
+        ("purpose", proposal.request.purpose.clone()),
+        (
+            "origin",
+            proposal.request.origin.clone().unwrap_or_default(),
+        ),
+        (
+            "service",
+            crate::CATALOG.t(&format!("passwords-service-{}", proposal.scope.service)),
+        ),
+        ("account", proposal.scope.account.clone()),
+        ("generation", proposal.scope.generation.to_string()),
+        ("principal", proposal.scope.principal.clone()),
+        ("device", proposal.scope.device.clone()),
+    ];
+    crate::CATALOG.t_args(
+        "passwords-request-details",
+        &fields
+            .into_iter()
+            .map(|(key, value)| (key, ui::i18n::ArgValue::Text(value)))
+            .collect::<Vec<_>>(),
     )
 }
 
@@ -755,6 +858,33 @@ fn dialog(core: &Core, shared: &Shared, requests: &Requests) -> Option<Element> 
         .with_destructive(true)
         .primary_action("Delete item", ask(requests, Request::ConfirmDelete))
         .secondary_action("Cancel", close),
+        Dialog::AccessConfirm { proposal, lifetime } => {
+            let pending = core
+                .app_proposals
+                .iter()
+                .find(|pending| pending.id == *proposal);
+            let description = pending.map_or_else(
+                || crate::CATALOG.t("passwords-request-expired"),
+                |pending| proposal_details(core, pending),
+            );
+            let policy = crate::CATALOG.t(match lifetime.as_str() {
+                "persistent" => "passwords-persistent-access",
+                _ => "passwords-session-access",
+            });
+            ModalDialog::new(
+                crate::CATALOG.t("passwords-review-access"),
+                body(vec![
+                    text(&description, TextRole::Body),
+                    text(&policy, TextRole::Body),
+                ]),
+            )
+            .with_primary_enabled(pending.is_some())
+            .primary_action(
+                crate::CATALOG.t("passwords-approve-access"),
+                ask(requests, Request::ConfirmAccess),
+            )
+            .secondary_action(crate::CATALOG.t("passwords-access-cancel"), close)
+        }
     };
     Some(Box::new(
         built

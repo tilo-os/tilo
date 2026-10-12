@@ -58,6 +58,8 @@ pub fn model() -> (RepoModel, DiffMap) {
         tags: sample_tags(),
         stashes: sample_stashes(),
         remotes: sample_remotes(),
+        worktrees: Vec::new(),
+        worktree_error: None,
         graph_width: layout.lanes,
         author_name: MIRA.0.into(),
         author_email: MIRA.1.into(),

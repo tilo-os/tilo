@@ -1,12 +1,5 @@
 //! Private native construction custody. It borrows the existing SDK worker;
 //! neither an environment value nor a data capture is a positive authority.
-#![cfg_attr(
-    not(feature = "native"),
-    allow(
-        dead_code,
-        reason = "construction custody is driven by the native launcher; portable hosts use only the initial-read bridge"
-    )
-)]
 #[cfg(feature = "broker-transport")]
 use super::{
     Backend, BridgeState, BrokerTransport, QueuedSdkCommand, SdkCommand, enqueue_sdk_command,
@@ -20,15 +13,18 @@ struct Construction {
     manager: RefCell<Option<CollaborationManager>>,
     bridge: Option<InitialReadBridge>,
     primary: RefCell<Option<CommittedDocument>>,
+    #[cfg(feature = "broker-transport")]
     creation: RefCell<std::collections::BTreeMap<String, CreationCapture>>,
     failure: RefCell<Option<String>>,
     transferring: Cell<bool>,
     component_scope: RefCell<Option<crate::wake::WakeScope>>,
 }
+#[cfg(feature = "broker-transport")]
 struct CreationCapture {
     read: CommittedDocument,
     claimed: bool,
 }
+#[cfg(feature = "broker-transport")]
 impl CreationCapture {
     fn new(read: CommittedDocument) -> Self {
         Self {
@@ -41,7 +37,40 @@ pub(crate) struct NativeConstruction {
     state: Rc<Construction>,
     previous: Option<Weak<Construction>>,
 }
+#[cfg(test)]
+#[cfg(feature = "broker-transport")]
+pub(crate) fn component_history_phase_for_test(
+    binding: &crate::bound_dispatch::CallbackBinding,
+) -> Option<(bool, bool, bool)> {
+    current()
+        .and_then(|construction| {
+            let bridge = construction.bridge.as_ref()?;
+            let route = binding.admission_route()?;
+            bridge
+                .state
+                .document_reads
+                .readiness_diagnostic(&route.channel_id())
+        })
+        .map(|phase| (phase.required, phase.staged, phase.applied))
+}
+#[cfg(test)]
+#[cfg(feature = "broker-transport")]
+pub(crate) fn component_history_read_for_test(
+    binding: &crate::bound_dispatch::CallbackBinding,
+) -> Result<CommittedDocument, String> {
+    let construction = current().ok_or("original construction unavailable")?;
+    let bridge = construction
+        .bridge
+        .as_ref()
+        .ok_or("original read bridge unavailable")?;
+    bridge.record(
+        &binding.app_id,
+        &bridge.route.cluster_id.to_string(),
+        &binding.checkout,
+    )
+}
 impl NativeConstruction {
+    #[cfg(feature = "native")]
     pub(crate) fn enter(manager: CollaborationManager) -> Result<Self, String> {
         Self::enter_inner(manager, None, true)
     }
@@ -70,20 +99,22 @@ impl NativeConstruction {
             None
         };
         #[cfg(feature = "broker-transport")]
-        let creation = primary
-            .as_ref()
-            .filter(|read| read.creation_workspace().is_some())
-            .cloned();
-        #[cfg(not(feature = "broker-transport"))]
-        let creation = None;
-        let mut creations = std::collections::BTreeMap::new();
-        if let (Some(read), Some(bridge)) = (creation, bridge.as_ref()) {
-            creations.insert(bridge.route.channel_id(), CreationCapture::new(read));
-        }
+        let creations = {
+            let creation = primary
+                .as_ref()
+                .filter(|read| read.creation_workspace().is_some())
+                .cloned();
+            let mut creations = std::collections::BTreeMap::new();
+            if let (Some(read), Some(bridge)) = (creation, bridge.as_ref()) {
+                creations.insert(bridge.route.channel_id(), CreationCapture::new(read));
+            }
+            creations
+        };
         let state = Rc::new(Construction {
             manager: RefCell::new(Some(manager)),
             bridge,
             primary: RefCell::new(primary),
+            #[cfg(feature = "broker-transport")]
             creation: RefCell::new(creations),
             failure: RefCell::new(None),
             transferring: Cell::new(false),
@@ -92,10 +123,6 @@ impl NativeConstruction {
         let previous = CONSTRUCTION.with(|slot| slot.replace(Some(Rc::downgrade(&state))));
         Ok(Self { state, previous })
     }
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "native component admission briefly waits on the broker worker's owner recheck, as the broker transport module does"
-    )]
     pub(crate) fn bind_component(
         &self,
         binding: &crate::bound_dispatch::CallbackBinding,
@@ -126,16 +153,39 @@ impl NativeConstruction {
             // a fast component factory must not race the real owner recheck.
             let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
             loop {
+                let seen = bridge.progress();
                 bridge.check()?;
+                if binding.admission_route().as_ref() != Some(&requested) {
+                    return Err("component record route changed before history application".into());
+                }
+                bridge.apply_prepared_capture(binding, &requested)?;
                 if bridge.publishable(&requested.channel_id()) {
                     break;
                 }
                 if crate::time::now() >= deadline {
+                    #[cfg(feature = "broker-transport")]
+                    {
+                        let phase = bridge
+                            .state
+                            .document_reads
+                            .readiness_diagnostic(&requested.channel_id());
+                        tracing::warn!(
+                            primary_route_matches = requested == current.route,
+                            phase_available = phase.is_some(),
+                            required = ?phase.as_ref().map(|phase| phase.required),
+                            staged = ?phase.as_ref().map(|phase| phase.staged),
+                            applied = ?phase.as_ref().map(|phase| phase.applied),
+                            refresh_requested = ?phase.as_ref().map(|phase| phase.refresh_requested),
+                            "native component history confirmation unavailable before factory"
+                        );
+                    }
                     return Err(
                         "native component history was not confirmed before its factory".into(),
                     );
                 }
-                std::thread::sleep(crate::time::Duration::from_millis(10));
+                // The confirming read wakes this; the bound re-checks the
+                // worker's health and the deadline.
+                bridge.wait_progress(seen, crate::time::Duration::from_millis(10));
             }
         }
         manager.switch_native_record(&binding.checkout)?;
@@ -173,6 +223,7 @@ impl NativeConstruction {
 /// Retains only an actual original creation capture, never a restore heuristic.
 pub(crate) struct RecordInitialization {
     read: CommittedDocument,
+    #[cfg(feature = "broker-transport")]
     bridge: InitialReadBridge,
     checkout: crate::record::RecordCheckout,
 }
@@ -282,6 +333,7 @@ pub(crate) fn check_current() -> Result<(), String> {
     }
     Ok(())
 }
+#[cfg(feature = "native")]
 pub(crate) fn ensure_unoccupied() -> Result<(), String> {
     if current().is_some() {
         let error = "nested native launch cannot replace the prepared worker";
@@ -328,24 +380,6 @@ pub(crate) fn take_manager() -> Option<CollaborationManager> {
     fail("App construction attempted to take the prepared worker outside final launch");
     // A nested App must never fall through to ambient FD discovery.
     Some(CollaborationManager::disabled())
-}
-pub(crate) fn file_bridge() -> Result<Option<InitialReadBridge>, String> {
-    if let Some(state) = current() {
-        if let Some(error) = state.failure.borrow().clone() {
-            return Err(error);
-        }
-        if let Some(bridge) = &state.bridge {
-            bridge.check()?;
-        }
-        return Ok(state.bridge.clone());
-    }
-    if crate::host::environment()
-        .identity
-        .collab_service_configured
-    {
-        return Err("file record mode must be resolved by the native launch owner".into());
-    }
-    Ok(None)
 }
 pub(crate) fn capture_bridge() -> Option<InitialReadBridge> {
     current()?.bridge.clone()
@@ -458,6 +492,41 @@ impl InitialReadBridge {
     fn publishable(&self, channel: &str) -> bool {
         self.state.document_reads.publishable(channel)
     }
+    fn apply_prepared_capture(
+        &self,
+        binding: &crate::bound_dispatch::CallbackBinding,
+        requested: &RouteSpec,
+    ) -> Result<(), String> {
+        let Some(read) = self.state.document_reads.unapplied(&requested.channel_id()) else {
+            return Ok(());
+        };
+        self.check_scope(&requested.app_id, Some(&requested.cluster_id.to_string()))?;
+        if binding.admission_route().as_ref() != Some(requested) {
+            return Err("component record route changed before history application".into());
+        }
+        // Creation remains owned by the original receipt/initialization path.
+        // A staged replacement must never materialize a reservation implicitly.
+        if read.creation_workspace().is_some() {
+            return Err("original application creation is not initialized".into());
+        }
+        let _entry = binding
+            .enter()
+            .map_err(|error| format!("component owner history admission refused: {error:?}"))?;
+        read.with_mutation(|mutation| {
+            binding
+                .records
+                .merge_remote_document(&binding.checkout, mutation.clone())
+        })??;
+        self.check()?;
+        if !read.is_current()
+            || !self.state.document_reads.required(&requested.channel_id())
+            || binding.admission_route().as_ref() != Some(requested)
+        {
+            return Err("component record route changed during history application".into());
+        }
+        read.applied();
+        Ok(())
+    }
     fn check_scope(&self, app: &str, room: Option<&str>) -> Result<(), String> {
         self.check()?;
         if app != self.route.app_id
@@ -544,6 +613,7 @@ impl InitialReadBridge {
         }
         let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
         loop {
+            let seen = self.progress();
             self.check()?;
             if let Some(read) = self.state.document_reads.initial(&key) {
                 return Ok(read);
@@ -552,9 +622,16 @@ impl InitialReadBridge {
                 return Err("native initial history unavailable before construction".into());
             }
             // The RPC worker has a separate runtime. No lock or application
-            // document borrow crosses this bounded construction wait.
-            std::thread::sleep(crate::time::Duration::from_millis(10));
+            // document borrow crosses this bounded construction wait; staging
+            // the capture ends it at once.
+            self.wait_progress(seen, crate::time::Duration::from_millis(10));
         }
+    }
+    fn progress(&self) -> u64 {
+        self.state.document_reads.progress()
+    }
+    fn wait_progress(&self, seen: u64, bound: crate::time::Duration) {
+        self.state.document_reads.wait_progress(seen, bound);
     }
 }
 
@@ -597,6 +674,19 @@ impl InitialReadBridge {
     fn publishable(&self, _channel: &str) -> bool {
         match self.never {}
     }
+    fn progress(&self) -> u64 {
+        match self.never {}
+    }
+    fn wait_progress(&self, _seen: u64, _bound: crate::time::Duration) {
+        match self.never {}
+    }
+    fn apply_prepared_capture(
+        &self,
+        _binding: &crate::bound_dispatch::CallbackBinding,
+        _requested: &RouteSpec,
+    ) -> Result<(), String> {
+        match self.never {}
+    }
     pub(crate) fn record(
         &self,
         _app: &str,
@@ -610,11 +700,13 @@ impl InitialReadBridge {
     }
 }
 
-#[cfg(all(test, feature = "broker-transport"))]
+#[cfg(test)]
+#[cfg(feature = "broker-transport")]
 #[path = "native_initial/named_creation_tests.rs"]
 mod named_creation_tests;
 
-#[cfg(all(test, feature = "broker-transport"))]
+#[cfg(test)]
+#[cfg(feature = "broker-transport")]
 mod tests {
     use super::{
         BridgeState, CollaborationManager, Construction, InitialReadBridge, NativeConstruction,

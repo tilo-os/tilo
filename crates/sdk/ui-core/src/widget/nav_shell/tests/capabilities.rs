@@ -477,36 +477,18 @@ impl Widget for Capturing {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(32.0),
                 height: Dimension::length(32.0),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -590,16 +572,6 @@ impl Widget for Filtered {
         self.inner.apply_layout(taffy, node, origin);
     }
 
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "Filtered"
     }
@@ -625,6 +597,7 @@ fn typed_access_controls_and_the_filter_reach_the_apps_widgets() {
         inner: Probe {
             id: "overview",
             deadline: None,
+            animating: false,
             rect: Rect::ZERO,
             events: SharedRc::new(Cell::new(0)),
         },

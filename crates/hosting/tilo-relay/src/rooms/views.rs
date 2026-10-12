@@ -24,12 +24,12 @@ impl GovernedRoom {
         }
         let now = SystemTime::now();
         peer.check_document_read(device, app, record, now).ok()?;
-        let (role, caps, person) = peer.permissions(device, now).ok()?;
+        let standing = peer.permissions(device, now).ok()?.standing();
+        let sandbox = peer.governed_sandbox().ok()?;
         Some(ViewReadPolicy {
             room: self.room().to_owned(),
-            role,
-            caps,
-            person,
+            standing,
+            sandbox,
             unix_time: now.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs(),
         })
     }
@@ -73,7 +73,7 @@ impl Rooms {
             .room(&source.cluster_id)
             .await
             .map_err(|error| error.to_string())?;
-        let room = state.lock().await;
+        let mut room = state.lock().await;
         if room.workspace_id() != workspace {
             return Err("source room mismatch".into());
         }
@@ -85,9 +85,18 @@ impl Rooms {
             collab_types::document_channel_id(&source.app_id, &source.cluster_id, &source.record);
         let keys = room
             .stewardship
-            .as_ref()
-            .ok_or("source stewardship unavailable")?
-            .existing_keys(channel)?;
+            .as_mut()
+            .and_then(|steward| steward.existing_keys(channel).ok());
+        let primary_governor = (source.record.is_empty()
+            && room.peer().document(&source.app_id, "").is_some())
+        .then_some(room.peer().authority().device_public_key);
+        if keys.is_none() && primary_governor.is_none() {
+            return Err(if room.stewardship.is_none() {
+                "source stewardship unavailable".into()
+            } else {
+                "source channel keys unavailable".into()
+            });
+        }
         let retained = self
             .inner
             .host
@@ -98,7 +107,7 @@ impl Rooms {
                 MAX_VIEW_DOCUMENT_BYTES,
             )
             .await?;
-        let bytes = replay_source(source, keys, retained)?;
+        let bytes = replay_source(source, keys, primary_governor, retained)?;
         room.view_read_policy(caller, &source.app_id, &source.record)
             .ok_or("resource read not permitted")?;
         drop(room);
@@ -112,16 +121,19 @@ impl Rooms {
 
 fn replay_source(
     source: &DocumentRoute,
-    keys: channel_crypto::ChannelContentKeys,
+    keys: Option<channel_crypto::ChannelContentKeys>,
+    primary_governor: Option<[u8; 32]>,
     retained: Vec<crate::room_records::RetainedBody>,
 ) -> Result<Vec<u8>, String> {
     let channel =
         collab_types::document_channel_id(&source.app_id, &source.cluster_id, &source.record);
     let mut ciphers = tilo_browser_peer::document::Ciphers::new();
-    ciphers.insert(
-        source.clone(),
-        tilo_browser_peer::document::content_key_reader(keys),
-    );
+    if let Some(keys) = keys {
+        ciphers.insert(
+            source.clone(),
+            tilo_browser_peer::document::content_key_reader(keys),
+        );
+    }
     let mut reassembly = tilo_browser_peer::document::Reassembly::default();
     let mut doc = automerge::AutoCommit::new();
     let mut bytes = 0usize;
@@ -141,11 +153,10 @@ fn replay_source(
         {
             continue;
         }
-        if envelope
-            .encryption
-            .is_none_or(|metadata| metadata.channel != channel)
-        {
-            return Err("source encrypted channel mismatch".into());
+        match envelope.encryption.as_ref() {
+            Some(metadata) if metadata.channel == channel => {}
+            None if primary_governor == Some(retained.author) => {}
+            _ => return Err("source encrypted channel mismatch".into()),
         }
         bytes = bytes
             .checked_add(retained.body.len())

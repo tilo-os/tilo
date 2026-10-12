@@ -73,6 +73,15 @@ else
   bad 'device private key remains replaceable by the session or is not provisioned before login'
 fi
 
+# Public certificate publication must work for every authorized login user.
+for identity_tmpfiles in "$tmpfiles" "$repo/os/usr/lib/tmpfiles.d/tilo-host.conf"; do
+  if grep -Eq '^d[[:space:]]+/var/lib/tilo/device/certs[[:space:]]+2770[[:space:]]+root[[:space:]]+tilo-identity' "$identity_tmpfiles"; then
+    ok 'identity-specific public certificates stay writable by later login identities'
+  else
+    bad "missing shared certificate-directory repair in $identity_tmpfiles"
+  fi
+done
+
 # Missing identity is normal until the compositor OOBE is acknowledged. The
 # boot timer starts existing identities without putting the mount on the login
 # critical path; the change watcher provides activation during first-session OOBE.
@@ -116,7 +125,7 @@ if [ "$enable_runs" -eq 1 ] \
    && exactly_once "$containerfile" '    systemctl enable cups.socket && \' \
    && grep -Fq 'systemctl enable tilo-boot-entries.timer tilo-boot-health.service' "$containerfile" \
    && grep -Fq 'systemctl enable bootc-fetch-apply-updates.timer' "$containerfile" \
-   && grep -Fq 'systemctl enable tilo-network-start.timer' "$containerfile"; then
+   && grep -Fq 'systemctl enable tilo-network-start.service' "$containerfile"; then
   ok 'service activation retains one useful rootfs layer boundary'
 else
   bad 'service activation is fragmented across expensive rootfs commits or incomplete'

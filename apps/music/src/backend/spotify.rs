@@ -70,14 +70,41 @@ impl SpotifyBackend {
         self.sign_in_for(USE, ACCOUNT)
     }
 
+    pub(super) fn sign_in_read_only(&self) -> Result<(), BackendError> {
+        let authorization = self
+            .custody
+            .begin_sign_in_for_scopes(USE, &["user-read-private", "user-library-read"], None)
+            .map_err(|_| {
+                BackendError("Spotify sign-in is unavailable or its callback port is busy".into())
+            })?;
+        self.finish_sign_in(
+            authorization,
+            ACCOUNT,
+            Some("user-read-private user-library-read"),
+        )
+    }
+
     fn sign_in_for(&self, usage: OAuthUse, account: &str) -> Result<(), BackendError> {
         let authorization = self.custody.begin_sign_in_for(usage, None)
             .map_err(|_| BackendError("Spotify sign-in is not configured or its callback port is busy. Register Tilo's public client with http://127.0.0.1:47654/oauth.".into()))?;
+        self.finish_sign_in(authorization, account, None)
+    }
+
+    fn finish_sign_in(
+        &self,
+        authorization: tilo_spotify::custody::Authorization,
+        account: &str,
+        requested_scope: Option<&str>,
+    ) -> Result<(), BackendError> {
         ui::portal::open_uri(authorization.url()).map_err(|_| {
             BackendError("Could not open Spotify sign-in in the system browser".into())
         })?;
-        let tokens = Custodian::finish_sign_in(authorization)
+        let mut tokens = Custodian::finish_sign_in(authorization)
             .map_err(|_| BackendError("Spotify sign-in did not complete. Try again.".into()))?;
+        // RFC 6749: omitted scope means the grant matches the requested scope.
+        if tokens.scope.is_none() {
+            tokens.scope = requested_scope.map(str::to_string);
+        }
         self.custody
             .seal_oauth(&AccountId::from(account.to_string()), &tokens)
             .map_err(|_| {
@@ -528,7 +555,7 @@ impl MusicBackend for SpotifyBackend {
                 .collect();
             return Ok(PlaylistPage {
                 id: id.into(),
-                title: ui::i18n!("music-spotify-liked"),
+                title: crate::i18n::t("music-spotify-liked"),
                 tracks,
                 ..Default::default()
             });
@@ -539,7 +566,7 @@ impl MusicBackend for SpotifyBackend {
             id: id.into(),
             title: text(&value, "name"),
             subtitle: text(value.get("owner").unwrap_or(&Value::Null), "display_name"),
-            description: ui::i18n!("music-spotify-ownership-help"),
+            description: crate::i18n::t("music-spotify-ownership-help"),
             cover_url: cover(&value),
             tracks: entries
                 .iter()
@@ -625,7 +652,7 @@ fn library_home(albums: &Value, playlists: &Value, artists: &Value) -> HomeConte
         .map(|artist| HomeItem {
             id: artist.id,
             title: artist.name,
-            subtitle: ui::i18n!("music-spotify-following"),
+            subtitle: crate::i18n::t("music-spotify-following"),
             cover_url: artist.avatar_url,
             kind: HomeItemKind::Artist,
             video_id: String::new(),
@@ -639,11 +666,11 @@ fn library_home(albums: &Value, playlists: &Value, artists: &Value) -> HomeConte
     HomeContent {
         sections: vec![
             HomeSection {
-                title: ui::i18n!("music-spotify-library"),
+                title: crate::i18n::t("music-spotify-library"),
                 items: vec![HomeItem {
                     id: "spotify:collection:liked".into(),
-                    title: ui::i18n!("music-spotify-liked"),
-                    subtitle: ui::i18n!("music-spotify-liked-description"),
+                    title: crate::i18n::t("music-spotify-liked"),
+                    subtitle: crate::i18n::t("music-spotify-liked-description"),
                     cover_url: String::new(),
                     kind: HomeItemKind::Playlist,
                     video_id: String::new(),
@@ -655,15 +682,15 @@ fn library_home(albums: &Value, playlists: &Value, artists: &Value) -> HomeConte
                 }],
             },
             HomeSection {
-                title: ui::i18n!("music-spotify-albums"),
+                title: crate::i18n::t("music-spotify-albums"),
                 items: album_items,
             },
             HomeSection {
-                title: ui::i18n!("music-spotify-playlists"),
+                title: crate::i18n::t("music-spotify-playlists"),
                 items: playlist_items,
             },
             HomeSection {
-                title: ui::i18n!("music-spotify-artists"),
+                title: crate::i18n::t("music-spotify-artists"),
                 items: artist_items,
             },
         ],
@@ -1243,6 +1270,60 @@ mod tests {
         for _ in 0..4 {
             assert_eq!(api.next_request().method, "GET");
         }
+        api.assert_untouched();
+    }
+
+    #[test]
+    fn spotify_read_only_library_only_requests_granted_collections() {
+        use crate::backend::SpotifyOperation;
+        use test_http::{Reply, Responder};
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let api = Responder::start(vec![
+            Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
+        ]);
+        let (backend, _root) = fixture(&api.url(), &oauth);
+        backend
+            .custody
+            .seal_oauth(
+                &AccountId::from(ACCOUNT.to_string()),
+                &account_custody::TokenSet {
+                    access_token: "initial-test".into(),
+                    refresh_token: "refresh-test".into(),
+                    scope: Some("user-read-private user-library-read".into()),
+                    expires_in: 3600,
+                    ..Default::default()
+                }
+                .stamp_now(),
+            )
+            .unwrap();
+        let reply = backend
+            .operation(&SpotifyOperation::LibraryPage {
+                offset: 0,
+                artists_after: None,
+            })
+            .unwrap();
+        assert_eq!(reply.state["has_more"], false);
+        let home: HomeContent = serde_json::from_value(reply.state["home_page"].clone()).unwrap();
+        assert!(home.sections[3].items.is_empty());
+        assert!(api.next_request().target.starts_with("/me/albums?"));
+        assert!(home.sections[2].items.is_empty());
+        assert!(
+            backend
+                .operation(&SpotifyOperation::Save {
+                    uri: "spotify:track:1234567890123456789012".into(),
+                    saved: true,
+                })
+                .unwrap_err()
+                .to_string()
+                .contains("has not granted")
+        );
+        assert!(
+            backend
+                .operation(&SpotifyOperation::Devices)
+                .unwrap_err()
+                .to_string()
+                .contains("has not granted")
+        );
         api.assert_untouched();
     }
 

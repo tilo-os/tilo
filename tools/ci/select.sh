@@ -59,3 +59,25 @@ python3 tools/ci/affected_packages.py --base "$base" --shards 2 "${selection_arg
   cat ci-plan.json
   echo '```'
 } >> "$GITHUB_STEP_SUMMARY"
+# The affected apps whose tapps the `tapps` job packages and holds to their
+# size budgets before the merge (TIL-765; DEVELOPMENT.md, "App package size"):
+# those of the default collection closest to a budget, at most a few, so a
+# toolkit change does not package the whole collection. Only pull requests:
+# on main, Release / apps measures every affected app after the merge.
+if [ "$EVENT_NAME" = pull_request ]; then
+  affected=$(python3 tools/apps/app_release.py --base "$base" \
+    | python3 -c 'import json, sys; print(" ".join(json.load(sys.stdin)["apps"]))')
+  # The run follows the pull request's own check.yml (that of HEAD_SHA, its
+  # head), not the merged tree's. A branch older than the tapps job would
+  # pass without measuring, so select fails it instead.
+  workflow=$(mktemp)
+  git show "$HEAD_SHA:.forgejo/workflows/check.yml" > "$workflow"
+  {
+    echo '```'
+    python3 tools/perf/tapp_size_ratchet.py select --apps "$affected" --github-output "$GITHUB_OUTPUT" \
+      --workflow "$workflow"
+    echo '```'
+  } | tee -a "$GITHUB_STEP_SUMMARY"
+else
+  printf 'tapp_apps=\ntapp_required=false\n' >> "$GITHUB_OUTPUT"
+fi

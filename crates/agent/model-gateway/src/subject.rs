@@ -66,8 +66,10 @@ pub fn segment(image: &VisionImage) -> Result<String, String> {
         return Err(format!("the picture must be 1 to {MAX_EDGE} pixels a side"));
     }
     let rgba = decoded.to_rgba8();
+    let root = local_model_service::user_model_root()
+        .ok_or_else(|| "the model store has no data home".to_string())?;
     let installed = local_model_service::installed_in_process_model(
-        &local_model_service::user_model_root(),
+        &root,
         local_model_service::InProcessCapability::Segmentation,
     )
     .map_err(|error| format!("the model store cannot be read: {error}"))?
@@ -160,13 +162,7 @@ const TAMPERED: &str = "the subject model on this device does not match its veri
 /// The SHA-256 of `bytes` in lowercase hexadecimal, as the store names files.
 fn hex_digest(bytes: &[u8]) -> String {
     use sha2::{Digest as _, Sha256};
-    use std::fmt::Write as _;
-    Sha256::digest(bytes)
-        .iter()
-        .fold(String::with_capacity(64), |mut hex, byte| {
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        })
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn millis(since: Instant) -> u64 {

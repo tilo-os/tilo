@@ -3,15 +3,18 @@
 //! the engine layer fills these in, the widgets read them.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Model};
 use uuid::Uuid;
 
 /// Which database engine a connection targets. `SQLite` is fully local and
 /// always available; Postgres and `MySQL` are network engines whose live
 /// drivers are gated behind a sandbox grant (see [`ConnectionProfile`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Engine {
     Sqlite,
+    #[default]
     Postgres,
+    #[model(rename = "mysql")]
     MySql,
 }
 
@@ -36,10 +39,9 @@ impl Engine {
         [Engine::Sqlite, Engine::Postgres, Engine::MySql]
     }
 
-    /// Stable string key used when a connection profile is stored in the shared
-    /// Automerge document (see [`crate::doc::ConnectionsDoc`]). Kept distinct
-    /// from [`label`](Self::label) so the on-wire key never shifts with a UI
-    /// rename.
+    /// Stable string key an engine is named by where it is typed: a verb's
+    /// parameter, the record. Kept distinct from [`label`](Self::label) so
+    /// the key never shifts with a UI rename.
     pub fn as_key(self) -> &'static str {
         match self {
             Engine::Sqlite => "sqlite",

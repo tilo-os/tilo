@@ -39,6 +39,21 @@ const NARROW_SCENARIOS: &[&str] = &[
 ];
 
 #[test]
+fn semantic_markdown_import_reports_original_success_notification() {
+    ui::clock::freeze_for_capture();
+    check(Some("import_success"), (1280, 720)).unwrap();
+    let mut app = TestApp::<NotesShell>::capture_at(Some("import_success"), (1280, 720)).unwrap();
+    // A capture retains its original notification even when frame preparation
+    // exceeds the live toast lifetime. Draw the real app after that delay.
+    std::thread::sleep(ui::widget::toast::DEFAULT_TTL + ui::time::Duration::from_millis(100));
+    app.harness().relayout();
+    assert!(observed(app.harness(), |node| {
+        node.name.as_deref() == Some("Notifications")
+            && node.value.as_deref() == Some("Imported Project brief")
+    }));
+}
+
+#[test]
 fn every_scenario_reaches_its_state() {
     // Match --shots before starting capture workers: transient notifications
     // belong to the captured scene and must not expire while it is prepared.
@@ -86,6 +101,13 @@ fn every_scenario_reaches_its_state() {
 }
 
 #[test]
+fn imported_note_keeps_its_success_notification_in_capture() {
+    ui::clock::freeze_for_capture();
+    check(Some("import_success"), (1280, 720))
+        .expect("the imported document and its notification are both captured");
+}
+
+#[test]
 fn rename_scenario_keeps_its_real_inline_editor_focused() {
     check(Some("rename"), (1280, 720)).expect("the real double-click rename remains focused");
 }
@@ -95,7 +117,7 @@ fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
     let mut app = TestApp::<NotesShell>::capture_at(scenario, viewport)
         .map_err(|error| format!("capture failed: {error:?}"))?;
     let Some(title) = shown_title(scenario) else {
-        let pages = app.read_document(notes::doc::NotesDoc::list_pages);
+        let pages = app.read_document(notes::read::list_pages);
         return if pages.is_empty() {
             Ok(())
         } else {
@@ -103,7 +125,7 @@ fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
         };
     };
     let panel = app.read_document(|doc| {
-        let workspace = notes::notebook::project(doc, None)?;
+        let workspace = notes::read::project(doc)?;
         let page = workspace
             .pages()
             .iter()
@@ -128,12 +150,13 @@ fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "did not reach its state: {:?}",
+            "did not reach its state: {:?}; accessibility: {:?}",
             blocks
                 .iter()
                 .zip(&rects)
                 .map(|(block, rect)| (&block.kind, block.text(), block.indent(), rect))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            driver.a11y_nodes()
         ))
     }
 }

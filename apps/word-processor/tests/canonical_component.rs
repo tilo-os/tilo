@@ -13,12 +13,10 @@ fn harness() -> (
         .open(definition.app_id, "room")
         .unwrap();
     let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, "room").unwrap());
-    let permissions = Rc::new(RefCell::new(
-        ui::permissions::PermissionContext::from_capabilities(
-            ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), "author"),
-            vec![],
-        ),
-    ));
+    let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
+        "author",
+        ui::permissions::Role::Owner,
+    )));
     let context = HostContext::prepare(
         definition,
         HostContextInputs {
@@ -37,8 +35,7 @@ fn harness() -> (
         .instantiate(context, LaunchTarget::New, RestoreInput::None)
         .unwrap();
     let checkout = component.record().clone();
-    let font_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/sdk/ui-core/assets/fonts");
+    let font_root = ui::font_catalog::checkout_root();
     let fonts = ui::font_catalog::FontCatalog::product(&font_root, "en-US")
         .load_bytes(|name| std::fs::read(font_root.join(name)).ok())
         .unwrap();

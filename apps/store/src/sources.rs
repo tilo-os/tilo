@@ -428,7 +428,7 @@ fn plain_text(input: &str) -> String {
 }
 
 /// Merge a Tilo pile and a Flathub pile into one deduped list.
-/// Tilo wins on any name collision (case-insensitive).
+/// Prefer native offers on name collisions, while retaining every installed app.
 pub fn merge(tilo_items: Vec<StoreItem>, flathub_items: Vec<StoreItem>) -> Vec<StoreItem> {
     let mut out = tilo_items;
     let tilo_names: std::collections::HashSet<String> = out
@@ -436,7 +436,8 @@ pub fn merge(tilo_items: Vec<StoreItem>, flathub_items: Vec<StoreItem>) -> Vec<S
         .map(|i| i.name.trim().to_ascii_lowercase())
         .collect();
     for fh in flathub_items {
-        if !tilo_names.contains(&fh.name.trim().to_ascii_lowercase()) {
+        if fh.installed.is_installed() || !tilo_names.contains(&fh.name.trim().to_ascii_lowercase())
+        {
             out.push(fh);
         }
     }
@@ -507,6 +508,31 @@ mod tests {
         assert!(crate::model::SourceFilter::Flatpak.accepts(&installed));
         assert!(installed.icon_url.is_none());
         assert!(installed.publisher_pubkey_hex.is_none());
+    }
+
+    #[test]
+    fn official_system_flathub_stable_items_use_the_account_install_route() {
+        let remote = crate::flathub_client::Remote {
+            name: "flathub".into(),
+            title: "Flathub".into(),
+            url: "https://dl.flathub.org/repo/".into(),
+            disabled: false,
+            user_managed: false,
+        };
+        let rows = "org.example.Editor\tEditor\tEdit documents\t2.0\tstable\tflathub\n";
+        let item = super::remote_catalogue_items(rows, &remote, &[]).remove(0);
+        assert!(matches!(item.source, StoreSource::Flathub));
+        assert!(item.allows_action(crate::ActionKind::FlatpakInstall, true));
+        let beta = rows.replace("stable", "beta");
+        let item = super::remote_catalogue_items(&beta, &remote, &[]).remove(0);
+        assert!(matches!(
+            item.source,
+            StoreSource::FlatpakRemote {
+                user_managed: false,
+                ..
+            }
+        ));
+        assert!(!item.allows_action(crate::ActionKind::FlatpakInstall, true));
     }
 
     #[test]
@@ -591,6 +617,7 @@ mod tests {
             runtime: String::new(),
             source: String::new(),
             held: false,
+            payload_bytes: 0,
             system: !user_managed,
         }
     }

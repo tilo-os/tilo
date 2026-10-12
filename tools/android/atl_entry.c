@@ -7,6 +7,10 @@
 #include <netinet/in.h>
 #include <pwd.h>
 #include <sys/socket.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <time.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,6 +30,64 @@ static char *join(const char *root, const char *suffix) {
 
 static void put(const char *key, const char *value) {
     if (setenv(key, value, 1) < 0) fail("setting runtime environment");
+}
+
+// The parent stays inside the original launcher sandbox and authority lease.
+// A fresh anonymous journal belongs to this launch only, never private storage.
+// Only abnormal process loss with a live foreground START_STICKY record retries;
+// normal close, normal service stop, malformed journals and crash loops stop.
+static int supervise(char *loader, char **child) {
+    int journal = memfd_create("tilo-android-sticky", 0);
+    if (journal < 0) fail("creating launch recovery journal");
+    char descriptor[32];
+    snprintf(descriptor, sizeof(descriptor), "%d", journal);
+    put("TILO_ANDROID_RECOVERY_FD", descriptor);
+    unsetenv("TILO_ANDROID_RECOVER_SERVICES");
+    for (int attempt = 0; attempt <= 3; attempt++) {
+        if (ftruncate(journal, 0)) fail("clearing recovery journal");
+        pid_t pid = fork();
+        if (pid < 0) fail("starting ART process");
+        if (!pid) {
+            execv(loader, child);
+            fail("executing private musl loader");
+        }
+        int status;
+        while (waitpid(pid, &status, 0) < 0) {
+            if (errno != EINTR) fail("waiting for ART process");
+        }
+        if (!WIFSIGNALED(status) || WTERMSIG(status) == SIGTERM ||
+                WTERMSIG(status) == SIGINT || attempt == 3) {
+            close(journal);
+            return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+        }
+        char services[4097];
+        ssize_t size = pread(journal, services, sizeof(services) - 1, 0);
+        if (size <= 0 || size == (ssize_t)sizeof(services) - 1 || services[size - 1] != '\n') {
+            close(journal);
+            return 128 + WTERMSIG(status);
+        }
+        services[size] = '\0';
+        int count = 0, column = 0;
+        for (ssize_t i = 0; i < size; i++) {
+            unsigned char c = (unsigned char)services[i];
+            if (c == '\n') {
+                if (!column || ++count > 16) { close(journal); return 2; }
+                column = 0;
+            } else {
+                if (++column > 255 || !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                        (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '$')) {
+                    close(journal); return 2;
+                }
+            }
+        }
+        put("TILO_ANDROID_RECOVER_SERVICES", services);
+        fprintf(stderr, "tilo Android runtime: foreground sticky recovery pending, attempt %d\n", attempt + 1);
+        // Bounded backoff also leaves the original root observable to revocation.
+        struct timespec delay = { .tv_sec = 2, .tv_nsec = 0 };
+        while (nanosleep(&delay, &delay) && errno == EINTR) {}
+    }
+    close(journal);
+    return 2;
 }
 
 // A negative qualification fixture through the production launcher. This
@@ -140,6 +202,5 @@ int main(int argc, char **argv) {
     child[next++] = "-Xnoimage-dex2oat";
     child[next++] = "-X";
     child[next++] = "-Xusejit:false";
-    execv(loader, child);
-    fail("executing private musl loader");
+    return supervise(loader, child);
 }

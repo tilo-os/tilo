@@ -27,8 +27,6 @@ check() {
 check "web desktop" -p tilo-web-desktop
 # scripts/build.sh runtime: the page runtime an app bundle links.
 check "page runtime" -p tilo-browser-runtime
-# web-registry-client/build-verifier.sh.
-check "registry verifier" -p registry-web-bindgen
 
 # Private image-only worker kernel.
 check "image compute worker" -p tilo-browser-compute

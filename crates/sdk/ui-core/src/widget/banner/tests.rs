@@ -1,5 +1,5 @@
 use super::*;
-use crate::headless::Driver;
+use crate::headless::FrameHarness;
 use crate::state::State;
 use crate::widget::Column;
 use std::cell::Cell;
@@ -96,8 +96,8 @@ fn height_grows_with_text_scale_and_long_messages() {
     assert!(scaled > long_h);
 }
 
-fn driver(root: Box<dyn Widget>) -> Driver {
-    let mut driver = Driver::new(State::new(), root, (640, 400));
+fn driver(root: Box<dyn Widget>) -> FrameHarness {
+    let mut driver = FrameHarness::new(State::new(), root, (640, 400));
     driver.relayout();
     driver
 }

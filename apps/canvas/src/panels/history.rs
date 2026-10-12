@@ -14,7 +14,7 @@ use ui::widget::ButtonRole;
 use ui::widget::ControlRow;
 
 use super::{caption, icon_button};
-use crate::resource::ArtworkResource;
+use crate::model::Artwork;
 use crate::tools::Tools;
 
 /// How many recent versions the panel lists.
@@ -46,6 +46,7 @@ fn entries(versions: &[HistoryVersion]) -> Vec<Entry> {
         if let Some(last) = entries.last_mut()
             && version.run.is_some()
             && last.run == version.run
+            && last.author == version.author
         {
             last.steps = last.steps.saturating_add(1);
             last.undone &= version.undone;
@@ -88,7 +89,7 @@ fn ago(time_ms: i64) -> String {
 }
 
 /// The panel.
-pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+pub fn panel(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let versions = cx.history(LISTED);
     let tools = tools.clone();
     let newest: Rc<RefCell<Option<String>>> = Rc::default();
@@ -124,6 +125,7 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                 .with_no_padding()
                 .with_intrinsic_height()
                 .with_gap(0.0)
+                .push(checkpoint_controls(cx, &tools))
                 .push(viewing(cx, &tools))
                 .push(Box::new(
                     Scrollable::new_vertical()
@@ -146,9 +148,40 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
 /// How tall the list of versions grows before it scrolls.
 const LIST_HEIGHT: f32 = 7.0 * ui::tokens::Metrics::BASE.panel_row_height;
 
+/// A person names a meaningful point without committing every typed letter.
+fn checkpoint_controls(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
+    let name = tools.checkpoint_name.clone();
+    Box::new(
+        Column::new()
+            .with_intrinsic_height()
+            .with_rhythm(ui::tokens::Rhythm::Tight)
+            .with_padding_rhythm(ui::tokens::Rhythm::Sibling, ui::tokens::Rhythm::Tight)
+            .push(Box::new(
+                TextInput::from_state(&name)
+                    .with_id("canvas-checkpoint-label")
+                    .with_placeholder(ui::i18n::I18nManager::lookup_plain(
+                        "canvas-checkpoint-label",
+                    ))
+                    .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
+                        "canvas-checkpoint-label",
+                    )),
+            ))
+            .push(cx.switch(&name, |cx, name| {
+                Box::new(
+                    cx.actions().bind_invocation(
+                        ui::widget::Button::new("canvas-checkpoint-save", "canvas-checkpoint-save")
+                            .with_icon(Icon::Flag)
+                            .with_enabled(!name.trim().is_empty()),
+                        Artwork::CHECKPOINT.with(name.trim().to_owned()),
+                    ),
+                )
+            })),
+    )
+}
+
 /// Naming the current version, beside the history tab. Its name counts
 /// the checkpoints there are.
-pub fn checkpoint_button(cx: &ViewCx<ArtworkResource>) -> Element {
+pub fn checkpoint_button(cx: &ViewCx<Artwork>) -> Element {
     let versions = cx.history(LISTED);
     cx.switch(&versions, |cx, versions| {
         let checkpoints = versions
@@ -163,13 +196,13 @@ pub fn checkpoint_button(cx: &ViewCx<ArtworkResource>) -> Element {
             cx,
             Icon::Flag,
             &ui::i18n::I18nManager::lookup_plain("canvas-checkpoint"),
-            ArtworkResource::CHECKPOINT.with(name),
+            Artwork::CHECKPOINT.with(name),
         ))
     })
 }
 
 /// While a past version is shown: what it is, and restoring it.
-fn viewing(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+fn viewing(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     cx.switch(&tools.preview, |cx, preview| {
         let Some(version) = preview else {
             return Box::new(Spacer::token(ui::tokens::SpacingStep::S0));
@@ -185,11 +218,8 @@ fn viewing(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                 )))
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(
-                    cx.button(
-                        "canvas-restore",
-                        ArtworkResource::RESTORE.with(version.clone()),
-                    )
-                    .role(ButtonRole::Primary),
+                    cx.button("canvas-restore", Artwork::RESTORE.with(version.clone()))
+                        .role(ButtonRole::Primary),
                 )),
         )
     })
@@ -212,7 +242,7 @@ fn now_row(tools: &Tools) -> Element {
     )
 }
 
-fn entry_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, entry: &Entry) -> Element {
+fn entry_row(cx: &ViewCx<Artwork>, tools: &Tools, entry: &Entry) -> Element {
     let by_agent = entry.run.is_some();
     let action = if entry.action.is_empty() {
         ui::i18n::I18nManager::lookup_plain("canvas-history-created")
@@ -282,7 +312,7 @@ fn entry_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, entry: &Entry) -> Elem
                 "canvas-undo-run",
                 &[("run", entry.author.clone().into())],
             ),
-            ArtworkResource::UNDO_RUN.with(run.clone()),
+            Artwork::UNDO_RUN.with(run.clone()),
         )));
     }
     Box::new(

@@ -59,22 +59,21 @@ use ui::widget::{
     ControlSize, SegmentedFace, TextInput, TextInputKind, ToggleGroup, Toolbar,
 };
 
-use crate::actions::{DraftBodySeed, MailAction};
-use crate::doc::MailDoc;
+use crate::actions::DraftBodySeed;
 use crate::model::{ComposeFormat, Draft, DraftAttachment};
-use crate::resource::{Mail, draft_body_dispatcher};
+use crate::resource::{Mail, draft_body_dispatcher, draft_body_object, mailbox};
 
 /// The HTML body: the SDK rich-text editor over the draft's body, every
-/// edit a [`MailAction::EditDraftBody`] through `dispatcher`; shown view-only
+/// edit a field edit of the body through `dispatcher`; shown view-only
 /// until there is one.
 type BodyEditor = RichTextSurface<RichTextField>;
 
 fn body_editor(dispatcher: Option<&Dispatcher<Mail>>) -> BodyEditor {
     let field = match dispatcher {
         Some(dispatcher) => {
-            RichTextField::new(draft_body_dispatcher(dispatcher), MailDoc::draft_body)
+            RichTextField::new(draft_body_dispatcher(dispatcher), draft_body_object)
         }
-        None => RichTextField::view_only(MailDoc::draft_body),
+        None => RichTextField::view_only(draft_body_object),
     };
     RichTextSurface::field(field).with_editor(
         BlockEditor::new()
@@ -354,6 +353,27 @@ pub(crate) struct ComposeEventContext<'a> {
     pub(crate) taffy: &'a taffy::TaffyTree<()>,
 }
 
+impl ComposeEventContext<'_> {
+    /// The event context a compose child sees, reporting into `handled` and
+    /// `focus_target`.
+    fn event_ctx<'b>(
+        &'b mut self,
+        handled: &'b mut bool,
+        focus_target: &'b mut Option<taffy::NodeId>,
+    ) -> ui::widget::EventCtx<'b> {
+        ui::widget::EventCtx {
+            scale_factor: self.scale_factor,
+            modifiers: &self.modifiers,
+            state: self.state.reborrow(),
+            path: self.path,
+            handled,
+            focus_target,
+            node_id: self.node_id,
+            taffy: self.taffy,
+        }
+    }
+}
+
 /// Where the compose window is parked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DockState {
@@ -479,7 +499,7 @@ pub struct ComposeWindow {
     /// The body to start the draft with, applied when the window next
     /// reaches the document.
     seed: Option<DraftBodySeed>,
-    /// Dispatches [`MailAction::StartDraftBody`].
+    /// Submits [`Mail::START_DRAFT_BODY`].
     dispatcher: Option<Dispatcher<Mail>>,
     /// The body as plain text as of the last frame, for accessibility and a
     /// switch to plain-text authoring.
@@ -1046,7 +1066,7 @@ impl ComposeWindow {
         self.start_pending_body(doc);
         let (body, html_body) = match self.format {
             ComposeFormat::Html => {
-                let root = MailDoc::draft_body(doc);
+                let root = draft_body_object(doc);
                 let html = root.as_ref().and_then(|root| {
                     tilo_doc_codecs::export_html::render_html_fragment_under(
                         doc,
@@ -1122,15 +1142,17 @@ impl ComposeWindow {
         let Some(seed) = self.seed.take() else {
             return;
         };
-        let action = MailAction::StartDraftBody(seed);
-        let context = tilo_actions::ActionContext::for_action("so.tilo.mail", "Mail", &action);
-        if let Err(error) = dispatcher.apply_now_with(doc, &action, context) {
+        let start = Mail::START_DRAFT_BODY.with(mailbox::StartDraftBody {
+            text: seed.text,
+            html: seed.html,
+        });
+        if let Err(error) = dispatcher.submit_now(doc, start) {
             tracing::warn!(%error, "draft body could not be started");
         }
     }
 
     fn read_plain(doc: &automerge::AutoCommit) -> String {
-        MailDoc::draft_body(doc)
+        draft_body_object(doc)
             .and_then(|root| tilo_rich_text::blocks_under(doc, &root).ok())
             .map(|blocks| plain_of(&blocks))
             .unwrap_or_default()
@@ -1323,6 +1345,15 @@ impl ComposeWindow {
     /// lay out every interactive region. `bounds` is the app content rect.
     pub fn layout(&mut self, bounds: Rect) {
         self.bounds = bounds;
+        if self.is_full_window_page() {
+            self.rect = bounds;
+            self.drag = None;
+            // Returning to a roomy viewport should restore a floating size,
+            // rather than preserving the phone page as a desktop window.
+            self.placed = false;
+            self.relayout_regions();
+            return;
+        }
         if !self.placed {
             let m = self.metrics;
             let margin = m.pad * 2.0;
@@ -1344,6 +1375,11 @@ impl ComposeWindow {
         }
         self.clamp_into_bounds();
         self.relayout_regions();
+    }
+
+    fn is_full_window_page(&self) -> bool {
+        matches!(self.dock, DockState::Docked)
+            && ui::widget::modal_dialog::uses_full_window(self.bounds, &self.theme)
     }
 
     fn clamp_into_bounds(&mut self) {
@@ -1528,51 +1564,17 @@ impl ComposeWindow {
         let mut h = false;
         let mut ft: Option<taffy::NodeId> = None;
         for inp in [&mut self.to, &mut self.cc, &mut self.bcc, &mut self.subject] {
-            inp.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.path,
-                    handled: &mut h,
-                    focus_target: &mut ft,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            );
+            inp.handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
         }
         // Forward to the plain body too so its hover / drag-selection tracks
         // (Text mode).
         if matches!(self.format, ComposeFormat::Text) {
-            self.plain_body.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.path,
-                    handled: &mut h,
-                    focus_target: &mut ft,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            );
+            self.plain_body
+                .handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
         }
         if let Some(p) = self.prompt.as_mut() {
-            p.input.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.path,
-                    handled: &mut h,
-                    focus_target: &mut ft,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            );
+            p.input
+                .handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
         }
         if matches!(self.format, ComposeFormat::Html) {
             self.body_event(event, ctx);
@@ -1716,19 +1718,8 @@ impl ComposeWindow {
         let mut h = false;
         let mut ft: Option<taffy::NodeId> = None;
         if let Some(p) = self.prompt.as_mut() {
-            p.input.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.path,
-                    handled: &mut h,
-                    focus_target: &mut ft,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            );
+            p.input
+                .handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
         }
         self.dirty = true;
         (true, ComposeAction::None)
@@ -1757,19 +1748,8 @@ impl ComposeWindow {
             ComposeFormat::Text => {
                 let mut h = false;
                 let mut ft: Option<taffy::NodeId> = None;
-                self.plain_body.handle_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: ctx.scale_factor,
-                        modifiers: &ctx.modifiers,
-                        state: ctx.state.reborrow(),
-                        path: ctx.path,
-                        handled: &mut h,
-                        focus_target: &mut ft,
-                        node_id: ctx.node_id,
-                        taffy: ctx.taffy,
-                    },
-                );
+                self.plain_body
+                    .handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
             }
         }
         self.dirty = true;
@@ -1781,19 +1761,7 @@ impl ComposeWindow {
         let mut h = false;
         let mut ft: Option<taffy::NodeId> = None;
         if let Some(inp) = self.focused_input() {
-            inp.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.path,
-                    handled: &mut h,
-                    focus_target: &mut ft,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            );
+            inp.handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
         }
         self.dirty = true;
     }
@@ -1807,9 +1775,11 @@ impl ComposeWindow {
     ) -> ComposeAction {
         match hit {
             ComposeHit::TitleBar => {
-                self.drag = Some(Drag::Move {
-                    grab: Point::new(pt.x - self.rect.x0, pt.y - self.rect.y0),
-                });
+                if !self.is_full_window_page() {
+                    self.drag = Some(Drag::Move {
+                        grab: Point::new(pt.x - self.rect.x0, pt.y - self.rect.y0),
+                    });
+                }
             }
             ComposeHit::Close | ComposeHit::Discard => {
                 self.close();
@@ -1849,19 +1819,8 @@ impl ComposeWindow {
                     p.input.set_focus(true);
                     let mut h = false;
                     let mut ft: Option<taffy::NodeId> = None;
-                    p.input.handle_event(
-                        event,
-                        &mut ui::widget::EventCtx {
-                            scale_factor: ctx.scale_factor,
-                            modifiers: &ctx.modifiers,
-                            state: ctx.state.reborrow(),
-                            path: ctx.path,
-                            handled: &mut h,
-                            focus_target: &mut ft,
-                            node_id: ctx.node_id,
-                            taffy: ctx.taffy,
-                        },
-                    );
+                    p.input
+                        .handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
                 }
             }
         }
@@ -1890,19 +1849,8 @@ impl ComposeWindow {
                 // click point (the preceding CursorMoved set hover).
                 let mut h = false;
                 let mut ft: Option<taffy::NodeId> = None;
-                self.plain_body.handle_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: ctx.scale_factor,
-                        modifiers: &ctx.modifiers,
-                        state: ctx.state.reborrow(),
-                        path: ctx.path,
-                        handled: &mut h,
-                        focus_target: &mut ft,
-                        node_id: ctx.node_id,
-                        taffy: ctx.taffy,
-                    },
-                );
+                self.plain_body
+                    .handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
             }
         }
     }
@@ -1939,16 +1887,7 @@ impl ComposeWindow {
         ui::Widget::handle_event(
             &mut self.format_bar.bar,
             event,
-            &mut ui::widget::EventCtx {
-                scale_factor: ctx.scale_factor,
-                modifiers: &ctx.modifiers,
-                state: ctx.state.reborrow(),
-                path: ctx.path,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: ctx.node_id,
-                taffy: ctx.taffy,
-            },
+            &mut ctx.event_ctx(&mut handled, &mut focus),
         );
         if let Some(format) = self.format_bar.chosen.take() {
             self.apply_format(format);
@@ -2021,25 +1960,16 @@ impl ComposeWindow {
         let mut h = false;
         let mut ft: Option<taffy::NodeId> = None;
         if let Some(inp) = self.focused_input() {
-            inp.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.path,
-                    handled: &mut h,
-                    focus_target: &mut ft,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            );
+            inp.handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
         }
     }
 
     // ---- move / resize ----
 
     fn resize_edge_at(&self, pt: Point) -> Option<Edge> {
+        if self.is_full_window_page() {
+            return None;
+        }
         let r = self.rect;
         // The grip is the window's own edge, a `s2` band inside it.
         let grip = f64::from(self.theme.tokens.spacing.s2);
@@ -2135,10 +2065,29 @@ impl ComposeWindow {
             self.layout(self.bounds);
         }
         // Docked, the window is modal over the app; detached, it is not.
-        if matches!(self.dock, DockState::Docked) {
-            ui::overlay::scrim::modal(scene, t, self.bounds, 1.0, theme);
+        if self.is_full_window_page() {
+            ui::floating_surface::paint_material(
+                scene,
+                t,
+                &self.rect,
+                ui::floating_surface::Material::Opaque,
+                theme,
+            );
+        } else {
+            if matches!(self.dock, DockState::Docked) {
+                ui::overlay::scrim::behind_panel(
+                    scene,
+                    t,
+                    self.bounds,
+                    vello::kurbo::RoundedRect::from_rect(
+                        self.rect,
+                        ui::widget::floating_surface::radius(theme),
+                    ),
+                    theme,
+                );
+            }
+            ui::widget::floating_surface::paint(scene, t, self.rect, theme);
         }
-        ui::widget::floating_surface::paint(scene, t, self.rect, theme);
         // What is drawn on the panel reads against the panel's ground.
         let panel = theme.on_ground(ui::chrome::panel_ground(theme));
         self.draw_title_bar(scene, t, tr, &panel);
@@ -2507,24 +2456,15 @@ impl ComposeWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::event::KeyEvent;
+
     use winit::keyboard::{Key, NamedKey, SmolStr};
 
     fn key(logical: Key, text: Option<&str>) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = text.map(SmolStr::new);
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            logical,
+            text.map(SmolStr::new),
+            ElementState::Pressed,
+        ))
     }
 
     fn win() -> ComposeWindow {
@@ -2586,17 +2526,17 @@ mod tests {
         // Phase `format_toggle_round_trips_content`.
         {
             let mut w = win();
-            let mut doc = automerge::AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             w.set_focus(Field::Body);
             w.start_body(DraftBodySeed::text("Hello world"));
             w.sync(&doc, &automerge::ROOT);
             assert!(
-                MailDoc::draft_body(&doc).is_none(),
+                draft_body_object(&doc).is_none(),
                 "projection leaves a pending draft body unwritten"
             );
             w.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             assert!(
-                MailDoc::draft_body(&doc).is_some(),
+                draft_body_object(&doc).is_some(),
                 "settlement authors the pending draft body"
             );
             w.sync(&doc, &automerge::ROOT);
@@ -2616,7 +2556,7 @@ mod tests {
         // Phase `draft_carries_html_in_html_mode`.
         {
             let mut w = win();
-            let mut doc = automerge::AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             w.set_focus(Field::Body);
             w.start_body(DraftBodySeed::text("Body\n> quoted"));
             w.to.set_text("a@b.example");
@@ -2631,7 +2571,7 @@ mod tests {
         // Phase `a_saved_html_draft_reopens_with_its_formatting`.
         {
             let mut w = win();
-            let mut doc = automerge::AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             w.open_with_draft(&Draft {
                 body: "Plan\nship it".into(),
                 html_body: Some("<h2>Plan</h2><ul><li><b>ship</b> it</li></ul>".into()),
@@ -2651,7 +2591,7 @@ mod tests {
             w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
             w.plain_body.set_text("Just text");
             let d = w.to_draft(&mut ui::widget::Edits::lend(
-                &mut automerge::AutoCommit::new(),
+                &mut crate::resource::TestMail::doc(),
             ));
             assert!(d.html_body.is_none());
             assert_eq!(d.body, "Just text");
@@ -2668,7 +2608,7 @@ mod tests {
             w.set_focus(Field::Body);
 
             let m = winit::event::Modifiers::default();
-            let mut doc = automerge::AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
             let node = taffy::NodeId::new(0);
             let mut send = |ev: &WindowEvent| {
@@ -2765,7 +2705,7 @@ mod tests {
             let mut w = win();
             w.last_mouse = Point::new(5.0, 5.0); // outside the centred window
             let modifiers = winit::event::Modifiers::default();
-            let mut doc = automerge::AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
             let press = WindowEvent::MouseInput {
                 device_id: winit::event::DeviceId::dummy(),
@@ -2796,9 +2736,56 @@ mod tests {
         }
     }
 
+    #[test]
+    fn compact_compose_is_a_full_window_page_and_keeps_close_and_send_reachable() {
+        for theme in [Theme::dark(), Theme::light()] {
+            for bounds in [
+                Rect::new(0.0, 0.0, 360.0, 800.0),
+                Rect::new(0.0, 0.0, 800.0, 360.0),
+            ] {
+                let mut window = win();
+                window.theme = theme.clone();
+                window.layout(bounds);
+                let mut scene = Scene::new();
+                let mut text = TextRenderer::new();
+                window.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &PresenceCtx::empty(),
+                );
+                assert_eq!(window.window_rect(), bounds);
+                assert!(window.body_rect().height() > 0.0);
+                for target in [
+                    ComposeHit::Close,
+                    ComposeHit::Send,
+                    ComposeHit::SaveDraft,
+                    ComposeHit::Discard,
+                ] {
+                    assert!(
+                        bounds.contains_rect(hit_rect(&window, target)),
+                        "{target:?} remains reachable"
+                    );
+                }
+                assert!(window.resize_edge_at(bounds.center()).is_none());
+                assert!(
+                    window
+                        .resize_edge_at(Point::new(bounds.x1 - 1.0, bounds.y1 - 1.0))
+                        .is_none()
+                );
+                let close = hit_rect(&window, ComposeHit::Close).center();
+                let (handled, action) = press_at(&mut window, close);
+                assert!(handled);
+                assert!(matches!(action, ComposeAction::Close));
+                assert!(!window.open);
+            }
+        }
+    }
+
     fn press_at(w: &mut ComposeWindow, p: Point) -> (bool, ComposeAction) {
         let m = winit::event::Modifiers::default();
-        let mut doc = automerge::AutoCommit::new();
+        let mut doc = crate::resource::TestMail::doc();
         let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
         let node = taffy::NodeId::new(0);
         let mv = WindowEvent::CursorMoved {

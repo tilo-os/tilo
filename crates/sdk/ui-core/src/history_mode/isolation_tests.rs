@@ -4,7 +4,7 @@ use super::*;
 use crate::widget::{AppModel, ModelPath};
 use crate::{
     State,
-    headless::Driver,
+    headless::FrameHarness,
     widget::{ActionEmitter, Text, Widget},
 };
 use crate::{presence::PresenceCtx, text_render::TextRenderer, theme::Theme};
@@ -376,7 +376,7 @@ fn preview_discards_unadmitted_local_intents_but_polls_an_already_admitted_effec
     let mut state = State::new();
     state.doc.put(ROOT, "body", "first").unwrap();
     state.commit_action(None, None);
-    let mut driver = Driver::from_managed_root(
+    let mut driver = FrameHarness::from_managed_root(
         state,
         ManagedRoot::new(Box::new(owner), registration()),
         (900, 650),
@@ -508,7 +508,7 @@ fn retained_phrase_confirmation_requires_fresh_visible_input_and_preserves_argum
         prompted: true,
         mutable_identity: None,
     };
-    let mut driver = Driver::from_managed_root(
+    let mut driver = FrameHarness::from_managed_root(
         State::new(),
         ManagedRoot::new(Box::new(owner), registration()),
         (900, 650),
@@ -578,7 +578,11 @@ fn retained_phrase_confirmation_requires_fresh_visible_input_and_preserves_argum
 
 fn retained_identity_fixture(
     identity: Rc<MutableContinuationIdentity>,
-) -> (Driver, Rc<Cell<usize>>, Rc<RefCell<ActionEmitter<()>>>) {
+) -> (
+    FrameHarness,
+    Rc<Cell<usize>>,
+    Rc<RefCell<ActionEmitter<()>>>,
+) {
     let starts = Rc::new(Cell::new(0));
     let resource =
         mutable_identity_resources("mutable-owner", "fixture.mutable-export", &identity).remove(0);
@@ -608,7 +612,7 @@ fn retained_identity_fixture(
         mutable_identity: Some(identity),
     };
     (
-        Driver::from_managed_root(
+        FrameHarness::from_managed_root(
             State::new(),
             ManagedRoot::new(Box::new(owner), registration()),
             (900, 650),

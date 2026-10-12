@@ -3,6 +3,7 @@
 //! and a ground with its medium, each shown as the sheet it makes.
 
 use std::collections::HashMap;
+use ui::tilo_resource::Invoke;
 
 use ui::LocalState;
 use ui::icons::Icon;
@@ -14,11 +15,10 @@ use ui::widget::{AppModel, ModelPath, Widget};
 use ui::{PresenceCtx, TextRenderer, Theme};
 
 use super::caption;
-use crate::actions::{CanvasAction, NewArtwork};
+use crate::actions::NewArtwork;
 use crate::document::{self, RecentArtworks, SIZES, STARTS};
 use crate::model::{Artwork, Ground};
 use crate::render::{Options, Renderer};
-use crate::resource::ArtworkResource;
 use crate::tools::{FileRequest, Sheet, Tools, ViewRequest};
 
 /// The size chosen when it is none of the presets.
@@ -78,10 +78,10 @@ impl Choices {
     }
 
     /// The action starting the artwork chosen.
-    pub fn action(&self) -> Option<CanvasAction> {
+    pub fn action(&self) -> Option<Invoke<Artwork>> {
         let (width, height) = self.dimensions()?;
         let title = self.title.get().trim().to_owned();
-        Some(CanvasAction::NewArtwork(NewArtwork {
+        Some(Artwork::NEW_ARTWORK.with(NewArtwork {
             title: Some(title).filter(|title| !title.is_empty()),
             width: Some(width),
             height: Some(height),
@@ -105,11 +105,25 @@ fn turned(width: f64, height: f64, landscape: bool) -> (f64, f64) {
 }
 
 /// Start the artwork the dialog is set to, and show it whole.
-pub fn create(dispatch: &Dispatcher<ArtworkResource>, tools: &Tools) -> bool {
+pub fn create(dispatch: &Dispatcher<Artwork>, tools: &Tools) -> bool {
     let Some(action) = tools.new.action() else {
         return false;
     };
-    dispatch.apply(&action);
+    dispatch.submit(action);
+    if tools.new.size.get().starts_with("pixel-") {
+        tools.workspace.set(crate::tools::Workspace::Pixel);
+        tools.choose_preset(crate::brushes::Preset::Pixel);
+        tools.tool.set(crate::tools::Tool::Brush);
+    } else {
+        tools.workspace.set(crate::tools::Workspace::Auto);
+        tools.choose_preset(crate::brushes::Preset::Round);
+        let start = document::start(&tools.new.start.get()).unwrap_or(STARTS[0]);
+        tools.tool.set(if start.medium.is_empty() {
+            crate::tools::Tool::Select
+        } else {
+            crate::tools::Tool::Brush
+        });
+    }
     tools.file.set(None);
     tools.selection.set(Vec::new());
     tools.layer.set("layer-1".to_owned());
@@ -159,28 +173,19 @@ impl Widget for Swatch {
     ) -> NodeId {
         use ui::widget::TaffyTreeExt as _;
         let side = theme.tokens.metrics.min_pointer_target;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: taffy::Size {
                 width: taffy::Dimension::length(side),
                 height: taffy::Dimension::length(side),
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     #[allow(
@@ -380,7 +385,7 @@ fn start_tiles(choices: &Choices) -> Vec<Element> {
 }
 
 /// Portrait or landscape, and for any size its sides.
-fn orientation(cx: &ViewCx<ArtworkResource>, choices: &Choices) -> Element {
+fn orientation(cx: &ViewCx<Artwork>, choices: &Choices) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let choices = choices.clone();
     cx.switch(&choices.size.clone(), move |_, size| {
@@ -417,16 +422,16 @@ fn custom_sides(choices: &Choices) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let width = TextInput::from_state(&choices.width)
         .with_id("canvas-new-width")
-        .with_accessible_name(lookup("canvas-artwork-width"));
+        .with_accessible_name(lookup("canvas-label-artwork-width"));
     let height = TextInput::from_state(&choices.height)
         .with_id("canvas-new-height")
-        .with_accessible_name(lookup("canvas-artwork-height"));
+        .with_accessible_name(lookup("canvas-label-artwork-height"));
     Box::new(
         Row::new()
             .no_wrap()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_align_items(ui::taffy::AlignItems::Center)
-            .push(caption(&lookup("canvas-artwork-width")))
+            .push(caption(&lookup("canvas-label-artwork-width")))
             .push(super::layout::width(
                 Box::new(
                     Container::new()
@@ -435,7 +440,7 @@ fn custom_sides(choices: &Choices) -> Element {
                 ),
                 |metrics| metrics.panel_row_height * 2.0,
             ))
-            .push(caption(&lookup("canvas-artwork-height")))
+            .push(caption(&lookup("canvas-label-artwork-height")))
             .push(super::layout::width(
                 Box::new(
                     Container::new()
@@ -449,7 +454,7 @@ fn custom_sides(choices: &Choices) -> Element {
 }
 
 /// What creating the artwork does to the one in the window.
-fn replacing(cx: &ViewCx<ArtworkResource>) -> Element {
+fn replacing(cx: &ViewCx<Artwork>) -> Element {
     let replacing = {
         let live = cx.live().clone();
         Text::dynamic(move || {
@@ -472,13 +477,22 @@ fn replacing(cx: &ViewCx<ArtworkResource>) -> Element {
 }
 
 /// The new-artwork dialog's body.
-pub fn body(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+pub fn body(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let choices = tools.new.clone();
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let title = TextInput::from_state(&choices.title)
         .with_id("canvas-new-title")
-        .with_placeholder(&lookup("canvas-untitled"))
-        .with_accessible_name(lookup("canvas-artwork-title"));
+        .with_placeholder(lookup("canvas-untitled"))
+        .with_accessible_name(lookup("canvas-label-artwork-title"));
+    let starts = {
+        let choices = choices.clone();
+        cx.switch(&choices.size.clone(), move |_cx, size| {
+            if size.starts_with("pixel-") && choices.start.get() == "paper" {
+                choices.start.set("transparent".into());
+            }
+            rows(start_tiles(&choices), 3)
+        })
+    };
     Box::new(
         Column::new()
             .with_no_padding()
@@ -488,8 +502,8 @@ pub fn body(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
             .push(rows(size_tiles(&choices), 4))
             .push(orientation(cx, &choices))
             .push(super::heading("canvas-new-start"))
-            .push(rows(start_tiles(&choices), 3))
-            .push(super::heading("canvas-artwork-title"))
+            .push(starts)
+            .push(super::heading("canvas-label-artwork-title"))
             .push(Box::new(title))
             .push(replacing(cx)),
     )
@@ -497,8 +511,7 @@ pub fn body(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
 
 /// The welcome over a blank artwork: what a person can do here, that an
 /// agent can paint here too, and the artworks worked on lately.
-pub fn welcome(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
-    // Shown while the artwork is blank and the welcome was not put away.
+pub fn welcome(cx: &ViewCx<Artwork>, tools: &Tools, compact: bool) -> Element {
     let blank = cx.value(|art: &Artwork| art.marks.is_empty());
     let tools = tools.clone();
     cx.switch(&blank, move |cx, blank| {
@@ -510,16 +523,13 @@ pub fn welcome(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
             if *welcomed {
                 return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
             }
-            let tools = tools.clone();
-            cx.switch(&tools.sidebar.clone(), move |cx, shown| {
-                placed(card(cx, &tools), *shown)
-            })
+            placed(card(cx, &tools), compact)
         })
     })
 }
 
 /// The welcome's card.
-fn card(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+fn card(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let button = |id: &str, icon: Icon, then: Box<dyn Fn()>| -> Element {
         let name = lookup(id);
@@ -601,13 +611,41 @@ fn card(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         .with_child(Box::new(Welcome(Box::new(ui::widget::Card::new(
             Box::new(body),
         )))));
-    super::layout::width(Box::new(card), |metrics| metrics.panel_width_list)
+    super::layout::themed(Box::new(card), |theme, style| {
+        // A cap is a comfortable wide measure, never a minimum wider than
+        // the space between the rail and the window's trailing gutter.
+        style.size.width = ui::taffy::Dimension::auto();
+        style.min_size.width = ui::taffy::Dimension::length(0.0);
+        style.max_size.width = ui::taffy::Dimension::length(theme.tokens.metrics.panel_width_list);
+        style.flex_basis = ui::taffy::Dimension::length(0.0);
+        style.flex_grow = 1.0;
+        style.flex_shrink = 1.0;
+    })
 }
 
-/// The card centred over the canvas: inset by the rail, the header and
-/// the sidebar when it is shown. Everywhere else the canvas stays the
-/// artwork's.
-fn placed(card: Element, sidebar: bool) -> Element {
+/// The welcome is a child of the actual artwork viewport, so the shell's
+/// header, inspector and tools retain their full measured space. Phones get
+/// a scrolling page; desktop cards stay centred over the artwork.
+fn placed(card: Element, compact: bool) -> Element {
+    if compact {
+        return super::layout::themed(
+            Box::new(
+                Container::new().filling().with_child(Box::new(
+                    Scrollable::new_vertical()
+                        .fill_parent_height()
+                        .with_child(card),
+                )),
+            ),
+            |theme, style| {
+                style.padding = ui::taffy::Rect {
+                    left: ui::taffy::LengthPercentage::length(theme.tokens.spacing.s3),
+                    right: ui::taffy::LengthPercentage::length(theme.tokens.spacing.s3),
+                    top: ui::taffy::LengthPercentage::length(theme.tokens.spacing.s3),
+                    bottom: ui::taffy::LengthPercentage::length(theme.tokens.spacing.s3),
+                };
+            },
+        );
+    }
     Box::new(
         Container::new()
             .with_no_padding()
@@ -628,22 +666,20 @@ fn placed(card: Element, sidebar: bool) -> Element {
                         )),
                 ),
                 move |theme, style| {
-                    style.padding.left =
-                        ui::taffy::LengthPercentage::length(theme.tokens.metrics.rail_width);
-                    style.padding.right = ui::taffy::LengthPercentage::length(if sidebar {
-                        theme.tokens.metrics.inspector_width
-                    } else {
-                        0.0
-                    });
-                    style.padding.top =
-                        ui::taffy::LengthPercentage::length(theme.tokens.metrics.header_height);
+                    let gutter = ui::taffy::LengthPercentage::length(theme.tokens.spacing.s4);
+                    style.padding = ui::taffy::Rect {
+                        left: gutter,
+                        right: gutter,
+                        top: gutter,
+                        bottom: gutter,
+                    };
                 },
             )),
     )
 }
 
 /// The artworks worked on lately, each opened by a click.
-fn recent_list(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+fn recent_list(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let files = tools.files.clone();
     cx.switch(&tools.recents, move |_, recents: &RecentArtworks| {
         let recents = &recents.artworks;

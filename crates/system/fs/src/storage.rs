@@ -13,7 +13,7 @@ use runtime_fs::storage::{
     StorageResponse, SyncStorageSnapshot, SyncedFileState,
 };
 
-use crate::availability::{AvailabilityPolicy, AvailabilityRegistry, RecordAvailability};
+use crate::availability::{AvailabilityRegistry, RecordAvailability, pinned_in_snapshot};
 use crate::clock::unix_now_ms;
 use crate::eviction::{EvictionCoordinator, EvictionPlan, EvictionQueue, EvictionRequestId};
 use crate::namespace::NodeKind;
@@ -23,7 +23,7 @@ use crate::{FileHistoryStore, Hydrator, Namespace};
 pub struct StorageAuthority {
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
-    dirty: Arc<Mutex<HashMap<u64, Vec<u8>>>>,
+    dirty: Arc<Mutex<crate::fs::WriteStages>>,
     /// Settings shares the same durable authority as FUSE.  In particular,
     /// it never treats a daemon-lifetime hydration source as durability.
     availability: Option<Arc<Mutex<AvailabilityRegistry>>>,
@@ -81,7 +81,7 @@ struct LogicalFile {
     path: String,
     logical_bytes: u64,
     hash: Option<Hash>,
-    record_id: collab_types::FileRecordId,
+    record_id: fs_protocol::FileRecordId,
     mtime: u64,
 }
 
@@ -89,7 +89,7 @@ impl StorageAuthority {
     pub fn new(
         namespace: Arc<Mutex<Namespace>>,
         hydrator: Arc<Hydrator>,
-        dirty: Arc<Mutex<HashMap<u64, Vec<u8>>>>,
+        dirty: Arc<Mutex<crate::fs::WriteStages>>,
         availability: Option<Arc<Mutex<AvailabilityRegistry>>>,
         eviction_queue: Option<Arc<tokio::sync::Mutex<EvictionQueue>>>,
         history: Option<Arc<FileHistoryStore>>,
@@ -144,7 +144,7 @@ impl StorageAuthority {
         file: LogicalFile,
         dirty: &HashSet<u64>,
         records: &[RecordAvailability],
-        plans: &HashMap<collab_types::FileRecordId, Option<EvictionPlan>>,
+        plans: &HashMap<fs_protocol::FileRecordId, Option<EvictionPlan>>,
     ) -> FileBlobs {
         let LogicalFile {
             identity,
@@ -157,7 +157,7 @@ impl StorageAuthority {
         } = file;
         let is_dirty = dirty.contains(&inode);
         let record = records.iter().find(|record| record.record_id == record_id);
-        let is_pinned = effective_pinned(records, record_id);
+        let is_pinned = pinned_in_snapshot(records, record_id);
         let Some(hash) = hash else {
             return FileBlobs {
                 state: SyncedFileState {
@@ -342,7 +342,7 @@ impl StorageAuthority {
     )]
     async fn enqueue_canonical_eviction(
         &self,
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
         expected_hash: Hash,
         identity: String,
         inode: u64,
@@ -397,7 +397,7 @@ impl StorageAuthority {
 
     async fn observe_once(
         &self,
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
         request_id: EvictionRequestId,
     ) -> Result<bool> {
         self.coordinator()?
@@ -405,7 +405,7 @@ impl StorageAuthority {
             .await
     }
 
-    fn spawn_observer(&self, record_id: collab_types::FileRecordId, request_id: EvictionRequestId) {
+    fn spawn_observer(&self, record_id: fs_protocol::FileRecordId, request_id: EvictionRequestId) {
         if let Ok(coordinator) = self.coordinator() {
             coordinator.spawn_observer(record_id, request_id);
         }
@@ -438,27 +438,6 @@ fn app_from_path(path: &str) -> Option<String> {
         (Some("apps" | "app"), Some(app)) if !app.is_empty() => Some(app.to_string()),
         _ => None,
     }
-}
-
-fn effective_pinned(records: &[RecordAvailability], record_id: collab_types::FileRecordId) -> bool {
-    let mut current = Some(record_id);
-    let mut remaining = records.len().saturating_add(1);
-    while let Some(record_id) = current {
-        if remaining == 0 {
-            return true;
-        }
-        remaining = remaining.saturating_sub(1);
-        let Some(record) = records.iter().find(|record| record.record_id == record_id) else {
-            // Missing ancestry is invalid durable state and must never become
-            // a Settings-side permission to release local data.
-            return true;
-        };
-        if record.policy == AvailabilityPolicy::Pinned {
-            return true;
-        }
-        current = record.parent;
-    }
-    false
 }
 
 fn has_fresh_signed_ack(record: &RecordAvailability) -> bool {
@@ -494,7 +473,7 @@ fn snapshot_candidate_ids(
     dirty: &HashSet<u64>,
     records: &[RecordAvailability],
     now: u64,
-) -> Vec<collab_types::FileRecordId> {
+) -> Vec<fs_protocol::FileRecordId> {
     logical
         .iter()
         .filter(|file| {
@@ -505,7 +484,7 @@ fn snapshot_candidate_ids(
                     .find(|record| record.record_id == file.record_id)
                     .is_some_and(|record| {
                         !record.transfer.phase.is_active()
-                            && !effective_pinned(records, file.record_id)
+                            && !pinned_in_snapshot(records, file.record_id)
                             && has_fresh_signed_ack_at(record, now)
                     })
         })
@@ -516,12 +495,12 @@ fn snapshot_candidate_ids(
 /// Verify the live namespace token at the destructive authorization boundary,
 /// after all catalog I/O.  Availability/history can lag namespace CRDT
 /// application, so neither is a substitute for this check.
-fn validate_live_eviction_token(
+fn validate_live_eviction_token<Stage>(
     namespace: &mut Namespace,
-    dirty: &HashMap<u64, Vec<u8>>,
+    dirty: &HashMap<u64, Stage>,
     identity: &str,
     inode: u64,
-    record_id: collab_types::FileRecordId,
+    record_id: fs_protocol::FileRecordId,
     expected_hash: Hash,
 ) -> Result<()> {
     if dirty.contains_key(&inode) {
@@ -622,15 +601,15 @@ mod tests {
         }
         // Phase `broken_or_cyclic_policy_ancestry_is_pinned_fail_closed`.
         {
-            let record = collab_types::FileRecordId::new();
-            let missing_parent = collab_types::FileRecordId::new();
+            let record = fs_protocol::FileRecordId::new();
+            let missing_parent = fs_protocol::FileRecordId::new();
             let mut row = RecordAvailability::new(record, crate::availability::RecordKind::File);
             row.parent = Some(missing_parent);
-            assert!(effective_pinned(&[row], record));
+            assert!(pinned_in_snapshot(&[row], record));
         }
         // Phase `snapshot_candidates_skip_rows_that_cannot_be_reclaimed`.
         {
-            let record_id = collab_types::FileRecordId::new();
+            let record_id = fs_protocol::FileRecordId::new();
             let logical = vec![LogicalFile {
                 identity: "candidate".into(),
                 inode: 7,
@@ -644,7 +623,7 @@ mod tests {
             dirty.insert(7);
             let mut record =
                 RecordAvailability::new(record_id, crate::availability::RecordKind::File);
-            record.current_version = Some(collab_types::FileVersionId::new());
+            record.current_version = Some(fs_protocol::FileVersionId::new());
             assert!(snapshot_candidate_ids(&logical, &dirty, &[record], unix_now_ms()).is_empty());
         }
     }
@@ -681,7 +660,7 @@ mod tests {
         // Phase `final_live_token_rejects_a_namespace_or_dirty_change`.
         {
             let namespace = Arc::new(Mutex::new(Namespace::new("storage-token").unwrap()));
-            let dirty = Arc::new(Mutex::new(HashMap::new()));
+            let dirty = Arc::new(Mutex::new(HashMap::<u64, Vec<u8>>::new()));
             let expected = Hash::from([7; 32]);
             let inode = namespace
                 .lock()
@@ -748,7 +727,7 @@ mod tests {
         // Phase `live_authorization_lease_blocks_mutation_after_validation`.
         {
             let namespace = Arc::new(Mutex::new(Namespace::new("storage-lease").unwrap()));
-            let dirty = Arc::new(Mutex::new(HashMap::new()));
+            let dirty = Arc::new(Mutex::new(HashMap::<u64, Vec<u8>>::new()));
             let expected = Hash::from([9; 32]);
             let inode = namespace
                 .lock()

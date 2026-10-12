@@ -9,13 +9,15 @@
 //!
 //! [`SidebarDrawer`]: ui::widget::SidebarDrawer
 
+use super::page_part::PagePart;
 use super::{
     Action, Affine, AlbumPage, Arc, ArtistPage, AutoCommit, CacheState, Color, Dimension, Drag,
     Fill, HashMap, HomeItem, HomeItemKind, HomeSection, Instant, MusicApp, NodeId, ObjId,
-    PermissionContext, PlaylistPage, Point, PresenceCtx, Rect, RepeatMode, Scene, Size, Style,
-    TaffyTree, TextRenderer, TextStyle, Theme, View, Widget, elide, is_live_album_id, is_live_id,
+    PlaylistPage, Point, PresenceCtx, Rect, RepeatMode, Scene, Size, Style, TaffyTree,
+    TextRenderer, TextStyle, Theme, View, Widget, elide, is_live_album_id, is_live_id,
     is_live_playlist_id, live_track_id, lyrics,
 };
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use ui::chrome::{self, HeaderRowFace, NavCount, NavRowFace, NavSectionFace, SelectionState};
@@ -25,7 +27,7 @@ use ui::surface;
 use ui::tokens::TextRole;
 use ui::widget::Continuable;
 use ui::widget::data_table::DataTableFace;
-use ui::widget::toast::{ToastAnchor, ToastCard, paint_transient};
+use ui::widget::toast::ToastAnchor;
 use ui::widget::{
     Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent, MediaArt,
     MediaCardFace, MediaSize, SkeletonFace, SkeletonShape, Slider, SliderFace, TransportControl,
@@ -314,7 +316,7 @@ fn accessible_playlist(
     ui::a11y::AccessNode::new(ui::a11y::Role::ListItem)
         .with_hashed_key(format!("playlist:{}", playlist.id))
         .with_name(&playlist.name)
-        .with_description(format!("{} songs", playlist.track_ids.len()))
+        .with_description(format!("{} songs", playlist.len()))
         .with_position(position, total)
         .with_action_target(format!("music.open-playlist.{}", playlist.id))
         .with_children(vec![
@@ -334,7 +336,7 @@ fn accessible_playlist_track(
     position: usize,
 ) -> ui::a11y::AccessNode {
     use ui::a11y::{AccessNode, Role};
-    let total = playlist.track_ids.len();
+    let total = playlist.len();
     let resource = crate::actions::playlist_track_resource_id(&playlist.id, &track.id);
     let mut node = accessible_track(lib, track, position, total);
     let mut actions = vec![
@@ -444,10 +446,7 @@ pub(super) struct TrackColumns {
     pub title_x1: f64,
     pub album: Option<(f64, f64)>,
     /// The leading edge of the action cluster.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "read by the column layout's tests")
-    )]
+    #[cfg(test)]
     pub actions_x: f64,
 }
 
@@ -502,6 +501,7 @@ pub(super) fn track_columns(left: f64, right: f64, w: ColumnWidths, album: bool)
         title_x,
         title_x1,
         album,
+        #[cfg(test)]
         actions_x,
     }
 }
@@ -770,7 +770,7 @@ impl Widget for MusicApp {
         children.extend(
             self.track_tables
                 .iter()
-                .filter_map(|slot| slot.table.visible_widget()),
+                .filter_map(|slot| slot.table.host.visible().map(|table| table as &dyn Widget)),
         );
         let mode = self.source_widget_mode();
         match mode {
@@ -812,11 +812,12 @@ impl Widget for MusicApp {
                 .button_mut()
                 .map(|button| button as &mut (dyn Widget + '_)),
         );
-        children.extend(
-            self.track_tables
-                .iter_mut()
-                .filter_map(|slot| slot.table.visible_widget_mut()),
-        );
+        children.extend(self.track_tables.iter_mut().filter_map(|slot| {
+            slot.table
+                .host
+                .visible_mut()
+                .map(|table| table as &mut (dyn Widget + '_))
+        }));
         match mode {
             2 | 3 => children.extend(
                 self.source_buttons
@@ -871,6 +872,7 @@ impl Widget for MusicApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.pump_live_search();
+        self.open_anchors();
         let (state, _) = ui::doc::document_ref(state, path);
         if self.playback_loaded {
             self.reload_library(state);
@@ -952,41 +954,18 @@ impl Widget for MusicApp {
             clippy::expect_used,
             reason = "the child belongs to this same tree; Widget::build_layout has no error return"
         )]
-        let node = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &children,
-            )
-            .expect("a parent and child in the same taffy tree");
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // `node` is the id this same widget inserted into this exact tree in
-        // `build_layout` earlier in the same frame (the five-pass contract
-        // guarantees layout was computed for it by now), so `layout` cannot
-        // fail here in practice; `apply_layout`'s `()` return leaves no error
-        // path, and that signature is shared framework-wide.
-        #[allow(
-            clippy::expect_used,
-            reason = "node was inserted into this tree by this widget's own build_layout earlier in the same frame; Widget::apply_layout's Result-free signature is shared by every implementor and out of this crate's scope to change"
-        )]
-        let layout = taffy
-            .layout(node)
-            .expect("apply_layout runs against the same tree + node build_layout returned");
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -997,19 +976,6 @@ impl Widget for MusicApp {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        self.render_frame(scene, transform, text_renderer, theme);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        // Root rect is the whole window — always paint.
         self.render_frame(scene, transform, text_renderer, theme);
     }
 
@@ -1193,6 +1159,7 @@ impl Widget for MusicApp {
             matches!(
                 (&self.view, id),
                 (View::Home, "home")
+                    | (View::Recommendations, "recommendations")
                     | (View::Songs, "songs")
                     | (View::Albums, "albums")
                     | (View::Artists, "artists")
@@ -1272,6 +1239,7 @@ impl Widget for MusicApp {
         }
         let page_name = match &self.view {
             View::Home => "Home".to_string(),
+            View::Recommendations => crate::i18n::t("music-recommendations-title"),
             View::Songs => "Songs".to_string(),
             View::Albums => "Albums".to_string(),
             View::Artists => "Artists".to_string(),
@@ -1295,8 +1263,7 @@ impl Widget for MusicApp {
                 .map(|page| page.title.clone())
                 .or_else(|| {
                     self.lib
-                        .playlists
-                        .iter()
+                        .playlists()
                         .find(|playlist| playlist.id == *id)
                         .map(|playlist| playlist.name.clone())
                 })
@@ -1408,16 +1375,11 @@ impl Widget for MusicApp {
                 );
             }
             View::Playlist(id) => {
-                if let Some(playlist) = self
-                    .lib
-                    .playlists
-                    .iter()
-                    .find(|playlist| playlist.id == *id)
-                {
+                if let Some(playlist) = self.lib.playlists().find(|playlist| playlist.id == *id) {
                     list_items.extend(
                         playlist
-                            .track_ids
-                            .iter()
+                            .tracks
+                            .values()
                             .filter_map(|track| self.lib.track(track))
                             .take(ACCESSIBLE_PAGE_LIMIT)
                             .enumerate()
@@ -1458,8 +1420,7 @@ impl Widget for MusicApp {
                 let total = self.lib.playlists.len();
                 list_items.extend(
                     self.lib
-                        .playlists
-                        .iter()
+                        .playlists()
                         .take(ACCESSIBLE_PAGE_LIMIT)
                         .enumerate()
                         .map(|(index, playlist)| accessible_playlist(playlist, index + 1, total)),
@@ -1471,8 +1432,7 @@ impl Widget for MusicApp {
                 let total = self.lib.playlists.len() + albums.len().min(6) + tracks.len();
                 list_items.extend(
                     self.lib
-                        .playlists
-                        .iter()
+                        .playlists()
                         .enumerate()
                         .map(|(index, playlist)| accessible_playlist(playlist, index + 1, total)),
                 );
@@ -1536,6 +1496,7 @@ impl Widget for MusicApp {
                         }),
                 );
             }
+            View::Recommendations => {}
         }
         if !list_items.is_empty() {
             page_content.push(
@@ -1544,6 +1505,7 @@ impl Widget for MusicApp {
                     .with_children(list_items),
             );
         }
+        page_content.extend(self.page_parts.iter().flat_map(PagePart::access_nodes));
         let page = AccessNode::new(Role::TabPanel)
             .with_hashed_key(format!("page:{page_name}"))
             .with_name(page_name)
@@ -1553,6 +1515,7 @@ impl Widget for MusicApp {
         children.extend(self.drawer.toggle_accessibility());
         children.extend([navigation, search, page, player]);
         children.extend(self.history.accessibility(self.history_rect));
+        children.extend(self.toast.access_node());
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Music")
@@ -1572,6 +1535,22 @@ impl Widget for MusicApp {
         state: &mut ui::widget::Edits<'_>,
         _path: &ui::widget::ModelPath,
     ) -> bool {
+        if let Some(id) = target.strip_prefix("music.page-widget.") {
+            let handled = self
+                .page_parts
+                .iter_mut()
+                .any(|part| part.perform(id, action, state));
+            let asked = self
+                .page_parts
+                .iter()
+                .flat_map(PagePart::take_asked)
+                .collect::<Vec<_>>();
+            for action in asked {
+                self.dispatch(action, state);
+            }
+            self.dirty |= handled;
+            return handled;
+        }
         if self.history.perform_semantic_action(target, action) {
             self.dirty = true;
             return true;
@@ -1666,7 +1645,7 @@ impl Widget for MusicApp {
                     }
                     Action::Nav(View::Artist(id.to_string()))
                 } else if let Some(id) = target.strip_prefix("music.open-playlist.") {
-                    let known_local = self.lib.playlists.iter().any(|playlist| playlist.id == id);
+                    let known_local = self.lib.playlists().any(|playlist| playlist.id == id);
                     let known_live = self.live_bundle.as_ref().is_some_and(|(_, bundle)| {
                         bundle.playlists.iter().any(|playlist| playlist.id == id)
                     });
@@ -1711,11 +1690,11 @@ impl Widget for MusicApp {
                     else {
                         return false;
                     };
-                    let Some(from) = self
-                        .lib
-                        .playlist(&playlist)
-                        .and_then(|playlist| playlist.track_ids.iter().position(|id| id == &track))
-                    else {
+                    let Some(from) = self.lib.playlist(&playlist).and_then(|playlist| {
+                        playlist
+                            .tracks
+                            .position(&ui::tilo_resource::Id::from_raw(track.as_str()))
+                    }) else {
                         return false;
                     };
                     let to = from.saturating_add_signed(delta);
@@ -1738,14 +1717,15 @@ impl Widget for MusicApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames flowing while playing / a toast fades, and — crucially —
-        // while the streaming worker has an in-flight search or stream
-        // resolution, so its result is drained (and applied to the audio
-        // engine) promptly without waiting for the next input event.
-        self.pb.playing
+        // Settled playback needs observation updates, not a full repaint at
+        // every display refresh. Leave the executor time to serve its bounded
+        // PCM output lane, especially when the renderer uses the CPU.
+        // Startup, worker replies and visible animations still wake promptly.
+        (self.pb.playing && ui::time::now() >= self.last_tick + super::PLAYBACK_POLL_INTERVAL)
             || self.audio.needs_poll()
+            || self.resource_stream_invocation.is_some()
+            || !self.effect_replies.is_empty()
             || self.local_file_pick.is_some()
-            || self.toast.is_some()
             || self.live_search_pending.is_some()
             || self.source_invocation.is_some()
             || !self.spotify_jobs.is_empty()
@@ -1763,6 +1743,20 @@ impl Widget for MusicApp {
                 .frame_theme
                 .as_ref()
                 .is_some_and(|theme| self.body_scroll.needs_animation_frame(theme))
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.pb
+            .playing
+            .then_some(self.last_tick + super::PLAYBACK_POLL_INTERVAL)
+            .into_iter()
+            .chain(self.toast.deadline())
+            .chain(
+                self.children()
+                    .into_iter()
+                    .filter_map(Widget::next_wake_deadline),
+            )
+            .min()
     }
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
@@ -1792,6 +1786,10 @@ impl Widget for MusicApp {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        // Recording a frame can outlast the playback interval. Start the
+        // next interval after that work so a slow paint cannot immediately
+        // request another paint and crowd out the output worker.
+        self.last_tick = ui::time::now();
     }
 }
 
@@ -1850,12 +1848,14 @@ impl MusicApp {
         self.ensure_worker();
         let request = if matches!(effect, MusicEffect::DisconnectSpotify) {
             crate::stream::StreamRequest::DisconnectSpotify
+        } else if matches!(effect, MusicEffect::ConnectSpotify) {
+            crate::stream::StreamRequest::ConnectSpotify
         } else if matches!(effect, MusicEffect::ConnectSpotifyPlayback) {
             crate::stream::StreamRequest::ConnectSpotifyPlayback
         } else {
             crate::stream::StreamRequest::Source {
                 spotify: !matches!(effect, MusicEffect::BrowseYouTube),
-                sign_in: matches!(effect, MusicEffect::ConnectSpotify),
+                sign_in: matches!(effect, MusicEffect::ConnectSpotifyLibrary),
             }
         };
         self.worker
@@ -1885,11 +1885,36 @@ impl MusicApp {
     ) -> Result<ui::framework::Effected, String> {
         use crate::actions::MusicEffect;
         match effect {
+            MusicEffect::PlaybackStatus => {
+                Ok(ui::framework::Effected::Done(tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({
+                        "track": self.pb.current,
+                        "queue": self.pb.queue,
+                        "queue_index": self.pb.queue_index,
+                        "volume": self.pb.volume,
+                        "shuffle": self.pb.shuffle,
+                        "repeat": self.pb.repeat.as_str(),
+                        "requested_playing": self.pb.playing,
+                        "confirmed_playing": self.audio.is_playing_real(),
+                        "control_pending": self.audio.is_control_pending(),
+                        "resolving": self.active_resolve_request.is_some(),
+                        "spotify_stage": self.audio.spotify_startup_stage(),
+                        "rendered_buffers": self.audio.frames_rendered(),
+                        "rendered_counter_unit": if media::audio_output::is_governed() { "host_pcm_frames" } else { "sink_buffers" },
+                        "sink": self.audio.actual_audio_sink_name(),
+                        "position_ms": self.observed_position_ms(),
+                        "duration_ms": self.observed_duration_ms(),
+                        "error": self.playback_error,
+                    })),
+                    resources: Vec::new(),
+                }))
+            }
             MusicEffect::Sources => {
                 self.open_sources_menu();
                 Ok(ui::framework::Effected::done())
             }
-            MusicEffect::ConnectSpotify
+            MusicEffect::ConnectSpotifyLibrary
+            | MusicEffect::ConnectSpotify
             | MusicEffect::ConnectSpotifyPlayback
             | MusicEffect::DisconnectSpotify
             | MusicEffect::BrowseSpotify
@@ -1910,7 +1935,7 @@ impl MusicApp {
             }
             MusicEffect::NewSpotifyPlaylist => {
                 if !self.spotify_catalogue {
-                    return Err(ui::i18n!("music-spotify-select-first"));
+                    return Err(crate::i18n::t("music-spotify-select-first"));
                 }
                 self.on_begin_new_playlist(None);
                 self.name_prompt = Some(super::NamePrompt::NewSpotifyPlaylist);
@@ -2109,7 +2134,7 @@ impl MusicApp {
                 let Some(current_playlist) = self.lib.playlist(&playlist) else {
                     return Err("playlist is no longer in the library".into());
                 };
-                if !current_playlist.track_ids.iter().any(|id| id == &track) {
+                if !current_playlist.contains(&track) {
                     return Err("playlist membership is no longer present".into());
                 }
                 self.on_nav(View::Playlist(playlist.clone()));
@@ -2670,11 +2695,7 @@ impl MusicApp {
         // Apply any deferred `--shots` staging now that `rect` is known.
         self.apply_shot_stage();
         self.tick();
-        if let Some(notice) = &self.toast
-            && notice.at.elapsed().as_secs_f32() > 2.6
-        {
-            self.toast = None;
-        }
+        self.dirty |= self.toast.expire();
 
         // The sidebar drawer decides docked vs floating from the window width
         // (its breakpoint grows with the text), eases its reveal and hands
@@ -2970,6 +2991,7 @@ impl MusicApp {
     fn view_title(&self) -> String {
         match &self.view {
             View::Home => "Home".into(),
+            View::Recommendations => crate::i18n::t("music-recommendations-title"),
             View::Songs => "Songs".into(),
             View::Albums => "Albums".into(),
             View::Artists => "Artists".into(),
@@ -3002,6 +3024,12 @@ impl MusicApp {
     fn draw_body(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, y: f64) -> f64 {
         match self.view.clone() {
             View::Home => self.draw_home(ctx, look, body, y),
+            View::Recommendations => self.draw_recommendations(
+                ctx,
+                (body.x0 + look.gutter, body.x1 - look.gutter),
+                y + look.gutter,
+                true,
+            ),
             View::Songs => {
                 let ids: Vec<String> = self
                     .lib
@@ -3208,13 +3236,19 @@ impl MusicApp {
             );
             y += f64::from(size.height) + look.sibling;
         }
-        y = Self::section_heading(ctx, look, body, y, &ui::i18n!("music-spotify-remote-queue"));
-        let mut lines = vec![ui::i18n!("music-spotify-remote-queue-help")];
+        y = Self::section_heading(
+            ctx,
+            look,
+            body,
+            y,
+            &crate::i18n::t("music-spotify-remote-queue"),
+        );
+        let mut lines = vec![crate::i18n::t("music-spotify-remote-queue-help")];
         if let Some(error) = &self.source_error {
             lines.push(error.clone());
         }
         if let Some((snapshot, observed)) = &self.spotify_remote_queue {
-            lines.push(ui::i18n::I18nManager::format(
+            lines.push(crate::i18n::t_args(
                 "music-spotify-remote-queue-age",
                 &[("seconds", observed.elapsed().as_secs().to_string().into())],
             ));
@@ -3226,17 +3260,17 @@ impl MusicApp {
             }
             if let Some(items) = queue["queue"].as_array() {
                 if items.is_empty() {
-                    lines.push(ui::i18n!("music-spotify-remote-queue-empty"));
+                    lines.push(crate::i18n::t("music-spotify-remote-queue-empty"));
                 }
                 lines.extend(items.iter().take(50).enumerate().map(|(i, item)| {
                     format!("{}. {}", i + 1, super::spotify::remote_item_label(item))
                 }));
             }
             if snapshot["truncated"].as_bool() == Some(true) {
-                lines.push(ui::i18n!("music-spotify-remote-queue-truncated"));
+                lines.push(crate::i18n::t("music-spotify-remote-queue-truncated"));
             }
         } else {
-            lines.push(ui::i18n!("music-spotify-remote-queue-unloaded"));
+            lines.push(crate::i18n::t("music-spotify-remote-queue-unloaded"));
         }
         for line in lines {
             y = Self::provider_note(ctx, look, body, y, &line) + look.sibling;
@@ -3246,7 +3280,7 @@ impl MusicApp {
             look,
             body,
             y + look.sibling,
-            &ui::i18n!("music-spotify-local-queue"),
+            &crate::i18n::t("music-spotify-local-queue"),
         )
     }
 
@@ -3256,6 +3290,14 @@ impl MusicApp {
         let mut y = y + look.gutter;
         self.refresh_spotify_control_flags();
         y = self.position_source_buttons(ctx, look, body, y);
+        if !self.lib.tracks.is_empty() {
+            y = self.draw_recommendations(
+                ctx,
+                (body.x0 + look.gutter, body.x1 - look.gutter),
+                y,
+                false,
+            ) + look.gutter;
+        }
 
         // Remote catalogue content when it has landed.
         if let Some(home) = self.home.take() {
@@ -3829,7 +3871,7 @@ impl MusicApp {
             if covered {
                 // The pointer is not over the page: no row stays lifted.
                 if let WindowEvent::CursorMoved { device_id, .. } = event {
-                    slot.table.handle_event(
+                    slot.table.host.handle_event(
                         &WindowEvent::CursorLeft {
                             device_id: *device_id,
                         },
@@ -3838,8 +3880,8 @@ impl MusicApp {
                 }
                 continue;
             }
-            slot.table.handle_event(event, ctx);
-            tooltip = tooltip.or_else(|| slot.table.tooltip_at(mouse));
+            slot.table.host.handle_event(event, ctx);
+            tooltip = tooltip.or_else(|| slot.table.host.tooltip_at(mouse));
             asked.extend(slot.table.take_events().into_iter().map(|ask| (index, ask)));
         }
         if tooltip != self.table_tooltip {
@@ -3851,7 +3893,7 @@ impl MusicApp {
             if covered {
                 // The pointer is not over the page: no card stays lifted.
                 if let WindowEvent::CursorMoved { device_id, .. } = event {
-                    grid.handle_event(
+                    grid.host.handle_event(
                         &WindowEvent::CursorMoved {
                             device_id: *device_id,
                             position: winit::dpi::PhysicalPosition::new(f64::MIN, f64::MIN),
@@ -3862,14 +3904,14 @@ impl MusicApp {
                 continue;
             }
             if !*ctx.handled {
-                grid.handle_event(event, ctx);
+                grid.host.handle_event(event, ctx);
             }
             cards.extend(grid.take_asked());
         }
         for part in &mut self.page_parts {
             if covered {
                 if let WindowEvent::CursorMoved { device_id, .. } = event {
-                    part.handle_event(
+                    part.host.handle_event(
                         &WindowEvent::CursorMoved {
                             device_id: *device_id,
                             position: winit::dpi::PhysicalPosition::new(f64::MIN, f64::MIN),
@@ -3880,10 +3922,10 @@ impl MusicApp {
                 continue;
             }
             if !*ctx.handled {
-                part.handle_event(event, ctx);
+                part.host.handle_event(event, ctx);
             }
             if self.table_tooltip.is_none()
-                && let Some(tip) = part.tooltip_at(mouse)
+                && let Some(tip) = part.host.tooltip_at(mouse)
             {
                 self.table_tooltip = Some(tip);
                 self.dirty = true;
@@ -3976,7 +4018,7 @@ impl MusicApp {
     /// Place the next embedded part of the page from `top` across
     /// `[left, right]`, rebuilt with `build` when `key` changed. Returns the
     /// y below it.
-    fn page_part(
+    pub(super) fn page_part(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         span: (f64, f64),
@@ -3994,7 +4036,7 @@ impl MusicApp {
             return top;
         };
         part.update(key, build);
-        part.place(ctx, span, top, clip)
+        part.host.place(ctx, span, top, clip)
     }
 
     /// A song's offline status in words, and whether it failed. A failure
@@ -4131,7 +4173,7 @@ impl MusicApp {
             ),
         ];
         let id = header.id.to_string();
-        let spotify_menu_label = ui::i18n!("music-spotify-playlist-actions");
+        let spotify_menu_label = crate::i18n::t("music-spotify-playlist-actions");
         match header.kind {
             DetailKind::Album { saved } => buttons.push((
                 if saved {
@@ -4623,7 +4665,7 @@ impl MusicApp {
             let p = self.lib.playlist(id);
             let name = p.map(|p| p.name.clone()).unwrap_or_default();
             let desc = p.map(|p| p.description.clone()).unwrap_or_default();
-            let ids = p.map(|p| p.track_ids.clone()).unwrap_or_default();
+            let ids = p.map(crate::model::Playlist::track_ids).unwrap_or_default();
             (name, desc, ids)
         };
         let rows = self.gather_tracks(&ids);
@@ -5627,23 +5669,19 @@ impl MusicApp {
     // ---- toast ------------------------------------------------------------
 
     fn draw_toast(&self, ctx: &mut PaintCtx<'_>) {
-        let Some(notice) = self.toast.as_ref() else {
-            return;
-        };
         let area = Rect::new(
             self.body_rect.x0,
             self.rect.y0,
             self.rect.x1,
             self.rect.y1 - self.bar_h,
         );
-        paint_transient(
+        self.toast.paint(
             ctx.scene,
             ctx.transform,
             ctx.text,
             ctx.theme,
             area,
             ToastAnchor::BottomCenter,
-            &ToastCard::new(&notice.text, notice.kind),
         );
     }
 
@@ -5721,12 +5759,11 @@ impl MusicApp {
 
     fn gather_playlists(&self) -> Vec<PlaylistDisp> {
         self.lib
-            .playlists
-            .iter()
+            .playlists()
             .map(|p| PlaylistDisp {
                 id: p.id.clone(),
                 name: p.name.clone(),
-                count: p.track_ids.len(),
+                count: p.len(),
             })
             .collect()
     }

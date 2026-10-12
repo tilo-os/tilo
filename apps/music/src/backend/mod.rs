@@ -15,16 +15,11 @@
 //! picks the implementation at build time, and [`crate::stream`]'s worker
 //! picks live-or-offline at *runtime*, falling back to offline if live init
 //! or the network fails.
-//!
-//! `PoToken` minting (why the offline-audio path works with no `BotGuard`) is
-//! documented in [`potoken`].
 
 pub mod android_vr;
 #[cfg(feature = "live")]
 pub mod live;
 pub mod offline;
-pub mod potoken;
-pub mod proxy;
 #[cfg(feature = "live")]
 mod sources;
 #[cfg(feature = "live")]
@@ -401,6 +396,13 @@ pub trait MusicBackend: Send + Sync {
     /// # Errors
     /// Source unavailable, sign-in failed or account inaccessible.
     fn select_source(&self, _spotify: bool, _sign_in: bool) -> Result<(), BackendError> {
+        Err(BackendError("Spotify is unavailable in this build".into()))
+    }
+
+    /// Connect with profile and library read access only.
+    /// # Errors
+    /// Source unavailable, sign-in failed or account inaccessible.
+    fn connect_spotify_read_only(&self) -> Result<(), BackendError> {
         Err(BackendError("Spotify is unavailable in this build".into()))
     }
 

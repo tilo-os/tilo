@@ -45,7 +45,7 @@ crate::testing::test_app_widget!(
     "Draft root",
     icon = IconDescriptor::Named("draft".into())
 );
-fn global_driver(pending: Rc<Cell<bool>>, calls: Rc<Cell<usize>>) -> Driver {
+fn global_driver(pending: Rc<Cell<bool>>, calls: Rc<Cell<usize>>) -> FrameHarness {
     let mut state = State::new();
     state.doc.put(ROOT, "body", "old").unwrap();
     state.commit_action(None, None);
@@ -65,7 +65,7 @@ fn global_driver(pending: Rc<Cell<bool>>, calls: Rc<Cell<usize>>) -> Driver {
         }],
     )
     .unwrap();
-    let mut driver = Driver::from_managed_root(
+    let mut driver = FrameHarness::from_managed_root(
         state,
         ManagedRoot::new(Box::new(DraftRoot::new(pending, calls)), registration),
         (900, 650),
@@ -206,7 +206,7 @@ fn readiness_component_tile_checks_retained_child_at_confirmation() {
         })
         .unwrap();
     let tile = crate::widget::TileHost::from_component(component);
-    let mut driver = Driver::new(State::new(), Box::new(tile), (900, 650));
+    let mut driver = FrameHarness::new(State::new(), Box::new(tile), (900, 650));
     driver.click_named("history-open").unwrap();
     let target = format!(
         "timeline-entry:{}",

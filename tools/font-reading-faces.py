@@ -7,13 +7,14 @@ ship unmodified from their official releases (see
 crates/sdk/ui-core/assets/fonts/PROVENANCE.md). Every archive and file is
 checked against its pinned SHA-256 before anything is written.
 
-    python3 tools/font-reading-faces.py          # write into the checkout
+    python3 tools/font-reading-faces.py          # write candidates outside source
     python3 tools/font-reading-faces.py --check  # fetch and compare
 
 Python 3.11+, no third-party modules.
 """
 
 import argparse
+import importlib.util
 import hashlib
 import io
 import sys
@@ -113,7 +114,14 @@ def pinned():
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true", help="fail if the checkout differs")
+    parser.add_argument("--out", type=Path, default=ROOT / "target/font-candidates",
+                        help="write regenerated binary candidates outside source")
     args = parser.parse_args()
+    spec = importlib.util.spec_from_file_location("font_catalog", ROOT / "tools/font-catalog.py")
+    catalog_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(catalog_module)
+    reviewed = catalog_module.prepared_root(CATALOG, "fixtures") if args.check else args.out
+    reviewed.mkdir(parents=True, exist_ok=True)
     pins = pinned()
     archives = {}
     stale = []
@@ -129,7 +137,7 @@ def main():
         if digest != sha256:
             raise SystemExit(f"{output}: SHA-256 {digest} is not the manifest's {sha256}")
         print(f"{output}: {len(data)} bytes, sha256 {digest}")
-        target = CATALOG / output
+        target = reviewed / output
         if args.check:
             if not target.is_file() or target.read_bytes() != data:
                 stale.append(output)

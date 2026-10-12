@@ -62,7 +62,9 @@ shortcut (`HostShortcut::History`), in the window's top-trailing corner after
 the column's actions and the inspector toggle. While History shows it reads
 as on (the selection lift) and closes History; the History pane or bar shows
 the mode itself. It is the same door as the shortcut, the palette and agents.
-An app never adds a History button, text or glyph, of its own. Where the
+An app never adds a History button, text or glyph, of its own. A host whose
+root has no header slot keeps the shortcut, palette and resource action;
+it never inserts a second toolbar above the app. Where the
 host's chrome presents History (the Tilo shell, a native menu bar) the row
 shows none.
 
@@ -533,11 +535,15 @@ pixels.
 anchored transient (an option menu, a small form next to its control) is a
 `Popover`. Both are floating Panels (§9.1) and both paint only in the window's
 top layer (`Widget::draw_overlay`), which the host runs after the app *and*
-after the window's own chrome. So a modal's `surfaces.scrim` scrim covers the
-whole window, the History bar and the sidebars included, wherever the dialog
-is mounted, and a popover is never clipped by the pane it was opened from. A
-modal sheet's height follows its content, its title is a `Title`, and its
-actions are Regular buttons anchored to its footer in the platform's order.
+after the window's own chrome. A modal's `surfaces.scrim` dims the background
+throughout the window, including sidebars, while excluding its foreground.
+Its floating material must not sample its own scrim or shadow. A popover is
+never clipped by the pane it was opened from. On compact viewports (either
+axis below `panel_width_sheet`) a modal fills the window as an opaque page,
+without rounded floating edges, shadow or scrim; its body scrolls while its
+footer stays reachable. On larger viewports a sheet follows its content
+height. Its title is a `Title`, and its actions are Regular buttons anchored
+to its footer in the platform's order.
 Immediate-mode hosts use the same chrome through `modal_dialog::layout`,
 `paint_backdrop` and `paint_actions`.
 
@@ -1057,8 +1063,15 @@ edge kept at full strength, so rest and disabled never look the same.
 | StatusBar, History bar | none: the region's ground | `edge_on(ground)` where the bar meets the content |
 | Selectors (tab pills, tray pill, scope chip) | idle none | none (`glass_selector`) |
 
-A declared border or ramp token (`border_standard`, `border_strong`,
-`overlay_border_strong`, `colors.neutral[..]`) on a chrome surface is a defect;
+Forced-colour accessibility is the field-edge exception: when
+`Theme::colors_are_forced()` collapses surface levels, the shared field painter
+uses `border_standard` for its idle outline so its boundary retains non-text
+contrast, including disabled fields under the existing disabled group opacity.
+Enabled focus and error outlines keep their own roles.
+
+Outside that forced-colour field branch, a declared border or ramp token
+(`border_standard`, `border_strong`, `overlay_border_strong`,
+`colors.neutral[..]`) on a chrome surface is a defect;
 `tests/design_token_audit.rs::declared_borders_in_chrome_do_not_grow` ratchets
 their count against the shards under `tests/baselines/chrome-border/`.
 
@@ -1139,6 +1152,11 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   detail_min_width` (700) fits. The shell's buttons (sidebar toggle, Back,
   inspector toggle, the window's History control) are Plain icon buttons of
   `min_pointer_target` in the `s3` inset.
+  Chat's channel list and conversation form a master/detail composition:
+  its conversation reserves `detail_min_width`, rather than the form-sheet
+  `content_min_width`. With its rail, the initial docked breakpoint is 716.
+  Adaptive sidebar resizing reserves the declared content minimum, so
+  enlarging a docked panel cannot hide its own resize control.
 - **One text-scale rule (`Theme::responsive_scale`).** The shell grows its
   text-sized widths and breakpoints by `ui_scale × text_scale.max(1.0)`
   (`Metrics::text_growth`): at 200 % text the panes stop fitting side by side

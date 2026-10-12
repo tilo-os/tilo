@@ -159,6 +159,10 @@ fn shipped_apps_declare_presentation_metadata() {
             ),
             ("so.tilo.music", ContinuitySemanticSchema::MediaPositionV1),
             ("so.tilo.chat", ContinuitySemanticSchema::RealtimeSessionV1),
+            (
+                "so.tilo.code-editor",
+                ContinuitySemanticSchema::TextPositionV1,
+            ),
         ]);
 
         for dir in app_dirs() {

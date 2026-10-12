@@ -19,6 +19,13 @@ pub trait Images: Send + Sync {
     /// Returns why the image is unavailable.
     fn tree(&self, id: &PackageId) -> Result<PathBuf, String>;
 
+    /// Whether [`Self::tree`] of `id` can be answered from this device's own
+    /// copy, rather than by first importing or fetching the image — the wait
+    /// a session tells its person about.
+    fn is_local(&self, _id: &PackageId) -> bool {
+        true
+    }
+
     /// Whether the tool image `tool` was built for `runtime`. A tool is
     /// never stacked on a runtime it was not built for.
     ///
@@ -127,13 +134,13 @@ impl StoreImages {
 
 /// The user's synced files as the supervisor reaches them: the workspace the
 /// session names, else the filesystem daemon's mount at
-/// [`xdg_paths::WORKSPACE_MOUNT`], where the Files app reads them too. The
+/// [`tilo_paths::WORKSPACE_MOUNT`], where the Files app reads them too. The
 /// supervisor is the `tilo-ush` user service, started with no workspace in
 /// its environment and in the host's mount namespace, so the mount is what a
 /// normal session finds.
 pub fn synced_files() -> Option<PathBuf> {
-    xdg_paths::workspace_root().or_else(|| {
-        let mount = PathBuf::from(xdg_paths::WORKSPACE_MOUNT);
+    tilo_paths::workspace_root().or_else(|| {
+        let mount = PathBuf::from(tilo_paths::WORKSPACE_MOUNT);
         mount.is_dir().then_some(mount)
     })
 }
@@ -197,7 +204,7 @@ fn trusted_publisher_from_env() -> Result<Option<[u8; 32]>, String> {
 /// Returns why [`IMAGE_SOURCES_ENV`] or [`IMAGE_CACHE_ENV`] is unusable.
 pub fn registry_images() -> Result<Option<tilo_oci_images::OciImages>, String> {
     let Some(sources) = std::env::var_os(IMAGE_SOURCES_ENV).filter(|s| !s.is_empty()) else {
-        return Ok(xdg_paths::xdg::cache_home()
+        return Ok(tilo_paths::xdg::cache_home()
             .filter(|cache| cache.is_absolute())
             .map(|cache| tilo_oci_images::OciImages::published(cache.join("tilo/env-images"))));
     };
@@ -219,6 +226,15 @@ pub fn registry_images() -> Result<Option<tilo_oci_images::OciImages>, String> {
 impl Images for StoreImages {
     fn tree(&self, id: &PackageId) -> Result<PathBuf, String> {
         package_store::local_materialized_tree(&self.store, id).map_err(|e| e.to_string())
+    }
+
+    fn is_local(&self, id: &PackageId) -> bool {
+        // `tree` serves the user's materialised copy; a system image has
+        // none until its first use imports it.
+        self.store
+            .user()
+            .image(*id)
+            .is_ok_and(|meta| meta.is_some())
     }
 
     fn check_tool(&self, tool: &PackageId, runtime: &PackageId) -> Result<(), String> {
@@ -527,5 +543,38 @@ mod tests {
         let refused = session.resolve().unwrap_err().to_string();
         assert!(refused.contains("removed from your devices"), "{refused}");
         assert_eq!(builds.0.load(Ordering::Relaxed), 1, "built here instead");
+    }
+
+    /// The runtime the OS ships is imported into the user's store on its
+    /// first use, which is the wait a session announces; afterwards the
+    /// user's own copy answers.
+    #[test]
+    fn a_system_runtime_is_local_only_once_its_first_use_imported_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = seal(
+            &dir.path().join("runtime"),
+            Kind::EnvRuntime,
+            None,
+            &SigningIdentity::generate(),
+        );
+        let system = dir.path().join("system");
+        PackageStore::at(&system)
+            .install_image(
+                full(&runtime).as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+            )
+            .unwrap();
+        let images = StoreImages::new(
+            Store::new(PackageStore::at(dir.path().join("user")))
+                .with_system(package_store::Layout::new(&system)),
+        );
+
+        assert!(!images.is_local(&runtime.meta.id));
+        let tree = images.tree(&runtime.meta.id).unwrap();
+        assert!(tree.starts_with(dir.path().join("user")), "{tree:?}");
+        assert!(tree.join("usr/bin/bash").is_file());
+        assert!(images.is_local(&runtime.meta.id));
+        assert_eq!(images.tree(&runtime.meta.id).unwrap(), tree);
     }
 }

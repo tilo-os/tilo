@@ -3,6 +3,79 @@ use ed25519_dalek::SigningKey;
 use tilo_desktop_model::WorkspaceEffectReceipt;
 
 impl StatePeer {
+    /// Decode the canonical, bounded broker terminal audit payload.
+    ///
+    /// # Errors
+    /// Rejects private or extra facets, malformed identifiers and noncanonical encoding.
+    pub fn validate_workspace_effect_receipt_encoding(
+        invocation: uuid::Uuid,
+        redacted: &[u8],
+    ) -> Result<WorkspaceEffectReceipt, String> {
+        if redacted.is_empty() || redacted.len() > 16 * 1024 {
+            return Err("invalid redacted owner receipt".into());
+        }
+        let receipt: WorkspaceEffectReceipt =
+            serde_json::from_slice(redacted).map_err(|_| "malformed redacted effect receipt")?;
+        if receipt.invocation.0 != invocation
+            || !receipt.is_redacted()
+            || matches!(&receipt.status, tilo_actions::EffectReceiptStatus::Failed { code }
+            if code.is_empty() || code.len() > 96 || !code.bytes().all(|byte|
+                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')))
+            || serde_json::to_vec(&receipt).map_err(|error| error.to_string())? != redacted
+        {
+            return Err("effect receipt is not the exact bounded broker terminal encoding".into());
+        }
+        Ok(receipt)
+    }
+
+    /// Record a currently admitted person's own terminal audit at its governor.
+    /// Transport authentication must independently bind the caller's device key.
+    ///
+    /// # Errors
+    /// Refuses stale certificates, revoked or unreadable rooms, impersonation,
+    /// malformed payloads and conflicting terminal outcomes.
+    pub fn apply_member_effect_receipt(
+        &mut self,
+        caller: &tilo_user_identity::DeviceCert,
+        invocation: uuid::Uuid,
+        redacted: &[u8],
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        if self.certificate(&caller.device_public_key, now)? != caller {
+            return Err("effect caller is not exact current admitted evidence".into());
+        }
+        now.duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|_| "effect clock precedes Unix epoch")?;
+        let member = self.permissions(caller.device_public_key, now)?;
+        if !member.allows(
+            &tilo_action_policy::TreePath::room(&self.core.room),
+            tilo_action_policy::ActionKind::Read,
+            now,
+        ) {
+            return Err("effect caller cannot currently read this workspace".into());
+        }
+        let receipt = Self::validate_workspace_effect_receipt_encoding(invocation, redacted)?;
+        if receipt.actor != hex::encode(caller.user_public_key) {
+            return Err("effect actor is not the authenticated person's own identity".into());
+        }
+        let existing = tilo_desktop_model::projection::workspace_effect_receipts_of(
+            self.admitted_room().ok_or("effect room is absent")?,
+        );
+        if !existing
+            .iter()
+            .any(|entry| entry.invocation == receipt.invocation)
+            && (existing.len() >= 1024
+                || existing
+                    .iter()
+                    .filter(|entry| entry.actor == receipt.actor)
+                    .count()
+                    >= 128)
+        {
+            return Err("member terminal receipt capacity exhausted".into());
+        }
+        self.apply_workspace_effect_receipt(&receipt, key, now)
+    }
     /// Publish a bounded terminal audit receipt using actual governor custody.
     /// This creates no application record or capability.
     ///

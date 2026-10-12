@@ -762,21 +762,20 @@ mod tests {
             "each byte is scanned once"
         );
         assert_eq!(documents, [graph.as_bytes()]);
-        let (tx, rx) = std::sync::mpsc::sync_channel(4);
-        let sender = std::thread::spawn(move || {
-            for chunk in graph.as_bytes().chunks(3) {
-                if tx.send(chunk.to_vec()).is_err() {
-                    break;
-                }
-            }
-        });
+        // This fixture proves tiny-fragment framing, not producer scheduling.
+        // Queue its bounded graph before starting the production deadline;
+        // the real reader still uses four bounded 8192-byte chunks.
+        let (tx, rx) = std::sync::mpsc::channel();
+        for chunk in graph.as_bytes().chunks(3) {
+            tx.send(chunk.to_vec()).unwrap();
+        }
+        drop(tx);
         let mut published = 0;
         drive_media_monitor(&rx, &mut |uses| {
             assert!(uses.is_empty());
             published += 1;
         })
         .expect("a complete authoritative device graph survives tiny fragments");
-        sender.join().unwrap();
         assert_eq!(published, 1);
     }
 

@@ -332,6 +332,50 @@ impl PresenceCtx {
         draw_name_chip_in(ctx, color, &name, chip);
     }
 
+    /// Semantic actions label the actual control beside it, not in the row
+    /// above it: that row often contains a notice explaining whether the action
+    /// is available. Ordinary peer selections retain their existing name chips.
+    pub(crate) fn draw_action_outline_labeled_within(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        user: &UserId,
+        label: &str,
+        rect: Rect,
+        radius: f64,
+        bounds: Rect,
+    ) {
+        self.draw_peer_outline(ctx.scene, ctx.theme, ctx.transform, user, rect, radius);
+        let gap = f64::from(ctx.theme.tokens.spacing.s1);
+        let right = (bounds.x1 - rect.x1 - gap).max(0.0);
+        let left = (rect.x0 - bounds.x0 - gap).max(0.0);
+        let (preferred_w, preferred_h) = chip_size(ctx.theme, ctx.text, label);
+        let (budget, x, y) = if right >= preferred_w {
+            (right, rect.x1 + gap, rect.y0)
+        } else if left >= preferred_w {
+            (left, rect.x0 - gap - preferred_w, rect.y0)
+        } else if rect.y1 + gap + preferred_h <= bounds.y1 {
+            (bounds.width(), rect.x0, rect.y1 + gap)
+        } else if right >= left && right > 0.0 {
+            (right, rect.x1 + gap, rect.y0)
+        } else if left > 0.0 {
+            (left, bounds.x0, rect.y0)
+        } else {
+            (bounds.width(), rect.x0, rect.y0)
+        };
+        let (label, w, h) = chip_fitting(ctx.theme, ctx.text, label, budget);
+        if w <= 0.0 || h > bounds.height() {
+            return;
+        }
+        let x = x.min(bounds.x1 - w).max(bounds.x0);
+        let y = y.min(bounds.y1 - h).max(bounds.y0);
+        draw_name_chip_in(
+            ctx,
+            color_for(self, user, ctx.theme),
+            &label,
+            Rect::new(x, y, x + w, y + h),
+        );
+    }
+
     /// Draw a peer's fading "just typed" highlighter behind the glyph runs
     /// they inserted. `spans` pairs each rect with its fade alpha.
     ///
@@ -605,6 +649,9 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
 /// Paint pointers, then tethers, then pills — in that layer order so a
 /// later peer's halo can't wash over an earlier peer's name. `viewport`
 /// bounds the pills; positions are assumed already filtered to it.
+///
+/// Returns the bounds, in scene coordinates, of everything painted: each
+/// pointer's halo, each tether and each pill with its shadow.
 pub fn draw_peer_cursors(
     scene: &mut Scene,
     transform: Affine,
@@ -612,9 +659,10 @@ pub fn draw_peer_cursors(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
     peers: &[PeerCursor],
-) {
+) -> Vec<Rect> {
+    let mut painted = Vec::new();
     if peers.is_empty() {
-        return;
+        return painted;
     }
     let requests: Vec<PillRequest> = peers
         .iter()
@@ -627,6 +675,7 @@ pub fn draw_peer_cursors(
 
     for p in peers {
         let bounds = Rect::from_center_size(p.pos, (FADE_DOT_BOUNDS, FADE_DOT_BOUNDS));
+        painted.push(transform.transform_rect_bbox(bounds));
         faded(scene, transform, p.opacity, bounds, |scene| {
             draw_peer_dot(scene, transform, theme, p.pos, p.color, p.is_agent);
         });
@@ -643,6 +692,7 @@ pub fn draw_peer_cursors(
         line.move_to(from);
         line.line_to(to);
         let bounds = Rect::from_points(from, to).inflate(FADE_EDGE, FADE_EDGE);
+        painted.push(transform.transform_rect_bbox(bounds));
         faded(scene, transform, p.opacity, bounds, |scene| {
             scene.stroke(
                 &Stroke::new(1.5),
@@ -656,6 +706,7 @@ pub fn draw_peer_cursors(
 
     for (p, place) in peers.iter().zip(&placements) {
         let bounds = place.rect.inflate(FADE_EDGE, FADE_EDGE);
+        painted.push(transform.transform_rect_bbox(bounds));
         faded(scene, transform, p.opacity, bounds, |scene| {
             draw_peer_pill_kind(
                 scene,
@@ -669,10 +720,14 @@ pub fn draw_peer_cursors(
             );
         });
     }
+    painted
 }
 
-/// Room around a pointer's centre that covers its halo, shadow and ring.
-const FADE_DOT_BOUNDS: f64 = 96.0;
+/// Room around a pointer's centre that covers its halo (the widest of what
+/// [`draw_peer_dot`] paints, `RING_R + 3`), shadow and ring, with two
+/// pixels for antialiasing: where the mark repaints when it moves, or when
+/// a scroll copies beneath it.
+const FADE_DOT_BOUNDS: f64 = 2.0 * (RING_R + 3.0 + 2.0);
 /// Room around a pill or tether for its stroke and shadow.
 const FADE_EDGE: f64 = 8.0;
 
@@ -1172,6 +1227,9 @@ fn mist_tag(
 /// peers get moving dots and collision-free name pills; off-screen peers
 /// become directional edge mist. This is the compositor-facing sibling of
 /// [`draw_remote_presence`], which resolves cursors from a [`PresenceCtx`].
+///
+/// Returns the bounds, in scene coordinates, of everything painted (see
+/// [`draw_peer_cursors`]).
 pub fn draw_peer_presence(
     scene: &mut Scene,
     transform: Affine,
@@ -1179,11 +1237,15 @@ pub fn draw_peer_presence(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
     peers: &[PeerCursor],
-) {
+) -> Vec<Rect> {
     let mut on_screen = Vec::new();
+    let mut painted = Vec::new();
     for peer in peers {
         let target = Point::new(peer.pos.0, peer.pos.1);
         if let Some(mist) = super::geom::edge_mist_for(viewport, target) {
+            // Drawn untransformed; the rail and the name tag stay inside
+            // the band.
+            painted.push(mist_band_rect(viewport, &mist).inflate(FADE_EDGE, FADE_EDGE));
             faded(scene, Affine::IDENTITY, peer.opacity, viewport, |scene| {
                 draw_edge_mist(
                     scene,
@@ -1199,13 +1261,24 @@ pub fn draw_peer_presence(
             on_screen.push(peer.clone());
         }
     }
-    draw_peer_cursors(scene, transform, viewport, text_renderer, theme, &on_screen);
+    painted.extend(draw_peer_cursors(
+        scene,
+        transform,
+        viewport,
+        text_renderer,
+        theme,
+        &on_screen,
+    ));
+    painted
 }
 
 /// The one call the app makes each frame to render all cross-process peer
 /// presence: on-screen peers get a dot + pill, off-screen peers get an edge
 /// mist. `viewport` is the visible rect in the same (logical) space as
 /// cursor positions.
+///
+/// Returns the bounds, in scene coordinates, of everything painted (see
+/// [`draw_peer_cursors`]), so the frame damages only those.
 pub fn draw_remote_presence(
     scene: &mut Scene,
     transform: Affine,
@@ -1213,9 +1286,10 @@ pub fn draw_remote_presence(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
     presence: &PresenceCtx,
-) {
+) -> Vec<Rect> {
+    let mut painted = Vec::new();
     if presence.remote_cursors.is_empty() {
-        return;
+        return painted;
     }
     // Split first, draw after: the on-screen peers are laid out together
     // so their names cannot land on top of each other.
@@ -1239,6 +1313,9 @@ pub fn draw_remote_presence(
         let peer = peer_of(presence, cursor);
         match super::geom::edge_mist_for(viewport, target) {
             Some(mist) => {
+                // Drawn untransformed, inside the band (as in
+                // `draw_peer_presence`).
+                painted.push(mist_band_rect(viewport, &mist).inflate(FADE_EDGE, FADE_EDGE));
                 draw_edge_mist(
                     scene,
                     text_renderer,
@@ -1252,7 +1329,15 @@ pub fn draw_remote_presence(
             None => on_screen.push(peer),
         }
     }
-    draw_peer_cursors(scene, transform, viewport, text_renderer, theme, &on_screen);
+    painted.extend(draw_peer_cursors(
+        scene,
+        transform,
+        viewport,
+        text_renderer,
+        theme,
+        &on_screen,
+    ));
+    painted
 }
 
 #[cfg(test)]
@@ -1260,6 +1345,54 @@ mod tests {
     use super::*;
     use crate::offscreen::OffscreenRenderer;
     use crate::permissions::UserId;
+
+    #[test]
+    fn action_labels_preserve_the_notice_above_the_actual_control() {
+        let presence = PresenceCtx::empty();
+        let user = UserId("charlie".into());
+        let viewport = Rect::new(20.0, 20.0, 480.0, 180.0);
+        for theme in [Theme::default(), Theme::dark().with_text_scale(2.0)] {
+            for control in [
+                Rect::new(40.0, 60.0, 100.0, 90.0),
+                Rect::new(400.0, 60.0, 460.0, 90.0),
+                Rect::new(100.0, 60.0, 400.0, 90.0),
+            ] {
+                let mut scene = Scene::new();
+                let mut text = TextRenderer::new();
+                presence.draw_action_outline_labeled_within(
+                    &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+                    &user,
+                    "Rename (Applying) - Quill",
+                    control,
+                    f64::from(theme.tokens.radii.detail),
+                    viewport,
+                );
+                let rgba = OffscreenRenderer::new(500, 200).render(&scene, Color::BLACK);
+                let mut label_pixels = 0;
+                for y in 0..200 {
+                    for x in 0..500 {
+                        let (r, g, b, _) = OffscreenRenderer::sample(&rgba, 500, x, y);
+                        if r == 0 && g == 0 && b == 0 {
+                            continue;
+                        }
+                        let point = Point::new(f64::from(x), f64::from(y));
+                        assert!(viewport.contains(point), "activity escaped its surface");
+                        assert!(
+                            y >= 59,
+                            "activity painted over the notice above the control"
+                        );
+                        if !control.inflate(2.0, 2.0).contains(point) {
+                            label_pixels += 1;
+                        }
+                    }
+                }
+                assert!(
+                    label_pixels > 100,
+                    "the action label must actually be painted"
+                );
+            }
+        }
+    }
 
     #[test]
     #[allow(

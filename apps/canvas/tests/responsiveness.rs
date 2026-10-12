@@ -101,3 +101,45 @@ fn edited_svg_geometry_and_undo_never_use_a_stale_cached_outline() {
         "undo restores exact pixels even with the same object id"
     );
 }
+
+#[test]
+fn repeated_artwork_publication_keeps_the_same_action_contract() {
+    let art = canvas::Artwork::default();
+    let expected = ui::tilo_resource::publish::<canvas::Artwork>("art", "Artwork", &art);
+    let mut samples = Vec::new();
+    for _ in 0..40 {
+        let start = std::time::Instant::now();
+        let published = ui::tilo_resource::publish::<canvas::Artwork>("art", "Artwork", &art);
+        samples.push(start.elapsed().as_secs_f64() * 1000.0);
+        let actual: Vec<_> = published
+            .actions
+            .iter()
+            .map(|action| {
+                (
+                    &action.id,
+                    &action.label,
+                    &action.description,
+                    action.params(),
+                )
+            })
+            .collect();
+        let contract: Vec<_> = expected
+            .actions
+            .iter()
+            .map(|action| {
+                (
+                    &action.id,
+                    &action.label,
+                    &action.description,
+                    action.params(),
+                )
+            })
+            .collect();
+        assert_eq!(actual, contract);
+    }
+    samples.sort_by(f64::total_cmp);
+    println!(
+        "CANVAS_PUBLICATION median_ms={:.3} p95_ms={:.3}",
+        samples[19], samples[37]
+    );
+}

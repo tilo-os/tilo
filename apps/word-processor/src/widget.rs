@@ -8,11 +8,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 #[cfg(test)]
 use ui::widget::Edits;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
@@ -35,7 +36,7 @@ use ui::clipboard_copy;
 use ui::icons::Icon;
 use ui::permissions::UserId;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::{Notice, ToastAnchor, ToastKind};
 use ui::widget::{BlockEditor, Embedded, Widget};
 use ui::{PathSegment, PresenceCtx, PresenceKey, clipboard_paste};
 
@@ -68,7 +69,8 @@ use ui::portal;
 use ui::tilo_resource::Effect as _;
 use ui::tokens::TextRole;
 use ui::widget::{
-    Button, ButtonFace, ButtonRole, CardFace, ColorSwatchFace, ControlSize, SegmentedFace, Tone,
+    Button, ButtonFace, ButtonRole, CardFace, ColorSwatchFace, ControlSize, SegmentedFace,
+    SegmentedTouch, SegmentedTouchGroup, SegmentedTouchResult, Tone,
 };
 
 mod block_layout;
@@ -101,14 +103,12 @@ use image_layout::{
     wrap as image_wrap,
 };
 use layout_cache::{ShapeKeyInput, shape_key};
+pub use proofing::WriterLayout;
 use proofing::misspelled_spans;
-pub use proofing::{PersonalDictionary, WriterLayout};
-#[cfg(test)]
-use text_runs::block_runs;
 use text_runs::{
-    block_change_decos, block_change_ranges, block_comment_ranges, block_note_refs,
-    block_runs_markup, char_font_family, char_font_size, char_highlight, composed_block,
-    note_numbering, note_text, parse_hex_rgb, running_head_runs, running_head_runs_editing,
+    block_change_decos, block_change_ranges, block_comment_ranges, block_note_refs, block_runs,
+    char_font_family, char_font_size, char_highlight, composed_block, note_numbering, note_text,
+    parse_hex_rgb, running_head_runs, running_head_runs_editing,
 };
 use toolbar::{HIGHLIGHT_PALETTE, STYLE_PALETTE, ToolAction, ToolEntry};
 
@@ -437,6 +437,17 @@ impl NumField {
             _ => 2.0,
         }
     }
+    fn semantic_target(self) -> String {
+        format!(
+            "word-processor.styles:number:{}",
+            match self {
+                Self::Size => "size",
+                Self::SpaceBefore => "space-before",
+                Self::SpaceAfter => "space-after",
+                Self::Indent => "indent",
+            }
+        )
+    }
     fn label(self) -> String {
         t(match self {
             NumField::Size => "panel-num-size",
@@ -638,6 +649,26 @@ impl<T: Clone> Copied<T> {
     }
 }
 
+/// Draw on `view` the comment marks of the threads about its text: one mark
+/// per thread, valued with the thread's id, as the review margin and the
+/// context menu read them.
+fn mark_comments(view: &mut BlockView, comments: &[tilo_doc::CommentView]) {
+    view.marks
+        .retain(|mark| mark.name != tilo_doc::schema::MARK_COMMENT);
+    for comment in comments {
+        if let Some((block, start, end)) = &comment.range
+            && *block == view.id
+        {
+            view.marks.push(tilo_doc::document::MarkSpan {
+                name: tilo_doc::schema::MARK_COMMENT.to_owned(),
+                start: *start,
+                end: *end,
+                value: tilo_doc::document::MarkValue::Str(comment.id.clone()),
+            });
+        }
+    }
+}
+
 /// What the editor last copied out of the document state.
 #[derive(Default)]
 struct CopiedParts {
@@ -646,7 +677,8 @@ struct CopiedParts {
     header: Copied<Vec<BlockView>>,
     footer: Copied<Vec<BlockView>>,
     notes: Copied<Vec<NoteView>>,
-    comments: Copied<Vec<tilo_doc::CommentView>>,
+    /// The comment threads last drawn, with where their text was.
+    comments: Vec<tilo_doc::CommentView>,
     changes: Copied<Vec<tilo_doc::ChangeView>>,
     content: Copied<std::collections::BTreeSet<String>>,
 }
@@ -703,7 +735,7 @@ fn participant_presence_payload(
     doc: &AutoCommit,
 ) -> Option<ui::PresencePayload> {
     let ctx = view.ctx(doc)?;
-    let containers = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+    let containers = crate::model::open(doc).ok()?;
     let obj = tilo_doc::model::region_block_obj(
         doc,
         &containers,
@@ -948,10 +980,9 @@ struct ViewPreferences {
 struct ProofingPreferences {
     enabled: bool,
     language: String,
-    /// The person's own words, which "Add to dictionary" adds to and the
-    /// dictionary is built with; `None` until the editor is attached, which
-    /// keeps added words in memory only.
-    personal: Option<ui::framework::Setting<proofing::PersonalDictionary>>,
+    /// Whether the editor follows the host's personal dictionary; false
+    /// until it is attached, which keeps added words in memory only.
+    personal: bool,
     /// The personal words the dictionary was last built with.
     personal_words: proofing::PersonalDictionary,
     /// The person's spelling preferences every app follows, which name the
@@ -975,7 +1006,7 @@ impl ProofingPreferences {
             } else {
                 spellcheck::default_language()
             },
-            personal: None,
+            personal: false,
             personal_words: proofing::PersonalDictionary::default(),
             shared: None,
             applied_language: None,
@@ -1115,6 +1146,7 @@ pub struct WordProcessorWidget {
     panel_rect: Rect,
     /// Clickable targets inside the styles panel, rebuilt each draw.
     panel_hits: Vec<(Rect, PanelHit)>,
+    segmented_touch: SegmentedTouch,
     /// The numeric field currently being typed into (click-to-type), if any.
     editing_field: Option<NumField>,
     /// The inspector's style property fields.
@@ -1232,7 +1264,7 @@ pub struct WordProcessorWidget {
     // ---- transient status toast -------------------------------------------
     /// A transient operation result (e.g. save confirmation or failure),
     /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
-    toast: Option<(String, ToastKind)>,
+    toast: Notice,
     ime_rect: Option<Rect>,
     /// The style inspector's shared color-picker popover. It owns its lifecycle,
     /// layout, drawing, and modal input routing; this editor applies its result.
@@ -1254,29 +1286,35 @@ pub struct WordProcessorWidget {
     /// writing it records what it now holds, so a later open can tell a
     /// change made elsewhere.
     record_file: Option<PathBuf>,
-    /// The edits bound to this window's caret and selection, and to each
-    /// participant's, as the document they were resolved against last
-    /// placed them: what [`ResourceSurface::bound_declarations`] publishes.
-    bound: BoundEdits,
+    /// The Find results of this window's view and of each participant's,
+    /// as the document they were resolved against last placed them: what
+    /// [`ResourceSurface::live_rows`] publishes.
+    bound: BoundRows,
+    /// The view an edit effect this window's person invoked leaves them
+    /// with, adopted once the document moved past the version it was built
+    /// against (the edit applied).
+    pending_local: Option<(LocalVersion, crate::actions::participant::ParticipantView)>,
     /// The last action the editor's own affordances dispatched, so a test can
     /// compare it with what the matching published operation builds.
     #[cfg(test)]
-    last_dispatched: Option<tilo_actions::EncodedAction>,
+    last_dispatched: Option<crate::actions::RichTextAction>,
 }
 
-/// What one view offers beside the document: the edits bound to its caret
-/// and selection, and its Find results.
-#[derive(Default, Clone)]
-struct ViewOffer {
-    edits: Vec<ui::tilo_resource::ActionDecl<crate::framework::Document>>,
-    rows: Vec<ui::framework::LiveRow>,
-}
-
-/// What the views a window serves offer, resolved at its last sync.
+/// The Find results the views a window serves offer, resolved at its last
+/// sync.
 #[derive(Default)]
-struct BoundEdits {
-    local: ViewOffer,
-    participants: HashMap<tilo_actions::ParticipantId, ViewOffer>,
+struct BoundRows {
+    local: Vec<ui::framework::LiveRow>,
+    participants: HashMap<tilo_actions::ParticipantId, Vec<ui::framework::LiveRow>>,
+}
+
+/// Committed heads plus the open transaction's size: changes whenever an
+/// edit applied.
+type LocalVersion = (Vec<automerge::ChangeHash>, usize);
+
+fn local_version(doc: &AutoCommit) -> LocalVersion {
+    use automerge::transaction::Transactable;
+    (doc.base_heads(), doc.pending_ops())
 }
 
 /// The host chooser's request for a document to open.
@@ -1420,6 +1458,7 @@ impl WordProcessorWidget {
             // narrow tile rather than permanently consuming half the canvas.
             panel_rect: Rect::ZERO,
             panel_hits: Vec::new(),
+            segmented_touch: SegmentedTouch::default(),
             editing_field: None,
             num_inputs: [
                 NumField::Size,
@@ -1499,14 +1538,15 @@ impl WordProcessorWidget {
             portal_rx: None,
             pending_save: None,
             style_menu: StyleMenu::default(),
-            toast: None,
+            toast: Notice::default(),
             ime_rect: None,
             color_picker: StyleColorPicker::default(),
             participants: participants::ParticipantViews::default(),
             staged_scenario: None,
             layout: None,
             record_file: None,
-            bound: BoundEdits::default(),
+            bound: BoundRows::default(),
+            pending_local: None,
             #[cfg(test)]
             last_dispatched: None,
         };
@@ -1543,7 +1583,7 @@ impl WordProcessorWidget {
 
     /// The last action the editor's own affordances dispatched.
     #[cfg(test)]
-    pub(crate) fn last_dispatched_for_test(&self) -> Option<&tilo_actions::EncodedAction> {
+    pub(crate) fn last_dispatched_for_test(&self) -> Option<&crate::actions::RichTextAction> {
         self.last_dispatched.as_ref()
     }
 
@@ -1561,53 +1601,42 @@ impl WordProcessorWidget {
             return;
         }
         if let Some(dispatch) = &self.dispatch {
-            dispatch.apply(&crate::actions::RichTextAction::NoteFileWritten {
-                digest: tilo_content::hash_bytes(bytes),
-            });
+            dispatch.submit(
+                crate::model::Document::NOTE_FILE_WRITTEN.with(tilo_content::hash_bytes(bytes)),
+            );
         }
     }
 
-    /// Resolve the edits bound to this window's view and to each
-    /// participant's against `doc` as it is now. A participant's edit noted
-    /// against this version adopts its next view once the edit applied.
+    /// Resolve the Find results of this window's view and of each
+    /// participant's against `doc` as it is now.
     fn resolve_bound_edits(&mut self, doc: &AutoCommit) {
         if self.read_only() {
-            self.bound = BoundEdits::default();
+            self.bound = BoundRows::default();
             return;
         }
-        let body = self.kept_body();
-        let edits = |ctx: &crate::actions::WpResourceCtx| ViewOffer {
-            edits: crate::actions::bound::declarations(
-                &crate::actions::live_presentation_resources(ctx, doc, body.as_deref()),
-            ),
-            rows: crate::actions::search_rows(ctx, doc),
-        };
         let local = self
             .wp_resource_ctx(doc)
-            .map(|ctx| edits(&ctx))
+            .map(|ctx| crate::actions::search_rows(&ctx, doc))
             .unwrap_or_default();
         let mut participants = HashMap::new();
         let known: Vec<_> = self.participants.participants().cloned().collect();
         for participant in known {
-            let Some(mut ctx) = self
+            let Some(ctx) = self
                 .participant_view_or_default(&participant, doc)
                 .and_then(|view| view.ctx(doc))
             else {
                 continue;
             };
-            ctx.content = self.inner.content_store().clone();
-            self.participants.note_resolution(&participant, doc);
-            participants.insert(participant, edits(&ctx));
+            participants.insert(participant, crate::actions::search_rows(&ctx, doc));
         }
-        self.bound = BoundEdits {
+        self.bound = BoundRows {
             local,
             participants,
         };
     }
 
-    /// What the view of whoever is invoking, or is published for, offers:
-    /// a participant's own, else this window's.
-    fn offer(&self) -> ViewOffer {
+    /// The Find results of the view of whoever is invoking, as rows.
+    pub(crate) fn search_rows(&self) -> Vec<ui::framework::LiveRow> {
         match ui::invocation_scope::current_viewer() {
             Some(participant) => self
                 .bound
@@ -1619,16 +1648,107 @@ impl WordProcessorWidget {
         }
     }
 
-    /// The edits bound to the view of whoever is invoking.
-    pub(crate) fn bound_edits(
-        &self,
-    ) -> Vec<ui::tilo_resource::ActionDecl<crate::framework::Document>> {
-        self.offer().edits
+    /// Adopt the view an edit effect left this window's person with, once
+    /// the edit applied.
+    fn adopt_local_outcome(&mut self, state: &AutoCommit) {
+        let Some((version, _)) = &self.pending_local else {
+            return;
+        };
+        if *version == local_version(state) {
+            return;
+        }
+        if let Some((_, next)) = self.pending_local.take() {
+            let body = self.kept_body();
+            let next = next.settle_in(state, body.as_deref());
+            self.adopt_local_view(&next, state);
+        }
     }
 
-    /// The Find results of the view of whoever is invoking, as rows.
-    pub(crate) fn search_rows(&self) -> Vec<ui::framework::LiveRow> {
-        self.offer().rows
+    /// Make the edit an edit effect names at the invoker's caret: a
+    /// participant's own view when one invoked it, else this window's. The
+    /// edit goes through the door as the invoker's, one undo step.
+    fn answer_edit_effect(
+        &mut self,
+        effect: &WordProcessorEffect,
+        cx: &mut ui::framework::EffectCx<crate::framework::Document, Self>,
+    ) -> Option<ui::framework::EffectAnswer> {
+        let doc = match cx.document() {
+            Some(doc) => doc.clone(),
+            None => return Some(Err("the document is not at hand".into())),
+        };
+        let participant = ui::invocation_scope::current_participant();
+        // Told where to act, it acts there; else at the invoker's caret.
+        let view = match (cx.place(), &participant) {
+            (Some(place), _) => {
+                match crate::actions::participant::ParticipantView::at_place(&doc, place) {
+                    Ok(view) => view,
+                    Err(error) => return Some(Err(error)),
+                }
+            }
+            (None, Some(participant)) => {
+                match self.participant_view_or_default(participant, &doc) {
+                    Some(view) => view,
+                    None => {
+                        return Some(Err("the document has no body to place a caret in".into()));
+                    }
+                }
+            }
+            (None, None) => self.local_edit_view(),
+        };
+        let dispatch = cx.dispatcher();
+        if let WordProcessorEffect::CommentSelection { text, .. } = effect {
+            return Some(
+                crate::actions::editing::comment_range(&view, &doc)
+                    .map(|range| {
+                        dispatch.submit(crate::model::Document::ADD_COMMENT.with(
+                            crate::model::document::AddComment {
+                                block: range.block,
+                                start: range.start,
+                                end: range.end,
+                                text: text.clone(),
+                            },
+                        ));
+                        ui::framework::Effected::done()
+                    })
+                    .map_err(|error| error.to_string()),
+            );
+        }
+        let built = effect.edit(&view, &doc, self.inner.content_store())?;
+        let (envelopes, next) = match built {
+            Ok(outcome) => outcome,
+            Err(error) => return Some(Err(error.to_string())),
+        };
+        if envelopes.is_empty() {
+            return Some(Err("there is nothing to change here".into()));
+        }
+        dispatch.group(|| {
+            for op in &envelopes {
+                dispatch.submit(crate::model::edit(op));
+            }
+        });
+        match participant {
+            Some(participant) => {
+                self.participants.note_resolution(&participant, &doc);
+                note_participant_outcome(&next);
+            }
+            None => self.pending_local = Some((local_version(&doc), next)),
+        }
+        self.lifecycle.dirty = true;
+        // One that answers its caller does so with the blocks its edit
+        // changed, once the door applied it.
+        if answers_later(effect) {
+            return Some(cx.when_landed(|_, landed, _| {
+                // The blocks it changed; the ids it minted are among them.
+                let answer = match landed.answer {
+                    Some(serde_json::Value::Object(mut fields)) => {
+                        fields.remove("changed").unwrap_or_default()
+                    }
+                    other => other.unwrap_or_default(),
+                };
+                Ok(ui::framework::Effected::value(answer))
+            }));
+        }
+        Some(Ok(ui::framework::Effected::done()))
     }
 
     /// Bring the kept state up to date with `state`. Returns whether it
@@ -1644,7 +1764,9 @@ impl WordProcessorWidget {
 
     /// Read the kept state, once there is one.
     fn with_live<T>(&self, read: impl FnOnce(&tilo_document::RichTextState) -> T) -> Option<T> {
-        self.source.as_ref().map(|live| live.with(read))
+        self.source
+            .as_ref()
+            .and_then(|live| live.with(|document| document.text().map(read)))
     }
 
     /// Show the paragraphs `demand` names.
@@ -1723,11 +1845,8 @@ impl WordProcessorWidget {
 
     /// Build the spelling dictionary with the person's own words, and keep
     /// the words they add there.
-    pub(crate) fn follow_personal_dictionary(
-        &mut self,
-        personal: ui::framework::Setting<proofing::PersonalDictionary>,
-    ) {
-        self.proofing.personal = Some(personal);
+    pub(crate) fn follow_personal_dictionary(&mut self) {
+        self.proofing.personal = true;
         self.dict = None;
         self.spell_cache.clear();
     }
@@ -1781,25 +1900,59 @@ impl WordProcessorWidget {
         state: &mut ui::widget::Edits<'_>,
         action: &crate::actions::RichTextAction,
     ) -> bool {
-        let context = tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", action);
+        let done = self.try_perform_document(state, &crate::model::action(action));
+        #[cfg(test)]
+        if done {
+            self.last_dispatched = Some(action.clone());
+        }
+        done
+    }
+
+    /// Take the document verb `operation` now, as this window's person.
+    fn perform_verb(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        operation: crate::model::DocumentAction,
+    ) -> bool {
+        self.perform_verb_as(state, operation, None)
+    }
+
+    /// Take the document verb `operation` now, as `author` when one is
+    /// named (a scenario staging a collaborator's comment), else as this
+    /// window's person.
+    fn perform_verb_as(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        operation: crate::model::DocumentAction,
+        author: Option<&str>,
+    ) -> bool {
+        // A staged collaborator's verb is theirs in history.
+        let _author = author.map(|author| {
+            ui::invocation_scope::InvokerScope::enter(tilo_actions::ActionInvoker::actor(author))
+        });
+        let action = ui::tilo_resource::Stamped {
+            operation,
+            now_ms: ui::tilo_resource::origin_now_ms(),
+        };
+        self.try_perform_document(state, &action)
+    }
+
+    /// Submit one action of the document now. `false` when the host
+    /// refuses it, so a caller can leave the document and caret as they
+    /// were.
+    fn try_perform_document(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        action: &<crate::model::Document as ui::tilo_resource::Resource>::Action,
+    ) -> bool {
         let Some(dispatch) = self.dispatch.clone() else {
             return false;
         };
-        match dispatch.apply_now_with(state, action, context) {
-            Ok(()) => {
-                #[cfg(test)]
-                {
-                    self.last_dispatched = tilo_actions::EncodedAction::encode(
-                        crate::actions::WORD_PROCESSOR_ACTION_TYPE,
-                        action,
-                    )
-                    .ok();
-                }
-                true
-            }
+        match dispatch.apply_now(state, action) {
+            Ok(()) => true,
             Err(error) => {
                 if self.read_only() {
-                    self.toast = Some((t("toast-view-only"), ToastKind::Error));
+                    self.toast.show(t("toast-view-only"), ToastKind::Error);
                     self.lifecycle.dirty = true;
                 }
                 eprintln!("word-processor: edit refused: {error}");
@@ -1840,7 +1993,7 @@ impl WordProcessorWidget {
             .cloned()
             .collect();
         if !removed.is_empty()
-            && let Ok(containers) = tilo_doc::model::open(state, &automerge::ROOT)
+            && let Ok(containers) = crate::model::open(state)
         {
             let snapshot = tilo_doc::model::materialize(state, &containers);
             for style in removed {
@@ -2604,14 +2757,11 @@ impl WordProcessorWidget {
         let Some(dispatch) = self.dispatch.clone() else {
             return Err("this view edits nothing".into());
         };
+        // Each edit is the participant's in history.
+        let _invoker = ui::invocation_scope::InvokerScope::enter(invoker.clone());
         for action in &envelopes {
             dispatch
-                .apply_now_with(
-                    state,
-                    action,
-                    tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", action)
-                        .with_invoker(invoker.clone()),
-                )
+                .apply_now(state, &crate::model::action(action))
                 .map_err(|error| error.to_string())?;
         }
         self.set_participant_view(&participant, &view, state);
@@ -2965,10 +3115,21 @@ impl WordProcessorWidget {
     /// with any persisted user words layered in. Owned so "Add to dictionary"
     /// can mutate it.
     fn dictionary(&mut self) -> &mut spellcheck::Dictionary {
-        // Words added on another device, or in another window, arrive with
-        // the setting: build the dictionary again when they change.
-        if let Some(personal) = &self.proofing.personal {
-            let words = personal.get();
+        // Explicit words added through the shared local host follow every
+        // window: build the spelling overlay again when they change.
+        if self.proofing.personal {
+            let snapshot = ui::personal_dictionary::snapshot();
+            let language = self
+                .proofing
+                .language
+                .replace('_', "-")
+                .to_ascii_lowercase();
+            let words = proofing::PersonalDictionary {
+                dictionary_words: snapshot
+                    .ok()
+                    .map(|snapshot| snapshot.hints(&language).map(str::to_owned).collect())
+                    .unwrap_or_default(),
+            };
             if words != self.proofing.personal_words {
                 self.proofing.personal_words = words;
                 self.dict = None;
@@ -2983,6 +3144,7 @@ impl WordProcessorWidget {
     /// Misspelled byte spans for a body block, using `spell_cache` (keyed by the
     /// block's text so an edit re-checks and an unchanged block is free).
     fn block_spell_spans(&mut self, id: &str, text: &str) -> Vec<(usize, usize)> {
+        self.dictionary();
         if let Some((cached_text, spans)) = self.spell_cache.get(id)
             && cached_text == text
         {
@@ -3056,20 +3218,6 @@ impl WordProcessorWidget {
         self.lifecycle.dirty = true;
     }
 
-    /// Edit the page margins on the page, as choosing Margins in the status
-    /// band does.
-    pub fn set_margins_mode(&mut self) {
-        self.toggle_layout_mode(LayoutMode::Margins);
-    }
-
-    /// Show or hide the document outline.
-    pub fn set_outline_open(&mut self, open: bool) {
-        if self.outline.is_open() != open {
-            self.outline.toggle();
-        }
-        self.lifecycle.dirty = true;
-    }
-
     /// Stage a representative non-destructive error toast for visual/a11y
     /// regression shots. Runtime failures use the same toast surface.
     pub fn stage_error_for_shot(&mut self) {
@@ -3133,7 +3281,7 @@ impl WordProcessorWidget {
 
     /// The first paragraph with text, and its length in characters.
     fn first_text_block(state: &AutoCommit) -> Option<(String, usize)> {
-        let containers = tilo_doc::model::open(state, &automerge::ROOT).ok()?;
+        let containers = crate::model::open(state).ok()?;
         tilo_doc::model::blocks_in_order(state, &containers)
             .into_iter()
             .find_map(|id| {
@@ -3148,19 +3296,19 @@ impl WordProcessorWidget {
     /// first paragraph, and with `thread` two replies and the thread panel
     /// open: the review a collaborator's document arrives with.
     fn stage_review(&mut self, state: &mut ui::widget::Edits<'_>, thread: bool) {
+        use crate::model::{DocumentAction, document};
         let Some((block, len)) = Self::first_text_block(state) else {
             return;
         };
-        self.perform_edits(
+        self.perform_verb_as(
             state,
-            &crate::actions::add_comment_action(
-                &block,
-                0,
-                len.min(12),
-                "Maya Chen",
-                "",
-                "Could we make this opening more specific?",
-            ),
+            DocumentAction::AddComment(document::AddComment {
+                block: block.clone(),
+                start: 0,
+                end: len.min(12),
+                text: "Could we make this opening more specific?".into(),
+            }),
+            Some("Maya Chen"),
         );
         self.perform_edits(
             state,
@@ -3175,28 +3323,29 @@ impl WordProcessorWidget {
         if !thread {
             return;
         }
-        let comments = |state: &AutoCommit| {
-            tilo_doc::model::open(state, &automerge::ROOT)
-                .map(|containers| tilo_doc::model::materialize(state, &containers).comments)
+        let threads = |state: &AutoCommit| {
+            <crate::model::Document as ui::tilo_resource::Resource>::read(state)
+                .map(|document| document.comment_views(state))
                 .unwrap_or_default()
         };
-        let Some(comment) = comments(state).into_iter().next().map(|comment| comment.id) else {
+        let Some(comment) = threads(state).into_iter().next().map(|comment| comment.id) else {
             return;
         };
-        for (author, date, text) in [
-            ("Jonas Weber", "2026-09-06", "I can revise the opening."),
-            (
-                "Maya Chen",
-                "2026-09-07",
-                "Thanks — please keep the decision clear.",
-            ),
+        for (author, text) in [
+            ("Jonas Weber", "I can revise the opening."),
+            ("Maya Chen", "Thanks — please keep the decision clear."),
         ] {
-            self.perform_edits(
+            self.perform_verb_as(
                 state,
-                &crate::actions::reply_to_comment_action(&comment, author, date, text),
+                DocumentAction::ReplyToComment(document::ReplyToComment {
+                    comment: ui::tilo_resource::Id::from_raw(comment.clone()),
+                    text: text.into(),
+                    body: None,
+                }),
+                Some(author),
             );
         }
-        if let Some(view) = comments(state).into_iter().find(|item| item.id == comment) {
+        if let Some(view) = threads(state).into_iter().find(|item| item.id == comment) {
             self.stage_comment_thread_for_shot(view);
         }
     }
@@ -3226,14 +3375,12 @@ impl WordProcessorWidget {
                 crate::actions::ImageInput::of(hash, SHOT_PNG),
             ),
         );
-        let image = tilo_doc::model::open(state, &automerge::ROOT)
-            .ok()
-            .and_then(|containers| {
-                tilo_doc::model::materialize(state, &containers)
-                    .blocks
-                    .into_iter()
-                    .find(|block| block.kind == "image")
-            });
+        let image = crate::model::open(state).ok().and_then(|containers| {
+            tilo_doc::model::materialize(state, &containers)
+                .blocks
+                .into_iter()
+                .find(|block| block.kind == "image")
+        });
         let Some(image) = image else {
             return;
         };
@@ -3385,7 +3532,8 @@ impl WordProcessorWidget {
                     }
                     portal::PortalOutcome::Failed(reason) => {
                         eprintln!("word-processor: portal error: {reason}");
-                        self.toast = Some((t("toast-file-dialog-failed"), ToastKind::Error));
+                        self.toast
+                            .show(t("toast-file-dialog-failed"), ToastKind::Error);
                     }
                     portal::PortalOutcome::Cancelled => {}
                 }
@@ -3432,9 +3580,11 @@ impl WordProcessorWidget {
         format: WpFormat,
     ) -> Result<(), String> {
         self.lifecycle.dirty = true;
-        if let Some(c) = self.inner.containers.as_ref() {
-            let dr = tilo_doc::DocRef { doc: state, c };
-            match format.export(dr, self.inner.content_store()) {
+        if self.inner.containers.is_some() {
+            // The file keeps the comment threads in its text, as file
+            // formats do.
+            let file = crate::model::export_copy(state)?;
+            match format.export(file.as_ref(), self.inner.content_store()) {
                 Ok(bytes) => {
                     tilo_files::native::atomic::write_preserving_target(path, &bytes).map_err(
                         |e| {
@@ -3444,7 +3594,7 @@ impl WordProcessorWidget {
                         },
                     )?;
                     self.save_error = None;
-                    self.toast = Some((t("toast-saved"), ToastKind::Success));
+                    self.toast.show(t("toast-saved"), ToastKind::Success);
                     self.note_file_written(path, &bytes);
                 }
                 Err(e) => {
@@ -3673,7 +3823,10 @@ impl WordProcessorWidget {
         let blocks = &mut self.blocks;
         let mut parts = PartsUpdate::default();
         if let Some(live) = self.source.clone() {
-            live.with(|doc| {
+            live.with(|document| {
+                let Some(doc) = document.text() else {
+                    return;
+                };
                 // Paragraphs: keep a view whose paragraph is unchanged (same
                 // shared value), copy the rest.
                 let mut kept: HashMap<String, (std::rc::Rc<BlockView>, BlockView)> = if preview {
@@ -3687,11 +3840,16 @@ impl WordProcessorWidget {
                 };
                 let mut sources = Vec::with_capacity(end.saturating_sub(start));
                 let mut views = Vec::with_capacity(end.saturating_sub(start));
+                // Comment threads live beside the text: where each one's text
+                // is now is read from its anchor, and drawn as the comment
+                // mark on the paragraphs shown.
+                let comments = document.comment_views(state);
                 for source in doc.blocks(start..end) {
-                    let view = match kept.remove(&source.id) {
+                    let mut view = match kept.remove(&source.id) {
                         Some((old, view)) if std::rc::Rc::ptr_eq(&old, source) => view,
                         _ => BlockView::clone(source),
                     };
+                    mark_comments(&mut view, &comments);
                     sources.push(std::rc::Rc::clone(source));
                     views.push(view);
                 }
@@ -3701,11 +3859,12 @@ impl WordProcessorWidget {
                 parts.footer = copied.footer.take_if_new(doc.footer());
                 parts.notes = copied.notes.take_if_new(doc.notes());
                 parts.content = copied.content.see(doc.content());
-                let comments = copied.comments.take_if_new(doc.comments());
+                let comments_moved = copied.comments != comments;
                 let changes = copied.changes.take_if_new(doc.changes());
-                if comments.is_some() || changes.is_some() {
+                if comments_moved || changes.is_some() {
+                    copied.comments.clone_from(&comments);
                     parts.review = Some((
-                        comments.unwrap_or_else(|| doc.comments().as_ref().clone()),
+                        comments,
                         changes.unwrap_or_else(|| doc.changes().as_ref().clone()),
                     ));
                 }
@@ -4856,15 +5015,20 @@ impl WordProcessorWidget {
         self.view.styles_panel_visible
     }
 
-    /// Narrow tiles present the inspector as a sheet over the page; wide
-    /// windows reserve space for it. This keeps the document useful at
-    /// phone/three-column widths without making advanced formatting unreachable.
+    /// Wider compact tiles use a drawer; phones present the inspector as
+    /// the foreground page. Desktop windows reserve space beside the document.
     fn styles_panel_overlay(&self) -> bool {
         self.view.styles_panel_visible && self.inspector_drawer.is_overlay()
     }
 
+    fn styles_panel_full_window(&self) -> bool {
+        self.view.styles_panel_visible
+            && ui::widget::modal_dialog::uses_full_window(self.rect, &self.desk_theme)
+    }
+
     /// The contextual inspector. Docked, it is the window's inspector region;
-    /// over a narrow window it floats as a sheet over a scrim. A header names
+    /// on a phone it fills the window using the shared opaque page surface.
+    /// A header names
     /// what it inspects beside its close button, and below it the image
     /// inspector or the paragraph's two sections scroll as one column.
     fn draw_styles_panel(
@@ -4876,6 +5040,11 @@ impl WordProcessorWidget {
         panel: Rect,
     ) {
         self.panel_hits.clear();
+        for slot in &mut self.num_inputs {
+            slot.rect = Rect::ZERO;
+        }
+        self.line_spacing_rect = Rect::ZERO;
+        self.style_pick_rect = Rect::ZERO;
         let local = theme.clone();
         let sp = &local.tokens.spacing;
         self.panel_rect = panel;
@@ -5338,7 +5507,7 @@ impl WordProcessorWidget {
             .collect();
         if entries.is_empty() {
             // Nothing to build a TOC from — tell the user *why* nothing happened.
-            self.toast = Some((t("toast-toc-empty"), ToastKind::Info));
+            self.toast.show(t("toast-toc-empty"), ToastKind::Info);
             self.lifecycle.dirty = true;
             return;
         }
@@ -5349,10 +5518,10 @@ impl WordProcessorWidget {
         // Scroll the freshly-inserted TOC (always at the document top) into view
         // and surface a confirmation toast, so the action has a visible result.
         self.scroll_y = 0.0;
-        self.toast = Some((
+        self.toast.show(
             t_args("toast-toc-updated", &[arg("n", num::i64_of_usize(n))]),
             ToastKind::Success,
-        ));
+        );
     }
 
     /// Draw the transient confirmation through the shared toast-card renderer.
@@ -5365,24 +5534,14 @@ impl WordProcessorWidget {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some((msg, kind)) = self.toast.as_ref() else {
-            return;
-        };
         let area = Rect::new(
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
             self.rect.y1 - self.layout_bar_height,
         );
-        paint_transient(
-            scene,
-            transform,
-            tr,
-            theme,
-            area,
-            ToastAnchor::BottomCenter,
-            &ToastCard::new(msg, *kind),
-        );
+        self.toast
+            .paint(scene, transform, tr, theme, area, ToastAnchor::BottomCenter);
     }
 }
 
@@ -5976,6 +6135,242 @@ impl WordProcessorWidget {
         })
     }
 
+    fn panel_hit_identity(&self, hit: &PanelHit) -> (String, String) {
+        let (id, label) = match hit {
+            PanelHit::Close => ("close".into(), t("panel-close")),
+            PanelHit::Pick(id) => (format!("pick:{id}"), self.sheet.get(id).name),
+            PanelHit::ParaAlign(value) => {
+                (format!("align:{value}"), t(&format!("panel-align-{value}")))
+            }
+            PanelHit::SetFont(value) => {
+                (format!("font:{value}"), t(&format!("panel-font-{value}")))
+            }
+            PanelHit::ToggleBold => ("bold".into(), t("panel-bold")),
+            PanelHit::ToggleItalic => ("italic".into(), t("panel-italic")),
+            PanelHit::SetColor(color) => {
+                let label = STYLE_PALETTE
+                    .iter()
+                    .zip(swatch_names(PaletteKind::Text))
+                    .find_map(|(candidate, label)| (candidate == color).then_some(label))
+                    .unwrap_or_else(|| tool_action_a11y_label(ToolAction::TextColor(Some(*color))));
+                let [red, green, blue] = color;
+                (format!("color:{red:02x}{green:02x}{blue:02x}"), label)
+            }
+            PanelHit::OpenColorPicker => ("custom-color".into(), t("panel-colour-custom")),
+            PanelHit::NewStyle => ("new-style".into(), t("panel-new-style")),
+            PanelHit::ImageScale(factor) => {
+                if *factor < 1.0 {
+                    ("image-smaller".into(), t("panel-image-smaller"))
+                } else {
+                    ("image-larger".into(), t("panel-image-larger"))
+                }
+            }
+            PanelHit::ImageFlipH => ("image-flip-h".into(), t("panel-image-flip-h")),
+            PanelHit::ImageFlipV => ("image-flip-v".into(), t("panel-image-flip-v")),
+            PanelHit::ImageCropInset => ("image-crop-inset".into(), t("panel-image-crop-inset")),
+            PanelHit::ImageCropReset => ("image-crop-reset".into(), t("panel-image-crop-reset")),
+            PanelHit::ImageInline => ("image-inline".into(), t("a11y-image-inline")),
+            PanelHit::ImageFreePosition => ("image-free".into(), t("a11y-image-free-position")),
+            PanelHit::ImageWrapLeft => ("image-left".into(), t("a11y-image-wrap-left")),
+            PanelHit::ImageWrapRight => ("image-right".into(), t("a11y-image-wrap-right")),
+        };
+        (format!("word-processor.styles:{id}"), label)
+    }
+
+    fn panel_hit_checked(&self, hit: &PanelHit) -> Option<bool> {
+        let style = self.focused_style_key().map(|key| self.sheet.get(&key));
+        match hit {
+            PanelHit::ParaAlign(value) => Some(self.current_align() == *value),
+            PanelHit::SetFont(value) => style.map(|style| style.font == *value),
+            PanelHit::ToggleBold => style.map(|style| style.bold),
+            PanelHit::ToggleItalic => style.map(|style| style.italic),
+            PanelHit::SetColor(value) => style.map(|style| style.color == *value),
+            _ => None,
+        }
+    }
+
+    fn visible_styles_rect(&self, rect: Rect) -> Option<Rect> {
+        let visible = rect.intersect(self.panel_body);
+        (visible.width() > 0.0 && visible.height() > 0.0).then_some(visible)
+    }
+
+    /// Project the same painted hits and shared fields the foreground inspector
+    /// actually owns. Scrolled-out controls have no actionable UI node.
+    fn styles_page_accessibility_tree(&self) -> A11yTreeNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut children = self
+            .panel_hits
+            .iter()
+            .filter_map(|(rect, hit)| {
+                let close = matches!(hit, PanelHit::Close);
+                let bounds = if close {
+                    Some(*rect)
+                } else {
+                    self.visible_styles_rect(*rect)
+                }?;
+                let (target, label) = self.panel_hit_identity(hit);
+                let checked = self.panel_hit_checked(hit);
+                let role = if matches!(hit, PanelHit::ToggleBold | PanelHit::ToggleItalic) {
+                    Role::ToggleButton
+                } else if checked.is_some() {
+                    Role::RadioButton
+                } else {
+                    Role::Button
+                };
+                Some(A11yTreeNode::leaf(
+                    AccessNode::new(role)
+                        .with_name(label)
+                        .with_bounds(bounds)
+                        .with_action_target(target)
+                        .with_state(AccessState {
+                            focusable: true,
+                            disabled: !close && self.read_only(),
+                            checked,
+                            ..Default::default()
+                        }),
+                ))
+            })
+            .collect::<Vec<_>>();
+        for slot in &self.num_inputs {
+            if let Some(bounds) = self.visible_styles_rect(slot.rect)
+                && let Some(mut node) = Widget::accessibility(&slot.input)
+            {
+                node.state.disabled |= self.read_only();
+                children.push(A11yTreeNode::leaf(
+                    node.with_bounds(bounds)
+                        .with_action_target(slot.field.semantic_target()),
+                ));
+            }
+        }
+        for (field, rect, label, target) in [
+            (
+                &self.line_spacing,
+                self.line_spacing_rect,
+                "panel-line-spacing",
+                "word-processor.styles:line-spacing",
+            ),
+            (
+                &self.style_pick,
+                self.style_pick_rect,
+                "panel-style",
+                "word-processor.styles:style",
+            ),
+        ] {
+            if let Some(bounds) = self.visible_styles_rect(rect)
+                && let Some(mut node) = Widget::accessibility(field)
+            {
+                node.state.disabled |= self.read_only();
+                children.push(A11yTreeNode::leaf(
+                    node.with_name(t(label))
+                        .with_bounds(bounds)
+                        .with_action_target(target),
+                ));
+            }
+        }
+        let title = if self.selected_image_id().is_some() {
+            t("panel-image")
+        } else {
+            t("toolbar-styles")
+        };
+        A11yTreeNode {
+            node: AccessNode::new(Role::Group)
+                .with_name(title)
+                .with_bounds(self.panel_rect),
+            children,
+        }
+    }
+
+    fn perform_styles_page_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        key_path: &[u64],
+        state: &mut ui::widget::Edits<'_>,
+    ) -> Option<bool> {
+        if !self.styles_panel_full_window() {
+            return None;
+        }
+        let target = key_path.last().copied();
+        let hit = self.panel_hits.iter().find_map(|(_, hit)| {
+            (target == Some(ui::a11y::hash_key(&self.panel_hit_identity(hit).0)))
+                .then(|| hit.clone())
+        });
+        if let Some(hit) = hit {
+            if self.read_only() && !matches!(hit, PanelHit::Close) {
+                return Some(false);
+            }
+            return Some(match action {
+                ui::a11y::Action::Focus => {
+                    self.set_focus(true);
+                    true
+                }
+                ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck => {
+                    self.apply_panel_hit(state, hit);
+                    true
+                }
+                _ => false,
+            });
+        }
+        Some(self.perform_styles_field_action(target, action, state))
+    }
+
+    fn perform_styles_field_action(
+        &mut self,
+        target: Option<u64>,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        if self.read_only() {
+            return false;
+        }
+        if matches!(action, ui::a11y::Action::Focus) {
+            self.set_focus(true);
+        }
+        let field = self.num_inputs.iter().find_map(|slot| {
+            (target == Some(ui::a11y::hash_key(&slot.field.semantic_target())))
+                .then_some(slot.field)
+        });
+        let performed = if let Some(field) = field {
+            if matches!(action, ui::a11y::Action::Focus) {
+                self.line_spacing.close();
+                self.style_pick.close();
+                Widget::set_focus(&mut self.line_spacing, false);
+                Widget::set_focus(&mut self.style_pick, false);
+                self.focus_hosted(Some(field), false);
+                true
+            } else {
+                let Some(slot) = self.num_inputs.iter_mut().find(|slot| slot.field == field) else {
+                    return false;
+                };
+                Widget::perform_action(&mut slot.input, action, &[], state, &automerge::ROOT)
+            }
+        } else {
+            if matches!(action, ui::a11y::Action::Focus) {
+                self.focus_hosted(None, false);
+                Widget::set_focus(&mut self.line_spacing, false);
+                Widget::set_focus(&mut self.style_pick, false);
+            }
+            let menu = if target == Some(ui::a11y::hash_key(&"word-processor.styles:line-spacing"))
+            {
+                &mut self.line_spacing
+            } else if target == Some(ui::a11y::hash_key(&"word-processor.styles:style")) {
+                &mut self.style_pick
+            } else {
+                return false;
+            };
+            if matches!(action, ui::a11y::Action::Focus) {
+                Widget::set_focus(menu, true);
+                true
+            } else {
+                Widget::perform_action(menu, action, &[], state, &automerge::ROOT)
+            }
+        };
+        if performed {
+            self.drain_hosted_fields(state);
+            self.lifecycle.dirty = true;
+        }
+        performed
+    }
+
     /// Assemble the full accessibility node tree: a `Role::Document` root holding
     /// one node per block (headings with level, paragraphs/list items with text,
     /// images with alt text, tables as `Role::Table`/`Role::Cell`), followed by
@@ -5984,6 +6379,9 @@ impl WordProcessorWidget {
     pub fn accessibility_tree(&self) -> A11yTreeNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 
+        if self.styles_panel_full_window() {
+            return self.styles_page_accessibility_tree();
+        }
         let mut children: Vec<A11yTreeNode> = Vec::new();
         let mut i = 0usize;
         while let Some(b) = self.blocks.get(i) {
@@ -6761,8 +7159,7 @@ impl WordProcessorWidget {
             let mut row_h = 26.0f64;
             for c in 0..ncols {
                 if let Some(cell) = cells.iter().find(|cl| cell_rc(cl) == (r, c)) {
-                    let (runs, underlines, strikes) =
-                        block_runs_markup(cell, self.review.is_visible());
+                    let (runs, underlines, strikes) = block_runs(cell, self.review.is_visible());
                     let wrap_w = num::f32_of_f64((col_w - 2.0 * layout.cell_padding).max(24.0));
                     let align = block_align(cell, TextAlign::Left);
                     let key = shape_key(&ShapeKeyInput {
@@ -7078,7 +7475,7 @@ impl WordProcessorWidget {
         };
         let wrap_w =
             (fg.content_w - num::f32_of_f64(indent) - num::f32_of_f64(float_reserve)).max(40.0);
-        let (runs, underlines, strikes) = block_runs_markup(b, self.review.is_visible());
+        let (runs, underlines, strikes) = block_runs(b, self.review.is_visible());
         let align = block_align(b, style_align(&st.align));
         let family = parse_font(&st.font);
         // The paragraph's line-spacing multiplier (1.0 = single) scales the
@@ -8722,7 +9119,7 @@ impl WordProcessorWidget {
             return;
         }
         // Any left press dismisses a staged toast (a transient cue).
-        if self.toast.take().is_some() {
+        if self.toast.dismiss() {
             self.lifecycle.dirty = true;
         }
         if !self.rect.contains(self.pointer) {
@@ -8803,13 +9200,13 @@ impl WordProcessorWidget {
         }
         // A drawer over the page dismisses on a press on its scrim, instead
         // of placing a caret through it.
-        if self.inspector_drawer.press_dismisses(self.pointer) {
+        if !self.styles_panel_full_window() && self.inspector_drawer.press_dismisses(self.pointer) {
             self.view.styles_panel_visible = false;
             self.lifecycle.dirty = true;
             *handled = true;
             return true;
         }
-        if self.outline_drawer.press_dismisses(self.pointer) {
+        if !self.styles_panel_full_window() && self.outline_drawer.press_dismisses(self.pointer) {
             if self.outline.is_open() {
                 self.outline.toggle();
             }
@@ -9548,7 +9945,7 @@ impl WordProcessorWidget {
         }
         // Ctrl+O opens a document in place of the current one.
         if s.eq_ignore_ascii_case("o") {
-            self.invoke_effect(&WordProcessorEffect::Open { path: None });
+            self.invoke_effect(&WordProcessorEffect::OpenDocument { path: None });
             *handled = true;
             return;
         }
@@ -9645,6 +10042,15 @@ impl WordProcessorWidget {
     }
 }
 
+/// Whether `effect` answers its caller once its edit applied.
+fn answers_later(effect: &WordProcessorEffect) -> bool {
+    use ui::tilo_resource::Effect as _;
+    let id = effect.id();
+    WordProcessorEffect::declarations()
+        .iter()
+        .any(|declaration| declaration.id == id && declaration.is_job())
+}
+
 impl WordProcessorWidget {
     /// Apply a synchronous command or view operation. Returns `Ok(false)`
     /// when `type_id` is not this widget's.
@@ -9664,6 +10070,9 @@ impl WordProcessorWidget {
         cx: &mut ui::framework::EffectCx<crate::framework::Document, Self>,
     ) -> ui::framework::EffectAnswer {
         use ui::framework::Effected;
+        if let Some(answer) = self.answer_edit_effect(&effect, cx) {
+            return answer;
+        }
         if let Some(movement) = effect.view_operation()? {
             let doc = cx.document().ok_or("the document is not at hand")?.clone();
             // A delivered invocation by a participant (an agent task) moves
@@ -9676,10 +10085,10 @@ impl WordProcessorWidget {
             return Ok(Effected::done());
         }
         match effect {
-            WordProcessorEffect::Open { path: Some(path) } => {
+            WordProcessorEffect::OpenDocument { path: Some(path) } => {
                 self.open_in_place(cx, std::path::Path::new(&path))?;
             }
-            WordProcessorEffect::Open { path: None } => {
+            WordProcessorEffect::OpenDocument { path: None } => {
                 return Ok(
                     cx.choose_path(open_request(), |editor, path, cx| match path {
                         Some(path) => {
@@ -9741,7 +10150,11 @@ impl WordProcessorWidget {
             .map_err(|error| format!("could not open {}: {error}", path.display()))?;
         let format = WpFormat::from_path(path);
         let action = crate::import_action(&bytes, format, self.inner.content_store())?;
-        cx.apply(&action);
+        let dispatch = cx.dispatcher();
+        dispatch.group(|| {
+            dispatch.submit(crate::model::edit(&action));
+            dispatch.submit(crate::model::Document::ADOPT_COMMENTS.invoke());
+        });
         self.set_file(path.to_path_buf(), format);
         self.scroll_y = 0.0;
         // The whole body changes; per-block caches keyed by id/text go stale.
@@ -9797,6 +10210,18 @@ impl Widget for WordProcessorWidget {
     }
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        if self.styles_panel_full_window() {
+            let viewport = self.panel_body.height();
+            return Some(ui::widget::PrimaryScrollRegion {
+                key: "styles",
+                owner_generation: None,
+                metrics: ui::widget::ScrollMetrics::new(
+                    self.panel_max_scroll + viewport,
+                    viewport,
+                    self.panel_scroll,
+                ),
+            });
+        }
         Some(ui::widget::PrimaryScrollRegion {
             key: "primary",
             owner_generation: None,
@@ -9826,7 +10251,11 @@ impl Widget for WordProcessorWidget {
         if next == region.metrics.offset {
             return PrimaryScrollResult::Unchanged(region);
         }
-        self.scroll_y = next;
+        if self.styles_panel_full_window() {
+            self.panel_scroll = next;
+        } else {
+            self.scroll_y = next;
+        }
         self.lifecycle.dirty = true;
         self.primary_vertical_scroll().map_or(
             PrimaryScrollResult::Unsupported,
@@ -9897,6 +10326,7 @@ impl Widget for WordProcessorWidget {
         // participant's own applied edit hands over its next view.
         let now = ui::time::now();
         self.participants.adopt_outcomes(state, now);
+        self.adopt_local_outcome(state);
         self.participants.rebase(state);
         self.participants.expire(now);
         self.resolve_bound_edits(state);
@@ -9944,31 +10374,15 @@ impl Widget for WordProcessorWidget {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.window_history.tree_rebuilt();
-        // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
-        // cannot actually return `Err` for a fresh leaf (see the
-        // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
-        // `Widget::build_layout` returns a bare `NodeId` across every
-        // implementor, so there is nowhere to surface a theoretical error.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
-        )]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.fill_leaf(node_map, self)
     }
 
     /// Authored chrome keeps its retained toolkit children available to the
     /// host's normal resource, custody and invocation traversal.
     fn children(&self) -> Vec<&dyn Widget> {
+        if self.styles_panel_full_window() {
+            return Vec::new();
+        }
         let mut children: Vec<&dyn Widget> = vec![&self.tool_bar];
         if let Some(button) = self.window_history.button() {
             children.push(button);
@@ -9977,6 +10391,9 @@ impl Widget for WordProcessorWidget {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.styles_panel_full_window() {
+            return Vec::new();
+        }
         let mut children: Vec<&mut (dyn Widget + '_)> = vec![&mut self.tool_bar];
         if let Some(button) = self.window_history.button_mut() {
             children.push(button);
@@ -9999,13 +10416,7 @@ impl Widget for WordProcessorWidget {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -10271,11 +10682,35 @@ impl Widget for WordProcessorWidget {
     /// children so AccessKit, AT-SPI and the built-in reader all receive it.
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         let mut tree = self.accessibility_tree();
-        tree.node = tree.node.with_name(t("a11y-document-editor"));
-        Some(tree.into_access_node())
+        if !self.styles_panel_full_window() {
+            tree.node = tree.node.with_name(t("a11y-document-editor"));
+        }
+        let mut node = tree.into_access_node();
+        node.children.extend(self.toast.access_node());
+        Some(node)
     }
 
-    fn perform_action_at(
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ui::widget::ModelPath,
+    ) -> bool {
+        fn published(node: &ui::a11y::AccessNode, target: &str) -> bool {
+            node.action_target.as_deref() == Some(target)
+                || node.children.iter().any(|child| published(child, target))
+        }
+        if !self
+            .accessibility()
+            .is_some_and(|node| published(&node, target))
+        {
+            return false;
+        }
+        ui::Widget::perform_action(self, action, &[ui::a11y::hash_key(&target)], state, path)
+    }
+
+    fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
@@ -10283,6 +10718,9 @@ impl Widget for WordProcessorWidget {
         path: &ui::widget::ModelPath,
     ) -> bool {
         let (state, path) = ui::doc::document(state, path);
+        if let Some(result) = self.perform_styles_page_action(action, key_path, state) {
+            return result;
+        }
         if matches!(action, ui::a11y::Action::Focus) {
             if let Some(target) = key_path.last().copied() {
                 let palette_target = if ui::a11y::hash_key(&"compact-swatch:clear") == target {
@@ -10367,6 +10805,17 @@ impl Widget for WordProcessorWidget {
     fn test_id(&self) -> Option<&str> {
         Some("word_processor")
     }
+    fn claims_raw_touch(&self, point: Point) -> bool {
+        self.segmented_rects()
+            .iter()
+            .flatten()
+            .any(|rect| rect.contains(point))
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.segmented_touch.is_active()
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -10387,14 +10836,30 @@ impl Widget for WordProcessorWidget {
         self.lifecycle.focused
     }
     fn ime_cursor_rect(&self) -> Option<Rect> {
-        if self.find.is_open() {
+        if self.styles_panel_full_window() {
+            self.num_inputs
+                .iter()
+                .find(|slot| {
+                    Some(slot.field) == self.editing_field
+                        && self.visible_styles_rect(slot.rect).is_some()
+                })
+                .and_then(|slot| Widget::ime_cursor_rect(&slot.input))
+        } else if self.find.is_open() {
             self.find.ime_cursor_rect()
         } else {
             self.ime_rect
         }
     }
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        if self.find.is_open() {
+        if self.styles_panel_full_window() {
+            self.num_inputs
+                .iter()
+                .find(|slot| {
+                    Some(slot.field) == self.editing_field
+                        && self.visible_styles_rect(slot.rect).is_some()
+                })
+                .and_then(|slot| Widget::ime_purpose(&slot.input))
+        } else if self.find.is_open() {
             self.find.ime_purpose()
         } else {
             Some(winit::window::ImePurpose::Normal)
@@ -11015,7 +11480,7 @@ impl WordProcessorWidget {
     pub(crate) fn remote_typing_overlays(
         &self,
         presence: &PresenceCtx,
-        now: ui::clock::Instant,
+        now: ui::time::Instant,
     ) -> Vec<(UserId, Vec<(Rect, f32)>)> {
         let mut out = Vec::new();
         for l in &self.laid {
@@ -11595,6 +12060,104 @@ impl WordProcessorWidget {
             .map_or(16.5, |k| self.sheet.get(&k).size)
     }
 
+    fn segmented_rects(&self) -> [Vec<Rect>; 3] {
+        if self.modal_capture().is_some()
+            || self.color_picker.is_open()
+            || self.compact_swatch_palette.is_open()
+        {
+            return std::array::from_fn(|_| Vec::new());
+        }
+        let align = self
+            .panel_hits
+            .iter()
+            .filter_map(|(rect, hit)| matches!(hit, PanelHit::ParaAlign(_)).then_some(*rect))
+            .collect();
+        let placement = self
+            .panel_hits
+            .iter()
+            .filter_map(|(rect, hit)| {
+                matches!(
+                    hit,
+                    PanelHit::ImageInline
+                        | PanelHit::ImageFreePosition
+                        | PanelHit::ImageWrapLeft
+                        | PanelHit::ImageWrapRight
+                )
+                .then_some(*rect)
+            })
+            .collect();
+        let font = self
+            .panel_hits
+            .iter()
+            .filter_map(|(rect, hit)| matches!(hit, PanelHit::SetFont(_)).then_some(*rect))
+            .collect();
+        [align, placement, font]
+    }
+
+    fn handle_segmented_touch(
+        &mut self,
+        touch: &winit::event::Touch,
+        scale: f64,
+        edits: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        let [align, placement, font] = self.segmented_rects();
+        let current = self.current_align();
+        let selected_align = ["left", "center", "right", "justify"]
+            .iter()
+            .position(|value| *value == current)
+            .unwrap_or(ui::widget::toggle_group::NONE_CHOSEN);
+        let image = self.selected_image_id();
+        let selected_placement = self
+            .blocks
+            .iter()
+            .find(|block| Some(&block.id) == image.as_ref())
+            .map_or(ui::widget::toggle_group::NONE_CHOSEN, |block| {
+                match (image_anchor(block), image_wrap(block)) {
+                    ("page", _) => 1,
+                    (_, "left") => 2,
+                    (_, "right") => 3,
+                    _ => 0,
+                }
+            });
+        let selected_font = self.focused_style_key().map_or(0, |key| {
+            ["sans", "serif", "mono"]
+                .iter()
+                .position(|value| *value == self.sheet.get(&key).font)
+                .unwrap_or(0)
+        });
+        let groups = [
+            SegmentedTouchGroup::new(0, &align, selected_align),
+            SegmentedTouchGroup::new(1, &placement, selected_placement),
+            SegmentedTouchGroup::new(2, &font, selected_font),
+        ];
+        let result = self.segmented_touch.handle(touch, scale, &groups);
+        if let SegmentedTouchResult::Selected { group, index } = result {
+            let hit = match group {
+                0 => ["left", "center", "right", "justify"]
+                    .get(index)
+                    .copied()
+                    .map(PanelHit::ParaAlign),
+                1 => [
+                    PanelHit::ImageInline,
+                    PanelHit::ImageFreePosition,
+                    PanelHit::ImageWrapLeft,
+                    PanelHit::ImageWrapRight,
+                ]
+                .get(index)
+                .cloned(),
+                2 => ["sans", "serif", "mono"]
+                    .get(index)
+                    .copied()
+                    .map(PanelHit::SetFont),
+                _ => None,
+            };
+            if let Some(hit) = hit {
+                self.apply_panel_hit(edits, hit);
+            }
+        }
+        result.handled()
+    }
+
     fn current_align(&self) -> String {
         self.blocks
             .iter()
@@ -11938,16 +12501,24 @@ impl WordProcessorWidget {
             }
             CtxAction::SelectAll => self.select_all_via_primitive(state),
             CtxAction::AddToDictionary(word) => {
-                if self.proofing.personal_words.add(&word) {
+                if self.proofing.personal {
+                    let result = ui::personal_dictionary::snapshot().and_then(|snapshot| {
+                        ui::personal_dictionary::edit(
+                            snapshot.revision,
+                            ui::personal_dictionary::Edit::Add(ui::personal_dictionary::Word::new(
+                                &word, None,
+                            )?),
+                        )
+                    });
+                    if let Err(error) = result {
+                        eprintln!("word-processor: could not keep the shared word: {error}");
+                    }
+                    self.dict = None;
+                    self.spell_cache.clear();
+                } else if self.proofing.personal_words.add(&word) {
                     // Keep it with the person's settings, then build the
                     // dictionary again so every block re-checks and the
                     // squiggle clears on the next draw.
-                    if let Some(personal) = &self.proofing.personal {
-                        let words = self.proofing.personal_words.clone();
-                        if let Err(error) = personal.set(words) {
-                            eprintln!("word-processor: could not keep the word: {error}");
-                        }
-                    }
                     self.dict = None;
                     self.spell_cache.clear();
                 }
@@ -11997,7 +12568,8 @@ impl WordProcessorWidget {
                 if self.sheet.remove(&id) {
                     self.persist_stylesheet_via_actions(state);
                     self.refresh_blocks(state);
-                    self.toast = Some((t("toast-style-deleted"), ToastKind::Success));
+                    self.toast
+                        .show(t("toast-style-deleted"), ToastKind::Success);
                 }
             }
             StyleMenuAction::Duplicate(id) => {
@@ -12009,7 +12581,8 @@ impl WordProcessorWidget {
                     // Apply the copy to the caret block so the panel focuses it.
                     self.dispatch_apply_named_style(state, &new_id);
                     self.refresh_blocks(state);
-                    self.toast = Some((t("toast-style-duplicated"), ToastKind::Success));
+                    self.toast
+                        .show(t("toast-style-duplicated"), ToastKind::Success);
                 }
             }
         }
@@ -12076,7 +12649,8 @@ impl WordProcessorWidget {
 
     fn open_comment_thread(&mut self, comment: &str) {
         if !self.review.comments().iter().any(|item| item.id == comment) {
-            self.toast = Some((t("review-thread-unavailable"), ToastKind::Error));
+            self.toast
+                .show(t("review-thread-unavailable"), ToastKind::Error);
             return;
         }
         self.thread_comment = Some(comment.to_string());
@@ -12116,14 +12690,14 @@ impl WordProcessorWidget {
         if draft.is_empty() {
             return;
         }
-        let action = crate::actions::RichTextAction::ReplyToComment {
-            comment,
-            author: t("review-you"),
-            date: String::new(),
-            text: draft.plain_text().trim().to_owned(),
-            body: draft.clip_blocks(),
-        };
-        self.perform_action(state, &action);
+        self.perform_verb(
+            state,
+            crate::model::DocumentAction::ReplyToComment(crate::model::document::ReplyToComment {
+                comment: ui::tilo_resource::Id::from_raw(comment),
+                text: draft.plain_text().trim().to_owned(),
+                body: Some(draft.clip_blocks()),
+            }),
+        );
         self.thread_reply.widget_mut().source_mut().clear();
         self.thread_reply.widget_mut().present_now();
         self.refresh_blocks(state);
@@ -12200,28 +12774,27 @@ impl WordProcessorWidget {
     /// or resolve (delete) a comment. Refreshes the materialized blocks +
     /// comments/changes so the acted-on item disappears, and flags an undo point.
     fn dispatch_review_action(&mut self, action: ReviewAction, state: &mut ui::widget::Edits<'_>) {
-        let typed = match action {
-            ReviewAction::AcceptChange(id) => {
-                crate::actions::RichTextAction::AcceptChanges { id: Some(id) }
+        use crate::model::{DocumentAction, document};
+        let verb = match action {
+            ReviewAction::AcceptChange(change) => {
+                DocumentAction::AcceptChange(document::AcceptChange { change })
             }
-            ReviewAction::RejectChange(id) => {
-                crate::actions::RichTextAction::RejectChanges { id: Some(id) }
+            ReviewAction::RejectChange(change) => {
+                DocumentAction::RejectChange(document::RejectChange { change })
             }
-            ReviewAction::AcceptAllChanges => {
-                crate::actions::RichTextAction::AcceptChanges { id: None }
-            }
-            ReviewAction::RejectAllChanges => {
-                crate::actions::RichTextAction::RejectChanges { id: None }
-            }
-            ReviewAction::ResolveComment(id) => {
-                crate::actions::RichTextAction::ResolveComment { id }
+            ReviewAction::AcceptAllChanges => DocumentAction::AcceptAllChanges(().into()),
+            ReviewAction::RejectAllChanges => DocumentAction::RejectAllChanges(().into()),
+            ReviewAction::ResolveComment(comment) => {
+                DocumentAction::ResolveComment(document::ResolveComment {
+                    comment: ui::tilo_resource::Id::from_raw(comment),
+                })
             }
             ReviewAction::OpenCommentThread(id) => {
                 self.open_comment_thread(&id);
                 return;
             }
         };
-        self.perform_action(state, &typed);
+        self.perform_verb(state, verb);
         self.refresh_blocks(state);
         // Accepting/rejecting can change body text (an accepted deletion removes
         // glyphs, a rejected insertion removes them); the spell cache is keyed by
@@ -12370,7 +12943,7 @@ impl WordProcessorWidget {
                     .map(|slot| slot.field)
             })
             .flatten();
-        let zoom = self.zoom_rect.contains(pointer);
+        let zoom = !self.styles_panel_full_window() && self.zoom_rect.contains(pointer);
         self.focus_hosted(field, zoom);
         if let Some(field) = field {
             if let Some(slot) = self.num_inputs.iter_mut().find(|s| s.field == field) {
@@ -12395,12 +12968,31 @@ impl WordProcessorWidget {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
+        let foreground = self.styles_panel_full_window();
+        let body = self.panel_body;
         if let Some(field) = self.editing_field {
-            if let Some(slot) = self.num_inputs.iter_mut().find(|s| s.field == field) {
-                Self::forward(&mut slot.input, event, ctx);
-            }
+            let Some(slot) = self.num_inputs.iter_mut().find(|slot| {
+                let visible = slot.rect.intersect(body);
+                slot.field == field
+                    && (!foreground || (visible.width() > 0.0 && visible.height() > 0.0))
+            }) else {
+                return false;
+            };
+            Self::forward(&mut slot.input, event, ctx);
             true
-        } else if Widget::is_focused(&self.zoom_input) {
+        } else if foreground
+            && self.visible_styles_rect(self.line_spacing_rect).is_some()
+            && Widget::is_focused(&self.line_spacing)
+        {
+            Self::forward(&mut self.line_spacing, event, ctx);
+            true
+        } else if foreground
+            && self.visible_styles_rect(self.style_pick_rect).is_some()
+            && Widget::is_focused(&self.style_pick)
+        {
+            Self::forward(&mut self.style_pick, event, ctx);
+            true
+        } else if !foreground && Widget::is_focused(&self.zoom_input) {
             Self::forward(&mut self.zoom_input, event, ctx);
             true
         } else {
@@ -12626,7 +13218,19 @@ impl WordProcessorWidget {
         } else {
             self.outline.clear_frame();
         }
-        if self.inspector_drawer.sidebar_rect().width() > 0.5 {
+        if self.styles_panel_full_window() {
+            // A compact inspector is a page, not floating chrome. Use the
+            // same material and breakpoint as shared full-window dialogs.
+            ui::floating_surface::paint_material(
+                scene,
+                transform,
+                &self.rect,
+                ui::floating_surface::Material::Opaque,
+                theme,
+            );
+            let local = theme.on_ground(ui::chrome::panel_ground(theme));
+            self.draw_styles_panel(scene, transform, text_renderer, &local, self.rect);
+        } else if self.inspector_drawer.sidebar_rect().width() > 0.5 {
             self.inspector_drawer.draw_scrim(scene, transform, theme);
             let local = self.inspector_drawer.paint_panel(scene, transform, theme);
             let panel = self.inspector_drawer.sidebar_rect();
@@ -12726,6 +13330,51 @@ impl WordProcessorWidget {
         }
         self.toolbar
             .push((ToolAction::ToggleStyles, self.inspector_toggle));
+    }
+
+    /// Hosted controls receive input first; the foreground Styles page
+    /// consumes remaining text instead of editing the displaced document.
+    fn route_styles_page_key(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        if !self.styles_panel_full_window() {
+            return false;
+        }
+        match event {
+            // Only application file commands may leave the foreground page.
+            // Formatting, clipboard and deletion shortcuts belong to its
+            // hosted fields (which have already received the event).
+            WindowEvent::KeyboardInput { event: key, .. }
+                if (ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key())
+                    && matches!(&key.logical_key, Key::Character(key)
+                        if key.eq_ignore_ascii_case("s") || key.eq_ignore_ascii_case("o")) =>
+            {
+                false
+            }
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                if key.state == ElementState::Pressed
+                    && key.logical_key == Key::Named(NamedKey::Escape)
+                {
+                    self.apply_panel_hit(&mut ctx.state, PanelHit::Close);
+                }
+                *ctx.handled = true;
+                true
+            }
+            WindowEvent::Ime(_)
+            | WindowEvent::DroppedFile(_)
+            | WindowEvent::HoveredFile(_)
+            | WindowEvent::HoveredFileCancelled
+            | WindowEvent::MouseInput {
+                state: ElementState::Released,
+                ..
+            } => {
+                *ctx.handled = true;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Route an event to the toolbar: hover always, presses inside its band,
@@ -12901,6 +13550,19 @@ impl WordProcessorWidget {
         reason = "the widget's single event entry point routes each window event to overlays, panels and the editor in priority order"
     )]
     fn route_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.styles_panel_full_window() {
+            // Displaced document overlays cannot act above the Styles page.
+            self.context_menu.close();
+            if self.thread_comment.is_some() {
+                self.close_comment_thread();
+            }
+        }
+        if let WindowEvent::Touch(touch) = event
+            && self.handle_segmented_touch(touch, ctx.scale_factor, &mut ctx.state)
+        {
+            *ctx.handled = true;
+            return;
+        }
         let shift = ctx.modifiers.state().shift_key();
         let ctrl = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
         // An open menu owns input until selection or dismissal. Forward
@@ -12986,10 +13648,13 @@ impl WordProcessorWidget {
         if comment_thread_handled {
             return;
         }
-        if self.route_toolbar_event(event, ctx) {
+        if !self.styles_panel_full_window() && self.route_toolbar_event(event, ctx) {
             return;
         }
         if self.route_hosted_fields(event, ctx) {
+            return;
+        }
+        if self.route_styles_page_key(event, ctx) {
             return;
         }
         let tb_h = self.tool_band.height();
