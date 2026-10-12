@@ -83,3 +83,5 @@ store-draft-report = Started a report about { $app_id }
 store-record-moderation-case = The registry opened case { $case_id }: { $status }
 store-report-note = Described the concern of a report
 store-reports-reports = Edited a report
+
+store-source-partial = Some repositories are unavailable. Other apps remain available.
