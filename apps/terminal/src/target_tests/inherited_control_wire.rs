@@ -1,7 +1,7 @@
 //! Native standalone sessions over one real inherited connection, never scripted opens.
 use super::{App, OpenState, Requester, SessionTarget, Sessions, TerminalWidget, on_tab, recorded};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::fd::{AsRawFd, IntoRawFd};
+use std::os::fd::{AsFd, BorrowedFd, IntoRawFd};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
@@ -85,9 +85,13 @@ fn serve_native_sessions(mut control: UnixStream) {
         let mut bytes = serde_json::to_vec(&response).unwrap();
         bytes.push(b'\n');
         runtime_portal::fd_transport::send_with_fds(
-            control.as_raw_fd(),
+            &control,
             &bytes,
-            &[pair.master.as_raw_fd().unwrap(), terminal.as_raw_fd()],
+            &[
+                // SAFETY: `pair` owns the master and outlives this call.
+                unsafe { BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
+                terminal.as_fd(),
+            ],
         )
         .unwrap();
         drop(pair);
@@ -205,9 +209,9 @@ fn an_invalid_session_reply_closes_both_received_rights() {
         let (mut master_peer, master) = UnixStream::pair().unwrap();
         let (mut lease_peer, lease) = UnixStream::pair().unwrap();
         runtime_portal::fd_transport::send_with_fds(
-            server.as_raw_fd(),
+            &server,
             b"{\"result\":\"session\",\"protocol\":1}\n",
-            &[master.as_raw_fd(), lease.as_raw_fd()],
+            &[master.as_fd(), lease.as_fd()],
         )
         .unwrap();
         drop(master);

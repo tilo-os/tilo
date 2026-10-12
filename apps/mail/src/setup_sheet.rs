@@ -75,6 +75,8 @@ pub(crate) struct SetupFields {
     imap_tls: LocalState<bool>,
     smtp_tls: LocalState<bool>,
     auth: LocalState<AuthMethod>,
+    import_pending: LocalState<bool>,
+    oauth_source: LocalState<Option<AccountConfig>>,
     /// The browser sign-in provider the address belongs to, if any.
     provider: LocalState<Option<OAuthProvider>>,
     /// Why the last save, sign-in or discovery failed.
@@ -104,6 +106,8 @@ impl SetupFields {
             imap_tls: LocalState::new(cfg.imap_tls),
             smtp_tls: LocalState::new(cfg.smtp_tls),
             auth: LocalState::new(cfg.auth),
+            import_pending: LocalState::new(cfg.import_pending),
+            oauth_source: LocalState::new(None),
             provider: LocalState::new(
                 cfg.email
                     .split_once('@')
@@ -168,7 +172,7 @@ impl SetupFields {
     }
 
     pub(crate) fn provider(&self) -> Option<OAuthProvider> {
-        self.provider.with(|provider| *provider)
+        OAuthProvider::for_account(&self.value(EMAIL), &self.value(IMAP_HOST))
     }
 
     pub(crate) fn set_provider(&self, provider: Option<OAuthProvider>) {
@@ -228,6 +232,26 @@ impl SetupFields {
             imap_tls: self.tls(Server::Incoming),
             smtp_tls: self.tls(Server::Outgoing),
             auth,
+            import_pending: self.import_pending.with(|pending| *pending)
+                && (auth == AuthMethod::OAuth
+                    || self.provider().is_some()
+                    || self.value(PASSWORD).trim().is_empty()),
+        }
+    }
+
+    /// Fence the secure handoff to the account configuration the person reviewed.
+    pub(crate) fn expect_oauth(&self) {
+        self.oauth_source.set(Some(self.config()));
+    }
+
+    pub(crate) fn complete_oauth(&self, account: &str) {
+        let current = self.config();
+        let matches = self
+            .oauth_source
+            .with(|source| source.as_ref() == Some(&current) && current.email.trim() == account);
+        if matches {
+            self.import_pending.set(false);
+            self.oauth_source.set(None);
         }
     }
 
@@ -696,3 +720,6 @@ impl SetupSheet {
         }
     }
 }
+
+#[cfg(test)]
+mod import_tests;

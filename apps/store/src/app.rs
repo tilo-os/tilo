@@ -376,6 +376,8 @@ fn publisher_of(item: &StoreItem) -> (String, String) {
     )
 }
 
+type LaunchCompletion = Result<(String, Option<serde_json::Value>), String>;
+
 /// Root widget.
 #[allow(
     clippy::struct_excessive_bools,
@@ -395,7 +397,7 @@ pub struct StoreApp {
     pub(crate) package_content: Option<ui::framework::content::ContentStore>,
     pub(crate) imported_review: Option<(String, String, String)>,
     launch_requests: Vec<ui::collaboration::CollabRequest>,
-    pending_launches: HashMap<u64, std::sync::mpsc::Sender<Result<String, String>>>,
+    pending_launches: HashMap<u64, std::sync::mpsc::Sender<LaunchCompletion>>,
     next_launch_request: Option<u64>,
     /// Merged item feed.
     items: Vec<StoreItem>,
@@ -998,9 +1000,10 @@ impl ui::widget::Collaborative for StoreApp {
             return;
         };
         let result = match result {
-            Ok((_, ui::tilo_actions::InvocationUpdate::Succeeded { .. })) => {
-                Ok(ui::i18n!("store-launch-opened").as_str().to_owned())
-            }
+            Ok((_, ui::tilo_actions::InvocationUpdate::Succeeded { output, .. })) => Ok((
+                ui::i18n!("store-launch-opened").as_str().to_owned(),
+                output.value.clone(),
+            )),
             Ok((_, ui::tilo_actions::InvocationUpdate::Failed { error, .. })) => {
                 Err(error.message.clone())
             }
@@ -1947,6 +1950,7 @@ impl StoreApp {
             (launch.app_id.as_str(), ActionKind::Open)
         };
         self.active_operation = Some((item.to_owned(), kind));
+        let returns_window = kind == ActionKind::Open;
         self.structure_dirty = true;
         let (reply, result) = std::sync::mpsc::channel();
         self.pending_launches.insert(request_id, reply);
@@ -1971,10 +1975,14 @@ impl StoreApp {
                 app.active_operation = None;
                 app.structure_dirty = true;
                 match result {
-                    Ok(status) => {
+                    Ok((status, window)) => {
                         app.status_line.clone_from(&status);
                         app.operation_error = None;
-                        Ok(Effected::done())
+                        if returns_window {
+                            Ok(Effected::value(serde_json::json!({"launch": window})))
+                        } else {
+                            Ok(Effected::done())
+                        }
                     }
                     Err(error) => {
                         app.show_failure(&error);

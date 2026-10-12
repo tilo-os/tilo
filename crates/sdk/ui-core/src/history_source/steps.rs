@@ -1163,6 +1163,50 @@ pub fn checkpoints(doc: &AutoCommit) -> Vec<Checkpoint> {
 /// Names what a version can be, and the checkpoints there are.
 pub fn resolve(doc: &AutoCommit, version: &str) -> Result<Vec<ChangeHash>, String> {
     let version = version.trim();
+    // Full hashes are immutable identities, even if a mutable checkpoint has
+    // the same name. Abbreviated hashes retain the legacy name-first behavior.
+    if version.len() == 64 && version.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        let hash = version
+            .parse::<ChangeHash>()
+            .map_err(|error| error.to_string())?;
+        return doc
+            .get_change_by_hash(&hash)
+            .map(|_| vec![hash])
+            .ok_or_else(|| "The exact version contains an unknown change.".into());
+    }
+    // Exact frontiers returned by historical reads can have concurrent heads.
+    // Only full hashes are accepted here: abbreviated compound frontiers would
+    // otherwise require ambiguous prefix resolution for every component.
+    if version.contains('+') {
+        let parts: Vec<&str> = version.split('+').collect();
+        if parts.len() > 64 {
+            return Err("A causal frontier has at most 64 heads.".into());
+        }
+        let mut heads = Vec::with_capacity(parts.len());
+        for part in parts {
+            if part.len() != 64 || !part.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err("A causal frontier needs full change hashes separated by +.".into());
+            }
+            let hash = part
+                .parse::<ChangeHash>()
+                .map_err(|error| error.to_string())?;
+            if heads.contains(&hash) || doc.get_change_by_hash(&hash).is_none() {
+                return Err("A causal frontier contains a duplicate or unknown head.".into());
+            }
+            heads.push(hash);
+        }
+        heads.sort_unstable();
+        let frozen = doc
+            .clone()
+            .fork_at(&heads)
+            .map_err(|error| error.to_string())?;
+        let mut canonical = frozen.base_heads();
+        canonical.sort_unstable();
+        if canonical != heads {
+            return Err("A causal frontier must not include an ancestor of another head.".into());
+        }
+        return Ok(heads);
+    }
     if let Some(found) = checkpoints(doc)
         .into_iter()
         .find(|checkpoint| checkpoint.name == version)
@@ -1285,6 +1329,147 @@ pub fn restore(
             format!("{ids:?} already match that version, or no item has those ids.")
         });
     }
+    Ok(written)
+}
+
+/// Maximum number of exact paths accepted by [`restore_paths`].
+pub const MAX_RESTORE_PATHS: usize = 256;
+/// Maximum byte length of one exact restore path.
+pub const MAX_RESTORE_PATH_BYTES: usize = 1024;
+
+/// Restore only the exact paths listed by [`changed_items`], writing forward
+/// through the same patch machinery as [`restore`]. A root path selects its
+/// entire value (including every descendant); `map/id` selects only that entry.
+/// Unlike `restore`, an empty selection never means the whole document.
+///
+/// Legacy history paths are not escaped. This API therefore refuses components
+/// containing `/` or `~`, and refuses ambiguous legacy paths rather than guessing.
+/// Bookkeeping cannot be selected. All paths must name differing items in this
+/// comparison; invalid selections are rejected together before any patch writes.
+/// Duplicate paths are harmless. Returns the number of patches written, not items.
+/// The caller owns the open transaction and its attribution/commit, as for `restore`.
+///
+/// # Errors
+/// Refuses empty/oversized selections, unknown heads, invalid, ambiguous or
+/// unchanged paths, entries whose collection was replaced (select the listed
+/// whole root instead), and comparisons with no applicable patches.
+pub fn restore_paths(
+    doc: &mut AutoCommit,
+    target_heads: &[ChangeHash],
+    paths: &[String],
+) -> Result<usize, String> {
+    if doc.pending_ops() != 0 {
+        return Err("Finish pending edits before restoring exact history paths.".into());
+    }
+    if paths.is_empty() || paths.len() > MAX_RESTORE_PATHS {
+        return Err(format!(
+            "Select 1 to {MAX_RESTORE_PATHS} exact history paths."
+        ));
+    }
+    let mut selected = HashSet::new();
+    for path in paths {
+        let parts: Vec<&str> = path.split('/').collect();
+        if path.len() > MAX_RESTORE_PATH_BYTES
+            || parts.len() > 2
+            || parts
+                .iter()
+                .any(|part| part.is_empty() || part.contains('~'))
+            || parts[0].starts_with(BOOKKEEPING_PREFIX)
+        {
+            return Err(format!("Invalid exact history path {path:?}."));
+        }
+        selected.insert((
+            parts[0].to_owned(),
+            parts.get(1).map(|part| (*part).to_owned()),
+        ));
+    }
+    if target_heads
+        .iter()
+        .any(|head| doc.get_change_by_hash(head).is_none())
+    {
+        return Err("The target version contains an unknown change.".into());
+    }
+    let current = doc.get_heads();
+    let patches = doc.diff(&current, target_heads);
+    let available = changed_items(doc, &current, target_heads);
+    for (root, entry) in &selected {
+        if entry.is_none() || selected.contains(&(root.clone(), None)) {
+            continue;
+        }
+        // Restoring an entry must not recreate or replace its collection: that
+        // would either hide the entry's writes or overwrite unselected siblings.
+        let live = doc
+            .get_at(automerge::ROOT, root.as_str(), &current)
+            .ok()
+            .flatten();
+        let past = doc
+            .get_at(automerge::ROOT, root.as_str(), target_heads)
+            .ok()
+            .flatten();
+        if !matches!((live, past),
+            (Some((automerge::Value::Object(ObjType::Map), live)),
+             Some((automerge::Value::Object(ObjType::Map), past))) if live == past)
+        {
+            return Err(format!(
+                "Select the whole root {root:?} to restore a replaced collection."
+            ));
+        }
+    }
+    for path in paths {
+        if !available.iter().any(|item| item.path == *path) {
+            return Err(format!(
+                "No differing item has exact history path {path:?}."
+            ));
+        }
+        // A root key containing a slash can collide with a collection entry in
+        // the legacy display. Never let that display choose between the two.
+        if patches.iter().filter_map(item_of).any(|(root, entry)| {
+            let legacy = entry
+                .as_ref()
+                .map_or_else(|| root.clone(), |key| format!("{root}/{key}"));
+            legacy == *path
+                && (root.contains(['/', '~']) || entry.is_some_and(|key| key.contains(['/', '~'])))
+        }) {
+            return Err(format!("Ambiguous legacy history path {path:?}."));
+        }
+    }
+    let keep = |patch: &Patch| {
+        if is_bookkeeping(patch) {
+            return false;
+        }
+        let Some(root) = root_key(patch) else {
+            return false;
+        };
+        if selected.contains(&(root.to_owned(), None)) {
+            return true;
+        }
+        // Use the actual second path component, not a bare key anywhere
+        // below the root (or a map key found inside a root sequence).
+        let entry = match patch.path.get(1) {
+            Some((_, Prop::Map(key))) => Some(key),
+            None if patch.path.len() == 1 => match &patch.action {
+                PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key } => Some(key),
+                _ => None,
+            },
+            Some(_) | None => None,
+        };
+        entry.is_some_and(|key| selected.contains(&(root.to_owned(), Some(key.clone()))))
+    };
+    // Keep the complete logical stream for sequence index translation. Do not
+    // suppress equal scalars in deleted objects: their parents are recreated
+    // under fresh ids, and those children must be populated again.
+    let patches: Vec<(Patch, bool)> = patches
+        .into_iter()
+        .map(|patch| {
+            let apply = keep(&patch);
+            (patch, apply)
+        })
+        .collect();
+    let written = patches.iter().filter(|(_, apply)| *apply).count();
+    if written == 0 {
+        return Err("The selected paths have no applicable restore patches.".into());
+    }
+    crate::state::write_selected_patches(doc, patches, target_heads, &current);
     Ok(written)
 }
 

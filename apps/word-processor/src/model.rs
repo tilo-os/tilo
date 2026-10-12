@@ -525,17 +525,13 @@ impl Document {
 const MAX_OBJECTS: usize = 64;
 
 fn attr_str<'a>(block: &'a tilo_doc::snapshot::BlockView, key: &str) -> Option<&'a str> {
-    match block.attrs.get(key) {
-        Some(tilo_doc::AttrVal::Str(value)) => Some(value.as_str()),
-        _ => None,
-    }
+    block.str_attr(key)
 }
 
 fn attr_index(block: &tilo_doc::snapshot::BlockView, key: &str) -> usize {
-    match block.attrs.get(key) {
-        Some(tilo_doc::AttrVal::Int(value)) => usize::try_from(*value).unwrap_or_default(),
-        _ => 0,
-    }
+    block
+        .int_attr(key)
+        .map_or(0, |value| usize::try_from(value).unwrap_or_default())
 }
 
 /// The paragraphs of an imported comment as one text.
@@ -549,23 +545,13 @@ fn joined(blocks: &[tilo_doc::snapshot::BlockView]) -> String {
 
 /// An imported comment's paragraph as the clipboard form a reply keeps.
 fn clip_block(block: &tilo_doc::snapshot::BlockView) -> ClipBlock {
-    let attr = |key: &str| block.attrs.get(key);
     ClipBlock {
         kind: block.kind.clone(),
         text: block.text.clone(),
         marks: block.marks.clone(),
-        level: match attr("level") {
-            Some(tilo_doc::AttrVal::Int(level)) => Some(*level),
-            _ => None,
-        },
-        ordered: match attr("ordered") {
-            Some(tilo_doc::AttrVal::Bool(ordered)) => Some(*ordered),
-            _ => None,
-        },
-        align: match attr("align") {
-            Some(tilo_doc::AttrVal::Str(align)) => Some(align.clone()),
-            _ => None,
-        },
+        level: block.int_attr("level"),
+        ordered: block.bool_attr("ordered"),
+        align: block.str_attr("align").map(str::to_owned),
         attrs: std::collections::BTreeMap::default(),
     }
 }

@@ -123,12 +123,22 @@ def cohort(vm, args, out):
     return receipt, shown, installed
 
 
-def mapped(vm, comm, installed, uid, out, *, executable=None):
+def mapped(vm, comm, installed, uid, out, *, executable=None, selected=None):
     source = Path(__file__).with_name("acceptance").joinpath("runtime_backing.py").read_text()
-    value = first_json(vm.root_exec("python3 -c " + shlex.quote(source) + " " + shlex.quote(comm) + " " + str(uid)))
+    selection = ""
+    if selected is not None:
+        pid, start = selected.get("peer_pid"), selected.get("peer_start_time_ticks")
+        require(type(pid) is int and pid > 0 and isinstance(start, str) and start.isdecimal(),
+                "authenticated native worker identity unavailable")
+        selection = " " + str(pid) + " " + shlex.quote(start)
+    value = first_json(vm.root_exec("python3 -c " + shlex.quote(source) + " " + shlex.quote(comm) + " " + str(uid) + selection))
     require(value.get("method") == "proc-map-files-fd" and value.get("reader_uid") == 0,
             "exact read-only mapped backing observation unavailable")
     require(value["uid"] == uid and value["processes"], "native worker unobservable")
+    if selected is not None:
+        require(len(value["processes"]) == 1 and value["processes"][0].get("pid") == pid
+                and value["processes"][0].get("start_time_ticks") == start,
+                "kernel backing observer returned a foreign worker")
     for process in value["processes"]:
         if executable is not None:
             require(process.get("executable", {}).get("sha256") == executable,
@@ -205,7 +215,7 @@ def package_flow(door, spec, local):
     installed = [row for row in inventory if row.get("package_id") == spec["app"]]
     require(len(installed) == 1 and installed[0]["version"] == spec["version"],
             "canonical installed inventory differs from reviewed version")
-    door.call("open", {"app": spec["app"]})
+    door.call("open-app", {"app": spec["app"]})
     require(wait_until(lambda: windows(door.vm.state(), spec["app"]), 60),
             "imported app never mapped")
     return {"route": "trusted-local" if local else "catalogue", "app": spec["app"], "root": spec["root"],
@@ -213,16 +223,9 @@ def package_flow(door, spec, local):
 
 
 def mapped_record(state, tab, application):
-    """Resolve a tab through the host's public launch association, never tab ID."""
-    record = state.get("workspace_tree", {}).get("local_app_records", {}).get(tab[1])
-    if record is None:
-        return None  # The toplevel may map before its launch association arrives.
-    require(isinstance(record, dict) and record.get("room") == tab[0]
-            and record.get("app_id") == application, "mapped tab has a foreign launch association")
-    instance = record.get("record_instance")
-    require(isinstance(instance, int) and not isinstance(instance, bool) and 0 < instance < 2**64,
-            "mapped tab record instance unavailable")
-    return f"derived:default@tab:{instance:016x}"
+    """Use the current kernel-bound certified checkout, never continuity aliases."""
+    worker = native_subject(state, tab, application)
+    return None if worker is None else worker["certified_checkout"]["record"]
 
 
 def fresh_browser(vm, out):
@@ -257,6 +260,54 @@ def fresh_browser(vm, out):
     result = wait_until(probe, 60)
     require(result, "queued Open did not create a new mapped tab and record; existing page left untouched")
     return AppDoor(vm, BROWSER, "browser.page", result[0], out), result[1]
+
+
+def browser_subject(state, tab):
+    return native_subject(state, tab, BROWSER)
+
+
+def native_subject(state, tab, application):
+    """Bind an exact public tab/record to its admitted native process lifetime."""
+    association = state.get("workspace_tree", {}).get("local_app_records", {}).get(tab[1])
+    if association is None:
+        return None
+    require(isinstance(association, dict) and association.get("room") == tab[0]
+            and association.get("app_id") == application
+            and type(association.get("record_instance")) is int
+            and 0 < association["record_instance"] < 2**64,
+            "mapped tab has a foreign or invalid launch association")
+    proof = state.get("chrome", {}).get("native_window_provenance")
+    require(isinstance(proof, dict) and proof.get("method") == "authenticated-wayland-peer"
+            and proof.get("omitted") == 0 and isinstance(proof.get("windows"), list),
+            "authenticated native worker provenance unavailable")
+    rows = [row for row in proof["windows"] if row.get("room") == tab[0]
+            and str(row.get("tab_id")) == tab[1] and str(row.get("surface_id")) == tab[2]]
+    require(len(rows) <= 1, "ambiguous authenticated native worker")
+    if not rows:
+        return None
+    worker = rows[0]
+    association = state["workspace_tree"]["local_app_records"][tab[1]]
+    require(worker.get("package_id") == application
+            and type(worker.get("record_instance")) is int
+            and worker["record_instance"] == association["record_instance"],
+            "native worker differs from the public launch record")
+    require(type(worker.get("peer_pid")) is int and worker["peer_pid"] > 0
+            and isinstance(worker.get("peer_start_time_ticks"), str)
+            and worker["peer_start_time_ticks"].isdecimal()
+            and int(worker["peer_start_time_ticks"]) > 0
+            and isinstance(worker.get("adoption_id"), str)
+            and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", worker["adoption_id"])
+            and worker["adoption_id"] != "00000000-0000-0000-0000-000000000000",
+            "native process lifetime or adoption unavailable")
+    checkout = worker.get("certified_checkout")
+    if checkout is None:
+        return None  # The admitted worker has not registered a certified directory yet.
+    require(isinstance(checkout, dict) and set(checkout) == {"application", "room", "record"}
+            and checkout["application"] == application and checkout["room"] == tab[0]
+            and isinstance(checkout["record"], str) and 0 < len(checkout["record"].encode()) <= 512
+            and not any(ord(char) < 32 for char in checkout["record"]),
+            "current certified checkout differs from the native worker")
+    return worker
 
 
 def example_url(value):

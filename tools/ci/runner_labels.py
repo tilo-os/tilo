@@ -63,6 +63,9 @@ LABELS = {
         "x86_64", "Imager and runtime builds on Intel macOS with Xcode", "macos-15-intel"),
     "imager-macos-aarch64": Label(
         "aarch64", "Imager and runtime builds on Apple silicon with Xcode", "macos-15"),
+    "macos-aarch64": Label(
+        "aarch64", "Development builds and tests on a persistent Apple-silicon Mac; never release signing",
+        "macos-15"),
 }
 
 NATIVE = {"x86_64": "runner", "aarch64": "runner-arm64"}

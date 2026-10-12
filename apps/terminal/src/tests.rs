@@ -214,6 +214,7 @@ fn pty_output_is_read_and_pumped_into_redraws_and_watermark() {
 )]
 #[serial_test::serial]
 fn hosted_service_sockets_are_probed_and_never_fall_back() {
+    use std::os::fd::{AsFd, BorrowedFd};
     // Case `an_open_waits_for_a_supervisor_answer_slower_than_the_connect_bound`.
     {
         use std::io::BufRead as _;
@@ -273,7 +274,6 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
     // Case `a_session_that_marks_its_runs_opens_and_keeps_the_key`.
     {
         use std::io::BufRead as _;
-        use std::os::fd::AsRawFd;
 
         // The supervisor's reply byte for byte as a persistent connection
         // sends it: `ServeResponse::Session` as ush's
@@ -303,9 +303,13 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
             let (supervisor_lease, terminal_lease) =
                 std::os::unix::net::UnixStream::pair().unwrap();
             runtime_portal::fd_transport::send_with_fds(
-                supervisor_end.as_raw_fd(),
+                &supervisor_end,
                 REPLY,
-                &[pair.master.as_raw_fd().unwrap(), terminal_lease.as_raw_fd()],
+                &[
+                    // SAFETY: `pair` owns the master and outlives this call.
+                    unsafe { BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
+                    terminal_lease.as_fd(),
+                ],
             )
             .unwrap();
             (request, supervisor_end, pair, supervisor_lease)
@@ -386,7 +390,6 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
     // Case `hosted_services_discover_and_use_a_healthy_ush_socket`.
     {
         use std::io::{BufRead, BufReader};
-        use std::os::fd::AsRawFd;
 
         let runtime = tempfile::tempdir().unwrap();
         let listener = private_ush_listener(runtime.path());
@@ -413,9 +416,13 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
             let (_supervisor_lease, terminal_lease) =
                 std::os::unix::net::UnixStream::pair().unwrap();
             runtime_portal::fd_transport::send_with_fds(
-                stream.as_raw_fd(),
+                &stream,
                 b"{\"result\":\"session\",\"protocol\":2,\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\"}\n",
-                &[pair.master.as_raw_fd().unwrap(), terminal_lease.as_raw_fd()],
+                &[
+                    // SAFETY: `pair` owns the master and outlives this call.
+                    unsafe { BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
+                    terminal_lease.as_fd(),
+                ],
             )
             .unwrap();
         });
@@ -4702,7 +4709,7 @@ fn typing_damages_only_its_row_and_the_cursor() {
     );
     let area: f64 = damage.iter().map(Rect::area).sum();
     eprintln!(
-        "TIL-579 terminal keystroke damage: {area} of {} px",
+        "#3892 terminal keystroke damage: {area} of {} px",
         viewport.area()
     );
     assert!(

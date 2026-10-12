@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use ui::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use tilo_actions::remote::RemoteActionMessage;
 use ui::collaboration::{
     CertifiedEndpointIdentity, CollabEvent, CollabRequest, PresencePayload, RouteSpec,
@@ -34,25 +34,10 @@ pub const DEFAULT_PACE_MS: u64 = 0;
 /// How long a task waits for the broker's pushed action catalogue.
 const TASK_CATALOGUE_WAIT: Duration = Duration::from_secs(2);
 const TASK_ACTION_WAIT: Duration = Duration::from_secs(30);
-/// How long one durable step may stay unsettled before the agent gives up
-/// waiting. The host keeps driving the bound child either way.
-const TASK_STEP_WAIT: Duration = Duration::from_secs(120);
-/// Local wait for one step reply. Longer than the broker's own 10 s step
-/// wait so its "retry the same step" answer arrives before this expires.
-const TASK_STEP_REPLY_WAIT: Duration = if cfg!(test) {
-    Duration::from_millis(300)
-} else {
-    Duration::from_secs(15)
-};
-const TASK_STEP_RETRY_PAUSE: Duration = Duration::from_millis(200);
 /// The first pause before observing a running invocation; it doubles up to
 /// [`FOLLOW_MOST_WAIT`] while the invocation keeps running.
 const FOLLOW_FIRST_WAIT: Duration = Duration::from_millis(5);
 const FOLLOW_MOST_WAIT: Duration = Duration::from_millis(50);
-/// The broker's refusal before any child is bound when its host has no step
-/// ledger. Only this refusal may fall back to the legacy invocation path.
-const TASK_STEPS_UNAVAILABLE: &str = "enrolled task steps unavailable";
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TaskAction {
     app: String,
@@ -75,20 +60,6 @@ struct StepOutcome {
 }
 
 impl StepOutcome {
-    /// Rebuild a step's outcome from the host's committed continuation, the
-    /// only durable hand-off between enrolled task steps.
-    fn from_continuation(continuation: &[u8]) -> Result<Self, String> {
-        let value: serde_json::Value = serde_json::from_slice(continuation)
-            .map_err(|_| "the committed step continuation is not valid".to_string())?;
-        let output = value
-            .get("succeeded")
-            .ok_or_else(|| "the committed step did not succeed".to_string())?;
-        Ok(Self {
-            output: serde_json::from_value(output.clone())
-                .map_err(|_| "the committed step output is not valid".to_string())?,
-        })
-    }
-
     fn content_hash(&self) -> Result<&str, String> {
         match self.output.resources.as_slice() {
             [] => Err("the previous action produced no content resource".into()),
@@ -127,136 +98,39 @@ enum TaskActionStop {
     Failed(String),
 }
 
-/// The host's durable step bound (`MAX_AGENT_TASK_STEPS`).
+/// Most actions one task may invoke.
 const MAX_TASK_STEPS: usize = 64;
 
-/// One planned action whose declared incremental Text parameter is written
-/// with a live preview, in as few steps as one step's bound allows.
-struct ChunkedParagraph<'a> {
-    first: &'a TaskAction,
-    /// The declared continuation action.
-    next: &'a TaskAction,
-    /// The incremental Text parameter.
-    param: &'a str,
-    arguments: &'a serde_json::Map<String, serde_json::Value>,
-    text: &'a str,
-    /// Most chunks (steps) this paragraph may take.
-    budget: usize,
+/// A legacy invocation the host accepted, followed to its outcome alone
+/// ([`Session::invoke_task_action`]) or beside others started in the same
+/// turn. Each keeps its own invocation id, interaction sequence and broker
+/// job: following several at once shares only the waiting.
+struct Following {
+    action: TaskAction,
+    /// The arguments it was started with: a native child is re-asked with
+    /// the identical request.
+    arguments: serde_json::Map<String, serde_json::Value>,
+    invocation: tilo_actions::InvocationId,
+    /// How a native task's child is observed; `None` for a Task Center
+    /// invocation, observed through the action host.
+    reask: Option<native_task::Reask>,
+    /// The latest state the host reported.
+    update: tilo_actions::InvocationUpdate,
+    /// The last semantic interaction sequence published for it.
+    sequence: u64,
+    deadline: Instant,
+    /// Its outcome, once settled.
+    outcome: Option<Result<StepOutcome, TaskActionStop>>,
 }
 
-/// `arguments` with parameter `param` set to `text`.
-fn with_param(
-    arguments: &serde_json::Map<String, serde_json::Value>,
-    param: &str,
-    text: &str,
-) -> serde_json::Map<String, serde_json::Value> {
-    let mut arguments = arguments.clone();
-    arguments.insert(param.into(), serde_json::Value::String(text.into()));
-    arguments
-}
-
-/// Report one enrolled task update and wait for the broker's answer.
-fn report_enrolled(
-    link: &mut Link,
-    next_request: &mut u64,
-    sequence: &mut u64,
-    acceptance: runtime_collab::EnrolledTaskAcceptance,
-    update: runtime_collab::TaskRunUpdate,
-) -> Result<()> {
-    *sequence = sequence
-        .checked_add(1)
-        .ok_or_else(|| anyhow::anyhow!("enrolled sequence exhausted"))?;
-    let request_id = *next_request;
-    *next_request = request_id
-        .checked_add(1)
-        .ok_or_else(|| anyhow::anyhow!("request sequence exhausted"))?;
-    link.send(&CollabRequest::ReportEnrolledTask {
-        request_id,
-        acceptance,
-        sequence: *sequence,
-        update,
-    })?;
-    link.wait_enrolled_reply(request_id)
-}
-
-/// Send one live update as enrolled progress, without waiting for the
-/// host's answer; its request id, or `None` when it could not be sent. Best
-/// effort: a refusal arrives later and turns live updates off, never the
-/// task ([`Session::absorb_refusals`]).
-fn send_live(
-    link: &mut Link,
-    next_request: &mut u64,
-    sequence: &mut u64,
-    acceptance: &runtime_collab::EnrolledTaskAcceptance,
-    message: String,
-) -> Option<u64> {
-    outstanding::report_enrolled_detached(
-        link,
-        next_request,
-        sequence,
-        acceptance.clone(),
-        runtime_collab::TaskRunUpdate::Progress { message },
-    )
-    .inspect_err(|error| tracing::warn!(%error, "live update not sent; live updates stop"))
-    .ok()
-}
-
-/// What the next task step is built from.
-#[derive(Debug, Default)]
-enum Handoff {
-    #[default]
-    None,
-    /// A legacy (non-step) invocation's in-memory terminal result.
-    Legacy(StepOutcome),
-    /// The host's committed continuation for the previous durable step.
-    Committed(Vec<u8>),
-}
-
-impl Handoff {
-    fn outcome(&self) -> Result<Option<StepOutcome>, String> {
-        match self {
-            Self::None => Ok(None),
-            Self::Legacy(outcome) => Ok(Some(outcome.clone())),
-            Self::Committed(continuation) => StepOutcome::from_continuation(continuation).map(Some),
-        }
+impl Following {
+    fn into_outcome(self) -> Result<StepOutcome, TaskActionStop> {
+        self.outcome.unwrap_or_else(|| {
+            Err(TaskActionStop::Failed(
+                "Task action did not reach a terminal state before its deadline".into(),
+            ))
+        })
     }
-}
-
-/// One task-action reply from the collaboration link.
-struct TaskReply {
-    result: Result<(u64, tilo_actions::InvocationUpdate), String>,
-    continuation: Option<Vec<u8>>,
-    retry_step: bool,
-}
-
-/// Interpret a committed step: success hands its continuation to the next
-/// step; a committed failure or cancellation stops the task.
-fn committed_step(
-    update: &tilo_actions::InvocationUpdate,
-    continuation: Vec<u8>,
-) -> Result<Handoff, TaskActionStop> {
-    let value: serde_json::Value = serde_json::from_slice(&continuation).map_err(|_| {
-        TaskActionStop::Failed("the host committed an invalid step continuation".into())
-    })?;
-    if value.get("succeeded").is_some() {
-        StepOutcome::from_continuation(&continuation).map_err(TaskActionStop::Failed)?;
-        return Ok(Handoff::Committed(continuation));
-    }
-    if let Some(code) = value.get("failed") {
-        return Err(TaskActionStop::Failed(match update {
-            tilo_actions::InvocationUpdate::Failed { error, .. } => error.message.clone(),
-            _ => code.as_str().unwrap_or("failed").to_string(),
-        }));
-    }
-    if value.get("cancelled").is_some() {
-        return Err(TaskActionStop::Cancelled(match update {
-            tilo_actions::InvocationUpdate::Cancelled { message, .. } => message.clone(),
-            _ => None,
-        }));
-    }
-    Err(TaskActionStop::Failed(
-        "the host committed an unrecognised step continuation".into(),
-    ))
 }
 
 fn validate_task_run(run: &runtime_collab::TaskRunEnvelope) -> Result<(), String> {
@@ -267,6 +141,8 @@ fn validate_task_run(run: &runtime_collab::TaskRunEnvelope) -> Result<(), String
         || run.task_id.len() > 256
         || run.title.trim().is_empty()
         || run.title.len() > 4 * 1024
+        || run.instruction().trim().is_empty()
+        || run.instruction().len() > 32 * 1024
         || run.lease.is_empty()
         || run.lease.len() > 128
     {
@@ -376,9 +252,9 @@ pub struct Session {
     link: Link,
     /// Decides which exported action answers an instruction.
     chooser: Chooser,
-    enrolled_custody: Option<runtime_collab::EnrolledRecipientCustody>,
-    enrolled_active: Option<runtime_collab::EnrolledTaskAcceptance>,
-    enrolled_sequence: u64,
+    /// Launched by the launcher with a managed context: limited to its
+    /// task-bound broker surface and to native task leases.
+    managed: bool,
     /// Monotonic deadline from an explicit broker-minted owner task policy.
     task_deadline: Option<Instant>,
     native_task: Option<native_task::NativeTaskState>,
@@ -386,8 +262,6 @@ pub struct Session {
     /// task loop surveys.
     broker_surfaces: Vec<ui::collaboration::BrokerActionSurface>,
     next_broker_request: u64,
-    /// Live activity for the enrolled task in progress (display only).
-    live: crate::live::LivePublisher,
     /// Bumped whenever the broker republishes its catalogue.
     broker_revision: u64,
     /// The task catalogue survey for [`Self::broker_revision`], shared by
@@ -438,10 +312,10 @@ impl Session {
         // lets the agent learn other applications' exported operations while
         // every mutation below still names its owning app route explicitly.
         if managed.is_none() {
-            // A managed (enrolled) agent is limited to its task-bound broker surface: the broker
-            // refuses the cluster route, the late-join snapshot and presence on that descriptor, and
-            // one refused snapshot RPC shuts down the whole collaboration bridge. Its catalogue
-            // arrives through the enrolled ActionCatalogue instead.
+            // A managed agent is limited to its task-bound broker surface: the broker refuses the
+            // cluster route, the late-join snapshot and presence on that descriptor, and one
+            // refused snapshot RPC shuts down the whole collaboration bridge. Its catalogue
+            // arrives through the task-bound ActionCatalogue instead.
             link.join_route(RouteSpec::cluster(cfg.cluster));
             // The broker directs the late-join request to one existing holder.
             ask_for_document(&mut link)?;
@@ -460,32 +334,27 @@ impl Session {
             name = %cfg.name,
             "joined the room; waiting for the document"
         );
-        let (chooser, enrolled_custody) = match managed {
-            Some((selection, custody)) => {
+        let is_managed = managed.is_some();
+        let chooser = match managed {
+            Some(selection) => {
                 let chooser = Chooser::with_provider(true, cfg.model_timeout, selection);
                 anyhow::ensure!(chooser.is_live(), "managed model gateway unavailable");
-                (chooser, Some(custody))
+                chooser
             }
-            None => (
-                default_selection().map_or_else(
-                    || Chooser::new(false, cfg.model_timeout),
-                    |selection| Chooser::with_provider(cfg.model, cfg.model_timeout, selection),
-                ),
-                None,
+            None => default_selection().map_or_else(
+                || Chooser::new(false, cfg.model_timeout),
+                |selection| Chooser::with_provider(cfg.model, cfg.model_timeout, selection),
             ),
         };
         Ok(Self {
             cfg,
             link,
             chooser,
-            enrolled_custody,
-            enrolled_active: None,
-            enrolled_sequence: 0,
+            managed: is_managed,
             task_deadline: None,
             native_task: None,
             broker_surfaces: Vec::new(),
             next_broker_request: 1,
-            live: crate::live::LivePublisher::default(),
             memory: agent_loop::Memory::default(),
             broker_revision: 0,
             catalogue_cache: None,
@@ -526,24 +395,15 @@ impl Session {
                 "published the AI transforms"
             );
         }
-        if self.enrolled_custody.is_some() {
-            let request_id = self.next_enrolled_request()?;
-            self.link
-                .send(&CollabRequest::SubscribeEnrolledTasks { request_id })?;
-            self.link.wait_enrolled_reply(request_id)?;
-        }
         tracing::info!(agent = %self.cfg.name, "waiting for broker-addressed task runs");
         loop {
             match self.link.recv(Duration::from_millis(100))? {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.set_broker_surfaces(surfaces);
                 }
-                Some(CollabEvent::EnrolledTask(run)) => self.run_enrolled_task(&run)?,
-                Some(CollabEvent::EnrolledTaskDisconnected { detail }) => anyhow::bail!(detail),
                 Some(CollabEvent::TaskRun(run))
-                    if self.enrolled_active.is_none()
-                        && (self.enrolled_custody.is_none()
-                            || runtime_collab::native_task_revision(&run.lease).is_some()) =>
+                    if !self.managed
+                        || runtime_collab::native_task_revision(&run.lease).is_some() =>
                 {
                     if let Err(error) = self.run_task(&run) {
                         if runtime_collab::native_task_revision(&run.lease).is_none() {
@@ -592,14 +452,12 @@ impl Session {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "one task run keeps planning, per-step reporting, chunked writing and the terminal update in a single auditable sequence"
+        reason = "one task run keeps planning, per-step reporting and the terminal update in a single auditable sequence"
     )]
     fn run_task(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
-        if self.enrolled_active.is_none() {
-            self.task_deadline = run.execution_budget.and_then(|budget| {
-                ui::time::now().checked_add(Duration::from_millis(u64::from(budget.total_ms)))
-            });
-        }
+        self.task_deadline = run.execution_budget.and_then(|budget| {
+            ui::time::now().checked_add(Duration::from_millis(u64::from(budget.total_ms)))
+        });
         self.native_task =
             runtime_collab::native_task_revision(&run.lease).map(|(base, revision)| {
                 native_task::NativeTaskState {
@@ -610,26 +468,13 @@ impl Session {
                     ..Default::default()
                 }
             });
-        let validation = if self.enrolled_active.is_some() {
-            validate_enrolled_context(run)
-        } else {
-            validate_task_run(run)
-        };
-        if let Err(message) = validation {
+        if let Err(message) = validate_task_run(run) {
             tracing::warn!(run_id = run.run_id, %message, "refused malformed task run");
             self.report_task(run, runtime_collab::TaskRunUpdate::Failed { message })?;
             return Ok(());
         }
         self.begin_task_watch();
-        if self.enrolled_active.is_none() {
-            self.report_task(run, runtime_collab::TaskRunUpdate::Accepted)?;
-        } else {
-            // Live activity rides the enrolled progress carrier only.
-            self.live.start();
-            self.live
-                .set_state(crate::live::LiveState::Thinking, "Thinking", None);
-            self.live_publish(true);
-        }
+        self.report_task(run, runtime_collab::TaskRunUpdate::Accepted)?;
         // None of these three waits for the host: the model call is the long
         // pole, and the planner below starts it at once. The cancellation
         // answer is read before the first step (or the first planned action),
@@ -646,7 +491,7 @@ impl Session {
         // catalogue. A managed agent has no other planner; a legacy one
         // without a model falls back to the rules-only survey below.
         if matches!(run.planning, runtime_collab::TaskRunPlanning::Model)
-            && (self.chooser.loop_model().is_ok() || self.enrolled_custody.is_some())
+            && (self.chooser.loop_model().is_ok() || self.managed)
         {
             return match self.run_task_loop(run)? {
                 agent_loop::LoopEnd::Finished(finish, completed) => {
@@ -677,17 +522,12 @@ impl Session {
                             done: true,
                         }
                     };
-                    if let Some(reply) = &finish.reply {
-                        self.live.set_reply(reply, true);
-                    }
                     let message = match finish.reply {
                         // The model's own reply is the durable chat answer. The
-                        // legacy Task Center carrier bounds it to 280 characters.
-                        Some(reply) if self.enrolled_active.is_some() => reply,
+                        // Task Center carrier bounds it to 280 characters.
                         Some(reply) => reply.chars().take(280).collect(),
                         None => format!("Completed {completed} broker-approved action(s)"),
                     };
-                    self.live_end(crate::live::LiveState::Done, "Done");
                     self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
                 }
                 agent_loop::LoopEnd::Failed(message) => self.fail_task(run, &message),
@@ -716,27 +556,17 @@ impl Session {
             }
             Err(message) => return self.fail_task(run, &message),
         };
-        // Enrolled tasks run as durable host steps: each next step is built
-        // from the host's committed continuation, never an in-memory reply.
-        let mut stepped = self.enrolled_active.is_some();
-        let mut handoff = Handoff::None;
-        if let Some(reply) = &reply {
-            self.live.set_reply(reply, true);
-        }
-        // Durable step indices: one per invoked step, so a chunked paragraph
-        // takes several. Without chunking this equals the action index.
-        let mut step_index = 0_usize;
+        // What the next content-consuming action is built from.
+        let mut previous: Option<StepOutcome> = None;
         for (index, action) in actions.iter().enumerate() {
             if self.task_cancelled(run)? {
                 return self.cancel_task(run, "Cancelled before the next action");
             }
-            let arguments = match handoff.outcome().and_then(|previous| {
-                arguments_for_step(
-                    action.carries.as_deref(),
-                    &action.arguments,
-                    previous.as_ref(),
-                )
-            }) {
+            let arguments = match arguments_for_step(
+                action.carries.as_deref(),
+                &action.arguments,
+                previous.as_ref(),
+            ) {
                 Ok(arguments) => arguments,
                 Err(message) => return self.fail_task(run, &message),
             };
@@ -751,196 +581,35 @@ impl Session {
                     ),
                 },
             )?;
-            let result = if let Some((param, text, next)) = self.chunkable(action, &arguments) {
-                // Steps still needed after this action, one each.
-                let later = actions.len() - index - 1;
-                let budget = MAX_TASK_STEPS
-                    .saturating_sub(step_index + later)
-                    .clamp(1, crate::live::MAX_CHUNKS);
-                let paragraph = ChunkedParagraph {
-                    first: action,
-                    next: &next,
-                    param: &param,
-                    arguments: &arguments,
-                    text: &text,
-                    budget,
-                };
-                self.run_chunked_paragraph(run, index, &mut step_index, &paragraph, &mut stepped)?
-            } else {
-                self.live_applying(action, &arguments, None);
-                let result =
-                    self.run_task_step(run, index, step_index, action, &arguments, &mut stepped)?;
-                step_index += 1;
-                result
-            };
-            match result {
-                Ok(next) => {
+            match self.run_task_step(run, index, action, &arguments)? {
+                Ok(outcome) => {
                     self.chooser
                         .mark(tilo_model_gateway::TraceEvent::ActionSettled, index);
-                    handoff = next;
+                    previous = Some(outcome);
                 }
-                Err(TaskActionStop::Cancelled(message)) => {
-                    let detail = if self.enrolled_active.is_some() {
-                        message
-                            .as_deref()
-                            .unwrap_or("Cancelled while an action was running")
-                    } else {
-                        "Cancelled while an action was running"
-                    };
-                    return self.cancel_task(run, detail);
+                Err(TaskActionStop::Cancelled(_)) => {
+                    return self.cancel_task(run, "Cancelled while an action was running");
                 }
                 Err(TaskActionStop::Failed(message)) => return self.fail_task(run, &message),
             }
         }
         let message = match reply {
-            // The model's own reply is the durable chat answer. The legacy
-            // Task Center carrier bounds messages to 280 characters.
-            Some(reply) if self.enrolled_active.is_some() => reply,
+            // The model's own reply is the durable chat answer. The Task
+            // Center carrier bounds messages to 280 characters.
             Some(reply) => reply.chars().take(280).collect(),
             None => format!("Completed {} broker-approved action(s)", actions.len()),
         };
-        self.live_end(crate::live::LiveState::Done, "Done");
         self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
     }
 
-    /// The live broker offers of one publishing peer — all an action of that
-    /// peer can be looked up in, without building every peer's offers.
-    fn peer_offers(&self, peer: u64) -> impl Iterator<Item = surface::Offer> + '_ {
-        self.broker_surfaces
-            .iter()
-            .filter(move |surface| surface.peer_id == peer)
-            .flat_map(|surface| surface::broker_offers(std::slice::from_ref(surface)))
-    }
-
-    /// The broker offer `action` was built from.
-    fn offer_of(&self, action: &TaskAction) -> Option<surface::Offer> {
-        self.peer_offers(action.peer_id).find(|offer| {
-            offer.broker_peer_id == Some(action.peer_id)
-                && offer.descriptor.address.resource == action.resource
-                && offer.descriptor.address.action == action.action
-        })
-    }
-
-    /// Whether `action` is written as a paragraph with a live preview (in
-    /// parts only past one step's bound): it writes text in parts
-    /// ([`crate::live::continuation`]) longer than
-    /// [`crate::live::CHUNK_MIN_TEXT`], and its continuation is published on
-    /// the same resource with that Text parameter. Only enrolled tasks chunk. Returns the parameter,
-    /// its text, and the continuation step.
-    fn chunkable(
-        &self,
-        action: &TaskAction,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Option<(String, String, TaskAction)> {
-        if self.enrolled_active.is_none() || action.carries.is_some() {
-            return None;
-        }
-        let offer = self.offer_of(action)?;
-        let (param, next) = self.continuation_of(&offer)?;
-        let text = arguments.get(&param)?.as_str()?;
-        if text.len() <= crate::live::CHUNK_MIN_TEXT {
-            return None;
-        }
-        Some((param, text.to_owned(), next))
-    }
-
-    /// The Text parameter `offer` writes in parts
-    /// ([`crate::live::continuation`]) and its continuation step, when
-    /// that continuation is published on the same resource with the same
-    /// Text parameter.
-    fn continuation_of(&self, offer: &surface::Offer) -> Option<(String, TaskAction)> {
-        let peer = offer.broker_peer_id?;
-        let (param, next) = crate::live::continuation(&offer.descriptor)?;
-        let text_param = |offer: &surface::Offer| {
-            offer.descriptor.params.iter().any(|candidate| {
-                candidate.name == param && candidate.ty == tilo_actions::ParamType::Text
-            })
-        };
-        if !text_param(offer) {
-            return None;
-        }
-        let continuation = self.peer_offers(peer).find(|candidate| {
-            candidate.broker_peer_id == Some(peer)
-                && candidate.descriptor.address.resource == offer.descriptor.address.resource
-                && candidate.descriptor.address.action == next
-                && text_param(candidate)
-        })?;
-        let mut sample = serde_json::Map::new();
-        sample.insert(param.clone(), serde_json::Value::String("…".into()));
-        let next = task_action_from_offer(&continuation, sample).ok()?;
-        Some((param, next))
-    }
-
-    /// Write one incremental text that is already complete. It is one step
-    /// through the planned action — each step is a durable round trip, so
-    /// splitting complete text only makes it land later — unless one step
-    /// cannot carry it ([`crate::live::step_text_len`]); then the rest goes
-    /// through the declared continuation, in order, through the unchanged
-    /// durable step path. Before each step the still-uncommitted rest is
-    /// sent as the live preview.
-    fn run_chunked_paragraph(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        index: usize,
-        step_index: &mut usize,
-        paragraph: &ChunkedParagraph<'_>,
-        stepped: &mut bool,
-    ) -> Result<Result<Handoff, TaskActionStop>> {
-        let mut rest = paragraph.text;
-        let mut chunks_left = paragraph.budget;
-        let mut last = Handoff::None;
-        let mut first = true;
-        while !rest.is_empty() {
-            if !first && self.task_cancelled(run)? {
-                return Ok(Err(TaskActionStop::Cancelled(Some(
-                    "Cancelled before the next action".into(),
-                ))));
-            }
-            let len = crate::live::step_text_len(rest, chunks_left);
-            let (chunk, after) = rest.split_at(len);
-            let (action, arguments) = if first {
-                (
-                    paragraph.first,
-                    with_param(paragraph.arguments, paragraph.param, chunk),
-                )
-            } else {
-                (
-                    paragraph.next,
-                    with_param(&paragraph.next.arguments, paragraph.param, chunk),
-                )
-            };
-            self.live_applying(paragraph.first, paragraph.arguments, Some(rest));
-            let result =
-                self.run_task_step(run, index, *step_index, action, &arguments, stepped)?;
-            *step_index += 1;
-            match result {
-                Ok(next) => last = next,
-                Err(stop) => return Ok(Err(stop)),
-            }
-            chunks_left = chunks_left.saturating_sub(1);
-            rest = after;
-            first = false;
-        }
-        self.live.set_preview(None);
-        Ok(Ok(last))
-    }
-
-    /// Invoke one step: durable when the host keeps a step ledger, else
-    /// through the legacy invocation path.
+    /// Invoke one planned action through the broker's invocation path.
     fn run_task_step(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
         index: usize,
-        step_index: usize,
         action: &TaskAction,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        stepped: &mut bool,
-    ) -> Result<Result<Handoff, TaskActionStop>> {
-        let step = if *stepped {
-            Some(u32::try_from(step_index).context("task plan exceeds the step range")?)
-        } else {
-            None
-        };
+    ) -> Result<Result<StepOutcome, TaskActionStop>> {
         // A cancellation poll already out answers ahead of this step in the
         // client's one ordered queue: honouring it costs no round trip.
         if self.cancelled_before_step()? {
@@ -950,103 +619,9 @@ impl Session {
         }
         self.chooser
             .mark(tilo_model_gateway::TraceEvent::ActionSubmitted, index);
-        let settled = match step {
-            Some(step) => self.invoke_task_step(run, step, action, arguments, stepped)?,
-            None => self
-                .invoke_task_action(run, action, arguments)?
-                .map(Handoff::Legacy),
-        };
+        let settled = self.invoke_task_action(run, action, arguments)?;
         self.step_settled();
         Ok(settled)
-    }
-
-    /// Show `action` being applied, labelled from its own descriptor.
-    /// `pending` is its text not yet committed; without it, the value of its
-    /// first Text-typed parameter is shown.
-    fn live_applying(
-        &mut self,
-        action: &TaskAction,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-        pending: Option<&str>,
-    ) {
-        if !self.live.is_active() {
-            return;
-        }
-        let offer = self.offer_of(action);
-        let pending = pending.map(str::to_owned).or_else(|| {
-            offer.as_ref()?.descriptor.params.iter().find_map(|param| {
-                (param.ty == tilo_actions::ParamType::Text)
-                    .then(|| arguments.get(param.name.as_ref())?.as_str())
-                    .flatten()
-                    .map(str::to_owned)
-            })
-        });
-        let record = self
-            .broker_surfaces
-            .iter()
-            .find(|surface| surface.peer_id == action.peer_id)
-            .map(|surface| surface.record_id.clone())
-            .unwrap_or_default();
-        self.live.set_state(
-            crate::live::LiveState::Applying,
-            &crate::live::action_label(&action.label, &action.resource_label),
-            None,
-        );
-        self.live
-            .set_preview(pending.map(|text| crate::live::LivePreview {
-                app: action.app.clone(),
-                record,
-                text,
-            }));
-        self.live_publish(true);
-    }
-
-    /// Send the live view: `flush` sends any change now, otherwise at most
-    /// [`crate::live::MAX_UPDATES_PER_SECOND`] per second. Best effort, and
-    /// never waits for the host: while one periodic update is unanswered the
-    /// next coalesces in the publisher rather than queueing behind it.
-    fn live_publish(&mut self, flush: bool) {
-        self.absorb_refusals();
-        let Some(acceptance) = self.enrolled_active.clone() else {
-            return;
-        };
-        if !self.live.is_active() || (!flush && self.live_in_flight()) {
-            return;
-        }
-        let Session {
-            live,
-            link,
-            next_broker_request,
-            enrolled_sequence,
-            outstanding,
-            ..
-        } = self;
-        let mut send = |message: String| {
-            send_live(
-                link,
-                next_broker_request,
-                enrolled_sequence,
-                &acceptance,
-                message,
-            )
-            .map(|request_id| outstanding.record_live(request_id))
-            .is_some()
-        };
-        if flush {
-            live.flush(ui::time::now(), &mut send);
-        } else {
-            live.tick(ui::time::now(), &mut send);
-        }
-    }
-
-    /// The last live update of a task, sent before its terminal report
-    /// (the carrier refuses progress after it).
-    fn live_end(&mut self, state: crate::live::LiveState, label: &str) {
-        if self.live.is_active() {
-            self.live.set_state(state, label, None);
-            self.live_publish(true);
-        }
-        self.live.stop();
     }
 
     fn report_task(
@@ -1054,29 +629,6 @@ impl Session {
         run: &runtime_collab::TaskRunEnvelope,
         update: runtime_collab::TaskRunUpdate,
     ) -> Result<()> {
-        if let Some(acceptance) = self.enrolled_active.clone() {
-            if matches!(update, runtime_collab::TaskRunUpdate::Progress { .. }) {
-                // Progress is display: it reaches the host in order without
-                // the task waiting for each answer. A refusal arrives later
-                // and turns live updates off. A terminal report still waits:
-                // it ends the task's custody.
-                outstanding::report_enrolled_detached(
-                    &mut self.link,
-                    &mut self.next_broker_request,
-                    &mut self.enrolled_sequence,
-                    acceptance,
-                    update,
-                )?;
-                return Ok(());
-            }
-            return report_enrolled(
-                &mut self.link,
-                &mut self.next_broker_request,
-                &mut self.enrolled_sequence,
-                acceptance,
-                update,
-            );
-        }
         let request_id = self.native_task.as_ref().map(|_| self.next_broker_request);
         if request_id.is_some() {
             self.next_request_id();
@@ -1094,7 +646,6 @@ impl Session {
     }
 
     fn fail_task(&mut self, run: &runtime_collab::TaskRunEnvelope, message: &str) -> Result<()> {
-        self.live_end(crate::live::LiveState::Failed, "Needs attention");
         self.report_task(
             run,
             runtime_collab::TaskRunUpdate::Failed {
@@ -1104,7 +655,6 @@ impl Session {
     }
 
     fn cancel_task(&mut self, run: &runtime_collab::TaskRunEnvelope, message: &str) -> Result<()> {
-        self.live_end(crate::live::LiveState::Failed, "Cancelled");
         self.report_task(
             run,
             runtime_collab::TaskRunUpdate::Cancelled {
@@ -1154,100 +704,9 @@ impl Session {
         run: &runtime_collab::TaskRunEnvelope,
     ) -> Result<(Vec<TaskAction>, Option<String>), String> {
         let catalogue = self.task_catalogue();
-        let (offer, arguments) = surface::from_verbs(&run.title, &catalogue.offers)
+        let (offer, arguments) = surface::from_verbs(run.instruction(), &catalogue.offers)
             .map_err(|error| format!("Rules-only planner could not choose an action: {error:?}"))?;
         task_action_from_offer(offer, arguments).map(|action| (vec![action], None))
-    }
-
-    /// Run one durable step of an enrolled task. Every attempt re-sends the
-    /// identical request (same request id, step and arguments), so the host
-    /// returns the one child it bound for this step instead of starting a new
-    /// invocation. Without a host step ledger this falls back, once and for
-    /// the rest of the run, to the legacy invocation path.
-    fn invoke_task_step(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        step: u32,
-        action: &TaskAction,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-        stepped: &mut bool,
-    ) -> Result<Result<Handoff, TaskActionStop>> {
-        if self.task_budget_expired() {
-            return Ok(Err(TaskActionStop::Failed(
-                "Task time budget expired before starting a step".into(),
-            )));
-        }
-        let request_id = self.next_request_id();
-        // One invocation id for every attempt: a retry is the same request.
-        let invocation = tilo_actions::InvocationId::new();
-        let request = CollabRequest::InvokeTaskAction {
-            request_id,
-            invocation,
-            run_id: run.run_id,
-            lease: self.task_lease(run),
-            step: Some(step),
-            peer_id: action.peer_id,
-            resource: action.resource.clone(),
-            action: action.action.clone(),
-            arguments: arguments.clone(),
-        };
-        let deadline = self.task_wait_deadline(TASK_STEP_WAIT);
-        loop {
-            if self.task_budget_expired() {
-                self.link.send(&CollabRequest::RemoteAction {
-                    message: RemoteActionMessage::Cancel { invocation },
-                })?;
-                return Ok(Err(TaskActionStop::Failed(
-                    "Task time budget expired; cancellation requested, step outcome remains unknown".into())));
-            }
-            self.link.send(&request)?;
-            match self.wait_for_task_action_reply(request_id, TASK_STEP_REPLY_WAIT)? {
-                // No reply or a pending step: the outcome is uncertain, so
-                // only the same step may be asked again.
-                None
-                | Some(TaskReply {
-                    retry_step: true, ..
-                }) => {}
-                Some(TaskReply {
-                    result: Ok((_, update)),
-                    continuation: Some(continuation),
-                    ..
-                }) => {
-                    self.publish_task_interaction(run, action, &update, 0)?;
-                    return Ok(committed_step(&update, continuation));
-                }
-                Some(TaskReply {
-                    result: Ok(_),
-                    continuation: None,
-                    ..
-                }) => {
-                    return Ok(Err(TaskActionStop::Failed(
-                        "Task step reply carried no committed continuation".into(),
-                    )));
-                }
-                Some(TaskReply {
-                    result: Err(error), ..
-                }) if error.contains(TASK_STEPS_UNAVAILABLE) => {
-                    // Refused before any child was bound; nothing ran.
-                    *stepped = false;
-                    return Ok(self
-                        .invoke_task_action(run, action, arguments)?
-                        .map(Handoff::Legacy));
-                }
-                Some(TaskReply {
-                    result: Err(error), ..
-                }) => {
-                    return Ok(Err(TaskActionStop::Failed(error)));
-                }
-            }
-            if ui::time::now() >= deadline {
-                return Ok(Err(TaskActionStop::Failed(
-                    "Task step did not settle before its deadline; its outcome is still unknown"
-                        .into(),
-                )));
-            }
-            std::thread::sleep(TASK_STEP_RETRY_PAUSE);
-        }
     }
 
     fn invoke_task_action(
@@ -1256,6 +715,27 @@ impl Session {
         action: &TaskAction,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Result<StepOutcome, TaskActionStop>> {
+        let following = match self.start_task_invocation(run, action, arguments)? {
+            Ok(following) => following,
+            Err(stop) => return Ok(Err(stop)),
+        };
+        let mut followed = [following];
+        self.follow_invocations(run, &mut followed)?;
+        let [following] = followed;
+        Ok(following.into_outcome())
+    }
+
+    /// Ask the host to start one legacy invocation: authorized, journaled
+    /// and accepted by the broker on its own, exactly as when it is followed
+    /// alone. The host answers with the accepted state at once; the action
+    /// then runs in its application while this agent starts the next one or
+    /// follows it ([`Self::follow_invocations`]).
+    fn start_task_invocation(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        action: &TaskAction,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Result<Following, TaskActionStop>> {
         if self.task_budget_expired() {
             return Ok(Err(TaskActionStop::Failed(
                 "Task time budget expired before invoking an action".into(),
@@ -1268,113 +748,222 @@ impl Session {
             invocation,
             run_id: run.run_id,
             lease: self.task_lease(run),
-            step: None,
             peer_id: action.peer_id,
             resource: action.resource.clone(),
             action: action.action.clone(),
             arguments: arguments.clone(),
+            wait: None,
         })?;
         let update = match self.wait_for_task_action_result(request_id)? {
             Ok((_, update)) => update,
             Err(error) => return Ok(Err(TaskActionStop::Failed(error))),
         };
-        if self.native_task.is_some() {
-            self.follow_native_invocation(run, action, arguments, invocation, update)
-        } else {
-            self.follow_task_invocation(run, action, invocation, update)
+        if self.native_task.is_none() {
+            self.publish_task_interaction(run, action, &update, 0);
+        }
+        Ok(Ok(Following {
+            action: action.clone(),
+            arguments: arguments.clone(),
+            invocation,
+            reask: self.native_task.is_some().then(native_task::Reask::default),
+            update,
+            sequence: 0,
+            deadline: self.task_wait_deadline(TASK_ACTION_WAIT),
+            outcome: None,
+        }))
+    }
+
+    /// Follow started legacy invocations, together, until each has its
+    /// outcome: one wait for news of any of them, one cancellation poll per
+    /// round, and every one still running cancelled when Task Center
+    /// cancels the run. One invocation alone is followed exactly as before.
+    fn follow_invocations(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        followed: &mut [Following],
+    ) -> Result<()> {
+        if followed.iter().any(|following| following.reask.is_some()) {
+            return self.follow_native(run, followed);
+        }
+        let mut wait = FOLLOW_FIRST_WAIT;
+        loop {
+            for following in followed.iter_mut() {
+                self.conclude_following(run, following)?;
+            }
+            let running: Vec<tilo_actions::InvocationId> = followed
+                .iter()
+                .filter(|following| following.outcome.is_none())
+                .map(|following| following.invocation)
+                .collect();
+            let Some(deadline) = followed
+                .iter()
+                .filter(|following| following.outcome.is_none())
+                .map(|following| following.deadline)
+                .min()
+            else {
+                return Ok(());
+            };
+            let left = deadline.saturating_duration_since(ui::time::now());
+            let pushed = self.await_invocation_news(&running, wait.min(left))?;
+            wait = (wait * 2).min(FOLLOW_MOST_WAIT);
+            // Asked without waiting: the answer arrives ahead of the
+            // observations' in the client's one ordered queue, so it is read
+            // below as fresh as the observations themselves.
+            self.poll_cancellation(run)?;
+            match pushed {
+                Some((invocation, update)) => {
+                    if let Some(following) = followed
+                        .iter_mut()
+                        .find(|following| following.invocation == invocation)
+                    {
+                        self.advance_following(run, following, update);
+                    }
+                }
+                None => {
+                    for following in followed
+                        .iter_mut()
+                        .filter(|following| following.outcome.is_none())
+                    {
+                        match self.observe(following.invocation)? {
+                            Ok(update) => self.advance_following(run, following, update),
+                            Err(error) => {
+                                following.outcome = Some(Err(TaskActionStop::Failed(error)));
+                            }
+                        }
+                    }
+                }
+            }
+            let still_running = followed
+                .iter()
+                .any(|following| following.outcome.is_none() && !following.update.is_terminal());
+            if still_running && self.cancellation_known()? {
+                for following in followed
+                    .iter_mut()
+                    .filter(|following| following.outcome.is_none())
+                {
+                    if following.update.is_terminal() {
+                        self.conclude_following(run, following)?;
+                    } else {
+                        self.cancel_following(run, following)?;
+                    }
+                }
+                return Ok(());
+            }
         }
     }
 
-    /// Follow a started legacy invocation to its terminal update through
-    /// the action host.
-    fn follow_task_invocation(
+    /// Take in a newer state of `following` and show it.
+    fn advance_following(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
-        action: &TaskAction,
-        invocation: tilo_actions::InvocationId,
-        mut update: tilo_actions::InvocationUpdate,
-    ) -> Result<Result<StepOutcome, TaskActionStop>> {
-        let mut interaction_sequence = 0_u64;
-        self.publish_task_interaction(run, action, &update, interaction_sequence)?;
-        let deadline = self.task_wait_deadline(TASK_ACTION_WAIT);
-        let mut wait = FOLLOW_FIRST_WAIT;
-        while !update.is_terminal() && ui::time::now() < deadline {
-            let left = deadline.saturating_duration_since(ui::time::now());
-            let pushed = self.await_invocation_news(invocation, wait.min(left))?;
-            wait = (wait * 2).min(FOLLOW_MOST_WAIT);
-            // Asked without waiting: the answer arrives ahead of the
-            // observation's in the client's one ordered queue, so it is read
-            // below as fresh as the observation itself.
-            self.poll_cancellation(run)?;
-            update = match pushed {
-                Some(pushed) => pushed,
-                None => match self.observe(invocation)? {
-                    Ok(update) => update,
-                    Err(error) => return Ok(Err(TaskActionStop::Failed(error))),
-                },
-            };
-            interaction_sequence = interaction_sequence.saturating_add(1);
-            self.publish_task_interaction(run, action, &update, interaction_sequence)?;
-            if !update.is_terminal() && self.cancellation_known()? {
-                self.link.send(&CollabRequest::RemoteAction {
-                    message: RemoteActionMessage::Cancel { invocation },
-                })?;
-                let _ = self.wait_for_remote_answer(|message| {
-                    matches!(
-                        message,
-                        RemoteActionMessage::CancelResponse { invocation: answered, .. }
-                            if *answered == invocation
-                    )
-                })?;
-                interaction_sequence = interaction_sequence.saturating_add(1);
-                let cancelled = tilo_actions::InvocationUpdate::Cancelled {
-                    invocation: update.invocation(),
-                    message: Some("Cancelled from Task Center".into()),
-                };
-                self.publish_task_interaction(run, action, &cancelled, interaction_sequence)?;
-                return Ok(Err(TaskActionStop::Cancelled(Some(
-                    "Cancelled from Task Center".into(),
-                ))));
-            }
+        following: &mut Following,
+        update: tilo_actions::InvocationUpdate,
+    ) {
+        following.update = update;
+        following.sequence = following.sequence.saturating_add(1);
+        self.publish_task_interaction(
+            run,
+            &following.action,
+            &following.update,
+            following.sequence,
+        );
+    }
+
+    /// Settle `following` once it is terminal or its time is up; a running
+    /// one within its time is left as it is.
+    fn conclude_following(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        following: &mut Following,
+    ) -> Result<()> {
+        if following.outcome.is_some() {
+            return Ok(());
         }
-        if self.task_budget_expired() && !update.is_terminal() {
-            self.link.send(&CollabRequest::RemoteAction {
-                message: RemoteActionMessage::Cancel { invocation },
-            })?;
-            return Ok(Err(TaskActionStop::Failed(
-                "Task time budget expired; cancellation requested, action outcome remains unknown"
-                    .into(),
-            )));
-        }
-        match update {
-            tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
-                Ok(Ok(StepOutcome { output }))
-            }
+        let outcome = match &following.update {
+            tilo_actions::InvocationUpdate::Succeeded { output, .. } => Ok(StepOutcome {
+                output: output.clone(),
+            }),
             tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
-                Ok(Err(TaskActionStop::Cancelled(message)))
+                Err(TaskActionStop::Cancelled(message.clone()))
             }
             tilo_actions::InvocationUpdate::Failed { error, .. } => {
-                Ok(Err(TaskActionStop::Failed(error.message)))
+                Err(TaskActionStop::Failed(error.message.clone()))
+            }
+            _ if ui::time::now() < following.deadline => return Ok(()),
+            _ if self.task_budget_expired() => {
+                self.link.send(&CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Cancel {
+                        invocation: following.invocation,
+                    },
+                })?;
+                Err(TaskActionStop::Failed(
+                    "Task time budget expired; cancellation requested, action outcome remains unknown"
+                        .into(),
+                ))
             }
             other => {
                 let message = "Task action did not reach a terminal state before its deadline";
-                interaction_sequence = interaction_sequence.saturating_add(1);
-                self.publish_task_interaction(
-                    run,
-                    action,
-                    &tilo_actions::InvocationUpdate::Failed {
-                        invocation: other.invocation(),
-                        error: tilo_actions::ActionFailure {
-                            code: "timeout".into(),
-                            message: message.into(),
-                            details: None,
-                            retryable: true,
-                        },
+                let failed = tilo_actions::InvocationUpdate::Failed {
+                    invocation: other.invocation(),
+                    error: tilo_actions::ActionFailure {
+                        code: "timeout".into(),
+                        message: message.into(),
+                        details: None,
+                        retryable: true,
                     },
-                    interaction_sequence,
-                )?;
-                Ok(Err(TaskActionStop::Failed(message.into())))
+                };
+                following.sequence = following.sequence.saturating_add(1);
+                self.publish_task_interaction(run, &following.action, &failed, following.sequence);
+                Err(TaskActionStop::Failed(message.into()))
             }
+        };
+        following.outcome = Some(outcome);
+        Ok(())
+    }
+
+    /// Cancel a running `following` because Task Center cancelled the run.
+    fn cancel_following(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        following: &mut Following,
+    ) -> Result<()> {
+        let invocation = following.invocation;
+        self.link.send(&CollabRequest::RemoteAction {
+            message: RemoteActionMessage::Cancel { invocation },
+        })?;
+        let _ = self.wait_for_remote_answer(|message| {
+            matches!(
+                message,
+                RemoteActionMessage::CancelResponse { invocation: answered, .. }
+                    if *answered == invocation
+            )
+        })?;
+        following.sequence = following.sequence.saturating_add(1);
+        let cancelled = tilo_actions::InvocationUpdate::Cancelled {
+            invocation: following.update.invocation(),
+            message: Some("Cancelled from Task Center".into()),
+        };
+        self.publish_task_interaction(run, &following.action, &cancelled, following.sequence);
+        following.outcome = Some(Err(TaskActionStop::Cancelled(Some(
+            "Cancelled from Task Center".into(),
+        ))));
+        Ok(())
+    }
+
+    /// Ask the host to stop `following` without waiting for its answer: the
+    /// turn that started it ended before it settled. A native child is not
+    /// the action host's to stop: the run's terminal report, which every
+    /// early end of a native run sends, cancels each child still running.
+    fn abandon_following(&mut self, following: &Following) {
+        if following.reask.is_some() {
+            return;
+        }
+        if let Err(error) = self.link.send(&CollabRequest::RemoteAction {
+            message: RemoteActionMessage::Cancel {
+                invocation: following.invocation,
+            },
+        }) {
+            tracing::warn!(%error, "could not cancel an abandoned invocation");
         }
     }
 
@@ -1387,27 +976,11 @@ impl Session {
         action: &TaskAction,
         update: &tilo_actions::InvocationUpdate,
         sequence: u64,
-    ) -> Result<()> {
-        if self.enrolled_custody.is_some() || self.enrolled_active.is_some() {
+    ) {
+        if self.managed {
             // No managed task diagnostic is constructed as public presence.
             // Terminal detail returns to run_task's single private terminal report.
-            if let tilo_actions::InvocationUpdate::Progress { phase, message, .. } = update {
-                anyhow::ensure!(
-                    self.enrolled_active.is_some(),
-                    "managed action lacks accepted task custody"
-                );
-                for detail in [Some(phase), message.as_ref()].into_iter().flatten() {
-                    if !detail.is_empty() {
-                        self.report_task(
-                            run,
-                            runtime_collab::TaskRunUpdate::Progress {
-                                message: detail.clone(),
-                            },
-                        )?;
-                    }
-                }
-            }
-            return Ok(());
+            return;
         }
         let phase = match update {
             tilo_actions::InvocationUpdate::Accepted { .. } => {
@@ -1486,28 +1059,13 @@ impl Session {
             key,
             payload: PresencePayload::Interaction(Box::new(interaction)),
         });
-        Ok(())
     }
 
     fn wait_for_task_action_result(
         &mut self,
         request_id: u64,
     ) -> Result<Result<(u64, tilo_actions::InvocationUpdate), String>> {
-        Ok(
-            match self.wait_for_task_action_reply(request_id, Duration::from_secs(10))? {
-                Some(reply) => reply.result,
-                None => Err("the broker did not answer the task action request".into()),
-            },
-        )
-    }
-
-    /// Wait up to `wait` for the reply to `request_id`; `None` on timeout.
-    fn wait_for_task_action_reply(
-        &mut self,
-        request_id: u64,
-        wait: Duration,
-    ) -> Result<Option<TaskReply>> {
-        let deadline = self.task_wait_deadline(wait);
+        let deadline = self.task_wait_deadline(Duration::from_secs(10));
         let mut deferred = Vec::new();
         loop {
             // Keep a streaming model turn moving while the step settles.
@@ -1515,7 +1073,9 @@ impl Session {
             let now = ui::time::now();
             if now >= deadline {
                 self.link.defer(deferred);
-                return Ok(None);
+                return Ok(Err(
+                    "the broker did not answer the task action request".into()
+                ));
             }
             match self
                 .link
@@ -1524,15 +1084,9 @@ impl Session {
                 Some(CollabEvent::TaskActionInvocationResult {
                     request_id: received,
                     result,
-                    continuation,
-                    retry_step,
                 }) if received == request_id => {
                     self.link.defer(deferred);
-                    return Ok(Some(TaskReply {
-                        result,
-                        continuation,
-                        retry_step,
-                    }));
+                    return Ok(result);
                 }
                 // Only one task action is outstanding at a time; a late
                 // reply to an earlier request has no reader left.
@@ -1548,15 +1102,15 @@ impl Session {
         }
     }
 
-    /// Wait up to `wait` for news of `invocation`: its update, when the host
-    /// pushes one (returned), or a document change in the room (absorbed;
-    /// the wait ends so the caller asks at once). Catalogue updates are
-    /// applied and every other event keeps its place.
+    /// Wait up to `wait` for news of any of `invocations`: an update the
+    /// host pushes (returned, with its invocation), or a document change in
+    /// the room (absorbed; the wait ends so the caller asks at once).
+    /// Catalogue updates are applied and every other event keeps its place.
     fn await_invocation_news(
         &mut self,
-        invocation: tilo_actions::InvocationId,
+        invocations: &[tilo_actions::InvocationId],
         wait: Duration,
-    ) -> Result<Option<tilo_actions::InvocationUpdate>> {
+    ) -> Result<Option<(tilo_actions::InvocationId, tilo_actions::InvocationUpdate)>> {
         let deadline = ui::time::now() + wait;
         let mut deferred = Vec::new();
         let mut pushed = None;
@@ -1573,8 +1127,8 @@ impl Session {
                             invocation: answered,
                             state: Some(state),
                         },
-                }) if answered == invocation => {
-                    pushed = Some(state.update);
+                }) if invocations.contains(&answered) => {
+                    pushed = Some((answered, state.update));
                     break;
                 }
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
@@ -1652,14 +1206,9 @@ impl Session {
     }
 }
 
-fn managed_context(
-    cfg: &Config,
-) -> Result<
-    Option<(
-        crate::providers::ProviderSelection,
-        runtime_collab::EnrolledRecipientCustody,
-    )>,
-> {
+/// The model selection of a launcher-managed agent, or `None` when this
+/// agent was not launched with a managed context.
+fn managed_context(cfg: &Config) -> Result<Option<crate::providers::ProviderSelection>> {
     let Some(raw) = std::env::var_os("TILO_MANAGED_AGENT_CONTEXT") else {
         return Ok(None);
     };
@@ -1708,65 +1257,12 @@ fn managed_context(
             .ok_or_else(|| anyhow::anyhow!("managed selection missing"))?,
     )
     .map_err(anyhow::Error::msg)?;
-    let custody = runtime_collab::EnrolledRecipientCustody::new(
-        text("agent")?,
-        text("launch")?,
-        text("runtime_epoch")?,
-        text("channel_id")?,
-    )
-    .map_err(anyhow::Error::msg)?;
-    Ok(Some((selection, custody)))
-}
-fn validate_enrolled_context(run: &runtime_collab::TaskRunEnvelope) -> Result<(), String> {
-    let context = serde_json::from_value::<tilo_actions::ActionContext>(run.action_context.clone())
-        .map_err(|_| "invalid enrolled context")?;
-    if context.purpose.is_some()
-        || !context.group.as_ref().is_some_and(|group| {
-            group.id == run.task_id && group.label == run.task_id && group.kind == "task"
-        })
-    {
-        return Err("enrolled context must carry opaque task identity only".into());
+    // The launch binding fields identify this process to the launcher; the
+    // agent itself only requires them to be present.
+    for key in ["launch", "runtime_epoch", "channel_id"] {
+        text(key)?;
     }
-    Ok(())
-}
-impl Session {
-    fn next_enrolled_request(&mut self) -> Result<u64> {
-        let id = self.next_broker_request;
-        self.next_broker_request = id
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("request sequence exhausted"))?;
-        Ok(id)
-    }
-    fn run_enrolled_task(&mut self, run: &runtime_collab::EnrolledTaskEnvelope) -> Result<()> {
-        validate_enrolled_context(&run.task).map_err(anyhow::Error::msg)?;
-        let custody = self
-            .enrolled_custody
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("enrolled task sent to legacy agent"))?;
-        let decision = custody.accept(run).map_err(anyhow::Error::msg)?;
-        let request_id = self.next_enrolled_request()?;
-        self.link.send(&CollabRequest::AcceptEnrolledTask {
-            request_id,
-            acceptance: decision.acceptance.clone(),
-        })?;
-        self.link.wait_enrolled_reply(request_id)?;
-        if !decision.execute {
-            return Ok(());
-        }
-        self.enrolled_active = Some(decision.acceptance);
-        self.enrolled_sequence = 0;
-        // The host's durable record of this agent's earlier tasks replaces
-        // what this process remembers: it survives restarts and holds the
-        // exact operations each step ran.
-        if let Some(history) = &run.history
-            && !self.memory.restore(history)
-        {
-            tracing::warn!("ignored an unreadable agent history");
-        }
-        let result = self.run_task(&run.task);
-        self.enrolled_active = None;
-        result
-    }
+    Ok(Some(selection))
 }
 
 #[cfg(test)]
@@ -1778,6 +1274,7 @@ mod tests {
             version: 1,
             task_id: "task:review".into(),
             title: "Review draft".into(),
+            instruction: None,
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::RulesOnly,
@@ -1787,15 +1284,6 @@ mod tests {
                 "group": {"id": "task:review", "label": "Review draft", "kind": "task"}
             }),
         }
-    }
-
-    #[test]
-    fn managed_context_rejects_private_task_text_in_public_attribution() {
-        let mut run = task_run();
-        assert!(validate_enrolled_context(&run).is_err());
-        run.action_context["purpose"] = serde_json::Value::Null;
-        run.action_context["group"]["label"] = serde_json::json!(run.task_id);
-        assert!(validate_enrolled_context(&run).is_ok());
     }
 
     #[test]
@@ -1823,8 +1311,6 @@ mod tests {
                         Some(CollabEvent::TaskActionInvocationResult {
                             request_id: *request_id,
                             result: Ok((71, self.updates.pop_front().unwrap())),
-                            continuation: None,
-                            retry_step: false,
                         })
                     }
                     CollabRequest::RemoteAction {
@@ -1844,13 +1330,7 @@ mod tests {
                             result: Ok(false),
                         })
                     }
-                    CollabRequest::ReportEnrolledTask { request_id, .. } => {
-                        Some(CollabEvent::EnrolledTaskReply {
-                            request_id: *request_id,
-                            result: Ok(()),
-                        })
-                    }
-                    CollabRequest::Presence { .. } => None,
+                    CollabRequest::ReportTaskRun { .. } | CollabRequest::Presence { .. } => None,
                     _ => panic!("unexpected request in action update path"),
                 };
                 self.sent.borrow_mut().push(request);
@@ -1896,29 +1376,7 @@ mod tests {
                         terminal,
                     ]),
                 });
-                let mut run = task_run();
-                run.action_context = serde_json::json!({"purpose":null,"group":{"kind":"task","id":run.task_id,"label":run.task_id}});
-                let mut custody = runtime_collab::EnrolledRecipientCustody::new(
-                    "agent-1",
-                    "launch-1",
-                    "epoch-1",
-                    "channel-1",
-                )
-                .unwrap();
-                let mut envelope = runtime_collab::EnrolledTaskEnvelope {
-                    version: 1,
-                    message_id: "message-1".into(),
-                    task_id: run.task_id.clone(),
-                    run_id: "run-1".into(),
-                    launch_id: "launch-1".into(),
-                    runtime_epoch: "epoch-1".into(),
-                    recipient_agent: "agent-1".into(),
-                    channel_lease: "channel-1".into(),
-                    history: None,
-                    task: run.clone(),
-                };
-                envelope.task.planning = runtime_collab::TaskRunPlanning::Model;
-                let acceptance = custody.accept(&envelope).unwrap().acceptance;
+                let run = task_run();
                 let mut session = Session {
                     cfg: Config {
                         agent_id: "agent-1".into(),
@@ -1943,14 +1401,11 @@ mod tests {
                     },
                     link,
                     chooser: Chooser::new(false, Duration::ZERO),
-                    enrolled_custody: managed.then_some(custody),
-                    enrolled_active: managed.then_some(acceptance),
-                    enrolled_sequence: 0,
+                    managed,
                     task_deadline: None,
                     native_task: None,
                     broker_surfaces: Vec::new(),
                     next_broker_request: 1,
-                    live: crate::live::LivePublisher::default(),
                     memory: agent_loop::Memory::default(),
                     broker_revision: 0,
                     catalogue_cache: None,
@@ -2002,18 +1457,10 @@ mod tests {
                         public.is_empty(),
                         "managed action updates must not construct or send public diagnostics: {public:?}"
                     );
-                    assert!(
-                        requests.iter().any(
-                            |request| matches!(request, CollabRequest::ReportEnrolledTask {
-                        update: runtime_collab::TaskRunUpdate::Progress { message }, ..
-                    } if message == marker)
-                        ),
-                        "private progress must retain action detail"
-                    );
                     if cancelled {
                         assert!(
                             requests.iter().any(
-                                |request| matches!(request, CollabRequest::ReportEnrolledTask {
+                                |request| matches!(request, CollabRequest::ReportTaskRun {
                             update: runtime_collab::TaskRunUpdate::Cancelled { message }, ..
                         } if message == marker)
                             ),
@@ -2022,7 +1469,7 @@ mod tests {
                     } else {
                         assert!(
                             requests.iter().any(
-                                |request| matches!(request, CollabRequest::ReportEnrolledTask {
+                                |request| matches!(request, CollabRequest::ReportTaskRun {
                             update: runtime_collab::TaskRunUpdate::Failed { message }, ..
                         } if message == marker)
                             ),
@@ -2038,483 +1485,6 @@ mod tests {
                     assert!(public.iter().all(|json| json.contains(marker)));
                 }
             }
-        }
-    }
-
-    mod durable_steps {
-        use super::*;
-        use std::{cell::RefCell, collections::VecDeque, rc::Rc};
-
-        enum Reply {
-            Retry,
-            Silent,
-            Committed(tilo_actions::InvocationUpdate, serde_json::Value),
-            Legacy(tilo_actions::InvocationUpdate),
-            Refused(&'static str),
-        }
-        struct Peer {
-            sent: Rc<RefCell<Vec<CollabRequest>>>,
-            events: Vec<CollabEvent>,
-            replies: VecDeque<Reply>,
-            statuses: VecDeque<tilo_actions::InvocationUpdate>,
-        }
-        impl ui::collaboration::PeerTransport for Peer {
-            fn is_connected(&self) -> bool {
-                true
-            }
-            fn poll(&mut self) -> Vec<CollabEvent> {
-                std::mem::take(&mut self.events)
-            }
-            fn send(&mut self, request: CollabRequest) -> Result<(), String> {
-                let response = match &request {
-                    CollabRequest::InvokeTaskAction { request_id, .. } => {
-                        let request_id = *request_id;
-                        let event = |result, continuation, retry_step| {
-                            CollabEvent::TaskActionInvocationResult {
-                                request_id,
-                                result,
-                                continuation,
-                                retry_step,
-                            }
-                        };
-                        match self.replies.pop_front().expect("scripted reply") {
-                            Reply::Retry => Some(event(Err("pending".into()), None, true)),
-                            Reply::Silent => None,
-                            Reply::Committed(update, continuation) => Some(event(
-                                Ok((0, update)),
-                                Some(serde_json::to_vec(&continuation).unwrap()),
-                                false,
-                            )),
-                            Reply::Legacy(update) => Some(event(Ok((9, update)), None, false)),
-                            Reply::Refused(error) => Some(event(Err(error.into()), None, false)),
-                        }
-                    }
-                    CollabRequest::RemoteAction {
-                        message: RemoteActionMessage::Observe { invocation, .. },
-                    } => Some(CollabEvent::RemoteAction {
-                        message: RemoteActionMessage::Update {
-                            invocation: *invocation,
-                            state: Some(tilo_actions::remote::InvocationState::new(
-                                *invocation,
-                                self.statuses.pop_front().unwrap(),
-                            )),
-                        },
-                    }),
-                    CollabRequest::TaskRunCancellation { request_id, .. } => {
-                        Some(CollabEvent::TaskRunCancellation {
-                            request_id: *request_id,
-                            result: Ok(false),
-                        })
-                    }
-                    CollabRequest::ReportEnrolledTask { request_id, .. } => {
-                        Some(CollabEvent::EnrolledTaskReply {
-                            request_id: *request_id,
-                            result: Ok(()),
-                        })
-                    }
-                    CollabRequest::Presence { .. } => None,
-                    _ => panic!("unexpected request in step path"),
-                };
-                self.sent.borrow_mut().push(request);
-                if let Some(response) = response {
-                    self.events.push(response);
-                }
-                Ok(())
-            }
-        }
-
-        fn fixture(
-            replies: Vec<Reply>,
-            statuses: Vec<tilo_actions::InvocationUpdate>,
-        ) -> (
-            Session,
-            runtime_collab::TaskRunEnvelope,
-            Rc<RefCell<Vec<CollabRequest>>>,
-        ) {
-            let sent = Rc::new(RefCell::new(Vec::new()));
-            let link = crate::wire::test_link(Peer {
-                sent: sent.clone(),
-                events: Vec::new(),
-                replies: replies.into(),
-                statuses: statuses.into(),
-            });
-            let mut run = task_run();
-            run.action_context = serde_json::json!({"purpose":null,"group":{"kind":"task","id":run.task_id,"label":run.task_id}});
-            let mut custody = runtime_collab::EnrolledRecipientCustody::new(
-                "agent-1",
-                "launch-1",
-                "epoch-1",
-                "channel-1",
-            )
-            .unwrap();
-            let mut envelope = runtime_collab::EnrolledTaskEnvelope {
-                version: 1,
-                message_id: "message-1".into(),
-                task_id: run.task_id.clone(),
-                run_id: "run-1".into(),
-                launch_id: "launch-1".into(),
-                runtime_epoch: "epoch-1".into(),
-                recipient_agent: "agent-1".into(),
-                channel_lease: "channel-1".into(),
-                history: None,
-                task: run.clone(),
-            };
-            envelope.task.planning = runtime_collab::TaskRunPlanning::Model;
-            let acceptance = custody.accept(&envelope).unwrap().acceptance;
-            let session = Session {
-                cfg: Config {
-                    agent_id: "agent-1".into(),
-                    endpoint: None,
-                    endpoint_identity: None,
-                    app_id: "so.tilo.agent".into(),
-                    cluster: Uuid::from_u128(1),
-                    record: None,
-                    name: "agent-1".into(),
-                    pace: Duration::ZERO,
-                    once: false,
-                    model: false,
-                    model_timeout: Duration::ZERO,
-                    await_document: Duration::ZERO,
-                    settle: Duration::ZERO,
-                    permissions: ui::permissions::PermissionContext::agent_granted_at(
-                        "agent-1",
-                        &[],
-                        ui::permissions::KindSet::READ_UNDOABLE,
-                    ),
-                    content: tilo_content::ContentStore::memory(),
-                },
-                link,
-                chooser: Chooser::new(false, Duration::ZERO),
-                enrolled_custody: Some(custody),
-                enrolled_active: Some(acceptance),
-                enrolled_sequence: 0,
-                task_deadline: None,
-                native_task: None,
-                broker_surfaces: Vec::new(),
-                next_broker_request: 1,
-                live: crate::live::LivePublisher::default(),
-                memory: agent_loop::Memory::default(),
-                broker_revision: 0,
-                catalogue_cache: None,
-                turn: None,
-                outstanding: outstanding::Outstanding::default(),
-            };
-            (session, run, sent)
-        }
-
-        fn action(name: &str, carries: bool) -> TaskAction {
-            TaskAction {
-                app: "app".into(),
-                peer_id: 2,
-                resource: "resource".into(),
-                resource_kind: "item".into(),
-                resource_label: "Resource".into(),
-                action: name.into(),
-                arguments: serde_json::Map::new(),
-                label: name.into(),
-                carries: carries.then(|| tilo_actions::PROMPTED_PARAM.to_owned()),
-            }
-        }
-
-        fn succeeded(resource: &str) -> tilo_actions::InvocationUpdate {
-            tilo_actions::InvocationUpdate::Succeeded {
-                invocation: tilo_actions::InvocationId(Uuid::from_u128(71)),
-                output: tilo_actions::ActionOutput {
-                    value: None,
-                    resources: vec![resource.into()],
-                },
-            }
-        }
-
-        fn step_requests(sent: &[CollabRequest]) -> Vec<(u64, Option<u32>, String)> {
-            sent.iter()
-                .filter_map(|request| match request {
-                    CollabRequest::InvokeTaskAction {
-                        request_id,
-                        step,
-                        arguments,
-                        ..
-                    } => Some((
-                        *request_id,
-                        *step,
-                        serde_json::Value::Object(arguments.clone()).to_string(),
-                    )),
-                    _ => None,
-                })
-                .collect()
-        }
-
-        /// Write `text` as a declared incremental paragraph and return each
-        /// step as `(step, action, part, preview shown before it)`.
-        fn write_paragraph(text: &str) -> Vec<(Option<u32>, String, String, String)> {
-            let replies = (0..crate::live::MAX_CHUNKS)
-                .map(|_| Reply::Committed(succeeded("done"), serde_json::json!({"succeeded": {}})))
-                .collect();
-            let (mut session, run, sent) = fixture(replies, vec![]);
-            session.live.start();
-            // Generic names: chunking follows the declared parameter and
-            // continuation action, never particular operation ids.
-            let mut first = action("start", false);
-            first.label = "Start".into();
-            first.arguments = with_param(&first.arguments, "body", text);
-            let next = action("more", false);
-            let paragraph = ChunkedParagraph {
-                first: &first,
-                next: &next,
-                param: "body",
-                arguments: &first.arguments,
-                text,
-                budget: crate::live::MAX_CHUNKS,
-            };
-            let mut step_index = 2;
-            let mut stepped = true;
-            session
-                .run_chunked_paragraph(&run, 1, &mut step_index, &paragraph, &mut stepped)
-                .unwrap()
-                .unwrap();
-            let mut preview = None;
-            let mut steps = Vec::new();
-            for request in sent.borrow().iter() {
-                match request {
-                    CollabRequest::ReportEnrolledTask {
-                        update: runtime_collab::TaskRunUpdate::Progress { message },
-                        ..
-                    } => {
-                        let update = crate::live::AgentLiveUpdate::decode(message).unwrap();
-                        assert_eq!(update.state, crate::live::LiveState::Applying);
-                        assert_eq!(update.label, "Start: Resource");
-                        preview = update.preview.map(|preview| preview.text);
-                    }
-                    CollabRequest::InvokeTaskAction {
-                        step,
-                        action,
-                        arguments,
-                        ..
-                    } => steps.push((
-                        *step,
-                        action.clone(),
-                        arguments["body"].as_str().unwrap().to_owned(),
-                        // The preview on show when the step is sent: an
-                        // unchanged preview is not published again.
-                        preview.clone().expect("a preview precedes the first step"),
-                    )),
-                    _ => {}
-                }
-            }
-            assert_eq!(step_index, 2 + steps.len());
-            steps
-        }
-
-        /// A complete 700-byte paragraph is one durable step through the
-        /// planned action, previewed before it lands — not a dozen chunk
-        /// round trips imitating typing.
-        #[test]
-        fn a_complete_paragraph_is_one_step_with_its_preview() {
-            let text = "The ocean covers more than seventy percent of the planet! ".repeat(13);
-            assert!(text.len() >= 700, "{}", text.len());
-            let steps = write_paragraph(&text);
-            assert_eq!(
-                steps,
-                [(
-                    Some(2),
-                    "start".to_owned(),
-                    text.clone(),
-                    crate::live::tail(&text, crate::live::MAX_PREVIEW_BYTES).to_owned()
-                )],
-                "one step carries the whole paragraph, after its preview"
-            );
-        }
-
-        /// Text past one step's bound continues through the declared
-        /// continuation, strictly in order, each step sent while the preview
-        /// shows the uncommitted rest, and the parts rejoin exactly.
-        #[test]
-        fn a_paragraph_past_one_steps_bound_continues_in_order_with_previews() {
-            let text = "word ".repeat(6000);
-            assert!(text.len() > crate::live::MAX_STEP_TEXT_JSON);
-            let steps = write_paragraph(&text);
-            assert_eq!(steps.len(), 2, "split only at the step bound: {steps:?}");
-            let mut rest = text.clone();
-            for (index, (step, action, chunk, preview)) in steps.iter().enumerate() {
-                assert_eq!(*step, Some(u32::try_from(2 + index).unwrap()));
-                let expected = if index == 0 { "start" } else { "more" };
-                assert_eq!(action, expected);
-                assert!(chunk.len() <= crate::live::MAX_STEP_TEXT_JSON);
-                assert_eq!(
-                    preview,
-                    crate::live::tail(&rest, crate::live::MAX_PREVIEW_BYTES),
-                    "the preview is the uncommitted rest"
-                );
-                rest = rest[chunk.len()..].to_owned();
-            }
-            assert!(rest.is_empty());
-            assert_eq!(
-                steps.iter().map(|step| step.2.as_str()).collect::<String>(),
-                text
-            );
-        }
-
-        /// A pending or unanswered step is re-sent identically, and the next
-        /// step is built from the committed continuation, not the reply.
-        #[test]
-        fn pending_steps_resend_identically_and_hand_off_the_committed_continuation() {
-            let committed = serde_json::json!({
-                "succeeded": {"resources": ["tilo.content:committed-hash"]}
-            });
-            let (mut session, run, sent) = fixture(
-                vec![
-                    Reply::Retry,
-                    Reply::Committed(succeeded("tilo.content:in-memory-hash"), committed),
-                    Reply::Committed(
-                        succeeded("tilo.content:final"),
-                        serde_json::json!({"succeeded": {}}),
-                    ),
-                ],
-                vec![],
-            );
-            let mut stepped = true;
-            let first = action("produce", false);
-            let handoff = session
-                .invoke_task_step(&run, 0, &first, &first.arguments, &mut stepped)
-                .unwrap()
-                .unwrap();
-            assert!(matches!(handoff, Handoff::Committed(_)));
-            let second = action("consume", true);
-            let arguments = arguments_for_step(
-                second.carries.as_deref(),
-                &second.arguments,
-                handoff.outcome().unwrap().as_ref(),
-            )
-            .unwrap();
-            assert_eq!(
-                arguments.get(tilo_actions::PROMPTED_PARAM),
-                Some(&serde_json::Value::String("committed-hash".into())),
-                "the next step consumes only the committed continuation"
-            );
-            session
-                .invoke_task_step(&run, 1, &second, &arguments, &mut stepped)
-                .unwrap()
-                .unwrap();
-            assert!(stepped);
-            let requests = step_requests(&sent.borrow());
-            assert_eq!(requests.len(), 3);
-            assert_eq!(
-                requests[0], requests[1],
-                "a pending step is re-sent byte-identically"
-            );
-            assert_eq!(requests[0].1, Some(0));
-            assert_eq!(requests[2].1, Some(1));
-            assert_ne!(requests[2].0, requests[0].0);
-        }
-
-        #[test]
-        fn a_committed_failure_stops_the_task_with_the_committed_detail() {
-            let failed = tilo_actions::InvocationUpdate::Failed {
-                invocation: tilo_actions::InvocationId(Uuid::from_u128(71)),
-                error: tilo_actions::ActionFailure {
-                    code: "app.refused".into(),
-                    message: "The app refused".into(),
-                    details: None,
-                    retryable: false,
-                },
-            };
-            let (mut session, run, _) = fixture(
-                vec![Reply::Committed(
-                    failed,
-                    serde_json::json!({"failed": "app.refused"}),
-                )],
-                vec![],
-            );
-            let mut stepped = true;
-            let first = action("produce", false);
-            match session
-                .invoke_task_step(&run, 0, &first, &first.arguments, &mut stepped)
-                .unwrap()
-            {
-                Err(TaskActionStop::Failed(message)) => assert_eq!(message, "The app refused"),
-                other => panic!("committed failure lost: {other:?}"),
-            }
-        }
-
-        /// A host without a step ledger refuses before binding, so the
-        /// non-step invocation path may run; a stepped reply without a
-        /// committed continuation is a failure, never a silent fallback.
-        #[test]
-        fn hosts_without_steps_keep_the_unstepped_path() {
-            let accepted = tilo_actions::InvocationUpdate::Accepted {
-                invocation: tilo_actions::InvocationId(Uuid::from_u128(71)),
-            };
-            let (mut session, run, sent) = fixture(vec![Reply::Legacy(accepted)], vec![]);
-            let mut stepped = true;
-            let first = action("produce", false);
-            assert!(matches!(
-                session
-                    .invoke_task_step(&run, 0, &first, &first.arguments, &mut stepped)
-                    .unwrap(),
-                Err(TaskActionStop::Failed(_))
-            ));
-            assert!(stepped);
-            assert_eq!(step_requests(&sent.borrow()).len(), 1, "never re-sent");
-
-            let (mut session, run, sent) = fixture(
-                vec![
-                    Reply::Refused("remote exception: enrolled task steps unavailable"),
-                    Reply::Legacy(succeeded("tilo.content:legacy")),
-                ],
-                vec![],
-            );
-            let mut stepped = true;
-            session
-                .invoke_task_step(&run, 0, &first, &first.arguments, &mut stepped)
-                .unwrap()
-                .unwrap();
-            assert!(!stepped);
-            let requests = step_requests(&sent.borrow());
-            assert_eq!(
-                requests.iter().map(|request| request.1).collect::<Vec<_>>(),
-                vec![Some(0), None]
-            );
-
-            let (mut session, run, sent) = fixture(
-                vec![Reply::Refused("task action is no longer live")],
-                vec![],
-            );
-            let mut stepped = true;
-            assert!(matches!(
-                session
-                    .invoke_task_step(&run, 0, &first, &first.arguments, &mut stepped)
-                    .unwrap(),
-                Err(TaskActionStop::Failed(_))
-            ));
-            assert!(stepped);
-            assert_eq!(
-                step_requests(&sent.borrow()).len(),
-                1,
-                "a refusal is not retried"
-            );
-        }
-
-        #[test]
-        fn an_unanswered_step_is_resent_under_the_same_identity() {
-            let (mut session, run, sent) = fixture(
-                vec![
-                    Reply::Silent,
-                    Reply::Committed(
-                        succeeded("tilo.content:x"),
-                        serde_json::json!({"succeeded": {}}),
-                    ),
-                ],
-                vec![],
-            );
-            let mut stepped = true;
-            let first = action("produce", false);
-            session
-                .invoke_task_step(&run, 0, &first, &first.arguments, &mut stepped)
-                .unwrap()
-                .unwrap();
-            let requests = step_requests(&sent.borrow());
-            assert_eq!(requests.len(), 2);
-            assert_eq!(requests[0], requests[1]);
         }
     }
 

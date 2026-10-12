@@ -21,9 +21,10 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
-use fs::availability::{EvictionDecision, EvictionRequirements, Residency};
+use fs::availability::{EvictionDecision, EvictionRequirements};
 use fs::eviction::{EvictionQueue, EvictionRequestState};
 use fs::{AvailabilityRegistry, ContentStore};
+use fs_protocol::Residency;
 use fs_protocol::{
     ContentHash, ContentRevisionV1, FilePermission, FileRecordId, SHARE_CONTROL_VERSION,
     ShareControlOperationV1, ShareControlRequestV1, ShareControlResultV1,
@@ -443,7 +444,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     host.wait_for_line("Mounting QuickFS");
     let host_file = host_mount.join("shared.bin");
     let record_bytes = wait_for_process(&mut host, "the host to stamp the record id", || {
-        get_xattr(&host_file, fs::syncstate::RECORD_ID_XATTR).ok()
+        get_xattr(&host_file, fs_protocol::RECORD_ID_XATTR).ok()
     });
     let record_id = FileRecordId(uuid::Uuid::from_bytes(record_bytes.try_into().unwrap()));
     let share_socket = host_cache.join("share-control.sock");
@@ -489,7 +490,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     // remove the cached bytes.
     set_xattr(
         &viewer_file,
-        fs::syncstate::AVAILABILITY_CONTROL_XATTR,
+        fs_protocol::AVAILABILITY_CONTROL_XATTR,
         b"retry",
     )
     .unwrap();
@@ -525,13 +526,13 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         EvictionDecision::Allowed
     );
 
-    let content_hash: [u8; 32] = get_xattr(&viewer_file, fs::syncstate::CONTENT_HASH_XATTR)
+    let content_hash: [u8; 32] = get_xattr(&viewer_file, fs_protocol::CONTENT_HASH_XATTR)
         .unwrap()
         .try_into()
         .unwrap();
     set_xattr(
         &viewer_file,
-        fs::syncstate::AVAILABILITY_CONTROL_XATTR,
+        fs_protocol::AVAILABILITY_CONTROL_XATTR,
         b"evict",
     )
     .unwrap();
@@ -543,7 +544,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         &mut viewer,
         "the viewer to project the evicted file",
         || {
-            (get_xattr(&viewer_file, fs::syncstate::SYNC_XATTR)
+            (get_xattr(&viewer_file, fs_protocol::SYNC_XATTR)
                 .ok()?
                 .as_slice()
                 == b"projected")
@@ -589,7 +590,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         &mut restarted_viewer,
         "the restarted viewer to report the file local",
         || {
-            (get_xattr(&restarted_file, fs::syncstate::SYNC_XATTR)
+            (get_xattr(&restarted_file, fs_protocol::SYNC_XATTR)
                 .ok()?
                 .as_slice()
                 == b"local")
@@ -638,7 +639,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     );
     set_xattr(
         &loss_file,
-        fs::syncstate::AVAILABILITY_CONTROL_XATTR,
+        fs_protocol::AVAILABILITY_CONTROL_XATTR,
         b"retry",
     )
     .unwrap();
@@ -659,7 +660,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     );
     set_xattr(
         &loss_file,
-        fs::syncstate::AVAILABILITY_CONTROL_XATTR,
+        fs_protocol::AVAILABILITY_CONTROL_XATTR,
         b"evict",
     )
     .unwrap();
@@ -675,7 +676,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         &mut loss_viewer,
         "the loss viewer to project the evicted file",
         || {
-            (get_xattr(&loss_file, fs::syncstate::SYNC_XATTR)
+            (get_xattr(&loss_file, fs_protocol::SYNC_XATTR)
                 .ok()?
                 .as_slice()
                 == b"projected")
@@ -686,7 +687,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     let unavailable = std::fs::read(&loss_file).unwrap_err();
     assert_eq!(unavailable.raw_os_error(), Some(libc::EIO));
     assert_eq!(
-        get_xattr(&loss_file, fs::syncstate::SYNC_XATTR)
+        get_xattr(&loss_file, fs_protocol::SYNC_XATTR)
             .unwrap()
             .as_slice(),
         b"projected"
@@ -703,14 +704,14 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
 }
 
 /// Voluntary wakeups per second an idle `fs serve` may make across all of
-/// its threads (TIL-750). An idle thread blocks once and stays blocked, so
+/// its threads. An idle thread blocks once and stays blocked, so
 /// each voluntary switch is a timer or a poll that fired. Preemptions are
 /// printed but not budgeted: on a loaded shared runner they measure the
-/// neighbours, not this process (TIL-749).
+/// neighbours, not this process.
 ///
-/// Measured on the CI `runner` class: 45.4/s before TIL-750 (a 100 ms
+/// Measured on the CI `runner` class: 45.4/s before #4130 (a 100 ms
 /// persist poll, a 50 ms session-supervisor poll, repair ticks), 6.5-7.9/s
-/// after (two runs). TIL-774 runs the daemon as `fs.service` does, with
+/// after (two runs). #4224 runs the daemon as `fs.service` does, with
 /// the shipped capability list: 9.95/s before (probe run 94694; its two
 /// one-second file polls were 3-4/s, iroh's relays 5.8/s), 0.60/s after
 /// (run 94886: one runtime worker, on iroh's own netwatch and re-STUN
@@ -774,7 +775,7 @@ fn idle_serve_mount_stays_asleep() {
     host.wait_for_line("Mounting QuickFS");
     let file = mount.join("idle.txt");
     wait_for_process(&mut host, "the mount to serve its seed", || {
-        get_xattr(&file, fs::syncstate::RECORD_ID_XATTR).ok()
+        get_xattr(&file, fs_protocol::RECORD_ID_XATTR).ok()
     });
 
     // Startup work (seeding, the first persist, thumbnails, the first sync
@@ -787,7 +788,7 @@ fn idle_serve_mount_stays_asleep() {
     .expect("the idle daemon's threads must be observable");
     eprintln!("{wakeups}");
     let per_second = wakeups.blocking_per_second();
-    eprintln!("TIL-774 idle fs serve: {per_second:.2} voluntary wakeups/s");
+    eprintln!("#4224 idle fs serve: {per_second:.2} voluntary wakeups/s");
     let logs = host.logs.lock().unwrap().join("\n");
     assert!(
         !logs.contains("relays: this device may be dialled"),
@@ -806,7 +807,7 @@ fn idle_serve_mount_stays_asleep() {
         std::thread::sleep(Duration::from_millis(10));
     }
     eprintln!(
-        "TIL-774 revocation closed the mount {} ms after the write",
+        "#4224 revocation closed the mount {} ms after the write",
         revoked.elapsed().as_millis()
     );
     host.stop();
@@ -942,7 +943,7 @@ fn idle_share_recipient_stays_asleep() {
     host.wait_for_line("Mounting QuickFS");
     let host_file = host_mount.join("shared.bin");
     let record_bytes = wait_for_process(&mut host, "the host to stamp the record id", || {
-        get_xattr(&host_file, fs::syncstate::RECORD_ID_XATTR).ok()
+        get_xattr(&host_file, fs_protocol::RECORD_ID_XATTR).ok()
     });
     let record_id = FileRecordId(uuid::Uuid::from_bytes(record_bytes.try_into().unwrap()));
     let share_socket = host_cache.join("share-control.sock");
@@ -1011,7 +1012,7 @@ fn idle_share_recipient_stays_asleep() {
     // replaces would not supersede its metadata.
     write_clock(&host_clock, clock_now.saturating_add(1_000));
     write_clock(&viewer_clock, clock_now.saturating_add(1_000));
-    let content_hash = |file: &Path| get_xattr(file, fs::syncstate::CONTENT_HASH_XATTR).ok();
+    let content_hash = |file: &Path| get_xattr(file, fs_protocol::CONTENT_HASH_XATTR).ok();
     let before_edit = content_hash(&viewer_file);
     let edited = Instant::now();
     std::fs::write(

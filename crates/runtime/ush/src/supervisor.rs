@@ -31,7 +31,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::FromRawFd;
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1082,7 +1082,6 @@ fn hand_off_session(
     editor: Option<runtime_portal::editor::Socket>,
     on_started: impl FnOnce(),
 ) -> anyhow::Result<()> {
-    use std::os::fd::AsFd;
     #[derive(serde::Serialize)]
     struct Leased<'a> {
         #[serde(flatten)]
@@ -1127,13 +1126,13 @@ fn hand_off_session(
             let mut bytes = serde_json::to_vec(response)?;
             bytes.push(b'\n');
             runtime_portal::fd_transport::send_with_fds(
-                writer.as_raw_fd(),
+                &*writer,
                 &bytes,
-                &[master.as_raw_fd(), app.as_fd().as_raw_fd()],
+                &[master.as_fd(), app.as_fd()],
             )
             .map_err(|error| undelivered(error.into()))?;
         } else {
-            reply(writer, response, Some(master.as_raw_fd())).map_err(undelivered)?;
+            reply(writer, response, Some(master.as_fd())).map_err(undelivered)?;
         }
         drop(editor);
         drop(master);
@@ -1152,11 +1151,11 @@ fn hand_off_session(
     bytes.push(b'\n');
     // Roles, in order: PTY master, private session lease, then the editor
     // capability when `editor_protocol` was negotiated.
-    let mut rights = vec![master.as_raw_fd(), terminal_lease.as_raw_fd()];
+    let mut rights = vec![master.as_fd(), terminal_lease.as_fd()];
     if let Some(app) = &editor {
-        rights.push(app.as_fd().as_raw_fd());
+        rights.push(app.as_fd());
     }
-    runtime_portal::fd_transport::send_with_fds(writer.as_raw_fd(), &bytes, &rights)
+    runtime_portal::fd_transport::send_with_fds(&*writer, &bytes, &rights)
         .map_err(|error| undelivered(error.into()))?;
     drop(editor);
     drop(master);
@@ -1777,7 +1776,6 @@ fn spawn_attached(
     }
     cmd.arg("--host-root").arg(launch.host_root);
     if let Some(editor) = launch.editor {
-        use std::os::fd::AsFd;
         use std::os::unix::process::CommandExt;
         let fd = editor.as_fd().as_raw_fd();
         cmd.arg("--editor-fd").arg(fd.to_string());
@@ -1878,7 +1876,7 @@ fn open_pty(cols: u16, rows: u16) -> std::io::Result<(std::fs::File, std::fs::Fi
 fn reply(
     stream: &mut UnixStream,
     response: &ServeResponse,
-    fd: Option<RawFd>,
+    fd: Option<BorrowedFd<'_>>,
 ) -> anyhow::Result<()> {
     let mut bytes = serde_json::to_vec(response)?;
     bytes.push(b'\n');
@@ -1887,7 +1885,7 @@ fn reply(
             stream.write_all(&bytes)?;
             stream.flush()?;
         }
-        Some(fd) => send_with_fd(stream.as_raw_fd(), &bytes, fd)?,
+        Some(fd) => send_with_fd(&*stream, &bytes, fd)?,
     }
     Ok(())
 }
@@ -1945,8 +1943,7 @@ mod tests {
                 assert!(handed.is_err());
             } else {
                 handed.unwrap();
-                let (_, mut rights) =
-                    runtime_portal::fd_transport::recv_with_owned_fds(client.as_raw_fd()).unwrap();
+                let (_, mut rights) = runtime_portal::fd_transport::recv_with_fds(&client).unwrap();
                 assert_eq!(rights.len(), 2);
                 let mut lease = UnixStream::from(rights.pop().unwrap());
                 lease
@@ -2015,8 +2012,7 @@ mod tests {
                 || {},
             )
             .unwrap();
-            let (bytes, mut rights) =
-                runtime_portal::fd_transport::recv_with_owned_fds(client.as_raw_fd()).unwrap();
+            let (bytes, mut rights) = runtime_portal::fd_transport::recv_with_fds(&client).unwrap();
             let response: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(response["session"], id);
             assert_eq!(response["environment"], environment);
@@ -2194,7 +2190,7 @@ mod tests {
                 runs: false,
                 editor_protocol: None,
             },
-            Some(master.as_raw_fd()),
+            Some(master.as_fd()),
         );
         assert!(
             handed.is_err(),
@@ -2672,13 +2668,8 @@ mod tests {
             let (a, b) = UnixStream::pair().unwrap();
             let (master, mut slave) = open_pty(80, 24).unwrap();
 
-            send_with_fd(
-                a.as_raw_fd(),
-                b"{\"result\":\"session\"}\n",
-                master.as_raw_fd(),
-            )
-            .unwrap();
-            let (payload, fd) = recv_with_fd(b.as_raw_fd()).unwrap();
+            send_with_fd(&a, b"{\"result\":\"session\"}\n", &master).unwrap();
+            let (payload, fd) = recv_with_fd(&b).unwrap();
             assert!(String::from_utf8_lossy(&payload).contains("session"));
             let fd = fd.expect("no descriptor arrived");
 
@@ -2687,15 +2678,9 @@ mod tests {
             slave.write_all(b"hello\n").unwrap();
             slave.flush().unwrap();
             let mut buf = [0u8; 32];
-            // SAFETY: `fd` is the descriptor just received and still open.
-            let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len()) };
+            let n = std::fs::File::from(fd).read(&mut buf).unwrap();
             assert!(n > 0, "nothing came back through the received descriptor");
-            // `n > 0` was just asserted above, so the cast below cannot lose the sign.
-            #[allow(clippy::cast_sign_loss, reason = "n > 0 was just asserted above")]
-            let n = n as usize;
             assert!(String::from_utf8_lossy(&buf[..n]).contains("hello"));
-            // SAFETY: we own `fd` now.
-            unsafe { libc::close(fd) };
         }
     }
 }

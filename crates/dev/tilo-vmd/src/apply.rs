@@ -53,6 +53,15 @@ pub struct Session {
 }
 
 impl Session {
+    pub(crate) fn identity(&self) -> tilo_vm_protocol::UserspaceSession {
+        tilo_vm_protocol::UserspaceSession {
+            user: self.user.clone(),
+            unit: self.unit.clone(),
+            login_session: self.login.as_ref().and_then(|login| login.session.clone()),
+            login_wrapper: self.login.as_ref().and_then(|login| login.wrapper),
+        }
+    }
+
     /// A login whose owner is logged out: nothing runs to restart.
     pub fn logged_out(&self) -> bool {
         self.login
@@ -124,6 +133,8 @@ pub trait Apply {
         None
     }
     fn remove_user(&mut self, user: &str) -> Result<(), DaemonError>;
+    /// Private device identity for a disposable slot, inside its removable home.
+    fn slot_identity_environment(&mut self, user: &str) -> Result<String, DaemonError>;
     fn write_dropin(&mut self, unit: &str, file: &str, contents: &str) -> Result<(), DaemonError>;
     fn remove_dropin(&mut self, unit: &str, file: &str) -> Result<(), DaemonError>;
     /// Prepare one readonly combined filesystem view for a stand-in slot.
@@ -228,6 +239,33 @@ pub trait Apply {
         &mut self,
         session: &Session,
         tapp: &std::path::Path,
+    ) -> Result<String, DaemonError>;
+    /// Prepare one request-scoped verified installer view.
+    fn prepare_cohort_selection(
+        &mut self,
+        session: &Session,
+        layers: &[PathBuf],
+    ) -> Result<(), DaemonError>;
+    /// Read the canonical selected rows in the exact candidate namespace,
+    /// before changing any selection or refreshing the owner desktop.
+    fn cohort_selected_apps(
+        &mut self,
+        session: &Session,
+        layers: &[PathBuf],
+    ) -> Result<crate::SelectedApps, DaemonError>;
+    /// Readonly prior namespace for exact admitted runtime retention.
+    fn cohort_runtime_view(
+        &mut self,
+        session: &Session,
+        layers: &[PathBuf],
+        prior: bool,
+    ) -> Result<PathBuf, DaemonError>;
+    /// Select through the exact verified candidate view before its sole restart.
+    fn install_cohort_app_in_view(
+        &mut self,
+        session: &Session,
+        tapp: &std::path::Path,
+        layers: &[PathBuf],
     ) -> Result<String, DaemonError>;
     /// Make the kernel in `layer` (already merged into `/usr`) the next boot,
     /// or with `None` put the image's own kernel back (see [`crate::boot`]).
@@ -427,6 +465,28 @@ pub fn seat_dropin(record: &SlotRecord) -> Option<String> {
     }
 }
 
+/// Encode a slot-private identity root in a systemd service environment.
+/// The real account home comes from passwd; no manager `%h` expansion is used.
+/// # Errors
+/// Relative, non-UTF-8 or control-character home directories are refused.
+pub fn slot_identity_environment(home: &std::path::Path) -> Result<String, DaemonError> {
+    let home = home
+        .to_str()
+        .filter(|home| {
+            std::path::Path::new(home).is_absolute() && !home.chars().any(char::is_control)
+        })
+        .ok_or_else(|| {
+            DaemonError::InvalidParams(
+                "slot home must be an absolute UTF-8 path without control characters".into(),
+            )
+        })?;
+    let root = format!("{home}/.local/share/tilo/test-identity")
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('%', "%%");
+    Ok(format!("Environment=\"TILO_IDENTITY_ROOT={root}\"\n"))
+}
+
 /// How the session reacts to an activation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionChange {
@@ -436,6 +496,8 @@ pub enum SessionChange {
     Restart,
     /// Leave the running session alone.
     Keep,
+    /// Stage a verified cohort view without the policy upgrading this to restart.
+    Stage,
 }
 
 /// Bring a slot's system state in line with `generation`.
@@ -507,7 +569,10 @@ pub fn activate(
         record.seat = Some(seat);
     }
 
-    let dropin = apply.session_layer_dropin(&record.name, generation.number, layers)?;
+    let mut dropin = apply.session_layer_dropin(&record.name, generation.number, layers)?;
+    if session.stand_in {
+        dropin.push_str(&apply.slot_identity_environment(&session.user)?);
+    }
     for unit in layered_units(&session, uid) {
         let text = if unit == session.unit
             && generation
@@ -537,7 +602,7 @@ pub fn activate(
             actions.push(Action::StartUnit { unit: session.unit });
         }
         SessionChange::Restart => actions.extend(restart_session(apply, &session, uid)?),
-        SessionChange::Keep => actions.push(Action::Deferred {
+        SessionChange::Keep | SessionChange::Stage => actions.push(Action::Deferred {
             reason:
                 "app-only change: live at next app launch; other layers at next session restart"
                     .into(),
@@ -565,7 +630,7 @@ fn activate_login(
     match change {
         // A login is started by its owner at the greeter, never by tilo-vmd.
         SessionChange::Ensure => {}
-        SessionChange::Keep => actions.push(Action::Deferred {
+        SessionChange::Keep | SessionChange::Stage => actions.push(Action::Deferred {
             reason:
                 "app-only change: live at next app launch; other layers at the next desktop restart"
                     .into(),
@@ -805,6 +870,9 @@ impl Apply for RecordingApply {
     fn device_session(&mut self) -> Option<DeviceSession> {
         self.device.clone()
     }
+    fn slot_identity_environment(&mut self, user: &str) -> Result<String, DaemonError> {
+        slot_identity_environment(std::path::Path::new(&format!("/home/{user}")))
+    }
     fn remove_user(&mut self, user: &str) -> Result<(), DaemonError> {
         self.call(format!("remove_user {user}"));
         self.users.remove(user);
@@ -971,6 +1039,51 @@ impl Apply for RecordingApply {
             .unwrap_or_default();
         Ok(format!("installed: so.tilo.{name} 0.1.0\n"))
     }
+    fn prepare_cohort_selection(
+        &mut self,
+        session: &Session,
+        layers: &[PathBuf],
+    ) -> Result<(), DaemonError> {
+        self.call(format!(
+            "prepare_cohort_view {} {}",
+            session.user,
+            layers.len()
+        ));
+        Ok(())
+    }
+    fn cohort_selected_apps(
+        &mut self,
+        session: &Session,
+        _layers: &[PathBuf],
+    ) -> Result<crate::SelectedApps, DaemonError> {
+        self.call(format!("cohort_selected_apps {}", session.user));
+        Ok(crate::SelectedApps::default())
+    }
+    fn cohort_runtime_view(
+        &mut self,
+        _session: &Session,
+        _layers: &[PathBuf],
+        _prior: bool,
+    ) -> Result<PathBuf, DaemonError> {
+        Ok(PathBuf::from("/"))
+    }
+    fn install_cohort_app_in_view(
+        &mut self,
+        session: &Session,
+        tapp: &std::path::Path,
+        layers: &[PathBuf],
+    ) -> Result<String, DaemonError> {
+        self.call(format!(
+            "cohort_view {} {}",
+            session.user,
+            layers
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+        self.install_cohort_app(session, tapp)
+    }
     fn install_cohort_app(
         &mut self,
         session: &Session,
@@ -1090,6 +1203,22 @@ mod tests {
     }
 
     #[test]
+    fn slot_identity_environment_quotes_the_actual_account_home() {
+        assert_eq!(
+            slot_identity_environment(std::path::Path::new("/var/home/you")).unwrap(),
+            "Environment=\"TILO_IDENTITY_ROOT=/var/home/you/.local/share/tilo/test-identity\"\n"
+        );
+        assert_eq!(
+            slot_identity_environment(std::path::Path::new("/home/a %u\"b")).unwrap(),
+            "Environment=\"TILO_IDENTITY_ROOT=/home/a %%u\\\"b/.local/share/tilo/test-identity\"\n"
+        );
+        assert!(slot_identity_environment(std::path::Path::new("relative")).is_err());
+        assert!(
+            slot_identity_environment(std::path::Path::new("/home/a\nEnvironment=BAD")).is_err()
+        );
+    }
+
+    #[test]
     fn frame_cpu_trace_is_generation_scoped_and_stand_in_only() {
         let mut apply = RecordingApply::default();
         let mut slot = record("cpu", SlotKind::Headless);
@@ -1129,6 +1258,11 @@ mod tests {
                 !apply.dropins[&(user_unit(60_001), LAYERS_DROPIN.into())]
                     .contains("TILO_VM_FRAME_CPU_TRACE")
             );
+            for unit in [session_unit("cpu"), user_unit(60_001)] {
+                assert!(apply.dropins[&(unit, LAYERS_DROPIN.into())].contains(
+                    "Environment=\"TILO_IDENTITY_ROOT=/home/tds-cpu/.local/share/tilo/test-identity\"\n"
+                ));
+            }
         }
     }
 
@@ -1460,6 +1594,11 @@ mod tests {
             assert!(dropin.contains(
                 "ExtensionDirectories=\nExtensionDirectories=/var/lib/tilo-vm/layers/h1\n"
             ));
+            for unit in ["user@60001.service", "tilo-vm-session@a.service"] {
+                assert!(apply.dropins[&(unit.into(), LAYERS_DROPIN.into())].contains(
+                    "Environment=\"TILO_IDENTITY_ROOT=/home/tds-a/.local/share/tilo/test-identity\"\n"
+                ));
+            }
         }
         // Phase `the_device_session_restarts_through_its_own_unit_as_its_account`.
         {
@@ -1497,6 +1636,13 @@ mod tests {
                     .iter()
                     .any(|a| matches!(a, Action::EnsureUser { .. })),
                 "the account is not a slot user: {actions:?}"
+            );
+            assert!(
+                apply
+                    .dropins
+                    .values()
+                    .all(|text| !text.contains("TILO_IDENTITY_ROOT")),
+                "a real device retains its existing identity environment"
             );
             let session = device.session().unwrap();
             assert!(!session.stand_in);

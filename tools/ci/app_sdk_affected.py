@@ -10,6 +10,7 @@ closure (the shell, OS services, tools) skip the lanes.
 
 Prints `affected=true|false` and, with --github-output, appends it there.
 --lane linux audits unrelated app Rust source before omitting that native lane.
+--lane both emits both decisions from one observed source and metadata snapshot.
 """
 
 from __future__ import annotations
@@ -63,6 +64,14 @@ GLOBAL_INPUTS = (
 # fixtures, not Rust sources. Bind that audit to its exact bytes: any build
 # script change restores the SDK lanes until its inputs have been re-audited.
 AUDITED_UNIT_MODULES = {
+    # Shell has no build script. Pin its manifest and reject new automatic
+    # or declared build targets before trusting the observed cfg(test) edge.
+    "crates/session/shell/src/shell/frame_retained_tests.rs": (
+        "crates/session/shell/src/shell/frame.rs",
+        "crates/session/shell/Cargo.toml",
+        # Re-audited after adding the shared fs-protocol dependency.
+        "9718617b42874a28204ca0f73fa13303efaf40dc28b7970374c2553749fe1742",
+    ),
     "crates/sdk/ui-core/src/app/bound_component_tests.rs": (
         "crates/sdk/ui-core/src/app/host.rs",
         "crates/sdk/ui-core/build.rs",
@@ -87,6 +96,15 @@ def audited_unit_module_only(root: Path, path: str, packages: dict, by_dir: dict
         changed.read_text()
         if hashlib.sha256(build.read_bytes()).hexdigest() != digest:
             return False
+        if build.name == "Cargo.toml":
+            package = packages[owner]
+            directory = Path(package["manifest_path"]).parent
+            automatic = directory / "build.rs"
+            if (build.resolve() != Path(package["manifest_path"]).resolve()
+                    or automatic.exists() or automatic.is_symlink()
+                    or any("custom-build" in target.get("kind", [])
+                           for target in package.get("targets", []))):
+                return False
         text = parent.read_text()
         module = (r'^#\[cfg\(test\)\]\s*#\[path\s*=\s*"'
                   + re.escape(changed.name) + r'"\]\s*mod\s+\w+\s*;')
@@ -287,17 +305,22 @@ def main() -> int:
     parser.add_argument("--base", help="base commit/ref (defaults to HEAD^)")
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--github-output", type=Path)
-    parser.add_argument("--lane", choices=("all", "linux"), default="all")
+    parser.add_argument("--lane", choices=("all", "linux", "both"), default="all")
     args = parser.parse_args()
     root = Path.cwd()
     base = comparison_merge_base(root, args.base, args.head)
-    hit, why = affected(root, changed_files(root, args.base, args.head), cargo_metadata(root),
-                        base, args.head, args.lane)
-    output = "linux_affected" if args.lane == "linux" else "affected"
-    print(f"{output}={'true' if hit else 'false'}" + (f"  # {why}" if why else ""))
+    changed = changed_files(root, args.base, args.head)
+    metadata = cargo_metadata(root)
+    lanes = ("all", "linux") if args.lane == "both" else (args.lane,)
+    decisions = []
+    for lane in lanes:
+        hit, why = affected(root, changed, metadata, base, args.head, lane)
+        output = "linux_affected" if lane == "linux" else "affected"
+        decisions.append(f"{output}={'true' if hit else 'false'}")
+        print(decisions[-1] + (f"  # {why}" if why else ""))
     if args.github_output:
         with args.github_output.open("a") as out:
-            out.write(f"{output}={'true' if hit else 'false'}\n")
+            out.write("\n".join(decisions) + "\n")
     return 0
 
 

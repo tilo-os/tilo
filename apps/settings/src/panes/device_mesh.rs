@@ -1752,22 +1752,24 @@ impl DeviceMeshModel {
             self.approve_enrollment(target);
             return;
         }
+        let identity_dir = match runtime_identity::identity_dir_from_env() {
+            Ok(path) => path,
+            Err(error) => {
+                self.load_status = format!("Could not find your identity: {error}");
+                self.changed = true;
+                return;
+            }
+        };
         let mut command = Command::new("pkexec");
         match target {
             PairingTarget::HomePeer => {
                 command
                     .args([CONTROL_HELPER, "approve-enrollment", "--identity-root"])
-                    .arg(identity_root());
+                    .arg(identity_root())
+                    .arg("--identity-dir")
+                    .arg(&identity_dir);
             }
             PairingTarget::PersonalDevice => {
-                let identity_dir = match runtime_identity::identity_dir_from_env() {
-                    Ok(path) => path,
-                    Err(error) => {
-                        self.load_status = format!("Could not find your identity: {error}");
-                        self.changed = true;
-                        return;
-                    }
-                };
                 command
                     .args([CONTROL_HELPER, "approve-device", "--identity-root"])
                     .arg(identity_root())
@@ -1830,6 +1832,18 @@ impl DeviceMeshModel {
             .arg(identity_root())
             .args(["--device", &peer.device_node_id])
             .args(["--service", &peer.relay_service_node_id]);
+        if action == "home-peer-remove" {
+            match runtime_identity::identity_dir_from_env() {
+                Ok(directory) => {
+                    command.arg("--identity-dir").arg(directory);
+                }
+                Err(error) => {
+                    self.load_status = format!("Could not find your identity: {error}");
+                    self.changed = true;
+                    return;
+                }
+            }
+        }
         if let Some(label) = label {
             command.args(["--label", label]);
         }
@@ -1868,6 +1882,10 @@ impl DeviceMeshModel {
                 .arg("home-peer-retry-removals")
                 .arg("--identity-root")
                 .arg(identity_root());
+            let Ok(directory) = runtime_identity::identity_dir_from_env() else {
+                return;
+            };
+            command.arg("--identity-dir").arg(directory);
             if let Ok(child) = bounded_command::spawn_prepared(
                 command,
                 None,

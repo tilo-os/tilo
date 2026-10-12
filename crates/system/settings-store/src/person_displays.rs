@@ -891,6 +891,9 @@ pub struct PersonDisplays {
     pub devices: Vec<PersonDevice>,
 }
 
+/// The view this process last published.
+static PUBLISHED: crate::published::Published<PersonDisplays> = crate::published::Published::new();
+
 impl PersonDisplays {
     /// The live publisher's view, or `None` when no live shell published
     /// one (no fabric identity, or the shell is gone).
@@ -899,7 +902,18 @@ impl PersonDisplays {
         Self::load_at(&path)
     }
 
+    /// The view this process last [`saved`](Self::save), from memory.
+    pub fn published() -> Option<std::sync::Arc<Self>> {
+        PUBLISHED.get(&path()?)
+    }
+
+    /// Moves every time this process publishes a view.
+    pub fn published_generation() -> u64 {
+        PUBLISHED.generation()
+    }
+
     pub fn load_at(path: &Path) -> Option<Self> {
+        crate::published::note_file_read();
         let bytes = tilo_files::native::bounded::read(path, 2_097_152).ok()??;
         let view: Self = serde_json::from_slice(&bytes).ok()?;
         (view.schema_version == SCHEMA_VERSION
@@ -917,6 +931,9 @@ impl PersonDisplays {
     /// file cannot be written.
     pub fn save(&self) -> std::io::Result<()> {
         let path = path().ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is unavailable"))?;
+        if PUBLISHED.get(&path).as_deref() != Some(self) {
+            PUBLISHED.set(&path, self.clone());
+        }
         self.save_at(&path)
     }
 

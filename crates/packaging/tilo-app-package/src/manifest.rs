@@ -793,7 +793,7 @@ impl SandboxNet {
 pub enum PortalPolicy {
     /// Route through the freedesktop portal on the host session bus —
     /// the launcher bind-mounts the D-Bus socket and sets
-    /// `DBUS_SESSION_BUS_ADDRESS`; the app uses `runtime::portal_xdg` or `ashpd` directly.
+    /// `DBUS_SESSION_BUS_ADDRESS`; the app talks to the portal through `ashpd`.
     ViaHost,
     /// The portal is explicitly denied — same on-wire behaviour as
     /// omitting the entry (`ashpd` surfaces `PortalError::NotAvailable`),
@@ -879,6 +879,12 @@ impl ServiceReq {
             requirement,
             version,
         })
+    }
+
+    /// Whether the app cannot run without the service.
+    #[must_use]
+    pub fn is_required(&self) -> bool {
+        self.requirement == Requirement::Required
     }
 }
 

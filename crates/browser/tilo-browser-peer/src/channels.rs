@@ -35,7 +35,7 @@ use collab_types::{
     ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction,
     MlsGovernanceFrameV1,
 };
-use tilo_user_identity::DeviceCert;
+use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 
 use crate::document::{ContentCipher, DocumentRoute};
 
@@ -142,8 +142,26 @@ pub(crate) struct SavedMember {
 /// which is kept apart from it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SavedChannels {
+    pub revocations: Vec<RevocationEntry>,
+    pub revocation_overflow: bool,
     pub governors: Vec<(String, [u8; 32])>,
     pub members: Vec<SavedMember>,
+}
+
+/// Frozen v2/v3 channel storage, before persistent semantic revocation knowledge.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct SavedChannelsV2 {
+    pub governors: Vec<(String, [u8; 32])>,
+    pub members: Vec<SavedMember>,
+}
+impl From<SavedChannelsV2> for SavedChannels {
+    fn from(old: SavedChannelsV2) -> Self {
+        Self {
+            governors: old.governors,
+            members: old.members,
+            ..Self::default()
+        }
+    }
 }
 
 /// Channel state as pages stored it while the vault was kept inside it.
@@ -164,6 +182,9 @@ pub(crate) struct Channels {
     /// Certificates announced through the host, bound to the device the
     /// host authenticated as their sender.
     certs: HashMap<[u8; 32], DeviceCert>,
+    /// Additive root-scoped knowledge; omission never restores revoked authority.
+    revocations: HashMap<[u8; 32], RevocationList>,
+    revocation_overflow: bool,
     routes: HashMap<ChannelId, Route>,
     unopened: HashMap<ChannelId, Vec<([u8; 32], MlsGovernanceFrameV1)>>,
     rooms: HashMap<String, Governance>,
@@ -190,6 +211,8 @@ impl Channels {
             user,
             vault: VaultKey::new(vault),
             certs: HashMap::new(),
+            revocations: HashMap::new(),
+            revocation_overflow: false,
             routes: HashMap::new(),
             unopened: HashMap::new(),
             rooms: HashMap::new(),
@@ -205,6 +228,13 @@ impl Channels {
     /// Pick up where a previous page left off: the governors it learned and
     /// its members' state.
     pub(crate) fn restore(&mut self, saved: SavedChannels) {
+        // Invalid persisted evidence is corruption, not an ignorable network message.
+        self.revocation_overflow |= saved
+            .revocations
+            .iter()
+            .any(|entry| tilo_user_identity::verify_revocation_entry(entry).is_err());
+        self.note_revocations(&saved.revocations);
+        self.revocation_overflow |= saved.revocation_overflow;
         for (room, governor) in saved.governors {
             self.rooms.insert(
                 room,
@@ -245,6 +275,7 @@ impl Channels {
         self.restore(SavedChannels {
             governors: legacy.governors,
             members,
+            ..SavedChannels::default()
         });
         self.dirty = true;
     }
@@ -317,7 +348,18 @@ impl Channels {
         governors.sort();
         let mut members: Vec<SavedMember> = members.into_values().collect();
         members.sort_by_key(|member| member.channel.0);
-        Some(SavedChannels { governors, members })
+        let mut revocations: Vec<_> = self
+            .revocations
+            .values()
+            .flat_map(|list| list.iter().cloned())
+            .collect();
+        revocations.sort_by_key(|entry| (entry.user_public_key, entry.revoked_device_public_key));
+        Some(SavedChannels {
+            governors,
+            members,
+            revocations,
+            revocation_overflow: self.revocation_overflow,
+        })
     }
 
     pub(crate) fn channel(route: &DocumentRoute) -> ChannelId {
@@ -443,6 +485,139 @@ impl Channels {
             changes.extend(self.consider_genesis(&room, sender, &frame, now_ms));
         }
         changes
+    }
+
+    pub(crate) fn note_revocations<'a>(
+        &mut self,
+        entries: impl IntoIterator<Item = &'a RevocationEntry>,
+    ) {
+        for entry in entries {
+            if tilo_user_identity::verify_revocation_entry(entry).is_err() {
+                continue;
+            }
+            let known = self
+                .revocations
+                .get(&entry.user_public_key)
+                .is_some_and(|list| {
+                    list.iter()
+                        .any(|old| old.revoked_device_public_key == entry.revoked_device_public_key)
+                });
+            if !known
+                && self
+                    .revocations
+                    .values()
+                    .map(RevocationList::len)
+                    .sum::<usize>()
+                    >= 4096
+            {
+                self.revocation_overflow = true;
+                self.dirty = true;
+                return;
+            }
+            self.dirty |= self
+                .revocations
+                .entry(entry.user_public_key)
+                .or_default()
+                .insert(entry.clone())
+                .unwrap_or(false);
+        }
+    }
+
+    /// Read current authority without opening routes, requesting keys or changing membership.
+    pub(crate) fn semantic_authority(
+        &self,
+        route: &DocumentRoute,
+        publisher: [u8; 32],
+        now_ns: u64,
+    ) -> Option<([u8; 32], u64, Option<u64>)> {
+        if self.revocation_overflow {
+            return None;
+        }
+        let cert = self.certs.get(&publisher)?;
+        tilo_user_identity::verify_device_cert_at(cert, now_ns).ok()?;
+        if cert.device_public_key != publisher
+            || self
+                .revocations
+                .get(&cert.user_public_key)
+                .is_some_and(|list| list.is_revoked_at(&publisher, now_ns))
+        {
+            return None;
+        }
+        let entry = self.routes.get(&Self::channel(route))?;
+        if entry.document != *route {
+            return None;
+        }
+        let member = entry.member.as_ref()?;
+        if self.governance(&route.cluster_id) != Governance::Governed(member.steward()) {
+            return None;
+        }
+        let revocation = self
+            .revocations
+            .get(&cert.user_public_key)
+            .and_then(|list| {
+                list.iter()
+                    .find(|entry| entry.revoked_device_public_key == publisher)
+                    .map(|entry| entry.revoked_at_ns)
+            });
+        let expires = cert.expires_at_ns.into_iter().chain(revocation).min();
+        Some((
+            cert.user_public_key,
+            member.admitted_epoch_for(Ed25519PublicKey::from_bytes(publisher))?,
+            expires,
+        ))
+    }
+
+    pub(crate) fn open_semantic(
+        &self,
+        route: &DocumentRoute,
+        publisher: [u8; 32],
+        bytes: &[u8],
+        now_ns: u64,
+        cipher: &mut dyn ContentCipher,
+    ) -> Option<crate::session::VerifiedSemanticLive> {
+        use tilo_relay_protocol::live::{LiveFrame, LiveRecord, OpsFrame, SealedLiveFrame};
+        let (user, epoch, expires) = self.semantic_authority(route, publisher, now_ns)?;
+        let sealed = SealedLiveFrame::decode(bytes).ok()?;
+        if sealed.epoch != epoch {
+            return None;
+        }
+        let frame = sealed
+            .open_in_record(
+                &route.cluster_id,
+                &LiveRecord {
+                    app: route.app_id.clone(),
+                    record: route.record.clone(),
+                },
+                |artifact, metadata, payload| cipher.open(artifact, metadata, payload),
+            )
+            .ok()?;
+        let LiveFrame::Ops(OpsFrame::Semantic { event, .. }) = &frame else {
+            return None;
+        };
+        let interaction: tilo_actions::SemanticInteraction =
+            serde_json::from_str(&event.interaction_json).ok()?;
+        interaction.validate().ok()?;
+        if interaction.invocation.0.is_nil()
+            || interaction.sequence != event.seq
+            || interaction.actor.kind != tilo_actions::ActorKind::Person
+            || interaction.actor.id != hex::encode(user)
+            || interaction
+                .action
+                .app
+                .as_ref()
+                .is_some_and(|app| app.id != route.app_id)
+        {
+            return None;
+        }
+        Some(crate::session::VerifiedSemanticLive {
+            publisher,
+            user,
+            epoch,
+            authority_generation: 0, // The owning session stamps its current snapshot.
+            authority_observed_at_ms: now_ns / 1_000_000,
+            authority_expires_at_ms: expires.map(|value| value / 1_000_000),
+            frame: frame.encode().ok()?,
+        })
     }
 
     /// Take part in `route`'s channel from now on.
@@ -721,7 +896,11 @@ mod tests {
 
     const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
-    fn cert(root: &SigningKey, key: &SigningKey, capabilities: DeviceCapabilities) -> DeviceCert {
+    pub(super) fn cert(
+        root: &SigningKey,
+        key: &SigningKey,
+        capabilities: DeviceCapabilities,
+    ) -> DeviceCert {
         let mut cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: key.verifying_key().to_bytes(),
@@ -735,7 +914,7 @@ mod tests {
         cert
     }
 
-    fn route(record: &str) -> DocumentRoute {
+    pub(super) fn route(record: &str) -> DocumentRoute {
         DocumentRoute {
             app_id: "so.tilo.notes".into(),
             cluster_id: ROOM.into(),
@@ -756,7 +935,7 @@ mod tests {
         .unwrap()
     }
 
-    fn device(key: &SigningKey) -> [u8; 32] {
+    pub(super) fn device(key: &SigningKey) -> [u8; 32] {
         key.verifying_key().to_bytes()
     }
 
@@ -1090,3 +1269,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "channels/semantic_tests.rs"]
+pub(crate) mod semantic_tests;

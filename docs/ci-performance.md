@@ -266,7 +266,7 @@ The [kernel module signing fixture](../os/tests/kernel_module_signing_test.sh)
 currently clears `RUSTC_WRAPPER` when building its helper. Retain that bypass
 until its cache trust requirements are reviewed; the separate libkmod parser
 checks runtime interoperability, not compiler-cache provenance. See
-[local compiler-cache guidance](../DEVELOPMENT.md#sizing-the-compilation-cache)
+[local compiler-cache guidance](measurements/build-speed.md#sizing-the-compilation-cache)
 and [packaging cache usage](packaging.md) for the existing reuse paths.
 
 ## Build-profile reuse

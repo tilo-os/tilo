@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import re
+import shlex
 import time
 import uuid
 from pathlib import Path
@@ -16,6 +17,11 @@ APP = "so.tilo.terminal"
 
 def identity(row):
     return tuple(row.get(k) for k in ("application", "room", "record", "resource"))
+
+
+def terminal_actions(vm):
+    # App action contracts are machine discovery, not human palette suggestions.
+    return vm.actions(APP, programmatic=True)
 
 
 def terminal_rows(rows):
@@ -36,19 +42,13 @@ def select(rows, operation, bound=None):
 
 # Only process identities, mapped runtime ELF and hashes; no argv, environment or documents.
 PROCESS_PROBE = r'''
-import hashlib,json,os,pathlib
+import json,os,pathlib
 rows=[]
 for p in pathlib.Path('/proc').iterdir():
  if not p.name.isdigit(): continue
  try:
   if p.stat().st_uid!=os.getuid() or (p/'comm').read_text().strip()!='terminal': continue
-  maps=(p/'maps').read_text().splitlines()
-  paths=sorted({x.split()[-1] for x in maps if '/run/tilo-runtime/' in x})
-  runtime=[]
-  for path in paths:
-   f=p/'root'/path.lstrip('/')
-   runtime.append({'path':path,'sha256':hashlib.sha256(f.read_bytes()).hexdigest()})
-  rows.append({'pid':int(p.name),'uid':os.getuid(),'runtime':runtime})
+  rows.append({'pid':int(p.name),'uid':os.getuid()})
  except (FileNotFoundError,ProcessLookupError): continue
 print(json.dumps({'uid':os.getuid(),'processes':rows}))
 '''
@@ -83,12 +83,12 @@ def run(args):
     before = processes(vm)
     require(before["uid"] == args.uid, "unexpected slot account")
     require(not before["processes"], "Terminal already open; close its own declared tab before fresh proof")
-    rows = vm.actions()
+    rows = terminal_actions(vm)
     require(not terminal_rows(rows), "stale Terminal binding present before fresh launch")
     opens = [r for r in vm.actions(APP) if r["provider"] == "applications" and r["id"] == APP]
     require(len(opens) == 1, "normal Terminal Open unavailable")
     vm.invoke("applications", APP)
-    rows = wait_until(lambda: (r if terminal_rows(r := vm.actions()) else None), 45, interval=0.5)
+    rows = wait_until(lambda: (r if terminal_rows(r := terminal_actions(vm)) else None), 45, interval=0.5)
     require(rows is not None, "Terminal resource not published")
     inspect = select(rows, "inspect-session")
     bound = identity(inspect)
@@ -100,12 +100,12 @@ def run(args):
     session = info["session"]
     marker = "TILO_TERMINAL_COHORT_" + uuid.uuid4().hex.upper()
     command = "printf '" + marker + "\\n'"
-    run_row = select(vm.actions(), "run", bound)
+    run_row = select(terminal_actions(vm), "run", bound)
     require(run_row["contract"]["confirmation"]["mode"] == "confirm", "Run confirmation contract changed")
     invoke(vm, run_row, {"command": command, "confirm": True}, out, "run")
     deadline = time.monotonic() + 30
     while True:
-        content = invoke(vm, select(vm.actions(), "read", bound), None, out, "read")
+        content = invoke(vm, select(terminal_actions(vm), "read", bound), None, out, "read")
         require(content and content.get("session") == session and content.get("target") == {"kind": "environment"},
                 "Read changed session/target")
         require(content.get("output_truncated") is False, "output incomplete")
@@ -118,8 +118,15 @@ def run(args):
         time.sleep(0.5)
     after = processes(vm)
     require(after["uid"] == args.uid and len(after["processes"]) == 1, "fresh Terminal process ambiguous")
-    process = after["processes"][0]
+    source_probe = Path(__file__).with_name("acceptance").joinpath("runtime_backing.py").read_text()
+    backing = first_json(vm.root_exec("python3 -c " + shlex.quote(source_probe) + " terminal " + str(args.uid)))
+    require(backing.get("method") == "proc-map-files-fd" and backing.get("reader_uid") == 0
+            and backing.get("uid") == args.uid and len(backing.get("processes", [])) == 1,
+            "exact mapped Terminal backing unobservable or ambiguous")
+    process = backing["processes"][0]
+    require(process["pid"] == after["processes"][0]["pid"], "Terminal changed during SDK proof")
     runtime = process["runtime"]
+    (out / "terminal-mapped-sdk.json").write_text(json.dumps(backing, indent=2))
     mapped = expected["path"].replace("/usr/lib/tilo-runtime/", "/run/tilo-runtime/", 1)
     installed = {f["path"].replace("/usr/lib/tilo-runtime/", "/run/tilo-runtime/", 1): f["sha256"]
                  for f in shown["files"] if f["layer"] == layer

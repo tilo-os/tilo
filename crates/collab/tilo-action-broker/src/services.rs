@@ -116,6 +116,15 @@ pub trait WorkspaceAuthority: Send + Sync {
     fn announces_policy_changes(&self) -> bool {
         false
     }
+
+    /// The delegated agents on `room`'s roster whose person's root signed
+    /// the delegation for exactly that device, as this host verified them:
+    /// who an app's history names for the changes an agent's own key
+    /// signed. Presentation only; nothing is admitted by it. The default
+    /// knows none, so every such change stays an unknown participant.
+    fn history_agents(&self, _room: &str) -> Vec<ui::history_source::RosterAgent> {
+        Vec::new()
+    }
 }
 
 const UNANSWERED: &str = "workspace authority did not answer";
@@ -346,7 +355,20 @@ impl ApplicationCreationEvidence {
 /// never sufficient to produce this receipt.
 pub struct LaunchReadiness {
     receiver: tokio::sync::oneshot::Receiver<Result<(), String>>,
+    adoption: Option<tokio::sync::oneshot::Receiver<Option<LaunchAdoption>>>,
     retire: Option<Box<dyn FnOnce() + Send>>,
+}
+
+/// Host-observed public window identity, never an application-claimed PID.
+/// Kernel process attribution is available only through device-owner control.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchAdoption {
+    /// Host-issued identity of this exact Wayland resource lifetime; not a grant.
+    pub adoption_id: uuid::Uuid,
+    pub surface_id: u64,
+    pub package_id: String,
+    pub room: String,
 }
 
 impl LaunchReadiness {
@@ -356,18 +378,43 @@ impl LaunchReadiness {
     ) -> Self {
         Self {
             receiver,
+            adoption: None,
             retire: Some(Box::new(retire)),
         }
+    }
+
+    #[must_use]
+    pub fn with_adoption(
+        mut self,
+        receiver: tokio::sync::oneshot::Receiver<Option<LaunchAdoption>>,
+    ) -> Self {
+        self.adoption = Some(receiver);
+        self
     }
 
     /// Wait for an adopted window or a terminal startup failure.
     ///
     /// # Errors
     /// Returns the launcher failure, or that its observer disappeared.
-    pub async fn wait(mut self) -> Result<(), String> {
+    pub async fn wait(self) -> Result<(), String> {
+        self.wait_with_adoption().await.map(|_| ())
+    }
+
+    /// Observe the adopted window association when the native host supplies custody.
+    /// Legacy hosts still settle readiness without inventing an association.
+    ///
+    /// # Errors
+    /// Returns the actual startup failure or a disconnected observation.
+    pub async fn wait_with_adoption(mut self) -> Result<Option<LaunchAdoption>, String> {
         (&mut self.receiver)
             .await
-            .map_err(|_| "the application startup observer stopped".to_string())?
+            .map_err(|_| "the application startup observer stopped".to_string())??;
+        match self.adoption.take() {
+            Some(receiver) => receiver
+                .await
+                .map_err(|_| "the adopted window observer stopped".into()),
+            None => Ok(None),
+        }
     }
 }
 
@@ -440,7 +487,26 @@ pub struct AuthenticatedApplicationLaunch {
     pub continuation_instance: Option<u64>,
 }
 
+/// Content-free progress of the existing executing-process custody handshake.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecutingBindingPhase {
+    Started,
+    Challenge,
+    Answer,
+    Admitted,
+    Refused,
+    TimedOut,
+}
+
 pub trait LauncherServices: Send + Sync {
+    /// Bind an optional diagnostic observation to the host's current exact
+    /// launcher task. The returned ID is correlation only, never authority.
+    fn begin_executing_binding_observation(&self, _launcher_pid: u32) -> Option<u64> {
+        None
+    }
+    /// Optional host-side observation only. It grants no authority and receives
+    /// neither challenge bytes nor credentials, document or application output.
+    fn observe_executing_binding(&self, _observation: u64, _phase: ExecutingBindingPhase) {}
     fn applications(&self) -> Vec<LaunchableApplication>;
     /// Launches `app` into `workspace`, its view of `record` (else the
     /// record it opens by default) opening at `place`.

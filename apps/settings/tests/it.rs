@@ -110,3 +110,6 @@ mod pane_geometry;
 
 #[path = "published_surface.rs"]
 mod published_surface;
+
+#[path = "accounts_mail_loop.rs"]
+mod accounts_mail_loop;

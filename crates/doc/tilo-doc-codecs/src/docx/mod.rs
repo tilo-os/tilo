@@ -15,10 +15,9 @@ mod section;
 mod side_part;
 pub mod styles;
 
-use crate::format::{CodecError, Confidence, FormatProvider};
+use crate::format::{CodecError, FormatProvider};
 use tilo_content::{ContentInputs, ContentSource};
 use tilo_doc::model::{DocMut, DocRef};
-use tilo_doc::schema::SCHEMA_ID;
 
 /// Preservation-layer key of the imported `word/document.xml` root start tag.
 pub(crate) const DOCUMENT_ROOT_KEY: &str = "docx/document-root";
@@ -26,19 +25,6 @@ pub(crate) const DOCUMENT_ROOT_KEY: &str = "docx/document-root";
 pub struct DocxCodec;
 
 impl FormatProvider for DocxCodec {
-    fn schema_id(&self) -> &str {
-        SCHEMA_ID
-    }
-
-    fn detect(&self, head: &[u8]) -> Confidence {
-        // OOXML is an OPC zip ("PK.."); a weak content hint shared with other zip-based formats.
-        if head.starts_with(b"PK") {
-            Confidence::Low
-        } else {
-            Confidence::None
-        }
-    }
-
     fn import(
         &self,
         bytes: &[u8],

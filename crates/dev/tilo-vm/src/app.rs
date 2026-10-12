@@ -53,6 +53,7 @@ mod forwarded_port_tests;
 mod kernel;
 mod reach;
 mod scenario;
+mod userspace;
 
 #[derive(Debug, Clone, Copy)]
 struct ForeignRect {
@@ -1332,24 +1333,16 @@ impl App {
             VmCommand::Add(args) => self.vm_add(&args),
             VmCommand::Start { name } => self.vm_start(name.as_deref()),
             VmCommand::Wake { name } => self.vm_wake(name.as_deref()),
+            VmCommand::NetworkWake {
+                name,
+                profile,
+                enabled,
+            } => self.vm_network_wake(name.as_deref(), &profile, enabled),
             VmCommand::Awake { name, hold, off } => self.vm_awake(name.as_deref(), hold, off),
             VmCommand::EnrolAdmin { via, cert, label } => {
                 self.vm_enrol_admin(via.as_deref(), cert.as_deref(), label)
             }
-            VmCommand::Restart { name } => {
-                let vm = self.resolve_vm(name.as_deref())?;
-                if !Self::adapter(&vm)?.powers_on() {
-                    return self.vm_reboot(&vm);
-                }
-                let stopped = self.vm_stop(name.as_deref(), false)?;
-                if stopped.data.get("down") == Some(&json!(false)) {
-                    return Ok(stopped);
-                }
-                let mut started = self.vm_start(name.as_deref())?;
-                started.text = format!("{}\n{}", stopped.text, started.text);
-                insert(&mut started.data, "stop", stopped.data);
-                Ok(started)
-            }
+            VmCommand::Restart { name } => self.vm_restart(name.as_deref()),
             VmCommand::Stop { name, force } => self.vm_stop(name.as_deref(), force),
             VmCommand::Rm { name, force } => self.vm_rm(&name, force),
             VmCommand::Upgrade(args) => self.vm_upgrade(&args),
@@ -1415,6 +1408,21 @@ impl App {
                 ))
             }
         }
+    }
+
+    fn vm_restart(&mut self, name: Option<&str>) -> Result<Outcome, CliError> {
+        let vm = self.resolve_vm(name)?;
+        if !Self::adapter(&vm)?.powers_on() {
+            return self.vm_reboot(&vm);
+        }
+        let stopped = self.vm_stop(name, false)?;
+        if stopped.data.get("down") == Some(&json!(false)) {
+            return Ok(stopped);
+        }
+        let mut started = self.vm_start(name)?;
+        started.text = format!("{}\n{}", stopped.text, started.text);
+        insert(&mut started.data, "stop", stopped.data);
+        Ok(started)
     }
 
     /// Shut down under the guest's VM lock, so no swap, gc or upgrade is cut
@@ -4030,6 +4038,29 @@ impl App {
 
     // ---- swap -----------------------------------------------------------------
 
+    /// Use the imported replacement's mount logic for the ordinary VM swap.
+    fn handoff_daemon(
+        &mut self,
+        vm: &Resolved,
+        remote: Remote,
+        layer: &str,
+    ) -> Result<Remote, CliError> {
+        let command =
+            remote::imported_daemon_command(vm.entry.daemon.as_deref(), &remote.hello.root, layer)?;
+        let command: Vec<String> = command.iter().map(|word| vmbuild::sh_quote(word)).collect();
+        let endpoint = self.endpoint(vm)?;
+        let line = remote::ssh_command(&endpoint, vm.entry.key.as_deref(), &command, false);
+        let adapter = Self::adapter(vm)?;
+        let debug = Self::debug_commands(adapter.as_ref(), &vm.name);
+        let imported = self.receipt.phase("daemon-handoff", || {
+            remote.handoff(&vm.name, &line, &endpoint, debug)
+        })?;
+        // End the old RPC only after the replacement handshake succeeded.
+        drop(remote);
+        self.receipt.set("applying_daemon_layer", layer);
+        Ok(imported)
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one swap sequence: resolve, build, deliver and receipt stay in order"
@@ -4062,24 +4093,23 @@ impl App {
         let slot = self.slot_name(slot)?;
         self.receipt.set("slot", &slot);
         self.receipt.set("component", &component);
-        if let Some(profile) = profile {
-            check_profile(profile, &component, from)?;
-            self.receipt.set("profile", profile);
+        if component == "userspace" {
+            return self.swap_userspace(&slot, from, builder, profile);
         }
+        self.record_swap_profile(profile, &component, from)?;
         if let Some(app) = component.strip_prefix("app:") {
             return self.swap_app(&slot, app, from, builder);
         }
         let manifest = self.manifest()?;
         let entry = manifest.as_ref().and_then(|m| m.get(&component)).cloned();
-        if let Some(c) = &entry {
-            let fits = (slot == VM_SLOT) == (c.info.scope == Scope::Vm);
-            if !fits {
-                return Err(CliError::ScopeMismatch {
-                    component,
-                    slot,
-                    scope: c.info.scope.as_str().into(),
-                });
-            }
+        if let Some(c) = &entry
+            && (slot == VM_SLOT) != (c.info.scope == Scope::Vm)
+        {
+            return Err(CliError::ScopeMismatch {
+                component,
+                slot,
+                scope: c.info.scope.as_str().into(),
+            });
         }
         let source = ci::parse(from, self.worktree.as_ref())?;
         if matches!(source, ci::Source::Worktree)
@@ -4144,6 +4174,9 @@ impl App {
         self.receipt.set("layer", &layer);
         // Building or pulling the layer can outlast the idle connection.
         remote = self.connect_for_swap(&vm)?;
+        if component == "vmd" {
+            remote = self.handoff_daemon(&vm, remote, &layer)?;
+        }
         let info = frame_cpu_info(entry, frame_cpu_trace)?;
         let result = self.receipt.phase("apply", || {
             remote.call(Swap {
@@ -4170,6 +4203,19 @@ impl App {
             "tilo-vm logs",
             "tilo-vm rollback",
         ]))
+    }
+
+    fn record_swap_profile(
+        &mut self,
+        profile: Option<&str>,
+        component: &str,
+        from: &str,
+    ) -> Result<(), CliError> {
+        if let Some(profile) = profile {
+            check_profile(profile, component, from)?;
+            self.receipt.set("profile", profile);
+        }
+        Ok(())
     }
 
     fn cohort_inputs(
@@ -8272,6 +8318,7 @@ mod tests {
             seat: None,
             outputs: Vec::new(),
             parity: None,
+            session_identity: None,
         }
     }
 
@@ -8370,6 +8417,7 @@ mod tests {
         // Phase: slot_show_lists_files_by_component_with_digests.
         {
             let shown = SlotShowResult {
+                provenance: std::collections::BTreeMap::new(),
                 slot: slot_info("a", SlotKind::Headless, 2, &[0, 1, 2]),
                 files: vec![
                     tilo_vm_protocol::SlotFile {
@@ -8409,6 +8457,7 @@ mod tests {
         let shown = SlotShowResult {
             slot,
             files: vec![],
+            provenance: BTreeMap::new(),
         };
         let layers = vec![
             tilo_vm_protocol::LayerInfo {

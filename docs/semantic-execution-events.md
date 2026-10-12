@@ -37,3 +37,15 @@ Missing record/geometry/presentation data remains a capture gap, never a guessed
 pointer or a move of the physical seat. Synthetic 80-run tests prove only these
 broker pathways and bounded observation; they are not real-model or frame-rate
 evidence.
+
+Execution lifetime is shared across host-retained caller copies. MCP HTTP session
+deletion, idle-session eviction, endpoint disposal and stdio server disposal
+retire that lifetime even when an in-flight request still holds the server.
+The broker emits `Ended` for that run's remaining execution observations;
+app operations continue under their existing receipt/cancellation rules.
+Their invocation-level interactions still show actual work and outcomes in the
+view, independently of the retired transport run. Late updates cannot revive
+execution observations, and buffered events expose the closed lifetime.
+A new logical MCP session gets a new host-minted execution identity. Consumers
+must treat an ended run or a buffered event with a closed lifetime as removal,
+not silently retain its earlier visible state.

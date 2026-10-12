@@ -78,7 +78,7 @@ mod tests {
     /// Answer an open with a PTY and a private session lease; the returned
     /// supervisor end of the lease reads end-of-file once the tab drops it.
     fn grant_session(server: &UnixStream, session: &str) -> UnixStream {
-        use std::os::fd::AsRawFd;
+        use std::os::fd::{AsFd, BorrowedFd};
         let pair = portable_pty::native_pty_system()
             .openpty(portable_pty::PtySize::default())
             .unwrap();
@@ -87,9 +87,13 @@ mod tests {
             "{{\"result\":\"session\",\"protocol\":2,\"session\":\"{session}\",\"environment\":\"default\"}}\n"
         );
         runtime_portal::fd_transport::send_with_fds(
-            server.as_raw_fd(),
+            server,
             reply.as_bytes(),
-            &[pair.master.as_raw_fd().unwrap(), terminal_lease.as_raw_fd()],
+            &[
+                // SAFETY: `pair` owns the master and outlives this call.
+                unsafe { BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
+                terminal_lease.as_fd(),
+            ],
         )
         .unwrap();
         supervisor_lease
@@ -285,6 +289,9 @@ mod tests {
     #[test]
     fn a_queued_success_is_discarded_when_the_attempt_is_cancelled() {
         let (client, server) = UnixStream::pair().unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let (sent, handed) = mpsc::channel();
         let worker = std::thread::spawn(move || {
             let mut reader = accept_hello(&server);

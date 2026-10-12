@@ -537,10 +537,13 @@ impl LibraryIndex {
         self.replace_from_library_before_publish(library, || {})
     }
 
-    /// Construct a complete replacement before taking the public snapshot
-    /// lock. The hook makes the lock boundary directly regression-testable:
-    /// a query must remain able to read the previous generation after all
-    /// expensive catalogue work has completed but before publication.
+    /// Build the library's rows before taking the public snapshot lock,
+    /// then publish them with the library they came from as one generation.
+    /// The catalogue indexes again only the rows that changed, so one
+    /// photo's edit or analysis result costs its own rows, not a rebuild of
+    /// every row the library has. The hook makes the lock boundary directly
+    /// regression-testable: a query must remain able to read the previous
+    /// generation after the rows are built but before publication.
     fn replace_from_library_before_publish<F>(
         &self,
         library: &PhotoLibrary,
@@ -554,29 +557,19 @@ impl LibraryIndex {
             .iter()
             .map(|(id, row)| (id.clone(), row.kind))
             .collect();
-        // Build postings, grams, and tokens without holding the public
-        // snapshot lock. A large import must not turn Ctrl+K or an exact
-        // resource lookup into a wait for a 100k-row index rebuild. The
-        // short lock below publishes the catalogue and its matching library
-        // as one generation, so callers never observe fresh hits with stale
-        // resources.
-        let catalog = SearchCatalog::new(PHOTO_SEARCH_KIND);
-        catalog.replace_all(
-            rows.iter()
-                .map(|(id, row)| (id.clone(), row.searchable(), row.result())),
-        )?;
         let library = Arc::new(library.clone());
         before_publish();
         let mut state = self
             .state
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // `replace_all` gives a new catalogue its own initial generation;
-        // align it with the generation immediately following the published
-        // one before making either half visible. An exhausted generation
-        // leaves the old snapshot intact.
-        catalog.advance_after(state.catalog.stats().generation)?;
-        state.catalog = catalog;
+        // Callers never observe fresh hits with stale resources: the rows
+        // and their library change under one lock. A refused snapshot
+        // leaves the catalogue, and so the old snapshot, intact.
+        state.catalog.sync(
+            rows.iter()
+                .map(|(id, row)| (id.clone(), row.searchable(), row.result())),
+        )?;
         state.rows = kinds;
         state.library = library;
         drop(state);
@@ -1122,8 +1115,8 @@ mod tests {
                 });
                 built_rx.recv().expect("replacement finished off-lock work");
 
-                // This runs exactly in the window after the new postings
-                // exist but before the short atomic swap. If rebuild work ever
+                // This runs exactly in the window after the replacement rows
+                // exist but before the short publication. If that work ever
                 // re-enters the public state lock, either operation deadlocks
                 // here instead of continuing against the prior generation.
                 assert!(
@@ -1140,6 +1133,45 @@ mod tests {
                 !provider.photo_matches_page("after", None).0.is_empty(),
                 "the published replacement finds the new photograph"
             );
+        }
+    }
+
+    #[test]
+    fn a_synced_library_answers_as_a_fresh_index() {
+        let mut photos: Vec<LibraryPhoto> = (0..40)
+            .map(|at| photo_of(&format!("harbour-{at:02}.png"), 1 + at % 7))
+            .collect();
+        let provider = LibraryIndex::new(&PhotoLibrary::of(photos.clone(), Vec::new())).unwrap();
+        let queries = ["harbour", "harbour-3", "golden", "Élodie", "trip", "png"];
+        for step in 0..12_usize {
+            match step % 4 {
+                0 => photos.push(photo_of(&format!("trip-{step}.png"), 3)),
+                1 => photos[step].tags = crate::model::labels(["golden-hour"]),
+                2 => photos[step].people = crate::model::labels(["Élodie"]),
+                _ => {
+                    photos.remove(step);
+                }
+            }
+            let library = PhotoLibrary::of(photos.clone(), Vec::new());
+            let generation = provider.generation();
+            provider.sync(&library).unwrap();
+            assert_ne!(
+                provider.generation(),
+                generation,
+                "step {step} changed the library"
+            );
+            let fresh = LibraryIndex::new(&library).unwrap();
+            for query in queries {
+                assert_eq!(
+                    provider.photo_matches_page(query, None).0,
+                    fresh.photo_matches_page(query, None).0,
+                    "step {step}, query {query:?}"
+                );
+            }
+            // The same library again changes nothing: cursors stay current.
+            let generation = provider.generation();
+            provider.sync(&library).unwrap();
+            assert_eq!(provider.generation(), generation);
         }
     }
 }

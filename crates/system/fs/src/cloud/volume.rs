@@ -37,7 +37,7 @@ use cloud_source::{
     Change, ChangeFeed, CloudSource, Cursor, Error, Item, ItemId, ItemKind, Notify, Revision,
     UploadTarget,
 };
-use runtime_fs::cloud::{CloudCapabilities, FileReply, FileRequest, FileRevision};
+use runtime_fs::cloud::{CloudCapabilities, FileReply, FileRequest, FileRevision, MountHealth};
 use serde::{Deserialize, Serialize};
 
 use crate::store::area::{AreaKey, Residency, hash_file};
@@ -108,45 +108,13 @@ pub const DEFAULT_IDLE_POLL_MAX: Duration = Duration::from_secs(600);
 /// Largest jitter applied to an idle poll wait, in thousandths (±10 %).
 const IDLE_JITTER_PERMILLE: i32 = 100;
 
-/// Account health as the volume sees it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Health {
-    Syncing,
-    Healthy,
-    Offline,
-    NeedsAuthentication,
-    Error,
-}
-
-impl Health {
-    fn of(error: &Error) -> Self {
-        match error {
-            Error::Offline | Error::RateLimited { .. } | Error::Io(_) => Self::Offline,
-            Error::Unauthorized => Self::NeedsAuthentication,
-            Error::Status(status) if *status >= 500 => Self::Offline,
-            _ => Self::Error,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Syncing => "syncing",
-            Self::Healthy => "healthy",
-            Self::Offline => "offline",
-            Self::NeedsAuthentication => "needs-authentication",
-            Self::Error => "error",
-        }
-    }
-
-    pub fn parse(text: &str) -> Option<Self> {
-        Some(match text {
-            "syncing" => Self::Syncing,
-            "healthy" => Self::Healthy,
-            "offline" => Self::Offline,
-            "needs-authentication" => Self::NeedsAuthentication,
-            "error" => Self::Error,
-            _ => return None,
-        })
+/// The health a provider failure leaves an account in.
+fn health_of(error: &Error) -> MountHealth {
+    match error {
+        Error::Offline | Error::RateLimited { .. } | Error::Io(_) => MountHealth::Offline,
+        Error::Unauthorized => MountHealth::NeedsAuthentication,
+        Error::Status(status) if *status >= 500 => MountHealth::Offline,
+        _ => MountHealth::Error,
     }
 }
 
@@ -389,9 +357,9 @@ pub struct CloudVolume {
     flights: Mutex<HashMap<RevKey, Arc<Mutex<()>>>>,
     /// Serialises outbox execution.
     uploading: Mutex<()>,
-    health: Mutex<Option<Health>>,
+    health: Mutex<Option<MountHealth>>,
     quota: Mutex<Option<cloud_source::Quota>>,
-    on_health: Box<dyn Fn(Health) + Send + Sync>,
+    on_health: Box<dyn Fn(MountHealth) + Send + Sync>,
     wake: Condvar,
     /// Bumped whenever a local change is queued.
     queued: Mutex<u64>,
@@ -417,7 +385,7 @@ impl CloudVolume {
     pub fn open(
         source: Arc<dyn CloudSource>,
         config: VolumeConfig,
-        on_health: Box<dyn Fn(Health) + Send + Sync>,
+        on_health: Box<dyn Fn(MountHealth) + Send + Sync>,
     ) -> io::Result<Arc<Self>> {
         let staging = config.dir.join("staging");
         fs::create_dir_all(&staging)?;
@@ -496,7 +464,7 @@ impl CloudVolume {
         &self.source
     }
 
-    fn report(&self, health: Health) {
+    fn report(&self, health: MountHealth) {
         let changed = {
             let mut current = self
                 .health
@@ -519,7 +487,7 @@ impl CloudVolume {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    pub fn health(&self) -> Option<Health> {
+    pub fn health(&self) -> Option<MountHealth> {
         *self
             .health
             .lock()
@@ -871,7 +839,7 @@ impl CloudVolume {
                 }
                 Err(error) => {
                     if !matches!(error, Error::Conflict { .. }) {
-                        self.report(Health::of(&error));
+                        self.report(health_of(&error));
                     }
                     // What was asked for may still be resident even if the
                     // read-ahead failed.
@@ -1394,7 +1362,7 @@ impl CloudVolume {
                 return Ok(done);
             };
             if let Err(error) = self.execute(&op) {
-                self.report(Health::of(&error));
+                self.report(health_of(&error));
                 return Err(error);
             }
             {
@@ -1525,7 +1493,7 @@ impl CloudVolume {
                 let _ = content.adopt_file(&key, staged, Retention::Cached);
             }
         }
-        self.report(Health::Healthy);
+        self.report(MountHealth::Healthy);
     }
 
     /// Upload the local content next to the remote version under the
@@ -1785,8 +1753,8 @@ impl CloudVolume {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = quota;
         }
         match &result {
-            Ok(_) => self.report(Health::Healthy),
-            Err(error) => self.report(Health::of(error)),
+            Ok(_) => self.report(MountHealth::Healthy),
+            Err(error) => self.report(health_of(error)),
         }
         self.save_tree()?;
         self.flush_content()?;
@@ -2083,7 +2051,8 @@ impl CloudVolume {
                 if self.wait_idle(wait, seen) {
                     idle_passes = 0;
                 }
-            } else if capabilities.notify == Notify::None || self.health() != Some(Health::Healthy)
+            } else if capabilities.notify == Notify::None
+                || self.health() != Some(MountHealth::Healthy)
             {
                 self.wait_stop(backoff);
             } else {
