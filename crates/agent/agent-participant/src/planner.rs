@@ -105,6 +105,11 @@ pub struct PlanContext {
     pub reference: Vec<(String, Vec<ActionDescriptor>)>,
     /// The room the task is planned in.
     pub room: String,
+    /// Every record of the room the agent may open, with its plain text,
+    /// for the planner to find one by what it holds
+    /// ([`crate::search::SEARCH_ROOM`]): those people have open first, then
+    /// the latest changed.
+    pub searchable: Vec<crate::search::SearchDoc>,
 }
 
 impl PlanContext {

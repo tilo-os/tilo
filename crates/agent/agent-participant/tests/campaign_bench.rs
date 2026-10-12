@@ -575,6 +575,17 @@ struct Scenario {
     steps: Vec<Stage>,
     outputs: Vec<(String, String, String)>,
     faults: Vec<Fault>,
+    events: Vec<Event>,
+}
+
+/// Something that happens in the room while agents work: `agent` is given
+/// `text` (usually written steps, so no model is asked) `at` after the clock
+/// starts — an email arriving, a chat message, a correction.
+struct Event {
+    at: Duration,
+    agent: String,
+    text: String,
+    label: String,
 }
 
 /// One agent of a scenario and the apps its grant covers.
@@ -695,6 +706,17 @@ impl Scenario {
                 agent: fault["agent"].as_str().map(str::to_owned),
             })
             .collect();
+        let events = value["events"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|event| Event {
+                at: Duration::from_secs_f64(event["at_seconds"].as_f64().unwrap_or(0.0)),
+                agent: field(event, "agent"),
+                text: field(event, "text"),
+                label: event["label"].as_str().unwrap_or("event").to_owned(),
+            })
+            .collect();
         Self {
             id: field(&value, "id"),
             agents,
@@ -702,6 +724,7 @@ impl Scenario {
             steps,
             outputs,
             faults,
+            events,
         }
     }
 }
@@ -914,6 +937,7 @@ async fn campaign_bench() {
     let mut finished_steps: BTreeMap<usize, f64> = BTreeMap::new();
     let mut log: Vec<serde_json::Value> = Vec::new();
     let mut faults_done = vec![false; scenario.faults.len()];
+    let mut events_done = vec![false; scenario.events.len()];
     let mut fault_log = Vec::new();
     while finished_steps.len() < scenario.steps.len() {
         for (index, stage) in scenario.steps.iter().enumerate() {
@@ -951,6 +975,27 @@ async fn campaign_bench() {
             launched.insert(index, (Instant::now(), issued));
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
+        // Events that are due happen in the room now.
+        for (number, event) in scenario.events.iter().enumerate() {
+            if events_done[number] || run_started.elapsed() < event.at {
+                continue;
+            }
+            events_done[number] = true;
+            let grant = grants[&event.agent].clone();
+            let task = message(&mut browser, &grant, &fill(&event.text)).await;
+            eprintln!(
+                "bench: event {} at {:.1}s",
+                event.label,
+                run_started.elapsed().as_secs_f64()
+            );
+            fault_log.push(serde_json::json!({
+                "kind": "event",
+                "label": event.label,
+                "agent": event.agent,
+                "task_id": task,
+                "at_seconds": run_started.elapsed().as_secs_f64(),
+            }));
+        }
         // Harness-side faults that are due.
         for (number, fault) in scenario.faults.iter().enumerate() {
             if faults_done[number] || run_started.elapsed() < fault.at {
@@ -1039,7 +1084,7 @@ async fn campaign_bench() {
                     .as_str()
                     .map(str::to_owned)
             })
-            .last()
+            .next_back()
     };
     let mut missing = Vec::new();
     for (step, agent, file) in &scenario.outputs {

@@ -45,10 +45,11 @@ pub mod participant;
 pub mod planner;
 pub mod profile;
 pub mod room_actions;
+pub mod search;
 mod web_apps;
 pub mod worker;
 
-pub use apps::{AppCatalogue, AppError, Replica, Seed, component_apps};
+pub use apps::{AppCatalogue, AppError, Replica, Seed, agent_only_apps, component_apps};
 pub use control::{
     AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, ApprovalDone, GrantRecord,
     Spawner, SupervisorHost, SupervisorSnapshot,

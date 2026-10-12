@@ -115,6 +115,14 @@ const KEYS_WAIT: Duration = Duration::from_secs(10);
 /// How long an export waits after the last edit others' changes merged into
 /// an open record: what others finished a moment ago is still arriving, and
 /// an export takes the record as it is (at most [`KEYS_WAIT`]).
+/// The apps whose records carry messages to the agent's team: a change
+/// another member makes to one while a task runs is news the task may have
+/// to follow (a correction, a decision, a new request).
+const MESSAGE_APPS: &[&str] = &["so.tilo.mail", "so.tilo.chat", "so.tilo.messages"];
+
+/// How many times a task plans again for news that arrived while it ran.
+const MOST_NEWS_REPLANS: u32 = 3;
+
 const EXPORT_QUIET: Duration = Duration::from_millis(1_000);
 
 /// When the agent's loop should pump again, unless woken sooner.
@@ -173,6 +181,8 @@ struct Running {
     /// target) is fixed rather than ending it, and a step that cannot work
     /// still fails the task.
     repaired: bool,
+    /// How many times it planned again for news ([`MOST_NEWS_REPLANS`]).
+    news_replans: u32,
     /// The records its steps opened or acted on: what a re-plan is always
     /// offered, whatever the rest of the task calls them.
     touched: Vec<DocumentRoute>,
@@ -211,6 +221,7 @@ impl Running {
             produced: Vec::new(),
             observed: VecDeque::new(),
             repaired: false,
+            news_replans: 0,
             touched: Vec::new(),
             acted: 0,
         };
@@ -306,6 +317,9 @@ pub struct AgentParticipant {
     previous_touched: Vec<DocumentRoute>,
     /// When others' changes last merged into an open record.
     last_merge: Option<Instant>,
+    /// Message records ([`MESSAGE_APPS`]) others changed since the running
+    /// task last planned, by title when known.
+    news: Vec<DocumentRoute>,
     left: bool,
     /// Bumped whenever what the open records publish may have changed; the
     /// revision remote catalogues are issued at.
@@ -412,6 +426,7 @@ impl AgentParticipant {
             task_touched: Vec::new(),
             previous_touched: Vec::new(),
             last_merge: None,
+            news: Vec::new(),
             left: false,
             generation: 0,
             remote: Vec::new(),
@@ -547,6 +562,15 @@ impl AgentParticipant {
                 }
             }
             PeerEvent::Document(document) => {
+                if document.author != self.identity.cert.device_public_key
+                    && document.route.cluster_id == self.room
+                    && MESSAGE_APPS.contains(&document.route.app_id.as_str())
+                    && self.identity.delegation.permits_app(&document.route.app_id)
+                    && (self.running.is_some() || self.planning.busy())
+                    && !self.news.contains(&document.route)
+                {
+                    self.news.push(document.route.clone());
+                }
                 if document.route.cluster_id != self.room {
                     return;
                 }
@@ -648,6 +672,7 @@ impl AgentParticipant {
             self.running = None;
             return false;
         }
+        take_news(running, &mut self.news);
         let Some(step) = running.steps.pop_front() else {
             let (id, done) = (running.id.clone(), running.done());
             self.running = None;
@@ -746,6 +771,8 @@ impl AgentParticipant {
         }
         self.end_keys_wait();
         self.previous_touched = std::mem::take(&mut self.task_touched);
+        // What arrived before the task began is in the room it is planned on.
+        self.news.clear();
         self.plan(id, &text, None);
     }
 
@@ -1162,6 +1189,7 @@ impl AgentParticipant {
                 )
             })
             .unwrap_or_default();
+        let searchable = self.searchable(&apps, &open);
         PlanContext {
             open,
             known,
@@ -1173,7 +1201,63 @@ impl AgentParticipant {
             request,
             reference,
             room: self.room.clone(),
+            searchable,
         }
+    }
+
+    /// The room's records of `apps` for the planner's search
+    /// ([`PlanContext::searchable`]): those the agent has open (`listed`
+    /// are those whose operations the plan lists), then the others, those
+    /// people have open first, then the latest changed, at most
+    /// [`crate::search::MOST_SEARCHED`]. A record's title and text are read
+    /// once per change of it.
+    fn searchable(
+        &mut self,
+        apps: &[String],
+        listed: &[(DocumentRoute, Vec<ActionDescriptor>)],
+    ) -> Vec<crate::search::SearchDoc> {
+        let mut docs = Vec::new();
+        for (route, replica) in &self.apps {
+            if !apps.contains(&route.app_id) {
+                continue;
+            }
+            if let Some(text) = self.unopened.open_text(route, replica) {
+                docs.push(crate::search::SearchDoc {
+                    route: route.clone(),
+                    title: None,
+                    text,
+                    changed: None,
+                    open: listed.iter().any(|(open, _)| open == route),
+                });
+            }
+        }
+        let mut titles = crate::worker::ConfinedTitles::default();
+        for route in self.unopened.people_first() {
+            if docs.len() >= crate::search::MOST_SEARCHED {
+                break;
+            }
+            if !apps.contains(&route.app_id) {
+                continue;
+            }
+            let title = self
+                .unopened
+                .title(&route, |doc| titles.title(&route.app_id, doc));
+            let Some(text) = self.unopened.text(&route) else {
+                continue;
+            };
+            let changed = self.unopened.changed(&route);
+            docs.push(crate::search::SearchDoc {
+                route,
+                title,
+                text,
+                changed,
+                open: false,
+            });
+        }
+        let kept: std::collections::HashSet<&DocumentRoute> =
+            docs.iter().map(|doc| &doc.route).collect();
+        self.unopened.keep_texts(|route| kept.contains(route));
+        docs
     }
 
     /// Make a new record of each of `apps` the task names that the room has
@@ -1710,6 +1794,96 @@ fn picture_size(bytes: &[u8]) -> Option<(&'static str, u32, u32)> {
     None
 }
 
+/// Appends one JSON line per invoked action to `TILO_AGENT_ACTION_LOG`, when
+/// set: who did what to which record, with its arguments, when, and how it
+/// went. A run can be replayed from it, every record rebuilt step by step.
+fn record_action(
+    agent: &str,
+    route: &DocumentRoute,
+    address: &ActionAddress,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    started_ms: u64,
+    outcome: &Result<Option<ActionOutput>, String>,
+) {
+    use std::io::Write as _;
+    let Some(path) = std::env::var_os("TILO_AGENT_ACTION_LOG") else {
+        return;
+    };
+    let line = serde_json::json!({
+        "started_unix_ms": started_ms,
+        "ended_unix_ms": tilo_clock::unix_now_ms(),
+        "agent": agent,
+        "app": route.app_id,
+        "record": route.record,
+        "resource": address.resource,
+        "action": address.action,
+        "arguments": arguments,
+        "ok": outcome.is_ok(),
+        "error": outcome.as_ref().err(),
+        "produced": outcome.as_ref().ok().and_then(Option::as_ref).map(produced).unwrap_or_default(),
+        // The resources it answered with: a replay maps the ids it made (a
+        // new sheet's) onto the ones the replay makes.
+        "resources": outcome
+            .as_ref()
+            .ok()
+            .and_then(Option::as_ref)
+            .map(|output| serde_json::to_value(&output.resources).unwrap_or_default()),
+        "value": outcome.as_ref().ok().and_then(Option::as_ref).and_then(|output| output.value.clone()),
+    });
+    // One write per line, as the usage log does: agents append at once.
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(format!("{line}\n").as_bytes()));
+    if let Err(error) = written {
+        tracing::warn!(%error, "cannot record an action");
+    }
+}
+
+/// The re-plan asked of a task when messages arrived while it ran.
+fn news_brief(news: &[DocumentRoute], left: usize) -> String {
+    let apps: Vec<&str> = news
+        .iter()
+        .map(|route| route.app_id.rsplit('.').next().unwrap_or(&route.app_id))
+        .collect();
+    format!(
+        "While you worked, new messages arrived ({}). Read them first. If one changes what \
+         the request needs (a correction, a decision, a new deadline) and its author may \
+         decide it, follow it; if not, keep to the request and say why. {} Then finish the \
+         request.",
+        apps.join(", "),
+        if left == 0 {
+            "Your planned steps are done; plan only what the news requires."
+        } else {
+            "Plan the rest of the request again with what you learned."
+        }
+    )
+}
+
+/// Put a re-plan for news that arrived while `running` ran before its next
+/// step, or before it is reported done: a correction or a decision changes
+/// what is left of it ([`MOST_NEWS_REPLANS`] at most).
+fn take_news(running: &mut Running, news: &mut Vec<DocumentRoute>) {
+    if news.is_empty() || running.news_replans >= MOST_NEWS_REPLANS {
+        return;
+    }
+    running.news_replans = running.news_replans.saturating_add(1);
+    let news = std::mem::take(news);
+    // The re-plan is of the rest of the request, as a repair's is.
+    let left = running.steps.len();
+    running.steps.clear();
+    running.steps.push_back(Step {
+        app: news
+            .first()
+            .map(|route| route.app_id.clone())
+            .unwrap_or_default(),
+        record: None,
+        action: StepAction::Continue(news_brief(&news, left)),
+        carries: false,
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1787,52 +1961,5 @@ mod tests {
             tilo_agent::plan::carried_arguments(&serde_json::Map::new(), true, fresh.last.as_ref())
                 .is_err()
         );
-    }
-}
-
-/// Appends one JSON line per invoked action to `TILO_AGENT_ACTION_LOG`, when
-/// set: who did what to which record, with its arguments, when, and how it
-/// went. A run can be replayed from it, every record rebuilt step by step.
-fn record_action(
-    agent: &str,
-    route: &DocumentRoute,
-    address: &ActionAddress,
-    arguments: &serde_json::Map<String, serde_json::Value>,
-    started_ms: u64,
-    outcome: &Result<Option<ActionOutput>, String>,
-) {
-    use std::io::Write as _;
-    let Some(path) = std::env::var_os("TILO_AGENT_ACTION_LOG") else {
-        return;
-    };
-    let line = serde_json::json!({
-        "started_unix_ms": started_ms,
-        "ended_unix_ms": tilo_clock::unix_now_ms(),
-        "agent": agent,
-        "app": route.app_id,
-        "record": route.record,
-        "resource": address.resource,
-        "action": address.action,
-        "arguments": arguments,
-        "ok": outcome.is_ok(),
-        "error": outcome.as_ref().err(),
-        "produced": outcome.as_ref().ok().and_then(Option::as_ref).map(produced).unwrap_or_default(),
-        // The resources it answered with: a replay maps the ids it made (a
-        // new sheet's) onto the ones the replay makes.
-        "resources": outcome
-            .as_ref()
-            .ok()
-            .and_then(Option::as_ref)
-            .map(|output| serde_json::to_value(&output.resources).unwrap_or_default()),
-        "value": outcome.as_ref().ok().and_then(Option::as_ref).and_then(|output| output.value.clone()),
-    });
-    // One write per line, as the usage log does: agents append at once.
-    let written = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .and_then(|mut file| file.write_all(format!("{line}\n").as_bytes()));
-    if let Err(error) = written {
-        tracing::warn!(%error, "cannot record an action");
     }
 }

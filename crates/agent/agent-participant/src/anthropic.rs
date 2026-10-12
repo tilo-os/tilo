@@ -332,6 +332,8 @@ impl PlanModel for AnthropicModel {
                     }
                 } else if call.name == READ_VIEW {
                     read_view_answer(&call.input, &revealed, read)
+                } else if call.name == crate::search::SEARCH_ROOM {
+                    crate::search::answer(&call.input, &briefing.searchable, &mut revealed)
                 } else {
                     tilo_agent::tools::answer(&call.name, &call.input, catalogue, &mut revealed)
                 };
