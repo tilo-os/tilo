@@ -880,6 +880,12 @@ impl ServiceReq {
             version,
         })
     }
+
+    /// Whether the app cannot run without the service.
+    #[must_use]
+    pub fn is_required(&self) -> bool {
+        self.requirement == Requirement::Required
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
