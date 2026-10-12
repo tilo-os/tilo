@@ -51,7 +51,7 @@ impl ui::application_view::ApplicationViewState for crate::ChatApp {
             participants: self.call.participants_expanded,
         };
         Ok(Some(ApplicationLocalView {
-            app_id: crate::definition().app_id.into(),
+            app_id: <crate::resource::ChatShell as ui::framework::ResourceApp>::ID.into(),
             version: 1,
             payload: serde_json::to_vec(&view).map_err(|e| ThawError::State(e.to_string()))?,
         }))
@@ -61,7 +61,7 @@ impl ui::application_view::ApplicationViewState for crate::ChatApp {
         local: &ApplicationLocalView,
         doc: &automerge::AutoCommit,
     ) -> Result<ApplicationFocusRestore, ThawError> {
-        if local.app_id != crate::definition().app_id {
+        if local.app_id != <crate::resource::ChatShell as ui::framework::ResourceApp>::ID {
             return Err(ThawError::BindingMismatch);
         }
         if local.version != 1 {

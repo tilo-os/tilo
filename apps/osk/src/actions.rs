@@ -81,25 +81,25 @@ impl SetPreference {
 #[effect(operation = "osk.keyboard")]
 pub enum OskEffect {
     /// Set the letter layout text fields open in.
-    #[effect(permission = "read", label = "Set keyboard layout")]
+    #[effect(kind = "read", label = "Set keyboard layout")]
     SetLayout {
         #[param("Letter layout", choices = LAYOUT_NAMES)]
         value: String,
     },
     /// Enable or disable the suggestion bar.
-    #[effect(permission = "read", label = "Set suggestions")]
+    #[effect(kind = "read", label = "Set suggestions")]
     SetSuggestions {
         #[param("Enabled")]
         value: bool,
     },
     /// Enable or disable adapting to what this person types.
-    #[effect(permission = "read", label = "Set personalization")]
+    #[effect(kind = "read", label = "Set personalization")]
     SetPersonalization {
         #[param("Enabled")]
         value: bool,
     },
     /// Replace this person's recent emoji list.
-    #[effect(permission = "read", label = "Set recent emoji")]
+    #[effect(kind = "read", label = "Set recent emoji")]
     SetEmojiRecents {
         #[param("Recent emoji, most recent first")]
         value: Vec<String>,
@@ -108,12 +108,7 @@ pub enum OskEffect {
     ///
     /// Learned word rankings, tap positions, kept words and recent emoji;
     /// the personalization preference stays as it is.
-    #[effect(
-        row,
-        permission = "read",
-        destructive,
-        label = "Clear learned suggestions"
-    )]
+    #[effect(row, kind = "read", destructive, label = "Clear learned suggestions")]
     ClearPersonal,
 }
 

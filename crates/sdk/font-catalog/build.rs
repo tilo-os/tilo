@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo::rerun-if-env-changed=PYTHON");
         let python = std::env::var_os("PYTHON")
             .unwrap_or_else(|| if cfg!(windows) { "python" } else { "python3" }.into());
-        let mut command = Command::new(python);
+        let mut command = Command::new(&python);
         command
             .arg(&tool)
             .arg("root")
@@ -27,7 +27,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if std::env::var("CARGO_NET_OFFLINE").is_ok_and(|value| value == "true") {
             command.arg("--offline");
         }
-        let output = command.output()?;
+        let output = command.output().map_err(|error| {
+            format!(
+                "could not launch `{}` to prepare fonts with {}: {error}; \
+                 source builds require Python 3.11+ (Fedora: dnf install python3); \
+                 set PYTHON to its executable if it is not on PATH",
+                python.to_string_lossy(),
+                tool.display()
+            )
+        })?;
         if !output.status.success() {
             return Err(format!(
                 "font preparation failed: {}",

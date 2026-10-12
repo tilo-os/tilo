@@ -7,13 +7,13 @@ use crate::shell::status::StatusBridge;
 
 /// Records every write, so two paths can be compared call for call.
 #[derive(Clone, Default)]
-struct Recorder(std::rc::Rc<std::cell::RefCell<Vec<String>>>);
+pub(super) struct Recorder(std::rc::Rc<std::cell::RefCell<Vec<String>>>);
 
 impl Recorder {
     fn push(&self, call: String) {
         self.0.borrow_mut().push(call);
     }
-    fn calls(&self) -> Vec<String> {
+    pub(super) fn calls(&self) -> Vec<String> {
         self.0.borrow().clone()
     }
 }
@@ -136,6 +136,7 @@ fn slider_and_media_key_share_commit_volume() {
         crate::shell::media_keys::MediaKey::VolumeUp,
         &crate::shell::media_keys::Context {
             actions: &key_actions,
+            audio: &crate::shell::media_keys::DispatcherAudio(&key_actions),
             status: Some(&key_bridge),
             transport_osd: &transport_osd,
             airplane_mode: false,

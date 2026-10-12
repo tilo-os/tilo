@@ -644,11 +644,6 @@ struct CompositeRenderer {
     canvas_w: u32,
     canvas_h: u32,
     header_h: u32,
-    #[allow(
-        dead_code,
-        reason = "retained for parity with the layout math; compose fixes the footer text relative to header_h + src_h"
-    )]
-    footer_h: u32,
     out: Vec<u8>,
     text: TextPainter,
     header_left: String,
@@ -676,7 +671,6 @@ impl CompositeRenderer {
             canvas_w,
             canvas_h,
             header_h,
-            footer_h,
             out,
             text: TextPainter::new(Family::SansSerif),
             header_left,
@@ -888,76 +882,6 @@ fn format_footer(
         "frames sent: {sent}  decoded: {decoded}  drops: {dropped}  \
          mean shim delay: {mean_delay:.1} ms  effective bitrate: {mbps:.2} Mbps",
     )
-}
-
-/// A minimal H.264 Annex-B parser: chops a `Vec<u8>` back into
-/// individual NAL units so the shim can throttle at the correct
-/// granularity.
-///
-/// The encoder emits Annex-B (start code `00 00 00 01` or `00 00 01`);
-/// splitting at start codes and re-emitting them keeps the bytes
-/// bit-identical for the decoder.
-///
-/// Not currently called from the demo — the whole per-frame NAL blob is
-/// pushed into the shim as one payload so the throttle sees a realistic
-/// per-frame packet size (real streaming stacks bundle SPS+PPS+IDR
-/// together on keyframes). Kept for downstream callers wanting a
-/// finer-grained throttle.
-#[allow(
-    dead_code,
-    reason = "kept for callers wanting a per-NAL throttle; the demo pushes whole access units"
-)]
-fn split_annex_b(nalus: &[u8]) -> Vec<Vec<u8>> {
-    let mut out = Vec::new();
-    let starts = find_start_codes(nalus);
-    for w in starts.windows(2) {
-        // `windows(2)` always yields a length-2 slice; the pattern match
-        // (rather than `w[0]`/`w[1]`) expresses that to the compiler too.
-        if let [a, b] = w
-            && let Some(chunk) = nalus.get(*a..*b)
-        {
-            out.push(chunk.to_vec());
-        }
-    }
-    if let Some(&last) = starts.last()
-        && let Some(chunk) = nalus.get(last..)
-    {
-        out.push(chunk.to_vec());
-    }
-    // If we found no start codes, the whole slice is one blob.
-    if out.is_empty() && !nalus.is_empty() {
-        out.push(nalus.to_vec());
-    }
-    out
-}
-
-#[allow(dead_code, reason = "only reached through split_annex_b")]
-fn find_start_codes(bytes: &[u8]) -> Vec<usize> {
-    let mut out = Vec::new();
-    let mut i: usize = 0;
-    while bytes.get(i.saturating_add(3)).is_some() {
-        let b0 = bytes.get(i).copied();
-        let b1 = bytes.get(i.saturating_add(1)).copied();
-        let b2 = bytes.get(i.saturating_add(2)).copied();
-        let b3 = bytes.get(i.saturating_add(3)).copied();
-        if b0 == Some(0) && b1 == Some(0) {
-            if b2 == Some(1) {
-                out.push(i);
-                i = i.saturating_add(3);
-                continue;
-            }
-            // The `i + 3 < bytes.len()` re-check from the original is
-            // implied by the `while` guard above (`i` hasn't moved since),
-            // so it's dropped rather than re-expressed.
-            if b2 == Some(0) && b3 == Some(1) {
-                out.push(i);
-                i = i.saturating_add(4);
-                continue;
-            }
-        }
-        i = i.saturating_add(1);
-    }
-    out
 }
 
 /// Installs the tracing subscriber (env-filter controlled, `trace` by

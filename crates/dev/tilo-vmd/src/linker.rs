@@ -76,7 +76,8 @@ pub fn configure(command: &mut Command, root: &Path, target: &str) -> Result<(),
     Ok(())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;

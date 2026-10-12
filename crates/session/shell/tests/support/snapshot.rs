@@ -74,11 +74,6 @@ impl SnapshotAssertion {
         }
     }
 
-    pub fn with_tolerance(mut self, t: u8) -> Self {
-        self.tolerance = t;
-        self
-    }
-
     /// See the module doc for the full behaviour matrix.
     pub fn assert(self) {
         let update = std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|v| v == "1");

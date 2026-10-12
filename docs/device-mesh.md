@@ -55,15 +55,14 @@ same target-side authorization path.
 
 ## Multiple servers
 
-There is no automatic placement yet. Hosts are chosen by configuration: a
-relay's `workspaces[]` bindings and home-peer registration decide which
-always-on peer pins, retains and relays a workspace. A compute requester names
-its worker, and the worker admits the job only if its own advertisement is
-eligible (`compute::admit_compute_job`). Ranking several hosts by load,
-latency and liveness needs hosts that publish that state, and is future work.
+Hosts are chosen by configuration, not ranked: a relay serves the workspaces
+bound in its `relay.toml`, and a client reaches the home peers it registered.
+There is no placement function choosing among candidate servers yet; one should
+arrive together with a producer of live load and latency advertisements, not
+ahead of it.
 
-The workloads served today are workspace replication, content residency, inbound
-collaboration/chat relay and compute. Sandboxed compute uses a
+The first workloads are workspace replication, content residency, inbound
+collaboration/chat relay and remote-control relay. Sandboxed compute uses a
 dedicated mutually authenticated `tilo-personal-compute/1` session and the
 signed-package launcher; the relay never accepts a command, host path,
 environment, or bearer secret from a requester. A worker advertises only after
@@ -79,18 +78,18 @@ digest that the requester cannot retrieve.
 - `tilo-relay` exposes its effective `DeviceMeshProfile` through `RelayHandle`.
 - The workspace runtime consumes the workspace subscription; filesystem and app
   runtimes consume the resolved resource set.
-- Compute workers produce `ServerAdvertisement` values from their measured
-  health and power; a requester accepts a worker's advertisement only after
-  its device certificate and same-identity/workspace relationship verify.
-- Remote control needs a direct, exact-target path to the target. A
-  workspace relay fans out to the whole workspace, so it is reported as the
-  reason control is unavailable rather than used; an exact-target relayed route
-  does not exist yet.
-- The compute worker admits the job named to it, executes only verified tapp
-  catalogue entrypoints, and retains exact requester/worker/workspace binding,
-  bounded diagnostics, cancellation and monotonic result attribution.
-  It refuses work while in energy saver or on battery at or below 15 %
-  (`PowerAvailability::is_critically_constrained`, the one battery rule).
+- Reachability discovery produces `ServerAdvertisement` values only after the
+  peer's device certificate and same-identity/workspace relationship verify.
+- Remote control needs an exact-target route, which today means a direct path.
+  A workspace relay fans out to every member, so it is reported as the reason
+  control is unavailable and never carries input. Relayed exact-target control
+  is future work.
+- The requester names the compute worker. `admit_compute_job` checks that
+  worker's `ServerAdvertisement` (service, workspace, app, accelerator,
+  capacity, energy saver and `PowerAvailability::is_critically_constrained`).
+  The worker executes only verified tapp catalogue entrypoints, and retains
+  exact requester/worker/workspace binding, bounded diagnostics, cancellation
+  and monotonic result attribution.
 
 No new wire message was added to `tilo-relay/1`: adding an enum variant to the
 postcard protocol would make old peers reject the stream. Compute uses its own

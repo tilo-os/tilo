@@ -256,7 +256,7 @@ pub struct LeaseKeeper {
     /// This device arbitrates the room's leases.
     authority: bool,
     /// Lease requests already answered.
-    answered: HashSet<(collab_types::FileRecordId, [u8; 32], u64)>,
+    answered: HashSet<(fs_protocol::FileRecordId, [u8; 32], u64)>,
 }
 
 impl LeaseKeeper {

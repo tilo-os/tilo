@@ -9,32 +9,27 @@
 //!
 //!  * [`SettingsPane`] — a `ui` [`Widget`] that renders process-local
 //!    presentation mirrors of those preferences. Every control submits a
-//!    [`BrowserAction`] through the resource's dispatcher; it never writes
-//!    the document itself.
+//!    field edit at the preference's path through the resource's
+//!    dispatcher; it never writes the document itself.
 //!
 //! The chrome applies the engine side effects of the preferences it is
 //! presented. Clear-history and clear-site-data are explicit one-shot
 //! effects, while closing the pane is an explicit view operation.
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-#[cfg(test)]
-use ui::widget::Edits;
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use ui::widget::TaffyTreeExt;
 
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     Button, Card, Column, Container, Row, ScrollAxis, Scrollable, Section, Spacer, Text, TextInput,
     Toggle, Widget,
 };
 
-use crate::actions::BrowserAction;
 use crate::resource::Browser;
+use ui::tilo_resource::{self, Model, Path, Refusal};
 
 /// The doors the pane's controls use, injected by Browser. Preferences are
-/// [`BrowserAction`]s submitted through the resource's dispatcher; the
+/// field edits submitted through the resource's dispatcher; the
 /// one-shot effects and closing the pane are the published operations, so
 /// pointer, keyboard and assistive-tech changes take the same path as Ctrl+K
 /// and agents.
@@ -90,20 +85,6 @@ impl SettingsPresentation {
 /// Boxed-widget currency the `ui` tree speaks.
 type El = Box<dyn Widget>;
 
-// === CRDT paths ======================================================
-// Flat scalar/text paths written on the app root object, mirroring the
-// `browser.*` convention in `browser_widget.rs`. Exposed so the chrome
-// can reference the same keys when it seeds or inspects the document.
-
-/// Boolean toggle: block ads & trackers. Written by the ad-block [`Toggle`].
-pub const ADBLOCK_PATH: &str = "settings.adblock";
-/// Boolean toggle: clear history & cookies when the browser exits.
-pub const CLEAR_ON_EXIT_PATH: &str = "settings.clear_on_exit";
-/// Automerge `Text` object holding the search-engine query template.
-pub const SEARCH_ENGINE_PATH: &str = "settings.search_engine";
-/// Automerge `Text` object holding the homepage URL.
-pub const HOMEPAGE_PATH: &str = "settings.homepage";
-
 /// Default search-engine query template. The `?q=` suffix lets the
 /// chrome build a search URL by appending typed terms.
 pub const DEFAULT_SEARCH_ENGINE: &str = "https://duckduckgo.com/?q=";
@@ -115,18 +96,33 @@ pub const DEFAULT_HOMEPAGE: &str = "https://duckduckgo.com";
 /// Durable browser preferences, as the browser document holds them.
 ///
 /// Defaults: ad-blocking on, clear-on-exit off, `DuckDuckGo` for both
-/// search and homepage; a document that never set a preference reads its
-/// default.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// search and homepage; a new browser record starts with them. The
+/// homepage and search engine are always absolute http(s) addresses.
+#[derive(Clone, Debug, PartialEq, Eq, Model)]
+#[model(check = Settings::valid)]
 pub struct Settings {
-    /// Block ads & trackers via the engine's content blocker.
+    /// Ad and tracker blocking: block ads & trackers via the engine's
+    /// content blocker.
     pub adblock_enabled: bool,
-    /// Clear browsing history & cookies on exit.
+    /// Clear data on exit: clear browsing history & cookies on exit.
     pub clear_on_exit: bool,
-    /// Search-engine query template (e.g. `https://duckduckgo.com/?q=`).
+    /// Search engine: the query template (e.g. `https://duckduckgo.com/?q=`).
     pub search_engine: String,
-    /// Homepage URL opened on startup / new tab.
+    /// Homepage: the URL opened on startup / new tab.
     pub homepage: String,
+}
+
+impl Settings {
+    /// A homepage and a search engine are web addresses the engine opens.
+    fn valid(&self) -> Result<(), Refusal> {
+        if crate::actions::normalized_bookmark_url(&self.homepage).is_none() {
+            return Err(Refusal::new("the homepage is an absolute http(s) URL"));
+        }
+        if crate::actions::normalized_bookmark_url(&self.search_engine).is_none() {
+            return Err(Refusal::new("the search engine is an absolute http(s) URL"));
+        }
+        Ok(())
+    }
 }
 
 impl Default for Settings {
@@ -147,10 +143,9 @@ impl Default for Settings {
 /// present the action-applied result in this window.
 pub struct SettingsPane {
     notices: Vec<crate::notice::Notice>,
-    rect: Rect,
     presentation: SettingsPresentation,
     /// Composed child tree, rebuilt on every `build_layout`.
-    composed: Option<Box<dyn Widget>>,
+    composed: ui::widget::Composed,
     actions: SettingsActionBindings,
     /// A device-local persistence failure supplied by Browser after a clear
     /// action. It is deliberately not a CRDT value: other collaborators
@@ -170,9 +165,8 @@ impl SettingsPane {
     pub fn with_settings(settings: &Settings) -> Self {
         Self {
             notices: Vec::new(),
-            rect: Rect::ZERO,
             presentation: SettingsPresentation::from_settings(settings),
-            composed: None,
+            composed: ui::widget::Composed::default(),
             actions: SettingsActionBindings::default(),
             history_clear_error: None,
             private_window_request: None,
@@ -199,14 +193,6 @@ impl SettingsPane {
     #[must_use]
     pub fn with_history_clear_error(mut self, error: Option<String>) -> Self {
         self.history_clear_error = error;
-        self
-    }
-
-    /// Keep New Private Window discoverable when compact chrome moves the
-    /// dedicated toolbar button into Settings.
-    #[must_use]
-    pub fn with_private_window_request(mut self, request: ui::LocalState<bool>) -> Self {
-        self.private_window_request = Some(request);
         self
     }
 
@@ -247,7 +233,7 @@ impl SettingsPane {
                     "settings.homepage_input",
                     DEFAULT_HOMEPAGE,
                     self.actions.edits.clone(),
-                    homepage_action,
+                    Browser::paths().preferences.homepage,
                 ),
                 field_block(
                     "Search engine",
@@ -255,7 +241,7 @@ impl SettingsPane {
                     "settings.search_engine_input",
                     DEFAULT_SEARCH_ENGINE,
                     self.actions.edits.clone(),
-                    search_engine_action,
+                    Browser::paths().preferences.search_engine,
                 ),
             ]),
         );
@@ -270,7 +256,7 @@ impl SettingsPane {
                         .with_id("settings.adblock")
                         .with_accessible_name("Block ads & trackers"),
                     self.actions.edits.clone(),
-                    adblock_action,
+                    Browser::paths().preferences.adblock_enabled,
                 )),
                 large_text,
             ),
@@ -282,7 +268,7 @@ impl SettingsPane {
                         .with_id("settings.clear_on_exit")
                         .with_accessible_name("Clear data when the browser closes"),
                     self.actions.edits.clone(),
-                    clear_on_exit_action,
+                    Browser::paths().preferences.clear_on_exit,
                 )),
                 large_text,
             ),
@@ -431,20 +417,20 @@ fn browsing_data_controls(actions: &SettingsActionBindings, large_text: bool) ->
 }
 
 /// A labelled full-width text field: a caption above a [`TextInput`] whose
-/// edits are the preference action `build` makes of the typed value.
+/// edits replace the preference at `path` with the typed value.
 fn field_block(
     label: &str,
     state: &ui::LocalState<String>,
     id: &str,
     placeholder: &str,
     edits: Option<ui::framework::Dispatcher<Browser>>,
-    build: fn(String) -> BrowserAction,
+    path: Path<Browser, String>,
 ) -> El {
     let input = TextInput::from_state(state)
         .with_id(id)
         .with_placeholder(placeholder);
     let input = match edits {
-        Some(edits) => input.on_change(move |value| edits.apply(&build(value.to_string()))),
+        Some(edits) => input.on_change(move |value| edits.submit(path.replace(value))),
         None => input,
     };
     Box::new(
@@ -459,28 +445,12 @@ fn field_block(
 fn preference_toggle(
     toggle: Toggle,
     edits: Option<ui::framework::Dispatcher<Browser>>,
-    build: fn(bool) -> BrowserAction,
+    path: Path<Browser, bool>,
 ) -> Toggle {
     match edits {
-        Some(edits) => toggle.on_change(move |enabled| edits.apply(&build(enabled))),
+        Some(edits) => toggle.on_change(move |enabled| edits.submit(path.set(enabled))),
         None => toggle,
     }
-}
-
-fn adblock_action(enabled: bool) -> BrowserAction {
-    BrowserAction::SetAdblock { enabled }
-}
-
-fn clear_on_exit_action(enabled: bool) -> BrowserAction {
-    BrowserAction::SetClearOnExit { enabled }
-}
-
-fn homepage_action(url: String) -> BrowserAction {
-    BrowserAction::SetHomepage { url }
-}
-
-fn search_engine_action(template: String) -> BrowserAction {
-    BrowserAction::SetSearchEngine { template }
 }
 
 fn button_with_action(button: Button, action: Option<tilo_actions::ActionBinding<()>>) -> Button {
@@ -497,9 +467,10 @@ impl Widget for SettingsPane {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition(theme);
-        let child_node = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
+        let composition = self.build_composition(theme);
+        let child_node = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
 
         let style = Style {
             display: taffy::Display::Flex,
@@ -512,81 +483,13 @@ impl Widget for SettingsPane {
         };
         // `new_with_children` only fails when a child belongs to a different
         // tree; `child_node` was just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "every child node was just created in this same tree"
-        )]
-        let node = taffy.new_with_children(style, &[child_node]).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &[child_node], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&child_node) = children.first()
-        {
-            c.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&child_node) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
+    ui::forward_to_composed!(composed);
 
     fn name(&self) -> &'static str {
         "SettingsPane"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -614,6 +517,7 @@ mod tests {
     use automerge::AutoCommit;
     use automerge::ReadDoc;
     use std::collections::HashMap;
+    use vello::kurbo::Point;
 
     #[test]
     fn preference_defaults_are_sensible() {
@@ -643,8 +547,7 @@ mod tests {
             let doc = AutoCommit::new();
             let root = automerge::ROOT;
             pane.sync(&doc, &root);
-            assert!(doc.get(&root, ADBLOCK_PATH).unwrap().is_none());
-            assert!(doc.get(&root, HOMEPAGE_PATH).unwrap().is_none());
+            assert_eq!(doc.length(&root), 0, "presenting writes no document");
             let presentation = SettingsPresentation::from_settings(&settings);
             assert_eq!(presentation.homepage.with(Clone::clone), settings.homepage);
             assert_eq!(
@@ -693,20 +596,7 @@ mod tests {
             // Drive the real five-pass path: build_layout → compute_layout →
             // apply_layout, then flip the ad-block toggle through the live
             // widget tree and assert the CRDT bool changed.
-            use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
-
-            // Locate the ad-block toggle's rect by walking the live tree.
-            fn find_toggle_rect(w: &dyn Widget, id: &str) -> Option<Rect> {
-                if w.test_id() == Some(id) {
-                    return Some(w.get_rect());
-                }
-                for c in w.children() {
-                    if let Some(r) = find_toggle_rect(c, id) {
-                        return Some(r);
-                    }
-                }
-                None
-            }
+            use winit::event::{ElementState, MouseButton, WindowEvent};
 
             let mut pane = SettingsPane::new();
             let mut doc = AutoCommit::new();
@@ -730,39 +620,25 @@ mod tests {
             // Re-sync so the toggle adopts its retained presentation state.
             pane.sync(&doc, &root);
 
-            let rect = find_toggle_rect(&pane, "settings.adblock")
-                .expect("ad-block toggle is addressable in the tree");
+            let rect = ui::widget::find_test_id(&pane, "settings.adblock")
+                .expect("ad-block toggle is addressable in the tree")
+                .get_rect();
             let center = rect.center();
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mods = winit::event::Modifiers::default();
-            let mut dispatch = |pane: &mut SettingsPane, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                pane.handle_event(
-                    &ev,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
-            };
-            dispatch(
+            let device = winit::event::DeviceId::dummy();
+            let mut at = ui::testing::Dispatch::new()
+                .doc(&mut doc)
+                .layout(&taffy, node);
+            at.send(
                 &mut pane,
-                WindowEvent::CursorMoved {
+                &WindowEvent::CursorMoved {
                     device_id: device,
                     position: (center.x, center.y).into(),
                 },
             );
-            dispatch(
+            at.send(
                 &mut pane,
-                WindowEvent::MouseInput {
+                &WindowEvent::MouseInput {
                     device_id: device,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,

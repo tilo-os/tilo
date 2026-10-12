@@ -21,7 +21,7 @@ fn two_records() -> (StatePeer, SigningKey, SystemTime) {
     let document = |value: String| {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "value", value).unwrap();
-        doc.commit();
+        doc.commit_edit("fixture", "value");
         doc.save()
     };
     let seed = |record: &str, bytes| SeedDocument {
@@ -54,7 +54,7 @@ fn incremental(author: &mut StatePeer, key: &SigningKey, now: SystemTime) -> Nei
     ));
     let heads = doc.get_heads();
     doc.put(ROOT, "typed", "a").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "typed");
     author
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), key, now)
         .unwrap()

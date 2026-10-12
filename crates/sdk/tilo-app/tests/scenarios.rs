@@ -6,6 +6,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree, WindowEvent};
 use tilo_app::headless::FrameHarness;
 use tilo_app::prelude::*;
 use tilo_app::winit::event::ElementState;
@@ -124,21 +125,17 @@ impl ResourceApp for PlaylistApp {
         fixture.version(
             "miles",
             MILES_AT_MS,
-            Playlist::ADD.with("Freddie Freeloader".into()),
+            Playlist::ADD.with("Freddie Freeloader"),
         );
-        fixture.version(
-            "bill",
-            BILL_AT_MS,
-            Playlist::ADD.with("Flamenco Sketches".into()),
-        );
+        fixture.version("bill", BILL_AT_MS, Playlist::ADD.with("Flamenco Sketches"));
         fixture.collaborator("miles", ResourceSelection::Item("second-take".into()));
     }
 
     fn scenario(name: Option<&str>) -> Vec<Invoke<Playlist>> {
         match name {
             Some("details") => vec![
-                Playlist::ADD.with("Blue in Green".into()),
-                Playlist::ADD.with("So What".into()),
+                Playlist::ADD.with("Blue in Green"),
+                Playlist::ADD.with("So What"),
             ],
             _ => Vec::new(),
         }

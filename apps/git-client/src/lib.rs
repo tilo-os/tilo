@@ -35,11 +35,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -50,7 +46,6 @@ pub mod app;
 pub mod changes;
 pub mod diff;
 pub mod diffview;
-mod doc;
 pub mod graph;
 pub mod history;
 mod http_transport;
@@ -61,6 +56,7 @@ pub mod repo;
 pub mod resource;
 pub mod sample;
 pub mod settings;
+pub mod shared;
 mod ssh_transport;
 mod transport;
 
@@ -68,7 +64,7 @@ pub use app::{GitClientApp, Screen};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<GitClientShell>()
+    ui::built_in_definition!(GitClientShell)
 }
 
 pub use resource::{GitClient, GitClientShell, SCENARIOS};

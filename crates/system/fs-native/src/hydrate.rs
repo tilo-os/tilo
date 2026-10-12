@@ -984,11 +984,6 @@ impl Hydrator {
             let _ = t.join();
         }
     }
-
-    /// Descriptor of the pre-content group, for probes that need extra marks.
-    pub fn group_fd(&self) -> BorrowedFd<'_> {
-        self.shared.group.as_fd()
-    }
 }
 
 impl Drop for Hydrator {

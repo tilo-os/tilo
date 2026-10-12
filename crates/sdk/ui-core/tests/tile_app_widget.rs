@@ -10,7 +10,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_ui::presence::PresenceCtx;
+use tilo_ui::widget::TaffyTreeExt;
 use tilo_ui::widget::{TileContent, TileHost};
 use tilo_ui::{AppKind, AppWidget, IconDescriptor, Theme, Widget};
 
@@ -23,25 +23,10 @@ impl Widget for DummyApp {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        let n = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-        n
-    }
-    fn apply_layout(&mut self, _t: &taffy::TaffyTree, _n: taffy::NodeId, _o: vello::kurbo::Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut vello::Scene,
-        _t: vello::kurbo::Affine,
-        _tr: &mut tilo_ui::text_render::TextRenderer,
-        _th: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn name(&self) -> &'static str {
         "DummyApp"
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
     }
 }
 

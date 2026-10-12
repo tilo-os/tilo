@@ -1,0 +1,26 @@
+{
+  "encoding": "UTF-8 lines; concatenate lines to reconstruct stdout",
+  "lines": [
+    "warning: ignoring --test-threads because --no-capture is specified\n",
+    "   Compiling shell v0.1.0 (/var/home/you/tilo/tilo/.worktrees/dictation-subject-candidate-source/crates/session/shell)\n",
+    "    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 52s\n",
+    "info: using target runner `/var/home/you/tilo/tilo/.worktrees/dictation-subject-candidate-source/tools/cargo-runner.sh` defined by `target.cfg(all(target_arch = \"x86_64\", target_os = \"linux\")).runner` within `/var/home/you/tilo/tilo/.worktrees/dictation-subject-candidate-source/.cargo/config.toml`\n",
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n",
+    " Nextest run ID 8ec15d05-22b5-4d24-b793-50eaa59f3b04 with nextest profile: ci\n",
+    "    Starting 1 test across 1 binary (441 tests skipped)\n",
+    "       START [         ] (1/1) shell::it clipboard_e2e::clipboard_mirror_never_requests_gtk_save_targets_as_payload\n",
+    "\n",
+    "running 1 test\n",
+    "[clipboard-e2e] compositor serving after 485.05264ms\n",
+    "[clipboard-e2e] org.tilo.test.gtk-clipboard-source: toplevel committed (wl_surface protocol id 12), waiting for keyboard focus\n",
+    "[clipboard-e2e] org.tilo.test.gtk-clipboard-source: attached a 320x240 buffer\n",
+    "[clipboard-e2e] org.tilo.test.gtk-clipboard-source: focused\n",
+    "test clipboard_e2e::clipboard_mirror_never_requests_gtk_save_targets_as_payload ... ok\n",
+    "\n",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 441 filtered out; finished in 0.66s\n",
+    "\n",
+    "        PASS [   0.681s] (1/1) shell::it clipboard_e2e::clipboard_mirror_never_requests_gtk_save_targets_as_payload\n",
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n",
+    "     Summary [   0.685s] 1 test run: 1 passed, 441 skipped\n"
+  ]
+}

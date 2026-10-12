@@ -101,11 +101,9 @@ impl FrameStall {
     /// Read [`FRAME_STALL_ENV`] behind the developer-override gate and
     /// announce a stall that is in effect.
     pub fn from_process_env() -> Option<Self> {
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| {
-                since.as_secs().rotate_left(32) ^ u64::from(since.subsec_nanos())
-            })
+        let since = tilo_clock::unix_now_ns();
+        let seed = (since / 1_000_000_000).rotate_left(32)
+            ^ (since % 1_000_000_000)
             ^ u64::from(std::process::id());
         let stall = Self::from_env(
             super::dev_env::DEV_ENV_OVERRIDES,

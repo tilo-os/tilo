@@ -2,7 +2,7 @@
 use crate::{
     BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices,
     mcp::McpServer,
-    mcp_process::{Frame, read_frame, write_reply},
+    mcp_process::{Answer, Frame, mcp_answer, read_frame, serve_lines, spawn_reader},
     unix,
 };
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,6 @@ use std::{
     ffi::OsString,
     io::{self, BufRead, BufReader, Read, Write},
     os::unix::{
-        fs::PermissionsExt,
         net::{UnixListener, UnixStream},
         process::CommandExt,
     },
@@ -683,20 +682,8 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
     let path = profile.join("native.sock");
     // Session already owns runtime.lock. Only that owner may remove a stale
     // endpoint, and a second --daemon cannot reach this point.
-    match std::fs::symlink_metadata(&path) {
-        Ok(metadata) => {
-            use std::os::unix::fs::FileTypeExt;
-            if !metadata.file_type().is_socket() {
-                return Err(invalid("native runtime endpoint is not a socket"));
-            }
-            std::fs::remove_file(&path)?;
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
     stages.enter("binding the native endpoint");
-    let listener = UnixListener::bind(&path)?;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    let listener = tilo_files::native::private::bind_socket(&path)?;
     if let Some((config, room)) = mcp {
         stages.enter("binding the MCP HTTP endpoint");
         // Computer, viewer and media are scoped to this profile's private
@@ -775,15 +762,15 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                 .name("tilo-native-mcp".into())
                 .spawn(move || {
                     let _slot = slot;
-                    let mut server = match factory() {
-                        Ok(server) => server.with_computer(computer).with_media(media),
+                    let server = match factory() {
+                        Ok(server) => Arc::new(server.with_computer(computer).with_media(media)),
                         Err(error) => {
                             tracing::debug!(%error, "native MCP session admission unavailable");
                             return;
                         }
                     };
                     if let Err(error) =
-                        serve_connection(stream, &mut server, &status, joiner.as_ref(), &search)
+                        serve_connection(stream, &server, &status, joiner.as_ref(), &search)
                     {
                         tracing::debug!(%error, "native runtime client disconnected");
                     }
@@ -803,9 +790,11 @@ impl Drop for ConnectionSlot {
     }
 }
 
-fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync>(
+/// Answer one native connection: the daemon's own requests in order, and
+/// MCP requests as [`serve_lines`] does, overlapping one another.
+fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync + 'static>(
     mut stream: UnixStream,
-    server: &mut McpServer<H>,
+    server: &Arc<McpServer<H>>,
     status: &Status,
     joiner: Option<&crate::Joiner>,
     search: &tilo_os_search::OsSearch,
@@ -815,36 +804,50 @@ fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync>(
     // Every connection thread waits on the one app runtime rather than
     // building a runtime per connection.
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
-    let mut reader = BufReader::new(stream.try_clone()?);
-    loop {
-        let reply = match read_frame(&mut reader)? {
-            Frame::Eof => return Ok(()),
-            Frame::TooLong => Some(
-                json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"request line exceeds 1 MiB"}}),
-            ),
-            Frame::Line(bytes) => match serde_json::from_slice::<Value>(&bytes) {
-                Ok(value) if value == json!({"native":"status"}) => {
-                    Some(serde_json::to_value(status).map_err(io::Error::other)?)
-                }
-                Ok(value) if value.get("native") == Some(&json!("join")) => {
-                    Some(answer_join(joiner, &value))
-                }
-                Ok(value) if value.get("native") == Some(&json!(tilo_host_search::OPEN)) => Some(
-                    runtime
-                        .block_on(answer_open(search, &value))
-                        .map_err(io::Error::other)?,
-                ),
-                Ok(value) => runtime
-                    .block_on(server.handle(value))
-                    .map_err(io::Error::other)?,
-                Err(_) => Some(
-                    json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}),
-                ),
-            },
-        };
-        if let Some(reply) = reply {
-            write_reply(&mut stream, &reply)?;
+    let input = spawn_reader(stream.try_clone()?)?;
+    let status = serde_json::to_value(status).map_err(io::Error::other)?;
+    let answer = |value: Value| {
+        let native = value.get("native").and_then(Value::as_str);
+        Answer::InOrder(match native {
+            Some("status") if value == json!({"native":"status"}) => {
+                let status = status.clone();
+                Box::pin(async move { Ok(Some(status)) })
+            }
+            Some("activate") => {
+                Box::pin(async move { Ok(Some(answer_activate(server, &value).await)) })
+            }
+            Some("join") => {
+                let answer = answer_join(joiner, &value);
+                Box::pin(async move { Ok(Some(answer)) })
+            }
+            Some(tilo_host_search::OPEN) => {
+                Box::pin(async move { Ok(Some(answer_open(search, &value).await)) })
+            }
+            _ => return mcp_answer(server, value),
+        })
+    };
+    let ended = serve_lines(runtime, input, &mut stream, answer, None);
+    // The reader thread holds a clone of the socket: shut it, so the reader
+    // sees its end and the client its connection close.
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+    ended
+}
+
+/// A native activation request's answer: the newest live instance of the
+/// named application brought forward, or that none runs.
+async fn answer_activate<H: tilo_actions::remote::ActionHost + Send + Sync + 'static>(
+    server: &McpServer<H>,
+    request: &Value,
+) -> Value {
+    match request.get("app_id").and_then(Value::as_str) {
+        Some(app) if !app.is_empty() && app.len() <= 4096 => {
+            match server.activate_existing(app).await {
+                Ok(Some(peer)) => json!({"activated": true, "peer_id": peer}),
+                Ok(None) => json!({"activated": false}),
+                Err(reason) => json!({"error": reason}),
+            }
         }
+        _ => json!({"error": "activation needs an application identity"}),
     }
 }
 
@@ -958,6 +961,16 @@ pub fn run_app(
     args: &[OsString],
 ) -> io::Result<()> {
     let status = ensure_running(profile)?;
+    // Only the argument-free default presentation is interchangeable here.
+    // App-specific arguments must run their own parser and are never discarded.
+    let launch_guard = if args.is_empty() && room.is_none_or(|room| room == status.room) {
+        match default_launch_guard(profile, app_id, Duration::from_secs(3))? {
+            Some(guard) => Some(guard),
+            None => return Ok(()),
+        }
+    } else {
+        None
+    };
     let owner = std::process::id().to_string();
     // Only the bootstrap exec for this exact process can request resumption.
     // A same-app ordinary child must run its own command handler first.
@@ -994,9 +1007,92 @@ pub fn run_app(
     if resume {
         command.env("TILO_RUNTIME_RESUME_LIVE", app_id);
     }
+    if let Some(guard) = &launch_guard {
+        use std::os::fd::AsRawFd;
+        let fd = guard.file().as_raw_fd();
+        command.env("TILO_RUNTIME_LAUNCH_GUARD_FD", fd.to_string());
+        // SAFETY: the guard stays owned until exec and only fcntl runs here.
+        unsafe {
+            command.pre_exec(move || {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    } else {
+        command.env_remove("TILO_RUNTIME_LAUNCH_GUARD_FD");
+    }
     let error = command.exec();
     drop(connections);
     Err(error)
+}
+
+fn activate_existing(profile: &Path, app_id: &str) -> io::Result<bool> {
+    let mut stream = UnixStream::connect(profile.join("native.sock"))?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let request = serde_json::to_vec(&json!({"native": "activate", "app_id": app_id}))
+        .map_err(io::Error::other)?;
+    stream.write_all(&request)?;
+    stream.write_all(b"\n")?;
+    let Frame::Line(bytes) = read_frame(&mut BufReader::new(stream))? else {
+        return Err(invalid(
+            "native activation endpoint returned no bounded reply",
+        ));
+    };
+    let reply: Value = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+    match reply.get("activated").and_then(Value::as_bool) {
+        Some(activated) => Ok(activated),
+        None => Err(io::Error::other(
+            reply
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("invalid native activation reply")
+                .to_owned(),
+        )),
+    }
+}
+
+/// Kernel-held admission survives exec and is released on owner exit. File
+/// contents and PID observations are diagnostics, never proof of a live owner.
+fn default_launch_guard(
+    profile: &Path,
+    app_id: &str,
+    grace: Duration,
+) -> io::Result<Option<advisory_lock::FileLock>> {
+    let directory = profile.join("launches");
+    unix::private_directory(&directory)?;
+    let path = directory.join(format!("{}.lock", blake3::hash(app_id.as_bytes()).to_hex()));
+    let deadline = Instant::now().checked_add(grace).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "native launch startup grace is too large",
+        )
+    })?;
+    loop {
+        if activate_existing(profile, app_id)? {
+            return Ok(None);
+        }
+        match advisory_lock::FileLock::try_exclusive(unix::private_file(&path)?) {
+            Ok(guard) => {
+                guard.record_owner()?;
+                return Ok(Some(guard));
+            }
+            Err(advisory_lock::TryLockError::Error(error)) => return Err(error),
+            Err(advisory_lock::TryLockError::WouldBlock) => {}
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!(
+                    "existing {app_id} launch has not published its window within the startup grace; its owner was retained"
+                ),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 #[cfg(test)]

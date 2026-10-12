@@ -30,7 +30,7 @@ struct ColdPair {
 fn room_tree(room: RoomId, identity: &[u8; 32]) -> WorkspaceTree {
     let mut tree = WorkspaceTree::bootstrap_default();
     let workspace = &mut tree.desktop.workspaces[0];
-    workspace.room = room;
+    workspace.set_room(room);
     workspace.set_owner(crate::shell::collab_broker_capnp::principal_id_for_root(
         *identity,
     ));
@@ -50,7 +50,7 @@ fn write_record(
         .unwrap();
     let record = RecordCheckout::new(
         address.record.clone(),
-        RecordKind::new(code_editor::resource::PROJECT_KIND),
+        RecordKind::new(code_editor::Project::KIND),
     );
     if !record_hydration::kept_here(address, data) {
         records.create_record(&record).unwrap();
@@ -83,17 +83,18 @@ fn read_record(data: &Path, address: &RecordAddress) -> automerge::AutoCommit {
 }
 
 fn body_of(document: &automerge::AutoCommit) -> String {
-    let mut project = code_editor::CodeEditor::read(document).unwrap();
+    let mut project = code_editor::Project::read(document).unwrap();
     assert_eq!(project.files.len(), 1);
-    assert_eq!(project.files[0].id, FILE);
-    assert_eq!(project.files[0].name, "continuity.rs");
-    assert_eq!(project.files[0].path, "continuity.rs");
-    assert_eq!(project.files[0].language, "rust");
-    assert!(project.files[0].parent.is_none());
-    assert!(!project.files[0].deleted);
-    code_editor::CodeEditor::load(&mut project, document, &Demand::none().with_keys([FILE]))
+    let (id, file) = project.files.iter().next().unwrap();
+    assert_eq!(id.as_str(), FILE);
+    assert_eq!(file.name, "continuity.rs");
+    assert_eq!(project.path_of(id).as_deref(), Some("continuity.rs"));
+    assert_eq!(file.language, "Rust");
+    assert!(file.parent.is_none());
+    project
+        .load_texts(document, &Demand::none().with_keys([FILE]))
         .unwrap();
-    project.buffers.remove(FILE).unwrap()
+    project.text(FILE).unwrap().to_owned()
 }
 
 impl ColdPair {
@@ -112,16 +113,18 @@ impl ColdPair {
             code_editor::native_fixture::seed(&file).unwrap();
             let body = std::fs::read_to_string(file).unwrap();
             write_record(home.data(), &address, |doc| {
-                code_editor::actions::CodeEditorAction::CreateFile {
-                    id: FILE.into(),
-                    name: "continuity.rs".into(),
-                    parent: None,
-                    language: "rust".into(),
-                    order: 0,
-                    seed: body.clone(),
-                }
+                code_editor::actions::record_entry_action(
+                    FILE,
+                    code_editor::project::EntryKind::File,
+                    "continuity.rs",
+                    None,
+                    "Rust",
+                )
                 .apply(doc)
                 .unwrap();
+                code_editor::actions::record_text_action(FILE, body.clone())
+                    .apply(doc)
+                    .unwrap();
             });
             let left = Box::pin(Session::new(
                 &identity,
@@ -261,7 +264,7 @@ impl ColdPair {
                 doc.set_actor(automerge::ActorId::from(
                     self.left.cert.device_public_key.to_vec(),
                 ));
-                code_editor::actions::text_edit_action(FILE.into(), &self.body, &source_edit)
+                code_editor::actions::text_edit_action(FILE, &self.body, &source_edit)
                     .apply(doc)
                     .unwrap();
             });
@@ -269,7 +272,7 @@ impl ColdPair {
                 doc.set_actor(automerge::ActorId::from(
                     self.right.cert.device_public_key.to_vec(),
                 ));
-                code_editor::actions::text_edit_action(FILE.into(), &self.body, &receiving_edit)
+                code_editor::actions::text_edit_action(FILE, &self.body, &receiving_edit)
                     .apply(doc)
                     .unwrap();
             });

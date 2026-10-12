@@ -1,4 +1,5 @@
-//! Opt-in resource-refresh diagnostics (`TILO_PROFILE_RESOURCES=1`).
+//! Opt-in resource-refresh diagnostics (`TILO_PROFILE_RESOURCES=1`, or the
+//! normal launcher's content-free `TILO_PROFILE_PRESENTATION=1` diagnostics).
 //!
 //! Each `tilo-resource-stage ` stderr line contains one JSON object. Durations
 //! are CPU wall time for disjoint stages, excluding serialization/logging and
@@ -27,6 +28,9 @@ pub(crate) enum Stage {
     BoundControlProjection,
     ControlCache,
     ControlRefresh,
+    /// Deciding whether an input kept the published tree: `hit` kept it.
+    #[cfg(feature = "native")]
+    InputCarry,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -59,6 +63,7 @@ impl Span {
         static ENABLED: OnceLock<bool> = OnceLock::new();
         let enabled = *ENABLED.get_or_init(|| {
             std::env::var("TILO_PROFILE_RESOURCES").is_ok_and(|value| value == "1")
+                || std::env::var("TILO_PROFILE_PRESENTATION").is_ok_and(|value| value == "1")
         });
         Self::with_enabled(stage, generation, permission_generation, enabled)
     }

@@ -26,12 +26,11 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+use capnp_rpc::rpc_twoparty_capnp;
 use format_host::format_router_capnp::format_router;
 use format_host::router::{Router, load_into};
 use format_host::runner::{self, Limits, LoadedProvider};
 use format_host::{transport, watch::spawn_watcher};
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
 const HANG_BOUND: Duration = Duration::from_secs(30);
@@ -119,19 +118,8 @@ impl HostHarness {
 }
 
 fn client_for(stream: tokio::net::UnixStream) -> format_router::Client {
-    let (reader, writer) = stream.into_split();
-    let reader = reader.compat();
-    let writer = writer.compat_write();
-    let network = Box::new(twoparty::VatNetwork::new(
-        futures::io::BufReader::new(reader),
-        futures::io::BufWriter::new(writer),
-        rpc_twoparty_capnp::Side::Client,
-        capnp::message::ReaderOptions::default(),
-    ));
-    let mut rpc_system = RpcSystem::new(network, None);
-    let client: format_router::Client = rpc_system.bootstrap(rpc_twoparty_capnp::Side::Server);
-    tokio::task::spawn_local(rpc_system);
-    client
+    runtime_portal::CapnpClient::from_connected_io(stream, rpc_twoparty_capnp::Side::Client)
+        .bootstrap()
 }
 
 fn markdown_registry(wasm: &std::path::Path) -> String {

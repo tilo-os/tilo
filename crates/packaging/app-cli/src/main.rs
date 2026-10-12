@@ -425,6 +425,10 @@ fn change_one(query: &str, update: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // Opening an app for the first time takes the newest version this device
+    // can run without fetching a runtime; `app update` moves it on later.
+    let first_open = (!update && installed.is_none()).then(|| app_cli::first_open_offer(app));
+    let app = first_open.as_ref().unwrap_or(app);
     let result = change_app(app, update, installed.as_deref());
     if update && !listing.unreachable.is_empty() {
         ExitCode::FAILURE

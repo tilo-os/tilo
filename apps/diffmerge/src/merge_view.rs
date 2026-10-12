@@ -3,11 +3,12 @@
 //! Top band: three columns — base / ours / theirs — rendered hunk-by-hunk so a
 //! conflict shows the same vertical span across all three. Conflicts get
 //! per-hunk action chips (take ours / take theirs / take both). Bottom band:
-//! the merged result, the document's text, which every collaborator edits
-//! through a [`TextControl`]. Clicking an action chip submits the hunk's
+//! the merged result, the record's text, which every collaborator edits
+//! through a [`TextControl`] at its path. Clicking an action chip submits the hunk's
 //! resolution, which recomposes the merged result.
 
 use std::collections::HashMap;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::prelude::*;
@@ -22,7 +23,7 @@ use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_resource::PlainText;
+use ui::tilo_resource::Invoke;
 use ui::tokens::TextRole;
 use ui::widget::code_editor::Span;
 use ui::widget::toggle_group::SegmentedStyle;
@@ -31,12 +32,12 @@ use ui::widget::{
     SegmentedFace, ToggleGroup, Tone, Widget,
 };
 
-use crate::actions::{self, DiffmergeAction, HunkChoice};
-use crate::doc::{MergeDoc, MergeInputs, MergeState};
+use crate::doc::{HunkChoice, MergeInputs, Session};
 use crate::highlight;
 use crate::i18n::{count, t, t_args};
 use crate::model::{MergeHunk, MergeModel, Resolution};
 use crate::pane::{self, CodeMetrics};
+use crate::resource::session;
 use crate::scroll::{HScroll, wheel_pixels};
 
 /// Row metrics measured from the renderer the panel paints with.
@@ -197,7 +198,7 @@ pub struct MergeView {
     /// The inputs shown, as the document holds them.
     inputs: Option<MergeInputs>,
     /// Whether the merged result is what the recorded sides compose, so a
-    /// side may still be taken ([`MergeState::composed`]).
+    /// side may still be taken ([`Session::composed`]).
     composed: bool,
     /// The participant may only view.
     read_only: bool,
@@ -231,14 +232,14 @@ pub struct MergeView {
     /// A conflict resolution the user just triggered via a chip, waiting to be
     /// drained by the parent app and submitted through its dispatcher (so a
     /// chip and Ctrl+K produce the same action).
-    pending_action: Option<DiffmergeAction>,
+    pending_action: Option<Invoke<Session>>,
     /// Last measured row metrics (see [`Metrics`]); an estimate until the
     /// first draw.
     metrics: Metrics,
     /// The merged result, edited through the same caret/selection/IME/
     /// clipboard implementation as every code surface, every edit a splice
     /// of the document's text.
-    merged_editor: TextControl<CodeEditor>,
+    merged_editor: TextControl<CodeEditor, Session>,
 }
 
 impl Default for MergeView {
@@ -273,18 +274,18 @@ impl MergeView {
             dirty: true,
             pending_action: None,
             metrics: Metrics::unmeasured(&Theme::dark()),
-            merged_editor: TextControl::view_only(
+            merged_editor: TextControl::view_only_at(
                 CodeEditor::new(Vec::new())
                     .with_language(Language::PlainText)
                     .with_id("diffmerge_merged_editor"),
-                MergeDoc::merged_text_id,
+                Session::paths().merged,
             ),
         }
     }
 
-    /// Submit edits of the merged result through `edits`.
-    pub(crate) fn attach(&mut self, edits: Dispatcher<PlainText>) {
-        self.merged_editor.attach(edits);
+    /// Submit edits of the merged result through `dispatcher`.
+    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Session>) {
+        self.merged_editor.attach(dispatcher);
     }
 
     /// The participant may only view: no side can be taken.
@@ -297,22 +298,23 @@ impl MergeView {
 
     /// Show `state`: the inputs when they changed, the side recorded for
     /// each hunk, and whether sides can still be taken.
-    pub(crate) fn present(&mut self, state: &MergeState) {
+    pub(crate) fn present(&mut self, state: &Session) {
         if self.inputs != state.merge {
             match &state.merge {
                 Some(inputs) => self.set_inputs(inputs),
                 None => self.clear_inputs(),
             }
         }
-        if self.model.hunks.len() == state.model.hunks.len() {
-            for (shown, stored) in self.model.hunks.iter_mut().zip(&state.model.hunks) {
+        let model = state.merge_model();
+        self.composed = state.composed(&model);
+        if self.model.hunks.len() == model.hunks.len() {
+            for (shown, stored) in self.model.hunks.iter_mut().zip(&model.hunks) {
                 shown.resolution = stored.resolution;
             }
         } else {
-            self.model = state.model.clone();
+            self.model = model;
             self.recompute_spans();
         }
-        self.composed = state.composed;
         self.pending_action = None;
         self.dirty = true;
     }
@@ -347,12 +349,16 @@ impl MergeView {
     fn set_inputs(&mut self, inputs: &MergeInputs) {
         self.inputs = Some(inputs.clone());
         self.model = inputs.model();
-        self.base_label.clone_from(&inputs.base_label);
-        self.ours_label.clone_from(&inputs.ours_label);
-        self.theirs_label.clone_from(&inputs.theirs_label);
+        self.base_label.clone_from(&inputs.base_label.0);
+        self.ours_label.clone_from(&inputs.ours_label.0);
+        self.theirs_label.clone_from(&inputs.theirs_label.0);
         self.source_spans = HunkSpans::for_model(
             &self.model,
-            [&inputs.base_label, &inputs.ours_label, &inputs.theirs_label],
+            [
+                &inputs.base_label.0,
+                &inputs.ours_label.0,
+                &inputs.theirs_label.0,
+            ],
         );
         // Spans depend on the model as much as on the metrics; a new input
         // set at an unchanged rect must not paint against stale spans.
@@ -453,7 +459,7 @@ impl MergeView {
 
     /// Take the pending chip-triggered resolution, if any, so the parent app can
     /// dispatch it through the shared action path. Rising-edge: cleared on read.
-    pub(crate) fn take_pending_action(&mut self) -> Option<DiffmergeAction> {
+    pub(crate) fn take_pending_action(&mut self) -> Option<Invoke<Session>> {
         self.pending_action.take()
     }
 
@@ -518,7 +524,7 @@ impl MergeView {
     }
 
     /// Resolve `hunk` by taking `choice`: shows the choice at once and queues
-    /// the matching [`DiffmergeAction`] for the parent app to submit — the
+    /// the matching verb for the parent app to submit — the
     /// same action the palette's row builds. The document changes through
     /// that action; if it is refused, the stored state is presented again.
     pub fn resolve(&mut self, hunk: usize, choice: HunkChoice) {
@@ -529,7 +535,12 @@ impl MergeView {
             h.resolution = choice.to_resolution();
         }
         self.active_hunk = Some(hunk);
-        self.pending_action = Some(actions::resolve_hunk_action(hunk, choice));
+        let hunk = u64::try_from(hunk).unwrap_or(u64::MAX);
+        self.pending_action = Some(match choice {
+            HunkChoice::Ours => Session::TAKE_OURS.with(session::TakeOurs { hunk }),
+            HunkChoice::Theirs => Session::TAKE_THEIRS.with(session::TakeTheirs { hunk }),
+            HunkChoice::Both => Session::TAKE_BOTH.with(session::TakeBoth { hunk }),
+        });
         self.dirty = true;
     }
 
@@ -1054,31 +1065,19 @@ impl Widget for MergeView {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // `new_leaf` on a freshly created tree never fails.
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                flex_grow: 1.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            flex_grow: 1.0,
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.place(Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        ));
+        self.place(ui::widget::layout_rect(taffy, node, origin));
         self.recompute_spans();
         let merged = self.merged_band_rect();
         self.merged_editor.control_mut().set_rect(Rect::new(
@@ -1367,7 +1366,7 @@ impl Widget for MergeView {
         true
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],

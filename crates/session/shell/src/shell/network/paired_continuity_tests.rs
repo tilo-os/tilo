@@ -504,7 +504,7 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
     let tab = 0xC011_0094;
     let mut tree = WorkspaceTree::bootstrap_default();
     let workspace = &mut tree.desktop.workspaces[0];
-    workspace.room = room;
+    workspace.set_room(room);
     workspace.strips[0].window_groups.push(WindowGroup {
         id: crate::shell::state::next_id(),
         tabs: vec![Tab {
@@ -910,7 +910,7 @@ impl NativeEditorPair {
             let room = RoomId::new();
             let tab = 0xC011_00B1;
             let mut tree = WorkspaceTree::bootstrap_default();
-            tree.desktop.workspaces[0].room = room;
+            tree.desktop.workspaces[0].set_room(room);
             tree.desktop.workspaces[0].strips[0]
                 .window_groups
                 .push(WindowGroup {
@@ -928,7 +928,7 @@ impl NativeEditorPair {
                     maximized: false,
                 });
             let mut local = WorkspaceTree::bootstrap_default();
-            local.desktop.workspaces[0].room = room;
+            local.desktop.workspaces[0].set_room(room);
             let mut left = Box::pin(Session::new(&signer, 0xB1, tree)).await;
             let mut right = Box::pin(Session::new(&signer, 0xB2, local)).await;
             left.network_mut().personal_continuity_path =

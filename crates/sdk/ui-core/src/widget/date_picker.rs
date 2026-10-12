@@ -269,21 +269,6 @@ impl DatePicker {
         self.set_rect(rect);
     }
 
-    /// Report an externally laid-out picker hit without mutating selection.
-    /// Canvas hosts can translate it into their own typed action envelope.
-    pub fn hit_test_external(&self, point: Point) -> Option<ExternalDatePickerHit> {
-        if self.prev_button_rect.contains(point) {
-            return Some(ExternalDatePickerHit::PreviousMonth);
-        }
-        if self.next_button_rect.contains(point) {
-            return Some(ExternalDatePickerHit::NextMonth);
-        }
-        self.day_rects
-            .iter()
-            .find(|(_, rect)| rect.contains(point))
-            .map(|(date, _)| ExternalDatePickerHit::Date(*date))
-    }
-
     /// Hit regions for an embedded host's existing retained hit map. The
     /// regions are derived by the same shared layout code used for drawing.
     pub fn hit_regions_external(&self) -> Vec<(ExternalDatePickerHit, Rect)> {
@@ -390,7 +375,7 @@ impl Widget for DatePicker {
             return node;
         }
         let height = self.intrinsic_height(width);
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(px(width)),
                 height: Dimension::length(px(height)),
@@ -398,9 +383,8 @@ impl Widget for DatePicker {
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -426,13 +410,7 @@ impl Widget for DatePicker {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.set_rect(Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        ));
+        self.set_rect(crate::widget::layout_rect(taffy, node, origin));
     }
 
     fn draw(
@@ -611,6 +589,7 @@ impl Widget for DatePicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
@@ -837,16 +816,11 @@ fn day_disc(cell: Rect) -> vello::kurbo::Circle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use taffy::prelude::TaffyMaxContent;
-    use winit::dpi::PhysicalPosition;
-    use winit::event::{DeviceId, MouseButton};
-
-    fn modifiers() -> winit::event::Modifiers {
-        winit::event::Modifiers::default()
-    }
 
     #[test]
     fn date_picker_month_navigation_and_selection() {
@@ -892,38 +866,9 @@ mod tests {
                 .expect("June 7 2024 cell exists in the visible grid");
 
             let pt = cell.center();
-            let mut handled = false;
-            let mut focus_target: Option<NodeId> = None;
-            let mods = modifiers();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-
-            dp.handle_event(
-                &cursor_moved(pt.x, pt.y),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            dp.handle_event(
-                &mouse_pressed(),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            let mut at_node = Dispatch::new().layout(&taffy, node);
+            at_node.send(&mut dp, &cursor_moved(pt.x, pt.y));
+            at_node.send(&mut dp, &mouse_press());
 
             assert_eq!(dp.selected(), target);
             assert_eq!(*captured.borrow(), Some(target));
@@ -1024,26 +969,9 @@ mod tests {
         focused_date_picker_paints_a_focus_ring();
     }
 
-    fn fake_device_id() -> DeviceId {
-        // `DeviceId::dummy()` needs a winit unstable feature and the
-        // regular constructor isn't pub; never inspected by `handle_event`.
-        unsafe { std::mem::zeroed() }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: fake_device_id(),
-            position: PhysicalPosition::new(x, y),
-        }
-    }
-
-    fn mouse_pressed() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: fake_device_id(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     #[test]
     fn date_picker_semantics_and_shared_state_track_selection() {
@@ -1092,6 +1020,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("2026-11-23".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
@@ -1101,6 +1030,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("2026-02-30".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
@@ -1149,7 +1079,7 @@ mod tests {
         let narrow = picker.intrinsic_height(168.0);
         let wide = picker.intrinsic_height(224.0);
         assert!(narrow < wide, "cells follow the column's width");
-        let app = crate::headless::Driver::new(
+        let app = crate::headless::FrameHarness::new(
             crate::State::new(),
             Box::new(crate::column![picker.with_accessible_name("Month")]),
             (200, 600),

@@ -27,7 +27,7 @@ impl StatePeer {
         }
         self.certificate(&cert.device_public_key, now)?;
         match self.permissions(cert.device_public_key, now) {
-            Ok((role, _, _)) => Ok(role),
+            Ok(member) => Ok(member.role),
             Err(error)
                 if error.contains("no room membership") && self.has_governed_admission(cert) =>
             {

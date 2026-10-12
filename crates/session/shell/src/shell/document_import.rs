@@ -109,13 +109,20 @@ impl HostedRooms for NativeHostedRooms {
             match view.read_document(
                 view.device().device_public_key,
                 app,
-                record.as_str(),
+                if record.is_package_primary() {
+                    ""
+                } else {
+                    record.as_str()
+                },
                 None,
                 limit,
                 SystemTime::now(),
             )? {
                 DocumentRead::Captured(document) => Ok(document.bytes),
                 DocumentRead::Unchanged(_) => Err("nothing was read".into()),
+                DocumentRead::CheckpointPending => {
+                    Err("the record's checkpoint is still arriving".into())
+                }
             }
         })
     }
@@ -189,10 +196,10 @@ impl HostedRooms for NativeHostedRooms {
         let owner = self.0.native_owner().ok()?;
         owner
             .with_current(room, |view| {
-                let (role, _, _) = view
+                let member = view
                     .peer()
                     .permissions(view.device().device_public_key, SystemTime::now())?;
-                if role != collab_types::Role::Owner {
+                if member.role != collab_types::Role::Owner {
                     return Ok(None);
                 }
                 let doc = view.peer().admitted_room().ok_or("no room")?;

@@ -93,8 +93,8 @@ impl State {
         participation.token = rand::random();
         let now = Instant::now();
         participation.token_expires = now.checked_add(GRANT_TTL).unwrap_or(now);
-        participation.token_expires_ns =
-            super::now_ns().saturating_add(u64::try_from(GRANT_TTL.as_nanos()).unwrap_or(u64::MAX));
+        participation.token_expires_ns = tilo_clock::unix_now_ns()
+            .saturating_add(u64::try_from(GRANT_TTL.as_nanos()).unwrap_or(u64::MAX));
         self.tokens.insert(participation.token, id);
     }
 }
@@ -618,16 +618,15 @@ impl Rooms {
         caller: &AuthenticatedPeer,
         operation: &CallOperation,
     ) -> Result<CallState, String> {
-        self.authorize(&caller.cert, super::now_ns(), "call")
+        self.authorize(&caller.cert, tilo_clock::unix_now_ns(), "call")
             .map_err(|error| error.to_string())?;
-        let host = &self.inner.host;
         let room = self.room(room).await.map_err(|error| error.to_string())?;
         let mut room = room.lock().await;
         let now = SystemTime::now();
         let mut candidate = room.peer().clone();
-        super::prepare_governance(&mut candidate, &host.key, now)?;
-        let call = transition(&mut candidate, &host.key, operation, now)?;
-        room.commit(candidate, &host.key, now, |record, _| {
+        super::prepare_governance(&mut candidate, &self.inner.host.key, now)?;
+        let call = transition(&mut candidate, &self.inner.host.key, operation, now)?;
+        room.commit(candidate, &self.inner.host.key, now, |record, _| {
             Ok(record.collaboration.clone())
         })?;
         self.settle(&mut room).await?;

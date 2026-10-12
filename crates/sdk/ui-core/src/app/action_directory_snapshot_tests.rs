@@ -20,14 +20,8 @@ impl Widget for DeclaredDirectory {
     ) -> NodeId {
         t.new_leaf(taffy::Style::default()).unwrap()
     }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
     fn name(&self) -> &'static str {
         "declared-directory"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.semantic_calls.set(self.semantic_calls.get() + 1);
@@ -217,7 +211,7 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
         assert_eq!(parent.rows[0].action.as_deref(), Some("inspect"));
         assert!(matches!(
             app.resolve_action_directory(&root.revision, "declared:0", "inspect"),
-            runtime_collab::ActionDirectoryResolution::Found(_)
+            runtime_collab::ActionDirectoryResolution::Found { .. }
         ));
         assert_eq!(
             calls.get(),
@@ -320,14 +314,10 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
         assert_eq!(root.rows[0].action.as_deref(), Some("inspect"));
         assert_eq!(
             root.rows[0].descriptor.as_ref().unwrap().operation_kind,
-            "effect"
+            tilo_actions::OperationKind::Effect
         );
-        let contract: tilo_actions::ActionContract =
-            serde_json::from_str(&root.rows[0].visibility_contract_json).unwrap();
-        assert_eq!(
-            contract.permission,
-            tilo_actions::PermissionRequirement::Write
-        );
+        let contract = &root.rows[0].visibility.as_ref().unwrap().contract;
+        assert_eq!(contract.kind, tilo_actions::ActionKind::Undoable);
     }
 
     // Case `directory_snapshot_parent_merges_exact_provider_extensions_without_duplicates`.
@@ -359,20 +349,16 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
             ]
         );
         assert_eq!(rows[0].resource_label, "Published label");
-        let contract: tilo_actions::ActionContract =
-            serde_json::from_str(&rows[0].visibility_contract_json).unwrap();
-        assert_eq!(
-            contract.permission,
-            tilo_actions::PermissionRequirement::Read
-        );
+        let contract = &rows[0].visibility.as_ref().unwrap().contract;
+        assert_eq!(contract.kind, tilo_actions::ActionKind::Read);
         let revision = app.action_directory_revision();
         assert!(matches!(
             app.resolve_action_directory(&revision, "extended:parent", "tail"),
-            runtime_collab::ActionDirectoryResolution::Found(_)
+            runtime_collab::ActionDirectoryResolution::Found { .. }
         ));
         assert!(matches!(
             app.resolve_action_directory(&revision, "extended:b", "inspect"),
-            runtime_collab::ActionDirectoryResolution::Found(_)
+            runtime_collab::ActionDirectoryResolution::Found { .. }
         ));
     }
 
@@ -430,7 +416,7 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
         app.action_directory_page(directory_query(&revision, "declared:0", 8, 8192, 8));
         assert!(matches!(
             app.resolve_action_directory(&revision, "declared:0", "prompt"),
-            runtime_collab::ActionDirectoryResolution::Found(_)
+            runtime_collab::ActionDirectoryResolution::Found { .. }
         ));
         assert_eq!(semantics.get(), surveyed);
         assert_eq!(calls.get(), 1);
@@ -496,9 +482,8 @@ fn directory_snapshot_revision_evicts_on_every_semantic_change() {
             "discovery must not close the undo transaction"
         );
         app.actions.permission_generation.set(u64::MAX);
-        app.set_permission_ctx(PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(None, "restricted"),
-            Vec::new(),
+        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+            "restricted",
         ));
         assert_ne!(app.action_directory_revision(), revision);
         assert!(
@@ -572,7 +557,7 @@ fn directory_snapshot_revision_evicts_on_every_semantic_change() {
         let revision = app.action_directory_revision();
         assert!(matches!(
             app.resolve_action_directory(&revision, "declared:0", "inspect"),
-            runtime_collab::ActionDirectoryResolution::Found(_)
+            runtime_collab::ActionDirectoryResolution::Found { .. }
         ));
         app.state_mut_for_test()
             .doc
@@ -613,7 +598,7 @@ impl ExtendedDirectory {
         );
         parent.children.push(inspect("extended:a", "A"));
         if extra {
-            parent.actions[0].contract.permission = tilo_actions::PermissionRequirement::Write;
+            parent.actions[0].contract.kind = tilo_actions::ActionKind::Undoable;
             parent.actions.push(
                 ActionSpec::operation(
                     "tail",
@@ -641,14 +626,8 @@ impl Widget for ExtendedDirectory {
     ) -> NodeId {
         t.new_leaf(taffy::Style::default()).unwrap()
     }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
     fn name(&self) -> &'static str {
         "extended-directory"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]
@@ -757,8 +736,7 @@ fn directory_lifecycle_publishes_once_ready_and_refreshes_on_idle() {
         let rows = app.action_directory_page(directory_query("", "declared:0", 8, 8192, 8));
         assert_eq!(rows.rows.len(), 1);
         assert_ne!(rows.revision, revision);
-        let contract: tilo_actions::ActionContract =
-            serde_json::from_str(&rows.rows[0].visibility_contract_json).unwrap();
+        let contract = &rows.rows[0].visibility.as_ref().unwrap().contract;
         assert_eq!(
             contract.confirmation,
             tilo_actions::ConfirmationPolicy::Confirm
@@ -805,7 +783,7 @@ fn directory_lifecycle_publishes_once_ready_and_refreshes_on_idle() {
         assert_eq!(root.rows.len(), 1);
         assert!(matches!(
             app.resolve_action_directory(&root.revision, "declared:0", "inspect"),
-            runtime_collab::ActionDirectoryResolution::Found(_)
+            runtime_collab::ActionDirectoryResolution::Found { .. }
         ));
         let materializations = calls.get();
         app.pump_collab_presence();

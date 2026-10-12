@@ -209,7 +209,7 @@ mod tests {
     use super::*;
     use crate::crypto::Ed25519PublicKey;
     use crate::identity::AttestationId;
-    use crate::role::OpClass;
+    use crate::role::OpKind;
 
     fn op(artifact: ArtifactId, seq: u64) -> SignedOp {
         SignedOp::new_unsigned(
@@ -217,7 +217,7 @@ mod tests {
             artifact,
             Ed25519PublicKey::from_bytes([1; 32]),
             AttestationId::new(),
-            OpClass::Splice,
+            OpKind::Change,
             std::time::SystemTime::UNIX_EPOCH,
             seq,
         )
