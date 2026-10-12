@@ -44,6 +44,10 @@ pub struct MountSpec {
     /// Provider-specific, non-secret configuration.
     pub config: serde_json::Value,
     pub cache_budget: u64,
+    /// Start with background sync and uploads paused (the person paused
+    /// the account); the service sets it when it starts the mount.
+    #[serde(default)]
+    pub paused: bool,
 }
 
 /// A `OneDrive` mount: resolved at sign-in, or still to be resolved.
@@ -149,6 +153,7 @@ pub fn spec_for(account: &accounts::Account) -> Option<MountSpec> {
         provider: provider.into(),
         config,
         cache_budget: DEFAULT_CACHE_BUDGET,
+        paused: false,
     })
 }
 

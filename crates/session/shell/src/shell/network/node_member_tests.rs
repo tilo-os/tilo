@@ -21,7 +21,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use automerge::transaction::Transactable as _;
 use collab_types::{
-    ContentRetention, DocumentFrame, DocumentMutation, Ed25519PublicKey, OpClass, SignedOp,
+    ContentRetention, DocumentFrame, DocumentMutation, Ed25519PublicKey, OpKind, SignedOp,
     document_artifact_id, document_attestation_id, document_channel_id,
 };
 use ed25519_dalek::SigningKey;
@@ -73,13 +73,6 @@ fn until<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(20));
     }
-}
-
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
 }
 
 fn document(title: &str) -> Vec<u8> {
@@ -212,6 +205,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         ShellNetwork::spawn_with(
             tree.clone(),
             &session_dir.join("device-private/keypair.bin"),
+            &session_dir.join("peer-sync"),
             Reach::Loopback,
             move |secret, _| {
                 let key = SigningKey::from_bytes(&secret.to_bytes());
@@ -290,7 +284,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         let channel = document_channel_id(NOTES, &acme.room, record);
         until("the steward to admit the session", || {
             net.tick();
-            channels.pump(&net, Instant::now(), unix_now());
+            channels.pump(&net, Instant::now(), tilo_clock::try_unix_now().unwrap());
             match channels.access(room, channel, Instant::now()) {
                 ChannelAccess::Ready(keys) => Some(keys),
                 ChannelAccess::Waiting => None,
@@ -341,7 +335,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         artifact,
         Ed25519PublicKey::from_bytes(session_cert.device_public_key),
         document_attestation_id(NOTES, &acme.room, "reply"),
-        OpClass::Splice,
+        OpKind::Change,
         SystemTime::now(),
         1,
         metadata,
@@ -370,7 +364,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
     let mut events = Vec::new();
     let seen = until("the reply to reach the browser", || {
         net.tick();
-        channels.pump(&net, Instant::now(), unix_now());
+        channels.pump(&net, Instant::now(), tilo_clock::try_unix_now().unwrap());
         events.extend(ada.drain());
         let index = events.iter().position(|event| {
             matches!(event, PeerEvent::Document(document) if document.route.record == "reply")

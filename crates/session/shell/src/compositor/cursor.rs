@@ -877,6 +877,52 @@ fn downsample_premultiplied(src: &[u8], source_size: u32, size: u32) -> Vec<u8> 
     out
 }
 
+/// Visits every visible cursor pixel that lands inside a 32-bit `width` x
+/// `height` buffer, with the cursor drawn so its hotspot sits at `(px, py)`.
+/// `paint` gets the cursor's premultiplied RGBA and the destination pixel.
+fn for_each_covered_pixel(
+    dst: &mut [u8],
+    pitch: usize,
+    width: usize,
+    height: usize,
+    (px, py): (i32, i32),
+    cursor: &CursorBitmap,
+    mut paint: impl FnMut([u8; 4], &mut [u8; 4]),
+) {
+    let left = px.saturating_sub(i32::try_from(cursor.hotspot.0).unwrap_or(0));
+    let top = py.saturating_sub(i32::try_from(cursor.hotspot.1).unwrap_or(0));
+    let row_bytes = usize::try_from(cursor.width).map_or(usize::MAX, |w| w.saturating_mul(4));
+    for (y, row) in (0_i32..).zip(cursor.rgba.chunks_exact(row_bytes)) {
+        let Some(dy) = usize::try_from(top.saturating_add(y))
+            .ok()
+            .filter(|&dy| dy < height)
+        else {
+            continue;
+        };
+        for (x, source) in (0_i32..).zip(row.chunks_exact(4)) {
+            let Some(dx) = usize::try_from(left.saturating_add(x))
+                .ok()
+                .filter(|&dx| dx < width)
+            else {
+                continue;
+            };
+            let Ok(source) = <[u8; 4]>::try_from(source) else {
+                continue;
+            };
+            let offset = dy
+                .saturating_mul(pitch)
+                .saturating_add(dx.saturating_mul(4));
+            if let Some(Ok(pixel)) = dst
+                .get_mut(offset..offset.saturating_add(4))
+                .map(<&mut [u8; 4]>::try_from)
+                && source[3] != 0
+            {
+                paint(source, pixel);
+            }
+        }
+    }
+}
+
 /// Alpha-composite the shared premultiplied bitmap into an XRGB8888 buffer.
 pub fn composite_xrgb(
     dst: &mut [u8],
@@ -887,42 +933,14 @@ pub fn composite_xrgb(
     py: i32,
     cursor: &CursorBitmap,
 ) {
-    let hotspot_x = i32::try_from(cursor.hotspot.0).unwrap_or(0);
-    let hotspot_y = i32::try_from(cursor.hotspot.1).unwrap_or(0);
-    for y in 0..cursor.height {
-        for x in 0..cursor.width {
-            let dx = px
-                .saturating_sub(hotspot_x)
-                .saturating_add(i32::try_from(x).unwrap_or(i32::MAX));
-            let dy = py
-                .saturating_sub(hotspot_y)
-                .saturating_add(i32::try_from(y).unwrap_or(i32::MAX));
-            let (Ok(dx), Ok(dy)) = (usize::try_from(dx), usize::try_from(dy)) else {
-                continue;
-            };
-            if dx >= width || dy >= height {
-                continue;
-            }
-            let src_offset = y
-                .saturating_mul(cursor.width)
-                .saturating_add(x)
-                .saturating_mul(4);
-            let src_offset = usize::try_from(src_offset).unwrap_or(usize::MAX);
-            let Some([red, green, blue, alpha]) = pixel_at(&cursor.rgba, src_offset) else {
-                continue;
-            };
-            if alpha == 0 {
-                continue;
-            }
-            let dst_offset = dy
-                .saturating_mul(pitch)
-                .saturating_add(dx.saturating_mul(4));
-            let Some(pixel) = dst.get_mut(dst_offset..dst_offset.saturating_add(4)) else {
-                continue;
-            };
-            let Ok([dst_blue, dst_green, dst_red, dst_x]) = <&mut [u8; 4]>::try_from(pixel) else {
-                continue;
-            };
+    for_each_covered_pixel(
+        dst,
+        pitch,
+        width,
+        height,
+        (px, py),
+        cursor,
+        |[red, green, blue, alpha], pixel| {
             let inverse = 255_u8.saturating_sub(alpha);
             let over = |source: u8, under: u8| {
                 u8::try_from(
@@ -933,12 +951,15 @@ pub fn composite_xrgb(
                 .unwrap_or(u8::MAX)
             };
             // XRGB is little-endian B,G,R,X; the source is premultiplied RGBA.
-            *dst_blue = over(blue, *dst_blue);
-            *dst_green = over(green, *dst_green);
-            *dst_red = over(red, *dst_red);
-            *dst_x = 0xff;
-        }
-    }
+            let [dst_blue, dst_green, dst_red, _] = *pixel;
+            *pixel = [
+                over(blue, dst_blue),
+                over(green, dst_green),
+                over(red, dst_red),
+                0xff,
+            ];
+        },
+    );
 }
 
 /// Composite the software cursor into an HDR `XBGR2101010` buffer holding a
@@ -951,46 +972,18 @@ pub fn composite_xbgr2101010(
     pitch: usize,
     width: usize,
     height: usize,
-    (px, py): (i32, i32),
+    at: (i32, i32),
     cursor: &CursorBitmap,
     encoder: &crate::shell::color_pipeline::SdrToPqEncoder,
 ) {
-    let hotspot_x = i32::try_from(cursor.hotspot.0).unwrap_or(0);
-    let hotspot_y = i32::try_from(cursor.hotspot.1).unwrap_or(0);
-    for y in 0..cursor.height {
-        for x in 0..cursor.width {
-            let dx = px
-                .saturating_sub(hotspot_x)
-                .saturating_add(i32::try_from(x).unwrap_or(i32::MAX));
-            let dy = py
-                .saturating_sub(hotspot_y)
-                .saturating_add(i32::try_from(y).unwrap_or(i32::MAX));
-            let (Ok(dx), Ok(dy)) = (usize::try_from(dx), usize::try_from(dy)) else {
-                continue;
-            };
-            if dx >= width || dy >= height {
-                continue;
-            }
-            let src_offset = y
-                .saturating_mul(cursor.width)
-                .saturating_add(x)
-                .saturating_mul(4);
-            let src_offset = usize::try_from(src_offset).unwrap_or(usize::MAX);
-            let Some([red, green, blue, alpha]) = pixel_at(&cursor.rgba, src_offset) else {
-                continue;
-            };
-            if alpha == 0 {
-                continue;
-            }
-            let dst_offset = dy
-                .saturating_mul(pitch)
-                .saturating_add(dx.saturating_mul(4));
-            let Some(pixel) = dst.get_mut(dst_offset..dst_offset.saturating_add(4)) else {
-                continue;
-            };
-            let Ok(word) = <&mut [u8; 4]>::try_from(pixel) else {
-                continue;
-            };
+    for_each_covered_pixel(
+        dst,
+        pitch,
+        width,
+        height,
+        at,
+        cursor,
+        |[red, green, blue, alpha], word| {
             // The bitmap is premultiplied; the encoder wants straight colour.
             let straight = |channel: u8| {
                 u8::try_from(
@@ -1016,8 +1009,8 @@ pub fn composite_xbgr2101010(
                 u16::try_from(mixed).unwrap_or(1023)
             });
             *word = crate::shell::color_pipeline::pack_xbgr2101010(blended).to_le_bytes();
-        }
-    }
+        },
+    );
 }
 
 #[cfg(test)]

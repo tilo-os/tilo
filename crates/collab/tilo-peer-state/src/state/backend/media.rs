@@ -143,7 +143,7 @@ pub(in crate::state) fn legacy_binding(
                 policy,
                 &route.app,
                 &route.record,
-                &document.doc,
+                &*document.doc,
             )
             .map_err(err)?;
             Ok(true)

@@ -11,8 +11,7 @@ use std::time::{Duration, Instant};
 use settings_store::display_identify::{IDENTIFY_MS, IdentifyRequest, display_numbers};
 use settings_store::hardware::DisplayHardwareSnapshot;
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect};
-use vello::peniko::Fill;
+use vello::kurbo::{Affine, Rect};
 
 use ui::i18n::ArgValue;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -150,22 +149,7 @@ impl DisplayIdentify {
         for label in self.labels(now) {
             let side = (label.output.height() * 0.28).clamp(120.0, 260.0);
             let card = Rect::from_center_size(label.output.center(), (side * 1.25, side));
-            let radius = ui::chrome::ChromeRole::Panel.radius(theme, card.height());
-            ui::chrome::shell::panel_shadow(scene, transform, card, radius, theme, 1.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                ui::chrome::shell::panel_ground(theme),
-                None,
-                &RoundedRect::from_rect(card, radius),
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                ui::chrome::shell::panel_border(theme),
-                None,
-                &RoundedRect::from_rect(card, radius),
-            );
+            ui::chrome::shell::paint_panel(scene, transform, card, theme, 1.0);
             let number = label.number.to_string();
             #[allow(
                 clippy::cast_possible_truncation,

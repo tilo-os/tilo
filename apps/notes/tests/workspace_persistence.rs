@@ -3,7 +3,7 @@
 
 use crate::framework_support::{add_note, apply, body, notes, open, surface};
 use notes::PageId;
-use notes::actions::new_page_action;
+use notes::actions::create_page_action;
 
 #[test]
 fn a_reopened_notebook_keeps_its_tree_bodies_and_open_note() {
@@ -13,7 +13,7 @@ fn a_reopened_notebook_keeps_its_tree_bodies_and_open_note() {
     let alpha = PageId::new_v4();
     apply(
         &mut app,
-        &new_page_action(alpha, Some(projects), "a".into(), "Project Alpha"),
+        &create_page_action(alpha, Some(projects), "Project Alpha"),
     );
     open(&mut app, alpha);
     assert_eq!(
@@ -22,7 +22,7 @@ fn a_reopened_notebook_keeps_its_tree_bodies_and_open_note() {
     );
 
     let mut app = app.reopen().unwrap();
-    let pages = app.state().pages().to_vec();
+    let pages = crate::framework_support::shown(&app).pages().to_vec();
     assert_eq!(pages.len(), 3);
     let title = |id| {
         pages
@@ -40,7 +40,7 @@ fn a_reopened_notebook_keeps_its_tree_bodies_and_open_note() {
         Some(projects)
     );
     assert_eq!(
-        app.state().children_of(None)[0].id,
+        crate::framework_support::shown(&app).children_of(None)[0].id,
         inbox,
         "sibling order holds"
     );

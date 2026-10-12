@@ -25,11 +25,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -54,6 +50,10 @@ pub mod markdown;
 pub mod ods;
 #[cfg(feature = "odt")]
 pub mod odt;
+#[cfg(any(feature = "docx", feature = "odt"))]
+mod office_meta;
+#[cfg(any(feature = "docx", feature = "odt"))]
+mod para_styles;
 #[cfg(feature = "office")]
 pub mod preserve;
 #[cfg(any(feature = "html", feature = "docx", feature = "odt"))]
@@ -67,7 +67,8 @@ pub mod sheet_common;
 #[cfg(feature = "xlsx")]
 pub mod xlsx;
 
-#[cfg(all(test, feature = "all"))]
+#[cfg(test)]
+#[cfg(feature = "all")]
 mod bulk_equivalence;
 
 #[cfg(feature = "docx")]
@@ -128,27 +129,33 @@ pub fn resolve_general_ref(reference: &quick_xml::events::BytesRef<'_>) -> Optio
     }
 }
 
-/// The spreadsheet codec for a file extension (`xlsx`/`ods`, case-insensitive) — separate
-/// from [`builtin_registry`] since spreadsheets speak [`SheetProvider`], not [`FormatProvider`].
-/// Only the formats this build enables resolve.
-#[cfg(any(feature = "xlsx", feature = "ods"))]
-pub fn sheet_provider_for_ext(ext: &str) -> Option<Box<dyn SheetProvider>> {
-    match ext.to_ascii_lowercase().as_str() {
-        #[cfg(feature = "xlsx")]
-        "xlsx" => Some(Box::new(XlsxCodec)),
-        #[cfg(feature = "ods")]
-        "ods" => Some(Box::new(OdsCodec)),
-        _ => None,
+#[cfg(any(
+    feature = "markdown",
+    feature = "html",
+    feature = "docx",
+    feature = "odt"
+))]
+/// The canonical `fontFamily` mark for a named font: `"mono"`, `"serif"` or `"sans"`. Documents
+/// carry the font's class, not a face the reader may not have installed, so every importer
+/// classifies a face the same way.
+pub(crate) fn generic_font_family(name: &str) -> &'static str {
+    let n = name.to_ascii_lowercase();
+    if n.contains("mono") || n.contains("courier") || n.contains("consol") {
+        "mono"
+    } else if (n.contains("serif") && !n.contains("sans"))
+        || n.contains("times")
+        || n.contains("georgia")
+        || n.contains("garamond")
+        || n.contains("roman")
+    {
+        "serif"
+    } else {
+        "sans"
     }
 }
 
 /// Spreadsheet formats the platform opens as a workbook resource, whatever this build compiles.
 pub const SHEET_EXTENSIONS: &[&str] = &["xlsx", "ods"];
-
-/// Whether `ext` names a spreadsheet format the platform opens as a workbook resource.
-pub fn is_supported_sheet_ext(ext: &str) -> bool {
-    SHEET_EXTENSIONS.iter().any(|e| e.eq_ignore_ascii_case(ext))
-}
 
 /// Document formats the platform opens as an editable rich-text resource — the OS source of
 /// truth for "this file is an editable document", independent of which codecs a given binary
@@ -201,7 +208,8 @@ pub fn is_supported_ext(ext: &str) -> bool {
         .any(|e| e.eq_ignore_ascii_case(ext))
 }
 
-#[cfg(all(test, feature = "all"))]
+#[cfg(test)]
+#[cfg(feature = "all")]
 mod tests {
     use super::*;
     use crate::FormatProvider;

@@ -2,7 +2,7 @@ use super::*;
 use crate::widget::{AppModel, ModelPath};
 use crate::{
     State,
-    headless::Driver,
+    headless::FrameHarness,
     widget::{Button, Column, Widget},
 };
 use crate::{text_render::TextRenderer, theme::Theme};
@@ -221,7 +221,7 @@ fn every_input_enters_the_same_history_canvas_without_live_effects() {
         state.doc.put(ROOT, "body", "second").unwrap();
         state.commit_action(None, None);
         let before = state.doc.get_heads();
-        let mut driver = Driver::from_managed_root(
+        let mut driver = FrameHarness::from_managed_root(
             state,
             ManagedRoot::new(Box::new(root), registration()),
             (900, 650),
@@ -480,7 +480,7 @@ fn managed_registration_admits_only_real_owners_and_scopes() {
             })
             .collect();
         let registration = HistoryRegistration::new(&MULTI, sources).unwrap();
-        let mut driver = Driver::from_managed_root(
+        let mut driver = FrameHarness::from_managed_root(
             State::new(),
             ManagedRoot::new(Box::new(Column::new()), registration),
             (900, 650),
@@ -525,7 +525,7 @@ fn managed_registration_admits_only_real_owners_and_scopes() {
                 Box::new(tile)
             };
             assert!(
-                Driver::from_managed_root(
+                FrameHarness::from_managed_root(
                     State::new(),
                     ManagedRoot::new(root, registration()),
                     (900, 650)
@@ -538,7 +538,7 @@ fn managed_registration_admits_only_real_owners_and_scopes() {
     {
         for pending in [false, true] {
             for layout in [false, true] {
-                let result = Driver::from_managed_root(
+                let result = FrameHarness::from_managed_root(
                     State::new(),
                     ManagedRoot::new(
                         lazy_owner_root(Rc::new(Cell::new(true)), pending, layout),
@@ -561,7 +561,7 @@ fn managed_registration_admits_only_real_owners_and_scopes() {
                 let mut state = State::new();
                 state.doc.put(ROOT, "body", "outer document").unwrap();
                 state.commit_action(None, None);
-                let mut driver = Driver::from_managed_root(
+                let mut driver = FrameHarness::from_managed_root(
                     state,
                     ManagedRoot::new(
                         lazy_owner_root(mount.clone(), pending, layout),
@@ -667,7 +667,7 @@ fn managed_registration_admits_only_real_owners_and_scopes() {
     }
 }
 
-fn versioned_driver(viewport: (u32, u32)) -> (Driver, String, Vec<automerge::ChangeHash>) {
+fn versioned_driver(viewport: (u32, u32)) -> (FrameHarness, String, Vec<automerge::ChangeHash>) {
     let mut state = State::new();
     state.doc.put(ROOT, "body", "first").unwrap();
     state.commit_action(None, None);
@@ -679,7 +679,7 @@ fn versioned_driver(viewport: (u32, u32)) -> (Driver, String, Vec<automerge::Cha
     let root = Column::new().push(Box::new(
         Button::new("live-effect", "Send").on_click(crate::testing::record_click("effect")),
     ));
-    let driver = Driver::from_managed_root(
+    let driver = FrameHarness::from_managed_root(
         state,
         ManagedRoot::new(Box::new(root), registration()),
         viewport,
@@ -695,7 +695,7 @@ fn versioned_driver(viewport: (u32, u32)) -> (Driver, String, Vec<automerge::Cha
     )
 }
 
-fn assert_history_frame_idle(driver: &mut Driver, context: &str) {
+fn assert_history_frame_idle(driver: &mut FrameHarness, context: &str) {
     assert!(
         !driver.frame_output().needs_redraw,
         "{context}: visible History branch stayed dirty after draw"
@@ -765,7 +765,7 @@ fn managed_history_visible_branches_drain_and_retained_modes_return_current() {
         }],
     )
     .unwrap();
-    let mut unavailable = Driver::from_managed_root(
+    let mut unavailable = FrameHarness::from_managed_root(
         State::new(),
         ManagedRoot::new(Box::new(Column::new()), registration),
         (900, 650),
@@ -826,7 +826,7 @@ fn history_preserves_pending_work_and_restores_exactly_one_focus() {
                 crate::widget::history_group::hex16(&id)
             );
             let root = Column::new().push(Box::new(TextInput::local().with_id("draft-editor")));
-            let mut driver = Driver::from_managed_root(
+            let mut driver = FrameHarness::from_managed_root(
                 state,
                 ManagedRoot::new(Box::new(root), registration()),
                 (900, 650),
@@ -964,7 +964,7 @@ fn history_preserves_pending_work_and_restores_exactly_one_focus() {
             let root = Column::new()
                 .push(Box::new(TextInput::local().with_id("first-editor")))
                 .push(Box::new(TextInput::local().with_id("second-editor")));
-            let mut driver = Driver::from_managed_root(
+            let mut driver = FrameHarness::from_managed_root(
                 State::new(),
                 ManagedRoot::new(Box::new(root), registration()),
                 (900, 650),
@@ -1120,7 +1120,7 @@ fn the_history_timeline_explains_scopes_and_announces_live_updates() {
                 "external-live-marker",
                 "Retained live session",
             )));
-            let mut driver = Driver::from_managed_root(
+            let mut driver = FrameHarness::from_managed_root(
                 State::new(),
                 ManagedRoot::new(Box::new(live), registration),
                 viewport,
@@ -1441,7 +1441,7 @@ fn checked_files_activity_keeps_the_wide_live_surface() {
         )))),
         source,
     };
-    let mut driver = Driver::from_managed_root(
+    let mut driver = FrameHarness::from_managed_root(
         State::new(),
         ManagedRoot::new(Box::new(live), registration),
         (900, 650),
@@ -1577,7 +1577,7 @@ fn closed_history_strip_insets_its_button_by_the_theme_spacing() {
 /// History, never the standalone chrome the app does not have.
 #[test]
 fn header_history_control_opens_the_registered_history() {
-    fn history_toggled(driver: &Driver) -> Vec<Option<accesskit::Toggled>> {
+    fn history_toggled(driver: &FrameHarness) -> Vec<Option<accesskit::Toggled>> {
         driver
             .a11y_nodes()
             .into_iter()
@@ -1596,7 +1596,7 @@ fn header_history_control_opens_the_registered_history() {
     let shell = crate::widget::NavShell::new()
         .content_header("Notes", vec![])
         .content(Box::new(crate::widget::Text::new("Body")));
-    let mut driver = Driver::from_managed_root(
+    let mut driver = FrameHarness::from_managed_root(
         state,
         ManagedRoot::new(Box::new(shell), registration()),
         (1000, 700),
@@ -1697,7 +1697,7 @@ fn opening_history_lays_the_shell_out_at_its_narrower_width() {
         .overview_header("All snippets", overview)
         .content_header("Multi-stage build", content)
         .content(Box::new(crate::widget::Text::new("Body")));
-    let mut driver = Driver::from_managed_root(
+    let mut driver = FrameHarness::from_managed_root(
         state,
         ManagedRoot::new(Box::new(shell), registration()),
         (1280, 800),

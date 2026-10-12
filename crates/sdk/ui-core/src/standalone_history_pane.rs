@@ -281,32 +281,26 @@ impl Widget for StandaloneHistoryPane {
             }
             self.child_nodes = vec![header, timeline, summary, restore];
         }
-        let node = taffy.parent_node(
-            Style {
-                flex_direction: taffy::FlexDirection::Column,
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                gap: Size {
-                    width: taffy::LengthPercentage::length(theme.gap_standard),
-                    height: taffy::LengthPercentage::length(theme.gap_standard),
-                },
-                ..Default::default()
+        let style = Style {
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
             },
-            &self.child_nodes,
-        );
+            gap: Size {
+                width: taffy::LengthPercentage::length(theme.gap_standard),
+                height: taffy::LengthPercentage::length(theme.gap_standard),
+            },
+            ..Default::default()
+        };
+        let node = taffy.parent_node(style, &self.child_nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let origin = origin + (f64::from(layout.location.x), f64::from(layout.location.y));
-        self.rect = Rect::from_origin_size(
-            origin,
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        let origin = self.rect.origin();
         let nodes = self.child_nodes.clone();
         for (child, node) in self.children_mut().into_iter().zip(nodes) {
             child.apply_layout(taffy, node, origin);
@@ -376,7 +370,7 @@ mod tests {
         HistoryEntry {
             id: HistoryEntryId([id; 16]),
             author: HistoryAuthor::new("Alice", 120.0, "alice"),
-            op_class: collab_types::OpClass::Splice,
+            entry_kind: crate::widget::EntryKind::Text,
             artifact_kind: collab_types::ArtifactKind::Note,
             timestamp: crate::time::SystemTime::UNIX_EPOCH,
             summary: format!("Change {id}"),

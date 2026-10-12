@@ -142,6 +142,36 @@ pub fn insets(top: f32, right: f32, bottom: f32, left: f32) -> taffy::Rect<Lengt
     }
 }
 
+thread_local! {
+    static LAYOUT_CLIP: std::cell::Cell<Option<vello::kurbo::Rect>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The window area content is seen through while it is being placed: the
+/// viewport of the nearest enclosing scroll view (intersected with any
+/// outer one), or `None` when nothing clips it. A collection reads it in
+/// [`Widget::apply_layout`] to keep only the rows near what is shown laid
+/// out; drawing culls against `PresenceCtx::should_cull` instead.
+#[must_use]
+pub fn layout_clip() -> Option<vello::kurbo::Rect> {
+    LAYOUT_CLIP.with(std::cell::Cell::get)
+}
+
+/// Run `place` (a scroll view placing its content) with `clip` as the
+/// [`layout_clip`], narrowed by any clip already in effect.
+pub fn with_layout_clip<T>(clip: vello::kurbo::Rect, place: impl FnOnce() -> T) -> T {
+    struct Restore(Option<vello::kurbo::Rect>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LAYOUT_CLIP.with(|cell| cell.set(self.0));
+        }
+    }
+    let outer = layout_clip();
+    let clip = outer.map_or(clip, |outer| outer.intersect(clip));
+    let _restore = Restore(LAYOUT_CLIP.with(|cell| cell.replace(Some(clip))));
+    place()
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum WidgetLayoutError {
     #[error(transparent)]
@@ -269,10 +299,10 @@ pub(super) unsafe fn compute_widget_layout_depth(
         }
         for &node in nodes.keys() {
             // SAFETY: same contract as measurement; no topology mutation is
-            // permitted by adjust_layout_with_measure.
+            // permitted by adjust_layout_style.
             changed |= unsafe {
                 layout_bound_node(bindings, nodes, node, |widget| {
-                    widget.adjust_layout_with_measure(taffy, node, text)
+                    widget.adjust_layout_style(taffy, node, text)
                 })
             }
             .unwrap_or(false);
@@ -577,11 +607,14 @@ impl CompositionFocus {
         bindings: &BoundNodeMap,
         allowed: Option<&[NodeId]>,
     ) -> Option<NodeId> {
+        // Asked of every node: look the order up, do not scan it each time.
+        let allowed: Option<std::collections::HashSet<NodeId>> =
+            allowed.map(|order| order.iter().copied().collect());
         let focused: Vec<_> = nodes
             .keys()
             .copied()
             .filter(|&node| {
-                allowed.is_none_or(|order| order.contains(&node))
+                allowed.as_ref().is_none_or(|order| order.contains(&node))
                     && unsafe {
                         crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
                             widget.is_focusable() && widget.is_enabled() && widget.is_focused()
@@ -763,19 +796,6 @@ impl Widget for AnonymousFocusProbe {
         nodes.insert(node, self as *mut dyn Widget);
         node
     }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {}
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut TextRenderer,
-        _: &crate::Theme,
-        _: &crate::PresenceCtx,
-    ) {
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
-    }
     fn is_focusable(&self) -> bool {
         true
     }
@@ -804,7 +824,7 @@ impl crate::undo::UndoPoints for AnonymousFocusProbe {
 mod tests {
     use super::*;
     use crate::widget::TaffyTreeExt;
-    use vello::kurbo::{Affine, Point, Rect};
+    use vello::kurbo::{Point, Rect};
 
     #[derive(Default)]
     struct UnsettledStyles {
@@ -837,7 +857,12 @@ mod tests {
                 height: 20.0,
             }
         }
-        fn adjust_layout_style(&mut self, tree: &mut TaffyTree<()>, node: NodeId) -> bool {
+        fn adjust_layout_style(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            node: NodeId,
+            _text: &mut crate::text_render::TextRenderer,
+        ) -> bool {
             self.adjustments = self.adjustments.checked_add(1).unwrap();
             let mut style = tree.style(node).unwrap().clone();
             style.size.width = taffy::Dimension::length(if self.adjustments.is_multiple_of(2) {
@@ -850,18 +875,6 @@ mod tests {
         }
         fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {
             panic!("unsettled geometry must not be applied")
-        }
-        fn draw(
-            &mut self,
-            _: &mut vello::Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &crate::Theme,
-            _: &crate::PresenceCtx,
-        ) {
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
     }
 
@@ -1461,6 +1474,36 @@ pub(super) fn allocation_or_content_size(
             layout.size.height.max(layout.content_size.height)
         },
     }
+}
+
+/// A linear container's `(rect, paint_rect)` at `origin`: the rect spans
+/// [`allocation_or_content_size`], the paint rect the laid-out box grown to
+/// fit its content.
+pub(super) fn flow_rects(
+    tree: &TaffyTree<()>,
+    node: NodeId,
+    origin: vello::kurbo::Point,
+) -> (vello::kurbo::Rect, vello::kurbo::Rect) {
+    let layout = tree.layout(node).copied().unwrap_or_default();
+    let allocated = allocation_or_content_size(tree, node, &layout);
+    let location = vello::kurbo::Point::new(
+        origin.x + f64::from(layout.location.x),
+        origin.y + f64::from(layout.location.y),
+    );
+    let rect = vello::kurbo::Rect::new(
+        location.x,
+        location.y,
+        location.x + f64::from(allocated.width),
+        location.y + f64::from(allocated.height),
+    );
+    let paint_rect = vello::kurbo::Rect::from_origin_size(
+        location,
+        (
+            f64::from(layout.size.width.max(layout.content_size.width)),
+            f64::from(layout.size.height.max(layout.content_size.height)),
+        ),
+    );
+    (rect, paint_rect)
 }
 
 /// Lay `widget` out on its own at `rect`, in a layout tree of its own, with

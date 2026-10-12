@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from . import core
+from . import core, records
 from .vm import TiloVm, VmError, wait_until
 
 
@@ -17,9 +17,18 @@ class Context:
         self.facts: dict = {}
         self.metrics: dict = {}
         self.current: core.Result | None = None
+        # Performance samples for run.py --records (acceptance/records.py).
+        self.samples: list[dict] = []
         (out / "shots").mkdir(parents=True, exist_ok=True)
 
     # -- evidence ------------------------------------------------------------
+
+    def record(self, kpi: str, unit: str, values, **meta) -> None:
+        """Keep `values` as samples of the performance KPI `kpi`, measured by the
+        running check; a check records before it judges, so a miss is recorded too."""
+        item = records.sample(kpi, unit, values, self.current.id if self.current else None, meta)
+        if item is not None:
+            self.samples.append(item)
 
     def shot(self, name: str) -> Path:
         path = self.out / "shots" / f"{name}.png"
@@ -62,11 +71,11 @@ class Context:
     # -- a known desktop between checks ---------------------------------------
 
     def close_overlays(self) -> None:
+        """Escape until no modal, overlay, prompt or dialog is open (`core.open_surfaces`):
+        overlays and search, and also the Invite composer, portal sheets and the rest the
+        state dump reports outside `overlays`."""
         for _ in range(3):
-            st = self.vm.state()
-            open_ = [k for k, v in core.overlays(st).items() if v]
-            palette = (st["chrome"].get("palette") or {}).get("visible")
-            if not open_ and not palette and not st["chrome"]["window_switcher"].get("open"):
+            if not core.open_surfaces(self.vm.state()):
                 return
             self.vm.key("Escape")
             time.sleep(0.6)

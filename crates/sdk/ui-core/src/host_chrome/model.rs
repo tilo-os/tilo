@@ -91,10 +91,7 @@ impl RecentChange {
         Self {
             entry: entry.id,
             author: entry.author.name.clone(),
-            label: entry.context.as_ref().map_or_else(
-                || entry.summary.clone(),
-                |context| context.action_label.clone(),
-            ),
+            label: entry.summary.clone(),
             at: entry.timestamp,
         }
     }

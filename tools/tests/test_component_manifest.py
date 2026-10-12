@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import importlib.util
 import io
 import os
@@ -6,6 +7,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -46,6 +48,12 @@ class ComponentManifestPolicyTests(unittest.TestCase):
         text = path.read_text(encoding="utf-8")
         self.assertIn(old, text)
         path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+    def test_shell_only_recipe_is_refused_before_deployment(self):
+        root = self.fixture()
+        entry = '  { from = "@manifest/usr/libexec/tilo-session", to = "/usr/libexec/tilo-session", mode = "0755" },'
+        self.edit(root / "os/components.toml", entry + "\n", "")
+        self.assertIn("shell must ship its matching mandatory PAM session wrapper", "\n".join(check.audit(root)))
 
     def test_component_manifest_is_the_only_source_of_builder_copies_and_layers(self):
         with self.subTest(phase='repository passes'):
@@ -91,6 +99,32 @@ class ComponentManifestPolicyTests(unittest.TestCase):
             self.assertIn("needs `dev_build`", "\n".join(check.audit(root)))
             self.edit(manifest, 'dev_swap = "reboot"\n', 'dev_swap = "hot"\n')
             self.assertIn("`dev_swap` must be one of reboot", "\n".join(check.audit(root)))
+        with self.subTest(phase='the assembled runtime tree must name each direct tree it installs'):
+            root = self.fixture()
+            containerfile = root / "os/Containerfile"
+            containerfile.write_text(containerfile.read_text().replace(
+                "/image/usr/share/tilo/font-catalogs", "/image/elsewhere"))
+            self.assertIn("direct file /usr/share/tilo/font-catalogs/ (component 'apps+runtime') is never copied",
+                          "\n".join(check.audit(root)))
+        with self.subTest(phase='the assembled runtime tree is copied whole'):
+            root = self.fixture()
+            self.edit(root / "os/Containerfile", "COPY --from=runtime-image-payload /image/usr/ /usr/",
+                      "COPY --from=runtime-image-payload /image/usr/lib/ /usr/lib/")
+            self.assertIn("copy the assembled tree whole", "\n".join(check.audit(root)))
+        with self.subTest(phase='the seeded app store is copied whole from the payload store'):
+            root = self.fixture()
+            self.edit(root / "os/Containerfile",
+                      "COPY --from=app-store /out/usr/share/tilo-apps/ /usr/share/tilo-apps/",
+                      "COPY --from=app-store /out/usr/share/tilo-apps/pkgs/ /usr/share/tilo-apps/pkgs/")
+            found = "\n".join(check.audit(root))
+            self.assertIn("copy the seeded store whole", found)
+            self.assertIn("direct file /usr/share/tilo-apps/ (component 'apps+runtime') is never copied", found)
+            root = self.fixture()
+            self.edit(root / "os/Containerfile",
+                      "--mount=type=bind,from=native-builder-payload,source=/usr/share/tilo-apps,"
+                      "target=/run/tilo-apps-built,ro",
+                      "--mount=type=bind,from=builder,source=/usr/share/tilo-apps,target=/run/tilo-apps-built,ro")
+            self.assertIn("copy the seeded store whole", "\n".join(check.audit(root)))
         with self.subTest(phase='unapplied layer fails'):
             root = self.fixture()
             self.edit(root / "os/Containerfile", "COPY --from=component-files /image/windows/ /\n", "")
@@ -132,6 +166,85 @@ class InstallerTests(unittest.TestCase):
                     self.assertEqual(notice.read_bytes(), (REPO / license_source).read_bytes())
                     self.assertEqual(notice.stat().st_mode & 0o777, 0o644)
                     self.assertTrue((layer / "desktop-binaries/usr/bin/tilo-speech-worker").is_file())
+
+    def test_shell_layer_requires_and_installs_its_exact_startup_wrapper(self):
+        copies = [pair
+                  for instruction in check.instructions(REPO / "os/Containerfile")
+                  if instruction.stage == check.INSTALL_STAGE
+                  and instruction.words[0].upper() == "COPY"
+                  for pair in check.copy_pairs(instruction)[1]
+                  if pair[1].startswith("/tilo-components/")]
+        for include_wrapper in (True, False):
+            with self.subTest(staged_wrapper=include_wrapper), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                for source, destination in copies:
+                    if not include_wrapper and source == "os/usr/libexec/tilo-session":
+                        continue
+                    target = root / destination.lstrip("/")
+                    if destination.endswith("/"):
+                        target /= Path(source).name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(REPO / source, target)
+                out = self.build_outputs(root)
+                layer = root / "layer"
+                with contextlib.redirect_stderr(io.StringIO()):
+                    status = self.run_installer(
+                        "--manifest", str(root / "tilo-components/components.toml"),
+                        "--from", str(out), "--dest", str(layer), "shell")
+                self.assertEqual(status, 0 if include_wrapper else 1)
+                if include_wrapper:
+                    wrapper = layer / "usr/libexec/tilo-session"
+                    self.assertEqual(wrapper.read_bytes(), (REPO / "os/usr/libexec/tilo-session").read_bytes())
+                    self.assertEqual(wrapper.stat().st_mode & 0o777, 0o755)
+                    self.assertTrue((layer / "usr/bin/shell").is_file())
+
+    def test_user_identity_bootstrap_installs_verified_native_asset_and_helpers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest_root = root / "os"
+            shutil.copytree(REPO / "os/usr/libexec", manifest_root / "usr/libexec")
+            (manifest_root / "dev").mkdir()
+            shutil.copyfile(REPO / "os/dev/hardware_profile.py", manifest_root / "dev/hardware_profile.py")
+            (manifest_root / "external-assets/cache").mkdir(parents=True)
+            header = bytearray(20)
+            header[:6] = b"\x7fELF\x02\x01"
+            header[18:20] = (62).to_bytes(2, "little")
+            payload = bytes(header) + b"controlled native verifier fixture"
+            asset = manifest_root / "external-assets/cache/cosign-v2.5.2-linux-amd64"
+            asset.write_bytes(payload)
+            pins = manifest_root / "external-assets/github-assets.tsv"
+            pins.write_text(f"{hashlib.sha256(payload).hexdigest()}\t{asset.name}\thttps://fixture.invalid/pinned\n")
+            shutil.copyfile(REPO / "os/components.toml", manifest_root / "components.toml")
+            entries = installer.load_manifest(manifest_root / "components.toml").component("user-identity").files
+            out = self.build_outputs(root)
+            dest = root / "layer"
+            with mock.patch.object(installer.platform, "machine", return_value="x86_64"), mock.patch.dict(os.environ, {}, clear=True):
+                installer.install(entries, [out], None, dest, False, lambda _: None)
+                self.assertEqual((dest / "usr/libexec/tilo-cosign").read_bytes(), payload)
+                self.assertEqual((dest / "usr/libexec/tilo-cosign").stat().st_mode & 0o777, 0o755)
+                for name in ("tilo-verified-update", "tilo-image-trust-staged", "tilo-board-successor.py"):
+                    self.assertEqual((dest / "usr/libexec" / name).read_bytes(), (REPO / "os/usr/libexec" / name).read_bytes())
+                original_copy = installer.shutil.copy2
+                def corrupt_copy(source, destination, **kwargs):
+                    result = original_copy(source, destination, **kwargs)
+                    if Path(source) == asset:
+                        Path(destination).write_bytes(payload + b"changed during copy")
+                    return result
+                with mock.patch.object(installer.shutil, "copy2", side_effect=corrupt_copy):
+                    with self.assertRaisesRegex(installer.ManifestError, "checksum"):
+                        installer.install(entries, [out], None, root / "raced", False, lambda _: None)
+                self.assertFalse((root / "raced/usr/libexec/tilo-cosign").exists())
+                asset.write_bytes(payload + b"corrupt")
+                with self.assertRaisesRegex(installer.ManifestError, "checksum"):
+                    installer.install(entries, [out], None, root / "refused", False, lambda _: None)
+                asset.write_bytes(payload)
+                with mock.patch.object(installer.platform, "machine", return_value="aarch64"):
+                    with self.assertRaisesRegex(installer.ManifestError, "pin"):
+                        installer.native_cosign(manifest_root)
+                asset.unlink()
+                asset.symlink_to(dest / "usr/libexec/tilo-cosign")
+                with self.assertRaisesRegex(installer.ManifestError, "regular"):
+                    installer.native_cosign(manifest_root)
 
     def build_outputs(self, root: Path) -> Path:
         out = root / "out"

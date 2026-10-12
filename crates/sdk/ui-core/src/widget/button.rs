@@ -1,4 +1,5 @@
 use crate::i18n;
+use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
 use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
@@ -37,7 +38,8 @@ pub struct Button {
     compact_presentation: Option<(String, Option<String>, Option<String>)>,
     rect: Rect,
     is_hovered: bool,
-    is_pressed: bool,
+    /// The press this button took, carried to a rebuilt button in its place.
+    press: crate::pointer_replay::HeldPress,
     is_focused: bool,
     /// Focus came from pressing the button: the pointer already shows where
     /// the person is, so the focus ring is kept for keyboard focus.
@@ -83,6 +85,9 @@ pub struct Button {
     enabled: bool,
     /// Where `enabled` comes from, when the app keeps it in a state.
     enabled_binding: Option<crate::widget::binding::BoxedBinding<bool>>,
+    /// The page's encouraged action: a focus reset lands here, so Enter
+    /// activates it.
+    default_focus: bool,
     /// Holds the last emitted body/border/label primitives at *logical*
     /// coordinates; the App's transform is reapplied on `Scene::append`.
     cached: vello::Scene,
@@ -144,7 +149,7 @@ impl Button {
             compact_presentation: None,
             rect: Rect::ZERO,
             is_hovered: false,
-            is_pressed: false,
+            press: crate::pointer_replay::HeldPress::default(),
             is_focused: false,
             pressed_into_focus: false,
             icon: None,
@@ -155,6 +160,7 @@ impl Button {
             measured_width: None,
             control_size: ControlSize::Regular,
             metrics: FaceMetrics::stock(ControlSize::Regular),
+            default_focus: false,
             on_click: None,
             action: None,
             native_resource: None,
@@ -245,10 +251,9 @@ impl Button {
         } else {
             self.label.clone()
         };
-        let mut spec =
+        let spec =
             tilo_actions::ActionSpec::operation("invoke", label.clone(), kind, TYPE_ID, &self.id)
                 .expect("a control id is always JSON serializable");
-        spec.contract.discovery = tilo_actions::DiscoveryScope::Launchable;
         let resource =
             tilo_actions::Resource::new(resource_id, "tilo.control", label).with_action(spec);
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "invoke")
@@ -414,6 +419,15 @@ impl Button {
         let (enabled, binding) = super::binding::local(state);
         self.enabled = enabled;
         self.enabled_binding = Some(binding);
+        self
+    }
+
+    /// Mark this button as its page's encouraged action: when the page is
+    /// rebuilt with a focus reset, keyboard focus starts here, so Enter
+    /// activates it.
+    #[must_use]
+    pub fn with_default_focus(mut self) -> Self {
+        self.default_focus = true;
         self
     }
 
@@ -921,7 +935,7 @@ impl FaceContent<'_> {
         // elides it over shaping round-off.
         let label =
             ctx.text
-                .elide_to_width_style(self.label, px_f32(label_room.max(1.0) + 0.5), style);
+                .elide_to_width_style(self.label, f32_of_f64(label_room.max(1.0) + 0.5), style);
         let (label_w, label_h) = ctx.text.measure_style(&label, None, style);
         let hint_w = hint.map_or(0.0, |(_, w)| metrics.hint_gap + w);
         let cluster = lead + f64::from(label_w) + hint_w;
@@ -1219,15 +1233,6 @@ impl<'a> ButtonFace<'a> {
 const FOCUS_RING_WIDTH: f64 = 2.0;
 const REST_BORDER_WIDTH: f64 = 1.0;
 
-/// `measure` works in taffy's `f32`; the painters work in kurbo's `f64`.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "logical pixel counts far below f32 precision"
-)]
-fn px_f32(value: f64) -> f32 {
-    value as f32
-}
-
 /// Resolve a label key for painting, measuring or speaking. An empty key is
 /// an icon-only face and stays empty: routed through `i18n!` it would come
 /// back as the pseudo-locale's `⟦⟧` markers — a visible bracket pair beside
@@ -1303,7 +1308,7 @@ impl Button {
     /// captured in `build_layout`.
     fn intrinsic_width(&self, text: &mut TextRenderer) -> f32 {
         let (label, hint) = self.content();
-        px_f32(
+        f32_of_f64(
             FaceContent {
                 flush: self.role.flush() && !label.is_empty(),
                 icon: self.icon,
@@ -1329,6 +1334,22 @@ impl Button {
 }
 
 impl Button {
+    fn pin_measured_width(&self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Some(width) = self.measured_width.filter(|_| !self.fill_width) else {
+            return false;
+        };
+        let Ok(style) = taffy.style(node) else {
+            return false;
+        };
+        let width = Dimension::length(width);
+        if style.size.width == width {
+            return false;
+        }
+        let mut style = style.clone();
+        style.size.width = width;
+        taffy.set_style(node, style).is_ok()
+    }
+
     /// Run the native handler for a `tilo.ui.control.invoke` addressed to
     /// this button. `Ok(false)` when the operation is not this button's.
     fn invoke_native_control(
@@ -1400,8 +1421,8 @@ impl Widget for Button {
             self.dirty = true;
             self.metrics = metrics;
         }
-        let height = px_f32(self.face_height());
-        let node = taffy.leaf_node(Style {
+        let height = f32_of_f64(self.face_height());
+        let style = Style {
             // An intrinsic button never shrinks below its label: a parent
             // with room shows it whole, and only a parent without room
             // (capped by `max_size`) makes the painter elide it.
@@ -1423,9 +1444,8 @@ impl Widget for Button {
                 height: Dimension::length(height),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -1442,30 +1462,16 @@ impl Widget for Button {
         }
         Size {
             width: known.width.unwrap_or(intrinsic),
-            height: known.height.unwrap_or_else(|| px_f32(self.face_height())),
+            height: known
+                .height
+                .unwrap_or_else(|| f32_of_f64(self.face_height())),
         }
-    }
-
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
-        let Some(width) = self.measured_width.filter(|_| !self.fill_width) else {
-            return false;
-        };
-        let Ok(style) = taffy.style(node) else {
-            return false;
-        };
-        let width = Dimension::length(width);
-        if style.size.width == width {
-            return false;
-        }
-        let mut style = style.clone();
-        style.size.width = width;
-        taffy.set_style(node, style).is_ok()
     }
 
     /// An intrinsic button's width is its measured content. Taffy only asks
     /// `measure` for an axis it cannot resolve, so the label is measured
     /// here as well and the width pinned when the solver has not done so.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
@@ -1477,17 +1483,11 @@ impl Widget for Button {
         if self.measured_width.is_none() {
             self.measured_width = Some(self.intrinsic_width(text));
         }
-        self.adjust_layout_style(taffy, node)
+        self.pin_measured_width(taffy, node)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         // Bitwise: this asks whether the cached size is stale at all, not
         // whether it drifted by more than some tolerance.
         let size_changed = self.rect.width().to_bits() != self.cache_rect.width().to_bits()
@@ -1503,12 +1503,12 @@ impl Widget for Button {
         out_transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        presence: &crate::presence::PresenceCtx,
     ) {
         self.observe_i18n_revision();
         let current_state = (
             self.is_hovered,
-            self.is_pressed,
+            self.press.is_held(),
             self.focus_visible(),
             self.effectively_enabled(),
         );
@@ -1527,6 +1527,13 @@ impl Widget for Button {
             let dy = self.rect.y0 - self.cache_rect.y0;
             let inner = out_transform.pre_translate(Vec2::new(dx, dy));
             self.append_cached(out_scene, inner);
+            crate::widget::draw_gate_and_peer_focus(
+                self,
+                out_scene,
+                out_transform,
+                theme,
+                presence,
+            );
             return;
         }
         // cache_rect tracks *where* the cache was emitted so subsequent
@@ -1547,7 +1554,7 @@ impl Widget for Button {
             on,
             interact: ButtonInteract {
                 hovered: self.is_hovered,
-                pressed: self.is_pressed,
+                pressed: self.press.is_held(),
                 focused: self.focus_visible(),
                 disabled: !enabled,
             },
@@ -1568,6 +1575,7 @@ impl Widget for Button {
         ));
         self.cache_rect = self.rect;
         self.append_cached(out_scene, out_transform);
+        crate::widget::draw_gate_and_peer_focus(self, out_scene, out_transform, theme, presence);
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1575,7 +1583,7 @@ impl Widget for Button {
             || self.i18n_revision != crate::i18n::I18nManager::revision()
             || (
                 self.is_hovered,
-                self.is_pressed,
+                self.press.is_held(),
                 self.focus_visible(),
                 self.effectively_enabled(),
             ) != self.last_state
@@ -1631,24 +1639,35 @@ impl Widget for Button {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.is_hovered {
-                    let pressed = *element_state == ElementState::Pressed;
-                    if pressed != self.is_pressed {
-                        self.is_pressed = pressed;
+                use crate::pointer_replay::{PressAt, Release};
+                let rect = self.hit_rect();
+                let at = PressAt::one(&self.id, rect);
+                match element_state {
+                    ElementState::Pressed if self.is_hovered && !self.press.is_held() => {
+                        self.press.press(at);
                         *ctx.handled = true;
-
-                        if self.is_pressed {
-                            self.pressed_into_focus |= !self.is_focused;
-                            *ctx.focus_target = Some(ctx.node_id);
-                        }
-
-                        if !self.is_pressed {
-                            self.activate();
+                        self.pressed_into_focus |= !self.is_focused;
+                        *ctx.focus_target = Some(ctx.node_id);
+                    }
+                    ElementState::Pressed => {
+                        if !self.is_hovered && self.press.is_held() {
+                            self.press.cancel();
+                            *ctx.handled = true;
                         }
                     }
-                } else if self.is_pressed {
-                    self.is_pressed = false;
-                    *ctx.handled = true;
+                    // The press this button took, or the one a button it
+                    // replaced took at this place (a rebuild while the
+                    // button was held), completes here.
+                    ElementState::Released => {
+                        match self.press.release(self.is_hovered.then_some(at)) {
+                            Release::Click(()) => {
+                                *ctx.handled = true;
+                                self.activate();
+                            }
+                            Release::Cancelled => *ctx.handled = true,
+                            Release::NotHeld => {}
+                        }
+                    }
                 }
             }
             _ => {}
@@ -1694,6 +1713,9 @@ impl Widget for Button {
     fn is_focusable(&self) -> bool {
         true
     }
+    fn is_default_keyboard_focus(&self) -> bool {
+        self.default_focus
+    }
     fn set_focus(&mut self, focused: bool) {
         // A press that focused it keeps its mark; losing focus clears it.
         self.pressed_into_focus &= focused;
@@ -1734,6 +1756,7 @@ impl Widget for Button {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
@@ -1783,52 +1806,11 @@ impl Widget for Button {
             });
         Some(node)
     }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
-    }
 }
 
 impl crate::presence::capability::PublishesPresence for Button {
     fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
+        PresenceKey::widget(&self.presence_path)
     }
 }
 
@@ -1867,18 +1849,7 @@ impl crate::resources::PublishesResources for Button {
 }
 
 impl crate::widget::controls::ActionControls for Button {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!(custody);
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         use crate::widget::{ControlBindingKind, ControlBindingMetadata};
         if let Some(action) = &self.action {
@@ -2824,7 +2795,7 @@ mod tests {
         fn disabled_button_rejects_input() {
             use std::cell::Cell;
             use std::rc::Rc;
-            use winit::event::{DeviceId, ElementState, MouseButton};
+            use winit::event::{ElementState, MouseButton};
 
             let fired = Rc::new(Cell::new(0u32));
             let mut b = {
@@ -2848,10 +2819,8 @@ mod tests {
             .unwrap();
             b.apply_layout(&tree, node, Point::ZERO);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
+            let device = winit::event::DeviceId::dummy();
+            let mut at_node = crate::testing::Dispatch::new().layout(&tree, node);
             let mut focus = None;
             let mut handled = false;
 
@@ -2871,19 +2840,9 @@ mod tests {
                     button: MouseButton::Left,
                 },
             ] {
-                b.handle_event(
-                    &ev,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                let sent = at_node.send(&mut b, &ev);
+                handled |= sent.handled;
+                focus = sent.focus_target.or(focus);
             }
 
             assert_eq!(fired.get(), 0, "disabled button must not fire on_click");
@@ -3196,7 +3155,7 @@ mod tests {
         fn on_click_callback_fires_on_release_over_button() {
             use std::cell::Cell;
             use std::rc::Rc;
-            use winit::event::{DeviceId, ElementState, MouseButton};
+            use winit::event::{ElementState, MouseButton};
 
             let fired = Rc::new(Cell::new(0u32));
             let mut b = {
@@ -3218,26 +3177,10 @@ mod tests {
             .unwrap();
             b.apply_layout(&tree, node, Point::ZERO);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
+            let device = winit::event::DeviceId::dummy();
+            let mut at_node = crate::testing::Dispatch::new().layout(&tree, node);
             let mut dispatch = |b: &mut Button, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                b.handle_event(
-                    &ev,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                at_node.send(b, &ev);
             };
 
             dispatch(

@@ -924,18 +924,6 @@ impl Grid {
         ((c0, r0), (c1, r1))
     }
 
-    /// Every selected range as `(top_left, bottom_right)`, inclusive and
-    /// normalized: what a style applies to, one rectangle at a time.
-    pub fn selection_ranges(&self) -> Vec<(Addr, Addr)> {
-        self.all_ranges()
-            .into_iter()
-            .map(|range| {
-                let (c0, r0, c1, r1) = range.bounds();
-                ((c0, r0), (c1, r1))
-            })
-            .collect()
-    }
-
     /// Whether a cell's text is bold.
     pub fn cell_is_bold(&self, addr: Addr) -> bool {
         self.bold.contains(&addr)

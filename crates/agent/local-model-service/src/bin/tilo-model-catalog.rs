@@ -11,15 +11,6 @@
     clippy::missing_errors_doc,
     reason = "the release tool reports one contextual string error contract"
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::indexing_slicing,
-        clippy::panic,
-        clippy::unwrap_used,
-        reason = "tests use direct access and unwraps as assertions"
-    )
-)]
 
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(target_os = "linux")]
@@ -837,6 +828,7 @@ mod tests {
         catalog.runtimes[0].execution = Some(RuntimeExecution::LlamaCpp {
             max_context_tokens: 4096,
             gpu_layers: 0,
+            parallel_slots: None,
         });
         assert!(compile(catalog.clone(), temp.path(), &key).is_err());
         catalog.models[0].artifact_format = ModelArtifactFormat::LlamaCppGguf;
@@ -850,6 +842,7 @@ mod tests {
         forged.runtimes[0].release.execution = Some(RuntimeExecution::LlamaCpp {
             max_context_tokens: 8192,
             gpu_layers: 0,
+            parallel_slots: None,
         });
         assert!(
             key.verifying_key()
@@ -859,8 +852,42 @@ mod tests {
         catalog.runtimes[0].execution = Some(RuntimeExecution::LlamaCpp {
             max_context_tokens: 0,
             gpu_layers: 0,
+            parallel_slots: None,
         });
         assert!(compile(catalog, temp.path(), &key).is_err());
+    }
+
+    #[test]
+    fn parallel_slots_are_verified_by_the_catalog_consumer() {
+        let key = SigningKey::from_bytes(&[5; 32]);
+        let temp = tempfile::tempdir().unwrap();
+        let mut input = source(temp.path());
+        input.models[0].artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        input.models[0].vision = false;
+        input.runtimes[0].execution = Some(RuntimeExecution::LlamaCpp {
+            max_context_tokens: 4096,
+            gpu_layers: 0,
+            parallel_slots: std::num::NonZeroU16::new(1),
+        });
+        let (mut signed, trust) = compile(input.clone(), temp.path(), &key).unwrap();
+        let cat = temp.path().join("catalog.json");
+        let keys = temp.path().join("keys.json");
+        fs::write(&cat, serde_json::to_vec(&signed).unwrap()).unwrap();
+        fs::write(&keys, serde_json::to_vec(&trust).unwrap()).unwrap();
+        assert!(local_model_service::catalog::VerifiedCatalog::load(&cat, &keys).is_ok());
+        signed.payload.runtimes[0].release.execution = Some(RuntimeExecution::LlamaCpp {
+            max_context_tokens: 4096,
+            gpu_layers: 0,
+            parallel_slots: std::num::NonZeroU16::new(2),
+        });
+        fs::write(&cat, serde_json::to_vec(&signed).unwrap()).unwrap();
+        assert!(local_model_service::catalog::VerifiedCatalog::load(&cat, &keys).is_err());
+        input.runtimes[0].execution = Some(RuntimeExecution::LlamaCpp {
+            max_context_tokens: 4096,
+            gpu_layers: 0,
+            parallel_slots: std::num::NonZeroU16::new(65),
+        });
+        assert!(compile(input, temp.path(), &key).is_err());
     }
 
     #[test]

@@ -113,6 +113,7 @@ pub(crate) struct KeyboardPresentation<'a> {
     pub hovered_sugg: Option<usize>,
     pub pressed_sugg: Option<usize>,
     pub empty_hint: &'a str,
+    pub context_error: Option<&'a str>,
     /// The emoji panel puts its search field over the suggestion bar.
     pub emoji_panel_open: bool,
     /// The character key a finger or the pointer holds down, previewed in a
@@ -297,7 +298,11 @@ impl KeyboardPresentation<'_> {
 
         // Suggestion bar: a tappable chip per suggestion.
         if self.suggestion_area.area() > 0.0 && !self.emoji_panel_open {
-            for (i, r) in self.suggestion_geom {
+            for (i, r) in self
+                .suggestion_geom
+                .iter()
+                .filter(|_| self.context_error.is_none())
+            {
                 let Some(s) = self.suggestions.get(*i) else {
                     continue;
                 };
@@ -305,15 +310,16 @@ impl KeyboardPresentation<'_> {
                 // The top chip is the highlighted (auto / best) pick.
                 draw_suggestion_chip(&mut ctx, *r, &s.word, *i == 0, hovered);
             }
-            if self.suggestion_geom.is_empty() {
-                let hint = self.empty_hint;
-                let size = ctx.measure_role(hint, TextRole::Caption, None);
+            if self.suggestion_geom.is_empty() || self.context_error.is_some() {
+                let hint = self.context_error.unwrap_or(self.empty_hint);
+                let room = self.suggestion_area.width() as f32;
+                let size = ctx.measure_role(hint, TextRole::Caption, Some(room));
                 let origin = Point::new(
                     self.suggestion_area.center().x - size.width * 0.5,
                     self.suggestion_area.center().y - size.height * 0.5,
                 );
                 let ink = theme.tokens.colors.text_dim;
-                ctx.text_role(hint, TextRole::Caption, ink, origin, None);
+                ctx.text_role(hint, TextRole::Caption, ink, origin, Some(room));
             }
         }
 

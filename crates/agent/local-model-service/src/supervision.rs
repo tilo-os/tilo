@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 /// User-systemd supervision. The executable and every vLLM argument come from
 /// [`VllmCommand`], itself constructed only from a verified signed catalog.
 pub struct SystemdSupervisor;
+/// Fixed existing placement shared by capacity admission and runtime launch.
+pub const MODEL_RUNTIME_SLICE: &str = "app.slice";
 #[must_use]
 pub fn podman_vllm_argv(command: &VllmCommand) -> Vec<String> {
     let mut argv = vec![
@@ -190,6 +192,16 @@ impl ProcessSupervisor for SystemdSupervisor {
         ))
     }
 
+    fn observe(
+        &self,
+        handle: &ProcessHandle,
+    ) -> crate::run_observation::Observed<crate::run_observation::RuntimeSample> {
+        match observe_owned_runtime(handle) {
+            Ok(value) => crate::run_observation::Observed::Actual { value },
+            Err(reason) => crate::run_observation::Observed::Unavailable { reason },
+        }
+    }
+
     fn stop(&mut self, handle: &ProcessHandle) -> Result<(), ServiceError> {
         let owned = owned_container(handle)?;
         let present = container_exists(&owned.container_id)?;
@@ -231,6 +243,144 @@ impl ProcessSupervisor for SystemdSupervisor {
         manager?;
         absence
     }
+}
+
+fn observed_unit(
+    handle: &ProcessHandle,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut command = Command::new("systemctl");
+    command.args([
+        "--user",
+        "show",
+        &handle.id,
+        "--property=Id,LoadState,ActiveState,MainPID,ControlGroup,InvocationID",
+    ]);
+    let output = bounded_command::run_prepared(command, None, 8192, Duration::from_secs(3))
+        .map_err(|_| "owned unit observation unavailable")?;
+    if !output.status.success() {
+        return Err("owned unit observation refused".into());
+    }
+    let body = String::from_utf8(output.stdout).map_err(|_| "invalid owned unit observation")?;
+    parse_unit(&body, handle)
+}
+
+fn parse_unit(
+    body: &str,
+    handle: &ProcessHandle,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut properties = std::collections::BTreeMap::new();
+    for line in body.lines() {
+        let (key, value) = line.split_once('=').ok_or("invalid manager property")?;
+        if properties.insert(key.into(), value.into()).is_some() {
+            return Err("duplicate manager property".into());
+        }
+    }
+    if properties
+        .get("Id")
+        .and_then(|id: &String| id.strip_suffix(".service"))
+        != Some(handle.id.as_str())
+        || properties.get("LoadState").map(String::as_str) != Some("loaded")
+        || properties.get("ActiveState").map(String::as_str) != Some("active")
+    {
+        return Err("owned unit is not currently active".into());
+    }
+    if !properties
+        .get("MainPID")
+        .is_some_and(|pid| pid.parse::<u32>().is_ok_and(|pid| pid > 0))
+        || !properties
+            .get("InvocationID")
+            .is_some_and(|id| id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()))
+        || !properties.get("ControlGroup").is_some_and(|group| {
+            group.starts_with('/')
+                && group != "/"
+                && !Path::new(group)
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::ParentDir))
+        })
+    {
+        return Err("owned unit process or lifetime metadata unavailable".into());
+    }
+    Ok(properties)
+}
+
+fn observed_payload(handle: &ProcessHandle) -> Result<u32, String> {
+    let owned = owned_container(handle).map_err(|_| "runtime custody unavailable")?;
+    let mut command = Command::new("podman");
+    command.args(["container", "inspect", &owned.container_id]);
+    let output = bounded_command::run_prepared(command, None, 131_072, Duration::from_secs(3))
+        .map_err(|_| "owned payload observation unavailable")?;
+    if !output.status.success() {
+        return Err("owned payload inspection refused".into());
+    }
+    let bodies: Vec<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).map_err(|_| "invalid payload observation")?;
+    let [body] = bodies.as_slice() else {
+        return Err("payload inspection is not exact".into());
+    };
+    payload_pid(owned, body)
+}
+
+fn payload_pid(owned: &ContainerOwnership, body: &serde_json::Value) -> Result<u32, String> {
+    owned.verify_observation(body)?;
+    if body
+        .pointer("/State/Running")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+    {
+        return Err("owned payload is not running".into());
+    }
+    body.pointer("/State/Pid")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid > 0)
+        .ok_or_else(|| "owned payload PID unavailable".into())
+}
+
+fn observe_owned_runtime(
+    handle: &ProcessHandle,
+) -> Result<crate::run_observation::RuntimeSample, String> {
+    use crate::run_observation::{RuntimeSample, sample_process, verify_process};
+    owned_container(handle).map_err(|_| "runtime custody unavailable")?;
+    let started = Instant::now();
+    let captured_at_unix_ms =
+        tilo_clock::try_unix_now_ms().ok_or("observation wall clock unavailable")?;
+    let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .map_err(|_| "boot identity unavailable")?;
+    if boot_id.trim().len() != 36 {
+        return Err("boot identity malformed".into());
+    }
+    let unit = observed_unit(handle)?;
+    let wrapper_pid = unit
+        .get("MainPID")
+        .ok_or("wrapper PID missing")?
+        .parse()
+        .map_err(|_| "wrapper PID malformed")?;
+    let invocation = unit.get("InvocationID").ok_or("unit invocation missing")?;
+    if invocation.len() != 32 || !invocation.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("unit invocation malformed".into());
+    }
+    let control_group = unit.get("ControlGroup").ok_or("unit cgroup missing")?;
+    let payload_pid = observed_payload(handle)?;
+    let wrapper = sample_process(wrapper_pid)?;
+    let payload = sample_process(payload_pid)?;
+    if !Path::new(&wrapper.identity.membership).starts_with(control_group) || control_group == "/" {
+        return Err("wrapper does not belong to the owned unit cgroup".into());
+    }
+    if observed_unit(handle)? != unit || observed_payload(handle)? != payload_pid {
+        return Err("owned unit or payload lifetime changed".into());
+    }
+    verify_process(&wrapper.identity)?;
+    verify_process(&payload.identity)?;
+    Ok(RuntimeSample {
+        boot_id: boot_id.trim().into(),
+        captured_at_unix_ms,
+        unit_invocation_id: invocation.clone(),
+        unit_control_group: control_group.clone(),
+        elapsed_micros: u64::try_from(started.elapsed().as_micros())
+            .map_err(|_| "observation duration overflow")?,
+        wrapper,
+        payload,
+    })
 }
 
 fn prepare_container(command: &VllmCommand, fixture: bool) -> Result<ProcessHandle, ServiceError> {
@@ -288,6 +438,7 @@ fn launch_container(handle: &ProcessHandle, fixture: bool) -> Result<(), Service
         "--user".into(),
         "--collect".into(),
         "--service-type=exec".into(),
+        format!("--slice={MODEL_RUNTIME_SLICE}"),
         "--unit".into(),
         handle.id.clone(),
         "--property=KillMode=control-group".into(),
@@ -407,6 +558,8 @@ pub struct DeveloperCleanupReceipt {
     pub control: ProcessHandle,
     pub observations: std::collections::BTreeMap<&'static str, bool>,
     pub source_sha256: String,
+    pub runtime_observations:
+        std::collections::BTreeMap<String, crate::run_observation::RuntimeSample>,
 }
 
 struct FixtureCustody(Vec<ProcessHandle>);
@@ -491,6 +644,43 @@ fn publish_fixture_custody(
     Ok(())
 }
 
+fn fixture_observations(
+    directory: &Path,
+    target: &ProcessHandle,
+    control: &ProcessHandle,
+) -> Result<std::collections::BTreeMap<String, crate::run_observation::RuntimeSample>, ServiceError>
+{
+    use crate::run_observation::{Observed, RunCheckpoint};
+    let mut output = std::collections::BTreeMap::new();
+    for handle in [target, control] {
+        let sample = observe_owned_runtime(handle).map_err(ServiceError::Backend)?;
+        if !matches!(
+            sample.payload.counters.get("memory.current"),
+            Some(Observed::Actual { .. })
+        ) {
+            return Err(ServiceError::Backend(
+                "fixture payload memory counter unavailable".into(),
+            ));
+        }
+        let checkpoint = RunCheckpoint {
+            schema: 1,
+            phase: "ready".into(),
+            model_id: "developer-lifecycle-fixture".into(),
+            model_sha256: hex::encode(Sha256::digest(
+                b"developer process-lifecycle fixture; no model weights\n",
+            )),
+            runtime_id: None,
+            process: handle.clone(),
+            sample: Observed::Actual {
+                value: sample.clone(),
+            },
+        };
+        crate::run_observation::retain(directory, &checkpoint).map_err(ServiceError::Backend)?;
+        output.insert(handle.id.clone(), sample);
+    }
+    Ok(output)
+}
+
 /// Qualify exact cleanup with two newly owned, fixed 120-second sleep fixtures.
 /// This executes no model and does not admit a catalog or evaluate coding quality.
 /// The fixture disables attach signal proxy to exercise a lingering container;
@@ -544,6 +734,7 @@ pub fn developer_cleanup_probe(
             "target fixture ended before observed stop".into(),
         ));
     }
+    let runtime_observations = fixture_observations(directory, &target, &control)?;
     stop_owned_unit(&target.id)?;
     let target_exists_after_manager_stop =
         container_exists(&owned_container(&target)?.container_id)?;
@@ -574,6 +765,7 @@ pub fn developer_cleanup_probe(
     custody.0.clear();
     Ok(DeveloperCleanupReceipt {
         kind: "developer_fixed_process_cleanup_qualification",
+        runtime_observations,
         target,
         control,
         observations: std::collections::BTreeMap::from([
@@ -599,3 +791,7 @@ pub fn developer_cleanup_probe(
         source_sha256: hex::encode(Sha256::digest(include_bytes!("supervision.rs"))),
     })
 }
+
+#[cfg(test)]
+#[path = "supervision_observation_tests.rs"]
+mod observation_tests;

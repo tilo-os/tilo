@@ -134,8 +134,7 @@ mio = { version = "1", features = ["net", "os-ext"] }
 ml-kem = { version = "0.3", features = ["hazmat"] }
 n0-error = { version = "1", features = ["anyhow"] }
 naga = { version = "29", features = ["wgsl-in"] }
-num-bigint-9fbad63c4bcf4a8f = { package = "num-bigint", version = "0.4" }
-num-bigint-d8f496e17d97b5cb = { package = "num-bigint", version = "0.5", features = ["rand_0_10"] }
+num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 once_cell = { version = "1", features = ["critical-section"] }
@@ -221,7 +220,6 @@ tracing = { version = "0.1" }
 tracing-core = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ttf-parser = { version = "0.25", features = ["gvar-alloc", "no-std-float"] }
-typst-assets = { version = "0.15", default-features = false, features = ["fonts"] }
 unic-langid = { version = "0.9", features = ["macros", "serde"] }
 unic-langid-impl = { version = "0.9", default-features = false, features = ["serde"] }
 unicode-bidi = { version = "0.3" }
@@ -372,8 +370,7 @@ mio = { version = "1", features = ["net", "os-ext"] }
 ml-kem = { version = "0.3", features = ["hazmat"] }
 n0-error = { version = "1", features = ["anyhow"] }
 naga = { version = "29", features = ["wgsl-in"] }
-num-bigint-9fbad63c4bcf4a8f = { package = "num-bigint", version = "0.4" }
-num-bigint-d8f496e17d97b5cb = { package = "num-bigint", version = "0.5", features = ["rand_0_10"] }
+num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 once_cell = { version = "1", features = ["critical-section"] }
@@ -461,7 +458,6 @@ tracing = { version = "0.1" }
 tracing-core = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ttf-parser = { version = "0.25", features = ["gvar-alloc", "no-std-float"] }
-typst-assets = { version = "0.15", default-features = false, features = ["fonts"] }
 unic-langid = { version = "0.9", features = ["macros", "serde"] }
 unic-langid-impl = { version = "0.9", default-features = false, features = ["serde"] }
 unicode-bidi = { version = "0.3" }
@@ -515,16 +511,15 @@ rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["ev
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
-wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["server", "staging"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
-wayland-sys = { version = "0.31", default-features = false, features = ["dlopen", "egl"] }
 x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "randr", "resource_manager", "xinput", "xkb"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 
@@ -553,16 +548,15 @@ rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["ev
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
-wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["server", "staging"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
-wayland-sys = { version = "0.31", default-features = false, features = ["dlopen", "egl"] }
 x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "randr", "resource_manager", "xinput", "xkb"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 
@@ -591,16 +585,15 @@ rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["ev
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
-wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["server", "staging"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
-wayland-sys = { version = "0.31", default-features = false, features = ["dlopen", "egl"] }
 x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "randr", "resource_manager", "xinput", "xkb"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 
@@ -629,16 +622,15 @@ rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["ev
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
-wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["server", "staging"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
-wayland-sys = { version = "0.31", default-features = false, features = ["dlopen", "egl"] }
 x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "randr", "resource_manager", "xinput", "xkb"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 

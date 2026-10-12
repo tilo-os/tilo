@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{MAX_REPORT_BYTES, report_id};
 
+pub(super) mod flow;
 mod operators;
+pub(super) mod placement;
 pub(super) mod study;
 mod superblock;
 pub use operators::{Observations, OperatorSummary};
@@ -66,6 +68,8 @@ pub struct VerificationReceipt {
     pub operator_summary: Option<OperatorSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub architecture_study: Option<ArchitectureStudy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_flow: Option<flow::EvidenceFlow>,
     // Device paths are accepted from producers but never synced or published.
     #[serde(skip_serializing)]
     input_directory: Option<String>,
@@ -127,6 +131,8 @@ pub struct VerificationReceipt {
 #[serde(deny_unknown_fields)]
 pub struct VerificationRecord {
     pub imported_bytes_blake3: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_bytes_sha256: Option<String>,
     pub receipt: VerificationReceipt,
 }
 
@@ -215,6 +221,12 @@ fn hashes(values: &BTreeMap<String, String>) -> bool {
 
 impl VerificationReceipt {
     fn validate(&self) -> Result<(), String> {
+        if self.evidence == "evidence_flow" {
+            return flow::validate(self);
+        }
+        if self.evidence_flow.is_some() {
+            return Err("flow cannot annotate other evidence".into());
+        }
         if self.evidence == "architecture_study" {
             return study::validate(self);
         }
@@ -660,6 +672,12 @@ impl VerificationRecord {
         receipt.run_directory = None;
         let record = Self {
             imported_bytes_blake3: report_id(json),
+            imported_bytes_sha256: if receipt.evidence_flow.is_some() {
+                use sha2::Digest;
+                Some(hex::encode(sha2::Sha256::digest(json.as_bytes())))
+            } else {
+                None
+            },
             receipt,
         };
         let stored = serde_json::to_string(&record).map_err(|error| error.to_string())?;
@@ -678,7 +696,12 @@ impl VerificationRecord {
             return Err("stored receipt exceeds the import limit".into());
         }
         let record: Self = serde_json::from_str(json).map_err(|error| error.to_string())?;
-        if !digest(&record.imported_bytes_blake3)
+        if record
+            .imported_bytes_sha256
+            .as_ref()
+            .is_some_and(|hash| !digest(hash))
+            || record.receipt.evidence_flow.is_some() && record.imported_bytes_sha256.is_none()
+            || !digest(&record.imported_bytes_blake3)
             || record.receipt.input_directory.is_some()
             || record.receipt.run_directory.is_some()
         {

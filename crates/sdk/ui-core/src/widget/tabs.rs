@@ -1,6 +1,7 @@
 use crate::color_compat::ColorCompat;
 use crate::dnd::{DRAG_START_THRESHOLD_PX, DragPayload};
 use crate::icons;
+use crate::num::f64_of_u64;
 use crate::paint::PaintCtx;
 use crate::presence::{PresenceCtx, PresenceKey};
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
@@ -98,17 +99,6 @@ fn shift_rect(r: Rect, d: vello::kurbo::Vec2) -> Rect {
     r + d
 }
 
-/// Converts a millisecond animation-timing constant to `f64`. These are small
-/// compile-time durations (well under a second), nowhere near `f64`'s 52-bit
-/// mantissa limit, so the conversion is exact.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "millisecond timing constants stay far below 2^52; exact in f64"
-)]
-fn ms_f64(ms: u64) -> f64 {
-    ms as f64
-}
-
 /// Converts an elapsed-time reading (in milliseconds) to `f64`. Only ever fed a
 /// recent `Duration`, so — like [`ms_f64`] — the value stays far below the
 /// precision limit.
@@ -174,6 +164,8 @@ struct RevealAnim {
 #[derive(Clone, Debug)]
 struct ClosingTab {
     desc: TabDescriptor,
+    index: usize,
+    was_active: bool,
     /// Rect at close-start; the fade animates in place, not tracking the layout
     /// spring.
     pill_rect: Rect,
@@ -1339,7 +1331,7 @@ impl TabBar {
         let Some(a) = self.reveal_anim.get(&id) else {
             return Reveal::None.reserve();
         };
-        let span = ms_f64(REVEAL_ANIM_MS) / 1000.0;
+        let span = f64_of_u64(REVEAL_ANIM_MS) / 1000.0;
         if span <= 0.0 {
             return a.to;
         }
@@ -1728,6 +1720,7 @@ impl TabBar {
         let close_rect = self.close_rects.get(idx).copied().unwrap_or(Rect::ZERO);
         self.pending_close = Some(id);
         self.snapshot_layout_for_spring();
+        let was_active = self.active_id == id;
         self.tabs.remove(idx);
         if self.active_id == id {
             // Prefer the tab that slid into this index; fall back to the
@@ -1740,10 +1733,31 @@ impl TabBar {
         }
         self.closing_tabs.push(ClosingTab {
             desc,
+            index: idx,
+            was_active,
             pill_rect,
             close_rect,
             started_at: crate::time::now(),
         });
+        true
+    }
+
+    /// Restore a requested close whose host still owns the live tab. No
+    /// metadata or focus is lost while the client asks for a save decision.
+    pub fn cancel_close(&mut self, id: u64) -> bool {
+        let Some(index) = self.closing_tabs.iter().position(|tab| tab.desc.id == id) else {
+            return false;
+        };
+        let tab = self.closing_tabs.remove(index);
+        if !self.tabs.iter().any(|live| live.id == id) {
+            self.tabs.insert(tab.index.min(self.tabs.len()), tab.desc);
+        }
+        if tab.was_active {
+            self.active_id = id;
+        }
+        if self.pending_close == Some(id) {
+            self.pending_close = None;
+        }
         true
     }
 
@@ -1835,9 +1849,6 @@ impl TabBar {
         self.snapshot_layout_for_spring();
         let t = self.tabs.remove(from);
         self.tabs.insert(to, t);
-    }
-    pub fn take_drag(&mut self) -> Option<DragPayload> {
-        self.pending_drag.take()
     }
     /// Abandon a pending or lifted tab without turning its release into a drop.
     pub fn cancel_drag(&mut self) -> bool {
@@ -2510,26 +2521,19 @@ impl Widget for TabBar {
             reason = "TAB_BAR_HEIGHT is a small fixed layout constant"
         )]
         let bar_height = TAB_BAR_HEIGHT as f32;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::auto(),
                 height: Dimension::length(bar_height),
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.tab_rects.clear();
         self.close_rects.clear();
         self.close_hit_rects.clear();
@@ -2671,7 +2675,7 @@ impl Widget for TabBar {
             if elapsed >= Duration::from_millis(LAYOUT_ANIM_MS) {
                 None
             } else {
-                let raw = elapsed.as_secs_f64() / (ms_f64(LAYOUT_ANIM_MS) / 1000.0);
+                let raw = elapsed.as_secs_f64() / (f64_of_u64(LAYOUT_ANIM_MS) / 1000.0);
                 Some(crate::ease_out(raw))
             }
         });
@@ -2682,7 +2686,12 @@ impl Widget for TabBar {
             .retain(|_, started| started.elapsed() < fade_window);
 
         self.draw_pills(scene, transform, tr, theme, presence, layout_t, fade_window);
-        self.draw_keyboard_focus(scene, transform, theme);
+        // The tab list's focus ring comes and goes with keyboard focus: a
+        // damage part around the active pill, not a repaint of the bar.
+        let focus = crate::scene_parts::PartKey::new("ui.tab-focus", ());
+        crate::scene_parts::part_drawn(scene, focus, |scene| {
+            self.draw_keyboard_focus(scene, transform, theme)
+        });
         self.draw_new_tab_chip(scene, transform, tr, theme);
         self.draw_closing_tabs(scene, transform, tr, theme);
         self.draw_drop_indicator(scene, transform, theme);
@@ -3109,7 +3118,7 @@ impl TabBar {
                     if elapsed >= fade_window {
                         (1.0, 0.0)
                     } else {
-                        let raw = (elapsed.as_secs_f64() / (ms_f64(INSERT_FADE_MS) / 1000.0))
+                        let raw = (elapsed.as_secs_f64() / (f64_of_u64(INSERT_FADE_MS) / 1000.0))
                             .clamp(0.0, 1.0);
                         let eased = crate::ease_out(raw);
                         #[allow(
@@ -3138,32 +3147,42 @@ impl TabBar {
                 compose(transform, Affine::translate((0.0, fade_y)))
             };
             let pill_alpha_active = combined_alpha < 1.0;
-            if pill_alpha_active {
-                // Wider than the pill so hover-reveal action icons fade in cleanly.
-                let close_w = self.close_rects.get(i).map_or(0.0, Rect::width);
-                let clip = Rect::new(r.x0 - 2.0, r.y0 - 4.0, r.x1 + close_w + 60.0, r.y1 + 4.0);
-                scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    combined_alpha,
-                    transform,
-                    &clip,
+            // Wider than the pill so hover-reveal action icons fade in cleanly.
+            let close_w = self.close_rects.get(i).map_or(0.0, Rect::width);
+            let clip = Rect::new(r.x0 - 2.0, r.y0 - 4.0, r.x1 + close_w + 60.0, r.y1 + 4.0);
+            // Each pill is a damage part: hovering one repaints that pill.
+            // It paints inside the clip a fading pill is held to, at its
+            // fade offset; a press only shrinks it.
+            let bounds = vec![
+                transform.transform_rect_bbox(clip),
+                pill_transform.transform_rect_bbox(clip),
+            ];
+            let key = crate::scene_parts::PartKey::new("ui.tab-pill", t.id);
+            crate::scene_parts::part(scene, key, bounds, |scene| {
+                if pill_alpha_active {
+                    scene.push_layer(
+                        vello::peniko::Fill::NonZero,
+                        vello::peniko::BlendMode::default(),
+                        combined_alpha,
+                        transform,
+                        &clip,
+                    );
+                }
+                // Uses `pill_transform` so the fade's y-offset composes with any
+                // layout-spring dx/dy.
+                self.draw_pill_inner(
+                    &mut PaintCtx::new(scene, pill_transform, tr, theme),
+                    presence,
+                    i,
+                    r,
+                    false,
                 );
-            }
-            // Uses `pill_transform` so the fade's y-offset composes with any
-            // layout-spring dx/dy.
-            self.draw_pill_inner(
-                &mut PaintCtx::new(scene, pill_transform, tr, theme),
-                presence,
-                i,
-                r,
-                false,
-            );
 
-            // Must mirror the push above exactly — `pill_alpha_active` tracks that.
-            if pill_alpha_active {
-                scene.pop_layer();
-            }
+                // Must mirror the push above exactly — `pill_alpha_active` tracks that.
+                if pill_alpha_active {
+                    scene.pop_layer();
+                }
+            });
         }
     }
 
@@ -3171,10 +3190,16 @@ impl TabBar {
     /// remains the active pill's glass/keyline treatment, while this outline
     /// says that the *tab list* now owns keyboard input. The semantic focus
     /// and the painted target therefore stay in lockstep under high contrast
-    /// and large text alike.
-    fn draw_keyboard_focus(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+    /// and large text alike. Returns the bounds of what it painted, in scene
+    /// coordinates.
+    fn draw_keyboard_focus(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+    ) -> Vec<Rect> {
         if !self.keyboard_focus {
-            return;
+            return Vec::new();
         }
         let Some((idx, _)) = self
             .tabs
@@ -3182,7 +3207,7 @@ impl TabBar {
             .enumerate()
             .find(|(_, tab)| tab.id == self.active_id)
         else {
-            return;
+            return Vec::new();
         };
         let Some(rect) = self
             .tab_rects
@@ -3190,7 +3215,7 @@ impl TabBar {
             .copied()
             .filter(|rect| rect.area() > 0.0)
         else {
-            return;
+            return Vec::new();
         };
         let ring_rect = rect.inset(1.0);
         let ring = RoundedRect::from_rect(
@@ -3209,6 +3234,8 @@ impl TabBar {
             None,
             &ring,
         );
+        // Half the stroke outside the ring, and a pixel of antialiasing.
+        vec![transform.transform_rect_bbox(ring_rect.inflate(2.0, 2.0))]
     }
 
     /// The idle/hover "+" new-tab chip, painted after the pills so a springing
@@ -3309,10 +3336,10 @@ impl TabBar {
         }
         let now = crate::time::now();
         let elapsed_ms = self.hover_drop_animated_at.map_or_else(
-            || ms_f64(HOVER_DROP_FADE_MS),
+            || f64_of_u64(HOVER_DROP_FADE_MS),
             |t| duration_ms_f64(now.duration_since(t).as_millis()),
         );
-        let raw_t = (elapsed_ms / ms_f64(HOVER_DROP_FADE_MS)).clamp(0.0, 1.0);
+        let raw_t = (elapsed_ms / f64_of_u64(HOVER_DROP_FADE_MS)).clamp(0.0, 1.0);
         let eased_t = crate::ease_out(raw_t);
         // 4px above/below the pill's extent for bleed past the rounded caps.
         let (cx, y0, y1) = if gap_idx == 0 {
@@ -3737,6 +3764,7 @@ fn draw_app_icon(
 mod tests {
     use super::*;
     use crate::presence::user_color;
+    use crate::testing::{Dispatch, dispatch};
     use automerge::AutoCommit;
 
     fn bar() -> TabBar {
@@ -4388,29 +4416,11 @@ mod tests {
             b.hover_idx = Some(1);
 
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-            b.handle_event(
-                &press,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            let handled = dispatch(&mut b, &press);
 
             assert_eq!(
                 b.take_max(),
@@ -4460,29 +4470,11 @@ mod tests {
             b.hover_idx = Some(2);
 
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-            b.handle_event(
-                &press,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            let handled = dispatch(&mut b, &press);
 
             assert_eq!(
                 b.take_search(),
@@ -4674,29 +4666,11 @@ mod tests {
             b.last_cursor = close_centre;
 
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-            b.handle_event(
-                &press,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut b, &press);
 
             assert!(
                 b.pending_close.is_none(),
@@ -5088,28 +5062,10 @@ mod tests {
             // Pill B's left half → drop index 1 (insert before B).
             b.last_cursor = Point::new(90.0, 20.0);
             let event = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(90.0, 20.0),
             };
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-            b.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut b, &event);
             assert_eq!(
                 b.drop_zone_target(),
                 Some(1),
@@ -5123,42 +5079,18 @@ mod tests {
 
             // Move cursor past pill C's midpoint → gap 3 (append).
             let event = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(230.0, 20.0),
             };
-            b.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut b, &event);
             assert_eq!(b.drop_zone_target(), Some(3), "past C's mid → gap 3");
 
             let release = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             };
-            b.handle_event(
-                &release,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut b, &release);
             assert_eq!(b.drop_zone_target(), None, "release clears target");
             assert!(
                 b.hover_intent.is_some() && b.needs_animation_frame(),
@@ -5186,28 +5118,10 @@ mod tests {
             b.pending_drag = Some(DragPayload::Tab { group: 0, tab: 1 });
             b.last_cursor = Point::new(90.0, 20.0);
             let event = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(90.0, 20.0),
             };
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-            b.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut b, &event);
             assert_eq!(
                 b.hover_drop_idx(),
                 Some(1),
@@ -5219,23 +5133,11 @@ mod tests {
             );
 
             let release = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             };
-            b.handle_event(
-                &release,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut b, &release);
             assert_eq!(
                 b.hover_drop_idx(),
                 None,
@@ -5824,53 +5726,22 @@ mod tests {
             // Pill 2's old rect was [86,6,166,34]; survivors keep their original
             // rects in `tab_rects` until the next apply_layout, so index 1 now
             // matches live tab 3, not the closing tab.
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-
             // Cursor over the closing pill's old close chip.
             let cursor = Point::new(155.0, 20.0);
             let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(cursor.x, cursor.y),
             };
-            b.handle_event(
-                &moved,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut b, &moved);
             // Pressing the closing pill's old close chip must NOT re-enter start_closing(2).
             let before_count = b.closing_tab_ids().len();
             let before_tabs: Vec<u64> = b.tabs().iter().map(|t| t.id).collect();
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
-            b.handle_event(
-                &press,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut b, &press);
             // The closing set may stay the same or *add* tab 3 (its close chip
             // overlaps tab 2's old one here) — the invariant is that tab 2 isn't
             // re-added and the press didn't touch the in-flight fade.
@@ -6323,29 +6194,11 @@ mod tests {
             b.last_cursor = Point::new(50.0, 20.0);
 
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-            b.handle_event(
-                &press,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut b, &press);
             assert_eq!(
                 b.hover_idx, None,
                 "stale hover_idx must be cleared when the rect cache no \
@@ -6750,67 +6603,45 @@ mod tests {
     }
 
     fn dispatch_cursor(b: &mut TabBar, p: Point, handled: &mut bool) {
-        use std::collections::HashMap;
-        let mut doc = automerge::AutoCommit::new();
-        let obj = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = {
-            let theme = crate::theme::Theme::dark();
-            b.build_layout(&mut taffy, &theme, &mut node_map)
-        };
-        let mut focus = None;
-        b.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-            },
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &obj,
-                handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let (taffy, node) = built_layout(b);
+        *handled = Dispatch::new()
+            .handled(*handled)
+            .layout(&taffy, node)
+            .send(
+                b,
+                &WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+                },
+            )
+            .handled;
     }
 
     /// Dispatches a left `MouseInput` event at the given press/release state —
     /// shared by every test that drives a click through `handle_event` without
     /// a real pointer.
     fn dispatch_left_button(b: &mut TabBar, state: ElementState, handled: &mut bool) {
-        use std::collections::HashMap;
-        let mut doc = automerge::AutoCommit::new();
-        let obj = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
+        let (taffy, node) = built_layout(b);
+        *handled = Dispatch::new()
+            .handled(*handled)
+            .layout(&taffy, node)
+            .send(
+                b,
+                &WindowEvent::MouseInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    state,
+                    button: MouseButton::Left,
+                },
+            )
+            .handled;
+    }
+
+    fn built_layout(b: &mut TabBar) -> (TaffyTree<()>, NodeId) {
         let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = {
-            let theme = crate::theme::Theme::dark();
-            b.build_layout(&mut taffy, &theme, &mut node_map)
-        };
-        let mut focus = None;
-        b.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state,
-                button: MouseButton::Left,
-            },
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &obj,
-                handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
+            std::collections::HashMap::new();
+        let node = b.build_layout(&mut taffy, &crate::theme::Theme::dark(), &mut node_map);
+        (taffy, node)
     }
 
     fn four_tab_bar() -> TabBar {

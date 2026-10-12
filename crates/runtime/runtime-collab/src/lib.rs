@@ -25,11 +25,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -41,6 +37,9 @@
               tokio::task::LocalSet-driven context, so this is not fixable without \
               redesigning around the RPC library"
 )]
+
+pub mod task_control;
+pub use task_control::{TaskDirection, TaskRunControl, TaskRunStatus, native_task_revision};
 
 #[cfg(feature = "client")]
 use std::rc::Rc;
@@ -67,6 +66,17 @@ pub mod collab_capnp {
     include!("generated/collab_capnp.rs");
 }
 
+pub mod approved_checks;
+/// The host distinguishes local UI intent from continuation of a published action.
+/// A published id is resolved only against broker-retained original custody.
+#[derive(Clone, Copy, Debug)]
+pub enum DisplayOrigin {
+    LocalHost,
+    Published([u8; 16]),
+}
+
+mod action_directory;
+pub use action_directory::*;
 pub mod audio_output;
 pub mod committed_document;
 #[cfg(feature = "client")]
@@ -78,103 +88,6 @@ pub mod settings;
 pub use live_activity::{LiveActivities, LiveActivityHandle};
 #[cfg(feature = "client")]
 pub use settings::{AppSettingsHandle, MAX_SETTINGS_WIRE_BYTES, SettingsView};
-
-/// Opaque capability naming MLS state held by the shell's vault provider.
-/// Bytes are useful only while registered in that provider; this type carries
-/// neither a key nor a filesystem path.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(transparent)]
-pub struct MlsVaultHandle([u8; 32]);
-
-impl MlsVaultHandle {
-    /// Wrap a freshly random identifier issued by a trusted broker/vault.
-    /// Possession alone is insufficient: the receiving provider must have the
-    /// identifier in its capability registry.
-    pub fn from_issued_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-/// Opaque handle for one vault-registered MLS key package.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(transparent)]
-pub struct MlsKeyPackageHandle([u8; 32]);
-
-impl MlsKeyPackageHandle {
-    pub fn from_issued_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-/// Opaque broker receipt proving an encrypted snapshot reached durable
-/// document history. It resolves to a digest only in the issuing broker.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(transparent)]
-pub struct MlsSnapshotReceipt([u8; 32]);
-
-impl MlsSnapshotReceipt {
-    pub fn from_issued_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-/// Broker-internal MLS membership command. This is not exposed
-/// as a `CollabService` RPC: applications never submit governance commands.
-/// The shell's authenticated workspace authority constructs it from live
-/// membership state and vault-issued handles.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MlsAuthorityTransaction {
-    pub idempotency_key: [u8; 32],
-    pub channel: [u8; 16],
-    pub workspace: String,
-    pub expected_membership_revision: u64,
-    pub vault: MlsVaultHandle,
-    pub action: MlsAuthorityAction,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub enum MlsAuthorityAction {
-    Admit {
-        recipient: [u8; 32],
-        role: MlsWorkspaceRole,
-        key_package: MlsKeyPackageHandle,
-    },
-    Remove {
-        recipient: [u8; 32],
-        leaf_index: u32,
-    },
-    EnableEncryption {
-        snapshot: MlsSnapshotReceipt,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum MlsWorkspaceRole {
-    Admin,
-    Editor,
-    Commenter,
-    Viewer,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WorkspaceControlRoute {
@@ -854,6 +767,51 @@ impl NearbyTransferReply {
 }
 
 #[cfg(feature = "client")]
+fn wire_failure(message: String) -> NotAvailable {
+    NotAvailable::Capnp(capnp::Error::failed(message))
+}
+
+/// Encode one `what` control command, refusing it when it is invalid or
+/// larger than `max_bytes`.
+#[cfg(feature = "client")]
+fn encode_bounded_command<C: serde::Serialize>(
+    what: &str,
+    command: &C,
+    valid: bool,
+    max_bytes: usize,
+) -> Result<Vec<u8>, NotAvailable> {
+    if !valid {
+        return Err(wire_failure(format!("invalid {what} command")));
+    }
+    let command_json = serde_json::to_vec(command)
+        .map_err(|error| wire_failure(format!("encode {what} command: {error}")))?;
+    if command_json.len() > max_bytes {
+        return Err(wire_failure(format!("{what} command exceeds wire bound")));
+    }
+    Ok(command_json)
+}
+
+/// Decode one `what` control reply, refusing it when it is larger than
+/// `max_bytes` or fails its own validity check.
+#[cfg(feature = "client")]
+fn decode_bounded_reply<R: serde::de::DeserializeOwned>(
+    what: &str,
+    bytes: &[u8],
+    max_bytes: usize,
+    valid: impl FnOnce(&R) -> bool,
+) -> Result<R, NotAvailable> {
+    if bytes.len() > max_bytes {
+        return Err(wire_failure(format!("{what} reply exceeds wire bound")));
+    }
+    let decoded: R = serde_json::from_slice(bytes)
+        .map_err(|error| wire_failure(format!("decode {what} reply: {error}")))?;
+    if !valid(&decoded) {
+        return Err(wire_failure(format!("invalid {what} reply")));
+    }
+    Ok(decoded)
+}
+
+#[cfg(feature = "client")]
 impl ChannelHandle {
     /// Send PCM or controls to this launched application's output-only service.
     ///
@@ -976,42 +934,22 @@ impl ChannelHandle {
         app_id: &str,
         command: &NearbyTransferCommand,
     ) -> Result<NearbyTransferReply, NotAvailable> {
-        if !command.valid() {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
-                "invalid nearby transfer command".into(),
-            )));
-        }
-        let command_json = serde_json::to_vec(command).map_err(|error| {
-            NotAvailable::Capnp(capnp::Error::failed(format!(
-                "encode nearby transfer command: {error}"
-            )))
-        })?;
-        if command_json.len() > MAX_NEARBY_TRANSFER_WIRE_BYTES {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
-                "nearby transfer command exceeds wire bound".into(),
-            )));
-        }
+        let command_json = encode_bounded_command(
+            "nearby transfer",
+            command,
+            command.valid(),
+            MAX_NEARBY_TRANSFER_WIRE_BYTES,
+        )?;
         let mut request = self.inner.nearby_transfer_command_request();
         request.get().set_app_id(app_id);
         request.get().set_command_json(&command_json);
         let reply = request.send().promise.await?;
-        let bytes = reply.get()?.get_reply_json()?;
-        if bytes.len() > MAX_NEARBY_TRANSFER_WIRE_BYTES {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
-                "nearby transfer reply exceeds wire bound".into(),
-            )));
-        }
-        let decoded: NearbyTransferReply = serde_json::from_slice(bytes).map_err(|error| {
-            NotAvailable::Capnp(capnp::Error::failed(format!(
-                "decode nearby transfer reply: {error}"
-            )))
-        })?;
-        if !decoded.valid() {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
-                "invalid nearby transfer reply".into(),
-            )));
-        }
-        Ok(decoded)
+        decode_bounded_reply(
+            "nearby transfer",
+            reply.get()?.get_reply_json()?,
+            MAX_NEARBY_TRANSFER_WIRE_BYTES,
+            NearbyTransferReply::valid,
+        )
     }
 
     /// Run a bounded local Files command under its original invocation, if any.
@@ -1058,42 +996,22 @@ impl ChannelHandle {
         app_id: &str,
         command: &WifiContinuityCommand,
     ) -> Result<WifiContinuityReply, NotAvailable> {
-        if !command.valid() {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
-                "invalid Wi-Fi continuity command".into(),
-            )));
-        }
-        let command_json = serde_json::to_vec(command).map_err(|error| {
-            NotAvailable::Capnp(capnp::Error::failed(format!(
-                "encode Wi-Fi continuity command: {error}"
-            )))
-        })?;
-        if command_json.len() > MAX_WIFI_CONTINUITY_WIRE_BYTES {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
-                "Wi-Fi continuity command exceeds wire bound".into(),
-            )));
-        }
+        let command_json = encode_bounded_command(
+            "Wi-Fi continuity",
+            command,
+            command.valid(),
+            MAX_WIFI_CONTINUITY_WIRE_BYTES,
+        )?;
         let mut request = self.inner.wifi_continuity_command_request();
         request.get().set_app_id(app_id);
         request.get().set_command_json(&command_json);
         let reply = request.send().promise.await?;
-        let bytes = reply.get()?.get_reply_json()?;
-        if bytes.len() > MAX_WIFI_CONTINUITY_WIRE_BYTES {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
-                "Wi-Fi continuity reply exceeds wire bound".into(),
-            )));
-        }
-        let decoded: WifiContinuityReply = serde_json::from_slice(bytes).map_err(|error| {
-            NotAvailable::Capnp(capnp::Error::failed(format!(
-                "decode Wi-Fi continuity reply: {error}"
-            )))
-        })?;
-        if !decoded.valid() {
-            return Err(NotAvailable::Capnp(capnp::Error::failed(
-                "invalid Wi-Fi continuity reply".into(),
-            )));
-        }
-        Ok(decoded)
+        decode_bounded_reply(
+            "Wi-Fi continuity",
+            reply.get()?.get_reply_json()?,
+            MAX_WIFI_CONTINUITY_WIRE_BYTES,
+            WifiContinuityReply::valid,
+        )
     }
 
     /// Ask the shell's speaker-group authority from the authenticated
@@ -1108,29 +1026,18 @@ impl ChannelHandle {
         app_id: &str,
         command: &SpeakerCommand,
     ) -> Result<SpeakerReply, NotAvailable> {
-        let failed = |message: String| NotAvailable::Capnp(capnp::Error::failed(message));
-        if !command.valid() {
-            return Err(failed("invalid speaker command".into()));
-        }
-        let command_json = serde_json::to_vec(command)
-            .map_err(|error| failed(format!("encode speaker command: {error}")))?;
-        if command_json.len() > MAX_SPEAKER_WIRE_BYTES {
-            return Err(failed("speaker command exceeds wire bound".into()));
-        }
+        let command_json =
+            encode_bounded_command("speaker", command, command.valid(), MAX_SPEAKER_WIRE_BYTES)?;
         let mut request = self.inner.speaker_command_request();
         request.get().set_app_id(app_id);
         request.get().set_command_json(&command_json);
         let reply = request.send().promise.await?;
-        let bytes = reply.get()?.get_reply_json()?;
-        if bytes.len() > MAX_SPEAKER_WIRE_BYTES {
-            return Err(failed("speaker reply exceeds wire bound".into()));
-        }
-        let decoded: SpeakerReply = serde_json::from_slice(bytes)
-            .map_err(|error| failed(format!("decode speaker reply: {error}")))?;
-        if !decoded.valid() {
-            return Err(failed("invalid speaker reply".into()));
-        }
-        Ok(decoded)
+        decode_bounded_reply(
+            "speaker",
+            reply.get()?.get_reply_json()?,
+            MAX_SPEAKER_WIRE_BYTES,
+            SpeakerReply::valid,
+        )
     }
 
     /// Subscribe to lifecycle edges addressed to this exact application
@@ -1164,6 +1071,23 @@ impl ChannelHandle {
         Ok(AppSettingsHandle {
             inner: Rc::new(reply.get()?.get_settings()?),
         })
+    }
+
+    /// Wait until this route's channel keys, or this device's access to
+    /// them, may have changed since `after` (0 at first, then what the
+    /// previous call returned), and return the value to wait from next. The
+    /// call stays pending, without traffic, while nothing changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the broker has no channel service to
+    /// follow (an older broker answers unimplemented) or is unavailable;
+    /// the endpoint then asks for keys on a timer.
+    pub async fn channel_keys_changed(&self, after: u64) -> Result<u64, NotAvailable> {
+        let mut request = self.inner.channel_keys_changed_request();
+        request.get().set_after(after);
+        let reply = request.send().promise.await?;
+        Ok(reply.get()?.get_change())
     }
 
     /// This application's live activity: what it shows outside its windows
@@ -1461,62 +1385,7 @@ impl ChannelHandle {
                 // `action_count` above already proved `actions.len()` fits in
                 // u32, so every index here does too.
                 let idx = u32::try_from(i).unwrap_or(u32::MAX);
-                let mut row = list.reborrow().get(idx);
-                row.set_resource(&a.resource);
-                if let Some(identity) = &a.semantic_identity {
-                    if !identity.is_valid() || identity.kind != a.resource_kind {
-                        return Err(capnp::Error::failed(
-                            "invalid resource semantic identity".into(),
-                        )
-                        .into());
-                    }
-                    let mut out = row.reborrow().init_semantic_identity();
-                    out.set_kind(&identity.kind);
-                    out.set_key(&identity.key);
-                }
-                row.set_action(&a.action);
-                row.set_resource_kind(&a.resource_kind);
-                row.set_resource_label(&a.resource_label);
-                row.set_action_label(&a.action_label);
-                row.set_description(a.description.as_deref().unwrap_or(""));
-                row.set_operation_kind(&a.operation_kind);
-                row.set_params_json(&a.params_json);
-                row.set_contract_json(&a.contract_json);
-                if let Some(view) = &a.view {
-                    let mut out = row.reborrow().init_view();
-                    out.set_id(&view.id);
-                    out.set_label(&view.label);
-                    out.set_description(view.description.as_deref().unwrap_or(""));
-                    out.set_open_action(&view.open_action);
-                    out.set_primary(view.primary);
-                    if let Some(range) = &view.range {
-                        let mut range_out = out.reborrow().init_range();
-                        range_out.set_action(&range.action);
-                        range_out.set_start_param(&range.start_param);
-                        range_out.set_end_param(&range.end_param);
-                        range_out.set_unit_param(&range.unit_param);
-                    }
-                    if let Some(mount) = &view.mount {
-                        let mut out = out.init_mount();
-                        out.set_action(&mount.action);
-                        out.set_capability_param(&mount.capability_param);
-                        out.set_view_param(&mount.view_param);
-                    }
-                }
-                let mut input = row.init_input();
-                match &a.input {
-                    ExportedInput::None => input.set_none(()),
-                    ExportedInput::Text {
-                        prompt,
-                        placeholder,
-                        wants_content,
-                    } => {
-                        let mut t = input.init_text();
-                        t.set_prompt(prompt);
-                        t.set_placeholder(placeholder);
-                        t.set_wants_content(*wants_content);
-                    }
-                }
+                write_exported_action(list.reborrow().get(idx), a)?;
             }
         }
         req.send().promise.await?;
@@ -1794,12 +1663,43 @@ impl ChannelHandle {
     /// Returns [`NotAvailable`] if the broker connection is unavailable or
     /// drops during the call.
     pub async fn task_run_cancelled(&self, run_id: u64, lease: &str) -> Result<bool, NotAvailable> {
+        Ok(self.task_run_status(run_id, lease).await?.cancelled)
+    }
+
+    /// Observe cancellation and bounded steering on this authenticated run.
+    ///
+    /// # Errors
+    /// The host is unavailable, refuses the run or returns invalid control data.
+    pub async fn task_run_status(
+        &self,
+        run_id: u64,
+        lease: &str,
+    ) -> Result<TaskRunStatus, NotAvailable> {
         let mut request = self.inner.task_run_cancelled_request();
         let mut params = request.get();
         params.set_run_id(run_id);
         params.set_lease(lease);
         let reply = request.send().promise.await?;
-        Ok(reply.get()?.get_cancelled())
+        let value = reply.get()?;
+        let json = value
+            .get_control_json()?
+            .to_str()
+            .map_err(|_| capnp::Error::failed("invalid task control UTF-8".into()))?;
+        if json.len() > TaskRunControl::MAX_BYTES {
+            return Err(capnp::Error::failed("oversized task direction page".into()).into());
+        }
+        let control = if json.is_empty() {
+            None
+        } else {
+            let control: TaskRunControl = serde_json::from_str(json)
+                .map_err(|_| capnp::Error::failed("invalid task direction page".into()))?;
+            control.validate().map_err(capnp::Error::failed)?;
+            Some(control)
+        };
+        Ok(TaskRunStatus {
+            cancelled: value.get_cancelled(),
+            control,
+        })
     }
 
     /// Report what became of an invocation. An empty `code` means it ran;
@@ -2438,337 +2338,6 @@ impl ActionStream {
     }
 }
 
-/// What one exported action's invocation must carry, as it crosses the
-/// wire — the transport-side twin of `tilo_actions::door::InputSpec`.
-/// Kept here rather than depending on `tilo-actions` so this crate stays
-/// a client for one socket; an app wanting the richer type converts at
-/// its own edge.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExportedInput {
-    None,
-    Text {
-        prompt: String,
-        placeholder: String,
-        /// Whether that text names content already in this machine's
-        /// store rather than words somebody says.
-        wants_content: bool,
-    },
-}
-
-/// Explicit resource-view metadata attached to the action that opens it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExportedView {
-    pub id: String,
-    pub label: String,
-    pub description: Option<String>,
-    pub open_action: String,
-    pub primary: bool,
-    pub mount: Option<ExportedViewMount>,
-    pub range: Option<ExportedViewRange>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExportedViewRange {
-    pub action: String,
-    pub start_param: String,
-    pub end_param: String,
-    pub unit_param: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExportedViewMount {
-    pub action: String,
-    pub capability_param: String,
-    pub view_param: String,
-}
-
-/// Bounded descriptive source identity; never permission or authority.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExportedResourceSemanticIdentity {
-    pub kind: String,
-    pub key: String,
-}
-
-impl ExportedResourceSemanticIdentity {
-    pub const MAX_KIND_BYTES: usize = 128;
-    pub const MAX_KEY_BYTES: usize = 4096;
-
-    #[must_use]
-    pub fn is_valid(&self) -> bool {
-        !self.kind.is_empty()
-            && self.kind.len() <= Self::MAX_KIND_BYTES
-            && self
-                .kind
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
-            && !self.key.is_empty()
-            && self.key.len() <= Self::MAX_KEY_BYTES
-            && !self.key.chars().any(char::is_control)
-    }
-}
-
-/// One inert operation an application exports, without execution authority.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExportedAction {
-    pub resource: String,
-    pub semantic_identity: Option<ExportedResourceSemanticIdentity>,
-    pub action: String,
-    pub resource_kind: String,
-    pub resource_label: String,
-    pub action_label: String,
-    pub description: Option<String>,
-    /// `document`, `effect`, or `view`.
-    pub operation_kind: String,
-    /// JSON encoding of the canonical typed parameter descriptors.
-    pub params_json: String,
-    /// JSON encoding of the complete safety/lifecycle/result contract.
-    pub contract_json: String,
-    pub view: Option<ExportedView>,
-    pub input: ExportedInput,
-}
-
-/// Bounded, revision-aware request to an application-owned action directory.
-///
-/// `cursor` is opaque to callers. A source must reject it as stale when its
-/// revision no longer names the same ordering, rather than silently skipping
-/// or duplicating rows. Every numeric field is an upper bound, never a hint.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActionDirectoryQuery {
-    /// Broker-issued live connection id. Zero requests the broker's root
-    /// directory; non-zero addresses one application directory.
-    pub peer_id: u64,
-    pub revision: String,
-    pub cursor: Vec<u8>,
-    pub needle: String,
-    pub parent_resource: String,
-    pub max_results: u32,
-    pub max_bytes: u32,
-    pub max_work: u32,
-    pub max_depth: u16,
-}
-
-/// A hierarchy-preserving directory row. Resource rows have no action or
-/// descriptor; action rows contain the canonical descriptor for that exact
-/// resource/action address.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActionDirectoryRow {
-    pub parent_resource: String,
-    pub resource: String,
-    /// Stable kind and user-facing label for resource/container rows. Action
-    /// rows repeat their descriptor values here so a shell can render either
-    /// shape without parsing raw resource identifiers.
-    pub resource_kind: String,
-    pub resource_label: String,
-    pub resource_presentation_json: String,
-    pub action: Option<String>,
-    pub descriptor: Option<ExportedAction>,
-    pub has_children: bool,
-    /// Permission-bearing action used only to disclose a container row.
-    pub visibility_action: Option<String>,
-    /// Contract paired with [`Self::visibility_action`].
-    pub visibility_contract_json: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActionDirectoryPage {
-    pub revision: String,
-    pub rows: Vec<ActionDirectoryRow>,
-    pub next_cursor: Vec<u8>,
-    pub exhausted: bool,
-    pub stale_cursor: bool,
-    pub budget_exhausted: bool,
-}
-
-/// Exact, current-authority response before an invocation is admitted.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ActionDirectoryResolution {
-    Found(Box<ActionDirectoryRow>),
-    NotFound,
-    StaleRevision,
-    Unavailable,
-}
-
-#[cfg(feature = "client")]
-fn capnp_text(value: capnp::text::Reader<'_>) -> Result<String, capnp::Error> {
-    value.to_str().map(str::to_owned).map_err(|error| {
-        capnp::Error::failed(format!("invalid UTF-8 in action directory: {error}"))
-    })
-}
-
-#[cfg(feature = "client")]
-fn decode_exported_action(
-    row: collab_capnp::exported_action::Reader<'_>,
-) -> Result<ExportedAction, capnp::Error> {
-    let description = capnp_text(row.get_description()?)?;
-    let semantic_identity = if row.has_semantic_identity() {
-        let identity = row.get_semantic_identity()?;
-        let kind = identity.get_kind()?;
-        let key = identity.get_key()?;
-        if kind.len() > ExportedResourceSemanticIdentity::MAX_KIND_BYTES
-            || key.len() > ExportedResourceSemanticIdentity::MAX_KEY_BYTES
-        {
-            return Err(capnp::Error::failed(
-                "oversized resource semantic identity".into(),
-            ));
-        }
-        let identity = ExportedResourceSemanticIdentity {
-            kind: capnp_text(kind)?,
-            key: capnp_text(key)?,
-        };
-        if !identity.is_valid() || identity.kind != capnp_text(row.get_resource_kind()?)? {
-            return Err(capnp::Error::failed(
-                "invalid resource semantic identity".into(),
-            ));
-        }
-        Some(identity)
-    } else {
-        None
-    };
-    let input = match row.get_input()?.which()? {
-        collab_capnp::action_input::Which::None(()) => ExportedInput::None,
-        collab_capnp::action_input::Which::Text(text) => ExportedInput::Text {
-            prompt: capnp_text(text.get_prompt()?)?,
-            placeholder: capnp_text(text.get_placeholder()?)?,
-            wants_content: text.get_wants_content(),
-        },
-    };
-    let view = row
-        .has_view()
-        .then(|| row.get_view())
-        .transpose()?
-        .map(|view| {
-            let description = capnp_text(view.get_description()?)?;
-            Ok::<_, capnp::Error>(ExportedView {
-                id: capnp_text(view.get_id()?)?,
-                label: capnp_text(view.get_label()?)?,
-                description: (!description.is_empty()).then_some(description),
-                open_action: capnp_text(view.get_open_action()?)?,
-                primary: view.get_primary(),
-                range: view
-                    .has_range()
-                    .then(|| view.get_range())
-                    .transpose()?
-                    .map(|range| {
-                        Ok::<_, capnp::Error>(ExportedViewRange {
-                            action: capnp_text(range.get_action()?)?,
-                            start_param: capnp_text(range.get_start_param()?)?,
-                            end_param: capnp_text(range.get_end_param()?)?,
-                            unit_param: capnp_text(range.get_unit_param()?)?,
-                        })
-                    })
-                    .transpose()?,
-                mount: view
-                    .has_mount()
-                    .then(|| view.get_mount())
-                    .transpose()?
-                    .map(|mount| {
-                        Ok::<_, capnp::Error>(ExportedViewMount {
-                            action: capnp_text(mount.get_action()?)?,
-                            capability_param: capnp_text(mount.get_capability_param()?)?,
-                            view_param: capnp_text(mount.get_view_param()?)?,
-                        })
-                    })
-                    .transpose()?,
-            })
-        })
-        .transpose()?;
-    Ok(ExportedAction {
-        resource: capnp_text(row.get_resource()?)?,
-        semantic_identity,
-        action: capnp_text(row.get_action()?)?,
-        resource_kind: capnp_text(row.get_resource_kind()?)?,
-        resource_label: capnp_text(row.get_resource_label()?)?,
-        action_label: capnp_text(row.get_action_label()?)?,
-        description: (!description.is_empty()).then_some(description),
-        operation_kind: capnp_text(row.get_operation_kind()?)?,
-        params_json: capnp_text(row.get_params_json()?)?,
-        contract_json: capnp_text(row.get_contract_json()?)?,
-        view,
-        input,
-    })
-}
-
-#[cfg(feature = "client")]
-fn decode_action_directory_row(
-    row: collab_capnp::action_directory_row::Reader<'_>,
-) -> Result<ActionDirectoryRow, capnp::Error> {
-    let action = capnp_text(row.get_action()?)?;
-    let visibility_action = capnp_text(row.get_visibility_action()?)?;
-    let descriptor = row
-        .has_descriptor()
-        .then(|| row.get_descriptor())
-        .transpose()?
-        .map(decode_exported_action)
-        .transpose()?;
-    Ok(ActionDirectoryRow {
-        parent_resource: capnp_text(row.get_parent_resource()?)?,
-        resource: capnp_text(row.get_resource()?)?,
-        resource_kind: capnp_text(row.get_resource_kind()?)?,
-        resource_label: capnp_text(row.get_resource_label()?)?,
-        resource_presentation_json: capnp_text(row.get_resource_presentation_json()?)?,
-        action: (!action.is_empty()).then_some(action),
-        descriptor,
-        has_children: row.get_has_children(),
-        visibility_action: (!visibility_action.is_empty()).then_some(visibility_action),
-        visibility_contract_json: capnp_text(row.get_visibility_contract_json()?)?,
-    })
-}
-
-/// Decode a broker-validated directory page for an in-process shell client.
-/// Public so the shell can use the same typed bridge without reserialising a
-/// Cap'n Proto page into an eager JSON catalogue.
-/// Decode one bounded action-directory page from its Cap'n Proto wire form.
-///
-/// # Errors
-///
-/// Returns a Cap'n Proto error when a field is absent, malformed, or cannot
-/// be decoded into the typed resource/action representation.
-#[cfg(feature = "client")]
-pub fn decode_action_directory_page(
-    page: collab_capnp::action_directory_page::Reader<'_>,
-) -> Result<ActionDirectoryPage, capnp::Error> {
-    let rows = page
-        .get_rows()?
-        .iter()
-        .map(decode_action_directory_row)
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(ActionDirectoryPage {
-        revision: capnp_text(page.get_revision()?)?,
-        rows,
-        next_cursor: page.get_next_cursor()?.to_vec(),
-        exhausted: page.get_exhausted(),
-        stale_cursor: page.get_stale_cursor(),
-        budget_exhausted: page.get_budget_exhausted(),
-    })
-}
-
-/// Decode a broker-validated exact resolution for an in-process shell client.
-/// Decode an exact action-directory resolution from its Cap'n Proto wire form.
-///
-/// # Errors
-///
-/// Returns a Cap'n Proto error when the union or a contained action row is
-/// malformed.
-#[cfg(feature = "client")]
-pub fn decode_action_directory_resolution(
-    resolution: collab_capnp::action_directory_resolution::Reader<'_>,
-) -> Result<ActionDirectoryResolution, capnp::Error> {
-    match resolution.which()? {
-        collab_capnp::action_directory_resolution::Which::Found(row) => Ok(
-            ActionDirectoryResolution::Found(Box::new(decode_action_directory_row(row?)?)),
-        ),
-        collab_capnp::action_directory_resolution::Which::NotFound(()) => {
-            Ok(ActionDirectoryResolution::NotFound)
-        }
-        collab_capnp::action_directory_resolution::Which::StaleRevision(()) => {
-            Ok(ActionDirectoryResolution::StaleRevision)
-        }
-        collab_capnp::action_directory_resolution::Which::Unavailable(()) => {
-            Ok(ActionDirectoryResolution::Unavailable)
-        }
-    }
-}
-
 /// One invocation off an [`InvocationStream`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invocation {
@@ -2873,6 +2442,9 @@ pub struct TaskRunEnvelope {
     pub run_id: u64,
     pub lease: String,
     pub planning: TaskRunPlanning,
+    /// Only the broker may mint a policy from the native task owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     pub action_context: serde_json::Value,
 }
 
@@ -2891,10 +2463,22 @@ pub enum TaskRunPlanning {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskRunUpdate {
     Accepted,
-    Progress { message: String },
-    Succeeded { message: String },
-    Failed { message: String },
-    Cancelled { message: String },
+    /// Sent only after the exact direction page entered the next planning context.
+    DirectionsApplied {
+        revision: u64,
+    },
+    Progress {
+        message: String,
+    },
+    Succeeded {
+        message: String,
+    },
+    Failed {
+        message: String,
+    },
+    Cancelled {
+        message: String,
+    },
 }
 
 /// Client-pulled stream of broker-addressed task leases.
@@ -2927,42 +2511,7 @@ impl TaskRunStream {
 }
 
 #[cfg(test)]
-mod task_run_tests {
-    use super::{TaskRunEnvelope, TaskRunPlanning, TaskRunUpdate};
-
-    #[test]
-    fn task_run_wire_is_typed_and_rejects_unknown_fields() {
-        let envelope = TaskRunEnvelope {
-            version: 1,
-            task_id: "task:1".into(),
-            title: "Review proposal".into(),
-            run_id: 7,
-            lease: "broker-lease".into(),
-            planning: TaskRunPlanning::RulesOnly,
-            action_context: serde_json::json!({"purpose": "Review proposal"}),
-        };
-        let json = serde_json::to_string(&envelope).unwrap();
-        assert_eq!(
-            serde_json::from_str::<TaskRunEnvelope>(&json).unwrap(),
-            envelope
-        );
-        assert!(serde_json::from_str::<TaskRunEnvelope>(
-            r#"{"version":1,"task_id":"t","title":"x","run_id":1,"lease":"l","planning":"rules_only","action_context":{},"path":"/tmp"}"#
-        )
-        .is_err());
-        assert!(serde_json::from_str::<TaskRunEnvelope>(
-            r#"{"version":1,"task_id":"t","title":"x","run_id":1,"lease":"l","planning":"unattended","action_context":{}}"#
-        )
-        .is_err());
-        assert_eq!(
-            serde_json::from_str::<TaskRunUpdate>(r#"{"kind":"progress","message":"checking"}"#)
-                .unwrap(),
-            TaskRunUpdate::Progress {
-                message: "checking".into()
-            }
-        );
-    }
-}
+mod task_run_tests;
 
 /// Per-channel presence handle.
 #[derive(Clone)]
@@ -3463,522 +3012,14 @@ pub mod raw {
 }
 
 #[cfg(test)]
-mod certified_join_tests {
-    use super::*;
-
-    #[test]
-    fn certified_join_round_trips_and_prefixed_garbage_never_downgrades() {
-        let identity = CertifiedJoinIdentity {
-            workspace_id: "workspace-a".into(),
-            device_certificate: vec![1, 2, 3],
-            proof: vec![4; 64],
-        };
-        let encoded = identity.encode().expect("encode");
-        assert_eq!(
-            CertifiedJoinIdentity::decode(&encoded).expect("decode"),
-            Some(identity)
-        );
-        assert_eq!(
-            CertifiedJoinIdentity::decode(b"uncertified identity").expect("uncertified bytes"),
-            None
-        );
-        let mut malformed = CERTIFIED_JOIN_PREFIX.to_vec();
-        malformed.extend_from_slice(b"not postcard");
-        assert!(CertifiedJoinIdentity::decode(&malformed).is_err());
-    }
-}
-
-#[cfg(all(test, feature = "client"))]
-mod tests {
-    #[cfg(feature = "client")]
-    #[test]
-    fn action_semantic_identity_is_optional_bounded_and_kind_exact() {
-        let decode = |identity: Option<(&str, &str)>| {
-            let mut message = capnp::message::Builder::new_default();
-            let mut row = message.init_root::<collab_capnp::exported_action::Builder<'_>>();
-            row.set_resource("opaque-alias");
-            row.set_resource_kind("store.app");
-            row.set_resource_label("A misleading label");
-            if let Some((kind, key)) = identity {
-                let mut out = row.reborrow().init_semantic_identity();
-                out.set_kind(kind);
-                out.set_key(key);
-            }
-            decode_exported_action(
-                message
-                    .get_root_as_reader::<collab_capnp::exported_action::Reader<'_>>()
-                    .unwrap(),
-            )
-        };
-        assert!(decode(None).unwrap().semantic_identity.is_none());
-        let decoded = decode(Some(("store.app", "app:so.tilo.chat"))).unwrap();
-        assert_eq!(decoded.resource, "opaque-alias");
-        assert_eq!(decoded.semantic_identity.unwrap().key, "app:so.tilo.chat");
-        assert!(decode(Some(("person", "app:so.tilo.chat"))).is_err());
-        assert!(decode(Some(("store.app", ""))).is_err());
-        assert!(decode(Some(("store.app", "key\nsecret"))).is_err());
-        assert!(decode(Some(("store.app", &"x".repeat(4097)))).is_err());
-        assert!(decode(Some((&"x".repeat(129), "key"))).is_err());
-        assert!(decode(Some(("store.app", &"x".repeat(4096)))).is_ok());
-    }
-
-    #[test]
-    fn airdrop_extension_preserves_old_json_and_accepts_no_application_trust_claim() {
-        use super::{NearbyTransferCommand as Command, NearbyTransferReply as Reply};
-        assert_eq!(
-            serde_json::to_string(&Command::Snapshot).unwrap(),
-            r#"{"command":"snapshot"}"#
-        );
-        assert_eq!(
-            serde_json::to_string(&Reply::Accepted).unwrap(),
-            r#"{"result":"accepted"}"#
-        );
-        let command = r#"{"command":"send-air-drop","source_path":[47,116,109,112,47,102],"address":"127.0.0.1","port":443}"#;
-        let parsed = serde_json::from_str::<Command>(command).unwrap();
-        assert!(parsed.valid());
-        for claimed in ["certificate_sha256", "verified", "person", "remember"] {
-            let value = command.strip_suffix('}').unwrap().to_owned()
-                + &format!(",\"{claimed}\":\"claimed\"}}");
-            assert!(serde_json::from_str::<Command>(&value).is_err());
-        }
-        for address in ["receiver.example", "0.0.0.0", "239.1.1.1", "::"] {
-            let mut value = serde_json::from_str::<serde_json::Value>(command).unwrap();
-            value["address"] = address.into();
-            assert!(!serde_json::from_value::<Command>(value).unwrap().valid());
-        }
-        let mut value = serde_json::from_str::<serde_json::Value>(command).unwrap();
-        value["port"] = 0.into();
-        assert!(!serde_json::from_value::<Command>(value).unwrap().valid());
-    }
-    use super::*;
-    use std::env;
-
-    fn clear_tilo_env() -> tilo_test_env::ScopedEnv {
-        let mut scoped = tilo_test_env::ScopedEnv::new();
-        for (key, _) in env::vars() {
-            if key.starts_with("TILO_") {
-                scoped.remove(&key);
-            }
-        }
-        scoped
-    }
-
-    #[test]
-    fn try_connect_without_env_returns_service_fd_missing() {
-        let _env = clear_tilo_env();
-        // Not using `expect_err` because `CollabClient` intentionally
-        // doesn't implement `Debug` (the underlying capnp client hook
-        // isn't `Debug`).
-        match try_connect() {
-            Err(NotAvailable::ServiceFdMissing) => {}
-            Err(other) => panic!("unexpected error: {other:?}"),
-            Ok(_) => panic!("expected ServiceFdMissing"),
-        }
-    }
-
-    #[test]
-    fn nearby_transfer_contract_is_bounded_and_rejects_impossible_progress() {
-        // phase: nearby_transfer_contract_is_bounded_and_path_bytes_are_opaque
-        {
-            let command = NearbyTransferCommand::Send {
-                target: NearbyTargetHandle::from_issued_bytes([7; 16]),
-                source_path: vec![b'/', b't', b'm', b'p', b'/', 0xff],
-            };
-            assert!(command.valid());
-            let encoded = serde_json::to_vec(&command).expect("encode nearby command");
-            assert!(encoded.len() < MAX_NEARBY_TRANSFER_WIRE_BYTES);
-            assert_eq!(
-                serde_json::from_slice::<NearbyTransferCommand>(&encoded).expect("decode command"),
-                command
-            );
-
-            assert!(
-                !NearbyTransferCommand::Send {
-                    target: NearbyTargetHandle::from_issued_bytes([7; 16]),
-                    source_path: vec![b'a', 0, b'b'],
-                }
-                .valid()
-            );
-            assert!(
-                NearbyTransferCommand::Decide {
-                    handle: NearbyTransferHandle::from_issued_bytes([8; 16]),
-                    accept: true,
-                    destination: Some(NearbyDestinationHandle::from_issued_bytes([9; 16])),
-                    remember_for_session: true,
-                }
-                .valid()
-            );
-            assert!(
-                !NearbyTransferCommand::Decide {
-                    handle: NearbyTransferHandle::from_issued_bytes([8; 16]),
-                    accept: true,
-                    destination: None,
-                    remember_for_session: false,
-                }
-                .valid()
-            );
-            assert!(
-                !NearbyTransferCommand::Send {
-                    target: NearbyTargetHandle::from_issued_bytes([7; 16]),
-                    source_path: vec![b'a'; MAX_NEARBY_TRANSFER_PATH_BYTES + 1],
-                }
-                .valid()
-            );
-        }
-        // phase: nearby_transfer_snapshot_rejects_unbounded_or_impossible_progress
-        {
-            let target = NearbyTransferTarget {
-                handle: NearbyTargetHandle::from_issued_bytes([3; 16]),
-                label: "Travel laptop".into(),
-                online: true,
-            };
-            let transfer = NearbyTransferStatus {
-                handle: NearbyTransferHandle::from_issued_bytes([4; 16]),
-                name: "Photos".into(),
-                device_label: target.label.clone(),
-                direction: NearbyTransferDirection::Sending,
-                phase: NearbyTransferPhase::Transferring,
-                transferred_bytes: 20,
-                total_bytes: 100,
-            };
-            let reply = NearbyTransferReply::Snapshot {
-                snapshot: NearbyTransferSnapshot {
-                    targets: vec![target],
-                    destinations: vec![NearbyTransferDestination {
-                        handle: NearbyDestinationHandle::from_issued_bytes([5; 16]),
-                        label: "Workspace files".into(),
-                        remembered_for_session: false,
-                    }],
-                    transfers: vec![transfer.clone()],
-                },
-            };
-            assert!(reply.valid());
-
-            let mut impossible = transfer;
-            impossible.transferred_bytes = 101;
-            assert!(
-                !NearbyTransferReply::Snapshot {
-                    snapshot: NearbyTransferSnapshot {
-                        targets: Vec::new(),
-                        destinations: Vec::new(),
-                        transfers: vec![impossible],
-                    },
-                }
-                .valid()
-            );
-        }
-    }
-
-    #[test]
-    fn wifi_continuity_is_bounded_redacted_and_bound_to_a_local_profile() {
-        // phase: wifi_continuity_contract_is_bounded_and_redacts_secrets
-        {
-            let command = WifiContinuityCommand::Share {
-                ssid: "Studio".into(),
-                security: PortableWifiSecurity::Wpa3,
-                password: "correct horse battery staple".into(),
-            };
-            assert!(command.valid());
-            assert!(!format!("{command:?}").contains("correct horse"));
-            let encoded = serde_json::to_vec(&command).expect("encode Wi-Fi command");
-            assert!(encoded.len() < MAX_WIFI_CONTINUITY_WIRE_BYTES);
-            assert_eq!(
-                serde_json::from_slice::<WifiContinuityCommand>(&encoded)
-                    .expect("decode Wi-Fi command"),
-                command
-            );
-
-            assert!(
-                !WifiContinuityCommand::Share {
-                    ssid: "Studio".into(),
-                    security: PortableWifiSecurity::Wpa2,
-                    password: "x".repeat(MAX_WIFI_PASSWORD_BYTES + 1),
-                }
-                .valid()
-            );
-            assert!(
-                !WifiContinuityReply::Password {
-                    password: "x".repeat(MAX_WIFI_PASSWORD_BYTES + 1),
-                }
-                .valid()
-            );
-        }
-        // phase: saved_wifi_profile_reference_requires_an_exact_local_uuid
-        {
-            assert!(
-                WifiContinuityCommand::ShareSavedProfile {
-                    profile_uuid: "12345678-1234-1234-1234-123456789abc".into(),
-                }
-                .valid()
-            );
-            for invalid in [
-                "profile-name",
-                "../../secret",
-                "12345678-1234-1234-1234-123456789abz",
-            ] {
-                assert!(
-                    !WifiContinuityCommand::ShareSavedProfile {
-                        profile_uuid: invalid.into(),
-                    }
-                    .valid()
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn action_directory_and_view_metadata_round_trip() {
-        // phase: action_directory_resource_presentation_round_trips
-        {
-            let mut message = capnp::message::Builder::new_default();
-            {
-                let mut page =
-                    message.init_root::<collab_capnp::action_directory_page::Builder<'_>>();
-                page.set_revision("r1");
-                page.set_exhausted(true);
-                let mut rows = page.init_rows(1);
-                let mut row = rows.reborrow().get(0);
-                row.set_resource("totp:mail");
-                row.set_resource_kind("totp");
-                row.set_resource_label("Mail code");
-                row.set_resource_presentation_json(
-                    r#"{"detail":"expires in 18 s","badge":"438 291"}"#,
-                );
-            }
-            let reader = message
-                .get_root_as_reader::<collab_capnp::action_directory_page::Reader<'_>>()
-                .expect("page reader");
-            let decoded = decode_action_directory_page(reader).expect("page decodes");
-            assert_eq!(
-                decoded.rows[0].resource_presentation_json,
-                r#"{"detail":"expires in 18 s","badge":"438 291"}"#
-            );
-        }
-        // phase: exported_view_metadata_round_trips
-        {
-            let mut message = capnp::message::Builder::new_default();
-            {
-                let mut action = message.init_root::<collab_capnp::exported_action::Builder<'_>>();
-                action.set_resource("notes:brief");
-                action.set_action("show-editor");
-                let mut view = action.init_view();
-                view.set_id("editor");
-                view.set_label("Editor");
-                view.set_description("Edit this note");
-                view.set_open_action("show-editor");
-                view.set_primary(true);
-                let mut range = view.reborrow().init_range();
-                range.set_action("show-range");
-                range.set_start_param("start");
-                range.set_end_param("end");
-                range.set_unit_param("unit");
-                let mut mount = view.init_mount();
-                mount.set_action("mount-editor");
-                mount.set_capability_param("slot_capability");
-                mount.set_view_param("slot_view");
-            }
-            let reader = message
-                .get_root_as_reader::<collab_capnp::exported_action::Reader<'_>>()
-                .expect("action reader");
-            let decoded = decode_exported_action(reader).expect("action decodes");
-            assert_eq!(
-                decoded.view,
-                Some(ExportedView {
-                    id: "editor".into(),
-                    label: "Editor".into(),
-                    description: Some("Edit this note".into()),
-                    open_action: "show-editor".into(),
-                    primary: true,
-                    range: Some(ExportedViewRange {
-                        action: "show-range".into(),
-                        start_param: "start".into(),
-                        end_param: "end".into(),
-                        unit_param: "unit".into()
-                    }),
-                    mount: Some(ExportedViewMount {
-                        action: "mount-editor".into(),
-                        capability_param: "slot_capability".into(),
-                        view_param: "slot_view".into(),
-                    }),
-                })
-            );
-        }
-    }
-}
+mod certified_join_tests;
 
 #[cfg(test)]
-mod enrolled_tests {
-    use super::*;
-    fn envelope() -> EnrolledTaskEnvelope {
-        EnrolledTaskEnvelope {
-            version: 1,
-            message_id: "message-1".into(),
-            task_id: "task-1".into(),
-            run_id: "run-1".into(),
-            launch_id: "launch-1".into(),
-            runtime_epoch: "epoch-1".into(),
-            recipient_agent: "agent-1".into(),
-            channel_lease: "channel-1".into(),
-            history: None,
-            task: TaskRunEnvelope {
-                version: 1,
-                task_id: "task-1".into(),
-                title: "Private instruction".into(),
-                run_id: 9,
-                lease: "lease-1".into(),
-                planning: TaskRunPlanning::Model,
-                action_context: serde_json::json!({}),
-            },
-        }
-    }
-    #[test]
-    fn enrolled_recipient_retains_exact_acceptance_and_never_reexecutes_duplicate() {
-        let first = envelope();
-        let mut custody =
-            EnrolledRecipientCustody::new("agent-1", "launch-1", "epoch-1", "channel-1").unwrap();
-        let accepted = custody.accept(&first).unwrap();
-        assert!(accepted.execute);
-        assert_eq!(accepted.acceptance.acceptance_sequence, 1);
-        let duplicate = custody.accept(&first).unwrap();
-        assert!(!duplicate.execute);
-        assert_eq!(accepted.acceptance, duplicate.acceptance);
-        let mut changed = first.clone();
-        changed.task.title = "Different private instruction".into();
-        assert!(custody.accept(&changed).is_err());
-        changed = first.clone();
-        changed.channel_lease = "other-channel".into();
-        assert!(custody.accept(&changed).is_err());
-        changed = first.clone();
-        changed.task.task_id = "other-task".into();
-        assert!(custody.accept(&changed).is_err());
-    }
-    #[test]
-    fn enrolled_full_private_input_and_retention_bounds_fail_closed() {
-        let mut first = envelope();
-        first.task.title = "𐐀".repeat(8000);
-        assert!(first.validate().is_ok());
-        first.task.title.push('x');
-        assert!(first.validate().is_err());
-        let mut custody =
-            EnrolledRecipientCustody::new("agent-1", "launch-1", "epoch-1", "channel-1").unwrap();
-        let original = envelope();
-        let accepted = custody.accept(&original).unwrap();
-        let mut refused = false;
-        for index in 2..=1025 {
-            let mut next = envelope();
-            next.message_id = format!("message-{index}");
-            next.task_id = format!("task-{index}");
-            next.task.task_id = next.task_id.clone();
-            next.run_id = format!("run-{index}");
-            next.task.run_id = index;
-            next.task.title = "𐐀".repeat(8000);
-            if custody.accept(&next).is_err() {
-                refused = true;
-                break;
-            }
-        }
-        assert!(refused, "retained byte budget must refuse new work");
-        let replay = custody.accept(&original).unwrap();
-        assert!(!replay.execute);
-        assert_eq!(replay.acceptance, accepted.acceptance);
-    }
-    #[cfg(feature = "client")]
-    #[tokio::test(flavor = "current_thread")]
-    async fn enrolled_old_peer_cannot_acknowledge_delivery_from_queue_success() {
-        struct OldPeer;
-        impl collab_capnp::channel_handle::Server for OldPeer {}
-        let channel = ChannelHandle {
-            inner: Rc::new(capnp_rpc::new_client(OldPeer)),
-        };
-        let first = envelope();
-        assert!(channel.subscribe_enrolled_tasks().await.is_err());
-        assert!(
-            channel
-                .accept_enrolled_task(&first.acceptance(1))
-                .await
-                .is_err()
-        );
-        assert!(
-            channel
-                .report_enrolled_task(
-                    &first.acceptance(1),
-                    1,
-                    &TaskRunUpdate::Succeeded {
-                        message: "done".into()
-                    }
-                )
-                .await
-                .is_err()
-        );
-    }
-    #[cfg(feature = "client")]
-    #[tokio::test(flavor = "current_thread")]
-    async fn enrolled_report_preserves_full_private_result_and_bounds_encoded_frame() {
-        struct Recipient(Rc<std::cell::Cell<usize>>);
-        impl collab_capnp::channel_handle::Server for Recipient {
-            fn report_enrolled_task(
-                self: Rc<Self>,
-                params: collab_capnp::channel_handle::ReportEnrolledTaskParams,
-                _results: collab_capnp::channel_handle::ReportEnrolledTaskResults,
-            ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-                let result = (|| {
-                    let request = params.get()?;
-                    let update: TaskRunUpdate =
-                        serde_json::from_str(request.get_update_json()?.to_str()?)
-                            .map_err(|error| capnp::Error::failed(error.to_string()))?;
-                    match update {
-                        TaskRunUpdate::Succeeded { message } => {
-                            assert_eq!(message.chars().count(), 8000);
-                        }
-                        _ => panic!("unexpected update"),
-                    }
-                    self.0.set(self.0.get() + 1);
-                    Ok(())
-                })();
-                capnp::capability::Promise::from(result)
-            }
-        }
-        let calls = Rc::new(std::cell::Cell::new(0));
-        let channel = ChannelHandle {
-            inner: Rc::new(capnp_rpc::new_client(Recipient(calls.clone()))),
-        };
-        let acceptance = envelope().acceptance(1);
-        for message in ["𐐀".repeat(8000), "\u{0001}".repeat(8000)] {
-            channel
-                .report_enrolled_task(&acceptance, 1, &TaskRunUpdate::Succeeded { message })
-                .await
-                .unwrap();
-        }
-        assert_eq!(calls.get(), 2);
-        assert!(
-            channel
-                .report_enrolled_task(
-                    &acceptance,
-                    2,
-                    &TaskRunUpdate::Succeeded {
-                        message: "x".repeat(64 * 1024)
-                    }
-                )
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            calls.get(),
-            2,
-            "oversized encoded update must not reach the peer"
-        );
-    }
-    #[test]
-    fn enrolled_protocol_rejects_unknown_fields_and_preserves_legacy_literal() {
-        let legacy = r#"{"version":1,"task_id":"task-1","title":"Private instruction","run_id":9,"lease":"lease-1","planning":"model","action_context":{}}"#;
-        let task: TaskRunEnvelope = serde_json::from_str(legacy).unwrap();
-        assert_eq!(task, envelope().task);
-        assert_eq!(serde_json::to_string(&task).unwrap(), legacy);
-        let mut value = serde_json::to_value(envelope()).unwrap();
-        value["credential"] = serde_json::json!("not permitted");
-        assert!(serde_json::from_value::<EnrolledTaskEnvelope>(value).is_err());
-    }
-}
+#[cfg(feature = "client")]
+mod tests;
+
+#[cfg(test)]
+mod enrolled_tests;
 
 /// Private managed delivery, independently versioned from the legacy task transport.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -4050,6 +3091,9 @@ impl EnrolledTaskEnvelope {
             || serde_json::to_vec(self).map_err(|e| e.to_string())?.len() > Self::MAX_JSON_BYTES
         {
             return Err("invalid enrolled task envelope".into());
+        }
+        if let Some(budget) = self.task.execution_budget {
+            budget.validate().map_err(str::to_owned)?;
         }
         Ok(())
     }
@@ -4265,273 +3309,9 @@ impl ChannelHandle {
     }
 }
 
-#[cfg(all(test, feature = "client"))]
-mod resolved_invocation_tests {
-    use super::*;
-
-    use capnp::capability::Promise;
-    use capnp_rpc::{RpcSystem, twoparty};
-    use std::cell::{Cell, RefCell};
-    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-
-    #[derive(Debug, PartialEq, Eq)]
-    struct Received {
-        peer: u64,
-        revision: String,
-        resource: String,
-        action: String,
-        argument: Option<String>,
-        confirmation: String,
-    }
-
-    struct ResolvedServer(Rc<RefCell<Vec<Received>>>);
-    impl collab_capnp::channel_handle::Server for ResolvedServer {
-        fn invoke_resolved_published_action(
-            self: Rc<Self>,
-            params: collab_capnp::channel_handle::InvokeResolvedPublishedActionParams,
-            mut results: collab_capnp::channel_handle::InvokeResolvedPublishedActionResults,
-        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            Promise::from((|| {
-                let p = params.get()?;
-                self.0.borrow_mut().push(Received {
-                    peer: p.get_peer_id(),
-                    revision: p.get_revision()?.to_str()?.to_owned(),
-                    resource: p.get_resource()?.to_str()?.to_owned(),
-                    action: p.get_action()?.to_str()?.to_owned(),
-                    argument: p
-                        .get_has_argument()
-                        .then(|| Ok::<String, capnp::Error>(p.get_argument()?.to_str()?.to_owned()))
-                        .transpose()?,
-                    confirmation: p.get_confirmation_json()?.to_str()?.to_owned(),
-                });
-                let mut out = results.get();
-                out.set_id(987);
-                out.set_update_json(r#"{"state":"accepted"}"#);
-                Ok(())
-            })())
-        }
-    }
-
-    // The server owns only the old eager method. The generated unsupported
-    // method returns the same Unimplemented category an older dispatch does.
-    struct LegacyServer(Rc<Cell<usize>>);
-    impl collab_capnp::channel_handle::Server for LegacyServer {
-        fn invoke_published_action(
-            self: Rc<Self>,
-            params: collab_capnp::channel_handle::InvokePublishedActionParams,
-            mut results: collab_capnp::channel_handle::InvokePublishedActionResults,
-        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            Promise::from((|| {
-                let p = params.get()?;
-                assert_eq!(p.get_peer_id(), 9);
-                assert_eq!(p.get_resource()?.to_str()?, "r");
-                assert_eq!(p.get_action()?.to_str()?, "a");
-                assert!(!p.get_has_argument());
-                self.0.set(self.0.get().saturating_add(1));
-                results.get().set_id(21);
-                Ok(())
-            })())
-        }
-    }
-
-    async fn over_wire<S, F, Fut>(server: S, action: F)
-    where
-        S: collab_capnp::channel_handle::Server + 'static,
-        F: FnOnce(ChannelHandle) -> Fut,
-        Fut: std::future::Future<Output = ()>,
-    {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let (server_io, client_io) = tokio::io::duplex(512);
-                let raw: collab_capnp::channel_handle::Client = capnp_rpc::new_client(server);
-                let (read, write) = tokio::io::split(server_io);
-                let network = twoparty::VatNetwork::new(
-                    read.compat(),
-                    write.compat_write(),
-                    capnp_rpc::rpc_twoparty_capnp::Side::Server,
-                    capnp::message::ReaderOptions::default(),
-                );
-                let task =
-                    tokio::task::spawn_local(RpcSystem::new(Box::new(network), Some(raw.client)));
-                let connection = runtime_portal::CapnpClient::from_connected_io(
-                    client_io,
-                    capnp_rpc::rpc_twoparty_capnp::Side::Client,
-                );
-                let channel = ChannelHandle {
-                    inner: Rc::new(connection.bootstrap()),
-                };
-                tilo_test_env::within("the RPC under test", action(channel)).await;
-                task.abort();
-                let _ = task.await;
-            })
-            .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn resolved_invocation_preserves_exact_revision_and_optional_argument_over_wire() {
-        let received = Rc::new(RefCell::new(Vec::new()));
-        over_wire(ResolvedServer(received.clone()), |channel| async move {
-            for argument in [None, Some(""), Some("exact argument")] {
-                assert_eq!(
-                    channel
-                        .invoke_resolved_published_action(
-                            42,
-                            "revision-7",
-                            "notes.block:p:b",
-                            "open:hash",
-                            argument,
-                            "{\"approved\":true}"
-                        )
-                        .await
-                        .unwrap(),
-                    (987, r#"{"state":"accepted"}"#.into())
-                );
-            }
-        })
-        .await;
-        let received = received.borrow();
-        assert_eq!(received.len(), 3);
-        for (row, argument) in received
-            .iter()
-            .zip([None, Some(""), Some("exact argument")])
-        {
-            assert_eq!(
-                *row,
-                Received {
-                    peer: 42,
-                    revision: "revision-7".into(),
-                    resource: "notes.block:p:b".into(),
-                    action: "open:hash".into(),
-                    argument: argument.map(str::to_owned),
-                    confirmation: "{\"approved\":true}".into()
-                }
-            );
-        }
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn resolved_invocation_accepts_exact_byte_limits() {
-        let received = Rc::new(RefCell::new(Vec::new()));
-        over_wire(ResolvedServer(received.clone()), |channel| async move {
-            channel
-                .invoke_resolved_published_action(
-                    9,
-                    &"é".repeat(256),
-                    &"r".repeat(512),
-                    &"a".repeat(512),
-                    Some(&"é".repeat(16 * 1024)),
-                    &" ".repeat(4 * 1024),
-                )
-                .await
-                .unwrap();
-        })
-        .await;
-        let rows = received.borrow();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].revision.len(), 512);
-        assert_eq!(rows[0].resource.len(), 512);
-        assert_eq!(rows[0].action.len(), 512);
-        assert_eq!(rows[0].argument.as_ref().unwrap().len(), 32 * 1024);
-        assert_eq!(rows[0].confirmation.len(), 4 * 1024);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn resolved_invocation_refuses_invalid_input_before_rpc() {
-        let received = Rc::new(RefCell::new(Vec::new()));
-        over_wire(ResolvedServer(received.clone()), |channel| async move {
-            for (field, invalid) in [
-                (0, String::new()),
-                (0, "x".repeat(513)),
-                (0, "revision\0tail".into()),
-                (1, String::new()),
-                (1, "r".repeat(513)),
-                (1, "r\n".into()),
-                (1, "r\0".into()),
-                (2, String::new()),
-                (2, "a".repeat(513)),
-                (2, "a\u{7f}".into()),
-                (2, "a\0".into()),
-                (3, "x".repeat(32769)),
-                (3, "é".repeat(16385)),
-                (3, "arg\0tail".into()),
-                (4, "x".repeat(4097)),
-                (4, "{}\0".into()),
-            ] {
-                let mut args = ["revision", "r", "a", "argument", "{}"];
-                args[field] = &invalid;
-                assert!(
-                    channel
-                        .invoke_resolved_published_action(
-                            9,
-                            args[0],
-                            args[1],
-                            args[2],
-                            Some(args[3]),
-                            args[4]
-                        )
-                        .await
-                        .is_err(),
-                    "invalid field {field} reached RPC"
-                );
-            }
-        })
-        .await;
-        assert!(
-            received.borrow().is_empty(),
-            "rejected inputs were transmitted"
-        );
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn resolved_invocation_old_server_is_unimplemented_without_eager_fallback() {
-        let eager_calls = Rc::new(Cell::new(0));
-        let seen = eager_calls.clone();
-        over_wire(LegacyServer(eager_calls), |channel| async move {
-            assert_eq!(channel.invoke_published_action(9, "r", "a", None, "{}").await.unwrap(), (21, String::new()));
-            assert_eq!(seen.get(), 1);
-            let error = channel.invoke_resolved_published_action(9, "revision", "r", "a", None, "{}").await.unwrap_err();
-            assert!(matches!(error, NotAvailable::Capnp(error) if error.kind == capnp::ErrorKind::Unimplemented));
-            assert_eq!(seen.get(), 1, "unsupported revisioned call fell back to eager invocation");
-        }).await;
-    }
-
-    #[test]
-    fn resolved_invocation_keeps_legacy_eager_parameter_bytes() {
-        // Literal pre-@47 @21 parameters: peer9, r, a, present empty argument,
-        // confirmation {}. Two data words and four pointer words are unchanged.
-        let golden: &[u8] = &[
-            0, 0, 0, 0, 11, 0, 0, 0, 0, 0, 0, 0, 2, 0, 4, 0, 9, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
-            0, 0, 0, 13, 0, 0, 0, 18, 0, 0, 0, 13, 0, 0, 0, 18, 0, 0, 0, 13, 0, 0, 0, 10, 0, 0, 0,
-            13, 0, 0, 0, 26, 0, 0, 0, b'r', 0, 0, 0, 0, 0, 0, 0, b'a', 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, b'{', b'}', 0, 0, 0, 0, 0, 0,
-        ];
-        let decoded = capnp::serialize::read_message(
-            &mut &golden[..],
-            capnp::message::ReaderOptions::default(),
-        )
-        .unwrap();
-        let old = decoded
-            .get_root::<collab_capnp::channel_handle::invoke_published_action_params::Reader<'_>>()
-            .unwrap();
-        assert_eq!(old.get_peer_id(), 9);
-        assert_eq!(old.get_resource().unwrap().to_str().unwrap(), "r");
-        assert_eq!(old.get_action().unwrap().to_str().unwrap(), "a");
-        assert!(old.get_has_argument());
-        assert_eq!(old.get_argument().unwrap().to_str().unwrap(), "");
-        assert_eq!(old.get_confirmation_json().unwrap().to_str().unwrap(), "{}");
-        let mut encoded = capnp::message::Builder::new_default();
-        let mut p = encoded
-            .init_root::<collab_capnp::channel_handle::invoke_published_action_params::Builder<'_>>(
-            );
-        p.set_peer_id(9);
-        p.set_resource("r");
-        p.set_action("a");
-        p.set_argument("");
-        p.set_has_argument(true);
-        p.set_confirmation_json("{}");
-        assert_eq!(capnp::serialize::write_message_to_words(&encoded), golden);
-    }
-}
+#[cfg(test)]
+#[cfg(feature = "client")]
+mod resolved_invocation_tests;
 
 /// Inert original-target facts from one captured broker resolution. This value
 /// grants no authority; callers must retain it unchanged with their business ID.
@@ -4880,661 +3660,6 @@ impl ChannelHandle {
     }
 }
 
-#[cfg(all(test, feature = "client"))]
-mod reliable_invocation_tests {
-    use super::*;
-
-    use capnp::capability::Promise;
-    use capnp_rpc::{RpcSystem, twoparty};
-    use std::cell::{Cell, RefCell};
-    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-
-    const HOST: [u8; 16] = [2; 16];
-    const ID: [u8; 16] = [1; 16];
-    const UPDATE: &str =
-        r#"{"state":"accepted","invocation":"01010101-0101-0101-0101-010101010101"}"#;
-    fn binding() -> PublishedInvocationBinding {
-        PublishedInvocationBinding {
-            host: HOST,
-            peer_id: 9,
-            app_id: "notes".into(),
-            record_id: String::new(),
-            root: [3; 32],
-            device: [4; 32],
-            target_binding: [5; 32],
-        }
-    }
-    fn write_binding(mut b: collab_capnp::published_invocation_binding::Builder<'_>) {
-        b.set_host(&HOST);
-        b.set_peer_id(9);
-        b.set_app_id("notes");
-        b.set_record_id("");
-        b.set_root(&[3; 32]);
-        b.set_device(&[4; 32]);
-        b.set_target_binding(&[5; 32]);
-    }
-    fn row(mut r: collab_capnp::action_directory_row::Builder<'_>) {
-        r.set_resource("r");
-        r.set_action("a");
-        let mut d = r.init_descriptor();
-        d.set_resource("r");
-        d.set_action("a");
-    }
-    fn observation(mut o: collab_capnp::published_invocation_observation::Builder<'_>, mode: u8) {
-        o.set_host(&HOST);
-        o.set_invocation(&ID);
-        o.set_found(true);
-        o.set_id(99);
-        o.set_update_json(UPDATE);
-        match mode {
-            1 => o.set_host(&[8;16]),
-            2 => o.set_invocation(&[8;16]),
-            3 => o.set_host(&[2;15]),
-            4 => o.set_invocation(&[1;17]),
-            5 => o.set_update_json(r#"{"state":"accepted","invocation":"08080808-0808-0808-0808-080808080808"}"#),
-            6 => o.set_update_json("not json"),
-            7 => o.set_update_json("{}"),
-            8 => o.set_found(false),
-            9 => {o.set_found(false);o.set_id(0);o.set_update_json("");o.set_uncertain(true);},
-            10 => {o.set_found(false);o.set_id(0);o.set_update_json("");o.set_cancellation_requested(true);},
-            11 => o.set_update_json("x".repeat(256*1024+1)),
-            12 => o.set_update_json(""),
-            13 => o.set_update_json(r#"{"invocation":"01010101-0101-0101-0101-010101010101","invocation":"01010101-0101-0101-0101-010101010101"}"#),
-            14 => {o.set_found(false);o.set_id(0);o.set_update_json("");},
-            15 => {o.set_uncertain(true);o.set_cancellation_requested(true);},
-            16 => o.set_host(&[0;16]),
-            17 => o.set_invocation(&[0;16]),
-            18 => o.init_update_json(1).as_bytes_mut()[0]=0xff,
-            19 => o.set_update_json(r#"{"invocation":"01010101010101010101010101010101"}"#),
-            20 => o.set_update_json(format!(r#"{{"state":"accepted","invocation":"01010101-0101-0101-0101-010101010101","padding":"{}"}}"#,"x".repeat(240*1024))),
-            21 => o.set_id(0),
-            _ => {}
-        }
-    }
-    type Received = Rc<RefCell<Vec<(String, String, String, Option<String>, String)>>>;
-    struct Server {
-        calls: Rc<Cell<usize>>,
-        mode: u8,
-        received: Received,
-    }
-    impl collab_capnp::channel_handle::Server for Server {
-        fn resolve_published_action(
-            self: Rc<Self>,
-            params: collab_capnp::channel_handle::ResolvePublishedActionParams,
-            mut results: collab_capnp::channel_handle::ResolvePublishedActionResults,
-        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            Promise::from((|| {
-                self.calls.set(self.calls.get().saturating_add(1));
-                let p = params.get()?;
-                assert_eq!(p.get_peer_id(), 9);
-                row(results.get().init_resolution().init_found());
-                if self.mode != 1 {
-                    write_binding(results.get().init_invocation_binding());
-                }
-                match self.mode {
-                    2 => results.get().get_invocation_binding()?.set_host(&[2; 15]),
-                    3 => results.get().get_invocation_binding()?.set_peer_id(10),
-                    4 => results
-                        .get()
-                        .get_invocation_binding()?
-                        .set_app_id("x".repeat(513)),
-                    5 => results.get().get_invocation_binding()?.set_root(&[0; 32]),
-                    6 => results.get().init_resolution().set_not_found(()),
-                    7 => results
-                        .get()
-                        .get_invocation_binding()?
-                        .set_target_binding(&[0; 32]),
-                    8 => results
-                        .get()
-                        .init_resolution()
-                        .init_found()
-                        .set_resource("other"),
-                    9 => results
-                        .get()
-                        .init_resolution()
-                        .init_found()
-                        .set_resource_label("x".repeat(256 * 1024)),
-                    10 => results.get().get_invocation_binding()?.set_root(&[3; 31]),
-                    11 => results.get().get_invocation_binding()?.set_device(&[4; 33]),
-                    12 => results
-                        .get()
-                        .get_invocation_binding()?
-                        .set_target_binding(&[5; 31]),
-                    13 => results
-                        .get()
-                        .get_invocation_binding()?
-                        .set_app_id("notes\n"),
-                    14 => results
-                        .get()
-                        .get_invocation_binding()?
-                        .set_record_id("r".repeat(513)),
-                    15 => results.get().get_invocation_binding()?.set_host(&[0; 16]),
-                    _ => {}
-                }
-                Ok(())
-            })())
-        }
-        fn invoke_resolved_published_action_durable(
-            self: Rc<Self>,
-            params: collab_capnp::channel_handle::InvokeResolvedPublishedActionDurableParams,
-            mut results: collab_capnp::channel_handle::InvokeResolvedPublishedActionDurableResults,
-        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            Promise::from((|| {
-                self.calls.set(self.calls.get().saturating_add(1));
-                let p = params.get()?;
-                assert_eq!(p.get_invocation()?, ID);
-                let b = p.get_binding()?;
-                assert_eq!(b.get_host()?, HOST);
-                assert_eq!(b.get_peer_id(), 9);
-                assert_eq!(b.get_app_id()?.to_str()?, "notes");
-                assert_eq!(b.get_record_id()?.to_str()?, "");
-                assert_eq!(b.get_root()?, [3; 32]);
-                assert_eq!(b.get_device()?, [4; 32]);
-                assert_eq!(b.get_target_binding()?, [5; 32]);
-                self.received.borrow_mut().push((
-                    p.get_revision()?.to_str()?.into(),
-                    p.get_resource()?.to_str()?.into(),
-                    p.get_action()?.to_str()?.into(),
-                    if p.get_has_argument() {
-                        Some(p.get_argument()?.to_str()?.into())
-                    } else {
-                        None
-                    },
-                    p.get_confirmation_json()?.to_str()?.into(),
-                ));
-                observation(results.get().init_observation(), self.mode);
-                Ok(())
-            })())
-        }
-        fn published_invocation_observation(
-            self: Rc<Self>,
-            params: collab_capnp::channel_handle::PublishedInvocationObservationParams,
-            mut results: collab_capnp::channel_handle::PublishedInvocationObservationResults,
-        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            Promise::from((|| {
-                self.calls.set(self.calls.get().saturating_add(1));
-                let p = params.get()?;
-                assert_eq!(p.get_host()?, HOST);
-                assert_eq!(p.get_invocation()?, ID);
-                observation(results.get().init_observation(), self.mode);
-                Ok(())
-            })())
-        }
-        fn cancel_durable_published_invocation(
-            self: Rc<Self>,
-            params: collab_capnp::channel_handle::CancelDurablePublishedInvocationParams,
-            mut results: collab_capnp::channel_handle::CancelDurablePublishedInvocationResults,
-        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            Promise::from((|| {
-                self.calls.set(self.calls.get().saturating_add(1));
-                let p = params.get()?;
-                assert_eq!(p.get_host()?, HOST);
-                assert_eq!(p.get_invocation()?, ID);
-                observation(results.get().init_observation(), self.mode);
-                Ok(())
-            })())
-        }
-    }
-    fn server(mode: u8) -> (Server, Rc<Cell<usize>>, Received) {
-        let calls = Rc::new(Cell::new(0));
-        let received = Rc::default();
-        (
-            Server {
-                calls: calls.clone(),
-                mode,
-                received: Rc::clone(&received),
-            },
-            calls,
-            received,
-        )
-    }
-    async fn over_wire<S, F, Fut>(server: S, action: F)
-    where
-        S: collab_capnp::channel_handle::Server + 'static,
-        F: FnOnce(ChannelHandle) -> Fut,
-        Fut: std::future::Future<Output = ()>,
-    {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let (server_io, client_io) = tokio::io::duplex(512);
-                let raw: collab_capnp::channel_handle::Client = capnp_rpc::new_client(server);
-                let (read, write) = tokio::io::split(server_io);
-                let network = twoparty::VatNetwork::new(
-                    read.compat(),
-                    write.compat_write(),
-                    capnp_rpc::rpc_twoparty_capnp::Side::Server,
-                    capnp::message::ReaderOptions::default(),
-                );
-                let task =
-                    tokio::task::spawn_local(RpcSystem::new(Box::new(network), Some(raw.client)));
-                let connection = runtime_portal::CapnpClient::from_connected_io(
-                    client_io,
-                    capnp_rpc::rpc_twoparty_capnp::Side::Client,
-                );
-                let channel = ChannelHandle {
-                    inner: Rc::new(connection.bootstrap()),
-                };
-                tilo_test_env::within("the RPC under test", action(channel)).await;
-                task.abort();
-                let _ = task.await;
-            })
-            .await;
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn reliable_invocation_round_trip_preserves_business_identity_and_optional_argument() {
-        let (s, calls, received) = server(0);
-        over_wire(s, |c| async move {
-            let (row, b) = c
-                .resolve_published_action_for_invocation(9, "v", "r", "a")
-                .await
-                .unwrap();
-            assert_eq!(*row.action.as_ref().unwrap(), "a");
-            assert_eq!(b, binding());
-            for a in [None, Some(""), Some("exact")] {
-                let o = c
-                    .invoke_resolved_published_action_durable(&ID, &b, "v", "r", "a", a, "{}")
-                    .await
-                    .unwrap();
-                assert_eq!(o.host, HOST);
-                assert_eq!(o.invocation, ID);
-                let r = o.result.unwrap();
-                assert_eq!(r.id, 99);
-                assert_eq!(r.update_json, UPDATE);
-                assert!(!r.uncertain);
-            }
-            assert_eq!(
-                c.published_invocation_observation(&HOST, &ID)
-                    .await
-                    .unwrap(),
-                c.cancel_durable_published_invocation(&HOST, &ID)
-                    .await
-                    .unwrap()
-            );
-        })
-        .await;
-        assert_eq!(calls.get(), 6);
-        assert_eq!(
-            *received.borrow(),
-            [None, Some(""), Some("exact")].map(|a| (
-                "v".into(),
-                "r".into(),
-                "a".into(),
-                a.map(str::to_owned),
-                "{}".into()
-            ))
-        );
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn reliable_invocation_old_35_without_binding_refuses_before_effect() {
-        let (s, calls, _) = server(1);
-        over_wire(s, |c| async move {
-            assert!(matches!(
-                c.resolve_published_action(9, "v", "r", "a").await.unwrap(),
-                ActionDirectoryResolution::Found(_)
-            ));
-            assert!(
-                c.resolve_published_action_for_invocation(9, "v", "r", "a")
-                    .await
-                    .is_err()
-            );
-        })
-        .await;
-        assert_eq!(calls.get(), 2);
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn reliable_invocation_rejects_malformed_or_replaced_binding_and_resolution() {
-        for mode in 2..=15 {
-            let (s, calls, _) = server(mode);
-            over_wire(s, move |c| async move {
-                assert!(
-                    c.resolve_published_action_for_invocation(9, "v", "r", "a")
-                        .await
-                        .is_err(),
-                    "mode {mode}"
-                );
-            })
-            .await;
-            assert_eq!(calls.get(), 1);
-        }
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn reliable_invocation_rejects_uncorrelated_or_inconsistent_observation() {
-        for mode in (1..=13).chain(16..=19) {
-            let (s, calls, _) = server(mode);
-            over_wire(s, move |c| async move {
-                assert!(
-                    c.invoke_resolved_published_action_durable(
-                        &ID,
-                        &binding(),
-                        "v",
-                        "r",
-                        "a",
-                        None,
-                        "{}"
-                    )
-                    .await
-                    .is_err(),
-                    "invoke mode {mode}"
-                );
-                assert!(
-                    c.published_invocation_observation(&HOST, &ID)
-                        .await
-                        .is_err(),
-                    "observe mode {mode}"
-                );
-                assert!(
-                    c.cancel_durable_published_invocation(&HOST, &ID)
-                        .await
-                        .is_err(),
-                    "cancel mode {mode}"
-                );
-            })
-            .await;
-            assert_eq!(calls.get(), 3);
-        }
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn reliable_invocation_retains_absence_and_uncertainty_without_inventing_outcome() {
-        for mode in [14, 15] {
-            let (s, _, _) = server(mode);
-            over_wire(s, move |c| async move {
-                let o = c
-                    .published_invocation_observation(&HOST, &ID)
-                    .await
-                    .unwrap();
-                if mode == 14 {
-                    assert!(o.result.is_none());
-                } else {
-                    let r = o.result.unwrap();
-                    assert!(r.uncertain);
-                    assert!(r.cancellation_requested);
-                    assert_eq!(r.update_json, UPDATE);
-                }
-            })
-            .await;
-        }
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn reliable_invocation_input_bounds_precede_every_request_copy() {
-        let (s, calls, _) = server(0);
-        over_wire(s, |c| async move {
-            for (field, value) in [
-                (0, String::new()),
-                (0, "v".repeat(513)),
-                (0, "v\0".into()),
-                (1, String::new()),
-                (1, "r\n".into()),
-                (1, "r".repeat(513)),
-                (2, "a\u{7f}".into()),
-                (2, "a".repeat(513)),
-                (3, "é".repeat(16385)),
-                (3, "a\0".into()),
-                (4, " ".repeat(4097)),
-                (4, "{}\0".into()),
-            ] {
-                let mut a = ["v", "r", "a", "arg", "{}"];
-                a[field] = &value;
-                assert!(
-                    c.invoke_resolved_published_action_durable(
-                        &ID,
-                        &binding(),
-                        a[0],
-                        a[1],
-                        a[2],
-                        Some(a[3]),
-                        a[4]
-                    )
-                    .await
-                    .is_err()
-                );
-                if field <= 2 {
-                    assert!(
-                        c.resolve_published_action_for_invocation(9, a[0], a[1], a[2])
-                            .await
-                            .is_err()
-                    );
-                }
-            }
-            for mode in 0..9 {
-                let mut b = binding();
-                match mode {
-                    0 => b.host = [0; 16],
-                    1 => b.peer_id = 0,
-                    2 => b.peer_id = u64::MAX,
-                    3 => b.app_id.clear(),
-                    4 => b.app_id = "x".repeat(513),
-                    5 => b.record_id = "x\n".into(),
-                    6 => b.root = [0; 32],
-                    7 => b.device = [0; 32],
-                    _ => b.target_binding = [0; 32],
-                }
-                assert!(
-                    c.invoke_resolved_published_action_durable(&ID, &b, "v", "r", "a", None, "{}")
-                        .await
-                        .is_err()
-                );
-            }
-            assert!(
-                c.invoke_resolved_published_action_durable(
-                    &[0; 16],
-                    &binding(),
-                    "v",
-                    "r",
-                    "a",
-                    None,
-                    "{}"
-                )
-                .await
-                .is_err()
-            );
-            for peer in [0, u64::MAX] {
-                assert!(
-                    c.resolve_published_action_for_invocation(peer, "v", "r", "a")
-                        .await
-                        .is_err()
-                );
-            }
-            for (host, id) in [([0; 16], ID), (HOST, [0; 16])] {
-                assert!(
-                    c.published_invocation_observation(&host, &id)
-                        .await
-                        .is_err()
-                );
-                assert!(
-                    c.cancel_durable_published_invocation(&host, &id)
-                        .await
-                        .is_err()
-                );
-            }
-        })
-        .await;
-        assert_eq!(calls.get(), 0);
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn reliable_invocation_accepts_inclusive_utf8_input_limits() {
-        let (s, _, received) = server(0);
-        over_wire(s, |c| async move {
-            c.invoke_resolved_published_action_durable(
-                &ID,
-                &binding(),
-                &"é".repeat(256),
-                &"r".repeat(512),
-                &"a".repeat(512),
-                Some(&"é".repeat(16384)),
-                &" ".repeat(4096),
-            )
-            .await
-            .unwrap();
-        })
-        .await;
-        assert_eq!(received.borrow()[0].3.as_ref().unwrap().len(), 32768);
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn reliable_invocation_accepts_bounded_large_observation_without_correlation_loss() {
-        let (s, _, _) = server(20);
-        over_wire(s, |c| async move {
-            let o = c
-                .published_invocation_observation(&HOST, &ID)
-                .await
-                .unwrap();
-            assert_eq!(o.invocation, ID);
-            assert!(o.result.unwrap().update_json.len() > 240 * 1024);
-        })
-        .await;
-    }
-    async fn rejects_zero_wire_id(method: u8) {
-        let (s, calls, _) = server(21);
-        over_wire(s, move |c| async move {
-            let result = match method {
-                48 => {
-                    c.invoke_resolved_published_action_durable(
-                        &ID,
-                        &binding(),
-                        "v",
-                        "r",
-                        "a",
-                        None,
-                        "{}",
-                    )
-                    .await
-                }
-                49 => c.published_invocation_observation(&HOST, &ID).await,
-                50 => c.cancel_durable_published_invocation(&HOST, &ID).await,
-                _ => unreachable!("test selects one actual reliable RPC"),
-            };
-            assert!(
-                result.is_err(),
-                "found=true id=0 was accepted by RPC @{method}"
-            );
-        })
-        .await;
-        assert_eq!(
-            calls.get(),
-            1,
-            "actual malformed RPC reply must be observed"
-        );
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn reliable_invocation_zero_wire_id_invoke_refuses() {
-        rejects_zero_wire_id(48).await;
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn reliable_invocation_zero_wire_id_observe_refuses() {
-        rejects_zero_wire_id(49).await;
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn reliable_invocation_zero_wire_id_cancel_refuses() {
-        rejects_zero_wire_id(50).await;
-    }
-    struct Old47(Rc<Cell<usize>>);
-    impl collab_capnp::channel_handle::Server for Old47 {
-        fn invoke_resolved_published_action(
-            self: Rc<Self>,
-            _: collab_capnp::channel_handle::InvokeResolvedPublishedActionParams,
-            mut results: collab_capnp::channel_handle::InvokeResolvedPublishedActionResults,
-        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            self.0.set(self.0.get().saturating_add(1));
-            results.get().set_id(47);
-            Promise::ok(())
-        }
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn reliable_invocation_old_47_server_has_no_fallback_effect() {
-        let effects = Rc::new(Cell::new(0));
-        let seen = effects.clone();
-        over_wire(Old47(effects), |c| async move {
-            let e = c
-                .invoke_resolved_published_action_durable(
-                    &ID,
-                    &binding(),
-                    "v",
-                    "r",
-                    "a",
-                    None,
-                    "{}",
-                )
-                .await
-                .unwrap_err();
-            assert!(matches!(e,NotAvailable::Capnp(e) if e.kind==capnp::ErrorKind::Unimplemented));
-            assert_eq!(seen.get(), 0);
-            assert_eq!(
-                c.invoke_resolved_published_action(9, "v", "r", "a", None, "{}")
-                    .await
-                    .unwrap()
-                    .0,
-                47
-            );
-            assert_eq!(seen.get(), 1);
-        })
-        .await;
-    }
-    #[test]
-    fn reliable_invocation_old_35_and_47_parameter_words_stay_exact() {
-        let fixtures: [(bool, &[u64]); 2] = [
-            (
-                false,
-                &[
-                    0x0000_0008_0000_0000,
-                    0x0003_0001_0000_0000,
-                    9,
-                    0x0000_0012_0000_0009,
-                    0x0000_0012_0000_0009,
-                    0x0000_0012_0000_0009,
-                    0x76,
-                    0x72,
-                    0x61,
-                ],
-            ),
-            (
-                true,
-                &[
-                    0x0000_000d_0000_0000,
-                    0x0005_0002_0000_0000,
-                    9,
-                    1,
-                    0x0000_0012_0000_0011,
-                    0x0000_0012_0000_0011,
-                    0x0000_0012_0000_0011,
-                    0x0000_000a_0000_0011,
-                    0x0000_001a_0000_0011,
-                    0x76,
-                    0x72,
-                    0x61,
-                    0,
-                    0x7d7b,
-                ],
-            ),
-        ];
-        for (lazy, words) in fixtures {
-            let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-            let decoded = capnp::serialize::read_message(
-                &mut bytes.as_slice(),
-                capnp::message::ReaderOptions::default(),
-            )
-            .unwrap();
-            let mut out = capnp::message::Builder::new_default();
-            if lazy {
-                let p=decoded.get_root::<collab_capnp::channel_handle::invoke_resolved_published_action_params::Reader<'_>>().unwrap();
-                assert!(p.get_has_argument());
-                assert_eq!(p.get_revision().unwrap().to_str().unwrap(), "v");
-                let mut p=out.init_root::<collab_capnp::channel_handle::invoke_resolved_published_action_params::Builder<'_>>();
-                p.set_peer_id(9);
-                p.set_has_argument(true);
-                p.set_revision("v");
-                p.set_resource("r");
-                p.set_action("a");
-                p.set_argument("");
-                p.set_confirmation_json("{}");
-            } else {
-                let p=decoded.get_root::<collab_capnp::channel_handle::resolve_published_action_params::Reader<'_>>().unwrap();
-                assert_eq!(p.get_revision().unwrap().to_str().unwrap(), "v");
-                let mut p=out.init_root::<collab_capnp::channel_handle::resolve_published_action_params::Builder<'_>>();
-                p.set_peer_id(9);
-                p.set_revision("v");
-                p.set_resource("r");
-                p.set_action("a");
-            }
-            assert_eq!(capnp::serialize::write_message_to_words(&out), bytes);
-        }
-    }
-}
+#[cfg(test)]
+#[cfg(feature = "client")]
+mod reliable_invocation_tests;

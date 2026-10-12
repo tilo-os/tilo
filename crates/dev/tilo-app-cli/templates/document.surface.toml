@@ -1,0 +1,24 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "generated.document"
+label = "Document"
+version = 1
+fields = [
+  { path = "title", type = "String" },
+  { path = "body", type = "String" },
+]
+
+[[resources.verbs]]
+id = "set-content"
+kind = "undoable"
+params = [
+  { name = "title", required = true, schema = { type = "string" } },
+  { name = "body", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "clear"
+destructive = true
+kind = "undoable"
+

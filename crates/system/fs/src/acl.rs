@@ -46,8 +46,8 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 use collab_types::{
-    Actor, CapDecision, CapOverride, Ed25519PublicKey, Effect, Principal, ResourceRef, Scope, Verb,
-    decide_capability, path_covers,
+    Access as CapAccess, Actor, CapDecision, CapOverride, Ed25519PublicKey, Effect, Principal,
+    ResourceRef, Scope, decide_capability, path_covers,
 };
 
 /// A Tilo identity — the 32-byte Ed25519 public key that anchors a
@@ -92,7 +92,8 @@ struct CapBinding {
     identity: IdentityKey,
     /// Who the mount acts as, for subject matching.
     actor: Actor,
-    /// The capabilities, verbatim — grants, restrictions and expiries.
+    /// The complete capabilities with Files mount paths projected into this
+    /// namespace — grants, restrictions, subjects and expiries stay intact.
     caps: Vec<CapOverride>,
     /// The instant capability expiry is evaluated at. `None` reads the
     /// system clock every check, so an [`collab_types::Expiry::AtUnix`]
@@ -115,8 +116,8 @@ impl CapBinding {
     /// a second policy.
     fn permits_as(&self, actor: &Actor, path: &str, access: Access) -> bool {
         let required = match access {
-            Access::Read => Verb::Read,
-            Access::Write => Verb::Write,
+            Access::Read => CapAccess::Read,
+            Access::Write => CapAccess::Write,
         };
         decide_capability(
             actor,
@@ -141,7 +142,7 @@ impl CapBinding {
             .iter()
             .filter(move |c| {
                 c.effect == Effect::Grant
-                    && c.verb.implies(Verb::Read)
+                    && c.access.implies(CapAccess::Read)
                     && c.subject.matches_actor(actor)
             })
             .filter_map(|c| match &c.scope {
@@ -149,6 +150,29 @@ impl CapBinding {
                 _ => None,
             })
     }
+}
+
+/// The normal Permissions surface and application sandbox name Files here.
+/// A signed workspace authority binds this mount's policy to its namespace UUID.
+const WORKSPACE_FILES_PATH: &str = "/var/workspace";
+
+/// Project only the path coordinate; never rewrite the signed policy or grant.
+/// Ancestor restrictions must map too, so a ceiling on `/var` still restricts
+/// the Files subtree rather than disappearing at the mount boundary.
+fn namespace_capabilities(caps: &[CapOverride]) -> Vec<CapOverride> {
+    caps.iter()
+        .cloned()
+        .map(|mut cap| {
+            if let Scope::FsPath(path) = &mut cap.scope {
+                if path_covers(path, WORKSPACE_FILES_PATH) {
+                    *path = "/".into();
+                } else if let Some(relative) = path.strip_prefix("/var/workspace/") {
+                    *path = format!("/{relative}");
+                }
+            }
+            cap
+        })
+        .collect()
 }
 
 /// The actor a **remote** identity is evaluated as: its own person
@@ -159,7 +183,6 @@ impl CapBinding {
 fn peer_actor(peer: &IdentityKey) -> Actor {
     let key = Ed25519PublicKey(*peer);
     Actor {
-        role: None,
         key: Some(key),
         principals: vec![Principal::person_from_key(key)],
     }
@@ -183,6 +206,11 @@ pub struct WorkspaceAcl {
 impl WorkspaceAcl {
     /// Bind `identity`'s capabilities to this ACL.
     ///
+    /// Paths beneath the normal `/var/workspace` projection are evaluated
+    /// relative to this namespace root. Ancestor scopes map to the root too;
+    /// existing namespace-relative scopes remain supported. The caller's signed
+    /// list is never modified, and no host filesystem path is opened here.
+    ///
     /// `caps` is the workspace's whole capability list, unfiltered:
     /// capabilities that don't cover the actor, aren't
     /// [`collab_types::Scope::FsPath`], or have expired are ignored by the
@@ -194,10 +222,8 @@ impl WorkspaceAcl {
     /// included. `now` is seconds since epoch: `None` uses the live clock,
     /// `Some(t)` pins every check.
     ///
-    /// The actor deliberately holds **no role**: a role never authorises a
-    /// path ([`collab_types::role_base_applies`] returns `false` for
-    /// `FsPath`), so even an Owner reaches the filesystem only through an
-    /// explicit capability.
+    /// A room role never authorises a path: even an owner reaches the
+    /// filesystem only through an explicit sandbox capability.
     pub fn from_capabilities(
         identity: IdentityKey,
         caps: &[CapOverride],
@@ -222,7 +248,6 @@ impl WorkspaceAcl {
     ) -> &mut Self {
         let key = Ed25519PublicKey(identity);
         let mut actor = Actor {
-            role: None,
             key: Some(key),
             principals: vec![Principal::person_from_key(key)],
         };
@@ -234,7 +259,7 @@ impl WorkspaceAcl {
         self.bindings.push(CapBinding {
             identity,
             actor,
-            caps: caps.to_vec(),
+            caps: namespace_capabilities(caps),
             fixed_now: now,
         });
         self
@@ -302,6 +327,24 @@ impl WorkspaceAcl {
             .collect()
     }
 
+    /// Whether anyone but the mount itself may be named here: a direct
+    /// entry for an identity no binding answers for, or a capability whose
+    /// subject is not the bound actor (another person, a role, a token, a
+    /// room the mount does not prove). The shipped list, which grants the
+    /// mount's own principal, names nobody else: then only the mount's own
+    /// identity (the person's other devices) can be admitted, never another
+    /// party (TIL-774, [`crate::reachability`]).
+    #[must_use]
+    pub fn names_others(&self) -> bool {
+        let own: HashSet<IdentityKey> = self.bindings.iter().map(|b| b.identity).collect();
+        self.entries.iter().any(|e| !own.contains(&e.identity))
+            || self.bindings.iter().any(|b| {
+                b.caps
+                    .iter()
+                    .any(|cap| !cap.subject.matches_actor(&b.actor))
+            })
+    }
+
     /// Does `identity` hold `access` on `path`? Fail-closed: `true` only if
     /// a direct entry whose prefix covers `path` grants it, or a bound
     /// capability list decides `Allow`. Path containment is
@@ -349,29 +392,6 @@ impl WorkspaceAcl {
                 b.permits_as(actor, path, access)
             })
         }
-    }
-
-    /// Is the **remote** identity `peer` a member of `room`? Membership is an
-    /// ordinary capability scoped to the room (or the whole workspace),
-    /// decided by the same function as every path, so a `Restrict` bites here
-    /// too. Paths never imply membership, nor membership a path.
-    pub fn peer_is_room_member(&self, peer: &IdentityKey, room: &str) -> bool {
-        let as_peer = peer_actor(peer);
-        let resource = ResourceRef::Room(room.to_string());
-        self.bindings.iter().any(|b| {
-            let actor = if &b.identity == peer {
-                &b.actor
-            } else {
-                &as_peer
-            };
-            decide_capability(
-                actor,
-                &resource,
-                Verb::Read,
-                &b.caps,
-                Some(b.fixed_now.unwrap_or_else(crate::clock::unix_now_secs)),
-            ) == CapDecision::Allow
-        })
     }
 
     /// Does `peer` hold a read grant on *anything* here? The admission
@@ -480,15 +500,6 @@ impl AclHandle {
         }
     }
 
-    /// Is `peer` a member of `room`, per the ACL bound *right now*?
-    /// Delegates to [`WorkspaceAcl::peer_is_room_member`].
-    pub fn peer_is_room_member(&self, peer: &IdentityKey, room: &str) -> bool {
-        match self.acl.read() {
-            Ok(acl) => acl.peer_is_room_member(peer, room),
-            Err(_) => false,
-        }
-    }
-
     /// Does `peer` read anything here, per the ACL bound *right now*?
     /// Delegates to [`WorkspaceAcl::reads_anything`], read live (not
     /// captured at connect time) so a revocation reaches the network plane
@@ -564,9 +575,90 @@ impl From<&AclHandle> for AclHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use collab_types::Subject;
 
     const ALICE: IdentityKey = [1u8; 32];
     const BOB: IdentityKey = [2u8; 32];
+
+    #[test]
+    fn normal_files_mount_scope_preserves_policy_and_deny_bias() {
+        let grant = CapOverride::grant(
+            Subject::User(Ed25519PublicKey(ALICE)),
+            Scope::FsPath("/var/workspace".into()),
+            CapAccess::Write,
+        );
+        let mut restriction = grant.clone();
+        restriction.scope = Scope::FsPath("/var/workspace/private".into());
+        restriction.effect = Effect::Restrict;
+        restriction.access = CapAccess::Read;
+        let caps = vec![grant, restriction];
+        let original = caps.clone();
+        let acl = WorkspaceAcl::from_capabilities(ALICE, &caps, &[], Some(0));
+        for path in ["/", "/notes.md", "/private/notes.md"] {
+            for (verb, access) in [
+                (CapAccess::Read, Access::Read),
+                (CapAccess::Write, Access::Write),
+            ] {
+                let mounted = format!("/var/workspace{}", if path == "/" { "" } else { path });
+                let expected = decide_capability(
+                    &peer_actor(&ALICE),
+                    &ResourceRef::FsPath(mounted),
+                    verb,
+                    &caps,
+                    Some(0),
+                ) == CapDecision::Allow;
+                assert_eq!(acl.permits(&ALICE, path, access), expected);
+                assert_eq!(acl.permits_peer(&ALICE, path, access), expected);
+            }
+        }
+        assert_eq!(caps, original, "signed policy is not rewritten");
+        assert!(!acl.permits_peer(&BOB, "/", Access::Read));
+        for outside in ["/", "/etc/passwd", "/var/workspace-other/notes.md"] {
+            assert_ne!(
+                decide_capability(
+                    &peer_actor(&ALICE),
+                    &ResourceRef::FsPath(outside.into()),
+                    CapAccess::Read,
+                    &caps,
+                    Some(0),
+                ),
+                CapDecision::Allow,
+                "no host-root permission was granted"
+            );
+        }
+        let mut ancestor = caps[1].clone();
+        ancestor.scope = Scope::FsPath("/var".into());
+        let restricted =
+            WorkspaceAcl::from_capabilities(ALICE, &[caps[0].clone(), ancestor], &[], Some(0));
+        assert!(restricted.permits(&ALICE, "/notes.md", Access::Read));
+        assert!(!restricted.permits(&ALICE, "/notes.md", Access::Write));
+    }
+
+    #[test]
+    fn normal_files_subtree_visibility_expiry_and_revocation_remain_scoped() {
+        let grant = CapOverride::grant(
+            Subject::User(Ed25519PublicKey(ALICE)),
+            Scope::FsPath("/var/workspace/team/documents".into()),
+            CapAccess::Read,
+        )
+        .with_expiry(20);
+        let acl =
+            WorkspaceAcl::from_capabilities(ALICE, std::slice::from_ref(&grant), &[], Some(10));
+        assert!(!acl.permits(&ALICE, "/", Access::Read));
+        assert!(acl.visible(&ALICE, "/team"));
+        assert!(acl.permits_peer(&ALICE, "/team/documents/a.txt", Access::Read));
+        assert!(!acl.permits_peer(&ALICE, "/team/documents-secret/a.txt", Access::Read));
+        assert!(!acl.visible(&ALICE, "/other"));
+        assert!(acl.reads_anything(&ALICE));
+        assert!(!acl.reads_anything(&BOB));
+        let expired =
+            WorkspaceAcl::from_capabilities(ALICE, std::slice::from_ref(&grant), &[], Some(21));
+        assert!(!expired.visible(&ALICE, "/team"));
+        assert!(!expired.reads_anything(&ALICE));
+        let handle = AclHandle::new(acl);
+        handle.replace(WorkspaceAcl::from_capabilities(ALICE, &[], &[], Some(10)));
+        assert!(!handle.permits(&ALICE, "/team/documents/a.txt", Access::Read));
+    }
 
     #[test]
     #[allow(
@@ -613,7 +705,7 @@ mod tests {
         // bug this crate exists to avoid. Both resolve containment with
         // `collab_types::path_covers`; this proves it on boundary cases.
         {
-            use collab_types::{Effect, Scope, Subject, Verb};
+            use collab_types::{Access as CapAccess, Effect, Scope, Subject};
 
             let mut direct = WorkspaceAcl::new();
             direct.grant_read(ALICE, "/w/docs");
@@ -622,7 +714,7 @@ mod tests {
                 Subject::User(Ed25519PublicKey(ALICE)),
                 Scope::FsPath("/w/docs".into()),
                 Effect::Grant,
-                Verb::Read,
+                CapAccess::Read,
             );
             let capacl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
 
@@ -653,7 +745,7 @@ mod tests {
         // capabilities are kept whole rather than projected onto a flat
         // prefix list (union-of-grants would keep allowing the write).
         {
-            use collab_types::{Effect, Scope, Subject, Verb};
+            use collab_types::{Access as CapAccess, Effect, Scope, Subject};
 
             let key = Ed25519PublicKey(ALICE);
             let caps = vec![
@@ -661,13 +753,13 @@ mod tests {
                     Subject::User(key),
                     Scope::FsPath("/w".into()),
                     Effect::Grant,
-                    Verb::Write,
+                    CapAccess::Write,
                 ),
                 CapOverride::new(
                     Subject::User(key),
                     Scope::FsPath("/w/readonly".into()),
                     Effect::Restrict,
-                    Verb::Read,
+                    CapAccess::Read,
                 ),
             ];
             let acl = WorkspaceAcl::from_capabilities(ALICE, &caps, &[], Some(0));
@@ -683,13 +775,13 @@ mod tests {
         // A room or app principal the mount presents is a subject like any
         // other — the mount need not be named by signing key to hold a cap.
         {
-            use collab_types::{Effect, Scope, Subject, Verb};
+            use collab_types::{Access as CapAccess, Effect, Scope, Subject};
 
             let cap = CapOverride::new(
                 Subject::room("team"),
                 Scope::FsPath("/w/team".into()),
                 Effect::Grant,
-                Verb::Write,
+                CapAccess::Write,
             );
             let member = WorkspaceAcl::from_capabilities(
                 ALICE,
@@ -716,13 +808,13 @@ mod tests {
         // it, nothing else — ancestors must exist or the grant is
         // unreachable; siblings must not, or denial becomes an absence.
         {
-            use collab_types::{Effect, Scope, Subject, Verb};
+            use collab_types::{Access as CapAccess, Effect, Scope, Subject};
 
             let cap = CapOverride::new(
                 Subject::User(Ed25519PublicKey(ALICE)),
                 Scope::FsPath("/w/docs".into()),
                 Effect::Grant,
-                Verb::Read,
+                CapAccess::Read,
             );
             let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
 
@@ -758,7 +850,7 @@ mod tests {
         // every verb implies `Read`, so a restricted subtree stays visible
         // and becomes read-only — safe to write into, since nothing is hidden.
         {
-            use collab_types::{Effect, Scope, Subject, Verb};
+            use collab_types::{Access as CapAccess, Effect, Scope, Subject};
 
             let key = Ed25519PublicKey(ALICE);
             let caps = vec![
@@ -766,13 +858,13 @@ mod tests {
                     Subject::User(key),
                     Scope::FsPath("/w".into()),
                     Effect::Grant,
-                    Verb::Write,
+                    CapAccess::Write,
                 ),
                 CapOverride::new(
                     Subject::User(key),
                     Scope::FsPath("/w/readonly".into()),
                     Effect::Restrict,
-                    Verb::Read,
+                    CapAccess::Read,
                 ),
             ];
             let acl = WorkspaceAcl::from_capabilities(ALICE, &caps, &[], Some(0));
@@ -793,13 +885,13 @@ mod tests {
         // An expired grant nominates nothing: the ancestor test re-runs the
         // real decision, so expiry removes the trail as well as the target.
         {
-            use collab_types::{Effect, Expiry, Scope, Subject, Verb};
+            use collab_types::{Access as CapAccess, Effect, Expiry, Scope, Subject};
 
             let cap = CapOverride::new(
                 Subject::User(Ed25519PublicKey(ALICE)),
                 Scope::FsPath("/w/docs".into()),
                 Effect::Grant,
-                Verb::Read,
+                CapAccess::Read,
             )
             .expiring(Expiry::AtUnix(500));
 
@@ -816,13 +908,13 @@ mod tests {
         // implies `Read`, so a writable subtree is a readable one and its
         // ancestors must exist.
         {
-            use collab_types::{Effect, Scope, Subject, Verb};
+            use collab_types::{Access as CapAccess, Effect, Scope, Subject};
 
             let cap = CapOverride::new(
                 Subject::User(Ed25519PublicKey(ALICE)),
                 Scope::FsPath("/w/inbox".into()),
                 Effect::Grant,
-                Verb::Write,
+                CapAccess::Write,
             );
             let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
             assert!(acl.visible(&ALICE, "/w"));
@@ -849,13 +941,13 @@ mod tests {
         // bound as Alice — `permits` would answer `false` for every peer,
         // correct for FUSE, useless for admitting a connection.
         {
-            use collab_types::{Effect, Scope, Subject, Verb};
+            use collab_types::{Access as CapAccess, Effect, Scope, Subject};
 
             let cap = CapOverride::new(
                 Subject::User(Ed25519PublicKey(BOB)),
                 Scope::FsPath("/docs".into()),
                 Effect::Grant,
-                Verb::Read,
+                CapAccess::Read,
             );
             let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
             assert!(acl.permits_peer(&BOB, "/docs/report.md", Access::Read));
@@ -867,13 +959,13 @@ mod tests {
         // An identity the list never names reads nothing — which is what the sync
         // and content planes turn into "served nothing".
         {
-            use collab_types::{Effect, Scope, Subject, Verb};
+            use collab_types::{Access as CapAccess, Effect, Scope, Subject};
 
             let cap = CapOverride::new(
                 Subject::User(Ed25519PublicKey(ALICE)),
                 Scope::FsPath("/".into()),
                 Effect::Grant,
-                Verb::Read,
+                CapAccess::Read,
             );
             let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
             assert!(acl.reads_anything(&ALICE), "the bound identity still reads");
@@ -889,13 +981,13 @@ mod tests {
         // live handle, not a snapshot from mount time — the swap
         // `CapabilityFile::refresh` performs when the capability file empties.
         {
-            use collab_types::{Effect, Scope, Subject, Verb};
+            use collab_types::{Access as CapAccess, Effect, Scope, Subject};
 
             let cap = CapOverride::new(
                 Subject::User(Ed25519PublicKey(BOB)),
                 Scope::FsPath("/docs".into()),
                 Effect::Grant,
-                Verb::Read,
+                CapAccess::Read,
             );
             let handle =
                 AclHandle::new(WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0)));
@@ -911,14 +1003,14 @@ mod tests {
         // mount. Lending it to a dialer would hand every caller the host's
         // authority, so a peer carries only its own key.
         {
-            use collab_types::{Effect, Scope, Subject, Verb};
+            use collab_types::{Access as CapAccess, Effect, Scope, Subject};
 
             let room = Principal::Room("6b3f9a10-0000-4000-8000-00000000000a".to_string());
             let cap = CapOverride::new(
                 Subject::Principal(room.clone()),
                 Scope::FsPath("/".into()),
                 Effect::Grant,
-                Verb::Read,
+                CapAccess::Read,
             );
             let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[room], Some(0));
             assert!(

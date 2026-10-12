@@ -141,7 +141,7 @@ class SignalRuntimeStaging(unittest.TestCase):
                 self.assertNotIn(name, assets)
                 assets[name] = (digest, url)
         pin = json.loads(staging.PIN.read_text())
-        for asset in pin["assets"].values():
+        for asset in [*pin["assets"].values(), pin["java_zero_source"]]:
             self.assertEqual(assets[asset["name"]], (asset["sha256"], asset["url"]))
         spec = importlib.util.spec_from_file_location("signal_release", ROOT / "tools/apps/signal_provider_release.py")
         release = importlib.util.module_from_spec(spec)

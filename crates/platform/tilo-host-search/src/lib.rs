@@ -8,17 +8,6 @@
 //! socket; the daemon re-resolves the entry and opens it through its action
 //! host, as it does for results it serves itself. The entry is opaque here.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(unix)]

@@ -1,5 +1,5 @@
 //! The whole installer wizard, driven on the host with no window, no GPU and
-//! no disk: the real widget tree under `ui::headless::Driver`, a recording
+//! no disk: the real widget tree under `ui::headless::FrameHarness`, a recording
 //! install backend, and the installer's published actions reached three
 //! ways — saved `--headless-drive` scenario steps, a wizard control clicked
 //! by name, and the console protocol the live medium serves.
@@ -99,7 +99,7 @@ impl InstallBackend for Fake {
 /// Ask the console, the way a live socket request arrives: queued, then
 /// answered on the UI thread when the wake-up is delivered.
 fn ask(
-    driver: &mut ui::headless::Driver,
+    driver: &mut ui::headless::FrameHarness,
     console: &console_control::ConsoleServer,
     request: &str,
 ) -> Value {
@@ -115,7 +115,7 @@ fn the_whole_wizard_runs_headless_through_published_actions() {
     let app = InstallerApp::with_disks(Vec::new())
         .with_backend(backend.clone())
         .with_console(console.clone());
-    let mut driver = ui::headless::Driver::new(ui::State::new(), Box::new(app), (1280, 800));
+    let mut driver = ui::headless::FrameHarness::new(ui::State::new(), Box::new(app), (1280, 800));
 
     // Saved scenario steps in the `--headless-drive` grammar: every step
     // names an action by address, and every refusal is asserted by code.
@@ -134,6 +134,7 @@ fn the_whole_wizard_runs_headless_through_published_actions() {
           {{"invoke":{{"resource":"installer","action":"next"}}}},
           {{"invoke":{{"resource":"installer.options","action":"set-hostname","args":{{"hostname":"lab-1"}}}}}},
           {{"invoke":{{"resource":"installer.options","action":"set-filesystem","args":{{"filesystem":"xfs"}}}}}},
+          {{"invoke":{{"resource":"installer","action":"next"}}}},
           {{"invoke":{{"resource":"installer","action":"next"}}}},
           {{"invoke":{{"resource":"installer.review","action":"begin","confirmation_phrase":"/dev/vdb","expect_error":"action_unavailable"}}}}
         ]}}"#

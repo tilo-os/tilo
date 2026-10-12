@@ -189,7 +189,7 @@ and winit event loop as on Linux. Preparing the process means:
 
 - stdout and stderr are piped into logcat;
 - `HOME`, `TMPDIR` and the XDG base directories point into the app's private
-  storage (`launch/android_env.rs`), so `xdg-paths` and every store built on
+  storage (`launch/android_env.rs`), so `tilo-paths` and every store built on
   it resolve there unchanged;
 - `LANG` follows the device locale;
 - `TILO_RUNTIME_STANDALONE=1`, since there is no runtime host to re-exec under.

@@ -21,6 +21,7 @@ use crate::signal_session::{CheckedSendError, Completion, SendError, SendJournal
 use crate::{Error, ProtocolReference, Route, Service};
 
 mod incoming;
+pub(crate) use incoming::text_body as group_text_body;
 pub use incoming::{IncomingContext, IncomingText};
 
 /// Host-held subscription context; authority must not come from app action input.

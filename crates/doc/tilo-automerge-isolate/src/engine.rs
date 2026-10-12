@@ -74,13 +74,23 @@ pub(crate) fn is_blank(doc: &mut AutoCommit) -> bool {
 
 /// Parse one chunk without applying it. A change costs only its own decode;
 /// a document or bundle is loaded on its own, as it has no cheaper parse.
+///
+/// Parsing a change does not check its stored checksum, and into a document
+/// that is not blank `load_incremental` stops at a chunk with a bad checksum
+/// and keeps the chunks before it without an error. So a change's stored
+/// checksum is compared with its hash here, and the whole input is refused.
+/// For a compressed chunk that hash is the uncompressed change's, which
+/// Automerge requires the compressed chunk's checksum to match as well.
 fn parse_alone(chunk: crate::precheck::Chunk<'_>) -> Result<(), Rejected> {
     let invalid = |e: automerge::AutomergeError| Rejected::Invalid(e.to_string());
     match chunk.kind {
         crate::precheck::CHANGE | crate::precheck::COMPRESSED_CHANGE => {
-            automerge::Change::from_bytes(chunk.bytes.to_vec())
-                .map(drop)
-                .map_err(|e| Rejected::Invalid(e.to_string()))
+            let change = automerge::Change::try_from(chunk.bytes)
+                .map_err(|e| Rejected::Invalid(e.to_string()))?;
+            if chunk.bytes.get(4..8) != change.hash().0.get(..4) {
+                return Err(Rejected::Invalid("bad change checksum".into()));
+            }
+            Ok(())
         }
         // On its own, a change whose dependencies are elsewhere loads as
         // `MissingDeps`: every chunk parsed, which is all this asks.

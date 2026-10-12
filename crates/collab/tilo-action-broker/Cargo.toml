@@ -7,9 +7,10 @@ publish.workspace = true
 [features]
 test-support = []
 [dependencies]
+tilo-action-policy = { path = "../action-policy" }
 # Kernel-authenticated custody of the executing native service peer.
-runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+runtime-portal = { path = "../../runtime/runtime-portal" }
+tilo-paths.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 # Saves the launchable action catalogue across restarts.
 tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
@@ -46,7 +47,8 @@ tilo-automation = { path = "../automation" }
 settings-store = { path = "../../system/settings-store" }
 tilo-peer-state = { path = "../tilo-peer-state" }
 tilo-user-identity = { path = "../tilo-user-identity" }
-tilo-relay = { path = "../../hosting/tilo-relay" }
+# The relay session client; the relay daemon is a dev-dependency only.
+tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 postcard = { workspace = true, features = ["alloc", "use-std"] }
 serde.workspace = true
@@ -56,6 +58,8 @@ tracing.workspace = true
 uuid.workspace = true
 workspace-hack = { version = "0.1" }
 [dev-dependencies]
+# Integration tests start a real relay.
+tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-joined-room = { path = "../tilo-joined-room", features = ["test-support"] }
 iroh.workspace = true
 tempfile.workspace = true

@@ -89,7 +89,7 @@ impl Session {
         let profile = crate::identity_registry::selected_identity_profile(&room_id)?
             .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?;
         let actor = profile.principal_id();
-        if workspace.owner.is_none() {
+        if workspace.owner().is_none() {
             workspace.set_owner(actor.clone());
         }
         stage("saving the workspace");
@@ -219,14 +219,13 @@ impl PeerSync {
         if !crate::shell::network::collab_host_configured() {
             return None;
         }
-        let network =
-            match ShellNetwork::spawn(tree.clone(), &crate::shell::network::peer_key_path()) {
-                Ok(network) => Arc::new(network),
-                Err(error) => {
-                    tracing::warn!(%error, "peer-sync: spawn failed; the session stays local");
-                    return None;
-                }
-            };
+        let network = match ShellNetwork::spawn_for_session(tree.clone()) {
+            Ok(network) => Arc::new(network),
+            Err(error) => {
+                tracing::warn!(%error, "peer-sync: spawn failed; the session stays local");
+                return None;
+            }
+        };
         let _ = network.join_default_workspace();
         let stop = Arc::new(AtomicBool::new(false));
         let pump = {

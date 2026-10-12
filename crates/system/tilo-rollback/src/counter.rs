@@ -629,11 +629,7 @@ pub struct AdvanceOutcome {
     pub unapproved: Vec<u64>,
 }
 
-impl AdvanceOutcome {
-    pub fn reached_target(&self, target_floor: u64) -> bool {
-        self.floor.floor_generation() >= target_floor
-    }
-}
+impl AdvanceOutcome {}
 
 /// The floor authority's key and the single-use approvals it has signed.
 #[derive(Debug, Clone, Copy)]

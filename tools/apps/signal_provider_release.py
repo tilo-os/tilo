@@ -24,6 +24,7 @@ def load(name, path):
 release = load('signal_release_tools', ROOT / 'tools/apps/browser_runtime_release.py')
 fixture = load('signal_release_assets', ROOT / 'tools/apps/signal_runtime_fixture.py')
 prepare = load('signal_release_source', ROOT / 'os/scripts/prepare-signal-provider.py')
+zero = load('signal_zero_runtime', ROOT / 'tools/apps/signal_zero_runtime.py')
 require = release.require
 RUNTIME = 'tilo-runtime/2026.10.1-signal'
 RUNTIME_ENTRYPOINT = 'lib/lib64/ld-linux-x86-64.so.2'
@@ -39,6 +40,7 @@ def provenance(source):
     manifest = tomllib.loads((ROOT / 'crates/packaging/launcher/signal-provider.toml').read_text())
     require(manifest['package']['runtime'] == RUNTIME, 'provider runtime declaration differs')
     require(manifest['package']['kind'] == 'service', 'provider must declare its headless service kind')
+    require(manifest['sandbox']['seccomp'] == 'tilo-default', 'Signal must retain its strict sandbox')
     publisher = (ROOT / 'os/registry-runtime-publisher.hex').read_text().strip()
     require(re.fullmatch('[0-9a-f]{64}', publisher), 'accepted runtime publisher is missing')
     return {'source': commit, 'architecture': 'x86_64', 'runtime': RUNTIME,
@@ -76,14 +78,25 @@ def compile_provider(out, source):
                  and item.get('executable')]
     require(len(providers) == 1, 'Cargo omitted the owned provider')
     shutil.copy2(providers[0], binaries / 'tilo-signal-provider')
+    strict = subprocess.run(['cargo', 'build', '--locked', '--release', '-p', 'launcher',
+                             '--example', 'signal_strict_memory', '--message-format=json-render-diagnostics'],
+                            cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True)
+    probes = [item['executable'] for line in strict.stdout.splitlines()
+              if (item := json.loads(line)).get('reason') == 'compiler-artifact'
+              and item.get('target', {}).get('name') == 'signal_strict_memory'
+              and item.get('executable')]
+    require(len(probes) == 1, 'Cargo omitted the strict runtime probe')
+    shutil.copy2(probes[0], binaries / 'signal-strict-memory')
     release.native_payload(binaries, 'x86_64')
     payload = out / 'signal-provider'
     assets = out / 'assets'
     environment = dict(os.environ, TILO_GITHUB_ASSET_CACHE=str(assets))
     subprocess.run(['bash', 'os/dev/cache-github-assets.sh',
-                    *[entry['name'] for entry in proof['pin']['assets'].values()]],
+                    *[entry['name'] for entry in proof['pin']['assets'].values()],
+                    proof['pin']['java_zero_source']['name']],
                    env=environment, cwd=ROOT, check=True)
     fixture.staging.stage(assets, payload, proof['pin'], 'x86_64')
+    zero.build(out / 'java-zero-build', payload, assets, proof['pin'])
     source_tree = out / 'java-source'
     shutil.copytree(ROOT / 'os/signal-provider/java', source_tree)
     prepare.prepare(payload / 'signal/source.tar.gz', source_tree, proof['pin'])
@@ -122,6 +135,7 @@ def seal(out, source, sequence):
     require({key: proof.get(key) for key in expected} == expected, 'compiled Signal provenance differs')
     require(proof['compiled'] == {'bin': inventory(out / 'bin'), 'payload': inventory(out / 'signal-provider')},
             'compiled Signal bytes changed')
+    zero.verify(out / 'signal-provider', expected['pin'])
     require(re.fullmatch('[1-9][0-9]*', sequence), 'positive release sequence required')
     runtime_identity = os.environ.get('RUNTIME_BUNDLE_IDENTITY_FILE')
     app_identity = os.environ.get('TAPP_PUBLISHER_IDENTITY_FILE')
@@ -135,6 +149,7 @@ def seal(out, source, sequence):
     subprocess.run([str(binary), 'build', '--release', RUNTIME.removeprefix('tilo-runtime/'),
                     '--arch', 'x86_64', '--from', '/', '--include', str(out / 'signal-provider'),
                     '--include', '/usr/lib64/libstdc++.so.6', '--include', '/usr/lib64/libz.so.1',
+                    '--include', '/usr/lib64/libffi.so.8',
                     '--identity', runtime_identity, '--out-root', str(versions),
                     '--version-out', str(version_file)], check=True)
     bundle_version = version_file.read_text().strip()
@@ -144,7 +159,7 @@ def seal(out, source, sequence):
     shutil.move(versions / bundle_version, runtime)
     subprocess.run([str(binary), 'verify', str(runtime), '--require-signature',
                     '--require-publisher', runtime_key, '--require-arch', 'x86_64'], check=True)
-    fixture.probe(out)
+    fixture.probe(out, prefix=(str(out / 'bin/signal-strict-memory'),))
     version = '0.1.' + sequence + '+g' + source
     subprocess.run(['bash', 'tools/apps/pack-runtime-package.sh', str(runtime), 'so.tilo.runtime.signal',
                     'Signal runtime', version, app_identity, str(out / 'bin'), str(out / 'runtime-package')],

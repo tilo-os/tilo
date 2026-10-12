@@ -28,6 +28,14 @@ for final_root in "$final_app_root" "$final_runtime_root" "$final_registry_root"
     }
 done
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# Use the same independently configured release authority as the OS image.
+# Never discover a trust root from the catalogue being authenticated.
+owner=${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}
+[[ $owner =~ ^[0-9a-fA-F]{64}$ && $owner != $(printf '0%.0s' {1..64}) ]] || {
+    echo "TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY must be a non-placeholder 32-byte hex key" >&2
+    exit 1
+}
+
 arch=$(uname -m)
 collection=$release_dir/tilo-apps-$arch.tar.gz
 
@@ -73,7 +81,7 @@ PY
     echo "collection runtime tilo-runtime/$runtime_version is missing bundle.toml" >&2
     exit 1
 }
-"$bin_dir/tilo-runtime-bundle" verify "$collection_runtime/$runtime_version" >/dev/null
+"$bin_dir/tilo-runtime-bundle" verify "$collection_runtime/$runtime_version" --require-signature >/dev/null
 
 mkdir -p "$stage/usr/share/tilo-apps" "$stage/usr/lib" "$stage/etc/tilo"
 cp -a "$collection_runtime" "$stage/usr/lib/tilo-runtime"
@@ -133,6 +141,18 @@ rm -- "$store/registry.toml"
 # The payload trees are materialised; the system store is read-only and never
 # installs again, so its content store, staging and writer lock do not ship.
 rm -rf -- "$store/content" "$store/tmp" "$store/.lock"
+# Each install above held the runtime collector off by sharing .gc.lock in the
+# runtime root it resolved against (runtime-bundle's gc.rs), which created the
+# file. Collection, its lock and its leases belong to the per-user root only:
+# nothing locks or writes the read-only system root, so none of its state
+# ships. Anything else hidden there is unexplained and fails the package.
+runtime_root=$stage/usr/lib/tilo-runtime
+rm -f -- "$runtime_root/.gc.lock"
+runtime_state=$(find "$runtime_root" -mindepth 1 -maxdepth 1 -name '.*' -print)
+[[ -z $runtime_state ]] || {
+    echo "collector state left in the packaged runtime root: $runtime_state" >&2
+    exit 1
+}
 
 # The collection's baked runtime and official Store runtimes have separate
 # signers. Ship both pins, as the OS image does, so ordinary Store updates do
@@ -154,6 +174,10 @@ if not re.fullmatch(r"[0-9a-f]{64}", registry_publisher):
 publishers = dict.fromkeys((publisher.lower(), registry_publisher))
 pathlib.Path(sys.argv[2]).write_text("".join(key + "\n" for key in publishers), encoding="utf-8")
 PY
+
+install -d -m 0755 "$stage/usr/share/tilo/trust"
+printf '%s\n' "${owner,,}" > "$stage/usr/share/tilo/trust/tilo-main-registry-owner.pub"
+chmod 0644 "$stage/usr/share/tilo/trust/tilo-main-registry-owner.pub"
 
 [[ -s $registry ]]
 find "$stage" -type d -exec chmod 0755 {} +

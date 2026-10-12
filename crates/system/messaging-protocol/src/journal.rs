@@ -160,7 +160,9 @@ impl EncryptedJournal {
             .map_err(|_| JournalError::Unavailable)?;
         let lock = FileLock::try_exclusive(lock).map_err(|_| JournalError::Unavailable)?;
         let path = root.join(secret_vault::VAULT_FILE);
-        let mut ledger = read_ledger(&path, &key)?.unwrap_or_else(|| Ledger {
+        let original = read_ledger(&path, &key)?;
+        let mut changed = original.is_none();
+        let mut ledger = original.unwrap_or_else(|| Ledger {
             version: 1,
             owner: owner.clone(),
             operations: BTreeMap::new(),
@@ -183,6 +185,7 @@ impl EncryptedJournal {
             }
             if entry.status == Status::Started {
                 entry.status = Status::Uncertain;
+                changed = true;
             }
         }
         let mut journal = Self {
@@ -192,7 +195,9 @@ impl EncryptedJournal {
             usable: true,
             _lock: lock,
         };
-        journal.persist()?;
+        if changed {
+            journal.persist()?;
+        }
         Ok(journal)
     }
 

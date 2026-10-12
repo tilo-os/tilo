@@ -152,6 +152,25 @@ When this repository publishes a newer `tilo-session`, the normal
 it into the next deployment together with the host OS update. Users do not
 download or reinstall release RPMs by hand.
 
+The version-locked `tilo-session-apps` companion carries the `app` command,
+the official Store registry owner pin under `/usr/share/tilo/trust`, and the
+signed runtime publisher policy. Opening Store or running `app repo list`
+repairs an older `registry = []` configuration from that packaged authority;
+it preserves custom registries and explicitly disabled entries. The update
+must come from the verified desktop package release. Do not copy a key from
+the catalogue into the host's trust policy.
+
+A host with Tilo RPMs listed under `requested-local-packages` has a local
+package pin, which ordinary repository updates do not replace. For a local
+source installation, `dist/rpm/host-update.sh --no-build` replaces the matching
+session/apps packages in one transaction using RPMs already built for that
+checkout. It also synchronizes the packaged runtime publisher policy into
+the pending deployment. This operation changes trust policy; review the
+exact packaged keys before applying it. Without `--apply-live`, the active
+desktop continues running until a planned boot. Do not use this source-build
+helper as a substitute for a signed public release.
+
+
 If the Tilo Forgejo organization is still private, the registry requires
 authenticated package-read access. Public Tilo organization/package visibility
 is the preferred release setup: it avoids credentials at install time and lets
@@ -298,14 +317,15 @@ so dependency resolution, ELF linkage, package metadata, installation, and
 `ldd` verification all exercise the target ABI. The runner must expose Docker
 and allow ordinary Docker create/copy/export/start operations. The deferred
 cross-architecture path additionally needs unprivileged `ptrace`. RPM tag
-publication additionally requires protected `TILO_RPM_SIGNING_KEY_B64` and
-`TILO_RPM_SIGNING_KEY_ID` secrets plus the protected
-`TILO_RPM_SIGNING_FINGERPRINT` variable. The key must be an unencrypted armored
-private key because non-interactive `rpmsign` cannot prompt for a passphrase;
-the signing workflow imports it only into a mode-0700 temporary keyring and
-never publishes it. If policy requires a passphrase-protected key, add an
-approved RPM-signing credential-broker implementation before enabling release
-publication. The existing `REGISTRY_TOKEN` remains the package-upload
+publication additionally requires an approved isolated broker and a protected
+`TILO_RPM_SIGNING_FINGERPRINT` variable. The separate protected-tag signing job
+uses native Forgejo OIDC; package build/install-test userspaces receive neither
+OIDC nor a private key. Only the isolated service holds a dedicated compatible
+OpenPGP authority. The runner receives signed copies and public provenance,
+verifies their signatures and identical immutable headers/payloads, and retains
+both signing and host-session gates. See [the broker protocol and exact separate
+live approval boundary](desktop-rpm-broker.md). No private key belongs in a
+repository-wide Actions secret. The existing `REGISTRY_TOKEN` remains the package-upload
 credential and must have repository and package write permission for tag
 releases.
 

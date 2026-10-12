@@ -1,0 +1,10 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "example.prime-search"
+label = "Prime search"
+version = 1
+fields = [
+  { path = "limit", type = "u64" },
+]
+

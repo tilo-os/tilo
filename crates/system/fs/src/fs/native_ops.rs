@@ -35,7 +35,7 @@ pub struct TreeEntry {
     /// not empty, just not known.
     pub known: bool,
     /// The stable record this path is. A rename keeps it.
-    pub record: Option<collab_types::FileRecordId>,
+    pub record: Option<fs_protocol::FileRecordId>,
     /// Replicated permission bits and whether the content is a symbolic
     /// link's target.
     pub posix: PosixAttrs,
@@ -696,11 +696,17 @@ impl QuickFS {
     pub fn read_path_range(&self, rel: &Path, offset: u64, len: u64) -> Result<Vec<u8>, i32> {
         let components = path_components(rel)?;
         let ino = self.ino_at(&components).ok_or(ENOENT)?;
-        let (attr, hash) = self.ns().attr_and_hash(ino).ok_or(ENOENT)?;
-        if attr.kind == FileType::Directory {
+        // One namespace lock for the inode's kind, content and document-ness.
+        let view = self.inode_view(ino, false).ok_or(ENOENT)?;
+        if view.attr.kind == FileType::Directory {
             return Err(EISDIR);
         }
-        if self.is_document(ino) || self.buffers().contains_key(&ino) {
+        if let Some(stage) = self.stage(ino) {
+            return self
+                .read_stage_blocking(&stage, offset, len)
+                .map_err(|e| to_errno(&e));
+        }
+        if view.document {
             let whole = self.read_full_blocking(ino).map_err(|e| to_errno(&e))?;
             let start = usize::try_from(offset)
                 .unwrap_or(usize::MAX)
@@ -710,7 +716,7 @@ impl QuickFS {
                 .min(whole.len());
             return Ok(whole.get(start..end).unwrap_or_default().to_vec());
         }
-        let Some(hash) = hash else {
+        let Some(hash) = view.hash else {
             return Ok(Vec::new());
         };
         let hydrator = self.hydrator.clone();
@@ -770,7 +776,7 @@ impl QuickFS {
         let read = || std::fs::read(snapshot).map_err(|e| to_errno(&e));
         match self.lookup_kind(parent, name) {
             Some((ino, FileType::RegularFile)) if self.is_document(ino) => {
-                self.commit_buffer(ino, &read()?)
+                self.commit_bytes(ino, &read()?)
             }
             None => {
                 if let Some(codec) = self.new_document_codec(name) {
@@ -782,7 +788,7 @@ impl QuickFS {
                 if !self.signed()
                     && let Some((ino, _)) = self.lookup_kind(parent, name)
                 {
-                    self.record_version(ino, collab_types::FileProvenance::Create, None);
+                    self.record_version(ino, fs_protocol::FileProvenance::Create, None);
                 }
                 Ok(())
             }
@@ -829,11 +835,11 @@ impl QuickFS {
             (ino, ns.save_incremental())
         };
         self.publish(delta);
-        self.record_version(ino, collab_types::FileProvenance::Create, None);
+        self.record_version(ino, fs_protocol::FileProvenance::Create, None);
         if data.is_empty() {
             return Ok(());
         }
-        let committed = self.commit_buffer(ino, data);
+        let committed = self.commit_bytes(ino, data);
         if committed.is_err() {
             // A document its codec refuses must not stay behind empty.
             let _ = self.delete_named(parent, name.as_bytes(), false);
@@ -852,7 +858,7 @@ impl QuickFS {
     /// Who held `record`'s write lease in `epoch`.
     pub fn lease_holder_of(&self, record: [u8; 16], epoch: u64) -> Option<[u8; 32]> {
         self.ns().lease_holder(
-            collab_types::FileRecordId(uuid::Uuid::from_bytes(record)),
+            fs_protocol::FileRecordId(uuid::Uuid::from_bytes(record)),
             epoch,
         )
     }
@@ -912,12 +918,7 @@ impl QuickFS {
                 .take_lease(record, me, ttl, granted)
                 .map(|l| (l, LeaseSource::Local));
         };
-        let nonce = u64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos()),
-        )
-        .unwrap_or(u64::MAX);
+        let nonce = tilo_clock::unix_now_ns();
         let delta = {
             let mut ns = self.ns();
             if !ns.put_lease_request(record, me, LeaseRequest { nonce }) {
@@ -969,7 +970,7 @@ impl QuickFS {
     pub fn arbitrate_lease_requests(
         &self,
         ttl: std::time::Duration,
-        answered: &mut std::collections::HashSet<(collab_types::FileRecordId, [u8; 32], u64)>,
+        answered: &mut std::collections::HashSet<(fs_protocol::FileRecordId, [u8; 32], u64)>,
     ) -> Vec<(std::path::PathBuf, WriteLease)> {
         let ttl_ms = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
         let mut granted = Vec::new();
@@ -1006,7 +1007,7 @@ impl QuickFS {
 
     fn take_lease(
         &self,
-        record: collab_types::FileRecordId,
+        record: fs_protocol::FileRecordId,
         me: [u8; 32],
         ttl: std::time::Duration,
         granted: bool,

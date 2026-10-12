@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::search::{ScopeDecl, SearchRequest, SearchResult, search_button};
+use crate::widget::TaffyTreeExt;
 use crate::widget::{Button, ModelPath, Widget};
 use automerge::AutoCommit;
 use std::collections::HashMap;
@@ -53,17 +54,11 @@ impl Widget for MailRoot {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.search.build_layout(taffy, theme, node_map);
-        let node = taffy
-            .new_with_children(taffy::Style::default(), &[child])
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(taffy::Style::default(), &[child], node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let child = taffy.children(node).unwrap()[0];
         self.search.apply_layout(taffy, child, origin);
-    }
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
     }
     fn children(&self) -> Vec<&dyn Widget> {
         vec![&self.search]
@@ -73,9 +68,6 @@ impl Widget for MailRoot {
     }
     fn name(&self) -> &'static str {
         "mail-root"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 }
 
@@ -124,6 +116,7 @@ fn press_launcher(app: &mut App) {
     let launcher = app.root_widget.children_mut().into_iter().next().unwrap();
     assert!(launcher.perform_action(
         &crate::a11y::Action::Activate,
+        &[],
         &mut crate::widget::Edits::lend(&mut app.state.doc),
         &app.state.root
     ));

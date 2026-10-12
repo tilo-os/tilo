@@ -20,9 +20,16 @@ def call(sock_path: str, payload: dict, timeout: float = 5.0) -> dict:
     and is what every example here uses. If you want multiple commands
     on one connection, wrap the socket in a context manager and call
     `_send_recv` directly.
+
+    To wait for a result rather than poll for it, add `wait_ms` to an
+    `actions_invoke`, `actions_status` or `actions_enumerate` payload: the
+    compositor holds the reply until it has settled (see
+    docs/agent-action-api.md). The socket timeout is extended to outlast
+    that wait.
     """
+    wait_s = payload.get("wait_ms", 0) / 1000.0
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(timeout)
+    s.settimeout(timeout + wait_s)
     s.connect(sock_path)
     try:
         return _send_recv(s, payload)

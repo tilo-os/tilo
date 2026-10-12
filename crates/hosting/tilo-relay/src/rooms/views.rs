@@ -24,12 +24,12 @@ impl GovernedRoom {
         }
         let now = SystemTime::now();
         peer.check_document_read(device, app, record, now).ok()?;
-        let (role, caps, person) = peer.permissions(device, now).ok()?;
+        let standing = peer.permissions(device, now).ok()?.standing();
+        let sandbox = peer.governed_sandbox().ok()?;
         Some(ViewReadPolicy {
             room: self.room().to_owned(),
-            role,
-            caps,
-            person,
+            standing,
+            sandbox,
             unix_time: now.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs(),
         })
     }
@@ -73,7 +73,7 @@ impl Rooms {
             .room(&source.cluster_id)
             .await
             .map_err(|error| error.to_string())?;
-        let room = state.lock().await;
+        let mut room = state.lock().await;
         if room.workspace_id() != workspace {
             return Err("source room mismatch".into());
         }
@@ -85,7 +85,7 @@ impl Rooms {
             collab_types::document_channel_id(&source.app_id, &source.cluster_id, &source.record);
         let keys = room
             .stewardship
-            .as_ref()
+            .as_mut()
             .and_then(|steward| steward.existing_keys(channel).ok());
         let primary_governor = (source.record.is_empty()
             && room.peer().document(&source.app_id, "").is_some())

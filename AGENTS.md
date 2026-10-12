@@ -90,6 +90,7 @@ cargo test --locked -p shell --test it interaction_test::   # headless Wayland s
 Shell integration files are modules of the single `it` target, not individual
 Cargo targets. Use `--test it MODULE::` to select a module, or its full
 `MODULE::TEST` path with `-- --exact` for one case. For remote native execution,
+and CI's exact Clippy gate on crates your host cannot build (operation `clippy`),
 see [focused native tests](DEVELOPMENT.md#fast-checks-before-assembly).
 
 Run `cargo check -p shell --tests` before finishing. A `--lib` run never compiles integration
@@ -102,8 +103,17 @@ Before pushing:
 2. Run the narrow tests that prove the change, plus the relevant all-target compile check
    (for shell work, `cargo check -p shell --tests`).
 3. Commit the candidate, then inspect the affected plan with
-   `python3 tools/ci/affected_packages.py --base origin/main --shards 2`; unexpected full-workspace
-   selection is a bug to understand before pushing.
+   `python3 "${TILO_CI_TOOLS:?stable CI tools required}/offline_affected_plan.py" --root "$PWD" --bundle "${TILO_CURRENT_WORKTREE_METADATA_BUNDLE:?source-bound CI export required}" --base origin/main --shards 2`.
+   Point `TILO_CI_TOOLS` at `tools/ci` in a current trusted checkout, even when this worktree
+   is older. Set `TILO_CURRENT_WORKTREE_METADATA_BUNDLE` to the exact-source CI bundle from
+   `dev-source-metadata.yml` (tools/ci/README.md). The launcher validates the committed clean
+   source, complete workspace/member manifests, lockfile and targets, remaps all metadata paths,
+   and runs this worktree's selector while forbidding every non-Git subprocess. A stale
+   selector cannot invoke local Cargo through a default, an absolute path or a shell fallback.
+   Do not reuse an unverified export or manufacture a partial graph. Without a verified bundle,
+   leave selection to normal CI. The current direct selector also rejects a local default;
+   older worktrees require the stable launcher rather than their historical relative command.
+   Unexpected full-workspace selection is a bug to understand before pushing.
 4. Push a task branch and use a PR. Do not probe `main` with a direct push. `.githooks/pre-push`
    refuses a branch that conflicts with the current main or leaves `crates/workspace-hack` stale,
    the two rejections CI otherwise reports a minute after the push. After pushing, let

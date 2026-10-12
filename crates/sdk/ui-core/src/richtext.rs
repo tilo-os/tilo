@@ -12,6 +12,11 @@ use cosmic_text::{
 use crate::text_break::OffsetMap;
 use crate::text_selection::{TextAffinity, TextPosition};
 
+#[path = "richtext_paragraphs.rs"]
+mod paragraphs;
+#[cfg(test)]
+pub(crate) use paragraphs::take_prepared_paragraphs;
+
 /// A generic font family the toolkit can resolve from system fonts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub enum FontFamily {
@@ -151,6 +156,19 @@ impl RichSpan {
         self.kind = Some(kind);
         self
     }
+
+    /// Whether the run carries no styling of its own: text in the block's
+    /// style, as [`Self::new`] makes it.
+    pub(crate) fn is_unstyled(&self) -> bool {
+        !self.bold
+            && !self.italic
+            && self.size.is_none()
+            && self.family.is_none()
+            && self.color.is_none()
+            && self.background.is_none()
+            && self.baseline == BaselineShift::None
+            && self.kind.is_none()
+    }
 }
 
 /// Horizontal alignment of a block.
@@ -205,12 +223,16 @@ pub struct RichTextLayout {
     fragmentation: crate::text_render::Fragmentation,
 }
 
+#[derive(Clone)]
 struct RichPreparation {
     spans: Vec<RichSpan>,
     style: crate::text_render::TextStyle,
     width: Option<f32>,
     align: TextAlign,
     browser_emoji: bool,
+    /// Built paragraph by paragraph ([`RichTextLayout::shape_paragraphs_reusing_browser`]),
+    /// whose fonts are planned per paragraph, not over the whole text.
+    paragraph_planned: bool,
 }
 
 impl RichPreparation {
@@ -226,7 +248,8 @@ impl RichPreparation {
         !matches!(
             style.hyphenation,
             crate::text_render::Hyphenation::Custom(_)
-        ) && self.spans == spans
+        ) && !self.paragraph_planned
+            && self.spans == spans
             && self.style == *style
             && self.width == width
             && self.align == align
@@ -648,6 +671,7 @@ impl RichTextLayout {
                 width: max_width,
                 align,
                 browser_emoji,
+                paragraph_planned: false,
             }),
             buffer,
             line_starts,
@@ -787,17 +811,6 @@ impl RichTextLayout {
                 .iter()
                 .filter(|r| !r.text.is_empty())
                 .map(|r| {
-                    let run_fam = match r.family {
-                        Some(family) => family.to_cosmic(),
-                        None => style.family.to_cosmic(),
-                    };
-                    let base_run_size = r.size.unwrap_or(size);
-                    // Super/subscript runs shape smaller so they advance narrower.
-                    let run_size = if r.baseline.is_shifted() {
-                        base_run_size * BaselineShift::SCALE
-                    } else {
-                        base_run_size
-                    };
                     let start = cursor;
                     let end = cursor.saturating_add(r.text.len());
                     cursor = end;
@@ -807,29 +820,51 @@ impl RichTextLayout {
                     if r.baseline.is_shifted() {
                         baselines.push((start, end, r.baseline));
                     }
-                    let mut a = style
-                        .cosmic_attrs()
-                        .family(run_fam)
-                        .weight(if r.bold {
-                            Weight::BOLD
-                        } else {
-                            style.effective_weight()
-                        })
-                        .metrics(Metrics::new(run_size, run_size * line_height_mult));
-                    if style.letter_spacing != 0.0 {
-                        a = a.letter_spacing(style.letter_spacing / run_size.max(0.1));
-                    }
-                    if r.italic || style.italic {
-                        a = a.style(Style::Italic);
-                    }
-                    if let Some([cr, cg, cb]) = r.color {
-                        a.color_opt = Some(cosmic_text::Color::rgb(cr, cg, cb));
-                    }
+                    let a = Self::run_attrs(r, style, size, line_height_mult);
                     (offset_map.shape_fragment(&r.text, start), a, r.kind)
                 })
                 .collect()
         };
         (built, backgrounds, baselines)
+    }
+
+    /// The cosmic-text attributes of one span's run in `style`.
+    fn run_attrs<'s>(
+        r: &RichSpan,
+        style: &'s crate::text_render::TextStyle,
+        size: f32,
+        line_height_mult: f32,
+    ) -> Attrs<'s> {
+        let run_fam = match r.family {
+            Some(family) => family.to_cosmic(),
+            None => style.family.to_cosmic(),
+        };
+        let base_run_size = r.size.unwrap_or(size);
+        // Super/subscript runs shape smaller so they advance narrower.
+        let run_size = if r.baseline.is_shifted() {
+            base_run_size * BaselineShift::SCALE
+        } else {
+            base_run_size
+        };
+        let mut a = style
+            .cosmic_attrs()
+            .family(run_fam)
+            .weight(if r.bold {
+                Weight::BOLD
+            } else {
+                style.effective_weight()
+            })
+            .metrics(Metrics::new(run_size, run_size * line_height_mult));
+        if style.letter_spacing != 0.0 {
+            a = a.letter_spacing(style.letter_spacing / run_size.max(0.1));
+        }
+        if r.italic || style.italic {
+            a = a.style(Style::Italic);
+        }
+        if let Some([cr, cg, cb]) = r.color {
+            a.color_opt = Some(cosmic_text::Color::rgb(cr, cg, cb));
+        }
+        a
     }
 
     /// Total laid-out height (at least one line tall).
@@ -978,6 +1013,37 @@ impl RichTextLayout {
             }
         }
         byte_fallback
+    }
+
+    /// Resolve a set of carets from one traversal of the shaped visual rows.
+    /// Exact affinity wins over the first byte-only fallback, as in
+    /// `caret_geometry_at`. Geometry is local to this call and never survives
+    /// an edit, reshape, font change or owner replacement.
+    pub(crate) fn caret_geometries(&self, positions: &[TextPosition]) -> Vec<(f32, f32, f32)> {
+        use std::collections::HashMap;
+        let mut exact = HashMap::new();
+        let mut fallback = HashMap::new();
+        for run in self.buffer.layout_runs() {
+            for (x, stop) in self.caret_stops(&run) {
+                let geometry = (x, run.line_top, run.line_height);
+                exact.entry(stop).or_insert(geometry);
+                fallback.entry(stop.byte).or_insert(geometry);
+            }
+        }
+        positions
+            .iter()
+            .map(|position| {
+                let position = TextPosition {
+                    byte: position.byte.min(self.text_len),
+                    affinity: position.affinity,
+                };
+                exact
+                    .get(&position)
+                    .or_else(|| fallback.get(&position.byte))
+                    .copied()
+                    .unwrap_or((0.0, 0.0, self.line_height))
+            })
+            .collect()
     }
 
     /// Caret geometry for a conventional byte-only position.
@@ -1151,10 +1217,7 @@ impl RichTextLayout {
                 continue;
             }
             let cluster = run.text.get(glyph.start..glyph.end).unwrap_or("");
-            let mut boundaries: Vec<usize> = crate::text_break::grapheme_indices(cluster)
-                .map(|(at, _)| at)
-                .collect();
-            boundaries.push(cluster.len());
+            let boundaries = caret_cluster_boundaries(cluster);
             let segments = boundaries.len().saturating_sub(1).max(1);
             for visual in 0..=segments {
                 let logical = if glyph.level.is_rtl() {
@@ -1536,6 +1599,19 @@ fn geometry_run_within_budget(run: &cosmic_text::LayoutRun<'_>) -> bool {
         }
     }
     true
+}
+
+/// One-byte ASCII clusters contain one grapheme. Keep the full segmenter for
+/// ligatures, CRLF and every non-ASCII cluster.
+fn caret_cluster_boundaries(cluster: &str) -> std::borrow::Cow<'_, [usize]> {
+    if cluster.len() == 1 && cluster.is_ascii() {
+        return std::borrow::Cow::Borrowed(&[0, 1]);
+    }
+    let mut boundaries: Vec<_> = crate::text_break::grapheme_indices(cluster)
+        .map(|(at, _)| at)
+        .collect();
+    boundaries.push(cluster.len());
+    std::borrow::Cow::Owned(boundaries)
 }
 
 #[cfg(test)]
@@ -2759,6 +2835,72 @@ mod tests {
             );
             // And the reported block height scales with it too.
             assert!(doubled.height() > single.height() * 1.8);
+        }
+    }
+    #[test]
+    fn batched_carets_match_existing_geometry_and_visit_each_row_once() {
+        let mut fs = crate::font_catalog::fixture_font_system();
+        let style = crate::text_render::TextStyle::new(16.0);
+        for text in [
+            "",
+            "ordinary text and ffi ligatures",
+            "שלום mixed עברית words and English",
+            "emoji 👩‍💻 and é é
+second line",
+            "  indented wrapped text has spaces and several visual rows",
+        ] {
+            for width in [None, Some(90.0)] {
+                let layout = RichTextLayout::shape_styled(
+                    &mut fs,
+                    &[RichSpan::new(text)],
+                    &style,
+                    width,
+                    TextAlign::Left,
+                    vec![],
+                    vec![],
+                );
+                let positions: Vec<_> = text
+                    .char_indices()
+                    .map(|(byte, _)| byte)
+                    .chain([text.len(), text.len() + 1])
+                    .flat_map(|byte| {
+                        [
+                            TextPosition::with_affinity(byte, TextAffinity::Before),
+                            TextPosition::with_affinity(byte, TextAffinity::After),
+                        ]
+                    })
+                    .collect();
+                let expected: Vec<_> = positions
+                    .iter()
+                    .map(|position| layout.caret_geometry_at(*position))
+                    .collect();
+                CARET_STOP_RUNS.with(|count| count.set(0));
+                let actual = layout.caret_geometries(&positions);
+                assert_eq!(actual, expected, "{text:?} width={width:?}");
+                assert_eq!(
+                    CARET_STOP_RUNS.with(std::cell::Cell::get),
+                    layout.buffer.layout_runs().count(),
+                    "one stop construction per visual row, not per requested caret"
+                );
+            }
+        }
+    }
+    #[test]
+    fn caret_cluster_fast_path_matches_unicode_segmenter() {
+        let mut clusters: Vec<String> = (0u8..=127)
+            .map(|byte| char::from(byte).to_string())
+            .collect();
+        clusters.extend(["", "ffi", "\r\n", "é", "é", "👩‍💻", "שלום"].map(str::to_owned));
+        for cluster in clusters {
+            let mut expected: Vec<_> = crate::text_break::grapheme_indices(&cluster)
+                .map(|(at, _)| at)
+                .collect();
+            expected.push(cluster.len());
+            assert_eq!(
+                caret_cluster_boundaries(&cluster).as_ref(),
+                expected.as_slice(),
+                "{cluster:?}"
+            );
         }
     }
 }

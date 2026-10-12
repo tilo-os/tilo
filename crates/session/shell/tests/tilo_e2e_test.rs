@@ -524,7 +524,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         let modifiers = winit::event::Modifiers::default();
 
         let cm = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(hit.x, hit.y),
         };
         bar.handle_event(
@@ -541,7 +541,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
             },
         );
         let mi = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
@@ -606,7 +606,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         let mut handled = false;
         bar.handle_event(
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: PhysicalPosition::new(1599.0, 1.0),
             },
             &mut ui::widget::EventCtx {
@@ -622,7 +622,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         );
         bar.handle_event(
             &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
@@ -926,7 +926,7 @@ fn click_full_root(
     use winit::event::{ElementState, MouseButton, WindowEvent};
 
     let cm = WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: PhysicalPosition::new(hit.x, hit.y),
     };
     let mut handled = false;
@@ -945,7 +945,7 @@ fn click_full_root(
     );
 
     let mi = WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Left,
     };

@@ -29,17 +29,11 @@ fn deliver_remote(app: &mut App, request: &crate::invocation_scope::PublishedInv
 fn original_remote_grant(
     now: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) -> crate::permissions::PermissionContext {
-    use crate::permissions::{Actor, CapOverride, Scope, Subject};
-    crate::permissions::PermissionContext::from_capabilities(
-        Actor::person(None, "remote:original"),
-        vec![
-            CapOverride::grant(
-                Subject::person("remote:original"),
-                Scope::App("test.counter".into()),
-                crate::permissions::Verb::Write,
-            )
-            .with_expiry(100),
-        ],
+    crate::permissions::PermissionContext::granted(
+        "remote:original",
+        &crate::permissions::TreePath::root().app("test.counter"),
+        crate::permissions::policy::KindSet::ALL,
+        Some(100),
     )
     .with_policy_time_sampler(std::sync::Arc::new(move || {
         Ok(now.load(std::sync::atomic::Ordering::Acquire))
@@ -92,7 +86,7 @@ fn original_remote_authorizer_with_spec(
                 grant
                     .check(&crate::permissions::PermissionScope::app(
                         "test.counter",
-                        crate::permissions::Verb::Write,
+                        crate::permissions::ActionKind::Undoable,
                     ))
                     .then_some(())
                     .ok_or_else(|| "original remote grant expired".into())
@@ -116,7 +110,7 @@ fn published_authorization_delayed_original_remote_grant_denies_before_document_
     let grant = original_remote_grant(time.clone());
     assert!(grant.check(&crate::permissions::PermissionScope::app(
         "test.counter",
-        crate::permissions::Verb::Write
+        crate::permissions::ActionKind::Undoable
     )));
     let request = remote_request(851, "bump");
     let mut app = app();
@@ -330,7 +324,6 @@ fn owned_count(store: &crate::record::RecordStore, checkout: &crate::RecordCheck
 
 #[test]
 fn causal_scope_actual_concurrent_jobs_keep_distinct_callers_and_valid_jobs_progress() {
-    use crate::permissions::{Actor, CapOverride, Scope, Subject};
     use std::sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -356,16 +349,11 @@ fn causal_scope_actual_concurrent_jobs_keep_distinct_callers_and_valid_jobs_prog
                 200
             };
             let now = sampled.clone();
-            let permission = crate::permissions::PermissionContext::from_capabilities(
-                Actor::person(None, &request.actor),
-                vec![
-                    CapOverride::grant(
-                        Subject::person(&request.actor),
-                        Scope::App("test.counter".into()),
-                        crate::permissions::Verb::Write,
-                    )
-                    .with_expiry(expiry),
-                ],
+            let permission = crate::permissions::PermissionContext::granted(
+                &request.actor,
+                &crate::permissions::TreePath::root().app("test.counter"),
+                crate::permissions::policy::KindSet::ALL,
+                Some(expiry),
             )
             .with_policy_time_sampler(Arc::new(move || Ok(now.load(Ordering::Acquire))));
             crate::invocation_scope::PublishedInvocationLease::new(
@@ -379,7 +367,7 @@ fn causal_scope_actual_concurrent_jobs_keep_distinct_callers_and_valid_jobs_prog
                     permission
                         .check(&crate::permissions::PermissionScope::app(
                             "test.counter",
-                            crate::permissions::Verb::Write,
+                            crate::permissions::ActionKind::Undoable,
                         ))
                         .then_some(())
                         .ok_or_else(|| "original grant expired".into())
@@ -528,7 +516,7 @@ fn published_authorization_original_spec_missing_or_changed_never_mutates_actual
         let mut spec = original_counter_spec("bump");
         match case {
             1 => spec.kind = tilo_actions::OperationKind::Effect,
-            2 => spec.contract.permission = tilo_actions::PermissionRequirement::Read,
+            2 => spec.contract.kind = tilo_actions::ActionKind::Read,
             3 => spec.params.push(tilo_actions::ActionParam::optional(
                 "extra",
                 tilo_actions::ParamType::Text,
@@ -588,6 +576,77 @@ fn directory_permission_original_revision_checked_before_actual_handler() {
             owned_count(&store, &checkout),
             i64::from(!stale),
             "stale original revision must refuse before mutation; identical control must still run"
+        );
+    }
+}
+
+/// TIL-652: a caller that names no revision is admitted against the one the
+/// owner resolved the action at, and the broker binds the admission to the
+/// revision that resolution names. When the directory moves on between that
+/// resolution and the host running the action (the owner's actions changed),
+/// the host refuses before the handler runs, exactly as it does for a
+/// revision the caller named. Two controls run: the same invocation with no
+/// change, and one resolved after the change.
+#[test]
+fn revisionless_directory_invoke_is_bound_to_the_resolved_revision() {
+    use std::sync::{Arc, atomic::AtomicU64};
+    // (the directory moves on, the invocation is resolved after it moved)
+    for (case, (moved, resolved_after)) in [(false, false), (true, false), (true, true)]
+        .into_iter()
+        .enumerate()
+    {
+        let request = remote_request(900 + u64::try_from(case).unwrap(), "bump");
+        let (mut app, store, checkout, _temp) = owned_counter(CounterCard::new());
+        if moved && resolved_after {
+            let _ = app.action_registry_mut();
+        }
+        // Publish the directory as the app does, then resolve one of its
+        // published actions with no revision, as the broker asks for a
+        // caller naming none. The revision is the whole directory's: it
+        // binds every action the app runs, `bump` among them.
+        let resources = app.publication_resources();
+        let descriptors = tilo_actions::door::survey(&resources);
+        app.capture_action_directory_snapshot(&resources, &descriptors);
+        let published = &descriptors
+            .first()
+            .expect("the counter publishes its directory")
+            .address;
+        let resolution = app.resolve_action_directory("", &published.resource, &published.action);
+        let runtime_collab::ActionDirectoryResolution::Found {
+            revision: Some(resolved),
+            ..
+        } = resolution.clone()
+        else {
+            panic!(
+                "an empty revision resolves the directory as it is now, and names it: \
+                 {resolution:?}"
+            );
+        };
+        assert_eq!(resolved, app.action_directory_revision());
+        // What the broker admits: the revision the resolution named.
+        let mut spec = original_counter_spec("bump");
+        spec.directory_revision = Some(resolved.clone());
+        if moved && !resolved_after {
+            let _ = app.action_registry_mut();
+            assert_ne!(
+                app.action_directory_revision(),
+                resolved,
+                "the owner's change moved the directory"
+            );
+        }
+        app.require_published_invocation_authorizer();
+        app.install_published_invocation_authorizer(original_remote_authorizer_with_spec(
+            request.clone(),
+            original_remote_grant(Arc::new(AtomicU64::new(99))),
+            Some(spec),
+        ))
+        .unwrap();
+        deliver_remote(&mut app, &request);
+        assert_eq!(
+            owned_count(&store, &checkout),
+            i64::from(!moved || resolved_after),
+            "case {case}: a directory that moved after a revisionless resolution must refuse \
+             before mutation; an unchanged one, or one resolved after the change, must run"
         );
     }
 }

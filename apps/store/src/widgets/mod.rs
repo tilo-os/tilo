@@ -6,4 +6,6 @@
 
 pub mod card;
 
-pub use card::{CardAction, CardDetails, app_icon, category_label, provenance, store_card};
+pub use card::{
+    CardAction, CardDetails, app_icon, category_label, provenance, store_card, visible_version,
+};

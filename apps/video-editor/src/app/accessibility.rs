@@ -1709,7 +1709,7 @@ impl VideoEditorApp {
     }
 
     /// Activate whatever the pane cursor is on — the keyboard's Enter, routed
-    /// through the same `perform_action_at` an assistive technology uses, so
+    /// through the same `perform_action` an assistive technology uses, so
     /// the two can never do different things.
     pub(super) fn activate_focused(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
         use ui::a11y::{Action, hash_key};
@@ -1757,7 +1757,7 @@ impl VideoEditorApp {
         let mut path = vec![pane.key()];
         path.extend(rest);
         let root = automerge::ROOT;
-        self.perform_action_at(&Action::Activate, &path, state, &root)
+        self.perform_action(&Action::Activate, &path, state, &root)
     }
 
     /// The hover label for whatever icon-only control sits under `p`, or

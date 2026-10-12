@@ -14,7 +14,9 @@
 //! The same area is the daemon's bounded cache: resident bytes of cached
 //! entries are kept under a byte budget, least recently used first, and
 //! pinned or local-only content is never evicted. A `moka` cache sits in
-//! front of loose blobs for hot reads. The provider serves both backings
+//! front of loose blobs for hot reads, bounded by bytes
+//! ([`BLOB_CACHE_BYTES`]) and holding only small blobs
+//! ([`MAX_CACHED_BLOB`]). The provider serves both backings
 //! ([`ContentStore::blobs_protocol`]).
 
 use std::collections::HashSet;
@@ -28,11 +30,12 @@ use std::sync::{
 use std::time::Duration;
 
 use anyhow::Result;
+use bao_tree::io::mixed::EncodedItem;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use iroh_blobs::api::Store;
-#[cfg(feature = "filesystem")]
 use iroh_blobs::api::blobs::BlobStatus;
+use iroh_blobs::protocol::{ChunkRanges, ChunkRangesExt as _};
 use iroh_blobs::provider::events::EventSender;
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::store::mem::MemStore;
@@ -51,6 +54,8 @@ use crate::eviction::{
 use crate::namespace::{LiveRecordBlobRoots, LiveRecordBlobScanError, Namespace};
 
 pub mod area;
+#[cfg(test)]
+mod cache_tests;
 mod content;
 mod files;
 mod serve;
@@ -99,21 +104,21 @@ pub enum BlobRecordLookupError {
     Namespace(#[from] LiveRecordBlobScanError),
     #[error("live record {record_id:?} manifest {manifest} is not locally available")]
     ManifestUnavailable {
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
         manifest: Hash,
     },
     #[error("live record {record_id:?} manifest exceeds {limit} encoded bytes")]
     ManifestTooLarge {
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
         limit: usize,
     },
     #[error("live record {record_id:?} has a malformed manifest")]
     MalformedManifest {
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
     },
     #[error("live record {record_id:?} manifest exceeds {limit} chunks")]
     TooManyChunks {
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
         limit: usize,
     },
 }
@@ -205,6 +210,57 @@ impl Drop for StoreRuntime {
         // Dropping a runtime blocks, which an async caller must not do.
         if let Some(runtime) = self.0.take() {
             runtime.shutdown_background();
+        }
+    }
+}
+
+/// Heap the hot cache in front of loose blobs may hold, counting each
+/// entry's bookkeeping. It is for what is read again and again and is small:
+/// manifests, the chunks of small files, thumbnails.
+pub const BLOB_CACHE_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Largest blob the hot cache admits. Anything larger is file-backed content
+/// ([`crate::content::FILE_BACKED_MIN`] is the same size) or document media,
+/// both read by range, and one such blob would take a large share of the
+/// budget for a single read.
+pub const MAX_CACHED_BLOB: usize = 1024 * 1024;
+
+/// What a cache entry costs beyond its bytes: the key, the `Bytes` handle
+/// and the cache's own node.
+const CACHE_ENTRY_OVERHEAD: u32 = 256;
+
+/// An insert at least this large settles the cache at once. moka applies
+/// writes in batches of 64, so without this a run of large inserts could sit
+/// above the budget until the next batch; with it, what waits is at most 64
+/// inserts smaller than this.
+const CACHE_SETTLE_AT: usize = 64 * 1024;
+
+/// The hot cache in front of loose blobs, bounded by bytes. Its admission
+/// weighs a newcomer's access frequency against that of every entry it would
+/// evict, so a run of cold large reads does not flush small hot entries.
+fn blob_cache() -> Cache<Hash, Bytes> {
+    Cache::builder()
+        .max_capacity(BLOB_CACHE_BYTES)
+        .weigher(|_, bytes: &Bytes| {
+            u32::try_from(bytes.len())
+                .unwrap_or(u32::MAX)
+                .saturating_add(CACHE_ENTRY_OVERHEAD)
+        })
+        .build()
+}
+
+/// Removes what imports left in the blob store's spill directory. A stream
+/// import spills to a file there and the store removes it only when the
+/// import succeeds, so an upload abandoned halfway leaves its part behind.
+/// Called right after the store loads, before anything imports, so every
+/// file there is from an earlier run.
+fn remove_import_spills(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            let _ = std::fs::remove_file(entry.path());
         }
     }
 }
@@ -303,9 +359,10 @@ impl ContentStore {
             .await
             .map_err(|error| anyhow::anyhow!("opening the content store failed: {error}"))??;
         gc_ready.store(true, Ordering::Release);
+        remove_import_spills(&dir.join("temp"));
         Ok(Self {
             backend: Backend::Fs(store),
-            cache: Cache::new(2048),
+            cache: blob_cache(),
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
             gc,
@@ -342,7 +399,7 @@ impl ContentStore {
         };
         Self {
             backend: Backend::Mem(MemStore::new_with_opts(options)),
-            cache: Cache::new(2048),
+            cache: blob_cache(),
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
             gc,
@@ -371,7 +428,8 @@ impl ContentStore {
         &self.files
     }
 
-    #[cfg(all(test, feature = "filesystem"))]
+    #[cfg(test)]
+    #[cfg(feature = "filesystem")]
     #[allow(clippy::unwrap_used, reason = "test fixture")]
     fn memory_with_gc_interval(gc_interval: Duration) -> Self {
         let scratch = tempfile::tempdir().unwrap();
@@ -383,7 +441,7 @@ impl ContentStore {
                     add_protected: None,
                 }),
             })),
-            cache: Cache::new(2048),
+            cache: blob_cache(),
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
             gc: GcGate::default(),
@@ -481,11 +539,157 @@ impl ContentStore {
         }
         match self.store().blobs().get_bytes(hash).await {
             Ok(b) => {
-                self.cache.insert(hash, b.clone());
+                self.cache_insert(hash, b.clone());
                 Some(b)
             }
             Err(_) => self.local_chunk(hash).await,
         }
+    }
+
+    /// Keep `bytes` hot if they are small enough to be worth their share of
+    /// [`BLOB_CACHE_BYTES`].
+    fn cache_insert(&self, hash: Hash, bytes: Bytes) {
+        if bytes.len() > MAX_CACHED_BLOB {
+            return;
+        }
+        let settle = bytes.len() >= CACHE_SETTLE_AT;
+        self.cache.insert(hash, bytes);
+        if settle {
+            self.cache.run_pending_tasks();
+        }
+    }
+
+    /// Import content that arrives as a stream of pieces, hashing and
+    /// writing each as it comes: a persistent store spills it to a file
+    /// after the first 16 KiB and builds the BAO outboard from that file, so
+    /// it never holds the whole content. Returns the content's hash and
+    /// length. Never fills the hot cache.
+    ///
+    /// The stream is consumed before any lock is taken, so a slow producer
+    /// (an app uploading) holds up nothing else; the import is protected
+    /// from collection by its temporary tag until the owned tag is in
+    /// place, as for [`Self::ingest`]. A piece that is an error abandons the
+    /// import and stores nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns the stream's error, or an error if the blob store fails.
+    pub async fn ingest_stream<S>(&self, pieces: S) -> Result<(Hash, u64)>
+    where
+        S: futures_util::Stream<Item = std::io::Result<Bytes>> + Send + Sync + 'static,
+    {
+        // iroh-blobs' `add_stream` stops forwarding at an error but keeps
+        // the import open, waiting for an end that never comes. So an error
+        // is never handed to it: it abandons the import here instead, and
+        // dropping the import ends the store's side of it.
+        let (abandon, abandoned) = tokio::sync::oneshot::channel::<std::io::Error>();
+        let mut abandon = Some(abandon);
+        let mut pieces = Box::pin(pieces);
+        let forwarded =
+            futures_util::stream::poll_fn(move |cx| match pieces.as_mut().poll_next(cx) {
+                std::task::Poll::Ready(Some(Err(error))) => {
+                    if let Some(abandon) = abandon.take() {
+                        let _ = abandon.send(error);
+                    }
+                    std::task::Poll::Pending
+                }
+                other => other,
+            });
+        let import = async {
+            self.store()
+                .blobs()
+                .add_stream(forwarded)
+                .await
+                .temp_tag()
+                .await
+        };
+        let temporary = tokio::select! {
+            imported = import => imported?,
+            Ok(error) = abandoned => {
+                return Err(anyhow::Error::new(error).context("the streamed import was abandoned"));
+            }
+        };
+        let hash = temporary.hash();
+        let BlobStatus::Complete { size } = self.store().blobs().status(hash).await? else {
+            anyhow::bail!("streamed blob {hash} is not complete after its import");
+        };
+        let _mutation = self.mutation.lock().await;
+        let _owned_tags = self.owned_tags.lock().await;
+        self.store()
+            .tags()
+            .set(
+                owned_blob_tag(hash, temporary.format()),
+                temporary.hash_and_format(),
+            )
+            .await?;
+        self.sync_unless_deferred().await?;
+        drop(temporary);
+        Ok((hash, size))
+    }
+
+    /// Read a clipped range and the whole length of a locally complete blob.
+    /// Loose data is BAO-verified over the requested chunk groups only; an
+    /// empty range needs just its status. Existing cached bytes and bounded,
+    /// hash-checked file chunks remain readable. Never fills the blob cache.
+    pub async fn read_blob_range(
+        &self,
+        hash: Hash,
+        range: std::ops::Range<u64>,
+    ) -> Option<(Vec<u8>, u64)> {
+        if let Some(bytes) = self.cache.get(&hash) {
+            let mut out = Vec::new();
+            content::copy_part(&mut out, &bytes, 0, range.start, range.end);
+            return Some((out, bytes.len() as u64));
+        }
+        let Ok(BlobStatus::Complete { size }) = self.store().blobs().status(hash).await else {
+            let bytes = self.local_chunk(hash).await?;
+            let mut out = Vec::new();
+            content::copy_part(&mut out, &bytes, 0, range.start, range.end);
+            return Some((out, bytes.len() as u64));
+        };
+        let end = range.end.min(size);
+        let start = range.start.min(end);
+        if start == end {
+            return Some((Vec::new(), size));
+        }
+        let requested = end.checked_sub(start)?;
+        let mut out = Vec::with_capacity(usize::try_from(requested).ok()?);
+        let mut items = self
+            .store()
+            .blobs()
+            .export_bao(hash, ChunkRanges::bytes(start..end))
+            .stream();
+        while let Some(item) = items.next().await {
+            match item {
+                EncodedItem::Leaf(leaf) => {
+                    content::copy_part(&mut out, &leaf.data, leaf.offset, start, end);
+                }
+                EncodedItem::Size(actual) if actual != size => return None,
+                EncodedItem::Parent(_) | EncodedItem::Size(_) => {}
+                EncodedItem::Done => {
+                    return (out.len() as u64 == requested).then_some((out, size));
+                }
+                EncodedItem::Error(_) => return None,
+            }
+        }
+        None
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_cached(&self, hash: Hash) -> bool {
+        self.cache.contains_key(&hash)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn forget_cached(&self, hash: Hash) {
+        self.cache.invalidate(&hash);
+    }
+
+    /// Bytes the hot cache holds once its pending writes are applied.
+    #[cfg(test)]
+    pub(crate) fn cached_bytes(&self) -> u64 {
+        self.cache.run_pending_tasks();
+        self.cache.weighted_size()
     }
 
     /// Persist + cache bytes that were fetched and verified from a peer.
@@ -617,6 +821,25 @@ impl ContentStore {
         }
     }
 
+    /// Make the writes just made durable now or, inside a deferred-durability
+    /// group ([`Self::defer_sync`]), leave the one sync to the group's end.
+    async fn sync_unless_deferred(&self) -> Result<()> {
+        let deferred = {
+            let mut deferred = self
+                .deferred
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if deferred.0 > 0 {
+                deferred.1 = true;
+            }
+            deferred.0 > 0
+        };
+        if !deferred {
+            self.store().sync_db().await?;
+        }
+        Ok(())
+    }
+
     async fn persist_owned(&self, data: Bytes) -> Result<Hash> {
         self.persist_owned_batch(vec![data])
             .await?
@@ -659,25 +882,13 @@ impl ContentStore {
         // in-memory backend. Inside a deferred-durability group the group's
         // end syncs once instead; the owned tags are already installed, so
         // nothing collects the blobs meanwhile.
-        let deferred = {
-            let mut deferred = self
-                .deferred
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if deferred.0 > 0 {
-                deferred.1 = true;
-            }
-            deferred.0 > 0
-        };
-        if !deferred {
-            self.store().sync_db().await?;
-        }
+        self.sync_unless_deferred().await?;
         let hashes = protected
             .iter()
             .map(|(temporary, _)| temporary.hash())
             .collect::<Vec<_>>();
         for (temporary, bytes) in protected {
-            self.cache.insert(temporary.hash(), bytes);
+            self.cache_insert(temporary.hash(), bytes);
             drop(temporary);
         }
         Ok(hashes)
@@ -708,7 +919,7 @@ impl ContentStore {
         namespace: &Namespace,
         requested: Hash,
         limits: BlobRecordLookupLimits,
-    ) -> std::result::Result<Vec<collab_types::FileRecordId>, BlobRecordLookupError> {
+    ) -> std::result::Result<Vec<fs_protocol::FileRecordId>, BlobRecordLookupError> {
         if limits.max_manifest_bytes == 0
             || limits.max_manifest_bytes > MAX_BLOB_LOOKUP_MANIFEST_BYTES
             || limits.max_chunks_per_record == 0
@@ -729,7 +940,7 @@ impl ContentStore {
         roots: Vec<LiveRecordBlobRoots>,
         requested: Hash,
         limits: BlobRecordLookupLimits,
-    ) -> std::result::Result<Vec<collab_types::FileRecordId>, BlobRecordLookupError> {
+    ) -> std::result::Result<Vec<fs_protocol::FileRecordId>, BlobRecordLookupError> {
         if limits.max_manifest_bytes == 0
             || limits.max_manifest_bytes > MAX_BLOB_LOOKUP_MANIFEST_BYTES
             || limits.max_chunks_per_record == 0
@@ -791,8 +1002,8 @@ impl ContentStore {
     #[cfg(feature = "filesystem")]
     pub async fn inspect_version_payload(
         &self,
-        record_id: collab_types::FileRecordId,
-        version_id: collab_types::FileVersionId,
+        record_id: fs_protocol::FileRecordId,
+        version_id: fs_protocol::FileVersionId,
         manifest_hash: Hash,
     ) -> Result<VersionPayload> {
         let manifest_bytes = self
@@ -837,7 +1048,7 @@ impl ContentStore {
     #[cfg(feature = "filesystem")]
     pub async fn verify_durable_revision(
         &self,
-        revision: &collab_types::ContentRevisionV1,
+        revision: &fs_protocol::ContentRevisionV1,
     ) -> Result<()> {
         revision.validate()?;
         let Some(content_hash) = revision.content_hash else {
@@ -1306,8 +1517,8 @@ mod tests {
             let manifest_hash = store.write_content(&data).await.unwrap().unwrap();
             let payload = store
                 .inspect_version_payload(
-                    collab_types::FileRecordId::new(),
-                    collab_types::FileVersionId::new(),
+                    fs_protocol::FileRecordId::new(),
+                    fs_protocol::FileVersionId::new(),
                     manifest_hash,
                 )
                 .await
@@ -1341,13 +1552,13 @@ mod tests {
                 }],
             );
             let manifest_hash = store.ingest(Bytes::from(manifest.encode())).await.unwrap();
-            let revision = collab_types::ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
-                record_id: collab_types::FileRecordId::new(),
-                version_id: collab_types::FileVersionId::new(),
-                content_hash: Some(collab_types::ContentHash(*manifest_hash.as_bytes())),
+            let revision = fs_protocol::ContentRevisionV1 {
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
+                record_id: fs_protocol::FileRecordId::new(),
+                version_id: fs_protocol::FileVersionId::new(),
+                content_hash: Some(fs_protocol::ContentHash(*manifest_hash.as_bytes())),
                 byte_len: 13,
-                metadata_hash: collab_types::ContentHash([1; 32]),
+                metadata_hash: fs_protocol::ContentHash([1; 32]),
             };
             assert!(store.verify_durable_revision(&revision).await.is_err());
         }
@@ -1358,8 +1569,8 @@ mod tests {
             let store = ContentStore::memory();
             let hash = store.ingest(Bytes::from_static(b"keep me")).await.unwrap();
             let plan = EvictionPlan {
-                record_id: collab_types::FileRecordId::new(),
-                version_id: collab_types::FileVersionId::new(),
+                record_id: fs_protocol::FileRecordId::new(),
+                version_id: fs_protocol::FileVersionId::new(),
                 mode: EvictionMode::DestructiveOverride,
                 reclaimable: vec![BlobExtent {
                     hash,
@@ -1396,8 +1607,8 @@ mod tests {
             let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
 
             let make_plan = |hash| EvictionPlan {
-                record_id: collab_types::FileRecordId::new(),
-                version_id: collab_types::FileVersionId::new(),
+                record_id: fs_protocol::FileRecordId::new(),
+                version_id: fs_protocol::FileVersionId::new(),
                 mode: EvictionMode::Safe,
                 reclaimable: vec![BlobExtent {
                     hash,
@@ -1472,10 +1683,10 @@ mod tests {
                 .await
                 .unwrap();
 
-            let target_id = collab_types::FileRecordId::new();
-            let target_version = collab_types::FileVersionId::new();
-            let other_id = collab_types::FileRecordId::new();
-            let other_version = collab_types::FileVersionId::new();
+            let target_id = fs_protocol::FileRecordId::new();
+            let target_version = fs_protocol::FileVersionId::new();
+            let other_id = fs_protocol::FileRecordId::new();
+            let other_version = fs_protocol::FileVersionId::new();
             let mut registry =
                 AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
             let mut target = RecordAvailability::new(target_id, RecordKind::File);
@@ -1614,10 +1825,10 @@ mod tests {
                 .ingest(Bytes::from_static(b"other root"))
                 .await
                 .unwrap();
-            let target_id = collab_types::FileRecordId::new();
-            let target_version = collab_types::FileVersionId::new();
-            let other_id = collab_types::FileRecordId::new();
-            let other_version = collab_types::FileVersionId::new();
+            let target_id = fs_protocol::FileRecordId::new();
+            let target_version = fs_protocol::FileVersionId::new();
+            let other_id = fs_protocol::FileRecordId::new();
+            let other_version = fs_protocol::FileVersionId::new();
             let mut registry =
                 AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
             let mut target = RecordAvailability::new(target_id, RecordKind::File);
@@ -1713,8 +1924,8 @@ mod tests {
                 .await
                 .unwrap();
 
-            let record_id = collab_types::FileRecordId::new();
-            let version_id = collab_types::FileVersionId::new();
+            let record_id = fs_protocol::FileRecordId::new();
+            let version_id = fs_protocol::FileVersionId::new();
             let mut registry =
                 AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
             let mut record = RecordAvailability::new(record_id, RecordKind::File);

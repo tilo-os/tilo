@@ -70,18 +70,6 @@ pub fn push_clip(scene: &mut Scene, tf: Affine, rect: Rect) {
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, tf, &rect);
 }
 
-/// Blend `a` toward `b` by `t` (0 = all `a`, 1 = all `b`), in sRGB.
-pub(crate) fn blend_toward(a: Color, b: Color, t: f64) -> Color {
-    use ui::color_compat::ColorCompat;
-    let t = t.clamp(0.0, 1.0) as f32;
-    let lerp = |x: u8, y: u8| {
-        (f32::from(x) + (f32::from(y) - f32::from(x)) * t)
-            .round()
-            .clamp(0.0, 255.0) as u8
-    };
-    Color::from_rgb8(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
-}
-
 /// Strengthen a tint until it stands `target` apart from the ground it sits on.
 ///
 /// The first thing tried is more of the colour the tint came from — a band
@@ -96,11 +84,12 @@ pub fn band_at_least(
     target: f64,
 ) -> Color {
     use ui::a11y::contrast_ratio;
+    use ui::tokens::colors::mix8;
     if contrast_ratio(tint, ground) >= target {
         return tint;
     }
-    for step in 1..=16 {
-        let candidate = blend_toward(tint, own, f64::from(step) / 16.0);
+    for step in 1..=16_u8 {
+        let candidate = mix8(tint, own, f32::from(step) / 16.0);
         if contrast_ratio(candidate, ground) >= target {
             return candidate;
         }

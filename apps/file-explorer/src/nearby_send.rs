@@ -166,10 +166,6 @@ impl NearbySendState {
         &self.snapshot.destinations
     }
 
-    pub fn history(&self) -> &VecDeque<NearbyTransferStatus> {
-        &self.history
-    }
-
     pub fn cancel(&mut self, handle: NearbyTransferHandle) {
         self.queue(NearbyTransferCommand::Cancel { handle }, Pending::Cancel);
     }
