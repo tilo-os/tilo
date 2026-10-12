@@ -279,6 +279,9 @@ fn current_time() -> Option<u64> {
     Some(NOW.get())
 }
 fn review_driver() -> FrameHarness {
+    review_driver_with_root(Box::new(crate::widget::Column::new()))
+}
+fn review_driver_with_root(root: Box<dyn Widget>) -> FrameHarness {
     NOW.set(100);
     let mut state = State::new();
     state.doc.put(ROOT, "body", "old").unwrap();
@@ -296,12 +299,9 @@ fn review_driver() -> FrameHarness {
         ),
     };
     let registration = HistoryRegistration::new(&RESTORABLE, vec![source]).unwrap();
-    let mut driver = FrameHarness::from_managed_root(
-        state,
-        ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
-        (900, 650),
-    )
-    .unwrap();
+    let mut driver =
+        FrameHarness::from_managed_root(state, ManagedRoot::new(root, registration), (900, 650))
+            .unwrap();
     driver.set_history_clock(current_time);
     driver.click_named("history-open").unwrap();
     let target = format!(
@@ -318,6 +318,86 @@ fn review_driver() -> FrameHarness {
         )
         .unwrap();
     driver
+}
+
+struct DisappearingNativeRecovery {
+    inner: crate::widget::Column,
+    available: std::rc::Rc<std::cell::Cell<bool>>,
+}
+impl Widget for DisappearingNativeRecovery {
+    crate::provides!(dyn crate::history_mode::capability::DocumentHistory);
+    crate::testing::delegate_widget_methods!(
+        inner: sync, build_layout, apply_layout, draw, handle_event, get_rect
+    );
+    fn name(&self) -> &str {
+        "disappearing-native-recovery"
+    }
+}
+impl crate::history_mode::capability::DocumentHistory for DisappearingNativeRecovery {
+    fn native_history_actions(
+        &self,
+        _: &str,
+    ) -> Option<crate::history_mode::capability::NativeHistoryActions> {
+        self.available
+            .get()
+            .then(|| crate::history_mode::capability::NativeHistoryActions {
+                review: tilo_actions::ActionAddress::new("notebook", "review-restore"),
+                restore: tilo_actions::ActionAddress::new("notebook", "restore-reviewed"),
+            })
+    }
+}
+
+#[test]
+fn initial_native_review_failure_cannot_downgrade_after_capability_loss() {
+    let available = std::rc::Rc::new(std::cell::Cell::new(true));
+    let mut driver = review_driver_with_root(Box::new(DisappearingNativeRecovery {
+        inner: crate::widget::Column::new(),
+        available: available.clone(),
+    }));
+    let before = driver.state_mut().doc.base_heads();
+    // The advertised native route refuses this non-native owner. The schema
+    // route is otherwise valid and would restore it if the retry downgraded.
+    driver.click_named("history-restore").unwrap();
+    assert!(
+        driver
+            .inspection_json()
+            .unwrap()
+            .contains("captured document owner")
+    );
+    assert!(driver.a11y_node_named("Refresh review").is_some());
+    assert_eq!(driver.state_mut().doc.base_heads(), before);
+    available.set(false);
+    // Refresh, then the same primary activation that would confirm an
+    // accidentally installed schema witness. Neither may write canonical state.
+    for _ in 0..2 {
+        driver
+            .click_named("history-restore-review.primary")
+            .unwrap();
+        assert_eq!(driver.state_mut().doc.base_heads(), before);
+        assert_eq!(
+            crate::state::owned_restore_tests::value(&driver.state_mut().doc),
+            "live"
+        );
+        assert!(driver.a11y_node_named("Refresh review").is_some());
+        assert!(driver.a11y_node_named("Restore version").is_none());
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("Native recovery is no longer available")
+        );
+    }
+    // Only explicit cancellation permits a new review to choose another engine.
+    driver.key("Escape");
+    driver.click_named("history-restore").unwrap();
+    assert!(driver.a11y_node_named("Restore version").is_some());
+    driver
+        .click_named("history-restore-review.primary")
+        .unwrap();
+    assert_eq!(
+        crate::state::owned_restore_tests::value(&driver.state_mut().doc),
+        "old"
+    );
 }
 
 #[test]

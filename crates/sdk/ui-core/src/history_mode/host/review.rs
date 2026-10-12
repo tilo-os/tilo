@@ -24,7 +24,7 @@ pub(super) struct ReviewPanel {
     token: Option<crate::history_mode::RestoreReview>,
     native: Option<(
         crate::history_mode::capability::NativeHistoryActions,
-        serde_json::Value,
+        Option<serde_json::Value>,
     )>,
 }
 impl HistoryHost {
@@ -62,10 +62,12 @@ impl HistoryHost {
         // A refusal clears the confirmation token, not the native engine
         // identity. Losing a capability must not downgrade a retry to the
         // schema restore door. Only cancel/owner replacement ends the review.
-        let native = token
-            .is_none()
-            .then(|| self.review.as_ref().and_then(|panel| panel.native.clone()))
-            .flatten();
+        let native = self.review.as_ref().and_then(|panel| {
+            panel
+                .native
+                .as_ref()
+                .map(|(actions, review)| (actions.clone(), token.as_ref().and(review.clone())))
+        });
         self.review = Some(ReviewPanel {
             token,
             native,
@@ -107,6 +109,14 @@ impl HistoryHost {
             let controller = self.controller.as_ref().ok_or("History is unavailable.")?;
             if matches!(command, ReviewCommand::Open | ReviewCommand::Refresh) {
                 let actions = actions.ok_or("Native recovery is no longer available.")?;
+                let (pinned, _) = self
+                    .review
+                    .as_ref()
+                    .and_then(|panel| panel.native.as_ref())
+                    .ok_or("Review restoration again.")?;
+                if actions.restore != pinned.restore || actions.review != pinned.review {
+                    return Err("Native recovery changed. Review restoration again.".into());
+                }
                 let token = controller
                     .review_restore()
                     .map_err(|error| error.to_string())?;
@@ -162,13 +172,14 @@ impl HistoryHost {
                     I18nManager::format("history-review-body", &[("version", title.into())]),
                 );
                 if let Some(panel) = &mut self.review {
-                    panel.native = Some((actions, review));
+                    panel.native = Some((actions, Some(review)));
                 }
                 return Ok(false);
             }
             let panel = self.review.as_ref().ok_or("Review restoration again.")?;
             let token = panel.token.as_ref().ok_or("Review restoration again.")?;
             let (pinned, review) = panel.native.as_ref().ok_or("Review restoration again.")?;
+            let review = review.as_ref().ok_or("Review restoration again.")?;
             let current = actions.ok_or("Native recovery is no longer available.")?;
             if current.restore != pinned.restore || current.review != pinned.review {
                 return Err("Native recovery changed. Review restoration again.".into());
@@ -291,8 +302,37 @@ impl HistoryHost {
         let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else {
             return false;
         };
+        let scope_key = scope.key;
+        let native = if matches!(
+            self.source(),
+            HistorySourceRegistration::CheckedFiles { .. }
+        ) {
+            None
+        } else {
+            crate::widget::capability::capability::<
+                dyn crate::history_mode::capability::DocumentHistory,
+            >(root)
+            .and_then(|history| history.native_history_actions(scope_key))
+        };
+        // Pin the engine and exact action routes before any review can refuse,
+        // including readiness, frontier validation and missing action output.
+        // A native confirmation witness is acquired separately on success.
+        if let Some(actions) = &native
+            && self
+                .review
+                .as_ref()
+                .is_none_or(|panel| panel.native.is_none())
+        {
+            self.show_review(
+                None,
+                I18nManager::lookup_plain("history-review-not-content"),
+            );
+            if let Some(panel) = &mut self.review {
+                panel.native = Some((actions.clone(), None));
+            }
+        }
         if let Err(reason) =
-            crate::history_mode::capability::history_restore_readiness(root, scope.key)
+            crate::history_mode::capability::history_restore_readiness(root, scope_key)
         {
             if let Some(files) = &mut self.files {
                 files.cancel_review();
@@ -326,10 +366,6 @@ impl HistoryHost {
         let Some(controller) = &self.controller else {
             return false;
         };
-        let native = crate::widget::capability::capability::<
-            dyn crate::history_mode::capability::DocumentHistory,
-        >(root)
-        .and_then(|history| history.native_history_actions(scope.key));
         if native.is_some()
             || self
                 .review

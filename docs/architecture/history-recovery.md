@@ -24,7 +24,12 @@ object returned by the admitted read action. Confirmation copies that native
 object unchanged. Selection changes, pending edits, stale live heads (including
 unrelated changes), revoked grants and retired owners refuse writes. An explicit
 refresh creates a new review; automatic presentation refresh never replaces a
-pinned review behind the confirmation button.
+pinned review behind the confirmation button. The engine and exact action
+addresses are pinned before the first review attempt, independently of its
+confirmation witnesses. A refusal (including missing review output) clears
+those witnesses but retains native routing; losing or changing the capability
+cannot switch a refresh or confirmation to the schema engine. Cancellation or
+replacement of the captured owner ends that review session.
 
 Standalone, legacy and schema-owned documents without the capability retain
 the existing restore path. Checked-file registrations use their checked-file
