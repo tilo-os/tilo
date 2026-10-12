@@ -1,6 +1,7 @@
 [package]
 name = "remote"
 version = "0.1.0"
+description = "SSH terminals, VNC/RDP desktops and Tilo-to-Tilo relay sessions"
 edition = "2024"
 publish.workspace = true
 license.workspace = true

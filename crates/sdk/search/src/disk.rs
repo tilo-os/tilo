@@ -134,9 +134,13 @@ impl DiskIndex {
     /// A writer with one indexing thread and `heap_bytes` of memory, whose
     /// merges keep segments below `max_docs_per_segment` documents.
     ///
+    /// The writer's lock is an advisory lock on `.tantivy-writer.lock`,
+    /// which the system releases with the process holding it: the file a
+    /// crashed process leaves behind does not refuse the next writer.
+    ///
     /// # Errors
     ///
-    /// Tantivy's error when another writer holds the index.
+    /// Tantivy's error when another live writer holds the index.
     pub fn writer(
         &self,
         heap_bytes: usize,
@@ -256,6 +260,19 @@ impl DiskWriter {
         self.writer.commit()?;
         self.reader.reload()
     }
+
+    /// Commit, let the merges that commit started finish, and release the
+    /// writer. Dropping a writer instead discards what it has not committed
+    /// and abandons its merges half done, to be redone by the next writer.
+    ///
+    /// # Errors
+    ///
+    /// Tantivy's error when the commit, a merge or the reload fails.
+    pub fn close(mut self) -> tantivy::Result<()> {
+        self.writer.commit()?;
+        self.writer.wait_merging_threads()?;
+        self.reader.reload()
+    }
 }
 
 #[cfg(test)]
@@ -306,6 +323,37 @@ mod tests {
         writer.commit().unwrap();
         assert_ne!(index.generation(), seen, "a commit moves the generation");
         assert_eq!(index.search("second", 5).len(), 1, "a later commit");
+    }
+
+    #[test]
+    fn a_writer_a_crash_left_behind_does_not_lock_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = DiskIndex::open_or_create(dir.path()).unwrap();
+        // The lock file of a process that died holding the writer.
+        std::fs::write(dir.path().join(".tantivy-writer.lock"), b"").unwrap();
+        let mut writer = index.writer(15_000_000, 2_000).unwrap();
+        writer.upsert("/a/one.md", 1, "one", "first").unwrap();
+        assert!(
+            index.writer(15_000_000, 2_000).is_err(),
+            "a live writer still holds the index"
+        );
+        // A writer whose thread panicked releases the index as it unwinds.
+        std::thread::scope(|scope| {
+            let held = scope.spawn(move || {
+                let _writer = writer;
+                panic!("indexing failed");
+            });
+            assert!(held.join().is_err());
+        });
+        let mut writer = index.writer(15_000_000, 2_000).unwrap();
+        writer.upsert("/a/two.md", 1, "two", "second").unwrap();
+        writer.close().unwrap();
+        assert_eq!(index.search("second", 5).len(), 1, "close commits");
+        assert!(
+            index.search("first", 5).is_empty(),
+            "the panicked writer's change was never committed"
+        );
+        assert!(index.writer(15_000_000, 2_000).is_ok(), "close releases");
     }
 
     /// tantivy names its `meta.json` poller `thread-tantivy-meta-file-watcher`;

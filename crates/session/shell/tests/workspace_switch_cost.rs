@@ -303,6 +303,13 @@ fn switching_back_to_a_workspace_with_apps_stays_within_its_cpu_budget() {
             .all(|(_, back)| back.iter().any(|tick| tick.painted)),
         "a switch back painted no frame, so its cost was not observed:\n{report}"
     );
+    // A second writer of the session's state file refuses every save the
+    // compositor makes, and used to stall its loop for seconds besides.
+    assert!(
+        !desktop.logged("file lease is busy"),
+        "the compositor under test did not own its state file's writer. Log:\n{}",
+        desktop.log_tail()
+    );
     // One machine-readable line for a scheduled lane.
     println!("WORKSPACE-SWITCH-BACK tick_cpu_ms={cpu:.2}");
     assert!(

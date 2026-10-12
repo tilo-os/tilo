@@ -278,6 +278,13 @@ class Groups(unittest.TestCase):
             self.assertIn(f"\n  {name}:\n", workflow, f"{name} is a perf-scheduled group")
         self.assertNotIn("footprint", ab.GROUPS)
 
+    def test_the_workflow_accepts_every_ab_group(self):
+        # The plan job refuses a group it does not list before ab.py runs.
+        workflow = (HERE.parents[1] / ".forgejo/workflows/perf-scheduled.yml").read_text()
+        listed = re.search(r"ab_known=\(([^)]*)\)", workflow)
+        self.assertIsNotNone(listed, "perf-scheduled.yml lists its A/B groups")
+        self.assertEqual(set(listed.group(1).split()), set(ab.GROUPS))
+
     def test_every_group_builds_the_benchmarks_its_nightly_job_builds(self):
         # An A/B group that skips one of its nightly job's benchmarks cannot
         # pair that benchmark's KPIs (the render group once left out strip pans).

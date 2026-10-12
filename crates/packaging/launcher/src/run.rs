@@ -445,15 +445,11 @@ fn interfaces_unmet(
         .sandbox
         .services
         .iter()
-        .filter_map(
-            |(name, raw)| match crate::manifest::ServiceReq::parse(raw) {
-                Ok(crate::manifest::ServiceReq::Required(version)) => {
-                    Some(tilo_app_package::interfaces::InterfaceRequirement {
-                        name: name.clone(),
-                        version,
-                    })
-                }
-                _ => None,
+        .filter(|(_, req)| req.is_required())
+        .map(
+            |(name, req)| tilo_app_package::interfaces::InterfaceRequirement {
+                name: name.clone(),
+                version: req.version,
             },
         )
         .collect();
