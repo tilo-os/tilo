@@ -2377,6 +2377,24 @@ mod two_sessions {
         relay.set_certified_people(&room.to_string(), vec![row.clone()]);
         relay.pump(&mut presence, &[]);
         assert!(
+            !presence.is_agent(&id),
+            "a certified roster in an inactive room must not leak into desktop presence"
+        );
+        // Appending a workspace does not focus it. Projection follows the
+        // active room, so enter the fixture's room before checking its kind.
+        {
+            let mut tree = tree.write();
+            let workspace = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room == room)
+                .expect("the certified roster's room exists")
+                .id;
+            tree.set_active(workspace);
+        }
+        relay.pump(&mut presence, &[]);
+        assert!(
             presence.is_agent(&id),
             "kind comes from the certified roster, not an id prefix"
         );

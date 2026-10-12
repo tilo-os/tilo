@@ -1707,6 +1707,9 @@ impl FrameBuilder {
         }
         if reset {
             self.focus_first(focus);
+        } else if let Some(palette) = self.palette_focus_target() {
+            self.set_native_focus(focus, Some(palette));
+            self.focus_tree_changed = false;
         } else if self.focus_tree_changed {
             self.restore_focus_after_tree_change(focus);
         } else if focus.is_none() {
@@ -5384,6 +5387,14 @@ impl FrameBuilder {
         if self.host.take_focus_reset() {
             self.relayout();
             self.focus_first(focus);
+        } else if self.host.palette_visible()
+            || self.host.agent_quick_composer_open()
+            || self.palette_focus_active
+        {
+            // Opening or closing an overlay must update the external seat
+            // cursor too, not just the widget's internal focus during layout.
+            self.relayout();
+            self.reconcile_native_focus(focus);
         }
         // Native/DRM chrome does not run through `ui::App`, whose event loop
         // normally turns Enter/Space on the focused widget into an

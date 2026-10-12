@@ -751,7 +751,7 @@ impl BrokerActor {
     /// then needs the confirmation of the person it is made for, and the
     /// `Once` grants admitting it spends. Decided on one sample: the action
     /// where it is published; the task the call works in (`task`, and every
-    /// task an agent runs: [`tilo_desktop_model::Workspace::task_bound_at`]);
+    /// task an agent runs, including waiting tasks);
     /// and, for a person, a change of the route record it acts on, so a
     /// person restricted on one record cannot act on it through an action
     /// they may otherwise use.
@@ -764,6 +764,21 @@ impl BrokerActor {
         workspace: &tilo_desktop_model::Workspace,
         now: u64,
         task: Option<&str>,
+        (surface, action): (&PublishedSurface, &PublishedAction),
+    ) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
+        self.admit_published_with_task_in(
+            workspace,
+            now,
+            workspace_tasks::TaskAdmission::Legacy(task),
+            (surface, action),
+        )
+    }
+
+    fn admit_published_with_task_in(
+        &self,
+        workspace: &tilo_desktop_model::Workspace,
+        now: u64,
+        task: workspace_tasks::TaskAdmission<'_>,
         (surface, action): (&PublishedSurface, &PublishedAction),
     ) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
         let refused = || "caller no longer authorized for invocation".to_owned();
@@ -785,7 +800,7 @@ impl BrokerActor {
         let agent = self
             .is_agent
             .then(|| self.id.strip_prefix("agent:").unwrap_or(&self.id));
-        match workspace.task_bound_at(agent, task, &node, need.kind, now) {
+        match task.answer(workspace, agent, &node, need.kind, now) {
             Some(Answer::Deny) => return Err("the task's grants do not cover this action".into()),
             Some(Answer::Ask) => asks = true,
             Some(Answer::Allow) | None => {}
@@ -5320,23 +5335,30 @@ impl CapnpBrokerState {
         // Every check of this admission is decided on one committed sample,
         // so a policy change cannot land between the action check and the
         // record check.
-        // Work done in a task — the one the call names, or the task its
-        // agent is running — is bounded by the task's grant set.
-        let task = match durable {
-            Some(DurableContext::Task { binding, .. }) => Some(binding.task_id.clone()),
-            _ => context
-                .as_ref()
-                .and_then(|context| context.group.as_ref())
-                .filter(|group| group.kind == "task")
-                .map(|group| group.id.clone()),
-        };
+        // A context group can only narrow legacy work. Only authenticated
+        // native custody selects the exact-run ceiling instead of all of an
+        // agent's running/waiting task ceilings.
+        let task = context
+            .as_ref()
+            .and_then(|context| context.group.as_ref())
+            .filter(|group| group.kind == "task")
+            .map(|group| group.id.as_str());
         let (asks, spent) = self
             .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
             .decide_in_room(&offered.0.route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("workspace no longer hosted")?;
-                actor.admit_published_in(workspace, now, task.as_deref(), (&offered.0, &offered.1))
+                match durable {
+                    Some(DurableContext::Task { binding, .. }) => actor
+                        .admit_published_with_task_in(
+                            workspace,
+                            now,
+                            workspace_tasks::TaskAdmission::Native(binding),
+                            (&offered.0, &offered.1),
+                        ),
+                    _ => actor.admit_published_in(workspace, now, task, (&offered.0, &offered.1)),
+                }
             })??;
 
         if (durable.is_some() || execution.is_some())

@@ -8,6 +8,54 @@ use tilo_peer_state::workspace_task::{
     WorkspaceTaskCommand, WorkspaceTaskSnapshot, validate_manual_resource,
 };
 
+/// Task ceilings selected by broker custody, not by action arguments.
+/// A named legacy task only narrows authority; it need not have a task record.
+#[derive(Clone, Copy)]
+pub(crate) enum TaskAdmission<'a> {
+    Legacy(Option<&'a str>),
+    Native(&'a crate::services::NativeTaskBinding),
+}
+
+impl TaskAdmission<'_> {
+    pub(crate) fn answer(
+        &self,
+        workspace: &tilo_desktop_model::Workspace,
+        agent: Option<&str>,
+        node: &tilo_action_policy::TreePath,
+        kind: tilo_actions::ActionKind,
+        now: u64,
+    ) -> Option<tilo_action_policy::Answer> {
+        let cx = tilo_desktop_model::context_at(now);
+        match self {
+            Self::Native(binding) => {
+                if agent != Some(binding.agent_id.as_str()) {
+                    return Some(tilo_action_policy::Answer::Deny);
+                }
+                // The native service checks the exact live run, starter and
+                // frozen scope. Other tasks cannot bound this authenticated run.
+                workspace
+                    .policy
+                    .task_answer(&binding.task_id, node, kind, &cx)
+            }
+            Self::Legacy(named) => {
+                let running = workspace.tasks.iter().filter(|task| {
+                    matches!(
+                        task.status,
+                        tilo_desktop_model::WorkspaceTaskStatus::InProgress
+                            | tilo_desktop_model::WorkspaceTaskStatus::Waiting
+                    ) && agent.is_some_and(|agent| task.assigned_agent.as_deref() == Some(agent))
+                });
+                named
+                    .iter()
+                    .copied()
+                    .chain(running.map(|task| task.id.as_str()))
+                    .filter_map(|task| workspace.policy.task_answer(task, node, kind, &cx))
+                    .min()
+            }
+        }
+    }
+}
+
 const WORKSPACE: &str = "desktop:workspace";
 const COLLECTION: &str = "desktop:tasks";
 const TASK_PREFIX: &str = "desktop:task:";

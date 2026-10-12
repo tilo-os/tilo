@@ -75,6 +75,7 @@ pub(super) struct FloatingRuntime {
 }
 
 impl FloatingRuntime {
+    #[cfg(any(feature = "native", test))]
     pub(super) fn complete_action_marker_frame(
         &mut self,
         completed: u64,

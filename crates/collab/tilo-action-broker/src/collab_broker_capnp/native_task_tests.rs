@@ -603,6 +603,83 @@ async fn ordinary_invoke(channel: &channel_handle::Client) -> Result<(), capnp::
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn authenticated_native_action_ignores_another_running_tasks_ceiling() {
+    use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            let (_target, stream) = notes_target(&f).await;
+            grant_notes(&f);
+            f.person_command(WorkspaceTaskCommand::QueueInstruction {
+                title: "Other work".into(),
+                instruction: "Inspect unrelated work".into(),
+                assigned_agent: "scribe".into(),
+                route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+            })
+            .unwrap();
+            let other = f
+                .native
+                .owner
+                .workspace_task_snapshot(room())
+                .unwrap()
+                .tasks
+                .into_iter()
+                .find(|task| task.id != f.task)
+                .unwrap()
+                .id;
+            f.person_command(WorkspaceTaskCommand::ApproveRun {
+                task_id: other.clone(),
+                agent_id: "scribe".into(),
+                expected_run_epoch: 0,
+                after_revision: 0,
+            })
+            .unwrap();
+            put_grant(
+                &f,
+                Grant::new(
+                    "other-task-denies-append",
+                    Subject::Task(other.clone()),
+                    TreePath::room(room().to_string()).app("so.tilo.notes"),
+                    KindSet::UNDOABLE,
+                    Answer::Deny,
+                    Subject::person(hex::encode(f.native.certificate.user_public_key)),
+                ),
+            );
+            assert_eq!(
+                f.native
+                    .owner
+                    .workspace_task_snapshot(room())
+                    .unwrap()
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == other)
+                    .unwrap()
+                    .status,
+                WorkspaceTaskStatus::InProgress,
+            );
+            let invocation = uuid::Uuid::new_v4();
+            let first = invoke(&agent, &run, invocation).await.unwrap();
+            assert!(matches!(
+                first.1,
+                tilo_actions::InvocationUpdate::Accepted { .. }
+            ));
+            let reply = stream.read_request().send().promise.await.unwrap();
+            assert_eq!(
+                reply.get().unwrap().get_invocation_uuid().unwrap(),
+                invocation.as_bytes()
+            );
+            assert_eq!(invoke(&agent, &run, invocation).await.unwrap(), first);
+            let unbound_refused = ordinary_invoke(&agent).await.is_err();
+            drop(f);
+            assert!(unbound_refused);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn ordinary_native_agent_invocation_cannot_escape_task_resource_scope() {
     use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
     tokio::task::LocalSet::new()

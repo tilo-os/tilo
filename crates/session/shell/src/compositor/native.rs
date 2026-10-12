@@ -18104,8 +18104,16 @@ mod tests {
             serde_json::json!({
                 "keyboard": null,
                 "routed_keyboard_surface": null,
+                "pointer_observable": true,
+                "pointer": null,
+                "routed_pointer_surface": null,
+                "pointer_grab": {"kind": "none", "surface": null},
+                "pointer_buttons_down": 0,
                 "text_input": null,
                 "text_input_active": false,
+                "input_method_connected": false,
+                "input_method_keyboard_grabbed": false,
+                "input_method_preedit_active": false,
                 "on_screen_keyboard_surface": null,
             })
         );
