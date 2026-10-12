@@ -6630,6 +6630,13 @@ mod tests {
         let _ = frame.paint_settled();
         let mut focus = None;
         native_click_named_control(&mut frame, &mut doc, &mut focus, "composer-return-editor");
+        assert!(
+            frame.node_map.values().all(|&widget| {
+                // SAFETY: these pointers belong to the current live layout tree.
+                unsafe { (*widget).test_id() != Some("agent-quick-editor") }
+            }),
+            "a closed composer has no editor in the measured/control tree"
+        );
         frame.host.agent_quick_composer_mut().open(
             crate::shell::agent_quick_composer::ComposerOwner {
                 room: "fixture-room".into(),
@@ -6668,6 +6675,13 @@ mod tests {
         frame.relayout();
         frame.reconcile_native_focus(&mut focus);
         assert!(!frame.host.agent_quick_composer_open());
+        assert!(
+            frame.node_map.values().all(|&widget| {
+                // SAFETY: dismissal rebuilt the map against the live tree.
+                unsafe { (*widget).test_id() != Some("agent-quick-editor") }
+            }),
+            "dismissal retires the composer's layout and metadata nodes"
+        );
         native_type_literal(&mut frame, &mut doc, &mut focus, "returned");
         assert_eq!(draft.get(), "returned");
     }

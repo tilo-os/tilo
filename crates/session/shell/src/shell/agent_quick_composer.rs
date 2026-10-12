@@ -635,6 +635,9 @@ impl Decorator for AgentQuickComposer {
         "AgentQuickComposer"
     }
     fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
+        if self.owner.is_none() {
+            return;
+        }
         self.tick();
         self.popover.sync(state, path);
         self.task_options
@@ -646,6 +649,9 @@ impl Decorator for AgentQuickComposer {
         }
     }
     fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+        if self.owner.is_none() {
+            return false;
+        }
         self.tick();
         let changed = self.popover.update(state, path);
         self.task_options

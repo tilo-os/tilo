@@ -149,6 +149,15 @@ impl Default for AgentMarkers {
 
 impl AgentMarkers {
     pub(crate) fn publish(&mut self, connection: u64, markers: Vec<AccessibleAgentMarker>) {
+        if markers.is_empty()
+            && !self
+                .controls
+                .iter()
+                .any(|control| control.source.connection == connection)
+        {
+            self.retain(|source| source.is_fresh(Instant::now()));
+            return;
+        }
         let pending = self.activation.get();
         let (mut previous, retained): (Vec<_>, Vec<_>) = std::mem::take(&mut self.controls)
             .into_iter()
@@ -454,6 +463,28 @@ mod tests {
             description: "Renaming Category".into(),
             published_at: Instant::now(),
         }
+    }
+
+    #[test]
+    fn empty_painted_frames_do_not_rebuild_the_control_tree() {
+        let mut markers = AgentMarkers::default();
+        markers.publish(7, Vec::new());
+        assert!(!markers.take_structure_dirty());
+        let source = marker();
+        markers.publish(source.connection, vec![source.clone()]);
+        assert!(markers.take_structure_dirty());
+        markers.publish(8, Vec::new());
+        assert!(
+            !markers.take_structure_dirty(),
+            "another idle source leaves live controls mounted"
+        );
+        markers.publish(source.connection, Vec::new());
+        assert!(
+            markers.take_structure_dirty(),
+            "removing a live marker still rebuilds"
+        );
+        markers.publish(source.connection, Vec::new());
+        assert!(!markers.take_structure_dirty());
     }
 
     #[test]
