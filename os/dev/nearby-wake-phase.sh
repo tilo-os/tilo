@@ -1,8 +1,8 @@
 # shellcheck shell=bash
 # The --wake phase of os/dev/test-nearby-pairing.sh, sourced once B has joined
 # A's identity: the two paired devices reach and wake each other. It uses that
-# script's vm_a/vm_b/sudo_b/die/note, $run_a, $out, $device (B's device id)
-# and $mac_b.
+# script's vm_a/vm_b/sudo_b/die/note/session_log, $run_a, $out, $device (B's
+# device id) and $mac_b.
 #
 #   5. A's remote action reaches B and holds B's idle-suspend off.
 #   6. B suspends; A's `device.wake` puts a magic packet for B's MAC on the
@@ -20,7 +20,7 @@ control_a() {
 }
 # This boot's lines from B's session that match $1.
 b_session_lines() {
-  vm_b ssh "journalctl -b --no-pager -o cat _UID=\$(id -u)" 2>/dev/null | grep -cF -- "$1" || true
+  session_log vm_b | grep -cF -- "$1" || true
 }
 audit='remote action from another of your devices'
 # A sends B one remote action until B's audit line count passes $1.
@@ -109,8 +109,7 @@ vm_b cmd system_wakeup >/dev/null
 await_status vm_b running 30
 await_ssh_b resume
 for attempt in $(seq 1 90); do
-  vm_a ssh "journalctl -b --no-pager -o cat _UID=\$(id -u)" 2>/dev/null \
-    | grep 'wake request progressed' > "$out/a-wake-progress.txt" || true
+  session_log vm_a | grep 'wake request progressed' > "$out/a-wake-progress.txt" || true
   grep -q 'Rejoined' "$out/a-wake-progress.txt" && break
   [ "$attempt" -lt 90 ] || die "A never saw B rejoin: $(cat "$out/a-wake-progress.txt")"
   sleep 2

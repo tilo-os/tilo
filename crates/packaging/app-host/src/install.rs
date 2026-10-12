@@ -5,11 +5,19 @@
 //! goes into the content store, and the tree is materialised once from
 //! there. A thin package installs when its payload is already stored or a
 //! [`BlobFetcher`] can supply the rest.
+//!
+//! [`InstallExpectation`] is the client's vocabulary too; installing is the
+//! daemon's and needs the `service` feature.
 
+#[cfg(feature = "service")]
 use package_store::{Admission, BlobFetcher, InstalledPackage, PackageStore, Pinning, StoreError};
+#[cfg(feature = "service")]
 use thiserror::Error;
-use tilo_app_package::{PackageId, PackageMeta, Verification};
+use tilo_app_package::PackageId;
+#[cfg(feature = "service")]
+use tilo_app_package::{PackageMeta, Verification};
 
+#[cfg(feature = "service")]
 #[derive(Debug, Error)]
 pub enum InstallError {
     #[error("verify: {0}")]
@@ -33,6 +41,7 @@ pub struct InstallExpectation {
     pub size_bytes: u64,
 }
 
+#[cfg(feature = "service")]
 fn admission(pinning: Pinning, source: &str) -> Admission {
     Admission {
         pinned: pinning == Pinning::Pinned,
@@ -42,6 +51,7 @@ fn admission(pinning: Pinning, source: &str) -> Admission {
     }
 }
 
+#[cfg(feature = "service")]
 /// Accept a package whose signature is valid, whoever made it. The trust
 /// decision belongs to the caller: the Store capability's expectation, or
 /// the user who handed over a local file.
@@ -54,6 +64,7 @@ fn signed(meta: &PackageMeta) -> Result<(), String> {
     }
 }
 
+#[cfg(feature = "service")]
 /// Install a `.tapp` whose signature is valid.
 ///
 /// # Errors
@@ -77,6 +88,7 @@ pub fn install_tapp(
     Ok(installed.package)
 }
 
+#[cfg(feature = "service")]
 /// Install a registry download after checking it against every signed
 /// catalogue identity: size, package root, publisher, app id and version.
 /// Nothing is stored for a package that does not match.

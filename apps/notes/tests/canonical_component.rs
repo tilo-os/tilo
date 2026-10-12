@@ -1,6 +1,6 @@
 use crate::component_support::*;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
-use notes::{doc::NotesDoc, notebook};
+use notes::read;
 use ui::{Widget, application::LaunchTarget, widget::TileHost};
 
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
@@ -16,7 +16,7 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
         for checkout in [a.record(), b.record()] {
             f.records
                 .read(&checkout.id, |doc| {
-                    let workspace = notebook::project(doc, None).unwrap();
+                    let workspace = read::project(doc).unwrap();
                     assert!(workspace.pages().is_empty());
                     assert!(workspace.tags().is_empty());
                 })
@@ -52,7 +52,7 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
         // the canonical empty-list state after explicitly deleting that block.
         f.records
             .with(&checkout.id, |doc| {
-                let block_id = NotesDoc::page_block_snapshots(doc, f.empty)[0].0.clone();
+                let block_id = read::page_block_snapshots(doc, f.empty)[0].0.clone();
                 remove_block(doc, f.empty, &block_id);
                 doc.commit();
             })
@@ -80,7 +80,7 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
         }
         f.records
             .read(&checkout.id, |doc| {
-                assert_eq!(NotesDoc::page_block_snapshots(doc, f.empty).len(), 0);
+                assert_eq!(read::page_block_snapshots(doc, f.empty).len(), 0);
                 assert_eq!((doc.base_heads(), doc.pending_ops()), heads);
             })
             .unwrap();
@@ -134,7 +134,7 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
             &mut live,
             11,
             notes::actions::tag_resource_id(f.tag),
-            "delete",
+            "delete-tag",
         );
         assert_eq!(revision(&f, &checkout), 3);
         close_driver(&mut live);
@@ -149,7 +149,7 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
         tile.sync(&AutoCommit::new(), &ROOT);
         f.records
             .read(&checkout.id, |doc| {
-                assert!(notebook::project(doc, None).unwrap().pages().is_empty());
+                assert!(read::project(doc).unwrap().pages().is_empty());
                 assert_eq!((doc.base_heads(), doc.pending_ops()), heads);
             })
             .unwrap();
@@ -165,7 +165,7 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
         use automerge::transaction::Transactable;
         use ui::record::RecordSaveStatus;
         let mut doc = AutoCommit::new();
-        notebook::initialize_empty(&mut doc).unwrap();
+        read::initialize(&mut doc);
         doc.commit();
         let before = (doc.base_heads(), doc.pending_ops());
         let mut app =
@@ -203,7 +203,7 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
         assert_eq!(app.selected_for_test(), Some(f.root));
         app.navigate_to(f.child);
         app.sync(&doc, &ROOT);
-        let expected = NotesDoc::page_block_marks(&doc, f.child)
+        let expected = read::page_block_marks(&doc, f.child)
             .into_iter()
             .map(|(id, mut marks)| {
                 marks.sort_by_key(|mark| mark.start);
@@ -234,7 +234,7 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
         assert_eq!((doc.base_heads(), doc.pending_ops()), before);
         for (block, marks) in expected {
             for span in marks {
-                let text = NotesDoc::page_block_snapshots(&doc, f.child)
+                let text = read::page_block_snapshots(&doc, f.child)
                     .into_iter()
                     .find(|(id, _)| *id == block)
                     .unwrap()
@@ -276,13 +276,13 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
         assert_eq!((doc.base_heads(), doc.pending_ops()), deleted);
         tilo_actions::Action::apply(&notes::actions::delete_page_action(f.empty), &mut doc)
             .unwrap();
-        NotesDoc::delete_tag(&mut doc, f.tag);
+        tilo_actions::Action::apply(&notes::actions::delete_tag_action(f.tag), &mut doc).unwrap();
         doc.commit();
         let emptied = (doc.base_heads(), doc.pending_ops());
         app.sync(&doc, &ROOT);
         assert_eq!(app.selected_for_test(), None);
         assert!(app.main_panel_mut().children().is_empty());
-        assert!(notebook::project(&doc, None).unwrap().tags().is_empty());
+        assert!(read::project(&doc).unwrap().tags().is_empty());
         assert_eq!((doc.base_heads(), doc.pending_ops()), emptied);
     }
 }
@@ -308,11 +308,15 @@ fn native_bound_open_binds_the_editor_after_the_worker_has_settled() {
     let target = app
         .semantic_tree()
         .iter()
-        .find(|node| node.name.as_deref() == Some("Launch") && node.action("open").is_some())
-        .expect("actual bound Notes page action")
+        .find(|node| node.name.as_deref() == Some("Notebook") && node.action("open").is_some())
+        .expect("the notebook opens an item")
         .id
         .clone();
-    assert!(app.invoke_semantic_action(&target, "open", None).unwrap());
+    let launch = notes::actions::page_resource_id(f.child);
+    assert!(
+        app.invoke_semantic_action(&target, "open", Some(&launch))
+            .unwrap()
+    );
     let queued = app
         .controlled_native_input_snapshot_for_test()
         .expect("observer before the ordinary navigation pump");
@@ -331,7 +335,7 @@ fn native_bound_open_binds_the_editor_after_the_worker_has_settled() {
     let body = f
         .records
         .read(&checkout.id, |doc| {
-            NotesDoc::page_block_snapshots(doc, f.child)
+            read::page_block_snapshots(doc, f.child)
                 .into_iter()
                 .map(|(_, text)| text)
                 .collect::<Vec<_>>()

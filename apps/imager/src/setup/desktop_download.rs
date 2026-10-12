@@ -55,7 +55,8 @@ fn download(
     unix::download(release, cache, cancel, origin)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 fn download_for_test(
     release: &DesktopRelease,
     cache: &Path,
@@ -390,7 +391,8 @@ mod unix {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use crate::setup::desktop_catalog::{DesktopRelease, PackageFormat};

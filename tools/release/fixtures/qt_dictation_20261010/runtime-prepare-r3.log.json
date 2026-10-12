@@ -1,0 +1,14 @@
+{
+  "encoding": "UTF-8 lines; concatenate lines to reconstruct stdout",
+  "lines": [
+    "Traceback (most recent call last):\n",
+    "  File \"<string>\", line 5, in <module>\n",
+    "    db=o/'rpmdb';db.mkdir();root=o/'root';shutil.copytree(o.parent/'dictation-qt-private-runtime-8d824-r1/root',root,symlinks=True)\n",
+    "                                          ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n",
+    "  File \"/usr/lib64/python3.14/shutil.py\", line 652, in copytree\n",
+    "    with os.scandir(src) as itr:\n",
+    "         ~~~~~~~~~~^^^^^\n",
+    "FileNotFoundError: [Errno 2] No such file or directory: '${BUILD_ROOT}/target/dictation-qt-private-runtime-8d824-r1/root'\n",
+    "\n"
+  ]
+}

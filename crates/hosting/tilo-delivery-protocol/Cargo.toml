@@ -3,12 +3,13 @@ name = "tilo-delivery-protocol"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-description = "Wire contract of Tilo's browser-facing delivery: delivery v3 records and proofs, the private action vocabulary, the v2 live envelope and the workspace join contract."
+description = "Wire contract of Tilo's browser-facing delivery: the signed transport descriptor and its session authentication, the bootstrap exchange, the private action vocabulary, the v2 live envelope and the workspace join contract."
 license = "MIT OR Apache-2.0"
 
 # Browsers, the action broker and both hosts speak these records without
 # linking the relay daemon. Keep this crate wasm-clean: no filesystem, process,
-# endpoint or runtime dependencies. The Iroh join transport stays in `tilo-relay`.
+# endpoint or runtime dependencies. The Iroh join transport is in
+# `tilo-relay-session` (client) and `tilo-relay` (host).
 [package.metadata.cargo-machete]
 # getrandom 0.3 is a feature-only edge that selects JS entropy for transitive
 # WASM cryptography.
@@ -46,7 +47,6 @@ uuid = { workspace = true, features = ["js"] }
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "time"] }
 tilo-automerge-isolate.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

@@ -124,7 +124,8 @@ fn compile(
         .collect()
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
     use winit::keyboard::{KeyCode, PhysicalKey};
@@ -232,7 +233,8 @@ mod tests {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod sandbox_tests {
     #[test]
     fn native_preview_uses_the_normal_readonly_sandbox_profile() {

@@ -66,7 +66,14 @@ fn journey_copy_later_restart_keeps_identity_gate_and_completion_destinations() 
         b"source survives"
     );
     assert!(!destination.join("later").exists());
+    let ownership_released = super::super::migration_store::test_support::ownership_release(
+        app.store.as_deref().unwrap(),
+    );
     drop(app);
+    tilo_test_env::recv(
+        "the previous import store's ownership release",
+        &ownership_released,
+    );
     let store = MigrationStore::open_at(&temp.path().join("state")).unwrap();
     let mut reopened = ImportApp::with_store(store).unwrap();
     settle_index(&mut reopened);

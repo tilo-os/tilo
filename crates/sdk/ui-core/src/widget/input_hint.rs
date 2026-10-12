@@ -601,7 +601,7 @@ impl Widget for InputHint {
             })
             .sum::<f64>()
             + CAP_GAP * crate::num::f64_of_usize(self.tokens().len().saturating_sub(1));
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(crate::num::f32_of_f64(approximate)),
                 height: Dimension::length(crate::num::f32_of_f64(
@@ -611,9 +611,8 @@ impl Widget for InputHint {
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -636,7 +635,7 @@ impl Widget for InputHint {
     /// The estimate `build_layout` reserved becomes the keycaps' measured
     /// width, so the hint ends where its last keycap does and a column of
     /// hints shares one trailing edge.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
@@ -657,13 +656,7 @@ impl Widget for InputHint {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(

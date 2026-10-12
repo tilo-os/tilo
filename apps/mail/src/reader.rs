@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
@@ -603,25 +603,11 @@ impl Widget for MessageReader {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let theme = self.theme.clone();
         self.region.set_viewport(self.rect, &theme);
     }
@@ -757,10 +743,10 @@ mod tests {
 
     /// A reader of `w`×`h` showing message `id`, opened as a row click opens it.
     fn reader_for(shared: &Shared, id: MessageId, w: f64, h: f64) -> MessageReader {
-        let mut doc = automerge::AutoCommit::new();
+        let mut doc = crate::resource::TestMail::doc();
         shared
             .borrow_mut()
-            .select_message(&mut ui::widget::Edits::lend(&mut doc), id);
+            .open_message(&mut ui::widget::Edits::lend(&mut doc), id);
         shared.borrow_mut().take_intents();
         let mut reader = MessageReader::new(shared.clone());
         reader.rect = Rect::new(0.0, 0.0, w, h);
@@ -829,10 +815,10 @@ mod tests {
 
         // Another message blocks remote content again.
         let plain = message_from(&shared, "lena@fischer.example");
-        let mut doc = automerge::AutoCommit::new();
+        let mut doc = crate::resource::TestMail::doc();
         shared
             .borrow_mut()
-            .select_message(&mut ui::widget::Edits::lend(&mut doc), plain);
+            .open_message(&mut ui::widget::Edits::lend(&mut doc), plain);
         draw(&mut reader);
         assert!(
             reader.html_loaded_key().is_none(),
@@ -841,7 +827,7 @@ mod tests {
         assert!(reader.remote_button().is_none());
         shared
             .borrow_mut()
-            .select_message(&mut ui::widget::Edits::lend(&mut doc), id);
+            .open_message(&mut ui::widget::Edits::lend(&mut doc), id);
         draw(&mut reader);
         assert_eq!(reader.html_loaded_key(), Some((id, true)));
     }

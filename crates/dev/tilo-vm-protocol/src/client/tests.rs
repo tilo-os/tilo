@@ -47,6 +47,7 @@ struct Wire {
     replies: VecDeque<Value>,
     batches: Vec<usize>,
     chunks: usize,
+    binary_requests: usize,
     received: u64,
     failure: Option<&'static str>,
 }
@@ -100,6 +101,13 @@ impl Write for Writer {
         let mut id = request.id;
         let mut error = None;
         let result = match request.request {
+            Request::LayerUploadBinary(_) => {
+                wire.binary_requests = wire.binary_requests.saturating_add(1);
+                error = Some(
+                    json!({"code":crate::code::INVALID_PARAMS,"message":"unknown optional method","hint":"legacy upload"}),
+                );
+                json!(null)
+            }
             Request::LayerUploadBegin(_) => json!({"upload": "test-upload"}),
             Request::LayerUploadChunk(chunk) => {
                 let data = STANDARD.decode(chunk.data).map_err(io::Error::other)?;
@@ -140,13 +148,14 @@ impl Write for Writer {
 
 fn client(wire: Wire) -> (Client<Reader, Writer>, Rc<RefCell<Wire>>) {
     let shared = Rc::new(RefCell::new(wire));
-    let client = Client::new(
+    let mut client = Client::new(
         Reader {
             wire: shared.clone(),
             buffered: Cursor::new(Vec::new()),
         },
         Writer(shared.clone()),
     );
+    client.enable_binary_uploads();
     (client, shared)
 }
 
@@ -154,7 +163,10 @@ fn client(wire: Wire) -> (Client<Reader, Writer>, Rc<RefCell<Wire>>) {
 fn upload_acknowledges_each_chunk_and_preserves_the_tail() {
     let bytes = vec![19; UPLOAD_CHUNK_BYTES * 6 + 7];
     let (mut client, wire) = client(Wire::default());
-    assert_eq!(client.upload(bytes.as_slice()).unwrap(), "test-upload");
+    assert_eq!(
+        client.upload_legacy(bytes.as_slice()).unwrap(),
+        "test-upload"
+    );
     assert_eq!(wire.borrow().received, bytes.len() as u64);
     assert_eq!(wire.borrow().batches, [1; 8]);
     assert!(wire.borrow().replies.is_empty());
@@ -169,7 +181,7 @@ fn upload_errors_stop_before_sending_another_chunk() {
             failure: Some(failure),
             ..Wire::default()
         });
-        let error = client.upload(bytes.as_slice()).unwrap_err();
+        let error = client.upload_legacy(bytes.as_slice()).unwrap_err();
         match failure {
             "rpc" => assert!(matches!(error, ClientError::Rpc(_))),
             _ => assert!(matches!(error, ClientError::Protocol(_))),
@@ -179,7 +191,7 @@ fn upload_errors_stop_before_sending_another_chunk() {
         assert!(client.call(LayerList {}).unwrap().is_empty());
     }
     let (mut client, wire) = client(Wire::default());
-    client.upload(&b""[..]).unwrap();
+    client.upload_legacy(&b""[..]).unwrap();
     assert_eq!(wire.borrow().chunks, 0);
 }
 
@@ -196,7 +208,10 @@ fn source_failure_leaves_no_pending_acknowledgment() {
     }
     let (mut client, wire) = client(Wire::default());
     let bytes = FailingRead(Cursor::new(vec![17; UPLOAD_CHUNK_BYTES]));
-    assert!(matches!(client.upload(bytes), Err(ClientError::Io(_))));
+    assert!(matches!(
+        client.upload_legacy(bytes),
+        Err(ClientError::Io(_))
+    ));
     assert_eq!(wire.borrow().chunks, 1);
     assert_eq!(wire.borrow().batches, [1, 1]);
     assert!(wire.borrow().replies.is_empty());
@@ -265,4 +280,84 @@ fn unusually_large_rpc_frames_are_sent_but_not_retained() {
     let second: RequestEnvelope = serde_json::from_str(frames.next().unwrap()).unwrap();
     assert!(matches!(second.request, Request::LayerList(_)));
     assert!(frames.next().is_none());
+}
+
+#[test]
+fn binary_optional_method_falls_back_only_before_sending_bytes() {
+    let (mut client, wire) = client(Wire::default());
+    assert_eq!(
+        client.upload(&b"fallback payload"[..]).unwrap(),
+        "test-upload"
+    );
+    assert_eq!(wire.borrow().received, 16);
+    assert_eq!(wire.borrow().chunks, 1);
+    assert!(client.call(LayerList {}).unwrap().is_empty());
+}
+
+#[test]
+fn binary_partial_transport_failure_poison_prevents_framing_reuse() {
+    struct PartialWriter {
+        calls: usize,
+        bytes: usize,
+    }
+    impl Write for PartialWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls = self.calls.saturating_add(1);
+            let count = match self.calls {
+                1 => bytes.len(),
+                2 => 2,
+                _ => return Err(io::Error::new(io::ErrorKind::BrokenPipe, "partial frame")),
+            };
+            self.bytes = self.bytes.saturating_add(count);
+            Ok(count)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let ready = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"upload\":\"fixture\"}}\n";
+    let mut client = Client::new(Cursor::new(ready), PartialWriter { calls: 0, bytes: 0 });
+    client.enable_binary_uploads();
+    assert!(matches!(
+        client.upload(vec![17; UPLOAD_CHUNK_BYTES].as_slice()),
+        Err(ClientError::Io(_))
+    ));
+    let written = client.writer.bytes;
+    assert!(matches!(
+        client.call(LayerList {}),
+        Err(ClientError::Closed)
+    ));
+    assert_eq!(client.writer.bytes, written);
+}
+
+#[test]
+fn binary_final_ack_and_authority_errors_do_not_fall_back() {
+    for reply in [
+        b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"upload\":\"fixture\"}}\n{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"received\":2}}\n".as_slice(),
+        b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"upload\":\"fixture\"}}\n{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"received\":3}}\n".as_slice(),
+    ] {
+        let mut client = Client::new(Cursor::new(reply), Vec::new());
+        client.enable_binary_uploads();
+        assert!(matches!(client.upload(&b"abc"[..]), Err(ClientError::Protocol(_))));
+        assert!(matches!(client.call(LayerList {}), Err(ClientError::Closed)));
+    }
+    let refusal = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":9,\"message\":\"refused\",\"hint\":\"check existing authority\"}}\n";
+    let mut client = Client::new(Cursor::new(refusal), Vec::new());
+    client.enable_binary_uploads();
+    assert!(matches!(
+        client.upload(&b"not sent"[..]),
+        Err(ClientError::Rpc(_))
+    ));
+    let request: RequestEnvelope = serde_json::from_slice(&client.writer).unwrap();
+    assert!(matches!(request.request, Request::LayerUploadBinary(_)));
+}
+
+#[test]
+fn default_client_keeps_json_line_bridges_on_legacy_framing() {
+    let (existing, wire) = client(Wire::default());
+    let mut client = Client::new(existing.reader, existing.writer);
+    assert_eq!(client.upload(&b"peer fixture"[..]).unwrap(), "test-upload");
+    assert_eq!(wire.borrow().binary_requests, 0);
+    assert_eq!(wire.borrow().chunks, 1);
+    assert!(client.call(LayerList {}).unwrap().is_empty());
 }

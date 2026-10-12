@@ -1,9 +1,8 @@
 //! Exact retained inputs for multiline preparation. Text is compared by value:
 //! local edits, CRDT reconciliation and callers without a mutation witness all
 //! take the same conservative path. No display text/spans are built on a hit.
-use super::{Arc, ColorCompat, TextAlign, TextInput, TextStyle, Theme};
-
-type SyntaxColors = [[u8; 3]; 12];
+use super::{Arc, TextAlign, TextInput, TextStyle};
+use crate::tokens::SyntaxPalette;
 
 pub(super) struct Preparation {
     text: Arc<str>,
@@ -12,7 +11,9 @@ pub(super) struct Preparation {
     style: TextStyle,
     width: f32,
     align: TextAlign,
-    syntax: Option<SyntaxColors>,
+    /// The palette highlighted runs were coloured from. `None` for a layout
+    /// shaped without one, which no palette-keyed lookup accepts.
+    syntax: Option<SyntaxPalette>,
 }
 
 impl Preparation {
@@ -20,7 +21,7 @@ impl Preparation {
         input: &TextInput,
         style: &TextStyle,
         width: f32,
-        theme: Option<&Theme>,
+        syntax: Option<&SyntaxPalette>,
     ) -> Option<Self> {
         // Do not retain another plaintext copy of a secret, even while revealed.
         // A custom hyphenator can mutate behind its Arc without a frozen witness.
@@ -44,8 +45,13 @@ impl Preparation {
             style: style.clone(),
             width,
             align: input.align,
-            syntax: theme.map(Self::syntax_colors),
+            syntax: syntax.cloned(),
         })
+    }
+
+    /// The wrap width the paragraph was prepared for.
+    pub(super) fn width(&self) -> f32 {
+        self.width
     }
 
     pub(super) fn matches_inputs(&self, input: &TextInput, style: &TextStyle, width: f32) -> bool {
@@ -70,9 +76,9 @@ impl Preparation {
         input: &TextInput,
         style: &TextStyle,
         width: f32,
-        theme: &Theme,
+        syntax: &SyntaxPalette,
     ) -> bool {
-        self.matches_inputs(input, style, width) && self.syntax == Some(Self::syntax_colors(theme))
+        self.matches_inputs(input, style, width) && self.syntax.as_ref() == Some(syntax)
     }
 
     fn composition_caret(input: &TextInput) -> Option<(usize, Option<(usize, usize)>)> {
@@ -80,24 +86,5 @@ impl Preparation {
             .core
             .has_preedit()
             .then_some((input.core.caret(), input.core.preedit_cursor()))
-    }
-
-    fn syntax_colors(theme: &Theme) -> SyntaxColors {
-        let p = &theme.tokens.syntax;
-        [
-            p.keyword,
-            p.type_name,
-            p.function,
-            p.string,
-            p.number,
-            p.comment,
-            p.operator,
-            p.attribute,
-            p.markup,
-            p.raw,
-            p.math,
-            p.text,
-        ]
-        .map(|color| [color.r(), color.g(), color.b()])
     }
 }

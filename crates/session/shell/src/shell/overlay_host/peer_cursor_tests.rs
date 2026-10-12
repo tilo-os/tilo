@@ -277,11 +277,13 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
 
         // Only the public fields read by the host are initialized; winit's
         // private KeyEvent payload is intentionally opaque to this unit test.
-        let mut key: KeyEvent = unsafe { std::mem::zeroed() };
-        key.logical_key = Key::Named(NamedKey::Escape);
-        key.state = ElementState::Pressed;
+        let key = ui::synthetic_input::key_event(
+            Key::Named(NamedKey::Escape),
+            None,
+            ElementState::Pressed,
+        );
         let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: key,
             is_synthetic: false,
         };
@@ -340,6 +342,89 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
     a_local_workspace_click_releases_follow_before_routing_the_click();
     escape_releases_follow_before_the_key_reaches_content();
     leaving_a_workspace_releases_follow_in_the_original_room();
+}
+
+#[test]
+fn follow_waits_for_the_live_row_before_recording_its_target() {
+    let tree = one_group_seed();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let room = tree.desktop.workspaces[0].room;
+    let strip = tree.desktop.workspaces[0].strips[0].id;
+    let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = std::rc::Rc::clone(&calls);
+    host.set_follow_bridge(std::rc::Rc::new(move |room, target| {
+        captured.borrow_mut().push((room, target));
+    }));
+    {
+        let state = chrome.borrow();
+        let mut tree = state.tree_mut();
+        let workspace = &mut tree.desktop.workspaces[0];
+        workspace.strips[0].window_groups.push(StateGroup {
+            id: 200,
+            width: StateWidth::Normal,
+            maximized: false,
+            tabs: vec![Tab {
+                id: 201,
+                title: "Chat".into(),
+                tile: TileContent::AppPlaceholder {
+                    kind: AppKind::Other("Chat".into()),
+                    label: "Chat".into(),
+                },
+            }],
+            active_tab: 201,
+        });
+        workspace
+            .collaborators
+            .push(Collaborator::with_active_tab("ada", "Ada", 201).with_session(77));
+        drop(tree);
+    }
+    chrome.borrow_mut().bump();
+    host.set_followed_peer(Some("ada".into()));
+    host.reconcile_followed_peer();
+    assert_eq!(host.followed_peer.as_deref(), Some("ada"));
+    assert_eq!(
+        host.followed_tab, None,
+        "the live row has not adopted the target yet"
+    );
+    assert_eq!(chrome.borrow().active_tab_id(), Some(1));
+    assert_eq!(calls.borrow().as_slice(), &[(room, Some("peer@77".into()))]);
+
+    host.resync_strips_from_tree();
+    host.reconcile_followed_peer();
+    assert_eq!(
+        chrome.borrow().tree().desktop.active_group_for(strip),
+        Some(200)
+    );
+    assert_eq!(chrome.borrow().active_tab_id(), Some(201));
+    assert_eq!(host.followed_peer.as_deref(), Some("ada"));
+    assert_eq!(host.followed_tab, Some(201));
+}
+
+#[test]
+fn follow_activates_the_peers_strip_as_well_as_its_group() {
+    let mut tree = one_group_seed();
+    let workspace = tree.desktop.workspaces[0].id;
+    let mut target = tree.desktop.workspaces[0].strips[0].clone();
+    target.id = StripId::new();
+    target.window_groups[0].id = 200;
+    target.window_groups[0].tabs[0].id = 201;
+    target.window_groups[0].active_tab = 201;
+    let target_strip = target.id;
+    tree.desktop.workspaces[0].strips.push(target);
+    tree.desktop.active_group.insert(target_strip, 200);
+    tree.desktop.workspaces[0]
+        .collaborators
+        .push(Collaborator::with_active_tab("ada", "Ada", 201).with_session(77));
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    host.set_followed_peer(Some("ada".into()));
+    host.reconcile_followed_peer();
+    assert_eq!(
+        chrome.borrow().tree().desktop.active_strip.get(&workspace),
+        Some(&target_strip)
+    );
+    assert_eq!(chrome.borrow().active_tab_id(), Some(201));
+    assert_eq!(host.followed_tab, Some(201));
+    assert_eq!(host.followed_peer.as_deref(), Some("ada"));
 }
 
 #[test]

@@ -79,6 +79,62 @@ fn parse_radio_state(radios: &str, devices: &str, active: &str) -> RadioState {
     }
 }
 
+/// Where the kernel lists its device classes.
+const SYS_CLASS: &str = "/sys/class";
+
+/// Whether this machine has a Wi-Fi radio, as the kernel lists it: a
+/// wireless PHY, or a network interface that is a WLAN. A few directory
+/// listings and no `nmcli`, so a caller may ask often — Settings asks every
+/// few seconds to follow a dongle being plugged in.
+#[must_use]
+pub fn has_wifi_radio() -> bool {
+    has_wifi_radio_in(std::path::Path::new(SYS_CLASS))
+}
+
+/// Whether this machine has a mobile broadband modem, as the kernel lists
+/// it: a WWAN device, or a network interface that is one. A modem that
+/// `ModemManager` drives over a serial port alone is not listed here;
+/// `get_radio_state` sees it.
+#[must_use]
+pub fn has_wwan_modem() -> bool {
+    has_wwan_modem_in(std::path::Path::new(SYS_CLASS))
+}
+
+fn has_wifi_radio_in(class: &std::path::Path) -> bool {
+    has_entries(&class.join("ieee80211"))
+        || interfaces(class).any(|interface| {
+            interface.join("wireless").exists()
+                || device_type(&interface).as_deref() == Some("wlan")
+        })
+}
+
+fn has_wwan_modem_in(class: &std::path::Path) -> bool {
+    has_entries(&class.join("wwan"))
+        || interfaces(class).any(|interface| device_type(&interface).as_deref() == Some("wwan"))
+}
+
+fn has_entries(directory: &std::path::Path) -> bool {
+    std::fs::read_dir(directory).is_ok_and(|mut entries| entries.any(|entry| entry.is_ok()))
+}
+
+/// The network interfaces under `class`, each as its sysfs directory.
+fn interfaces(class: &std::path::Path) -> impl Iterator<Item = std::path::PathBuf> {
+    std::fs::read_dir(class.join("net"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+}
+
+/// The `DEVTYPE` an interface's `uevent` names, if any.
+fn device_type(interface: &std::path::Path) -> Option<String> {
+    let uevent = std::fs::read_to_string(interface.join("uevent")).ok()?;
+    uevent
+        .lines()
+        .find_map(|line| line.strip_prefix("DEVTYPE="))
+        .map(str::to_owned)
+}
+
 /// # Errors
 ///
 /// Returns an error message if `nmcli` is not installed or the radio-toggle call fails.
@@ -366,7 +422,13 @@ pub fn get_wifi() -> Result<bool, String> {
     wifi_from_radios(&get_radio_state()?)
 }
 
-fn wifi_from_radios(radios: &RadioState) -> Result<bool, String> {
+/// Whether Wi-Fi is on, read from a radio snapshot already taken — so a
+/// caller holding one does not fork `nmcli` a second time for the same answer.
+///
+/// # Errors
+///
+/// Returns an error message when the snapshot shows no Wi-Fi adapter.
+pub fn wifi_from_radios(radios: &RadioState) -> Result<bool, String> {
     if !radios.wifi_available {
         return Err("no Wi-Fi adapter on this machine".into());
     }
@@ -531,85 +593,59 @@ impl LinkStatus {
     }
 }
 
-/// Read the active connection without triggering a scan. Deliberately **not** built on
-/// [`list_wifi_networks`]: that runs `device wifi list`, which asks the driver to rescan and
-/// can block a timer-driven poll thread for seconds; `device status` is a cache read.
-///
-/// Signal strength comes from `/proc/net/wireless` instead, one file read the kernel keeps
-/// current, so the bars move as the user walks around with no nmcli involvement at all.
+/// Read the primary connection from `NetworkManager`'s state: one D-Bus read, never a scan.
+/// Long-lived readers follow [`tilo_nm::watch`] instead and map each reading with
+/// [`link_status_from_state`].
 ///
 /// # Errors
 ///
-/// Returns an error message if `nmcli` is not installed or the device-status query fails.
+/// Returns an error message if the D-Bus runtime cannot start or `NetworkManager` is unreachable.
 pub fn get_link_status() -> Result<LinkStatus, String> {
-    let out = run_capture(
-        "nmcli",
-        &[
-            "-t",
-            "-f",
-            "TYPE,STATE,CONNECTION,DEVICE",
-            "device",
-            "status",
-        ],
-    )?;
-    let mut status = parse_nmcli_device_status(&out);
-    if status.kind == LinkKind::Wifi
-        && let Some(pct) = wireless_link_quality_pct()
-    {
-        status.signal = signal_pct_to_bucket(pct);
-    }
-    Ok(status)
+    let state = crate::block_on(async { tilo_nm::state().await.map_err(|e| e.to_string()) })?;
+    Ok(link_status_from_state(&state, wireless_link_quality_pct()))
 }
 
-/// Pick the machine's primary link out of `nmcli device status`. Ethernet wins over Wi-Fi
-/// when both are up — it's the one carrying the traffic and the one whose loss matters.
-fn parse_nmcli_device_status(stdout: &str) -> LinkStatus {
-    let mut wifi: Option<LinkStatus> = None;
-    for line in stdout.lines() {
-        let f = split_terse(line);
-        let (Some(kind_s), Some(state), Some(conn)) = (f.first(), f.get(1), f.get(2)) else {
-            continue;
-        };
-        let (kind_s, state, conn) = (kind_s.trim(), state.trim(), conn.trim());
-        // nmcli spells the fully-up state "connected"; "connecting (getting IP configuration)" and
-        // friends aren't yet carrying traffic, so they read as offline.
-        if state != "connected" {
-            continue;
-        }
-        let name = if conn.is_empty() || conn == "--" {
-            None
-        } else {
-            Some(conn.to_string())
-        };
-        match kind_s {
-            "ethernet" | "bridge" | "bond" | "team" => {
-                return LinkStatus {
-                    kind: LinkKind::Wired,
-                    name,
-                    signal: 0,
-                };
+/// The top bar's link summary for one `NetworkManager` reading: the primary connection, the
+/// one the person's traffic leaves on. `wireless_quality_pct` refines the bars on Wi-Fi;
+/// pass [`wireless_link_quality_pct`].
+///
+/// The indicator draws a cable or a radio. A primary connection of another kind (mobile
+/// broadband, a Bluetooth tether) draws as the cable: it is connected, and must never read
+/// as offline.
+pub fn link_status_from_state(
+    state: &tilo_nm::NetworkState,
+    wireless_quality_pct: Option<u8>,
+) -> LinkStatus {
+    let Some(primary) = &state.primary else {
+        return LinkStatus::offline();
+    };
+    let name = primary.name.clone();
+    match primary.kind {
+        tilo_nm::LinkKind::Wifi => LinkStatus {
+            kind: LinkKind::Wifi,
+            name,
+            // Bucket 4 until /proc/net/wireless refines it, so a connected radio never draws
+            // as "no signal".
+            signal: wireless_quality_pct.map_or(4, signal_pct_to_bucket),
+        },
+        tilo_nm::LinkKind::Wired | tilo_nm::LinkKind::Mobile | tilo_nm::LinkKind::Other => {
+            LinkStatus {
+                kind: LinkKind::Wired,
+                name,
+                signal: 0,
             }
-            "wifi"
-                // Remember it, but keep scanning for a wired link.
-                if wifi.is_none() => {
-                    // Bucket 4 until /proc/net/wireless refines it, so a connected radio never draws as "no signal".
-                    wifi = Some(LinkStatus {
-                        kind: LinkKind::Wifi,
-                        name,
-                        signal: 4,
-                    });
-                }
-            _ => {}
         }
     }
-    wifi.unwrap_or_else(LinkStatus::offline)
 }
 
 /// Best link quality across every wireless interface, as a percentage. `/proc/net/wireless`
 /// reports quality on the driver's own scale (a trailing `.` on each value, most drivers
 /// 0..70); a value above that is taken as already-a-percentage rather than clamped, so an
 /// unusual driver degrades gracefully instead of pinning.
-fn wireless_link_quality_pct() -> Option<u8> {
+///
+/// One file read the kernel keeps current, so the bars move as the person walks around
+/// with no `NetworkManager` involvement at all.
+pub fn wireless_link_quality_pct() -> Option<u8> {
     let raw = std::fs::read_to_string("/proc/net/wireless").ok()?;
     parse_proc_net_wireless(&raw)
 }
@@ -719,31 +755,59 @@ impl ConnectivityState {
     }
 }
 
-/// Ask `NetworkManager` to recheck connectivity, and fall back to its last
-/// verdict when this caller may not ask for a recheck (polkit refuses that
-/// to clients outside an active session, such as a sandboxed app behind a
-/// filtered bus).
+impl From<tilo_nm::NmConnectivity> for ConnectivityState {
+    fn from(value: tilo_nm::NmConnectivity) -> Self {
+        match value {
+            tilo_nm::NmConnectivity::Unknown => Self::Unknown,
+            tilo_nm::NmConnectivity::None => Self::Offline,
+            tilo_nm::NmConnectivity::Portal => Self::Portal,
+            tilo_nm::NmConnectivity::Limited => Self::Limited,
+            tilo_nm::NmConnectivity::Full => Self::Full,
+        }
+    }
+}
+
+/// `NetworkManager`'s last connectivity verdict. A read: it never makes the daemon probe the
+/// internet. [`check_connectivity_now`] is the deliberate recheck.
 ///
 /// # Errors
 ///
-/// Returns the recheck's error message if neither the recheck nor the
-/// cached verdict could be read (e.g. `nmcli` is not installed).
+/// Returns an error message if the D-Bus runtime cannot start or `NetworkManager` is unreachable.
 pub fn get_connectivity() -> Result<ConnectivityState, String> {
-    connectivity_from(
-        run_capture("nmcli", &["-t", "networking", "connectivity", "check"]),
-        || run_capture("nmcli", &["-t", "networking", "connectivity"]),
-    )
+    crate::block_on(async {
+        tilo_nm::state()
+            .await
+            .map(|state| state.connectivity.into())
+            .map_err(|e| e.to_string())
+    })
+}
+
+/// Ask `NetworkManager` to recheck connectivity now (an HTTP probe of its configured URI), for
+/// an explicit "check again" in the installer or Settings. Falls back to the last verdict when
+/// this caller may not ask for a recheck (polkit refuses that to clients outside an active
+/// session, such as a sandboxed app behind a filtered bus).
+///
+/// # Errors
+///
+/// Returns the recheck's error message if neither the recheck nor the last verdict could be
+/// read (e.g. `NetworkManager` is not running).
+pub fn check_connectivity_now() -> Result<ConnectivityState, String> {
+    let check = crate::block_on(async {
+        tilo_nm::check_connectivity_now()
+            .await
+            .map(ConnectivityState::from)
+            .map_err(|e| e.to_string())
+    });
+    connectivity_from(check, get_connectivity)
 }
 
 fn connectivity_from(
-    check: Result<String, String>,
-    cached: impl FnOnce() -> Result<String, String>,
+    check: Result<ConnectivityState, String>,
+    cached: impl FnOnce() -> Result<ConnectivityState, String>,
 ) -> Result<ConnectivityState, String> {
     match check {
-        Ok(out) => Ok(parse_connectivity(&out)),
-        Err(check_error) => cached()
-            .map(|out| parse_connectivity(&out))
-            .map_err(|_| check_error),
+        Ok(state) => Ok(state),
+        Err(check_error) => cached().map_err(|_| check_error),
     }
 }
 
@@ -757,36 +821,10 @@ fn connectivity_from(
 /// it has no connectivity-check URI configured, or the configured URI is not `http(s)://`.
 pub fn captive_portal_uri() -> Result<String, String> {
     crate::block_on(async {
-        let connection = zbus::Connection::system()
+        tilo_nm::captive_portal_uri()
             .await
-            .map_err(|e| format!("cannot reach NetworkManager: {e}"))?;
-        let proxy = zbus::Proxy::new(
-            &connection,
-            "org.freedesktop.NetworkManager",
-            "/org/freedesktop/NetworkManager",
-            "org.freedesktop.NetworkManager",
-        )
-        .await
-        .map_err(|e| format!("cannot bind NetworkManager: {e}"))?;
-        let uri: String = proxy
-            .get_property("ConnectivityCheckUri")
-            .await
-            .map_err(|e| format!("NetworkManager has no connectivity-check URI: {e}"))?;
-        if !(uri.starts_with("https://") || uri.starts_with("http://")) {
-            return Err("NetworkManager returned an unsafe connectivity-check URI".into());
-        }
-        Ok(uri)
+            .map_err(|e| e.to_string())
     })
-}
-
-fn parse_connectivity(out: &str) -> ConnectivityState {
-    match out.trim().to_ascii_lowercase().as_str() {
-        "none" => ConnectivityState::Offline,
-        "portal" => ConnectivityState::Portal,
-        "limited" => ConnectivityState::Limited,
-        "full" => ConnectivityState::Full,
-        _ => ConnectivityState::Unknown,
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1535,25 +1573,33 @@ mod profile_tests {
     fn networkmanager_output_parses_connectivity_profiles_hotspots_and_clients() {
         // Phase `networkmanager_connectivity_keeps_portal_distinct_from_limited`.
         {
-            assert_eq!(parse_connectivity("portal\n"), ConnectivityState::Portal);
-            assert_eq!(parse_connectivity("limited\n"), ConnectivityState::Limited);
-            assert_eq!(parse_connectivity("full\n"), ConnectivityState::Full);
+            use tilo_nm::NmConnectivity;
+            for (raw, want) in [
+                (NmConnectivity::Unknown, ConnectivityState::Unknown),
+                (NmConnectivity::None, ConnectivityState::Offline),
+                (NmConnectivity::Portal, ConnectivityState::Portal),
+                (NmConnectivity::Limited, ConnectivityState::Limited),
+                (NmConnectivity::Full, ConnectivityState::Full),
+            ] {
+                assert_eq!(ConnectivityState::from(raw), want, "{raw:?}");
+            }
         }
         // Phase `a_refused_recheck_falls_back_to_the_cached_verdict`.
         {
-            let refused =
-                || Err::<String, String>("Error: Not authorized to recheck connectivity.".into());
+            let refused = || {
+                Err::<ConnectivityState, String>("Not authorized to recheck connectivity.".into())
+            };
             assert_eq!(
-                connectivity_from(refused(), || Ok("full\n".into())),
+                connectivity_from(refused(), || Ok(ConnectivityState::Full)),
                 Ok(ConnectivityState::Full)
             );
             assert_eq!(
-                connectivity_from(Ok("portal\n".into()), || unreachable!()),
+                connectivity_from(Ok(ConnectivityState::Portal), || unreachable!()),
                 Ok(ConnectivityState::Portal)
             );
             assert_eq!(
-                connectivity_from(refused(), || Err("nmcli not installed".into())),
-                Err("Error: Not authorized to recheck connectivity.".into())
+                connectivity_from(refused(), || Err("NetworkManager not running".into())),
+                Err("Not authorized to recheck connectivity.".into())
             );
         }
         // Phase `saved_profiles_preserve_escaped_colons_and_autoconnect`.
@@ -2183,51 +2229,61 @@ mod portable_profile_tests {
 mod link_status_tests {
     use super::*;
 
-    /// `nmcli -t -f TYPE,STATE,CONNECTION,DEVICE device status`.
-    const BOTH_UP: &str = "ethernet:connected:Wired connection 1:enp0s31f6\n\
-wifi:connected:Cafe WiFi:wlp2s0\n\
-loopback:unmanaged::lo\n";
+    fn primary(kind: tilo_nm::LinkKind, name: &str) -> tilo_nm::NetworkState {
+        tilo_nm::NetworkState {
+            state: tilo_nm::NmState::ConnectedGlobal,
+            connectivity: tilo_nm::NmConnectivity::Full,
+            metered: Some(false),
+            primary: Some(tilo_nm::PrimaryLink {
+                kind,
+                name: Some(name.into()),
+                device: None,
+            }),
+        }
+    }
 
     #[test]
-    fn device_status_prefers_wired_and_reports_only_connected_links() {
-        // Phase `wired_wins_when_both_links_are_up`.
+    fn link_status_follows_the_primary_connection() {
+        // Phase `a_wired_primary_reads_as_wired_with_no_bars`.
         {
-            let s = parse_nmcli_device_status(BOTH_UP);
+            let s = link_status_from_state(
+                &primary(tilo_nm::LinkKind::Wired, "Wired connection 1"),
+                Some(90),
+            );
             assert_eq!(s.kind, LinkKind::Wired);
             assert_eq!(s.name.as_deref(), Some("Wired connection 1"));
             assert_eq!(s.signal, 0, "a cable has no signal strength to report");
         }
-        // Phase `wifi_reports_its_ssid_when_there_is_no_cable`.
+        // Phase `wifi_reports_its_ssid_and_proc_quality`.
         {
-            let s = parse_nmcli_device_status(
-                "wifi:connected:Cafe WiFi:wlp2s0\nloopback:unmanaged::lo\n",
-            );
+            let s =
+                link_status_from_state(&primary(tilo_nm::LinkKind::Wifi, "Cafe WiFi"), Some(70));
             assert_eq!(s.kind, LinkKind::Wifi);
             assert_eq!(s.name.as_deref(), Some("Cafe WiFi"));
+            assert_eq!(s.signal, 3, "70% is bucket 3 on the shared signal scale");
+        }
+        // Phase `a_radio_without_a_quality_reading_never_shows_no_signal`.
+        {
+            let s = link_status_from_state(&primary(tilo_nm::LinkKind::Wifi, "Cafe WiFi"), None);
             assert!(s.signal > 0, "a connected radio never reads as no-signal");
         }
-        // Phase `a_link_still_negotiating_is_not_online`.
+        // Phase `a_mobile_primary_is_connected_not_offline`.
         {
-            let out = "wifi:connecting (getting IP configuration):Cafe WiFi:wlp2s0\n";
-            let s = parse_nmcli_device_status(out);
+            let s = link_status_from_state(&primary(tilo_nm::LinkKind::Mobile, "Carrier"), None);
+            assert!(s.is_online());
+            assert_eq!(s.name.as_deref(), Some("Carrier"));
+        }
+        // Phase `no_primary_connection_is_offline`.
+        {
+            let connecting = tilo_nm::NetworkState {
+                state: tilo_nm::NmState::Connecting,
+                ..tilo_nm::NetworkState::unknown()
+            };
             assert_eq!(
-                s.kind,
-                LinkKind::Offline,
-                "a half-associated link carries no traffic and must not read as connected"
+                link_status_from_state(&connecting, Some(80)),
+                LinkStatus::offline()
             );
-            assert!(!s.is_online());
-        }
-        // Phase `nothing_connected_is_offline`.
-        {
-            let s = parse_nmcli_device_status(
-                "wifi:disconnected::wlp2s0\nethernet:unavailable::eth0\n",
-            );
-            assert_eq!(s, LinkStatus::offline());
-        }
-        // Phase `an_ssid_containing_a_colon_survives_the_terse_split`.
-        {
-            let s = parse_nmcli_device_status(r"wifi:connected:Home\:Network:wlp2s0");
-            assert_eq!(s.name.as_deref(), Some("Home:Network"));
+            assert!(!link_status_from_state(&tilo_nm::NetworkState::unknown(), None).is_online());
         }
     }
 
@@ -2335,6 +2391,56 @@ mod wifi_deadline_tests {
         )
         .expect(
             "a connection without a supplied secret still needs the normal activation deadline",
+        );
+    }
+}
+
+#[cfg(test)]
+mod radio_presence_tests {
+    use super::{has_wifi_radio_in, has_wwan_modem_in};
+
+    /// A Wi-Fi PHY or WLAN interface is a Wi-Fi radio and a WWAN device or
+    /// interface is a modem; a wired interface and an empty class are
+    /// neither.
+    #[test]
+    fn radios_are_read_from_the_kernels_device_classes() {
+        use std::fs;
+        let class = tempfile::tempdir().unwrap();
+        let class = class.path();
+        assert!(!has_wifi_radio_in(class) && !has_wwan_modem_in(class));
+
+        let wired = class.join("net/enp1s0");
+        fs::create_dir_all(&wired).unwrap();
+        fs::write(wired.join("uevent"), "INTERFACE=enp1s0\nIFINDEX=2\n").unwrap();
+        fs::create_dir_all(class.join("ieee80211")).unwrap();
+        fs::create_dir_all(class.join("wwan")).unwrap();
+        assert!(
+            !has_wifi_radio_in(class),
+            "a wired interface is no Wi-Fi radio"
+        );
+        assert!(!has_wwan_modem_in(class), "a wired interface is no modem");
+
+        let wlan = class.join("net/wlp2s0");
+        fs::create_dir_all(&wlan).unwrap();
+        fs::write(wlan.join("uevent"), "DEVTYPE=wlan\nINTERFACE=wlp2s0\n").unwrap();
+        assert!(has_wifi_radio_in(class));
+        assert!(!has_wwan_modem_in(class));
+
+        let modem = class.join("net/wwan0");
+        fs::create_dir_all(&modem).unwrap();
+        fs::write(modem.join("uevent"), "DEVTYPE=wwan\nINTERFACE=wwan0\n").unwrap();
+        assert!(has_wwan_modem_in(class));
+
+        let bare = tempfile::tempdir().unwrap();
+        fs::create_dir_all(bare.path().join("ieee80211/phy0")).unwrap();
+        fs::create_dir_all(bare.path().join("wwan/wwan0")).unwrap();
+        assert!(
+            has_wifi_radio_in(bare.path()),
+            "a PHY with no interface yet"
+        );
+        assert!(
+            has_wwan_modem_in(bare.path()),
+            "a WWAN device with no interface yet"
         );
     }
 }

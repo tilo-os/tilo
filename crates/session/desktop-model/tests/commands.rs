@@ -13,6 +13,7 @@
 
 use tilo_desktop_model::commands::{
     DesktopCommand, OpenContext, TabLocation, TabPlacement, apply_command, open_app_placement,
+    resolve_open_app,
 };
 use tilo_desktop_model::{
     AppKind, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
@@ -118,12 +119,74 @@ fn open_app_lands_in_a_new_group_of_the_last_owned_strip() {
         &mut workspace,
         &DesktopCommand::OpenApp {
             app: "so.tilo.notes".into(),
+            beside: None,
         },
         &mut minter(200),
         &mut create,
     )
     .unwrap();
     assert_eq!(workspace.strips[0].window_groups.len(), 2);
+}
+
+/// An open for an actor names the group its view is in: the owner places
+/// the new view right after it, on that group's strip, never at the end.
+#[test]
+fn open_app_beside_an_actors_group_lands_right_after_it() {
+    let mut workspace = workspace_with_group();
+    workspace.strips.push(tilo_desktop_model::Strip {
+        id: StripId(11),
+        name: "Agent".into(),
+        window_groups: vec![WindowGroup {
+            id: 40,
+            active_tab: 41,
+            width: WindowWidth::Normal,
+            maximized: false,
+            tabs: vec![Tab {
+                id: 41,
+                title: "Notes".into(),
+                tile: notes(),
+            }],
+        }],
+    });
+    let resolved = resolve_open_app(
+        &workspace,
+        DesktopCommand::OpenApp {
+            app: "so.tilo.files".into(),
+            beside: Some(20),
+        },
+        |_| true,
+    )
+    .unwrap();
+    assert_eq!(
+        resolved,
+        DesktopCommand::OpenTab {
+            app: "so.tilo.files".into(),
+            placement: TabPlacement::NewGroup {
+                strip: 10,
+                after: Some(20)
+            }
+        }
+    );
+    let gone = resolve_open_app(
+        &workspace,
+        DesktopCommand::OpenApp {
+            app: "so.tilo.files".into(),
+            beside: Some(99),
+        },
+        |_| true,
+    )
+    .unwrap();
+    assert_eq!(
+        gone,
+        DesktopCommand::OpenTab {
+            app: "so.tilo.files".into(),
+            placement: TabPlacement::NewGroup {
+                strip: 11,
+                after: None
+            }
+        },
+        "a group that is gone falls back to the owner's own placement"
+    );
 }
 
 #[test]

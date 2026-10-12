@@ -87,31 +87,6 @@ impl DesktopTree {
         self.active = next.id;
         true
     }
-
-    /// Move the active workspace's focused strip one step in `dir`, clamping
-    /// at both ends. Returns the resulting index, or `None` when the active
-    /// workspace has no strips.
-    pub fn move_active_strip(&mut self, dir: i32) -> Option<usize> {
-        let workspace = self
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.id == self.active)?;
-        let last = workspace.strips.len().checked_sub(1)?;
-        let current = self
-            .active_strip
-            .get(&self.active)
-            .and_then(|id| workspace.strips.iter().position(|strip| strip.id == *id))
-            .unwrap_or(0)
-            .min(last);
-        let next = match dir.signum() {
-            -1 => current.saturating_sub(1),
-            1 => current.saturating_add(1).min(last),
-            _ => current,
-        };
-        let strip = workspace.strips.get(next)?.id;
-        self.active_strip.insert(self.active, strip);
-        Some(next)
-    }
 }
 
 #[cfg(test)]

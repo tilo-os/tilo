@@ -11,15 +11,37 @@
 //! chunked blob's bytes reach the sink only chunk by verified chunk and its
 //! final chunk only once the whole blob verified, and a response is cut off
 //! past [`MAX_OBJECT_BYTES`] so a hostile server cannot make the client
-//! buffer without bound. At most one object is held in memory.
+//! buffer without bound.
+//!
+//! Every object is asked for as its compressed twin first, `<url>.zst`
+//! ([`tilo_app_package::compressed`]), and taken raw when the registry has
+//! no twin (404). A twin is decompressed with the object's bound — the
+//! chunk's listed length, or [`MAX_OBJECT_BYTES`] for a whole blob — before
+//! any of the checks above, which see only decompressed bytes: compression
+//! changes how many bytes cross the network, never what is verified.
+//!
+//! An installer's [`BlobFetcher`] keeps [`IN_FLIGHT`] requests going while it
+//! hands the sink one object: a runtime is about thirty objects, and fetched
+//! one after another each costs a full round trip before its first byte.
+//! Delivery stays in order. Memory is bounded by objects, not by the
+//! package: at most [`IN_FLIGHT`] blobs being located ahead, plus, while a
+//! chunked blob is delivered, [`IN_FLIGHT`] of its chunks ahead, plus the
+//! object being delivered — each at most [`MAX_OBJECT_BYTES`], in practice
+//! at most [`tilo_app_package::chunks::CHUNK_BYTES`].
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
+use std::collections::VecDeque;
+use std::future::Future;
 use std::time::Duration;
 use tilo_app_package::chunks::{
     ChunkList, ChunkRef, ChunkedReader, MAX_CHUNK_LIST_BYTES, MAX_OBJECT_BYTES, Reassembly,
 };
+use tilo_app_package::compressed;
 use tilo_app_package::{BlobFetcher, BlobHash, BlobSink, PackageFetcher, PackageId};
+
+/// Requests an installer keeps going ahead of the object it is delivering.
+pub const IN_FLIGHT: usize = 4;
 
 /// A registry server serving payload blobs at `<base>/blobs/<hash>`.
 #[derive(Clone, Debug)]
@@ -127,11 +149,33 @@ impl HttpBlobs {
         Ok(Some(Bytes::from(body)))
     }
 
+    /// The object at `url`, at most `limit` bytes: its compressed twin
+    /// decompressed within `limit`, or, when the registry keeps no twin, the
+    /// raw object. `None` when it has neither. The caller verifies the bytes.
+    async fn get_object(client: &reqwest::Client, url: &str, limit: u64) -> Result<Option<Bytes>> {
+        let twin_url = format!("{url}{}", compressed::SUFFIX);
+        let Some(twin) =
+            Self::get_bounded(client, &twin_url, compressed::compressed_bound(limit)).await?
+        else {
+            return Self::get_bounded(client, url, limit).await;
+        };
+        // Decompressing a large chunk is CPU work; keep it off the task that
+        // drives the other requests in flight.
+        let bytes = tokio::task::spawn_blocking(move || {
+            let mut bytes = Vec::new();
+            compressed::decompress_bounded(twin.as_ref(), limit, &mut bytes).map(|_| bytes)
+        })
+        .await
+        .context("decompress task")?
+        .map_err(|error| anyhow!("{twin_url}: {error}"))?;
+        Ok(Some(Bytes::from(bytes)))
+    }
+
     /// The whole blob `hash`, or its chunk list when the registry keeps it
     /// as chunks.
     async fn locate(&self, client: &reqwest::Client, hash: &BlobHash) -> Result<Stored> {
         let url = format!("{}/blobs/{hash}", self.base_url);
-        if let Some(body) = Self::get_bounded(client, &url, MAX_OBJECT_BYTES).await? {
+        if let Some(body) = Self::get_object(client, &url, MAX_OBJECT_BYTES).await? {
             if blake3::hash(&body).as_bytes() != hash.as_bytes() {
                 return Err(anyhow!(
                     "{url} served bytes that do not hash to the payload blob"
@@ -154,7 +198,7 @@ impl HttpBlobs {
     /// them against the name.
     async fn fetch_chunk(&self, client: &reqwest::Client, chunk: &ChunkRef) -> Result<Bytes> {
         let url = format!("{}/blobs/{}", self.base_url, chunk.hash);
-        Self::get_bounded(client, &url, chunk.len.min(MAX_OBJECT_BYTES))
+        Self::get_object(client, &url, chunk.len.min(MAX_OBJECT_BYTES))
             .await?
             .ok_or_else(|| anyhow!("registry {} lacks chunk {url}", self.base_url))
     }
@@ -219,26 +263,44 @@ impl HttpBlobs {
             .build()
     }
 
-    /// Deliver one blob to `sink`: whole, or chunk by verified chunk.
+    /// Deliver one located blob to `sink`: whole, or chunk by verified
+    /// chunk with up to [`IN_FLIGHT`] of the following chunks requested.
     fn deliver(
         &self,
         runtime: &tokio::runtime::Runtime,
         client: &reqwest::Client,
         hash: &BlobHash,
+        stored: Stored,
         sink: &mut dyn BlobSink,
     ) -> std::io::Result<()> {
-        let stored = runtime
-            .block_on(self.locate(client, hash))
-            .map_err(std::io::Error::other)?;
         match stored {
             Stored::Whole(bytes) => sink.accept(hash, bytes.len() as u64, &mut bytes.as_ref()),
             Stored::Chunked(list) => {
                 let len = list.len;
+                let mut ahead = Ahead::new(
+                    runtime,
+                    list.chunks.clone().into_iter().map(|chunk| {
+                        let blobs = self.clone();
+                        let client = client.clone();
+                        async move {
+                            let bytes = blobs.fetch_chunk(&client, &chunk).await?;
+                            Ok((chunk.hash, bytes))
+                        }
+                    }),
+                );
                 let mut reader = ChunkedReader::new(list, |chunk: &ChunkRef| {
-                    runtime
-                        .block_on(self.fetch_chunk(client, chunk))
-                        .map(|bytes| bytes.to_vec())
-                        .map_err(std::io::Error::other)
+                    let (fetched, bytes) = ahead.next().ok_or_else(|| {
+                        std::io::Error::other(format!("payload blob {hash} has no chunk left"))
+                    })??;
+                    // The window runs in list order; a mismatch is a bug here,
+                    // and Reassembly would refuse the bytes anyway.
+                    if fetched != chunk.hash {
+                        return Err(std::io::Error::other(format!(
+                            "chunk {} arrived where {} was expected",
+                            fetched, chunk.hash
+                        )));
+                    }
+                    Ok(bytes.to_vec())
                 });
                 sink.accept(hash, len, &mut reader)?;
                 // A sink that stopped early still gets no unverified blob:
@@ -268,10 +330,80 @@ impl BlobFetcher for HttpBlobs {
     fn fetch(&self, hashes: &[BlobHash], sink: &mut dyn BlobSink) -> std::io::Result<()> {
         let runtime = Self::runtime()?;
         let client = Self::client().map_err(std::io::Error::other)?;
+        let mut located = Ahead::new(
+            &runtime,
+            hashes.iter().copied().map(|hash| {
+                let blobs = self.clone();
+                let client = client.clone();
+                async move { blobs.locate(&client, &hash).await }
+            }),
+        );
         for hash in hashes {
-            self.deliver(&runtime, &client, hash, sink)?;
+            let stored = located.next().ok_or_else(|| {
+                std::io::Error::other(format!("payload blob {hash} was not requested"))
+            })??;
+            self.deliver(&runtime, &client, hash, stored, sink)?;
         }
         Ok(())
+    }
+}
+
+/// Requests started [`IN_FLIGHT`] ahead of the one being consumed, answered
+/// in the order they were made. Each runs as a task on `runtime`, so the
+/// ones ahead make progress whenever the consumer waits for the next.
+struct Ahead<'r, I, F>
+where
+    I: Iterator<Item = F>,
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    runtime: &'r tokio::runtime::Runtime,
+    pending: I,
+    running: VecDeque<tokio::task::JoinHandle<F::Output>>,
+}
+
+impl<'r, I, F, T> Ahead<'r, I, F>
+where
+    I: Iterator<Item = F>,
+    F: Future<Output = Result<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    fn new(runtime: &'r tokio::runtime::Runtime, pending: I) -> Self {
+        Self {
+            runtime,
+            pending,
+            running: VecDeque::with_capacity(IN_FLIGHT.saturating_add(1)),
+        }
+    }
+
+    /// The next answer in request order, or `None` after the last one. The
+    /// request after the window is started before waiting, so [`IN_FLIGHT`]
+    /// stay in flight while the caller handles this one.
+    fn next(&mut self) -> Option<std::io::Result<T>> {
+        while self.running.len() <= IN_FLIGHT {
+            let Some(request) = self.pending.next() else {
+                break;
+            };
+            self.running.push_back(self.runtime.spawn(request));
+        }
+        let handle = self.running.pop_front()?;
+        Some(match self.runtime.block_on(handle) {
+            Ok(answer) => answer.map_err(std::io::Error::other),
+            Err(join) => Err(std::io::Error::other(join)),
+        })
+    }
+}
+
+impl<I, F> Drop for Ahead<'_, I, F>
+where
+    I: Iterator<Item = F>,
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    fn drop(&mut self) {
+        for handle in &self.running {
+            handle.abort();
+        }
     }
 }
 
@@ -300,6 +432,11 @@ mod tests {
         (format!("http://{address}"), worker)
     }
 
+    /// The answer of a registry that keeps no compressed twin.
+    fn not_found() -> Vec<u8> {
+        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+    }
+
     fn response(length: usize, body: &[u8]) -> Vec<u8> {
         let mut bytes =
             format!("HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n")
@@ -313,17 +450,20 @@ mod tests {
         let body = b"verified runtime payload";
         let hash = BlobHash::of(body);
         let (url, worker) = server(vec![
+            not_found(),
             response(body.len(), b"partial"),
             response(body.len(), body),
         ]);
         let blobs = HttpBlobs::new(url).fetch_all(&[hash]).await.unwrap();
         assert_eq!(blobs, vec![Bytes::from_static(body)]);
-        assert_eq!(worker.join().unwrap(), 2);
+        assert_eq!(worker.join().unwrap(), 3);
     }
 
     #[tokio::test]
     async fn permanent_interruption_stops_after_three_attempts_with_source_error() {
-        let (url, worker) = server(vec![response(20, b"partial"); 3]);
+        let mut responses = vec![not_found()];
+        responses.extend(vec![response(20, b"partial"); 3]);
+        let (url, worker) = server(responses);
         let hash = BlobHash::of(b"expected");
         let error = HttpBlobs::new(url)
             .fetch_all(&[hash])
@@ -336,7 +476,7 @@ mod tests {
             error.contains("body"),
             "underlying transport error missing: {error}"
         );
-        assert_eq!(worker.join().unwrap(), 3);
+        assert_eq!(worker.join().unwrap(), 4);
     }
 
     #[tokio::test]
@@ -404,7 +544,7 @@ mod tests {
         assert!(error.contains("after 1 HTTP attempt(s)"), "{error}");
         assert_eq!(worker.join().unwrap(), 1);
 
-        let (url, worker) = server(vec![response(7, b"corrupt")]);
+        let (url, worker) = server(vec![not_found(), response(7, b"corrupt")]);
         let hash = BlobHash::of(b"correct");
         let error = HttpBlobs::new(url)
             .fetch_all(&[hash])
@@ -412,6 +552,197 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("do not hash to the payload blob"), "{error}");
-        assert_eq!(worker.join().unwrap(), 1);
+        assert_eq!(worker.join().unwrap(), 2);
+    }
+
+    /// A server answering every request on its own thread after `delay`:
+    /// `objects` maps a path to its body, anything else is a 404.
+    fn slow_server(objects: std::collections::HashMap<String, Vec<u8>>, delay: Duration) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let objects = objects.clone();
+                std::thread::spawn(move || {
+                    let mut request = [0; 2048];
+                    let read = stream.read(&mut request).unwrap_or(0);
+                    let text = String::from_utf8_lossy(&request[..read]).to_string();
+                    let path = text.split_whitespace().nth(1).unwrap_or("").to_string();
+                    std::thread::sleep(delay);
+                    let reply = match objects.get(&path) {
+                        Some(body) => response(body.len(), body),
+                        None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_vec(),
+                    };
+                    let _ = stream.write_all(&reply);
+                });
+            }
+        });
+        format!("http://{address}")
+    }
+
+    fn twin(bytes: &[u8]) -> Vec<u8> {
+        compressed::compress(bytes).unwrap()
+    }
+
+    /// Collects delivered blobs in order.
+    #[derive(Default)]
+    struct Collected(Vec<(BlobHash, Vec<u8>)>);
+
+    impl BlobSink for Collected {
+        fn accept(
+            &mut self,
+            hash: &BlobHash,
+            len: u64,
+            bytes: &mut dyn std::io::Read,
+        ) -> std::io::Result<()> {
+            let mut body = Vec::new();
+            bytes.take(len).read_to_end(&mut body)?;
+            self.0.push((*hash, body));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn fetch_overlaps_requests() {
+        let bodies: Vec<Vec<u8>> = (0..8u8).map(|n| vec![n; 64]).collect();
+        let hashes: Vec<BlobHash> = bodies.iter().map(|body| BlobHash::of(body)).collect();
+        // Twins, so each blob is one request as from a registry that has them.
+        let objects = hashes
+            .iter()
+            .zip(&bodies)
+            .map(|(hash, body)| (format!("/blobs/{hash}.zst"), twin(body)))
+            .collect();
+        let delay = Duration::from_millis(200);
+        let url = slow_server(objects, delay);
+        let mut sink = Collected::default();
+        let started = std::time::Instant::now();
+        HttpBlobs::new(url).fetch(&hashes, &mut sink).unwrap();
+        let elapsed = started.elapsed();
+        // One at a time this is eight delays; with requests overlapped it is
+        // two windows.
+        assert!(elapsed < delay * 5, "8 blobs took {elapsed:?}");
+        let delivered: Vec<_> = sink.0.iter().map(|(hash, _)| *hash).collect();
+        assert_eq!(delivered, hashes, "delivered in request order");
+        for ((_, body), expected) in sink.0.iter().zip(&bodies) {
+            assert_eq!(body, expected);
+        }
+    }
+
+    #[test]
+    fn chunked_blobs_arrive_in_order_and_verified() {
+        let blob = b"chunked payload, fetched ahead".to_vec();
+        let hash = BlobHash::of(&blob);
+        let chunk_bytes = 4u64;
+        let chunks: Vec<ChunkRef> = blob
+            .chunks(4)
+            .map(|piece| ChunkRef {
+                hash: BlobHash::of(piece),
+                len: piece.len() as u64,
+            })
+            .collect();
+        let list = ChunkList::new(hash, blob.len() as u64, chunk_bytes, chunks);
+        let mut objects: std::collections::HashMap<String, Vec<u8>> = blob
+            .chunks(4)
+            .map(|piece| (format!("/blobs/{}", BlobHash::of(piece)), piece.to_vec()))
+            .collect();
+        objects.insert(format!("/blobs/{hash}.chunks"), list.encode());
+        let small = b"a whole blob after it".to_vec();
+        objects.insert(format!("/blobs/{}", BlobHash::of(&small)), small.clone());
+        let url = slow_server(objects.clone(), Duration::from_millis(20));
+        let mut sink = Collected::default();
+        HttpBlobs::new(&url)
+            .fetch(&[hash, BlobHash::of(&small)], &mut sink)
+            .unwrap();
+        assert_eq!(
+            sink.0,
+            vec![(hash, blob.clone()), (BlobHash::of(&small), small)]
+        );
+
+        // A chunk the server corrupts stops the blob before its last byte.
+        let first = BlobHash::of(&blob[..4]);
+        objects.insert(format!("/blobs/{first}"), b"evil".to_vec());
+        let url = slow_server(objects, Duration::from_millis(1));
+        let mut sink = Collected::default();
+        assert!(HttpBlobs::new(url).fetch(&[hash], &mut sink).is_err());
+        assert!(sink.0.iter().all(|(_, body)| body != &blob));
+    }
+    #[test]
+    fn twins_are_preferred_and_raw_objects_are_the_fallback() {
+        let whole = b"a whole runtime library, compressed for the wire ".repeat(64);
+        let raw_only = b"an object stored before twins existed".to_vec();
+        let (whole_hash, raw_hash) = (BlobHash::of(&whole), BlobHash::of(&raw_only));
+        let objects = std::collections::HashMap::from([
+            // The raw copy is wrong: delivering the right bytes proves the
+            // twin was taken and verified after decompression.
+            (format!("/blobs/{whole_hash}"), b"not it".to_vec()),
+            (format!("/blobs/{whole_hash}.zst"), twin(&whole)),
+            // No twin: 404, then the raw object.
+            (format!("/blobs/{raw_hash}"), raw_only.clone()),
+        ]);
+        let url = slow_server(objects, Duration::from_millis(1));
+        let mut sink = Collected::default();
+        HttpBlobs::new(url)
+            .fetch(&[whole_hash, raw_hash], &mut sink)
+            .unwrap();
+        assert_eq!(sink.0, vec![(whole_hash, whole), (raw_hash, raw_only)]);
+    }
+
+    #[test]
+    fn a_twin_is_verified_after_decompression() {
+        let body = b"the payload the signed collection names".to_vec();
+        let hash = BlobHash::of(&body);
+        let objects = std::collections::HashMap::from([
+            (format!("/blobs/{hash}"), body),
+            (
+                format!("/blobs/{hash}.zst"),
+                twin(b"a well-formed twin of other bytes"),
+            ),
+        ]);
+        let url = slow_server(objects, Duration::from_millis(1));
+        let error = HttpBlobs::new(url)
+            .fetch(&[hash], &mut Collected::default())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("do not hash to the payload blob"), "{error}");
+    }
+
+    #[test]
+    fn a_chunk_twin_that_expands_past_its_listed_length_is_refused() {
+        let blob = b"chunked payload whose second twin is a bomb".to_vec();
+        let hash = BlobHash::of(&blob);
+        let pieces: Vec<&[u8]> = blob.chunks(16).collect();
+        let chunks: Vec<ChunkRef> = pieces
+            .iter()
+            .map(|piece| ChunkRef {
+                hash: BlobHash::of(piece),
+                len: piece.len() as u64,
+            })
+            .collect();
+        let list = ChunkList::new(hash, blob.len() as u64, 16, chunks.clone());
+        let mut objects: std::collections::HashMap<String, Vec<u8>> = pieces
+            .iter()
+            .map(|piece| (format!("/blobs/{}.zst", BlobHash::of(piece)), twin(piece)))
+            .collect();
+        objects.insert(format!("/blobs/{hash}.chunks"), list.encode());
+        let url = slow_server(objects.clone(), Duration::from_millis(1));
+        let mut sink = Collected::default();
+        HttpBlobs::new(&url).fetch(&[hash], &mut sink).unwrap();
+        assert_eq!(sink.0, vec![(hash, blob.clone())]);
+
+        // Sixteen listed bytes, a megabyte of zeros behind them.
+        objects.insert(
+            format!("/blobs/{}.zst", chunks[1].hash),
+            twin(&vec![0; 1 << 20]),
+        );
+        let url = slow_server(objects, Duration::from_millis(1));
+        let mut sink = Collected::default();
+        let error = HttpBlobs::new(url)
+            .fetch(&[hash], &mut sink)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("expands past its 16-byte bound"), "{error}");
+        assert!(sink.0.iter().all(|(_, body)| body != &blob));
     }
 }

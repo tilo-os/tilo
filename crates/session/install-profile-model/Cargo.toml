@@ -1,0 +1,11 @@
+[package]
+name = "install-profile-model"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+
+# Dependency-free: the isolated tools/imager-profile workspace builds it too.
+
+[lints]
+workspace = true

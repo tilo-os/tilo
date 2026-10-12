@@ -9,13 +9,7 @@ impl crate::widget::Widget for InitialHistoryProbe {
         dyn crate::resources::PublishesResources,
         dyn crate::widget::controls::ActionControls
     );
-    crate::testing::inert_widget_methods!(
-        unregistered_leaf_layout,
-        apply_layout,
-        draw,
-        get_rect,
-        name = "initial-history-probe"
-    );
+    crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "initial-history-probe");
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["initial-history.probe"]
     }
@@ -133,7 +127,7 @@ fn initial_history_action_publication_waits_for_actual_owner_application() {
     assert!(!page.rows.is_empty());
     assert!(matches!(
         app.published_action_directory_resolution(&page.revision, "initial-probe", "inspect"),
-        runtime_collab::ActionDirectoryResolution::Found(_)
+        runtime_collab::ActionDirectoryResolution::Found { .. }
     ));
     app.invoke_published_action(
         77,
@@ -332,7 +326,7 @@ fn initial_history_public_directory_requires_every_actual_live_record_owner() {
             &action.address.resource,
             &action.address.action
         ),
-        runtime_collab::ActionDirectoryResolution::Found(_)
+        runtime_collab::ActionDirectoryResolution::Found { .. }
     ));
     let second = fixture.app.document_routes.owners[1].route.clone();
     fixture

@@ -36,13 +36,13 @@ use ui::framework::{Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, 
 use ui::tilo_actions::{ActionSpec, ResourcePresentation};
 use ui::tilo_resource::Effect as _;
 use ui::widget::Widget;
-use ui::{Theme, permissions::PermissionContext, presence::PresenceCtx, text_render::TextRenderer};
+use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-use crate::doc_actions::StoreDocumentAction;
 use crate::model::{ActionKind, SourceFilter, StoreItem, StoreSource};
-use crate::resource::{ReportProjection, Store, StoreEffect};
+use crate::reports::{Reports as Store, reports as verbs};
+use crate::resource::{ReportProjection, StoreEffect};
 use crate::sources::distinct_categories;
 use crate::worker::{Outcome, Request, StoreWorker};
 mod view;
@@ -1104,15 +1104,7 @@ impl Widget for StoreApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node))
             && let Some(&child_node) = children.first()
         {
@@ -1130,27 +1122,6 @@ impl Widget for StoreApp {
     ) {
         if let Some(root) = self.root.as_mut() {
             root.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &PermissionContext,
-    ) {
-        if let Some(root) = self.root.as_mut() {
-            root.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                permissions,
-            );
         }
     }
 
@@ -1358,7 +1329,7 @@ impl StoreApp {
     pub(crate) fn inspect_catalogue(&self, app: Option<&str>) -> Result<serde_json::Value, String> {
         let detail = app
             .map(|id| {
-                if !crate::doc_actions::valid_app_id(id) {
+                if !crate::reports::valid_app_id(id) {
                     return Err("invalid app identity".to_string());
                 }
                 self.items
@@ -1574,7 +1545,7 @@ impl StoreApp {
                 self.set_active_category(None);
             }
             StoreEffect::ShowDetails { app } => {
-                if !crate::doc_actions::valid_app_id(&app) {
+                if !crate::reports::valid_app_id(&app) {
                     return Err("invalid app identity".into());
                 }
                 self.status_line = self.items.iter().find(|item| item.id == app).map_or_else(
@@ -1725,7 +1696,7 @@ impl StoreApp {
                     return Err("this report was already submitted".into());
                 }
                 let note = report.note.trim().chars().count();
-                if !(8..=crate::doc_actions::MAX_REPORT_NOTE_CHARS).contains(&note) {
+                if !(8..=crate::reports::MAX_REPORT_NOTE_CHARS).contains(&note) {
                     return Err("Add a concern of 8–4096 characters before submitting".into());
                 }
                 let (item, registry_name) = self.reported_app(&report)?;
@@ -1779,7 +1750,7 @@ impl StoreApp {
                 let item = self.items.iter().find(|item| item.id == report.app_id);
                 return Ok(Admitted::Export(report_envelope(&report, item)));
             }
-            StoreEffect::Open { .. }
+            StoreEffect::OpenApp { .. }
             | StoreEffect::Update { .. }
             | StoreEffect::Remove { .. }
             | StoreEffect::Pin { .. }
@@ -1835,7 +1806,7 @@ impl StoreApp {
     /// The report about `app`, once the registry has a case for it.
     fn case(&self, app: &str) -> Result<ReportProjection, String> {
         let report = self.report(app)?;
-        if !report.is_case() || !crate::doc_actions::valid_case_id(&report.id) {
+        if !report.is_case() || !crate::reports::valid_case_id(&report.id) {
             return Err("this report has no moderation case yet".into());
         }
         Ok(report)
@@ -1889,7 +1860,7 @@ impl StoreApp {
         &mut self,
         finish: &Finish,
         outcome: Outcome,
-        parent: Option<tilo_actions::InvocationId>,
+        parent: Option<ui::tilo_actions::InvocationId>,
         cx: &mut EffectCx<Store, Self>,
     ) -> EffectAnswer {
         if let Ok(finished) = &outcome
@@ -1935,7 +1906,7 @@ impl StoreApp {
     fn start_application_launch(
         &mut self,
         launch: crate::actions::ApplicationLaunch,
-        parent: Option<tilo_actions::InvocationId>,
+        parent: Option<ui::tilo_actions::InvocationId>,
         cx: &mut EffectCx<Store, Self>,
     ) -> EffectAnswer {
         let Some(request_id) = self.next_launch_request.take() else {
@@ -2001,7 +1972,7 @@ impl StoreApp {
     ) -> Result<(), String> {
         match case_record(app_id, package_id, case_id, status) {
             Ok(record) => {
-                cx.apply(&record);
+                cx.submit(Store::RECORD_MODERATION_CASE.with(record));
                 self.status_line = format!("Moderation case {case_id} is {status}.");
                 Ok(())
             }
@@ -2291,14 +2262,14 @@ fn case_record(
     package_id: &str,
     case_id: &str,
     status: &str,
-) -> Result<StoreDocumentAction, &'static str> {
+) -> Result<verbs::RecordModerationCase, &'static str> {
     if package_id != app_id
         || !case_id.starts_with("case-")
-        || !crate::doc_actions::valid_case_id(case_id)
+        || !crate::reports::valid_case_id(case_id)
     {
         return Err("Registry returned an invalid moderation case identifier.");
     }
-    Ok(StoreDocumentAction::RecordModerationCase {
+    Ok(verbs::RecordModerationCase {
         app_id: app_id.to_owned(),
         case_id: case_id.to_owned(),
         status: status.to_owned(),
@@ -2629,6 +2600,111 @@ mod tests {
     }
 
     #[test]
+    fn completed_empty_search_offers_the_declared_filter_reset() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.show_capture_catalogue(crate::fixture::fixture_catalog());
+            store.set_worker_busy(false);
+        })
+        .unwrap();
+        app.effect(&StoreEffect::SetSearch {
+            query: "no-matching-app".into(),
+        })
+        .unwrap();
+        app.with_surface(|store: &mut StoreApp| {
+            store.apply_worker_snapshot(crate::worker::Snapshot {
+                items: Vec::new(),
+                status_line: "0 search results".into(),
+                query: Some("no-matching-app".into()),
+                detail: None,
+                remotes: Vec::new(),
+                flatpak_available: true,
+                flatpak_error: None,
+                operation_error: None,
+            });
+        })
+        .unwrap();
+        for role in [ui::permissions::Role::Owner, ui::permissions::Role::Viewer] {
+            app.set_role(role);
+            let visible = app.harness().inspection_json().unwrap();
+            assert!(
+                visible.contains("No apps found"),
+                "empty completed search is not a missing catalogue: {visible}"
+            );
+            assert!(!visible.contains("Add or enable a catalogue"));
+            let reset = app
+                .harness()
+                .controls()
+                .into_iter()
+                .find(|control| control.name.as_deref() == Some("Clear filters"))
+                .expect("the empty result publishes its recovery control");
+            assert!(!reset.disabled);
+            let audit = app.harness().native_app_audit();
+            assert!(
+                !audit
+                    .issues
+                    .iter()
+                    .any(|issue| issue.code == "stale-action-binding"),
+                "{audit:?}"
+            );
+        }
+        app.effect(&StoreEffect::ClearFilters).unwrap();
+        let snapshot = app
+            .effect(&StoreEffect::InspectCatalogue { app: None })
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(snapshot["query"], "");
+        app.with_surface(|store: &mut StoreApp| {
+            assert_eq!(store.pending_search.as_deref(), Some(""));
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn empty_search_preserves_loading_failure_and_unfiltered_empty_states() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.effect(&StoreEffect::SetSearch {
+            query: "no-matching-app".into(),
+        })
+        .unwrap();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.apply_worker_snapshot(crate::worker::Snapshot {
+                items: Vec::new(),
+                status_line: String::new(),
+                query: Some("no-matching-app".into()),
+                detail: None,
+                remotes: Vec::new(),
+                flatpak_available: true,
+                flatpak_error: None,
+                operation_error: None,
+            });
+            store.set_worker_busy(true);
+        })
+        .unwrap();
+        let visible = app.harness().inspection_json().unwrap();
+        assert!(visible.contains("Loading apps"));
+        assert!(!visible.contains("No apps found"));
+        app.with_surface(|store: &mut StoreApp| {
+            store.set_worker_busy(false);
+            store.set_operation_error(Some("Repository unavailable".into()));
+        })
+        .unwrap();
+        let visible = app.harness().inspection_json().unwrap();
+        assert!(visible.contains("Catalogues offline"));
+        assert!(visible.contains("Repository unavailable"));
+        assert!(!visible.contains("No apps found"));
+        app.with_surface(|store: &mut StoreApp| store.set_operation_error(None))
+            .unwrap();
+        app.effect(&StoreEffect::ClearFilters).unwrap();
+        let visible = app.harness().inspection_json().unwrap();
+        assert!(visible.contains("No apps available"));
+        assert!(!visible.contains("No apps found"));
+    }
+
+    #[test]
     fn resizing_remotes_preserves_the_active_input_selection() {
         fn input(widget: &mut dyn Widget) -> Option<&mut dyn Widget> {
             if widget.test_id() == Some("store.remote.name") {
@@ -2942,7 +3018,7 @@ mod tests {
         // Admin effects are removed from a viewer's public door; unlike a
         // retained read effect submitting a forbidden edit, lookup itself refuses.
         assert!(
-            matches!(&refused, tilo_actions::DoorError::Unknown(_)),
+            matches!(&refused, ui::tilo_actions::DoorError::Unknown(_)),
             "{refused:?}"
         );
         assert!(!app.harness().controls().iter().any(|control| matches!(
@@ -3389,10 +3465,7 @@ mod tests {
                 .iter()
                 .find(|action| action.id == expected)
                 .unwrap();
-            assert_eq!(
-                action.contract.permission,
-                tilo_actions::PermissionRequirement::Admin
-            );
+            assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Outside);
             let job = admitted_job(&mut app, remote_enabled_effect(&remote));
             assert!(
                 matches!(job.request, Request::RemoteSetEnabled { ref name, enabled: value } if name == "custom-tools" && value == enabled)
@@ -3530,10 +3603,7 @@ mod tests {
             .iter()
             .find(|action| action.id == "enable-remote")
             .unwrap();
-        assert_eq!(
-            enable.contract.permission,
-            tilo_actions::PermissionRequirement::Admin
-        );
+        assert_eq!(enable.contract.kind, ui::tilo_actions::ActionKind::Outside);
         assert!(matches!(
             admitted_job(&mut app, remote_enabled_effect(&account)).request,
             Request::RemoteSetEnabled { enabled: true, .. }
@@ -3691,12 +3761,12 @@ mod tests {
         let open = row
             .actions
             .iter()
-            .find(|action| action.id == "open")
+            .find(|action| action.id == "open-app")
             .unwrap();
         assert!(
             matches!(&open.contract.availability, ui::tilo_actions::Availability::Unavailable { code, .. } if code == "device_version_unavailable")
         );
-        assert!(app.admit(StoreEffect::Open { app: id }).is_err());
+        assert!(app.admit(StoreEffect::OpenApp { app: id }).is_err());
     }
 
     #[test]
@@ -4220,11 +4290,7 @@ mod tests {
     }
 
     fn has_test_id(widget: &dyn Widget, id: &str) -> bool {
-        widget.test_id() == Some(id)
-            || widget
-                .children()
-                .into_iter()
-                .any(|child| has_test_id(child, id))
+        ui::widget::find_test_id(widget, id).is_some()
     }
 
     /// Mount a composed tree and run one frame at `width` × 900.
@@ -4390,36 +4456,29 @@ mod tests {
                     let mut doc = AutoCommit::new();
                     let mut focus = None;
                     let cursor = WindowEvent::CursorMoved {
-                        device_id: unsafe { std::mem::zeroed() },
+                        device_id: winit::event::DeviceId::dummy(),
                         position: winit::dpi::PhysicalPosition::new(center.x, center.y),
                     };
                     let events = [
                         cursor,
                         WindowEvent::MouseInput {
-                            device_id: unsafe { std::mem::zeroed() },
+                            device_id: winit::event::DeviceId::dummy(),
                             state: winit::event::ElementState::Pressed,
                             button: winit::event::MouseButton::Left,
                         },
                         WindowEvent::MouseInput {
-                            device_id: unsafe { std::mem::zeroed() },
+                            device_id: winit::event::DeviceId::dummy(),
                             state: winit::event::ElementState::Released,
                             button: winit::event::MouseButton::Left,
                         },
                     ];
                     for event in events {
-                        grid.handle_event(
-                            &event,
-                            &mut ui::widget::EventCtx {
-                                scale_factor: 1.0,
-                                modifiers: &winit::event::Modifiers::default(),
-                                state: ui::widget::Edits::lend(&mut doc),
-                                path: &automerge::ROOT,
-                                handled: &mut false,
-                                focus_target: &mut focus,
-                                node_id: node,
-                                taffy: &tree,
-                            },
-                        );
+                        focus = ui::testing::Dispatch::new()
+                            .doc(&mut doc)
+                            .layout(&tree, node)
+                            .focus_target(focus)
+                            .send(&mut grid, &event)
+                            .focus_target;
                     }
                     let details = ui::widget::controls::take_control_invocation(&mut grid)
                         .expect("pressing the card shows its details");
@@ -4431,6 +4490,7 @@ mod tests {
                     assert_eq!(
                         primary.perform_action(
                             &ui::a11y::Action::Activate,
+                            &[],
                             &mut ui::widget::Edits::lend(&mut doc),
                             &automerge::ROOT
                         ),
@@ -4440,7 +4500,10 @@ mod tests {
                     if busy {
                         assert!(invoked.is_none());
                     } else {
-                        assert_eq!(invoked.unwrap().address.action, action_code(action));
+                        assert_eq!(
+                            invoked.unwrap().address.action,
+                            crate::resource::StoreEffect::package(action, String::new()).id()
+                        );
                     }
                 }
             }
@@ -4545,6 +4608,7 @@ mod tests {
                 .expect("failure offers the real catalogue refresh control");
             assert!(retry.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut ui::widget::Edits::lend(&mut state),
                 &automerge::ROOT,
             ));
@@ -4629,7 +4693,7 @@ mod tests {
         app.present_reports(&[ReportProjection {
             id: "report:id.notes".into(),
             app_id: "id.notes".into(),
-            status: crate::doc_actions::DRAFT_STATUS.into(),
+            status: crate::reports::DRAFT_STATUS.into(),
             note: note.into(),
         }]);
     }
@@ -4686,7 +4750,7 @@ mod tests {
         // Case `app_operation_locks_the_target_card_until_it_finishes`.
         {
             let mut app = seeded_app();
-            let open = StoreEffect::Open {
+            let open = StoreEffect::OpenApp {
                 app: "id.notes".into(),
             };
             let job = admitted_job(&mut app, open.clone());
@@ -5020,13 +5084,14 @@ mod tests {
 
         // Case `only_a_well_formed_case_about_the_reported_app_is_recorded`.
         {
+            let record = case_record("id.notes", "id.notes", "case-authoritative", "Open").unwrap();
             assert_eq!(
-                case_record("id.notes", "id.notes", "case-authoritative", "Open"),
-                Ok(StoreDocumentAction::RecordModerationCase {
-                    app_id: "id.notes".into(),
-                    case_id: "case-authoritative".into(),
-                    status: "Open".into(),
-                })
+                (
+                    record.app_id.as_str(),
+                    record.case_id.as_str(),
+                    record.status.as_str()
+                ),
+                ("id.notes", "case-authoritative", "Open")
             );
             assert!(case_record("id.notes", "id.notes", "case-../../outside", "Open").is_err());
             assert!(case_record("id.notes", "id.other", "case-authoritative", "Open").is_err());

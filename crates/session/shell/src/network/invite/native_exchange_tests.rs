@@ -24,9 +24,13 @@ mod cold_code;
 #[path = "native_exchange_tests/mounted_code.rs"]
 mod mounted_code;
 
+#[path = "native_exchange_tests/network_ownership.rs"]
+mod network_ownership;
 #[path = "native_exchange_tests/receipts.rs"]
 mod receipts;
 
+#[path = "native_exchange_tests/governance.rs"]
+mod governance;
 #[path = "native_exchange_tests/refresh.rs"]
 mod refresh;
 type ActualAuthority = Arc<Mutex<Option<TestGovernor>>>;
@@ -258,8 +262,19 @@ async fn actual_exchange(restart: bool, cold_code: bool, mounted: Option<mounted
         .unwrap();
     // Reconcile relay access only from the actual issuing owner's committed peer.
     let (access, publications) = {
-        let state = actual_authority.lock().unwrap();
-        let state = state.as_ref().unwrap();
+        let mut state = actual_authority.lock().unwrap();
+        let state = state.as_mut().unwrap();
+        state.refresh_checkpoint().unwrap();
+        let before = receiving_owner
+            .with_current(room, |view| {
+                tilo_peer_state::durability::entries(view.peer().admitted_room().unwrap())
+            })
+            .unwrap();
+        assert_ne!(
+            before,
+            tilo_peer_state::durability::entries(state.peer().admitted_room().unwrap()).unwrap(),
+            "proof needs genuinely new signed governor receipts"
+        );
         (
             state.governed_access(SystemTime::now()).unwrap(),
             state
@@ -354,6 +369,7 @@ async fn actual_exchange(restart: bool, cold_code: bool, mounted: Option<mounted
         }
         .unwrap();
     }
+    governance::assert_admitted_without_ui_drain(&actual_authority, &receiving_owner, room).await;
     let mut last = None;
     tilo_test_env::within("every native input publication", async {
         let mut count = 0;
@@ -408,9 +424,7 @@ async fn actual_exchange(restart: bool, cold_code: bool, mounted: Option<mounted
         last.unwrap().admit(&identity).is_err(),
         "closed session input cannot cross the owner again"
     );
-    drop(commands);
-    actor.abort();
-    let _ = actor.await;
+    retire_actor_before_endpoint_reuse(commands, actor).await;
     drop(received);
     if let Some(journey) = mounted {
         Box::pin(mounted_code::run(
@@ -463,4 +477,17 @@ async fn actual_exchange(restart: bool, cold_code: bool, mounted: Option<mounted
     publisher_endpoint.close().await;
     endpoint.close().await;
     relay.shutdown().await;
+}
+
+/// Retire the enrollment actor while keeping its endpoint for the next native session.
+async fn retire_actor_before_endpoint_reuse(
+    commands: impl Send,
+    actor: tokio::task::JoinHandle<()>,
+) {
+    // The actor's ordinary channel-closed exit shuts down its Router and
+    // closes the shared endpoint. Cancel and join while its last sender is
+    // still retained, then release that sender after router ownership ends.
+    actor.abort();
+    let _ = actor.await;
+    drop(commands);
 }

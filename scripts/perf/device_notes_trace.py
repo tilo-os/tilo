@@ -11,7 +11,7 @@ markers = ("tilo-physical-input ", "tilo-physical-frame ",
            "tilo-physical-delivery ", "tilo-display-frame ",
            "tilo-native-send ", "tilo-native-main-stages ",
            "tilo-native-worker ", "tilo-native-worker-handoff ",
-           "tilo-native-present-call ")
+           "tilo-native-present-call ", "tilo-native-gpu-stages ")
 records = []
 for line in Path(sys.argv[1]).read_text().splitlines():
     for marker in markers:

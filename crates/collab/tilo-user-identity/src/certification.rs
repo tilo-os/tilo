@@ -54,7 +54,7 @@ pub struct CertificationRequest {
     /// Exclusive expiry, Unix-epoch nanoseconds.
     pub expires_at_ns: u64,
     /// Device-key Ed25519 signature over [`Self::signing_digest`].
-    #[serde(with = "crate::cert::serde_bytes_64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 
