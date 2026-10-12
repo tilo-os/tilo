@@ -151,6 +151,7 @@ fn owner_config() -> AccountConfig {
         smtp_tls: true,
         username: OWNER_EMAIL.into(),
         auth: crate::model::AuthMethod::Password,
+        import_pending: false,
         password: "correct-horse-battery".into(),
     }
 }
@@ -402,6 +403,7 @@ pub fn sample_account_store() -> AccountStore {
         smtp_tls: true,
         username: "sam@northwind.example".into(),
         auth: crate::model::AuthMethod::Password,
+        import_pending: false,
         password: "correct-horse-battery".into(),
     };
     let mut personal = Account::new(owner_config());

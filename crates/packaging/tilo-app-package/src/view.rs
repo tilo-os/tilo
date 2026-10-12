@@ -27,6 +27,7 @@ pub use crate::manifest::{
     ContinuityContract, ContinuityFacet, ContinuitySemanticSchema, EntrypointType, PortalPolicy,
     Requirement, ServiceReq,
 };
+use crate::validate::{valid_extension, valid_mime, valid_scheme};
 
 /// `[package].kind` for something a user opens. Everything else is a
 /// system component, however it starts.
@@ -181,46 +182,6 @@ impl TryFrom<Manifest> for ManifestView {
             continuity,
         })
     }
-}
-
-fn valid_extension(ext: &str) -> bool {
-    !ext.is_empty()
-        && ext.len() <= 64
-        && ext
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'_'))
-}
-
-fn valid_mime(mime: &str) -> bool {
-    let Some((top, subtype)) = mime.split_once('/') else {
-        return false;
-    };
-    let token = |part: &str| {
-        !part.is_empty()
-            && part.len() <= 127
-            && part.bytes().all(|b| {
-                b.is_ascii_alphanumeric()
-                    || matches!(
-                        b,
-                        b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-'
-                    )
-            })
-    };
-    mime.len() <= 255
-        && !subtype.contains('/')
-        && top != "*"
-        && subtype != "*"
-        && token(top)
-        && token(subtype)
-}
-
-fn valid_scheme(scheme: &str) -> bool {
-    let mut chars = scheme.chars();
-    !scheme.is_empty()
-        && scheme.len() <= 32
-        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
-        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
-        && !matches!(scheme, "file" | "data" | "javascript")
 }
 
 fn path_string(path: &Path) -> String {

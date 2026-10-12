@@ -27,6 +27,7 @@ use std::ops::Bound;
 use std::sync::Arc;
 use tilo_automerge::ApplyIncoming;
 use tilo_automerge::ReadTyped as _;
+use tilo_automerge::read::{map_at, str_at, str_entries};
 use tilo_content::{ContentInputs, ContentMeta, ContentSource};
 
 mod bulk;
@@ -630,20 +631,20 @@ pub fn shadowed_containers(doc: &AutoCommit, root: &ObjId) -> Vec<String> {
 pub fn open(doc: &AutoCommit, root: &ObjId) -> Result<Containers, DocError> {
     Ok(Containers {
         root: root.clone(),
-        blocks: map_at(doc, root, KEY_BLOCKS)?,
-        styles: map_at(doc, root, KEY_STYLES)?,
-        preserved: map_at(doc, root, KEY_PRESERVED)?,
-        meta: map_at(doc, root, KEY_META)?,
-        blobs: map_at(doc, root, KEY_BLOBS)?,
-        header: map_at(doc, root, KEY_HEADER)?,
-        footer: map_at(doc, root, KEY_FOOTER)?,
-        notes: map_at(doc, root, KEY_NOTES)?,
-        comments: map_at(doc, root, KEY_COMMENTS)?,
-        changes: map_at(doc, root, KEY_CHANGES)?,
+        blocks: required_map(doc, root, KEY_BLOCKS)?,
+        styles: required_map(doc, root, KEY_STYLES)?,
+        preserved: required_map(doc, root, KEY_PRESERVED)?,
+        meta: required_map(doc, root, KEY_META)?,
+        blobs: required_map(doc, root, KEY_BLOBS)?,
+        header: required_map(doc, root, KEY_HEADER)?,
+        footer: required_map(doc, root, KEY_FOOTER)?,
+        notes: required_map(doc, root, KEY_NOTES)?,
+        comments: required_map(doc, root, KEY_COMMENTS)?,
+        changes: required_map(doc, root, KEY_CHANGES)?,
     })
 }
 
-fn map_at(doc: &AutoCommit, root: &ObjId, key: &str) -> Result<ObjId, DocError> {
+pub(crate) fn required_map(doc: &AutoCommit, root: &ObjId, key: &str) -> Result<ObjId, DocError> {
     match doc.get(root, key)? {
         Some((Value::Object(ObjType::Map), id)) => Ok(id),
         _ => Err(DocError::Invalid(format!("root.{key} is not a map"))),
@@ -718,19 +719,13 @@ pub fn materialize_region(doc: &AutoCommit, c: &Containers, region: Region) -> V
 /// Resolve a single note's sub-map object by id.
 fn note_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> {
     let notes = &c.notes;
-    match doc.get(notes, id) {
-        Ok(Some((Value::Object(ObjType::Map), oid))) => Some(oid),
-        _ => None,
-    }
+    map_at(doc, notes, id)
 }
 
 /// Resolve a note's block container (`note.blocks`) sub-map object.
 fn note_blocks_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> {
     let note = note_obj(doc, c, id)?;
-    match doc.get(&note, NOTE_BLOCKS) {
-        Ok(Some((Value::Object(ObjType::Map), bid))) => Some(bid),
-        _ => None,
-    }
+    map_at(doc, &note, NOTE_BLOCKS)
 }
 
 /// The note ids present in the document, in a stable (sorted) order so two replicas converge
@@ -753,10 +748,9 @@ pub fn note_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
 /// A single note's kind (`Footnote`/`Endnote`), or `None` if the id is unknown.
 pub fn note_kind(doc: &AutoCommit, c: &Containers, id: &str) -> Option<NoteKind> {
     let note = note_obj(doc, c, id)?;
-    match doc.get(&note, NOTE_KIND) {
-        Ok(Some((v, _))) => v.as_str().map(NoteKind::from_str),
-        _ => None,
-    }
+    str_at(doc, &note, NOTE_KIND)
+        .as_deref()
+        .map(NoteKind::from_str)
 }
 
 /// Materialize a note's block sequence (empty if the note has no blocks / is unknown).
@@ -805,19 +799,13 @@ fn comment_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> {
         return None;
     }
     let comments = &c.comments;
-    match doc.get(comments, id) {
-        Ok(Some((Value::Object(ObjType::Map), oid))) => Some(oid),
-        _ => None,
-    }
+    map_at(doc, comments, id)
 }
 
 /// Resolve a comment's block container (`comment.blocks`) sub-map object.
 fn comment_blocks_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> {
     let comment = comment_obj(doc, c, id)?;
-    match doc.get(&comment, COMMENT_BLOCKS) {
-        Ok(Some((Value::Object(ObjType::Map), bid))) => Some(bid),
-        _ => None,
-    }
+    map_at(doc, &comment, COMMENT_BLOCKS)
 }
 
 fn comment_reply_obj(
@@ -845,10 +833,7 @@ fn comment_reply_blocks_obj(
     reply_id: &str,
 ) -> Option<ObjId> {
     let reply = comment_reply_obj(doc, c, comment_id, reply_id)?;
-    match doc.get(&reply, COMMENT_REPLY_BLOCKS) {
-        Ok(Some((Value::Object(ObjType::Map), blocks))) => Some(blocks),
-        _ => None,
-    }
+    map_at(doc, &reply, COMMENT_REPLY_BLOCKS)
 }
 
 /// The comment ids present in the document, in a stable (sorted) order so two replicas that merged
@@ -869,13 +854,13 @@ pub fn comment_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
 /// A comment's author display name (empty if unset / unknown id).
 pub fn comment_author(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let comment = comment_obj(doc, c, id)?;
-    doc.str_at(&comment, COMMENT_AUTHOR)
+    str_at(doc, &comment, COMMENT_AUTHOR)
 }
 
 /// A comment's date / timestamp string (empty if unset / unknown id).
 pub fn comment_date(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let comment = comment_obj(doc, c, id)?;
-    doc.str_at(&comment, COMMENT_DATE)
+    str_at(doc, &comment, COMMENT_DATE)
 }
 
 /// The ordered block ids of a comment's content (empty if absent).
@@ -936,7 +921,7 @@ pub fn comment_reply_author(
     reply_id: &str,
 ) -> Option<String> {
     let reply = comment_reply_obj(doc, c, comment_id, reply_id)?;
-    doc.str_at(&reply, COMMENT_REPLY_AUTHOR)
+    str_at(doc, &reply, COMMENT_REPLY_AUTHOR)
 }
 
 pub fn comment_reply_date(
@@ -946,7 +931,7 @@ pub fn comment_reply_date(
     reply_id: &str,
 ) -> Option<String> {
     let reply = comment_reply_obj(doc, c, comment_id, reply_id)?;
-    doc.str_at(&reply, COMMENT_REPLY_DATE)
+    str_at(doc, &reply, COMMENT_REPLY_DATE)
 }
 
 pub fn comment_reply_blocks_in_order(
@@ -1106,10 +1091,7 @@ pub fn heading_ref_id(block_id: &str) -> String {
 /// Resolve a single change's sub-map object by id.
 fn change_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> {
     let changes = &c.changes;
-    match doc.get(changes, id) {
-        Ok(Some((Value::Object(ObjType::Map), oid))) => Some(oid),
-        _ => None,
-    }
+    map_at(doc, changes, id)
 }
 
 /// The change ids present in the document, in a stable (sorted) order so replicas converge byte-identically;
@@ -1132,13 +1114,13 @@ pub fn change_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
 /// A change's author display name (empty if unset / unknown id).
 pub fn change_author(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let change = change_obj(doc, c, id)?;
-    doc.str_at(&change, CHANGE_AUTHOR)
+    str_at(doc, &change, CHANGE_AUTHOR)
 }
 
 /// A change's date / timestamp string (empty if unset / unknown id).
 pub fn change_date(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let change = change_obj(doc, c, id)?;
-    doc.str_at(&change, CHANGE_DATE)
+    str_at(doc, &change, CHANGE_DATE)
 }
 
 /// A change's kind (`Ins`/`Del`), or `None` if the id is unknown.
@@ -1148,10 +1130,9 @@ pub fn change_kind(
     id: &str,
 ) -> Option<crate::snapshot::ChangeKind> {
     let change = change_obj(doc, c, id)?;
-    match doc.get(&change, CHANGE_KIND) {
-        Ok(Some((v, _))) => v.as_str().map(crate::snapshot::ChangeKind::from_str),
-        _ => None,
-    }
+    str_at(doc, &change, CHANGE_KIND)
+        .as_deref()
+        .map(crate::snapshot::ChangeKind::from_str)
 }
 
 /// The mark name a change of `kind` anchors with (`ins`/`del`).
@@ -1254,10 +1235,7 @@ pub fn referenced_content(doc: &AutoCommit, c: &Containers) -> BTreeSet<String> 
 }
 
 fn block_obj(doc: &AutoCommit, container: &ObjId, id: &str) -> Option<ObjId> {
-    match doc.get(container, id) {
-        Ok(Some((Value::Object(ObjType::Map), oid))) => Some(oid),
-        _ => None,
-    }
+    map_at(doc, container, id)
 }
 
 thread_local! {
@@ -1416,7 +1394,7 @@ pub fn block_order_key_lengths(doc: &AutoCommit, c: &Containers) -> Vec<usize> {
 
 /// Read a document-level meta string (e.g. the serialized stylesheet).
 pub fn meta_str(doc: &AutoCommit, c: &Containers, key: &str) -> Option<String> {
-    doc.str_at(&c.meta, key)
+    str_at(doc, &c.meta, key)
 }
 
 /// The document-wide multi-column layout: `(column_count, optional_gap_px)`. Reads the `meta.columns` /
@@ -1452,47 +1430,28 @@ pub fn columns(doc: &AutoCommit, c: &Containers) -> (u32, Option<f64>) {
 /// `None` for documents that declare no default language; the consumer then falls back to its own locale.
 /// Round-trips through the `.odt` default-paragraph-style `fo:language`/`fo:country` and `.docx` `docDefaults` `w:lang`.
 pub fn language(doc: &AutoCommit, c: &Containers) -> Option<String> {
-    match doc.get(&c.meta, META_LANGUAGE) {
-        Ok(Some((v, _))) => v
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(std::string::ToString::to_string),
-        _ => None,
-    }
+    str_at(doc, &c.meta, META_LANGUAGE).filter(|s| !s.is_empty())
 }
 
 /// Resolve the document-properties sub-map under `meta` (`meta.props`), if it exists (created lazily on first [`DocMut::set_doc_prop`]).
 fn props_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
-    match doc.get(&c.meta, KEY_PROPS) {
-        Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
-        _ => None,
-    }
+    map_at(doc, &c.meta, KEY_PROPS)
 }
 
 /// Read a single document property (`title`/`author`/… — see [`DOC_PROP_KEYS`](crate::schema::DOC_PROP_KEYS)), or any other string property name a codec stashed. `None` if unset.
 pub fn doc_prop(doc: &AutoCommit, c: &Containers, name: &str) -> Option<String> {
     let props = props_obj(doc, c)?;
-    doc.str_at(&props, name)
+    str_at(doc, &props, name)
 }
 
 /// All document properties (`name → value`) as a sorted map, empty if none are set.
 pub fn doc_props(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
-    if let Some(props) = props_obj(doc, c) {
-        for k in doc.keys(&props) {
-            if let Ok(Some((v, _))) = doc.get(&props, &k)
-                && let Some(s) = v.as_str()
-            {
-                out.insert(k, s.to_string());
-            }
-        }
-    }
-    out
+    props_obj(doc, c).map_or_else(BTreeMap::new, |props| str_entries(doc, &props))
 }
 
 pub fn block_kind(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let obj = block_obj(doc, &c.blocks, id)?;
-    doc.str_at(&obj, BLOCK_KIND)
+    str_at(doc, &obj, BLOCK_KIND)
 }
 
 pub fn block_text(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {

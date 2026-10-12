@@ -48,7 +48,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use runtime_portal::RawFd;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc as tokio_mpsc;
@@ -519,6 +519,16 @@ impl CollabTransport for BrokerTransport {
         self.state
             .action_surface_failed
             .swap(false, Ordering::AcqRel)
+    }
+
+    fn action_directory_publication_counts(&self) -> Option<(u64, u64)> {
+        self.state
+            .directory_observation_enabled
+            .store(true, Ordering::Release);
+        Some((
+            self.state.directory_rpc_successes.load(Ordering::Acquire),
+            self.state.directory_rpc_failures.load(Ordering::Acquire),
+        ))
     }
 
     fn send_native_media(
@@ -1505,6 +1515,19 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
             serialized_bytes(event, &mut meter);
             "Realtime"
         }
+        CollabEvent::HistoryAgents { cluster_id, agents } => {
+            meter.string_capacity(cluster_id);
+            meter.add_product(
+                agents.capacity(),
+                std::mem::size_of::<crate::history_source::RosterAgent>(),
+            );
+            for agent in agents {
+                meter.string_capacity(&agent.person_name);
+                meter.string_capacity(&agent.agent_id);
+                meter.string_capacity(&agent.label);
+            }
+            "HistoryAgents"
+        }
     };
     (kind, meter.finish())
 }
@@ -1528,6 +1551,9 @@ struct BridgeState {
     /// The broker refused or failed an action-surface publication; the owner
     /// takes this and republishes.
     action_surface_failed: Arc<AtomicBool>,
+    directory_rpc_successes: Arc<AtomicU64>,
+    directory_rpc_failures: Arc<AtomicU64>,
+    directory_observation_enabled: Arc<AtomicBool>,
     command_bytes: ByteBudget,
     event_bytes: ByteBudget,
     document_command_bytes: ByteBudget,
@@ -1675,6 +1701,9 @@ impl BridgeState {
             healthy: Arc::new(AtomicBool::new(true)),
             publication_failure: Arc::new(std::sync::Mutex::new(None)),
             action_surface_failed: Arc::new(AtomicBool::new(false)),
+            directory_rpc_successes: Arc::new(AtomicU64::new(0)),
+            directory_rpc_failures: Arc::new(AtomicU64::new(0)),
+            directory_observation_enabled: Arc::new(AtomicBool::new(false)),
             command_bytes: ByteBudget::with_room_wake(outbound_room.clone()),
             event_bytes: ByteBudget::new(),
             document_command_bytes: ByteBudget::with_room_wake(outbound_room),
@@ -4016,7 +4045,23 @@ async fn drive_shovel(
                     .publish_action_directory(&app_id, directory)
                     .await
                 {
+                    inbound_tx
+                        .state
+                        .directory_rpc_failures
+                        .fetch_add(1, Ordering::AcqRel);
                     tracing::warn!(%error, "collab: publishing pull resource/action directory failed");
+                } else {
+                    inbound_tx
+                        .state
+                        .directory_rpc_successes
+                        .fetch_add(1, Ordering::AcqRel);
+                }
+                if inbound_tx
+                    .state
+                    .directory_observation_enabled
+                    .load(Ordering::Acquire)
+                {
+                    inbound_tx.state.notify_events();
                 }
             }
             SdkCommand::WifiContinuity {
@@ -4500,6 +4545,29 @@ async fn spawn_context_stream(
                         }
                     } else {
                         tracing::warn!("collab: malformed handoff request dropped");
+                    }
+                    continue;
+                }
+                if let Some(agents) = context.history_agents {
+                    let agents = agents
+                        .into_iter()
+                        .map(|agent| {
+                            let [_, red, green, blue] = agent.color.to_be_bytes();
+                            crate::history_source::RosterAgent {
+                                device: agent.device,
+                                person: agent.person,
+                                person_name: agent.person_name,
+                                agent_id: agent.agent_id,
+                                label: agent.label,
+                                color: [red, green, blue],
+                            }
+                        })
+                        .collect();
+                    if !tx.send_durable(CollabEvent::HistoryAgents {
+                        cluster_id: route.cluster_id.to_string(),
+                        agents,
+                    }) {
+                        break;
                     }
                     continue;
                 }
@@ -6529,6 +6597,59 @@ async fn dispatch_sdk_request(
             resource,
             action,
             arguments,
+            wait: Some(wait),
+        } => {
+            // The broker holds this answer until the child moves; the
+            // connection's other traffic must not wait behind it. Polled
+            // once here, so the re-ask still goes out in the order it was
+            // asked, as a waiting remote action does.
+            let channel = route.channel.clone();
+            let mut round_trip = Box::pin(async move {
+                let argument = format!(
+                    "{}{}",
+                    tilo_actions::ARGUMENTS_JSON_PREFIX,
+                    serde_json::Value::Object(arguments)
+                );
+                let target = runtime_collab::TaskAction {
+                    peer_id,
+                    resource: &resource,
+                    action: &action,
+                    argument: Some(&argument),
+                };
+                channel
+                    .observe_task_child(run_id, &lease, target, &invocation.0.to_string(), wait)
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|(id, update)| parse_task_update(id, &update))
+            });
+            let first = std::future::poll_fn(|context| {
+                std::task::Poll::Ready(round_trip.as_mut().poll(context))
+            })
+            .await;
+            let event =
+                move |result| CollabEvent::TaskActionInvocationResult { request_id, result };
+            match first {
+                std::task::Poll::Ready(result) => {
+                    let _ = inbound_tx.send_durable(event(result));
+                }
+                std::task::Poll::Pending => {
+                    let inbound = inbound_tx.clone();
+                    tokio::task::spawn_local(async move {
+                        let _ = inbound.send_durable(event(round_trip.await));
+                    });
+                }
+            }
+        }
+        CollabRequest::InvokeTaskAction {
+            request_id,
+            invocation,
+            run_id,
+            lease,
+            peer_id,
+            resource,
+            action,
+            arguments,
+            ..
         } => {
             let argument = format!(
                 "{}{}",
@@ -6902,6 +7023,9 @@ mod tests {
         refuse_action_publications: usize,
         refused_action_publications: usize,
         action_directories: Vec<String>,
+        refuse_action_directories: usize,
+        directory_attempts: Vec<std::time::Instant>,
+        directory_ack: Option<Arc<tokio::sync::Notify>>,
         action_catalogue_fixture: Option<Vec<String>>,
         action_catalogue_subscriptions: usize,
         action_catalogue_reads: usize,
@@ -7416,12 +7540,27 @@ mod tests {
             _results: channel_handle::PublishActionDirectoryResults,
         ) -> Promise<(), capnp::Error> {
             let request = params.get().unwrap();
-            self.captures
-                .lock()
-                .unwrap()
+            let mut captures = self.captures.lock().unwrap();
+            captures.directory_attempts.push(std::time::Instant::now());
+            let refused = captures.refuse_action_directories > 0;
+            if refused {
+                captures.refuse_action_directories -= 1;
+            }
+            captures
                 .action_directories
                 .push(request.get_app_id().unwrap().to_str().unwrap().to_owned());
-            Promise::ok(())
+            let ack = captures.directory_ack.clone();
+            drop(captures);
+            Promise::from_future(async move {
+                if let Some(ack) = ack {
+                    ack.notified().await;
+                }
+                if refused {
+                    Err(capnp::Error::failed("fixture directory refusal".into()))
+                } else {
+                    Ok(())
+                }
+            })
         }
 
         #[cfg(unix)]
@@ -10994,6 +11133,87 @@ mod tests {
                 },
             );
         }
+    }
+
+    #[test]
+    fn native_admission_ack_wakes_parked_owner_without_an_action() {
+        held_directory_observation(false);
+    }
+
+    #[test]
+    fn native_admission_failure_wakes_owner_without_claiming_retry() {
+        held_directory_observation(true);
+    }
+
+    fn held_directory_observation(refused: bool) {
+        let ack = Arc::new(tokio::sync::Notify::new());
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                directory_ack: Some(ack.clone()),
+                refuse_action_directories: usize::from(refused),
+                ..Captures::default()
+            })),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (scope, wakes) = wake_channel();
+        let _entry = scope.enter();
+        let (fd, captures, worker) = stand_up_fake_broker(broker);
+        let manager = CollaborationManager::from_sdk_fd_for_test(
+            fd,
+            &crate::collaboration::local_app_id(),
+            Uuid::new_v4(),
+        );
+        let mut app = crate::App::with_collaboration_manager(
+            crate::State::new(),
+            Box::new(crate::widget::Button::new("complete", "Complete").on_view(|| {})),
+            manager,
+        );
+        crate::app::draw_prepared_component_test_frame(&mut app);
+        eventually("directory RPC reaches actual host", || {
+            !captures.lock().unwrap().directory_attempts.is_empty()
+        });
+        app.pump_collab_presence();
+        let before = app.native_admission_snapshot();
+        while wakes.try_recv().is_ok() {}
+        ack.notify_one();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let observed = loop {
+            if wakes
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .is_err()
+            {
+                break false;
+            }
+            app.pump_collab_presence();
+            let snapshot = app.native_admission_snapshot();
+            if snapshot.directory.transport_directory_rpc_successes == Some(u64::from(!refused))
+                && snapshot.directory.transport_directory_rpc_failures == Some(u64::from(refused))
+            {
+                break true;
+            }
+        };
+        drop(app);
+        worker.join().unwrap();
+        assert_eq!(
+            before.directory.transport_directory_rpc_successes,
+            Some(0),
+            "enqueue is not RPC success"
+        );
+        assert_eq!(before.directory.transport_directory_rpc_failures, Some(0));
+        assert!(before.directory.directory_enqueued);
+        assert!(before.connection.manager_connected);
+        assert!(
+            observed,
+            "actual RPC result must wake the profiled owner before any app action"
+        );
+        assert_eq!(
+            captures.lock().unwrap().directory_attempts.len(),
+            1,
+            "observation introduces no retries"
+        );
     }
 
     #[test]

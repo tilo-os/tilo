@@ -24,7 +24,7 @@
 
 #[cfg(feature = "heap-probe")]
 pub mod heap;
-mod read;
+pub mod read;
 
 pub use read::ReadTyped;
 

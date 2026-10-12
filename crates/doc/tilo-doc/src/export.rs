@@ -7,7 +7,7 @@
 
 use crate::document::MarkSpan;
 use crate::snapshot::{AttrVal, BlockView, ChangeKind};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Canonical block semantics shared by format exporters.
 ///
@@ -51,10 +51,159 @@ impl<'a> ExportBlock<'a> {
 
     /// Heading level in the range supported by the canonical document model.
     pub fn heading_level(self) -> u8 {
-        match self.block.attrs.get("level") {
-            Some(AttrVal::Int(level)) => u8::try_from((*level).clamp(1, 6)).unwrap_or(1),
-            _ => 1,
+        self.block
+            .int_attr("level")
+            .map_or(1, |level| u8::try_from(level.clamp(1, 6)).unwrap_or(1))
+    }
+
+    /// A list item's 0-based nesting depth; negative values read as 0.
+    pub fn list_level(self) -> i64 {
+        self.block.int_attr("level").map_or(0, |level| level.max(0))
+    }
+
+    /// Whether a list item is numbered rather than bulleted.
+    pub fn ordered(self) -> bool {
+        self.block.flag("ordered")
+    }
+
+    /// A numbered item's canonical format (`decimal`, `lower-roman`, ...).
+    pub fn num_format(self) -> &'a str {
+        self.block.str_attr("num_format").unwrap_or("decimal")
+    }
+
+    /// The number a numbered list starts at.
+    pub fn num_start(self) -> i64 {
+        self.block.int_attr("num_start").unwrap_or(1)
+    }
+
+    /// Whether this item restarts its list's numbering at [`Self::num_start`].
+    pub fn num_restart(self) -> bool {
+        self.block.flag("num_restart")
+    }
+
+    /// An image's anchoring: `inline` unless the block says otherwise.
+    pub fn image_anchor(self) -> &'a str {
+        self.block.str_attr("anchor").unwrap_or("inline")
+    }
+
+    /// How text wraps around an anchored image: `none` unless the block says
+    /// otherwise.
+    pub fn image_wrap(self) -> &'a str {
+        self.block.str_attr("wrap").unwrap_or("none")
+    }
+
+    /// The table a flat `cell` block belongs to.
+    pub fn cell_table(self) -> Option<&'a str> {
+        self.block.str_attr("table")
+    }
+
+    /// A cell's `(row, col)` grid position; missing or negative values read
+    /// as 0.
+    pub fn cell_position(self) -> (usize, usize) {
+        self.block.cell_position()
+    }
+
+    /// How many grid columns a cell spans (at least 1, at most 1024).
+    pub fn col_span(self) -> usize {
+        self.block.cell_span("colspan")
+    }
+
+    /// How many grid rows a cell spans (at least 1, at most 1024).
+    pub fn row_span(self) -> usize {
+        self.block.cell_span("rowspan")
+    }
+}
+
+/// One table stored as a contiguous run of flat `cell` blocks, laid out by
+/// grid position.
+///
+/// Office imports keep a table's cells flat, each with its `table` id, its
+/// position and its spans; every office writer needs the same grid back.
+#[derive(Clone, Debug)]
+pub struct CellGrid<'a> {
+    cells: &'a [BlockView],
+    origins: BTreeMap<(usize, usize), &'a BlockView>,
+    covered: BTreeMap<(usize, usize), &'a BlockView>,
+    rows: usize,
+    cols: usize,
+}
+
+impl<'a> CellGrid<'a> {
+    /// The cells from `blocks[start]` on that are `cell` blocks of the same
+    /// table. Empty when `blocks[start]` is not a cell.
+    pub fn run(blocks: &'a [BlockView], start: usize) -> Self {
+        let rest = blocks.get(start..).unwrap_or_default();
+        let table = rest
+            .first()
+            .and_then(|cell| ExportBlock::new(cell).cell_table());
+        let len = rest
+            .iter()
+            .take_while(|block| {
+                block.kind == "cell" && ExportBlock::new(block).cell_table() == table
+            })
+            .count();
+        Self::new(rest.get(..len).unwrap_or_default())
+    }
+
+    fn new(cells: &'a [BlockView]) -> Self {
+        let mut grid = Self {
+            cells,
+            origins: BTreeMap::new(),
+            covered: BTreeMap::new(),
+            rows: 0,
+            cols: 0,
+        };
+        for cell in cells {
+            let view = ExportBlock::new(cell);
+            let (row, col) = view.cell_position();
+            let (rows, cols) = (view.row_span(), view.col_span());
+            grid.origins.entry((row, col)).or_insert(cell);
+            for dr in 0..rows {
+                for dc in 0..cols {
+                    if dr > 0 || dc > 0 {
+                        grid.covered
+                            .entry((row.saturating_add(dr), col.saturating_add(dc)))
+                            .or_insert(cell);
+                    }
+                }
+            }
+            grid.rows = grid.rows.max(row.saturating_add(rows));
+            grid.cols = grid.cols.max(col.saturating_add(cols));
         }
+        grid
+    }
+
+    /// The run's blocks, in document order.
+    pub fn cells(&self) -> &'a [BlockView] {
+        self.cells
+    }
+
+    /// The table id the run's cells share (empty when untagged).
+    pub fn table(&self) -> &'a str {
+        self.cells
+            .first()
+            .and_then(|cell| ExportBlock::new(cell).cell_table())
+            .unwrap_or_default()
+    }
+
+    /// Grid rows, including those merged cells span into.
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    /// Grid columns, including those merged cells span into.
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+
+    /// The cell whose top-left corner is at `(row, col)`.
+    pub fn origin(&self, row: usize, col: usize) -> Option<&'a BlockView> {
+        self.origins.get(&(row, col)).copied()
+    }
+
+    /// The merged cell covering `(row, col)` from an earlier row or column.
+    pub fn covering(&self, row: usize, col: usize) -> Option<&'a BlockView> {
+        self.covered.get(&(row, col)).copied()
     }
 }
 
@@ -514,6 +663,71 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["root", "child", "grandchild", "sibling"]
         );
+    }
+
+    #[test]
+    fn export_accessors_use_canonical_defaults_and_cell_bounds() {
+        let mut b = block("list_item", "item");
+        let view = ExportBlock::new(&b);
+        assert_eq!(view.list_level(), 0);
+        assert!(!view.ordered());
+        assert_eq!(view.num_format(), "decimal");
+        assert_eq!(view.num_start(), 1);
+        assert!(!view.num_restart());
+        assert_eq!(view.image_anchor(), "inline");
+        assert_eq!(view.image_wrap(), "none");
+        assert_eq!(view.cell_table(), None);
+        assert_eq!(view.cell_position(), (0, 0));
+        assert_eq!((view.row_span(), view.col_span()), (1, 1));
+
+        b.attrs.extend([
+            ("level".into(), AttrVal::Int(-1)),
+            ("ordered".into(), AttrVal::Bool(true)),
+            ("num_format".into(), AttrVal::Str("lower-roman".into())),
+            ("num_start".into(), AttrVal::Int(3)),
+            ("num_restart".into(), AttrVal::Bool(true)),
+            ("row".into(), AttrVal::Int(-1)),
+            ("col".into(), AttrVal::Int(2)),
+            ("rowspan".into(), AttrVal::Int(0)),
+            ("colspan".into(), AttrVal::Int(i64::MAX)),
+        ]);
+        let view = ExportBlock::new(&b);
+        assert_eq!(view.list_level(), 0);
+        assert!(view.ordered());
+        assert_eq!(view.num_format(), "lower-roman");
+        assert_eq!(view.num_start(), 3);
+        assert!(view.num_restart());
+        assert_eq!(view.cell_position(), (0, 2));
+        assert_eq!((view.row_span(), view.col_span()), (1, 1024));
+    }
+
+    #[test]
+    fn cell_grid_groups_runs_and_includes_merged_extents() {
+        let mut merged = block("cell", "merged");
+        merged.attrs.extend([
+            ("table".into(), AttrVal::Str("a".into())),
+            ("rowspan".into(), AttrVal::Int(2)),
+            ("colspan".into(), AttrVal::Int(3)),
+        ]);
+        let mut next_table = block("cell", "next");
+        next_table
+            .attrs
+            .insert("table".into(), AttrVal::Str("b".into()));
+        let blocks = [merged, next_table, block("paragraph", "after")];
+        let grid = CellGrid::run(&blocks, 0);
+        assert_eq!(grid.cells().len(), 1);
+        assert_eq!(grid.table(), "a");
+        assert_eq!((grid.rows(), grid.cols()), (2, 3));
+        assert_eq!(grid.origin(0, 0).unwrap().text, "merged");
+        assert!(grid.origin(1, 2).is_none());
+        assert_eq!(grid.covering(1, 2).unwrap().text, "merged");
+        assert!(grid.covering(0, 0).is_none());
+        assert!(grid.covering(2, 0).is_none());
+        assert_eq!(CellGrid::run(&blocks, 1).table(), "b");
+        assert!(CellGrid::run(&blocks, 2).cells().is_empty());
+        assert!(CellGrid::run(&blocks, usize::MAX).cells().is_empty());
+        let untagged = [block("cell", "a"), block("cell", "b")];
+        assert_eq!(CellGrid::run(&untagged, 0).cells().len(), 2);
     }
 
     fn mark(start: usize, end: usize, name: &str, value: MarkValue) -> MarkSpan {
