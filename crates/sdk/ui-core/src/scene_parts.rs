@@ -38,7 +38,7 @@ use vello_encoding::{Encoding, Patch};
 
 /// Bounds what a section draws outside its parts ([`damage_with_copies`],
 /// [`drawn_bounds`]); keep one across frames.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native")]
 pub use tilo_cpu_raster::DrawBounds;
 
 /// Identifies one part among the parts of a section. Two frames' parts are
@@ -629,7 +629,7 @@ pub fn damage(
 ///
 /// # Errors
 /// As [`damage`].
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native")]
 pub fn damage_with_copies(
     previous: &Scene,
     previous_parts: &SectionParts,
@@ -671,7 +671,7 @@ pub fn damage_with_copies(
 /// Where `scene`, drawn with `parts` (if it was), paints anything: inside a
 /// bounded part by that part's bounds, anywhere else by its draw bounds.
 /// `None` when some of it cannot be bounded.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native")]
 pub fn drawn_bounds(
     scene: &Scene,
     parts: Option<&SectionParts>,
@@ -687,7 +687,7 @@ pub fn drawn_bounds(
 }
 
 /// The index of the event that ends the part `begin` begins.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native")]
 fn end_of(events: &[Event], begin: usize) -> Option<usize> {
     let mut depth = 0_usize;
     for (index, event) in events.iter().enumerate().skip(begin) {
@@ -706,7 +706,7 @@ fn end_of(events: &[Event], begin: usize) -> Option<usize> {
 
 /// Where `scene` paints in its pieces from `first` on: a piece inside a
 /// bounded part by that part's bounds, any other by its draw bounds.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native")]
 fn drawn_from(
     scene: &Scene,
     events: &[Event],
