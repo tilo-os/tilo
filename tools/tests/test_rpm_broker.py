@@ -168,6 +168,24 @@ class RpmBrokerTest(unittest.TestCase):
         self.assertEqual({f.name: f.read_bytes() for f in self.input.glob('*.rpm')}, before)
         self.assertFalse(list(self.input.glob('*.asc')))
 
+    def test_published_artifact_cannot_supply_its_own_authority(self):
+        (self.response / 'tilo-rpm-signing-request-amd64.json').write_bytes(self.request_path.read_bytes())
+        (self.response / 'tilo-rpm-signing-receipt-amd64.json').write_text(json.dumps(self.receipt))
+        (self.response / 'tilo-rpm-signing-key.fingerprint').write_text(PIN + '\n')
+        # All artifact-owned pins and receipts agree. They still cannot establish
+        # authority when the caller has no independently configured release pin.
+        for value in (None, '', 'not-a-fingerprint'):
+            env = dict(self.env)
+            if value is None:
+                env.pop('TILO_RPM_SIGNING_FINGERPRINT')
+            else:
+                env['TILO_RPM_SIGNING_FINGERPRINT'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'independently pinned'):
+                CLIENT.verify_published(self.response, 'amd64', '0.1.13', env)
+        with self.assertRaisesRegex(ValueError, 'protected pin'):
+            CLIENT.verify_published(self.response, 'amd64', '0.1.13',
+                                    self.env | {'TILO_RPM_SIGNING_FINGERPRINT': 'B' * 40})
+
     def test_workflow_keeps_main_session_gate_and_isolates_oidc_from_builds(self):
         workflow = (ROOT / '.forgejo/workflows/release-desktop.yml').read_text()
         package = workflow.split('  package:\n')[1].split('  sign-rpm:\n')[0]
@@ -180,6 +198,8 @@ class RpmBrokerTest(unittest.TestCase):
         self.assertIn("!startsWith(github.ref, 'refs/tags/desktop-v')", workflow)
         self.assertIn('needs: [validate, package, sign-rpm, host-session-e2e]', workflow)
         self.assertIn("'signed-fedora-44-amd64' || 'fedora-44-amd64'", workflow)
+        verifier_step = workflow.split('- name: Check release version and create checksums', 1)[1].split('- name:', 1)[0]
+        self.assertIn('TILO_RPM_SIGNING_FINGERPRINT: ${{ vars.TILO_RPM_SIGNING_FINGERPRINT }}', verifier_step)
         build = (ROOT / 'dist/ci/run-package-job.sh').read_text()
         self.assertNotIn('--env TILO_RPM_SIGNING', build)
         self.assertNotIn('dist/rpm/sign-rpms.sh', build)
