@@ -201,8 +201,8 @@ impl<'a> PolicyVisibility<'a> {
 
 impl ActionVisibility for PolicyVisibility<'_> {
     fn can_see(&self, resource: &ResourceRef, kind: &ResourceKind) -> bool {
-        // First-use identity belongs to the local owner alone: never a person
-        // the owner admitted, an app or an agent, whatever they were granted.
+        // Identity setup and personal file handoff belong to the local owner
+        // alone: never an admitted person, app or agent, whatever their grants.
         if resource.provider == "onboarding"
             || resource.provider == super::providers::file_picker::PROVIDER_ID
         {
@@ -382,6 +382,46 @@ mod tests {
             !PolicyVisibility::new(&ws, ws.actor_for_person(&admin))
                 .can_see(&selected, &ResourceKind::Action),
             "a person the owner granted everything does not set up the owner's identity"
+        );
+    }
+
+    #[test]
+    fn file_picker_personal_handoff_is_the_owners_alone() {
+        let owner = "owner".to_string();
+        let mut ws = owned("picker", &owner);
+        let selected = resource(
+            super::super::providers::file_picker::PROVIDER_ID,
+            "confirm@request",
+        );
+        assert!(
+            PolicyVisibility::new(&ws, ws.actor_for_person(&owner))
+                .can_see(&selected, &ResourceKind::Action)
+        );
+        for principal in [
+            Principal::Agent("helper".into()),
+            Principal::App("so.tilo.store".into()),
+            Principal::Token("token".into()),
+        ] {
+            let mut mixed = ws.actor_for_person(&owner);
+            mixed.principals.push(principal.clone());
+            assert!(!PolicyVisibility::new(&ws, mixed).can_see(&selected, &ResourceKind::Action));
+            assert!(
+                !PolicyVisibility::new(
+                    &ws,
+                    Actor {
+                        principals: vec![principal],
+                        ..Actor::default()
+                    }
+                )
+                .can_see(&selected, &ResourceKind::Action)
+            );
+        }
+        let admitted = "admitted".to_string();
+        ws.admit(admitted.clone(), Role::Editor);
+        grant_room(&mut ws, Subject::person(admitted.clone()), KindSet::ALL);
+        assert!(
+            !PolicyVisibility::new(&ws, ws.actor_for_person(&admitted))
+                .can_see(&selected, &ResourceKind::Action)
         );
     }
 

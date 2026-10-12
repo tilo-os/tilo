@@ -221,9 +221,11 @@ fn choose(
             .granted_paths(caller)
             .into_iter()
             .filter(|path| {
-                context
-                    .grants
-                    .filesystem_path_allows(caller, path, collab_types::caps::Verb::Read)
+                context.grants.filesystem_path_allows(
+                    caller,
+                    path,
+                    collab_types::caps::Access::Read,
+                )
             }),
     );
     let Ok(roots) = anchor_scope(&scope) else {
