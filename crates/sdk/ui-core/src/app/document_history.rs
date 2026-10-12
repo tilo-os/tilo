@@ -86,7 +86,7 @@ impl App {
         };
         let _ = self.history_local_resources();
         if layout.pane.is_some() != self.document_history.is_open() {
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
             self.layout.layout_dirty = true;
             return Err("History presentation requires layout".into());
         }
@@ -198,12 +198,7 @@ impl App {
                 })
             })
             .collect();
-        for button in self.document_history.in_window_controls_mut() {
-            crate::widget::controls::refresh_control_action_availability(button, &allowed);
-        }
-        if let Some(pane) = self.document_history.pane_mut() {
-            crate::widget::controls::refresh_control_action_availability(pane, &allowed);
-        }
+        self.document_history.refresh_control_availability(&allowed);
         allowed
             .into_iter()
             .filter(|address| address.resource == crate::standalone_history_host::HISTORY_RESOURCE)
@@ -400,19 +395,8 @@ impl App {
         if !self.history_chrome_enabled {
             return 0;
         }
-        let mut pending = Vec::new();
-        for button in self.document_history.in_window_controls_mut() {
-            while let Some(intent) = crate::widget::controls::take_control_invocation(button) {
-                pending.push(intent);
-            }
-        }
-        if let Some(pane) = self.document_history.pane_mut() {
-            while let Some(intent) = crate::widget::controls::take_control_invocation(pane) {
-                pending.push(intent);
-            }
-        }
         let mut count = 0usize;
-        for intent in pending {
+        for intent in self.document_history.take_control_invocations() {
             let argument = format!(
                 "{}{}",
                 tilo_actions::ARGUMENTS_JSON_PREFIX,
@@ -421,20 +405,8 @@ impl App {
             let result = self
                 .invoke_history_address_local(&intent.address, Some(&argument))
                 .unwrap_or_else(|| Err(tilo_actions::DoorError::Unknown(intent.address.clone())));
-            for button in self.document_history.in_window_controls_mut() {
-                crate::widget::controls::on_control_invocation_result(
-                    button,
-                    &intent.address,
-                    &result,
-                );
-            }
-            if let Some(pane) = self.document_history.pane_mut() {
-                crate::widget::controls::on_control_invocation_result(
-                    pane,
-                    &intent.address,
-                    &result,
-                );
-            }
+            self.document_history
+                .report_control_result(&intent.address, &result);
             if result.is_ok() {
                 count = count.saturating_add(1);
             }
@@ -769,65 +741,20 @@ impl App {
     }
 
     pub(super) fn capture_history_target(&self) -> Result<HistoryTarget, HistoryError> {
-        let mut binding = self
-            .focused_node
-            .and_then(|node| self.bindings.binding_for(node))
-            .or_else(|| self.root_widget.callback_binding());
-        if binding.is_none() {
-            for node in self.layout.node_map.keys() {
-                let Some(candidate) = self.bindings.binding_for(*node) else {
-                    continue;
-                };
-                if binding
-                    .as_ref()
-                    .is_some_and(|current| current.lifetime_id != candidate.lifetime_id)
-                {
-                    return Err(HistoryError::Unavailable);
-                }
-                binding = Some(candidate);
-            }
-        }
-        if binding.is_none()
-            && self
-                .persistence
-                .records
-                .as_ref()
-                .is_some_and(|records| records.active().is_none())
-        {
-            return Err(HistoryError::Unavailable);
-        }
-        Ok(binding.map_or_else(
-            || HistoryTarget::Legacy {
-                app_id: crate::collaboration::local_app_id(),
-                record: self
-                    .persistence
-                    .records
-                    .as_ref()
-                    .and_then(|records| records.active())
-                    .cloned(),
-                document_identity: self.state.document_identity(),
-            },
-            |binding| HistoryTarget::Bound(Box::new(binding)),
-        ))
+        crate::standalone_history_host::capture_history_target(
+            self.focused_node
+                .and_then(|node| self.bindings.binding_for(node))
+                .or_else(|| self.root_widget.callback_binding()),
+            &self.bindings,
+            self.layout.node_map.keys().copied(),
+            self.persistence.records.as_ref(),
+            self.state.document_identity(),
+        )
     }
 
     pub(super) fn is_history_node(&self, node: taffy::NodeId) -> bool {
-        let Some(layout) = self.history_layout else {
-            return false;
-        };
-        let mut pending: Vec<_> = layout.toolbar.into_iter().collect();
-        pending.extend(layout.search);
-        pending.extend(layout.pane);
-        pending.extend(layout.preview);
-        while let Some(next) = pending.pop() {
-            if next == node {
-                return true;
-            }
-            if let Ok(children) = self.layout.taffy.children(next) {
-                pending.extend(children);
-            }
-        }
-        false
+        self.history_layout
+            .is_some_and(|layout| layout.contains(&self.layout.taffy, node))
     }
 
     pub(super) fn remember_history_content(&mut self) {
@@ -869,7 +796,7 @@ impl App {
             self.document_history.remove_fallback_bar();
             if let Some(history) = &mut self.history {
                 history.remove_fallback_bar();
-                self.layout.structure_dirty = true;
+                self.layout.request_rebuild();
             }
             if self.native_document_chrome && self.history.is_none() {
                 self.enable_document_history_chrome();
@@ -878,7 +805,7 @@ impl App {
         }
         if let Some(history) = &mut self.history {
             history.remove_open_button();
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
         } else if self.native_document_chrome {
             self.enable_document_history_chrome();
         }
@@ -914,7 +841,7 @@ impl App {
     pub fn enable_document_history_chrome(&mut self) {
         if let Some(history) = &mut self.history {
             history.remove_fallback_bar();
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
         }
         // A registered framework owner already supplies its own shared History
         // surface and custody. The standalone adapter serves unregistered roots.
@@ -929,7 +856,7 @@ impl App {
         self.invalidate_widget_resource_cache();
         self.document_history.enable_search(self.input.platform);
         self.remember_history_content();
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         self.layout.layout_dirty = true;
     }
 
@@ -937,8 +864,11 @@ impl App {
         if revision != self.document_history.revision() {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
-            self.layout.structure_dirty |= open != self.document_history.is_open()
-                || self.document_history.take_structure_dirty();
+            if open != self.document_history.is_open()
+                || self.document_history.take_structure_dirty()
+            {
+                self.layout.request_rebuild();
+            }
             if !open && self.document_history.is_open() {
                 self.history_focus_pending = true;
             }
@@ -1286,21 +1216,21 @@ mod tests {
                 .filter(|descriptor| {
                     descriptor.address.resource == super::super::history_actions::RESOURCE
                 })
-                .map(|descriptor| (descriptor.address.action, descriptor.contract.permission))
+                .map(|descriptor| (descriptor.address.action, descriptor.contract.kind))
                 .collect::<std::collections::BTreeMap<_, _>>();
-            use tilo_actions::PermissionRequirement::{Read, Write};
+            use tilo_actions::ActionKind::{Read, Undoable};
             assert_eq!(
                 history,
                 [
-                    ("history.close", Write),
-                    ("history.compare", Write),
+                    ("history.close", Undoable),
+                    ("history.compare", Undoable),
                     ("history.list", Read),
                     ("history.open", Read),
-                    ("history.restore", Write),
-                    ("history.view_at", Write),
+                    ("history.restore", Undoable),
+                    ("history.view_at", Undoable),
                 ]
                 .into_iter()
-                .map(|(action, permission)| (action.to_owned(), permission))
+                .map(|(action, kind)| (action.to_owned(), kind))
                 .collect(),
                 "the broker gates each History action on the permission it declares"
             );
@@ -1527,10 +1457,13 @@ mod tests {
             .and_then(|change| change.message())
             .and_then(tilo_actions::ActionContext::from_change_message)
             .expect("restore carries its action context");
-        assert_eq!(
-            context.action_label,
-            crate::i18n::I18nManager::lookup_plain("standalone-history-restore-action")
-        );
+        assert!(matches!(
+            context.what,
+            Some(tilo_actions::Did::History(tilo_actions::HistoryStep {
+                op: tilo_actions::HistoryOp::Restore,
+                ..
+            }))
+        ));
 
         // The autosaved document reopens at the restored version.
         app.autosave().unwrap().flush();
@@ -1538,7 +1471,7 @@ mod tests {
 
         // Ctrl+Z on an app-owned document is this call in the native runner.
         let author = app.local_author().clone();
-        assert!(app.state.undo_as(Some(&author), None, None).is_some());
+        assert!(app.state.undo_as(Some(&author), None, None, None).is_some());
         assert_eq!(title(&app).as_deref(), Some("v3"));
 
         // A review that the live document outgrows is refused, unwritten.
@@ -1575,13 +1508,10 @@ mod tests {
         app.state.doc.put(ROOT, "title", "v2").unwrap();
         app.state.commit_action(None, None);
         let app_id = crate::collaboration::local_app_id();
-        app.permission_ctx = crate::permissions::PermissionContext::from_capabilities(
-            crate::permissions::Actor::agent("reader"),
-            vec![crate::permissions::CapOverride::grant(
-                crate::permissions::Subject::agent("reader"),
-                crate::permissions::Scope::App(app_id),
-                crate::permissions::Verb::Read,
-            )],
+        app.permission_ctx = crate::permissions::PermissionContext::agent_granted(
+            "reader",
+            &crate::permissions::TreePath::root().app(app_id),
+            crate::permissions::policy::KindSet::READ,
         );
         app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
         app.init_layout();
@@ -1745,17 +1675,6 @@ impl Widget for FrameworkPresentation<'_> {
         _: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         self.layout_root
-    }
-    fn apply_layout(&mut self, _: &taffy::TaffyTree<()>, _: taffy::NodeId, _: vello::kurbo::Point) {
-    }
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut crate::text_render::TextRenderer,
-        _: &crate::Theme,
-        _: &crate::presence::PresenceCtx,
-    ) {
     }
     fn children(&self) -> Vec<&dyn Widget> {
         self.roots.clone()

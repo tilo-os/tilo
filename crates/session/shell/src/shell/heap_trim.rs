@@ -36,6 +36,13 @@ const SETTLE: Duration = Duration::from_secs(1);
 const MAX_DELAY: Duration = Duration::from_secs(5);
 /// Shortest time between two trims.
 const MIN_INTERVAL: Duration = Duration::from_secs(10);
+/// How long after the compositor starts its startup work (renderer warm-up,
+/// identity, network, search, font warm-up) has freed its scratch, for the
+/// one trim that returns it.
+pub const STARTUP_SETTLED: Duration = Duration::from_secs(30);
+/// How long the compositor stays quiet after work before a quiet trim
+/// ([`request_when_quiet`]).
+const QUIET_SETTLE: Duration = Duration::from_secs(2);
 
 /// `instant` plus `duration`; an instant past the clock's range stays put.
 fn after(instant: Instant, duration: Duration) -> Instant {
@@ -47,6 +54,10 @@ fn after(instant: Instant, duration: Duration) -> Instant {
 struct Schedule {
     /// First and latest request since the last trim.
     pending: Option<(Instant, Instant)>,
+    /// The earliest trim asked for at a set time ([`request_after`]).
+    later: Option<Instant>,
+    /// When the compositor last went quiet after work ([`request_when_quiet`]).
+    quiet: Option<Instant>,
     last_trim: Option<Instant>,
     /// A trim taken off the schedule is running.
     trimming: bool,
@@ -58,20 +69,36 @@ impl Schedule {
         self.pending = Some((first, now));
     }
 
+    fn request_at(&mut self, at: Instant) {
+        self.later = Some(self.later.map_or(at, |later| later.min(at)));
+    }
+
+    fn request_quiet(&mut self, now: Instant) {
+        self.quiet = Some(now);
+    }
+
     /// When the pending requests are served; `None` with nothing pending.
     fn due(&self) -> Option<Instant> {
-        let (first, last) = self.pending?;
-        let settled = after(last, SETTLE).min(after(first, MAX_DELAY));
+        let settled = self
+            .pending
+            .map(|(first, last)| after(last, SETTLE).min(after(first, MAX_DELAY)));
+        let quiet = self.quiet.map(|quiet| after(quiet, QUIET_SETTLE));
+        let soonest = [settled, self.later, quiet].into_iter().flatten().min()?;
         Some(
             self.last_trim
-                .map_or(settled, |trimmed| settled.max(after(trimmed, MIN_INTERVAL))),
+                .map_or(soonest, |trimmed| soonest.max(after(trimmed, MIN_INTERVAL))),
         )
     }
 
-    /// Whether to trim at `now`; if so, the requests count as served.
+    /// Whether to trim at `now`; if so, the requests due by then count as
+    /// served.
     fn take(&mut self, now: Instant) -> bool {
         if self.due().is_some_and(|due| due <= now) {
             self.pending = None;
+            if self.later.is_some_and(|later| later <= now) {
+                self.later = None;
+            }
+            self.quiet = None;
             self.last_trim = Some(now);
             self.trimming = true;
             return true;
@@ -152,6 +179,36 @@ pub fn window_closed() {
 /// its last frame.
 pub fn windows_closed() -> u64 {
     WINDOWS_CLOSED.load(Ordering::Acquire)
+}
+
+/// Ask for one trim `delay` from now, whatever is requested meanwhile: work
+/// that frees its scratch at no single moment (a session's startup) is
+/// trimmed once it is over. The trim thread sleeps until then, one wakeup.
+pub fn request_after(delay: Duration) {
+    let Some(trimmer) = trimmer() else {
+        return;
+    };
+    trimmer
+        .schedule
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .request_at(after(Instant::now(), delay));
+    trimmer.wake.notify_one();
+}
+
+/// The compositor goes quiet after work (its startup, a burst of input):
+/// trim once it has stayed quiet a moment. A later call replaces an earlier
+/// one not yet served, so work that keeps going never trims mid-way.
+pub fn request_when_quiet() {
+    let Some(trimmer) = trimmer() else {
+        return;
+    };
+    trimmer
+        .schedule
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .request_quiet(Instant::now());
+    trimmer.wake.notify_one();
 }
 
 /// Trims run so far in this process.
@@ -347,5 +404,56 @@ mod tests {
         assert_eq!(schedule.due(), Some(at(start, 11_000)));
         assert!(!schedule.take(at(start, 3_000)));
         assert!(schedule.take(at(start, 11_000)));
+    }
+
+    #[test]
+    fn a_trim_asked_for_later_survives_the_trims_before_it() {
+        let start = Instant::now();
+        let mut schedule = Schedule::default();
+        // The first frame asks for one now and one when startup is over.
+        schedule.request(start);
+        schedule.request_at(at(start, 30_000));
+        assert_eq!(schedule.due(), Some(at(start, 1_000)));
+        assert!(schedule.take(at(start, 1_000)));
+        assert_eq!(
+            schedule.due(),
+            Some(at(start, 30_000)),
+            "the later trim is still owed"
+        );
+        assert!(!schedule.take(at(start, 29_999)));
+        assert!(schedule.take(at(start, 30_000)));
+        assert_eq!(schedule.due(), None, "both were served");
+    }
+
+    #[test]
+    fn a_quiet_trim_waits_for_the_last_quiet_moment_and_leaves_a_later_one_owed() {
+        let start = Instant::now();
+        let mut schedule = Schedule::default();
+        schedule.request_at(at(start, 30_000));
+        schedule.request_quiet(at(start, 4_000));
+        schedule.request_quiet(at(start, 5_000));
+        assert_eq!(
+            schedule.due(),
+            Some(at(start, 7_000)),
+            "the last quiet moment counts"
+        );
+        assert!(schedule.take(at(start, 7_000)));
+        assert_eq!(
+            schedule.due(),
+            Some(at(start, 30_000)),
+            "startup's trim is still owed"
+        );
+        assert!(schedule.take(at(start, 30_000)));
+        assert_eq!(schedule.due(), None);
+    }
+
+    #[test]
+    fn a_trim_asked_for_later_keeps_the_shortest_interval() {
+        let start = Instant::now();
+        let mut schedule = Schedule::default();
+        schedule.request(start);
+        assert!(schedule.take(at(start, 1_000)));
+        schedule.request_at(at(start, 2_000));
+        assert_eq!(schedule.due(), Some(at(start, 11_000)));
     }
 }

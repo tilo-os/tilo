@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import datetime
 import io
+import re
 import sys
 import tempfile
 import unittest
@@ -188,6 +189,12 @@ class Budgets(unittest.TestCase):
         self.assertEqual([(row.kpi, row.failing) for row in rows if row.status == "missing"],
                          [("render.frame_ms.4k", True)])
 
+    def test_missing_is_counted_apart_from_regressions(self):
+        rows = compare.compare([make(5, 1, kpi="render.other")], [], self.budgets(True), {"render"}, set())
+        text = compare.summary(rows)
+        self.assertIn("2 results, 1 failing (1 missing).", text)
+        self.assertIn("no result (not a regression)", text)
+
     def test_the_repository_budgets_load(self):
         budgets = compare.load_budgets(compare.BUDGETS)
         self.assertEqual(budgets.defaults["p50_tolerance"], 1.10)
@@ -195,6 +202,108 @@ class Budgets(unittest.TestCase):
         self.assertEqual(budgets.defaults["baseline_min_runs"], 1)
         self.assertEqual(budgets.setting("latency.workspace_switch.dropped_frames", "baseline_min_runs"), 1)
         self.assertIn("footprint.tapp.bytes.x86_64", budgets.kpis)
+
+
+WORKFLOWS = HERE.parents[1] / ".forgejo/workflows"
+
+
+def lane_budgets(**lanes: compare.Lane) -> compare.Budgets:
+    entry = {"unit": "ms", "max": 1000.0}
+    kpis = {kpi: dict(entry) for kpi in ("render.ui.frame_us.4k", "render.frame_cpu_ms", "idle.frames")}
+    return compare.Budgets(dict(compare.DEFAULTS), kpis, lanes)
+
+
+SPLIT_RENDER = {"perf-scheduled": compare.Lane(frozenset({"render"})),
+                "vm-acceptance": compare.Lane(frozenset({"idle"}), frozenset({"render.frame_cpu_ms"}))}
+
+
+class Lanes(unittest.TestCase):
+    """A group with two producers: each lane is owed only the KPIs it measures."""
+
+    def test_a_lane_is_not_owed_another_lanes_kpi(self):
+        budgets = lane_budgets(**SPLIT_RENDER)
+        rows = compare.compare([make(5, 1, kpi="render.ui.frame_us.4k")], [], budgets, {"render"}, set())
+        self.assertEqual([(row.kpi, row.status, row.failing) for row in rows],
+                         [("render.ui.frame_us.4k", "new", False)])
+        current = [make(5, 1, kpi="render.frame_cpu_ms"), make(5, 1, kpi="idle.frames")]
+        rows = compare.compare(current, [], budgets, {"render", "idle"}, set(), "vm-acceptance")
+        self.assertEqual([row.status for row in rows], ["new", "new"])
+
+    def test_a_lane_is_owed_its_claimed_kpi(self):
+        rows = compare.compare([make(5, 1, kpi="idle.frames")], [], lane_budgets(**SPLIT_RENDER),
+                               {"idle", "render"}, set(), "vm-acceptance")
+        self.assertEqual([(row.kpi, row.status) for row in rows if row.failing],
+                         [("render.*", "missing")])
+        rows = compare.compare([make(5, 1, kpi="idle.frames"), make(5, 1, kpi="render.other")], [],
+                               lane_budgets(**SPLIT_RENDER), {"idle", "render"}, set(), "vm-acceptance")
+        self.assertEqual([(row.kpi, row.status) for row in rows if row.failing],
+                         [("render.frame_cpu_ms", "missing")])
+        self.assertIn("vm-acceptance owes this budgeted KPI", rows[-1].note)
+
+    def test_a_group_the_lane_does_not_produce_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "lane perf-scheduled produces no KPI of group idle"):
+            compare.compare([make(5, 1)], [], lane_budgets(**SPLIT_RENDER), {"idle"}, set())
+        with self.assertRaisesRegex(ValueError, "unknown lane 'nightly'"):
+            compare.compare([make(5, 1)], [], lane_budgets(**SPLIT_RENDER), set(), set(), "nightly")
+
+    def load(self, text: str) -> compare.Budgets:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "budgets.toml"
+            path.write_text(text)
+            return compare.load_budgets(path)
+
+    BUDGET = '[kpi."render.frame_cpu_ms"]\nunit = "ms"\nmax = 1.0\n[kpi."idle.frames"]\nunit = "count"\nmax = 1.0\n'
+
+    def test_every_budget_needs_exactly_one_lane(self):
+        with self.assertRaisesRegex(ValueError, "no lane produces idle.frames"):
+            self.load('[lanes.a]\ngroups = ["render"]\n' + self.BUDGET)
+        with self.assertRaisesRegex(ValueError, "group render belongs to lanes a and b"):
+            self.load('[lanes.a]\ngroups = ["render", "idle"]\n[lanes.b]\ngroups = ["render"]\n' + self.BUDGET)
+        with self.assertRaisesRegex(ValueError, "claims render.gone, which has no budget"):
+            self.load('[lanes.a]\ngroups = ["render", "idle"]\nkpis = ["render.gone"]\n' + self.BUDGET)
+        budgets = self.load('[lanes.a]\ngroups = ["render"]\n[lanes.b]\ngroups = ["idle"]\n'
+                            'kpis = ["render.frame_cpu_ms"]\n' + self.BUDGET)
+        self.assertEqual((budgets.owner("render.frame_cpu_ms"), budgets.owner("render.ui.frame_us.4k")),
+                         ("b", "a"))
+
+    def test_every_repository_budget_has_one_producing_lane(self):
+        budgets = compare.load_budgets(compare.BUDGETS)
+        self.assertEqual(set(budgets.lanes), {"perf-scheduled", "vm-acceptance", "reference-hardware"})
+        self.assertEqual(budgets.owner("render.frame_cpu_ms"), "vm-acceptance")
+        self.assertEqual(budgets.owner("render.shell.redraw_us.4k"), "perf-scheduled")
+
+    def test_perf_scheduled_selects_exactly_its_lanes_groups(self):
+        budgets = compare.load_budgets(compare.BUDGETS)
+        workflow = (WORKFLOWS / "perf-scheduled.yml").read_text()
+        [known] = re.findall(r"^\s*known=\(([^)]*)\)$", workflow, re.M)
+        self.assertEqual(set(known.split()), budgets.lane_groups("perf-scheduled"))
+        for group in known.split():
+            self.assertIn(f"\n  {group}:\n", workflow, f"perf-scheduled.yml has a {group} job")
+        self.assertIn("--lane perf-scheduled", workflow)
+
+    def test_vm_acceptance_owes_exactly_its_lanes_groups(self):
+        budgets = compare.load_budgets(compare.BUDGETS)
+        workflow = (WORKFLOWS / "vm-acceptance.yml").read_text()
+        [groups] = re.findall(r"\|\| groups=([a-z,]+)$", workflow, re.M)
+        self.assertEqual(set(groups.split(",")), budgets.lane_groups("vm-acceptance"))
+        self.assertIn("--lane vm-acceptance", workflow)
+
+    def test_each_workflows_render_records_satisfy_the_repository_budgets(self):
+        # The nightly failure this fixes: both workflows select render, and
+        # each was owed the other's render KPIs.
+        budgets = compare.load_budgets(compare.BUDGETS)
+
+        def run(lane: str) -> list[compare.Row]:
+            owed = [kpi for kpi in budgets.kpis if kpi.startswith("render.") and budgets.owes(lane, kpi)]
+            current = [record.from_samples(kpi, budgets.kpis[kpi]["unit"], [0], **ENV,
+                                           started_at="2026-10-01T00:00:00Z") for kpi in owed]
+            return compare.compare(current, [], budgets, {"render"}, set(), lane)
+
+        nightly = run("perf-scheduled")
+        self.assertIn("render.shell.pan_us.4k", {row.kpi for row in nightly})
+        self.assertEqual([row.kpi for row in nightly if row.failing], [])
+        vm = run("vm-acceptance")
+        self.assertEqual([(row.kpi, row.failing) for row in vm], [("render.frame_cpu_ms", False)])
 
 
 class EndToEnd(unittest.TestCase):

@@ -24,6 +24,7 @@
 //! between them) for a painted host that lays its own rows, so a stepper
 //! drawn by hand is the one the widget draws.
 
+use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -134,17 +135,6 @@ const I64_MAX_AS_F64: f64 = 9_223_372_036_854_775_807.0;
 )]
 fn round_to_i64(v: f64) -> i64 {
     v.round().clamp(I64_MIN_AS_F64, I64_MAX_AS_F64) as i64
-}
-
-/// Narrows a screen-space length (`f64`, this widget's own unit) to the
-/// `f32` taffy consumes. Control widths/heights never approach `f32`'s
-/// range, so this never truncates in practice.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "widget widths/heights are always far below f32's range"
-)]
-fn px_f32(v: f64) -> f32 {
-    v as f32
 }
 
 /// `kurbo::Affine` composition is plain f64 matrix math with no panic
@@ -679,7 +669,7 @@ impl NumberInput {
         let (value_width, _) = text.measure_style(display, None, style);
         minimum
             .width
-            .max(value_width + field_padding * 2.0 + minimum.height * 2.0 + px_f32(GAP * 2.0))
+            .max(value_width + field_padding * 2.0 + minimum.height * 2.0 + f32_of_f64(GAP * 2.0))
             .ceil()
     }
 
@@ -700,8 +690,8 @@ impl NumberInput {
             DEFAULT_WIDTH * f64::from(theme.text_scale)
         };
         Size {
-            width: px_f32(width),
-            height: px_f32(height),
+            width: f32_of_f64(width),
+            height: f32_of_f64(height),
         }
     }
 
@@ -710,11 +700,11 @@ impl NumberInput {
     /// configured precision and suffix — beside its steppers. A host laying
     /// its own rows (a font-size stepper in an inspector) reserves this
     /// instead of guessing the field's type size; it is the same rule the
-    /// widget applies to itself in `adjust_layout_with_measure`, so a slot
+    /// widget applies to itself in `adjust_layout_style`, so a slot
     /// sized from it never clips a value the widget would have held.
     pub fn preferred_width(&self, theme: &Theme, text: &mut TextRenderer) -> f64 {
         let minimum = self.base_footprint(theme);
-        let padding = px_f32(self.field.text_padding_x(theme));
+        let padding = f32_of_f64(self.field.text_padding_x(theme));
         let style = self.value_style_in(theme);
         let widest = [self.value, self.min, self.max]
             .into_iter()
@@ -845,7 +835,7 @@ impl Widget for NumberInput {
     ) -> NodeId {
         let size = self.base_footprint(theme);
         self.minimum = size;
-        self.field_padding = px_f32(self.field.text_padding_x(theme));
+        self.field_padding = f32_of_f64(self.field.text_padding_x(theme));
         self.value_style = self.value_style_in(theme);
         let style = Style {
             size: Size {
@@ -861,7 +851,7 @@ impl Widget for NumberInput {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
@@ -894,12 +884,7 @@ impl Widget for NumberInput {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x0 = origin.x + f64::from(layout.location.x);
-        let y0 = origin.y + f64::from(layout.location.y);
-        let x1 = x0 + f64::from(layout.size.width);
-        let y1 = y0 + f64::from(layout.size.height);
-        self.apply_layout_external(Rect::new(x0, y0, x1, y1));
+        self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
     }
 
     fn draw(
@@ -1138,6 +1123,7 @@ impl Widget for NumberInput {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
@@ -1350,9 +1336,9 @@ mod tests {
                 None,
                 &theme.text(crate::tokens::TextRole::Body),
             );
-            let padding = px_f32(input.field.text_padding_x(&theme));
-            let height = px_f32(crate::widget::ControlSize::Regular.height(&theme));
-            let required = f64::from(widest + padding * 2.0 + height * 2.0 + px_f32(GAP * 2.0));
+            let padding = f32_of_f64(input.field.text_padding_x(&theme));
+            let height = f32_of_f64(crate::widget::ControlSize::Regular.height(&theme));
+            let required = f64::from(widest + padding * 2.0 + height * 2.0 + f32_of_f64(GAP * 2.0));
             assert!(
                 preferred + 1e-6 >= required,
                 "preferred {preferred} must hold the widest value ({required})"
@@ -1604,6 +1590,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::Increment,
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
@@ -1641,6 +1628,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut n,
                 &Action::Increment,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -1648,6 +1636,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut n,
                 &Action::SetValue("100".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -1675,6 +1664,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut number,
                 &crate::a11y::Action::SetValue("42".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));

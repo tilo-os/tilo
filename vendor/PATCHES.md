@@ -25,6 +25,21 @@ Both directories contain `PROVENANCE.md`, licences and focused regression
 tests. No insecure verifier, alternative trust loader or policy exception is
 introduced.
 
+## iroh idle timers
+
+`iroh` 1.0.3, `netwatch` 0.19.1 and `iroh-gossip` 0.101.0 are the
+checksum-verified registry releases in the lock, each with one small patch
+so an idle endpoint wakes for nothing: no re-STUN tick and no home relay
+while the relay map is empty, no 15 s wall-clock poll on Linux (a timerfd the
+kernel cancels on resume or a clock step replaces it), and no gossip cache
+sweep once a topic's caches are empty. Network changes still arrive through
+netlink at once. Each directory's `TILO-PATCH.md` has the details and an
+upstream-ready description; `crates/system/fs/tests/iroh_idle.rs` pins them.
+`iroh` and `iroh-gossip` build an `rlib` only: as path packages their
+upstream `cdylib` dropped the hash from the library filenames, so two builds
+in one Cargo run overwrote each other's outputs (E0460/E0463).
+Remove a copy once its upstream release carries the change.
+
 ## Exportable histories
 
 The fork changes also live in two standalone histories, disconnected from the
@@ -267,6 +282,31 @@ buffer, and `fill_segment_count` clamps a fill's segment count to the
 segment buffer. Valid streams render byte-identically (every GPU fixture in
 `vendor/vello/src/lib.rs` passes unchanged).
 
+## `vendor/vello_shaders/shader/fine.wgsl`, `src/cpu/fine.rs`: translation-stable area coverage
+
+Upstream evaluates a line's area coverage of a pixel as
+`(b + 0.5 * (d * d - c * c) - xmin) / (xmax - xmin)`. For a vertical or
+near-vertical edge, `xmax - xmin` is the `1e-6` nudge, while the two
+squares and their sum round at the magnitude of x: the numerator carries an
+absolute error of a few `1e-8` against a value of `1e-6`, so the edge pixel
+comes out up to 15 channel steps (6 % coverage) off, by an error that depends
+on the exact f32 bits of the tile-relative x. The same shape drawn a whole
+number of pixels elsewhere then rasterises differently, which a compositor
+that moves already rasterised pixels (Tilo's strip pans) shows as edge noise
+against a fresh render. `fill_path`, `fill_path_ppt8` and the CPU fine stage
+evaluate the algebraically identical
+`((b - xmin) - 0.5 * ((c - d) * (c + d))) / (xmax - xmin)` instead: both
+differences are of nearby values and exact, so coverage is accurate to f32
+precision and the same at every whole-pixel offset (in the strip pan test,
+whole renders at two pans went from up to 31 pixels more than a step apart
+to none). Edge pixels move to their correct coverage, so visual goldens of
+antialiased text change by up to that much. The accurate form also keeps
+the slivers of coverage the `1e-6` nudges add next to an edge on a whole
+pixel (about `1e-6`), which the expanded form happened to round to zero;
+the store divided such a pixel's colour out to full strength under an alpha
+that stores as 0. Fine therefore stores a pixel whose alpha rounds to 0 as
+transparent black, which nothing composited can tell apart.
+
 ## Total bump budget (`config.rs`, `bump_budget.rs`, `lib.rs`)
 
 `BumpBudget::fit_total_bytes` shrinks every reservation by one factor until
@@ -327,6 +367,52 @@ thirty open/close cycles leave only the wallpaper resident at the size it
 started with, and told images went the atlas comes down within a few passes
 while an expired request waits the long way again.
 
+## Scratch shrink (`bump_budget.rs`, `wgpu_engine.rs`, `lib.rs`)
+
+Upstream and the bump-budget patch above size a renderer's working memory for
+the busiest scene it has drawn and keep it: the bump reservation only grows,
+and the buffer pool keeps every size class until something clears it. A
+compositor that once drew several windows therefore kept their scratch after
+they closed (about 35 MiB on the dev VM: a 36 MiB reservation against the
+bare desktop's 28, and a 68 MiB pool). `Renderer::set_shrink_scratch(true)`
+opts a renderer in; it is off by default, so applications keep upstream's
+behaviour.
+
+- `BudgetTracker` tags each counter readback with whether its render ran
+  coarse over the whole scene (`begin_dense_readback`, used by
+  `render_to_texture_with_post_render_checked{,_indexed}`); a damage render's
+  counters cover only the bins it redrew, so they neither count nor shrink.
+  It keeps the field-wise maximum of the dense, non-overflowing frames since
+  the reservation last changed. After 120 of them (`SHRINK_AFTER_FRAMES`) it
+  lowers each field towards four times that maximum (`SHRINK_HEADROOM`, twice
+  what growth reserves), by at most half per shrink, so the scene that grew
+  a field still fits once and draws without overflowing when it comes back.
+  A shrink that frees less than an eighth of what the viewport reserves,
+  floors included (`SHRINK_MIN_FRACTION`), is not taken. Growth or an
+  overflow starts the window again. The caller clears the pool on a shrink
+  as it does on growth (`collect` reports both as `changed`).
+- `ResourcePool` stamps each free buffer with the recording that returned
+  it; after each recording an opted-in engine destroys the free buffers no
+  recording has taken for 120 recordings (`POOL_KEEP_RECORDINGS`), with the
+  cached bind groups that name them. Buffers are taken from the end of their
+  class's list, so a class's surplus goes first.
+- `Renderer::shrink_scratch_soon()`: the caller knows the scene got smaller
+  for good, a window closed. The next shrink needs only two dense frames
+  drawn since (`SHRINK_SOON_FRAMES`, within 16 measurements), once, and for
+  the next 64 recordings free buffers go after 16 untaken. An idle desktop
+  draws a handful of frames after a close, too few for the slow rule.
+- `Renderer::scratch_shrinks()` counts the shrinks, for the caller to have
+  freed device memory returned (a software rasteriser keeps it otherwise).
+
+Own tests in `bump_budget.rs` (a window of lighter dense frames shrinks it by
+at most half and the busy scene still fits, damage renders neither count nor
+shrink, an overflow or a growth starts the window again, a soon request
+shrinks once after two dense frames drawn since, small steps and renderers
+that did not opt in hold) and in `lib.rs` on a GPU (the shrunk renderer draws
+the light scene bit-identically to a fresh one, holds less, and draws the
+busy scene again in one render, identically; buffers no recording takes are
+destroyed and the pool holds what the light scene alone pools).
+
 ## `vendor/vello/src/wgpu_engine.rs`: cleared pools and freed downloads are destroyed
 
 wgpu's WebGPU backend does not destroy a buffer when it is dropped; the GPU
@@ -364,6 +450,13 @@ client frames on the GPU and draws them on its presenting renderer from
 their textures; screenshots, recordings and renderers on other devices
 reach the same frames through the source, which reads them back on demand.
 
+## `vendor/automerge`: parse changes without applying them
+
+`Automerge::parse_changes(data)` parses and checksums the change chunks of an
+incremental save without applying them to a document, so a receiver reads
+each change's hash, message and dependencies (the signed claim of what each
+change is) before it decides to merge them.
+
 ## `vendor/vello/src/image_source.rs` (new), `lib.rs`, `wgpu_engine.rs`: images drawn from a texture
 
 `Renderer::draw_image_from(image, Some(ImageSource { texture, origin,
@@ -378,6 +471,34 @@ draws a client's dma-buf straight from its import with this one copy. The
 atlas texture gains `RENDER_ATTACHMENT` usage for it. A source takes
 precedence over an `override_image` texture for the same image.
 `Renderer::image_source_writes()` counts the writes and their bytes.
+
+## `vendor/vello_shaders/build.rs`, `vendor/vello/src/lib.rs`: shader fingerprint
+
+The build script also emits `SOURCE_FINGERPRINT`, an FNV-1a hash over every
+shader's name and WGSL text in name order, and vello re-exports it as
+`vello::SHADER_FINGERPRINT`. A `wgpu::PipelineCache` an app keeps across
+launches (`ui::pipeline_cache`) is keyed by it, so a cache filled by other
+shaders is never used. Nothing else reads it.
+
+## `vendor/vello/src/lib.rs`, `shaders.rs`, `wgpu_engine.rs`: deferred pipelines
+
+`Renderer::new_deferring(device, options, deferral)` registers every shader
+as `Renderer::new` does, but builds a pipeline before returning only when
+`deferral` allows. `PipelineDeferral::Unused` defers the registrations a full
+frame on the default path never dispatches: the three-level path-tag scan,
+the GPU draw reduce and leaf while the CPU draw prefix serves, the indirect
+path stages while the direct ones serve, the clip reduce and the sparse fine
+stage. `PipelineDeferral::All` defers every one, for a caller that rasterizes
+its frames another way. `start_deferred_pipelines` builds them in the
+background on the renderer's init threads, the default-path ones first and the
+largest of each group first, and runs a callback after the last. Before
+encoding, a render installs what the thread has finished. For a deferred
+pipeline it dispatches and that is not built yet, it waits for the thread, or
+builds it itself when no thread is running, so a dispatch never lacks its
+pipeline. On GL nothing is deferred (one context lock, see "one init thread
+on GL"). `Renderer::new` is unchanged except that the parallel initial build
+starts the longest shaders first. `deferred_pipelines()` reports what is
+pending and what a render had to build itself.
 
 ## zlink-macros
 

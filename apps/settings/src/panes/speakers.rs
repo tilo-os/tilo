@@ -41,8 +41,8 @@ use crate::speaker_setup::{
     member_status_text, playback_text, role_answer, role_text,
 };
 use crate::widgets::{
-    StatusTone, caption, card, cards, choice_row_described, rows, semantic_status_pill,
-    setting_row, setting_row_described, value_row,
+    StatusTone, caption, card, cards, rows, semantic_status_pill, setting_row,
+    setting_row_described, value_row,
 };
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
@@ -820,7 +820,7 @@ impl SpeakersModel {
         .with_id("speakers.listening")
         .with_accessible_name(t("speakers-listening-title"))
         .with_placeholder(&listening.label);
-        body.push(choice_row_described(
+        body.push(setting_row_described(
             &t("speakers-listening-title"),
             &t("speakers-listening-description"),
             Box::new(chooser),
@@ -1030,7 +1030,7 @@ impl SpeakersModel {
         .with_id("speakers.arrangement")
         .with_accessible_name(t("speakers-arrangement"));
         let candidates = self.setup.candidates();
-        let mut body = vec![choice_row_described(
+        let mut body = vec![setting_row_described(
             &t("speakers-arrangement"),
             &self.setup.arrangement().description(),
             Box::new(arrangement),
@@ -1206,9 +1206,9 @@ impl SpeakersModel {
     fn build_name(&self) -> Vec<Box<dyn Widget>> {
         let name = TextInput::from_state(&self.name_state)
             .with_id("speakers.name")
-            .with_placeholder(&t("speakers-name-placeholder"))
+            .with_placeholder(t("speakers-name-placeholder"))
             .with_accessible_name(t("speakers-name"));
-        let mut body = vec![choice_row_described(
+        let mut body = vec![setting_row_described(
             &t("speakers-name"),
             &t("speakers-name-description"),
             Box::new(name),

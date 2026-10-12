@@ -360,6 +360,11 @@ class Group:
     # executable baked in at compile time (`env!("CARGO_BIN_EXE_shell")`).
     stage: dict[str, str]
     run: Callable[[RunContext], list[record.Record]]
+    # Artifact name -> (source file, build command, path after the build): a
+    # benchmark built only on a side whose commit has its source, so a base
+    # older than the benchmark still runs; its KPIs are then the candidate's
+    # alone, listed but not paired.
+    optional: dict[str, tuple[str, tuple[str, ...], str]] = dataclasses.field(default_factory=dict)
 
 
 def call(command: list[str], log: Path, cwd: Path, env: dict[str, str] | None = None,
@@ -376,8 +381,10 @@ def call(command: list[str], log: Path, cwd: Path, env: dict[str, str] | None = 
 
 
 def run_hosting(ctx: RunContext) -> list[record.Record]:
+    # Both sides need a bench that knows --relay-cpus; an older one refuses it.
+    cpus = ["--relay-cpus", str(ctx.options.hosting_relay_cpus)] if ctx.options.hosting_relay_cpus else []
     call([ctx.bins["relay_load"], "--collaborators", "100", "--minutes", str(ctx.options.hosting_minutes),
-          "--out", ctx.dir], ctx.dir / "bench.log", ctx.repo)
+          *cpus, "--out", ctx.dir], ctx.dir / "bench.log", ctx.repo)
     report = json.loads((ctx.dir / "hosting-load.json").read_text(encoding="utf-8"))
     prices = tomllib.loads(adapters.PRICES.read_text(encoding="utf-8"))
     return adapters.hosting_load(report, prices, ctx.env, require_all=False)
@@ -403,8 +410,9 @@ def run_agent(ctx: RunContext) -> list[record.Record]:
 
 def run_render(ctx: RunContext) -> list[record.Record]:
     records = ctx.dir / "records.jsonl"
+    pans = ["--strip-pan-bench", ctx.bins["strip_pan_bench"]] if "strip_pan_bench" in ctx.bins else []
     call([sys.executable, "scripts/perf/render_bench.py", "timing", ctx.bins["ui-perf"],
-          ctx.bins["redraw_bench"], "--env-json", ctx.env_json, "--out", ctx.dir, "--records", records],
+          ctx.bins["redraw_bench"], "--env-json", ctx.env_json, "--out", ctx.dir, *pans, "--records", records],
          ctx.dir / "bench.log", ctx.repo)
     opening = ctx.dir / "framework-open.log"
     call([ctx.bins["framework-scaling"], "5000,50000", "open"], opening, ctx.repo)
@@ -431,6 +439,20 @@ def run_fs(ctx: RunContext) -> list[record.Record]:
     return adapters.fs_gate([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
 
 
+FILES_NAME_INDEX_TEST = "shell::search::providers::files::tests::a_watched_change_costs_one_record_not_a_rebuild"
+
+
+def run_search(ctx: RunContext) -> list[record.Record]:
+    log = ctx.dir / "files-name-index.log"
+    # The nightly job's index size: the walk's MAX_ENTRIES. A cost over the
+    # test's own bound fails it but still measured; the adapter fails only
+    # when the run printed no measurement.
+    call(["bash", ctx.repo / "tools/with-test-environment.sh", ctx.bins["shell-lib"], FILES_NAME_INDEX_TEST,
+          "--exact", "--nocapture", "--test-threads=1"], log, ctx.cwd["shell-lib"],
+         {"TILO_FILES_NAME_INDEX_NAMES": "50000"}, check=False)
+    return adapters.files_name_index([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
+
+
 RELEASE_SHELL = ("cargo", "build", "--locked", "--release", "-p", "shell", "--bin", "shell",
                  "--features", "dev-overrides")
 
@@ -452,7 +474,11 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
             "--example", "framework-scaling")),
           {"ui-perf": "target/release/examples/ui-perf", "redraw_bench": "target/release/examples/redraw_bench",
            "framework-scaling": "target/release/examples/framework-scaling"},
-          {}, {}, run_render),
+          {}, {}, run_render,
+          {"strip_pan_bench": ("crates/session/shell/examples/strip_pan_bench.rs",
+                               ("cargo", "build", "--locked", "--release", "-p", "shell", "--example",
+                                "strip_pan_bench"),
+                               "target/release/examples/strip_pan_bench")}),
     Group("wakeups", "dev", "lavapipe", (),
           {"shell": "target/debug/shell"},
           {"it": (("cargo", "test", "--locked", "-p", "shell", "--test", "it", "--no-run"), "it")},
@@ -461,6 +487,9 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
           {}, {"performance_gate": (("cargo", "test", "--locked", "-p", "tilo-fs", "--test", "performance_gate",
                                      "--no-run"), "performance_gate")},
           {}, run_fs),
+    Group("search", "dev", "none", (),
+          {}, {"shell-lib": (("cargo", "test", "--locked", "-p", "shell", "--lib", "--no-run"), "shell")},
+          {}, run_search),
 )}
 
 
@@ -510,6 +539,12 @@ def build_side(groups: list[Group], side: str, commit: str, repo: Path, out: Pat
             shutil.copy2(executable, directory / name)
             cwd[name] = str(package)
         for name, path in group.binaries.items():
+            shutil.copy2(repo / path, directory / name)
+        for name, (source, command, path) in group.optional.items():
+            if not (repo / source).is_file():
+                print(f"== {side} {commit[:10]} has no {source}; {name} is not built", flush=True)
+                continue
+            call(list(command), log, repo)
             shutil.copy2(repo / path, directory / name)
         manifest[group.name] = {"cwd": cwd}
     return manifest
@@ -604,6 +639,8 @@ def main(argv: list[str] | None = None) -> int:
     go.add_argument("--virtualization", default="none", choices=sorted(record.VIRTUALIZATIONS))
     go.add_argument("--runner", default="local", help="the runner class, as record.py env takes it")
     go.add_argument("--hosting-minutes", type=int, default=3, help="measured minutes per hosting run")
+    go.add_argument("--hosting-relay-cpus", type=int, default=0,
+                    help="confine the relay to this many CPUs, as on a VM with that many vCPUs (0: all)")
     go.add_argument("--wakeups-window", type=int, default=30, help="idle window per wakeups run, seconds")
     again = commands.add_parser("analyse", help="analyse the records of an earlier run again")
     again.add_argument("records", type=Path)

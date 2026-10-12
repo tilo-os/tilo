@@ -43,8 +43,9 @@ pub const MAX_NAME_BYTES: usize = 128;
 pub const MAX_COORDINATE: i32 = 1_000_000;
 
 /// One display's place in the person's shared layout.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct ArrangedDisplay {
     /// Fabric device id of the device that drives the display.
     pub device: String,
@@ -66,6 +67,8 @@ pub struct ArrangedDisplay {
     pub rev: u64,
 }
 
+crate::read_through_json_value!(ArrangedDisplay);
+
 impl ArrangedDisplay {
     /// The same entry ignoring its revision.
     fn same_as(&self, other: &Self) -> bool {
@@ -83,11 +86,17 @@ impl ArrangedDisplay {
 const ORDER_GAP: i64 = 1024;
 
 /// The person's display arrangement.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct Arrangement {
     pub displays: Vec<ArrangedDisplay>,
 }
+
+crate::read_through_json_value!(Arrangement);
+
+#[cfg(feature = "model")]
+tilo_resource::json_model!(Arrangement);
 
 impl Arrangement {
     /// Decode a stored arrangement, or `None` when it is malformed or out of
@@ -882,6 +891,9 @@ pub struct PersonDisplays {
     pub devices: Vec<PersonDevice>,
 }
 
+/// The view this process last published.
+static PUBLISHED: crate::published::Published<PersonDisplays> = crate::published::Published::new();
+
 impl PersonDisplays {
     /// The live publisher's view, or `None` when no live shell published
     /// one (no fabric identity, or the shell is gone).
@@ -890,7 +902,18 @@ impl PersonDisplays {
         Self::load_at(&path)
     }
 
+    /// The view this process last [`saved`](Self::save), from memory.
+    pub fn published() -> Option<std::sync::Arc<Self>> {
+        PUBLISHED.get(&path()?)
+    }
+
+    /// Moves every time this process publishes a view.
+    pub fn published_generation() -> u64 {
+        PUBLISHED.generation()
+    }
+
     pub fn load_at(path: &Path) -> Option<Self> {
+        crate::published::note_file_read();
         let bytes = tilo_files::native::bounded::read(path, 2_097_152).ok()??;
         let view: Self = serde_json::from_slice(&bytes).ok()?;
         (view.schema_version == SCHEMA_VERSION
@@ -908,6 +931,9 @@ impl PersonDisplays {
     /// file cannot be written.
     pub fn save(&self) -> std::io::Result<()> {
         let path = path().ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is unavailable"))?;
+        if PUBLISHED.get(&path).as_deref() != Some(self) {
+            PUBLISHED.set(&path, self.clone());
+        }
         self.save_at(&path)
     }
 
@@ -915,6 +941,13 @@ impl PersonDisplays {
     ///
     /// Returns an error when the file cannot be written.
     pub fn save_at(&self, path: &Path) -> std::io::Result<()> {
+        // Equality includes the publisher identity and every output fact.
+        // A regular observation is reusable only under its current live lease.
+        if tilo_files::native::is_regular_file(path).unwrap_or(false)
+            && Self::load_at(path).as_ref() == Some(self)
+        {
+            return Ok(());
+        }
         let mut body = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
         body.push(b'\n');
         tilo_files::native::atomic::write_creating_parent(path, &body)
@@ -1247,5 +1280,81 @@ mod tests {
             serde_json::json!({"arrangement": value, "scale": 1.0}),
         );
         assert_eq!(Arrangement::from_document(&document).displays.len(), 1);
+    }
+}
+
+#[cfg(all(test, any(unix, windows)))]
+mod publication_regressions {
+    use super::*;
+
+    #[test]
+    fn unchanged_live_person_observations_keep_the_published_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("person-displays.json");
+        let (publisher_pid, publisher_start_ticks) =
+            crate::hardware::publisher_identity_in(dir.path()).unwrap();
+        let mut view = PersonDisplays {
+            schema_version: SCHEMA_VERSION,
+            publisher_pid,
+            publisher_start_ticks,
+            local_device: "own-device".into(),
+            devices: Vec::new(),
+        };
+        view.save_at(&path).unwrap();
+        let retained = std::fs::File::open(&path).unwrap();
+        let original = tilo_files::native::atomic::FileIdentity::of(&retained).unwrap();
+        view.save_at(&path).unwrap();
+        let current = std::fs::File::open(&path).unwrap();
+        assert_eq!(
+            original,
+            tilo_files::native::atomic::FileIdentity::of(&current).unwrap(),
+            "an unchanged live observation must not perform durable replacement"
+        );
+        assert_eq!(PersonDisplays::load_at(&path), Some(view.clone()));
+        view.local_device = "changed-device".into();
+        view.save_at(&path).unwrap();
+        assert_eq!(PersonDisplays::load_at(&path), Some(view.clone()));
+        std::fs::write(&path, b"invalid observation").unwrap();
+        view.save_at(&path).unwrap();
+        assert_eq!(PersonDisplays::load_at(&path), Some(view.clone()));
+        std::fs::remove_file(&path).unwrap();
+        view.save_at(&path).unwrap();
+        assert_eq!(PersonDisplays::load_at(&path), Some(view.clone()));
+        let mut stale = view.clone();
+        stale.publisher_start_ticks = stale.publisher_start_ticks.saturating_add(1);
+        stale.save_at(&path).unwrap();
+        assert_eq!(
+            PersonDisplays::load_at(&path),
+            None,
+            "a previous publisher identity never becomes live by saving"
+        );
+        view.save_at(&path).unwrap();
+        assert_eq!(PersonDisplays::load_at(&path), Some(view));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn matching_symlink_observations_are_replaced_under_the_owned_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("person-displays.json");
+        let alias = dir.path().join("alias.json");
+        let (publisher_pid, publisher_start_ticks) =
+            crate::hardware::publisher_identity_in(dir.path()).unwrap();
+        let view = PersonDisplays {
+            schema_version: SCHEMA_VERSION,
+            publisher_pid,
+            publisher_start_ticks,
+            local_device: "own-device".into(),
+            devices: Vec::new(),
+        };
+        view.save_at(&alias).unwrap();
+        let original = std::fs::read(&alias).unwrap();
+        std::os::unix::fs::symlink(&alias, &path).unwrap();
+        view.save_at(&path).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&path).unwrap().is_file(),
+            "matching linked observations must still use atomic directory-entry replacement"
+        );
+        assert_eq!(std::fs::read(&alias).unwrap(), original);
+        assert_eq!(PersonDisplays::load_at(&path), Some(view));
     }
 }

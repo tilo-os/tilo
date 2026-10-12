@@ -255,6 +255,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             assert!(button.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT
             ));
@@ -268,6 +269,7 @@ mod tests {
             let mut disabled = button.disabled(true);
             assert!(!disabled.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT
             ));
@@ -337,12 +339,7 @@ impl Widget for ActionButton {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // `layout` only errors for a `NodeId` from a different tree, which
-        // never happens here since `node` is always the id this same widget
-        // received from its own `build_layout` call.
-        #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
-        let l = taffy.layout(node).unwrap();
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -525,6 +522,7 @@ impl Widget for ActionButton {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         _state: &mut ui::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {

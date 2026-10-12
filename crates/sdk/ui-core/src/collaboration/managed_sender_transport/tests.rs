@@ -6,7 +6,8 @@
 use super::*;
 use crate::collaboration::RouteSpec;
 use capnp::capability::Promise;
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+use capnp_rpc::rpc_twoparty_capnp;
+use runtime_collab::PublishedInvocationBinding;
 use runtime_collab::collab_capnp::{
     channel_handle, collab_service, published_invocation_observation,
 };
@@ -15,7 +16,6 @@ use std::{
     rc::Rc,
     time::Duration,
 };
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 const HOST: [u8; 16] = [2; 16];
 const ID: [u8; 16] = [1; 16];
@@ -243,15 +243,10 @@ where
             });
             let broker: collab_service::Client = capnp_rpc::new_client(Broker { channel });
             let (server_io, client_io) = tokio::io::duplex(512);
-            let (read, write) = tokio::io::split(server_io);
-            let network = twoparty::VatNetwork::new(
-                read.compat(),
-                write.compat_write(),
-                rpc_twoparty_capnp::Side::Server,
-                capnp::message::ReaderOptions::default(),
-            );
-            let task =
-                tokio::task::spawn_local(RpcSystem::new(Box::new(network), Some(broker.client)));
+            let task = tokio::task::spawn_local(runtime_portal::serve_connected_io(
+                server_io,
+                broker.client,
+            ));
             let connection = runtime_portal::CapnpClient::from_connected_io(
                 client_io,
                 rpc_twoparty_capnp::Side::Client,
@@ -285,9 +280,9 @@ fn request<'a>(
     kind: u8,
     b: &'a PublishedInvocationBinding,
     argument: Option<&'a str>,
-) -> Request<'a> {
+) -> RequestView<'a> {
     match kind {
-        48 => Request::Invoke {
+        48 => RequestView::Invoke {
             invocation: &ID,
             binding: b,
             revision: "revision-original",
@@ -296,11 +291,11 @@ fn request<'a>(
             argument,
             confirmation_json: "{\"current\":true}",
         },
-        49 => Request::Observe {
+        49 => RequestView::Observe {
             host: &HOST,
             invocation: &ID,
         },
-        50 => Request::Cancel {
+        50 => RequestView::Cancel {
             host: &HOST,
             invocation: &ID,
         },
@@ -370,7 +365,7 @@ async fn managed_sender_transport_real_rpc_refuses_uncorrelated_and_failed_repli
                         tilo_test_env::hang_deadline()
                     )
                     .await,
-                    Err(Failure::Unavailable)
+                    Err(AttemptFailure::Unavailable)
                 );
             }
         }
@@ -411,7 +406,7 @@ async fn managed_sender_transport_real_rpc_deadlines_bound_calls_without_resubmi
                     Instant::now() - Duration::from_secs(1)
                 )
                 .await,
-                Err(Failure::Deadline)
+                Err(AttemptFailure::Deadline)
             );
         }
         assert!(captured.borrow().calls.is_empty());
@@ -426,7 +421,7 @@ async fn managed_sender_transport_real_rpc_deadlines_bound_calls_without_resubmi
                 };
             assert_eq!(
                 send(&route, request(kind, &b, None), deadline).await,
-                Err(Failure::Deadline)
+                Err(AttemptFailure::Deadline)
             );
             assert!(start.elapsed() < Duration::from_secs(3));
         }
@@ -478,7 +473,7 @@ async fn managed_sender_transport_real_rpc_ready_reply_after_deadline_is_refused
             replies.push(pending.await);
         }
         assert_eq!(captured.borrow().calls, [48, 49, 50]);
-        assert_eq!(replies, vec![Err(Failure::Deadline); 3]);
+        assert_eq!(replies, vec![Err(AttemptFailure::Deadline); 3]);
     })
     .await;
 }

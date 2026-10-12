@@ -432,22 +432,14 @@ impl StorageModel {
         card(
             &t("settings-storage-tools"),
             rows(vec![
-                crate::widgets::setting_row_described(
-                    &t("settings-storage-disks"),
-                    &t("settings-storage-disks-desc"),
-                    Box::new(self.cx.bind_invocation(
-                        Button::new("storage.disks", &open_disks),
-                        StorageEffect::OpenDisks,
-                    )),
-                ),
-                crate::widgets::setting_row_described(
-                    &t("settings-storage-backups"),
-                    &t("settings-storage-backups-desc"),
-                    Box::new(self.cx.bind_invocation(
-                        Button::new("storage.backups", &open_backups),
-                        StorageEffect::OpenBackups,
-                    )),
-                ),
+                self.cx
+                    .row(t("settings-storage-disks"))
+                    .described(t("settings-storage-disks-desc"))
+                    .button("storage.disks", &open_disks, StorageEffect::OpenDisks),
+                self.cx
+                    .row(t("settings-storage-backups"))
+                    .described(t("settings-storage-backups-desc"))
+                    .button("storage.backups", &open_backups, StorageEffect::OpenBackups),
                 caption(&t("settings-storage-tools-caption")),
             ]),
         )

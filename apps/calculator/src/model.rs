@@ -4,6 +4,7 @@
 
 use crate::actions::GraphKind;
 use crate::engine::{self, Ctx};
+use ui::tilo_resource::{self, Model};
 
 /// Top-level app mode (segmented control in the header).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -57,16 +58,22 @@ impl Mode {
 }
 
 /// One evaluated entry in the calculator history.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Model, Clone, Debug, PartialEq)]
 pub struct HistoryEntry {
+    /// Calculation
+    #[model(label)]
     pub expr: String,
+    /// Result
     pub result: String,
 }
 
-/// A `y = f(x)` curve for the 2D plotter.
-#[derive(Clone, Debug, PartialEq)]
+/// A curve (`y = f(x)`) or surface (`z = f(x, y)`) row of a graph.
+#[derive(Model, Clone, Debug, PartialEq)]
 pub struct PlotFn {
+    /// Formula
+    #[model(label)]
     pub expr: String,
+    /// Shown
     pub visible: bool,
 }
 
@@ -264,9 +271,9 @@ impl CalcModel {
     }
 
     /// Commit `=`: evaluate, push history, update Ans. Returns the committed
-    /// [`HistoryEntry`] (a clone) so the caller can dispatch the matching
-    /// [`CommitHistory`](crate::actions::CalculatorAction) action — the shared,
-    /// replayable, undoable path the history list is mutated through. Returns
+    /// [`HistoryEntry`] (a clone) so the caller can submit the matching
+    /// `commit-history` verb — the shared, replayable, undoable path the
+    /// history list is changed through. Returns
     /// `None` when there is nothing to commit (empty or unparseable expression),
     /// so no action is dispatched.
     pub fn commit_equals(&mut self) -> Option<HistoryEntry> {

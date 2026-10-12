@@ -40,10 +40,8 @@
     )
 )]
 
-pub mod actions;
 pub mod app;
 pub mod canvas;
-pub mod doc;
 pub mod draw;
 mod endpoint_editor;
 pub mod geo;
@@ -61,10 +59,19 @@ pub mod sample;
 mod scenario;
 pub mod tiles;
 pub mod traffic;
+pub mod workspace;
 
 pub use app::MapsApp;
 pub use model::{Category, LatLon, MapModel, Panel, Place, Route, TransitJourney, TravelMode};
 
-pub use resource::{Maps, MapsShell};
+pub use resource::MapsShell;
+
+/// The map's Fluent catalogs, source locale first.
+pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
+
+/// The map's messages, in every host that mounts it.
+pub(crate) static CATALOG: ui::i18n::EmbeddedCatalog =
+    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+pub use workspace::Workspace;
 
 ui::dev_reload_entry!(MapsShell);

@@ -67,25 +67,9 @@ struct StewardLedger {
     packages: BTreeMap<Ed25519PublicKey, BTreeSet<[u8; 32]>>,
 }
 
-/// The ledger as written before it recorded key packages.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LedgerWithoutPackages {
-    admitted: BTreeMap<Ed25519PublicKey, u64>,
-    acknowledged: BTreeMap<Ed25519PublicKey, [u8; 32]>,
-}
-
 impl StewardLedger {
     fn decode(bytes: &[u8]) -> Result<Self> {
-        postcard::from_bytes::<Self>(bytes).or_else(|_| {
-            let earlier: LedgerWithoutPackages = postcard::from_bytes(bytes)
-                .map_err(|error| Error::Serialization(error.to_string()))?;
-            Ok(Self {
-                admitted: earlier.admitted,
-                acknowledged: earlier.acknowledged,
-                packages: BTreeMap::new(),
-            })
-        })
+        postcard::from_bytes(bytes).map_err(|error| Error::Serialization(error.to_string()))
     }
 
     fn admitted_with(&self, device: &Ed25519PublicKey, request: &MlsAccessRequestV1) -> bool {
@@ -674,29 +658,5 @@ impl<S: StewardStore> std::fmt::Debug for ChannelSteward<S> {
             .field("members", &self.members().len())
             .field("frames", &self.journal.frames().len())
             .finish_non_exhaustive()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_ledger_written_before_key_packages_were_recorded_still_opens() {
-        let device = Ed25519PublicKey::from_bytes([9; 32]);
-        let earlier = (
-            BTreeMap::from([(device, 41_u64)]),
-            BTreeMap::from([(device, [5_u8; 32])]),
-        );
-        let bytes = postcard::to_allocvec(&earlier).unwrap();
-        let ledger = StewardLedger::decode(&bytes).unwrap();
-        assert_eq!(ledger.admitted.get(&device), Some(&41));
-        assert_eq!(ledger.acknowledged.get(&device), Some(&[5; 32]));
-        assert!(ledger.packages.is_empty());
-
-        let mut current = ledger;
-        current.packages.entry(device).or_default().insert([7; 32]);
-        let reread = StewardLedger::decode(&postcard::to_allocvec(&current).unwrap()).unwrap();
-        assert_eq!(reread.packages, current.packages);
     }
 }

@@ -121,6 +121,7 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
     let server_carol = carol.clone();
     let call_id = hex::encode(room.call.call);
     let room_id = room.room.clone();
+    let channel_id = room.channel.clone();
     let workspace = room.workspace_id;
     let call = room.call.call;
     let repository = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../");
@@ -132,6 +133,11 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
         }
         if path == "/api/room" {
             return text(room_id.clone());
+        }
+        // The chat's voice channel the governed call is on: its id is the
+        // chat's own, minted when the workspace was made.
+        if path == "/api/channel" {
+            return text(channel_id.clone());
         }
         if path == "/api/alice" {
             return text(alice_id.clone());

@@ -343,6 +343,46 @@ This gives three deployments without three protocols:
   Both halves keep at most 64 slots of at most 4 KiB per session. Deltas are
   never delayed for it. Clients dial `/7` first and fall back to `/6`; older
   sessions, replays and positions get the frames they always did.
+- Packets, not frames (TIL-776): a 27 B presence batch costs about 35 B of
+  QUIC packet on top, so the host writes whatever goes to one connection
+  together in one write where it can. A live delta's write carries its
+  position and every presence that may go early: carets, selections, typing
+  and events at any time (their 5 ms window exists only to share a frame),
+  and a pointer once 25 ms have passed since it last went (never later than
+  its 20 Hz pace, never more often than twice it). A batch that falls due
+  takes the same company. A keystroke's `Typing` and `Caret` reach the host
+  while its delta is still being committed; while a delta of the same author
+  is unpublished, they are held, up to 20 ms, and leave in the delta's write,
+  so a member receives the character and the caret after it in one packet.
+  The delta never waits, and the frames are the same on every protocol.
+- Client pointer pacing: the shell and the toolkit publish a moving pointer
+  at about 30 Hz, and the host forwards one at 20 Hz, so the client's session
+  writer (`tilo_relay_session::client`, `pointer_pacing`) writes each pointer
+  slot at most every 50 ms (`coedit::POINTER_GAP`, which is also the host's
+  pace): a move after a pause at once, a move inside the gap held and
+  replaced by newer ones, and the latest written when the gap ends, so the
+  resting position always arrives. A held move that has gone stale by then
+  waits up to 15 ms for the producer's next move, when that is due sooner
+  than the staleness it saves, and the fresher move goes in its place; a
+  30 Hz cursor so reaches peers a few milliseconds old rather than half a
+  producer period. Anything but a delta or another
+  latest-state presence takes the held pointers ahead of it in the same
+  write, so an app's `Left` never overtakes its last pointer. A move the host
+  would only have coalesced away no longer costs an upstream packet or the
+  acknowledgement it draws. The writer paces whatever session it serves,
+  whoever the author is; the frames are unchanged. The host counts its own
+  gap from when the previous move was due rather than from when its writer
+  got to it, and a pointer does not wait the 5 ms batching window for
+  company, so moves that already arrive a gap apart are forwarded as they
+  arrive and a late write never adds to the next move's wait. The direct
+  (gossip) path paces the same way with the same `PointerPacer`, slot
+  classification (`pointer_pacing::slot_pacing`) and gap: the shell's network
+  actor hands every pointer move to the room's hosts at once (their writers
+  pace it) and holds it for gossip, broadcasting a slot at most every 50 ms,
+  the resting position always, carets and typing past a held move, and any
+  other message only after it. A peer-to-peer drag so costs each neighbour
+  20 packets a second instead of 30, and the acknowledgements they draw;
+  the actor arms no timer while nothing is held.
 - Remote actions (v1): versioned JSON `RemoteActionFrame`s (`tilo_actions::remote`).
   A caller follows an invocation with one waiting request at a time —
   `wait_ms` on `Invoke`, or on `Observe` with the `seen` update — which the

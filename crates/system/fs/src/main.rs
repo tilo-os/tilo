@@ -19,6 +19,9 @@ use fs::full_replica::{
     prune_obsolete_workspace_content, save_status, validate_home_peer_set,
 };
 use fs::namespace::ROOT_INO;
+use fs::share_refresh::{
+    ShareRefresh, ShareRefresher, SharedCredential, SharedFetchError, fetch_shared_snapshot,
+};
 use fs::sync::{self, SyncHandle};
 use fs::workspace_authority::{
     AuthorityRequest, WorkspaceAuthority, WorkspaceAuthorityEnvelope, load_persisted_content_peers,
@@ -30,16 +33,14 @@ use fs::{
     AclHandle, CapabilityFile, ContentStore, FileHistoryStore, FileShareLinkV2,
     FsTransportIdentity, Heuristics, Hydrator, IdentityKey, Namespace, QuickFS,
     RecipientControlServer, RecipientMountSupervisor, RecordAccessRegistry, RecordMaterializer,
-    RecordProtocolClient, RecordProtocolClientError, RecordProtocolOperationV1,
-    RecordProtocolResponseV1, RecordProtocolSnapshotV1, RecordPublisher, RecordRepository,
-    RecordServices, RecordSubscriptionFailureCode, RecordSubscriptionKey, RecordSubscriptionStore,
-    Refresh, ShareAuthority, ShareControlServer, ShareManagement, Ticket, Workspace,
-    identity_paths, load_certified_mount_identity, load_revocation_list,
-    load_workspace_share_issuer,
+    RecordProtocolClient, RecordProtocolOperationV1, RecordProtocolResponseV1,
+    RecordProtocolSnapshotV1, RecordPublisher, RecordRepository, RecordServices,
+    RecordSubscriptionFailureCode, RecordSubscriptionKey, RecordSubscriptionStore, ShareAuthority,
+    ShareControlServer, ShareManagement, Ticket, Workspace, identity_paths,
+    load_certified_mount_identity, load_revocation_list, load_workspace_share_issuer,
 };
 use fuser::{Config, MountOption, SessionACL};
 use std::io::Read;
-use std::os::fd::FromRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -371,7 +372,9 @@ struct AclArgs {
     /// A principal this mount can prove beyond its own person id (`room:<id>`, `app:<id>`, `agent:<id>`, `token:<id>`, `person:<id>`); repeatable.
     #[arg(long = "principal", value_name = "KIND:ID")]
     principals: Vec<String>,
-    /// How often to re-read `--acl`, in seconds (`0` = once, at mount time; default 1).
+    /// `0` reads `--acl` once, at mount time. Otherwise it is re-read on
+    /// every change, and every this many seconds only when the file cannot
+    /// be watched (default 1).
     #[arg(long, value_name = "SECONDS", default_value_t = 1)]
     acl_reload_secs: u64,
 }
@@ -706,7 +709,8 @@ async fn run_command() -> Result<()> {
                     .context("recovery requires --cache-dir")?;
                 workspace_startup::inspect(cache)?.require_existing()?;
             }
-            serve(
+            // Boxed: serving holds every service's state across one await.
+            Box::pin(serve(
                 mount_point,
                 cache_dir,
                 seed,
@@ -715,7 +719,7 @@ async fn run_command() -> Result<()> {
                 blob_sock,
                 acl,
                 data_plane,
-            )
+            ))
             .await
         }
         Command::Mount {
@@ -866,7 +870,7 @@ async fn publish_authority(acl: PathBuf) -> Result<()> {
         }
         Err(error) => return Err(error).context("read workspace governor key"),
     };
-    let capabilities = serde_json::from_slice(
+    let capabilities: collab_types::FsAuthority = serde_json::from_slice(
         &std::fs::read(&acl).with_context(|| format!("read capability list {}", acl.display()))?,
     )?;
     let (workspace, socket) = fs::workspace_authority::find_local_authority().await?;
@@ -1092,7 +1096,9 @@ fn resolve_acl(
     Ok(Some(Arc::new(file)))
 }
 
-/// Re-read the capability list every `every` seconds and swap it into the live mount (`0` disables reload).
+/// Keep the live mount's capability list current (`every == 0` disables
+/// reload): re-read on every change of the file, and poll every `every`
+/// seconds only when it cannot be watched (TIL-774).
 fn spawn_acl_reload(file: Arc<CapabilityFile>, every: u64) -> Option<tokio::task::JoinHandle<()>> {
     if every == 0 {
         println!(
@@ -1101,68 +1107,26 @@ fn spawn_acl_reload(file: Arc<CapabilityFile>, every: u64) -> Option<tokio::task
         );
         return None;
     }
-    Some(tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(every));
-        loop {
-            tick.tick().await;
-            match file.refresh() {
-                Refresh::Unchanged => {}
-                Refresh::Reloaded(n) => {
-                    println!(
-                        "Capability list {} reloaded: {n} in force",
-                        file.path().display()
-                    );
-                }
-                Refresh::Revoked => eprintln!(
-                    "Capability list {} is gone; denying every access until it returns",
-                    file.path().display()
-                ),
-                Refresh::Failed(e) => eprintln!(
-                    "Capability list {} could not be re-read ({e}); the previously loaded list \
-                     stays in force",
-                    file.path().display()
-                ),
-            }
-        }
-    }))
+    Some(
+        file.spawn_reload(fs::file_watch::ReloadCadence::new(Duration::from_secs(
+            every,
+        ))),
+    )
 }
 
+/// Sign each new version of the capability list into the workspace
+/// authority; polls once a second only when the file cannot be watched.
 fn spawn_workspace_authority_reload(
     path: PathBuf,
     authority: Arc<WorkspaceAuthority>,
     governor: ed25519_dalek::SigningKey,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut previous = std::fs::read(&path).ok();
-        let mut tick = tokio::time::interval(Duration::from_secs(1));
-        loop {
-            tick.tick().await;
-            let Ok(bytes) = std::fs::read(&path) else {
-                continue;
-            };
-            if previous.as_ref() == Some(&bytes) {
-                continue;
-            }
-            let Ok(capabilities) = serde_json::from_slice(&bytes) else {
-                continue;
-            };
-            let revision = authority
-                .current()
-                .map_or(1, |current| current.revision.saturating_add(1));
-            let Ok(envelope) = WorkspaceAuthorityEnvelope::sign(
-                authority.workspace(),
-                revision,
-                capabilities,
-                false,
-                &governor,
-            ) else {
-                continue;
-            };
-            if authority.apply(envelope).is_ok() {
-                previous = Some(bytes);
-            }
-        }
-    })
+    fs::workspace_authority::spawn_capability_file_reload(
+        path,
+        authority,
+        governor,
+        fs::file_watch::ReloadCadence::new(Duration::from_secs(1)),
+    )
 }
 
 /// Serve document media from the content store (best-effort, like the other
@@ -1185,6 +1149,13 @@ fn spawn_document_media(
     }
 }
 
+/// An owner-only socket at `path` for the tokio runtime, replacing a stale one.
+fn bind_private_socket(path: &Path) -> std::io::Result<tokio::net::UnixListener> {
+    let listener = tilo_files::native::private::bind_socket(path)?;
+    listener.set_nonblocking(true)?;
+    tokio::net::UnixListener::from_std(listener)
+}
+
 /// Bind and serve the document control socket (best-effort), using the same ACL/identity as the mount.
 fn spawn_control(
     sock: &Path,
@@ -1192,12 +1163,9 @@ fn spawn_control(
     sync: Arc<SyncHandle>,
     enforcement: fs::control::Enforcement,
 ) -> tokio::task::JoinHandle<()> {
-    let _ = std::fs::remove_file(sock); // clear a stale socket
-    match tokio::net::UnixListener::bind(sock) {
+    // The socket can read and edit every document — restrict to the owner.
+    match bind_private_socket(sock) {
         Ok(listener) => {
-            // The socket can read and edit every document — restrict to the owner.
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(sock, std::fs::Permissions::from_mode(0o600));
             println!("Document control socket at {}", sock.display());
             tokio::spawn(fs::control::serve(
                 listener,
@@ -1217,15 +1185,8 @@ fn spawn_share_control(
     socket: &Path,
     server: Arc<ShareControlServer>,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    use std::os::unix::fs::PermissionsExt;
-
-    if socket.exists() {
-        std::fs::remove_file(socket)
-            .with_context(|| format!("removing stale share socket {}", socket.display()))?;
-    }
-    let listener = tokio::net::UnixListener::bind(socket)
+    let listener = bind_private_socket(socket)
         .with_context(|| format!("binding share socket {}", socket.display()))?;
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
     println!("Files share control socket at {}", socket.display());
     Ok(tokio::spawn(async move {
         if let Err(error) = server.serve(listener).await {
@@ -1368,7 +1329,7 @@ fn export_home_peer(
         .with_context(|| format!("read capability list {}", acl.display()))?;
     let _: serde_json::Value =
         serde_json::from_str(&capability_json).context("capability list is not valid JSON")?;
-    let capabilities = serde_json::from_str(&capability_json)?;
+    let capabilities: collab_types::FsAuthority = serde_json::from_str(&capability_json)?;
     let paths = identity_paths();
     let governor = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
         .context("read workspace governor key")?;
@@ -1426,6 +1387,12 @@ async fn replica(config_path: PathBuf) -> Result<()> {
     let bundle: HomePeerSet = toml::from_str(&config_text)
         .with_context(|| format!("parse home-peer bundle {}", config_path.display()))?;
     validate_home_peer_set(&bundle)?;
+    // Held for the life of the process: the relay honours a ready status
+    // only while this lock is held (or its stamp is a few seconds old), so
+    // the status is written when it changes rather than every second
+    // (TIL-774). Taken before the status is touched, so a second replica
+    // refused here cannot clobber a running one's status.
+    let _alive = fs::full_replica::ReplicaLiveness::hold(&bundle.status_file)?;
     save_status(
         &bundle.status_file,
         &fs::full_replica::FullReplicaStatus::syncing(),
@@ -1563,7 +1530,7 @@ async fn replica_workspace(
         .map(|path| spawn_persist(Arc::clone(&namespace), path));
     println!("Home peer joined workspace; hydrating complete content replica.");
     let mut hydrated_namespace = None;
-    let mut last_status = fs::full_replica::FullReplicaStatus::syncing();
+    let mut wait = ReplicaWait::new(&namespace);
     loop {
         // Namespace anti-entropy and signed-record anti-entropy are separate
         // authenticated exchanges. Project the durable record truth before
@@ -1574,17 +1541,16 @@ async fn replica_workspace(
             let mut failed = fs::full_replica::FullReplicaStatus::syncing();
             failed.state = "failed".into();
             failed.error = Some(format!("reconcile signed replica projection: {error}"));
-            let _ = status_tx.send((index, failed.clone())).await;
-            last_status = failed;
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            let _ = status_tx.send((index, failed)).await;
+            wait.retry().await;
             continue;
         }
         let before = replica_namespace_fingerprint(&namespace);
         if hydrated_namespace.as_ref() == Some(&before) {
-            // Keep the proof fresh without re-reading the full content set on
-            // every heartbeat. Any namespace delta below clears this fast path.
-            let _ = status_tx.send((index, last_status.clone())).await;
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            // The proof stands for as long as this process holds its
+            // liveness lock: nothing to restamp. Any namespace delta wakes
+            // the next pass, which withdraws it first.
+            wait.settled().await;
             continue;
         }
         // Withdraw first. A partial or stalled pass must never leave the
@@ -1644,9 +1610,8 @@ async fn replica_workspace(
                 status = fs::full_replica::FullReplicaStatus::syncing();
                 status.state = "failed".into();
                 status.error = Some("home peer has no durable namespace path".into());
-                let _ = status_tx.send((index, status.clone())).await;
-                last_status = status;
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                let _ = status_tx.send((index, status)).await;
+                wait.retry().await;
                 continue;
             };
             // Unchanged heads before and after the save prove it persisted
@@ -1671,11 +1636,69 @@ async fn replica_workspace(
                 }
             }
         }
-        let _ = status_tx.send((index, status.clone())).await;
-        hydrated_namespace = status.full_content_replication.then_some(after);
-        last_status = status;
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        let ready = status.full_content_replication;
+        let _ = status_tx.send((index, status)).await;
+        hydrated_namespace = ready.then_some(after);
+        if ready {
+            wait.settled().await;
+        } else {
+            // Content a peer could not serve yet: try again, backing off,
+            // or at once when the namespace moves.
+            wait.retry().await;
+        }
         let _ = &workspace;
+    }
+}
+
+/// What the home-peer loop sleeps on between passes (TIL-774). A ready
+/// replica waits for the namespace to change; an incomplete or failed pass
+/// is retried after 1 s, doubling to a minute, and at once on a namespace
+/// change. It used to wake every second either way to restamp its proof.
+struct ReplicaWait {
+    changes: tokio::sync::watch::Receiver<()>,
+    retry: Duration,
+}
+
+impl ReplicaWait {
+    const FIRST_RETRY: Duration = Duration::from_secs(1);
+    const MAX_RETRY: Duration = Duration::from_secs(60);
+    /// A ready replica re-projects the signed records this often even with
+    /// no namespace change: a bound for anything that did not announce.
+    const BACKSTOP: Duration = Duration::from_secs(300);
+
+    fn new(namespace: &Arc<Mutex<Namespace>>) -> Self {
+        Self {
+            changes: namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .subscribe_changes(),
+            retry: Self::FIRST_RETRY,
+        }
+    }
+
+    /// After a pass that left the replica ready.
+    async fn settled(&mut self) {
+        self.retry = Self::FIRST_RETRY;
+        self.until_change(Self::BACKSTOP).await;
+    }
+
+    /// After a pass that could not.
+    async fn retry(&mut self) {
+        let delay = self.retry;
+        self.retry = delay.saturating_mul(2).min(Self::MAX_RETRY);
+        self.until_change(delay).await;
+    }
+
+    async fn until_change(&mut self, at_most: Duration) {
+        tokio::select! {
+            changed = self.changes.changed() => {
+                if changed.is_err() {
+                    // The namespace is gone; only the timer is left.
+                    tokio::time::sleep(at_most).await;
+                }
+            }
+            () = tokio::time::sleep(at_most) => {}
+        }
     }
 }
 
@@ -1741,11 +1764,26 @@ async fn serve(
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
-    let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret.clone()).await?;
+    // The relays wait until something means another party may dial this
+    // mount (TIL-774, `fs::reachability`): each trace of one wakes them.
+    let (endpoint, lookup, reachability) =
+        sync::bind_dormant_endpoint_with_key(device.secret.clone()).await?;
+    if let Some(authority) = share_authority.as_ref()
+        && authority.has_unrevoked_grants()
+    {
+        reachability.wake("a share grant is live");
+    }
     // Files act as the certified person by default; transport authorship and
     // device-specific grants continue to use the endpoint/device key.
     let caps = resolve_acl(&acl_args, credentials.user_public_key())?;
     let acl = caps.as_ref().map(|c| (c.handle(), c.identity()));
+    let _acl_reachability = if let Some(caps) = &caps {
+        reachability
+            .wake_when_acl_admits_others(&caps.handle(), "the capability list names someone else")
+    } else {
+        reachability.wake("the mount enforces no capability list");
+        None
+    };
     let _reload = caps.map(|c| spawn_acl_reload(c, acl_args.acl_reload_secs));
     let named_outbox = cache_dir
         .as_ref()
@@ -1761,9 +1799,14 @@ async fn serve(
         || Ticket::workspace_id_for_topic(*endpoint.id().as_bytes()),
         Ticket::workspace_id,
     );
+    if remote_ticket.is_some() {
+        reachability.wake("this device joined another device's workspace");
+    }
     let store = Arc::new(open_workspace_store(cache_dir.clone(), &data_plane, workspace_id).await?);
     let author = endpoint.id().to_string();
-    let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
+    let hydrator = Arc::new(
+        Hydrator::new(endpoint.clone(), store.clone()).with_reachability(reachability.clone()),
+    );
     if let Some(cache_dir) = cache_dir.as_deref() {
         for peer in load_persisted_content_peers(cache_dir)? {
             hydrator.add_peer(peer.endpoint);
@@ -1793,6 +1836,9 @@ async fn serve(
             None => (Namespace::new(author.clone())?, true),
         },
     };
+    if ns_value.has_synced_with_peers() {
+        reachability.wake("this workspace has synced with a peer before");
+    }
     let namespace = Arc::new(Mutex::new(ns_value));
     let record_materializer = if let Some(records) = record_services.as_mut() {
         let materializer =
@@ -1845,9 +1891,10 @@ async fn serve(
             .filter(|_| remote_ticket.is_none())
             .zip(share_issuer.as_ref())
             .map(|(path, signer)| -> Result<_> {
-                let capabilities = serde_json::from_slice(&std::fs::read(path)?)
-                    .context("parse workspace authority bootstrap capabilities")?;
-                Ok((capabilities, signer))
+                let authority: collab_types::FsAuthority =
+                    serde_json::from_slice(&std::fs::read(path)?)
+                        .context("parse workspace authority bootstrap capabilities")?;
+                Ok((authority.capabilities, signer))
             })
             .transpose()?;
         records.workspace_authority = workspace_startup::owner_authority(
@@ -1858,6 +1905,15 @@ async fn serve(
             bootstrap,
         )?;
     }
+    let _authority_reachability = record_services
+        .as_ref()
+        .and_then(|records| records.workspace_authority.as_ref())
+        .and_then(|authority| {
+            reachability.wake_when_acl_admits_others(
+                &authority.handle(),
+                "the workspace authority names someone else",
+            )
+        });
     let record_publisher = record_repository
         .clone()
         .map(|repository| {
@@ -2057,7 +2113,8 @@ async fn serve(
                 vec![issuer_public],
                 Arc::new(ShareManagement::new(Arc::clone(authority))),
                 Arc::clone(repository),
-            )?;
+            )?
+            .with_reachability(reachability.clone());
             if let Some(outbox) = named_outbox.as_ref() {
                 server = server.with_named_delivery_outbox(Arc::clone(outbox));
             }
@@ -2404,33 +2461,6 @@ async fn mount(
     Ok(())
 }
 
-#[derive(Clone)]
-enum SharedCredential {
-    Bearer(FileShareLinkV2),
-    Named(fs::NamedShareEnvelopeV1),
-}
-
-impl SharedCredential {
-    fn invite(&self) -> &fs_protocol::FileInviteV1 {
-        match self {
-            Self::Bearer(link) => &link.invite,
-            Self::Named(envelope) => &envelope.invite,
-        }
-    }
-    fn endpoint(&self) -> &iroh_base::EndpointAddr {
-        match self {
-            Self::Bearer(link) => &link.endpoint,
-            Self::Named(envelope) => &envelope.endpoint,
-        }
-    }
-    fn validate_at(&self, person: collab_types::Ed25519PublicKey, now_ms: u64) -> Result<()> {
-        match self {
-            Self::Bearer(link) => link.validate_at(now_ms).map_err(Into::into),
-            Self::Named(envelope) => envelope.validate_for_at(person, now_ms).map_err(Into::into),
-        }
-    }
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "Exact-record mounting keeps credential checks, snapshot validation, scoped namespace projection, refresh tasks, and mount cleanup in one trust sequence."
@@ -2513,10 +2543,11 @@ async fn mount_share(
     hydrator.add_peer(credential.endpoint().clone());
     let availability = open_availability(cache.as_deref())?;
     let eviction_queue = open_eviction_queue(cache.as_deref())?;
+    let mut observed = false;
     if let Some(revision) = snapshot.content_revision {
         track_shared_revision(availability.as_ref(), revision)?;
-        if let SharedCredential::Bearer(link) = &credential
-            && let Err(error) = refresh_host_replica_observation(
+        if let SharedCredential::Bearer(link) = &credential {
+            match refresh_host_replica_observation(
                 &client,
                 link,
                 revision,
@@ -2524,130 +2555,39 @@ async fn mount_share(
                 actor.device,
             )
             .await
-        {
-            eprintln!("shared-record host replica is not yet available: {error}");
+            {
+                Ok(()) => observed = true,
+                Err(error) => {
+                    eprintln!("shared-record host replica is not yet available: {error}");
+                }
+            }
         }
     }
     let thumb_dir = thumb_path(cache.as_deref());
 
-    // Refresh the authenticated snapshot and the host-side live blob session.
-    // Same-actor bearer redemption is idempotent, while expiry/revocation
-    // still stops subsequent refreshes and fetch authorization.
-    let poll_namespace = Arc::clone(&namespace);
-    let poll_history = Arc::clone(&history);
-    let poll_path = namespace_path.clone();
-    let poll_client = client.clone();
-    let poll_credential = credential.clone();
-    let poll_subscriptions = subscriptions.clone();
-    let poll_store = Arc::clone(&store);
-    let poll_availability = availability.clone();
-    let poll_replica_signing_key = replica_signing_key;
-    let poll_task = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(5));
-        interval.tick().await;
-        loop {
-            interval.tick().await;
-            if poll_credential
-                .validate_at(actor.person, unix_now_ms())
-                .is_err()
-            {
-                break;
-            }
-            match fetch_shared_snapshot(&poll_client, &poll_credential).await {
-                Ok(snapshot) if snapshot.record_id == expected_record => {
-                    if let Err(error) =
-                        apply_shared_snapshot(&poll_namespace, &poll_history, &snapshot)
-                    {
-                        eprintln!("shared record refresh rejected: {error}");
-                        break;
-                    }
-                    persist_now(&poll_namespace, &poll_path);
-                    if let Some(revision) = snapshot.content_revision {
-                        if let Err(error) =
-                            track_shared_revision(poll_availability.as_ref(), revision)
-                        {
-                            eprintln!("could not persist shared-record version: {error}");
-                            break;
-                        }
-                        if let SharedCredential::Bearer(poll_link) = &poll_credential
-                            && let Err(error) = refresh_host_replica_observation(
-                                &poll_client,
-                                poll_link,
-                                revision,
-                                poll_availability.as_ref(),
-                                actor.device,
-                            )
-                            .await
-                        {
-                            eprintln!("shared-record host replica is not yet available: {error}");
-                        }
-                    }
-                    if let Some(revision) = snapshot.content_revision
-                        && poll_store.verify_durable_revision(&revision).await.is_ok()
-                    {
-                        match fs::ReplicaAckRequestV1::new(
-                            poll_credential.invite().workspace_id,
-                            revision,
-                        )
-                        .and_then(|request| {
-                            fs::ReplicaAckV1::signed(
-                                &request,
-                                actor,
-                                unix_now_ms(),
-                                &poll_replica_signing_key,
-                            )
-                        }) {
-                            Ok(receipt) => {
-                                if !matches!(
-                                    request_shared(
-                                        &poll_client,
-                                        &poll_credential,
-                                        RecordProtocolOperationV1::AcknowledgeReplica(receipt)
-                                    )
-                                    .await,
-                                    Ok(RecordProtocolResponseV1::ReplicaAcknowledged { .. })
-                                ) {
-                                    eprintln!(
-                                        "shared record is durable locally but host did not accept its replica receipt"
-                                    );
-                                }
-                            }
-                            Err(error) => {
-                                eprintln!("could not sign shared-record replica receipt: {error}");
-                            }
-                        }
-                    }
-                    if let Some(subscriptions) = &poll_subscriptions
-                        && let Err(error) =
-                            subscriptions.record_success(subscription_key, unix_now_ms())
-                    {
-                        eprintln!("could not persist shared-record refresh status: {error}");
-                        break;
-                    }
-                }
-                Ok(_) => {
-                    if let Some(subscriptions) = &poll_subscriptions {
-                        let _ = subscriptions.record_error(
-                            subscription_key,
-                            RecordSubscriptionFailureCode::InvalidResponse,
-                            unix_now_ms(),
-                        );
-                    }
-                    break;
-                }
-                Err(error) => {
-                    if let Some(subscriptions) = &poll_subscriptions {
-                        let _ = subscriptions.record_error(
-                            subscription_key,
-                            error.failure_code(),
-                            unix_now_ms(),
-                        );
-                    }
-                    eprintln!("shared record refresh failed: {error}");
-                }
-            }
-        }
-    });
+    // Keep the snapshot current and the host-side live blob session
+    // registered: one held, authenticated stream on which the host answers
+    // when the record changes, or a 5 s poll of a host that
+    // predates that. Same-actor bearer redemption is idempotent, while
+    // expiry/revocation still stops subsequent refreshes and fetch
+    // authorization.
+    let refresh = ShareRefreshTask {
+        refresher: ShareRefresher::new(client, credential.clone(), actor.person, &snapshot),
+        namespace: Arc::clone(&namespace),
+        history: Arc::clone(&history),
+        namespace_path: namespace_path.clone(),
+        subscriptions: subscriptions.map(|store| (store, subscription_key)),
+        store: Arc::clone(&store),
+        availability: availability.clone(),
+        replica_signing_key,
+        actor,
+        workspace_id: credential.invite().workspace_id,
+        expected_record,
+        revision: snapshot.content_revision,
+        observed_at: observed.then(tokio::time::Instant::now),
+        receipt: None,
+    };
+    let poll_task = tokio::spawn(refresh.run());
 
     println!(
         "Mounted exact shared record {} from certified endpoint {}",
@@ -2807,54 +2747,14 @@ async fn recipient_service(
     Ok(())
 }
 
-#[allow(
-    clippy::disallowed_methods,
-    reason = "systemd socket activation: LISTEN_* must not leak to supervised mount \
-              children; cleared right after fd 3 is taken, at the start of the \
-              recipient service before it spawns any task or child, while the \
-              runtime's worker threads are still idle and nothing else reads the \
-              environment"
-)]
 fn recipient_service_listener(socket: &Path) -> Result<tokio::net::UnixListener> {
-    const SYSTEMD_LISTEN_FD: libc::c_int = 3;
-    let pid_matches = std::env::var("LISTEN_PID")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-        == Some(std::process::id());
-    if !pid_matches {
+    // SAFETY: taken at the start of the recipient service, before it spawns
+    // any task or child, while the runtime's worker threads are still idle
+    // and nothing else reads the environment.
+    let Some(listener) = (unsafe { tilo_files::native::private::activated_socket(socket)? }) else {
         return bind_recipient_service_socket(socket);
-    }
-    anyhow::ensure!(
-        std::env::var("LISTEN_FDS").as_deref() == Ok("1"),
-        "systemd must pass exactly one recipient-service listener"
-    );
-    // SAFETY: fcntl only validates the scalar descriptor.
-    anyhow::ensure!(
-        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } != -1,
-        "systemd recipient-service listener fd is closed"
-    );
-    // SAFETY: validated activation metadata transfers ownership of fd 3 once.
-    let listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
-    // systemd may hand over an unnamed connected socket; a missing pathname
-    // is not a different listener. Refuse only an explicit other path.
-    if let Some(actual) = listener.local_addr()?.as_pathname() {
-        anyhow::ensure!(
-            actual == socket,
-            "systemd recipient-service listener has an unexpected path"
-        );
-    }
+    };
     listener.set_nonblocking(true)?;
-    // Do not leak the service control endpoint into supervised FUSE children.
-    anyhow::ensure!(
-        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } != -1,
-        "cannot mark recipient-service listener close-on-exec"
-    );
-    // SAFETY: recipient_service runs before spawning its worker tasks.
-    unsafe {
-        std::env::remove_var("LISTEN_PID");
-        std::env::remove_var("LISTEN_FDS");
-        std::env::remove_var("LISTEN_FDNAMES");
-    }
     tokio::net::UnixListener::from_std(listener).map_err(Into::into)
 }
 
@@ -2903,90 +2803,167 @@ fn bind_recipient_service_socket(socket: &Path) -> Result<tokio::net::UnixListen
     }
 }
 
-async fn fetch_shared_snapshot(
-    client: &RecordProtocolClient,
-    credential: &SharedCredential,
-) -> std::result::Result<RecordProtocolSnapshotV1, SharedFetchError> {
-    match request_shared(client, credential, RecordProtocolOperationV1::Read).await? {
-        // The snapshot is of the invite's workspace and record, or refused.
-        RecordProtocolResponseV1::Snapshot { session, snapshot } => {
-            if session.is_for_invite(credential.invite()) {
-                Ok(snapshot)
-            } else {
-                Err(SharedFetchError::OtherSession)
+/// How often an idle recipient renews the replica receipts it exchanges
+/// with its host: inside [`fs::availability::EvictionRequirements`]'s
+/// five-minute bound on a receipt's age, so either side may still evict.
+/// A new revision renews them at once.
+const SHARE_REPLICA_RENEWAL: Duration = Duration::from_secs(4 * 60);
+
+/// The refresh loop of one mounted shared record.
+///
+/// Persists, records availability and exchanges replica receipts only when
+/// something changed or a receipt is due: an idle record costs one await
+/// a minute on a stream already held, and no disk write.
+struct ShareRefreshTask {
+    refresher: ShareRefresher,
+    namespace: Arc<Mutex<Namespace>>,
+    history: Arc<FileHistoryStore>,
+    namespace_path: PathBuf,
+    subscriptions: Option<(Arc<RecordSubscriptionStore>, RecordSubscriptionKey)>,
+    store: Arc<ContentStore>,
+    availability: Option<Arc<Mutex<fs::AvailabilityRegistry>>>,
+    replica_signing_key: ed25519_dalek::SigningKey,
+    actor: fs_protocol::FileActor,
+    workspace_id: uuid::Uuid,
+    expected_record: fs_protocol::FileRecordId,
+    /// The revision the recipient holds.
+    revision: Option<fs_protocol::ContentRevisionV1>,
+    /// When the host last proved it holds `revision`.
+    observed_at: Option<tokio::time::Instant>,
+    /// The revision the host last accepted this device's receipt for.
+    receipt: Option<(fs_protocol::ContentRevisionV1, tokio::time::Instant)>,
+}
+
+impl ShareRefreshTask {
+    async fn run(mut self) {
+        let mut failing = false;
+        loop {
+            let changed = match self.refresher.next().await {
+                Ok(ShareRefresh::Changed(snapshot)) => {
+                    if snapshot.record_id != self.expected_record {
+                        self.record_error(RecordSubscriptionFailureCode::InvalidResponse);
+                        break;
+                    }
+                    if let Err(error) = self.apply(&snapshot) {
+                        eprintln!("shared record refresh rejected: {error}");
+                        break;
+                    }
+                    true
+                }
+                Ok(ShareRefresh::Unchanged) => false,
+                Err(SharedFetchError::Expired) => break,
+                Err(error) => {
+                    self.record_error(error.failure_code());
+                    eprintln!("shared record refresh failed: {error}");
+                    failing = true;
+                    continue;
+                }
+            };
+            if let Some(revision) = self.revision {
+                self.renew_receipts(revision).await;
+            }
+            if (changed || failing)
+                && let Some((subscriptions, key)) = &self.subscriptions
+            {
+                if let Err(error) = subscriptions.record_success(*key, unix_now_ms()) {
+                    eprintln!("could not persist shared-record refresh status: {error}");
+                    break;
+                }
+                failing = false;
             }
         }
-        RecordProtocolResponseV1::Denied => Err(SharedFetchError::Denied),
-        RecordProtocolResponseV1::NotFound => Err(SharedFetchError::NotFound),
-        RecordProtocolResponseV1::InternalError => Err(SharedFetchError::Internal),
-        _ => Err(SharedFetchError::InvalidResponse),
     }
-}
 
-async fn request_shared(
-    client: &RecordProtocolClient,
-    credential: &SharedCredential,
-    operation: RecordProtocolOperationV1,
-) -> std::result::Result<RecordProtocolResponseV1, RecordProtocolClientError> {
-    match credential {
-        SharedCredential::Bearer(link) => client.request_bearer_link(link, operation).await,
-        SharedCredential::Named(envelope) => {
-            client
-                .request_named(
-                    envelope.endpoint.clone(),
-                    envelope.invite.clone(),
-                    operation,
+    /// Project a changed snapshot and persist it; a new revision clears
+    /// the receipts of the old one.
+    fn apply(&mut self, snapshot: &RecordProtocolSnapshotV1) -> Result<()> {
+        apply_shared_snapshot(&self.namespace, &self.history, snapshot)?;
+        persist_now(&self.namespace, &self.namespace_path);
+        if snapshot.content_revision != self.revision {
+            self.revision = snapshot.content_revision;
+            self.observed_at = None;
+            self.receipt = None;
+            if let Some(revision) = self.revision {
+                track_shared_revision(self.availability.as_ref(), revision)
+                    .context("could not persist shared-record version")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Ask the host for its receipt, and send this device's once the
+    /// content is durable here, when either is missing or due.
+    async fn renew_receipts(&mut self, revision: fs_protocol::ContentRevisionV1) {
+        let due = |at: tokio::time::Instant| at.elapsed() >= SHARE_REPLICA_RENEWAL;
+        if self.observed_at.is_none_or(due) {
+            match self.observe_host(revision).await {
+                Ok(()) => self.observed_at = Some(tokio::time::Instant::now()),
+                Err(error) => {
+                    eprintln!("shared-record host replica is not yet available: {error}");
+                }
+            }
+        }
+        let receipt_due = self
+            .receipt
+            .is_none_or(|(acked, at)| acked != revision || due(at));
+        if !receipt_due || self.store.verify_durable_revision(&revision).await.is_err() {
+            return;
+        }
+        let receipt =
+            fs::ReplicaAckRequestV1::new(self.workspace_id, revision).and_then(|request| {
+                fs::ReplicaAckV1::signed(
+                    &request,
+                    self.actor,
+                    unix_now_ms(),
+                    &self.replica_signing_key,
                 )
-                .await
+            });
+        match receipt {
+            Ok(receipt) => {
+                if matches!(
+                    self.refresher
+                        .request(RecordProtocolOperationV1::AcknowledgeReplica(receipt))
+                        .await,
+                    Ok(RecordProtocolResponseV1::ReplicaAcknowledged { .. })
+                ) {
+                    self.receipt = Some((revision, tokio::time::Instant::now()));
+                } else {
+                    eprintln!(
+                        "shared record is durable locally but host did not accept its replica receipt"
+                    );
+                }
+            }
+            Err(error) => {
+                eprintln!("could not sign shared-record replica receipt: {error}");
+            }
         }
     }
-}
 
-#[derive(Debug, thiserror::Error)]
-enum SharedFetchError {
-    #[error("shared-record transport or authentication failed")]
-    Client(#[from] RecordProtocolClientError),
-    #[error("shared-record access was denied or revoked")]
-    Denied,
-    #[error("shared record no longer exists")]
-    NotFound,
-    #[error("shared-record host returned an invalid response")]
-    InvalidResponse,
-    #[error("shared-record host answered for another workspace or record than the invite names")]
-    OtherSession,
-    #[error("shared-record host failed internally")]
-    Internal,
-}
+    async fn observe_host(&mut self, revision: fs_protocol::ContentRevisionV1) -> Result<()> {
+        let Some(availability) = &self.availability else {
+            return Ok(());
+        };
+        let request = fs::ReplicaAckRequestV1::new(self.workspace_id, revision)?;
+        let Some(observation) = self.refresher.host_replica_observation(request).await? else {
+            return Ok(());
+        };
+        let observed_at_ms = observation.observed_at_ms;
+        let mut registry = availability
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        registry.observe_replica(
+            revision.record_id,
+            self.actor.device,
+            observation,
+            observed_at_ms,
+        )?;
+        drop(registry);
+        Ok(())
+    }
 
-impl SharedFetchError {
-    fn failure_code(&self) -> RecordSubscriptionFailureCode {
-        match self {
-            Self::Client(
-                RecordProtocolClientError::Transport(_)
-                | RecordProtocolClientError::Timeout
-                | RecordProtocolClientError::ReplicaUnavailable,
-            ) => RecordSubscriptionFailureCode::Offline,
-            Self::Client(
-                RecordProtocolClientError::Authentication(_)
-                | RecordProtocolClientError::LocalEndpointMismatch
-                | RecordProtocolClientError::ServerEndpointMismatch
-                | RecordProtocolClientError::RevocationStatePoisoned
-                | RecordProtocolClientError::ReplicaVerification(_),
-            ) => RecordSubscriptionFailureCode::Authentication,
-            Self::Denied
-            | Self::Client(
-                RecordProtocolClientError::Link(_) | RecordProtocolClientError::ReplicaDenied,
-            ) => RecordSubscriptionFailureCode::Denied,
-            Self::NotFound => RecordSubscriptionFailureCode::NotFound,
-            Self::InvalidResponse
-            | Self::OtherSession
-            | Self::Client(
-                RecordProtocolClientError::RequestTooLarge
-                | RecordProtocolClientError::InvalidRequest
-                | RecordProtocolClientError::ResponseTooLarge
-                | RecordProtocolClientError::InvalidResponse,
-            ) => RecordSubscriptionFailureCode::InvalidResponse,
-            Self::Internal => RecordSubscriptionFailureCode::Internal,
+    fn record_error(&self, code: RecordSubscriptionFailureCode) {
+        if let Some((subscriptions, key)) = &self.subscriptions {
+            let _ = subscriptions.record_error(*key, code, unix_now_ms());
         }
     }
 }
@@ -4308,7 +4285,7 @@ mod tests {
             let err = resolve_acl(&args, NODE_KEY)
                 .expect_err("a malformed capability list must abort the mount");
             assert!(
-                format!("{err:#}").contains("JSON array of capabilities"),
+                format!("{err:#}").contains("not the governor's file authority"),
                 "expected a parse failure, got: {err:#}"
             );
         }
@@ -4331,7 +4308,9 @@ mod tests {
         }
         // Phase `the_capability_file_round_trips_and_is_enforced`.
         {
-            use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};
+            use collab_types::{
+                Access as CapAccess, CapOverride, Ed25519PublicKey, Effect, Scope, Subject,
+            };
             use fs::Access;
 
             let who = [0x0A; 32];
@@ -4339,11 +4318,15 @@ mod tests {
                 Subject::User(Ed25519PublicKey(who)),
                 Scope::FsPath("/w/docs".into()),
                 Effect::Grant,
-                Verb::Read,
+                CapAccess::Read,
             )];
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");
-            std::fs::write(&path, serde_json::to_vec(&caps).unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&collab_types::FsAuthority::from(caps)).unwrap(),
+            )
+            .unwrap();
 
             let args = acl_args_from(&[
                 "--acl",

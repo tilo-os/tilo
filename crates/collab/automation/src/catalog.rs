@@ -6,6 +6,7 @@
 //! fetches immediately before each invocation.
 
 use serde_json::{Map, Value};
+use tilo_actions::ActionKey;
 use tilo_actions::params::ActionParam;
 use tilo_actions::remote::CatalogueRow;
 
@@ -51,19 +52,20 @@ pub fn quick_action_arguments(input: &ActionParam, resource: &str) -> Map<String
     arguments
 }
 
-/// The first row among `rows` that offers `action` on `app_id` at `target`.
+/// The first row among `rows` that offers the action `key` names at
+/// `target`: its app, its id, and a resource of its kind or a sub-kind.
 pub(crate) fn find_row<'r>(
     rows: impl IntoIterator<Item = &'r CatalogueRow>,
-    app_id: &str,
+    key: &ActionKey,
     target: ResourceTarget<'_>,
-    action: &str,
 ) -> Option<&'r CatalogueRow> {
     rows.into_iter().find(|row| {
-        row.app_id == app_id
+        row.app_id == key.app
+            && kind_matches(&key.kind, &row.resource.kind)
             && row
                 .action
                 .as_ref()
-                .is_some_and(|descriptor| descriptor.address.action == action)
+                .is_some_and(|descriptor| descriptor.address.action == key.action)
             && match target {
                 ResourceTarget::Id(id) => row.resource.id == id,
                 ResourceTarget::Kind(kind) => kind_matches(kind, &row.resource.kind),
@@ -95,15 +97,10 @@ impl ActionCatalog {
         &self.rows
     }
 
-    /// The row offering `action` on `app_id` at `target`.
+    /// The row offering the action `key` names at `target`.
     #[must_use]
-    pub fn find(
-        &self,
-        app_id: &str,
-        target: ResourceTarget<'_>,
-        action: &str,
-    ) -> Option<&CatalogueRow> {
-        find_row(&self.rows, app_id, target, action)
+    pub fn find(&self, key: &ActionKey, target: ResourceTarget<'_>) -> Option<&CatalogueRow> {
+        find_row(&self.rows, key, target)
     }
 
     /// Every row offering `action` on `app_id`, whatever the resource.

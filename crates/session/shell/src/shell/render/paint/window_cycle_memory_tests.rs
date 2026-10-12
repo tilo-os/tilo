@@ -381,3 +381,133 @@ fn closed_windows_device_memory_goes_back_to_the_kernel() {
         );
     }
 }
+
+/// Long zigzags across the desktop: about 150k path segments, past what the
+/// viewport's floors reserve (164k, with growth reserving twice what a frame
+/// used), so the renderer's bump reservation grows for them and one shrink
+/// brings it back to the floors. A window with dense vector content stands
+/// in for it.
+fn busy_paths(scene: &mut Scene) {
+    use vello::kurbo::BezPath;
+    use vello::peniko::{Color, Fill};
+    for band in 0..2_u32 {
+        let top = 40.0 + f64::from(band) * 360.0;
+        let mut path = BezPath::new();
+        path.move_to((40.0, top));
+        for i in 0..1000_u32 {
+            let x = if i % 2 == 0 { 1240.0 } else { 40.0 };
+            path.line_to((x, top + f64::from(i) * 0.3));
+        }
+        path.close_path();
+        scene.fill(Fill::NonZero, Affine::IDENTITY, Color::WHITE, None, &path);
+    }
+}
+
+/// Paint the desktop with `window` and the busy paths over it, or bare, as
+/// the DRM presenter does (`after_paint` included); the pixels it drew.
+fn paint_scene(
+    bridge: &mut VelloDrmBridge,
+    wallpaper: &ImageData,
+    window: Option<&ImageData>,
+) -> Vec<u8> {
+    let mut scene = Scene::new();
+    scene.draw_image(wallpaper, Affine::IDENTITY);
+    if let Some(window) = window {
+        scene.draw_image(window, Affine::translate((20.0, 10.0)));
+        busy_paths(&mut scene);
+    }
+    let pixels = bridge.paint(&scene).expect("the desktop paints").to_vec();
+    bridge.after_paint();
+    pixels
+}
+
+/// The renderer's scratch comes back after a busy window closes. Vello sizes
+/// its bump buffers from the busiest frame it drew and pools every buffer it
+/// allocated; four apps opened and closed left the compositor's reservation
+/// at 36 MiB against the bare desktop's 28, and its pool at 68 MiB. Now the
+/// few frames a close draws bring both back to the bare desktop's, the
+/// pixels stay the same, and the window opened again draws its first frame
+/// in one render: a shrink leaves room for the scene that grew it.
+#[test]
+fn closed_windows_renderer_scratch_comes_back() {
+    let mut bridge = VelloDrmBridge::new(LARGE_DESKTOP.0, LARGE_DESKTOP.1)
+        .expect("the memory gate requires a real wgpu adapter");
+    let wallpaper = image(LARGE_DESKTOP.0, LARGE_DESKTOP.1, 0x30);
+    let mut bare_pixels = Vec::new();
+    for _ in 0..IDLE_PAINTS {
+        bare_pixels = paint_scene(&mut bridge, &wallpaper, None);
+    }
+    let bare = bridge.renderer_memory_stats();
+
+    let id: SurfaceId = 0x0806_0000;
+    store().forget(id);
+    commit_sized(id, 0x5A, LARGE_WINDOW);
+    let (window, _) = store().frame_image(id).expect("a published frame draws");
+    let started = Instant::now();
+    let open_pixels = paint_scene(&mut bridge, &wallpaper, Some(&window));
+    let first_open = (started.elapsed(), bridge.last_render_attempts());
+    for _ in 1..COMMITS {
+        paint_scene(&mut bridge, &wallpaper, Some(&window));
+    }
+    let open = bridge.renderer_memory_stats();
+    assert!(
+        open.bump_budget_bytes > bare.bump_budget_bytes,
+        "the busy window never grew the bump reservation ({} bytes), so its shrink proves nothing",
+        bare.bump_budget_bytes
+    );
+
+    store().forget(id);
+    let mut closed_pixels = Vec::new();
+    for _ in 0..CLOSE_PAINTS {
+        closed_pixels = paint_scene(&mut bridge, &wallpaper, None);
+    }
+    let closed = bridge.renderer_memory_stats();
+    eprintln!(
+        "bump reservation {} KiB bare, {} KiB open, {} KiB closed; pool {} KiB bare, {} KiB \
+         open, {} KiB closed",
+        bare.bump_budget_bytes >> 10,
+        open.bump_budget_bytes >> 10,
+        closed.bump_budget_bytes >> 10,
+        bare.pooled_buffer_bytes >> 10,
+        open.pooled_buffer_bytes >> 10,
+        closed.pooled_buffer_bytes >> 10,
+    );
+    // Within an eighth: a smaller shrink is not worth reallocating for.
+    assert!(
+        closed.bump_budget_bytes <= bare.bump_budget_bytes + bare.bump_budget_bytes / 8,
+        "{CLOSE_PAINTS} frames after the close the bump reservation had not come back"
+    );
+    assert!(
+        closed.pooled_buffer_bytes <= bare.pooled_buffer_bytes,
+        "{CLOSE_PAINTS} frames after the close the pool held {} KiB, the bare desktop {} KiB",
+        closed.pooled_buffer_bytes >> 10,
+        bare.pooled_buffer_bytes >> 10
+    );
+    assert!(
+        closed_pixels == bare_pixels,
+        "the bare desktop draws alike after the close"
+    );
+
+    // The same window again: its first frame fits what the shrink left.
+    let id: SurfaceId = 0x0806_0001;
+    store().forget(id);
+    commit_sized(id, 0x5A, LARGE_WINDOW);
+    let (window, _) = store().frame_image(id).expect("a published frame draws");
+    let started = Instant::now();
+    let reopen_pixels = paint_scene(&mut bridge, &wallpaper, Some(&window));
+    let reopen = (started.elapsed(), bridge.last_render_attempts());
+    store().forget(id);
+    eprintln!(
+        "first frame: {:?} in {} render(s) when the window first opened, {:?} in {} when it \
+         opened again",
+        first_open.0, first_open.1, reopen.0, reopen.1
+    );
+    assert_eq!(
+        reopen.1, 1,
+        "the reopened window's first frame overflowed and rendered again"
+    );
+    assert!(
+        reopen_pixels == open_pixels,
+        "and draws as it did when first opened"
+    );
+}

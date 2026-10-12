@@ -215,6 +215,27 @@ class Select(unittest.TestCase):
                                        "--github-output", str(output)]), 0)
         self.assertEqual(output.read_text(), "tapp_apps=\ntapp_required=false\n")
 
+    def test_the_repository_workflow_runs_the_tapps_job(self):
+        workflow = (ratchet.REPO / ".forgejo/workflows/check.yml").read_text(encoding="utf-8")
+        self.assertTrue(ratchet.runs_tapps_job(workflow))
+        before = workflow.replace("\n  tapps:\n", "\n  sizes:\n")
+        self.assertFalse(ratchet.runs_tapps_job(before))
+
+    def test_a_workflow_without_the_tapps_job_fails_when_an_app_is_affected(self):
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(directory)], check=False))
+        index, output = directory / "entries.json", directory / "output"
+        index.write_text(json.dumps(entries({("so.tilo.settings", "x86_64"): 1_000})))
+        old, new = directory / "old.yml", directory / "new.yml"
+        old.write_text("jobs:\n  select:\n    runs-on: x\n  checks:\n    needs: [select]\n")
+        new.write_text("jobs:\n  select:\n    runs-on: x\n  tapps:\n    needs: [select]\n")
+        args = ["select", "--entries", str(index), "--github-output", str(output)]
+        self.assertEqual(ratchet.main(args + ["--apps", "settings", "--workflow", str(old)]), 1)
+        self.assertIn("tapp_required=true", output.read_text())
+        self.assertEqual(ratchet.main(args + ["--apps", "settings", "--workflow", str(new)]), 0)
+        # A change that affects no app needs no tapps job.
+        self.assertEqual(ratchet.main(args + ["--apps", "", "--workflow", str(old)]), 0)
+
 
 class CheckBudget(unittest.TestCase):
     def test_an_unchanged_budget_passes(self):

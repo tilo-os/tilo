@@ -15,17 +15,13 @@
 
 use crate::framework_support::{add_note, notes, open, send as dispatch, surface};
 use ui::widget::BlockKind;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::NamedKey;
 
 use ui::synthetic_input::cursor_moved;
 
 fn mouse(state: ElementState) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state,
-        button: MouseButton::Left,
-    }
+    ui::synthetic_input::mouse_input(state, ui::winit::event::MouseButton::Left)
 }
 
 use ui::synthetic_input::char_key;

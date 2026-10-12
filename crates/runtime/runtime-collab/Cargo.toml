@@ -24,7 +24,7 @@ default = ["client"]
 # (action directory, nearby transfer, Wi-Fi continuity, task runs, presence
 # and workspace-control types), for code that speaks the broker's language
 # through some other transport.
-client = ["dep:runtime-portal", "dep:capnp", "dep:capnp-rpc", "dep:tokio", "dep:tokio-util"]
+client = ["dep:runtime-portal", "dep:capnp", "dep:capnp-rpc", "dep:tokio"]
 # The `AppSettings` capability over a `settings_store::SettingsSource`, for
 # the hosts that hand one to each app.
 settings-host = ["client", "dep:settings-store"]
@@ -39,7 +39,6 @@ capnp = { workspace = true, optional = true }
 capnp-rpc = { workspace = true, optional = true }
 # `net` (the Unix-socket transport) is added for non-WASM targets below.
 tokio = { workspace = true, optional = true, features = ["rt", "io-util", "macros", "sync"] }
-tokio-util = { workspace = true, optional = true }
 settings-store = { version = "0.1.0", path = "../../system/settings-store", optional = true }
 serde.workspace = true
 serde_json.workspace = true

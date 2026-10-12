@@ -312,8 +312,8 @@ fn quick_settings_keyboard_actions_and_edit_reorder_route_through_the_host() {
     // pointer users. This guards the route through `ShellOverlayHost`, where
     // overlay ordering and modifier state have historically swallowed keys.
     {
-        // Sliders, live controls, Devices, Clipboard, power profile and Edit
-        // precede Settings.
+        // Sliders, live controls and both radio detail targets, Devices,
+        // Clipboard, power profile and Edit precede Settings.
         // Enter on Settings dismisses the popover. The launcher itself is covered by the
         // serial `quick_settings_settings_action_launches_personal_settings_app`
         // test; this route test also guards against reopening the unrelated
@@ -321,7 +321,7 @@ fn quick_settings_keyboard_actions_and_edit_reorder_route_through_the_host() {
         let tree = minimal_tree();
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-        for _ in 0..10 {
+        for _ in 0..12 {
             assert!(press_key(
                 &mut host,
                 &taffy,
@@ -347,7 +347,7 @@ fn quick_settings_keyboard_actions_and_edit_reorder_route_through_the_host() {
         let tree = minimal_tree();
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-        for _ in 0..9 {
+        for _ in 0..11 {
             assert!(press_key(
                 &mut host,
                 &taffy,
@@ -418,10 +418,11 @@ fn quick_settings_keyboard_actions_and_edit_reorder_route_through_the_host() {
         let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
 
         // The control-first root puts Edit after two sliders, three live
-        // controls, Devices, Clipboard and Power profile. Space enters edit mode
+        // controls, two radio detail targets, Devices, Clipboard and Power
+        // profile. Space enters edit mode
         // with no hidden selection. Two Tabs then select Bluetooth. Move it below
         // Night Light with Ctrl+Down.
-        for _ in 0..9 {
+        for _ in 0..11 {
             assert!(press_key(
                 &mut host,
                 &taffy,

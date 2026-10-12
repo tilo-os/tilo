@@ -86,7 +86,7 @@ fn fixture() -> Fixture {
     let room = tilo_joined_room::testing::ROOM;
     let mut workspace =
         crate::test_support::Workspace::new(crate::test_support::WorkspaceId(1), "Native recovery");
-    workspace.room = uuid::Uuid::parse_str(room).unwrap().into();
+    workspace.set_room(uuid::Uuid::parse_str(room).unwrap().into());
     workspace.set_owner(principal_id_for_root(certificate.user_public_key));
     let mut tree = crate::test_support::WorkspaceTree::default();
     tree.workspaces.push(workspace);
@@ -147,10 +147,10 @@ fn prepare(f: &Fixture) -> DurableInvocation {
     let actor = f.caller.admitted.broker_actor().id;
     let context = tilo_actions::ActionContext::default();
     let contract = tilo_actions::ActionContract {
-        permission: tilo_actions::PermissionRequirement::Write,
+        kind: tilo_actions::ActionKind::Undoable,
         ..Default::default()
     };
-    let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,"actor":actor,"context":context,"contract":contract,"app_id":"so.tilo.chat","resource":"app.so.tilo.chat","action":"test-effect"});
+    let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,"actor":actor,"context":context,"contract":contract,"app_id":"so.tilo.chat","resource":"app.so.tilo.chat","resource_kind":"app","action":"test-effect"});
     let update = tilo_actions::InvocationUpdate::Succeeded {
         invocation: key.invocation,
         output: tilo_actions::ActionOutput::default(),

@@ -1549,13 +1549,12 @@ impl TopBarChrome {
                     .find(|person| person.session == Some(peer))
                     .map(|participant| (workspace, participant))
             }) {
-                let is_agent = workspace.capabilities.iter().any(|capability| {
+                let is_agent = workspace.policy.grants.iter().any(|grant| {
                     matches!(
-                        &capability.subject,
-                        collab_types::caps::Subject::Principal(
-                            collab_types::caps::Principal::Agent(id)
-                        ) if id.eq_ignore_ascii_case(&participant.id)
-                            || id.eq_ignore_ascii_case(&participant.name)
+                        &grant.subject,
+                        tilo_action_policy::Subject::Agent(id)
+                            if id.eq_ignore_ascii_case(&participant.id)
+                                || id.eq_ignore_ascii_case(&participant.name)
                     )
                 });
                 viewers.push((peer, participant.name.clone(), Some(is_agent), can_control));
@@ -6091,7 +6090,6 @@ mod calendar_strip_tests {
 mod tests {
     use super::*;
     use automerge::AutoCommit;
-    use collab_types::caps::{CapOverride, Subject, Verb};
     use tilo_desktop_model::{
         DesktopTree, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
     };
@@ -7168,15 +7166,17 @@ mod tests {
         };
         tree.active = tree.workspaces[0].id;
         let workspace = &mut tree.workspaces[0];
-        workspace.owner = Some("owner".to_string());
-        let room = workspace.id.raw().to_string();
-        workspace
-            .grant_as_at(
+        workspace.set_owner("owner");
+        assert!(
+            !crate::workspace_settings::admit_agent(
+                workspace,
                 &"owner".to_string(),
-                CapOverride::membership(Subject::agent("scribe"), room, Verb::Write),
-                0,
+                "scribe",
+                crate::workspace_settings::AgentPreset::Operator,
             )
-            .expect("owner admits agent");
+            .is_empty(),
+            "owner admits agent"
+        );
         workspace.collaborators.push(
             tilo_desktop_model::Collaborator::new("scribe", "Release Notes Agent").with_session(9),
         );
@@ -7208,13 +7208,16 @@ mod tests {
         let mut tree = two_workspace_tree();
         let shared = &mut tree.workspaces[1];
         shared.name = "Private".into();
-        shared.owner = Some("owner".into());
-        let room = shared.id.raw().to_string();
-        shared.capabilities.push(CapOverride::membership(
-            Subject::agent("scribe"),
-            room,
-            Verb::Write,
-        ));
+        shared.set_owner("owner");
+        assert!(
+            !crate::workspace_settings::admit_agent(
+                shared,
+                &"owner".to_string(),
+                "scribe",
+                crate::workspace_settings::AgentPreset::Operator,
+            )
+            .is_empty()
+        );
         shared
             .collaborators
             .push(tilo_desktop_model::Collaborator::new("scribe", "scribe").with_session(9));

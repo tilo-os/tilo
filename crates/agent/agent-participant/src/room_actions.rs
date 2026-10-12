@@ -34,7 +34,12 @@
 //! The service joins each room as the host's own device ([`RoomMember`], from
 //! the [`RoomRecordsLink`] the host supplies): a member of the room's
 //! channels like any other, admitted by the room's steward. It reads only
-//! records it holds keys for and writes nothing in the clear.
+//! records it holds keys for and writes nothing in the clear. When the host
+//! device is itself the steward of the room's channels (a room the host
+//! governs), it cannot be admitted to them a second time; the host hands the
+//! service the keys its steward holds instead
+//! ([`RoomRecordsLink::steward_keys`]), for each record a request reads or
+//! acts on, fresh for every act.
 
 mod feedback;
 mod reads;
@@ -49,15 +54,14 @@ use ed25519_dalek::SigningKey;
 use crate::apps::{AppCatalogue, Seed};
 use crate::host::{CatalogueFactory, HostEndpoint};
 use crate::participant::SharedDesktop;
-use crate::participant::actions::{RECORD_PROVIDER, record_provider};
+use crate::participant::actions::{Outcome, door_outcome, open_row, record_of, record_provider};
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use collab_types::DocumentMutation;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CallerPrincipal,
-    CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource, CatalogueRow, Completer,
-    Confirmation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
-    ReceiptStatus, RemoteActionMessage, application_open_target, pending, workspace_provider,
-    workspace_provider_room,
+    CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow, Completer, Confirmation,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
+    RemoteActionMessage, pending, workspace_provider, workspace_provider_room,
 };
 use tilo_actions::{
     ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate, PROMPTED_PARAM,
@@ -99,22 +103,21 @@ pub struct RoomMember {
 pub struct ViewReadPolicy {
     /// Governed room whose current policy authorized the exact source record.
     pub room: String,
-    /// Current role of the certified caller, supplied by the host.
-    pub role: collab_types::Role,
-    /// Current capability overrides, including device restrictions.
-    pub caps: Vec<collab_types::caps::CapOverride>,
-    /// Root identity authenticated on the connection.
-    pub person: String,
+    /// The certified caller's current standing in the room, including the
+    /// bound of a device that is not theirs.
+    pub standing: ui::permissions::Standing,
+    /// The room's current sandbox capabilities.
+    pub sandbox: Vec<collab_types::caps::CapOverride>,
     /// Host time used to evaluate capability expiry.
     pub unix_time: u64,
 }
 
 impl ViewReadPolicy {
     pub(crate) fn permissions(&self) -> ui::permissions::PermissionContext {
-        ui::permissions::PermissionContext::from_capabilities(
-            ui::permissions::Actor::person(Some(self.role), self.person.clone())
-                .in_room(self.room.clone()),
-            self.caps.clone(),
+        ui::permissions::PermissionContext::new(
+            ui::permissions::Actor::person(self.standing.person.clone()).in_room(self.room.clone()),
+            self.sandbox.clone(),
+            self.standing.clone(),
         )
         .at_unix_time(self.unix_time)
     }
@@ -162,6 +165,23 @@ pub trait RoomRecordsLink: Send + Sync {
         _source: &DocumentRoute,
     ) -> Result<ViewDocument, String> {
         Err("existing view documents unavailable".into())
+    }
+    /// The content keys of `route`'s channel, when the host device itself
+    /// stewards the channels of `route`'s room: it is then already the
+    /// channel's member, and the service, which joins as that device, can
+    /// only be handed the keys the steward holds. `create` opens the channel
+    /// of a record the service is about to write for the first time.
+    ///
+    /// `None` when the host does not steward the room: the service waits for
+    /// the room's steward to admit it over the channel, like any member.
+    /// `Some(Err)` when the host refused the hand-off or holds no such
+    /// channel. Called only on behalf of a caller the service serves.
+    fn steward_keys(
+        &self,
+        _route: &DocumentRoute,
+        _create: bool,
+    ) -> Option<Result<tilo_browser_peer::ChannelContentKeys, String>> {
+        None
     }
     /// The listener-owned public locator; absence cannot mint a browser link.
     fn view_locator(
@@ -717,7 +737,12 @@ impl Room {
     /// refused: nothing acts on a record seen only in part. A listing gives
     /// up quietly, lists what opened, and does not wait for the same keys
     /// again.
-    fn wait_for(&mut self, workspace_id: u64, needs: Needs<'_>) -> Result<(), ActionHostError> {
+    fn wait_for(
+        &mut self,
+        workspace_id: u64,
+        needs: Needs<'_>,
+        link: Option<&dyn RoomRecordsLink>,
+    ) -> Result<(), ActionHostError> {
         let joined = Instant::now()
             .checked_add(JOIN_WAIT)
             .unwrap_or_else(Instant::now);
@@ -730,9 +755,39 @@ impl Room {
         let keyed = Instant::now()
             .checked_add(KEYS_WAIT)
             .unwrap_or_else(Instant::now);
-        self.settle(workspace_id, keyed, |room| {
-            room.sealed(workspace_id, needs).is_empty()
-        });
+        // Keys the host's own steward holds are handed over as soon as a
+        // route needs them: the record acted on at once (fresh every time),
+        // and every route that arrives sealed while this waits.
+        let mut handed = HashSet::new();
+        if let Some(link) = link
+            && let Needs::Act { app_id, record } = needs
+            && let Some(room) = self.room_id(workspace_id)
+        {
+            let route = DocumentRoute {
+                app_id: app_id.to_owned(),
+                cluster_id: room,
+                record: record.to_owned(),
+            };
+            self.take_steward_keys(vec![route], needs, link, &mut handed)?;
+        }
+        loop {
+            self.settle(workspace_id, keyed, |room| {
+                let sealed = room.sealed(workspace_id, needs);
+                sealed.is_empty()
+                    || (link.is_some() && sealed.iter().any(|route| !handed.contains(route)))
+            });
+            let unhanded: Vec<DocumentRoute> = self
+                .sealed(workspace_id, needs)
+                .into_iter()
+                .filter(|route| !handed.contains(route))
+                .collect();
+            match link {
+                Some(link) if !unhanded.is_empty() => {
+                    self.take_steward_keys(unhanded, needs, link, &mut handed)?;
+                }
+                _ => break,
+            }
+        }
         let sealed = self.sealed(workspace_id, needs);
         match needs {
             Needs::Act { app_id, record } if !sealed.is_empty() => {
@@ -757,6 +812,60 @@ impl Room {
             }
             Needs::Joined | Needs::Act { .. } => Ok(()),
         }
+    }
+
+    /// Hold the keys the host's own steward hands over for `routes`
+    /// ([`RoomRecordsLink::steward_keys`]), noting each in `handed`. The
+    /// session then opens what it held for them and wakes the wait. A record
+    /// to act on whose keys the host refuses is refused at once; a listing
+    /// goes on without it.
+    fn take_steward_keys(
+        &self,
+        routes: Vec<DocumentRoute>,
+        needs: Needs<'_>,
+        link: &dyn RoomRecordsLink,
+        handed: &mut HashSet<DocumentRoute>,
+    ) -> Result<(), ActionHostError> {
+        for route in routes {
+            handed.insert(route.clone());
+            match link.steward_keys(&route, false) {
+                None => {}
+                Some(Ok(keys)) => {
+                    self.peer
+                        .install_channel_keys(route, keys)
+                        .map_err(|reason| ActionHostError::Unavailable { reason })?;
+                }
+                Some(Err(reason)) => {
+                    if let Needs::Act { app_id, record } = needs {
+                        return Err(ActionHostError::Unavailable {
+                            reason: format!(
+                                "the host holds no keys to {app_id} record {record}: {reason}"
+                            ),
+                        });
+                    }
+                    tracing::info!(app = %route.app_id, record = %route.record, %reason,
+                        "room actions: listing without a record the host holds no keys to");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The id of the room `workspace_id` names, from what the member has
+    /// seen of it.
+    fn room_id(&self, workspace_id: u64) -> Option<String> {
+        let of_room = |route: &DocumentRoute| {
+            tilo_relay_protocol::room_workspace_id(&route.cluster_id).ok() == Some(workspace_id)
+        };
+        if let Some((route, _)) = self.log.iter().find(|(route, _)| of_room(route)) {
+            return Some(route.cluster_id.clone());
+        }
+        self.peer
+            .status()
+            .routes
+            .into_keys()
+            .find(|route| of_room(route))
+            .map(|route| route.cluster_id)
     }
 
     /// Take the session's events until `settled`, or until `deadline`.
@@ -805,57 +914,9 @@ struct Worker {
     clock: u64,
 }
 
-fn record_of(provider: &str, room: &str) -> Option<DocumentRoute> {
-    let rest = provider.strip_prefix(RECORD_PROVIDER)?.strip_prefix(':')?;
-    let (app_id, record) = rest.split_once(':')?;
-    Some(DocumentRoute {
-        app_id: app_id.to_owned(),
-        cluster_id: room.to_owned(),
-        record: record.to_owned(),
-    })
-}
-
-/// What a held record publishes that its door runs now. A `Launchable`
-/// action is delivered by launching the app, not by a record already open,
-/// so it is not offered here.
+/// What a held record publishes that its door runs now.
 fn live_actions(app: &ConfinedReplica) -> Vec<tilo_actions::ActionDescriptor> {
     app.survey()
-        .into_iter()
-        .filter(|descriptor| {
-            descriptor.contract.discovery != tilo_actions::DiscoveryScope::Launchable
-        })
-        .collect()
-}
-
-/// How an invocation that did not succeed ended.
-enum Outcome {
-    /// Nothing ran; the id is forgotten.
-    Rejected(ActionHostError),
-    Failed(ActionFailure),
-}
-
-fn door_outcome(error: &tilo_actions::door::DoorError) -> Outcome {
-    use tilo_actions::door::DoorError;
-    match error {
-        DoorError::Unknown(_) | DoorError::UnregisteredType(_) => {
-            Outcome::Rejected(ActionHostError::UnknownAction)
-        }
-        DoorError::ConfirmationRequired => Outcome::Rejected(ActionHostError::ConfirmationRequired),
-        DoorError::MissingArgument(_)
-        | DoorError::UnexpectedArgument(_)
-        | DoorError::InvalidArguments(_) => Outcome::Rejected(ActionHostError::InvalidRequest {
-            reason: error.to_string(),
-        }),
-        DoorError::Unavailable { reason, .. } => Outcome::Rejected(ActionHostError::Unavailable {
-            reason: reason.clone(),
-        }),
-        DoorError::Failed(message) => Outcome::Failed(ActionFailure {
-            code: error.code().to_owned(),
-            message: message.clone(),
-            details: None,
-            retryable: false,
-        }),
-    }
 }
 
 impl Worker {
@@ -946,7 +1007,11 @@ impl Worker {
                 .ok_or_else(|| ActionHostError::Unavailable {
                     reason: "the room was not joined".into(),
                 })?;
-        room.wait_for(workspace_id, needs)?;
+        room.wait_for(
+            workspace_id,
+            needs,
+            self.shared.link.get().map(|link| &**link),
+        )?;
         let mut state = RoomState::default();
         for (position, (route, change)) in room.log.iter().enumerate() {
             state.room.get_or_insert_with(|| route.cluster_id.clone());
@@ -1071,9 +1136,8 @@ impl Worker {
             .view_read_policy(workspace, caller, &route.app_id, &route.record)
             .ok_or_else(refuse)?;
         if fresh.room != first.room
-            || fresh.role != first.role
-            || fresh.caps != first.caps
-            || fresh.person != first.person
+            || fresh.standing != first.standing
+            || fresh.sandbox != first.sandbox
         {
             return Err(refuse());
         }
@@ -1081,19 +1145,8 @@ impl Worker {
         let rows = descriptors
             .into_iter()
             .filter(|descriptor| current.contains(descriptor))
-            .map(|descriptor| CatalogueRow {
-                provider: provider.to_owned(),
-                app_id: route.app_id.clone(),
-                parent_resource: String::new(),
-                resource: CatalogueResource {
-                    id: descriptor.address.resource.clone(),
-                    kind: descriptor.resource_kind.clone(),
-                    label: descriptor.resource_label.clone(),
-                    presentation: None,
-                },
-                action: Some(descriptor),
-                has_children: false,
-                visibility: None,
+            .map(|descriptor| {
+                CatalogueRow::for_action(provider.to_owned(), route.app_id.clone(), descriptor)
             })
             .collect();
         let mut page = CataloguePage::from_rows(source.revision, rows, query);
@@ -1166,19 +1219,8 @@ impl Worker {
             {
                 descriptors.extend(read.operations());
             }
-            rows.extend(descriptors.into_iter().map(|descriptor| CatalogueRow {
-                provider: provider.clone(),
-                app_id: route.app_id.clone(),
-                parent_resource: String::new(),
-                resource: CatalogueResource {
-                    id: descriptor.address.resource.clone(),
-                    kind: descriptor.resource_kind.clone(),
-                    label: descriptor.resource_label.clone(),
-                    presentation: None,
-                },
-                action: Some(descriptor),
-                has_children: false,
-                visibility: None,
+            rows.extend(descriptors.into_iter().map(|descriptor| {
+                CatalogueRow::for_action(provider.clone(), route.app_id.clone(), descriptor)
             }));
         }
         if query
@@ -1242,20 +1284,7 @@ impl Worker {
             .ok()?;
         let rows = descriptors
             .into_iter()
-            .map(|descriptor| CatalogueRow {
-                provider: provider.into(),
-                app_id: route.app_id.clone(),
-                parent_resource: String::new(),
-                resource: CatalogueResource {
-                    id: descriptor.address.resource.clone(),
-                    kind: descriptor.resource_kind.clone(),
-                    label: descriptor.resource_label.clone(),
-                    presentation: None,
-                },
-                action: Some(descriptor),
-                has_children: false,
-                visibility: None,
-            })
+            .map(|descriptor| CatalogueRow::for_action(provider, route.app_id.clone(), descriptor))
             .collect();
         Some(CataloguePage::from_rows(
             read.revision().to_owned(),
@@ -1267,37 +1296,7 @@ impl Worker {
     fn open_rows(&self, room: &str) -> Vec<CatalogueRow> {
         self.catalogue
             .iter()
-            .map(|definition| {
-                let app = definition.app_id;
-                let target = application_open_target(room, app);
-                CatalogueRow {
-                    provider: target.provider.clone(),
-                    app_id: app.to_owned(),
-                    parent_resource: String::new(),
-                    resource: CatalogueResource {
-                        id: target.address.resource.clone(),
-                        kind: "applications.app".into(),
-                        label: app.to_owned(),
-                        presentation: None,
-                    },
-                    action: Some(tilo_actions::door::ActionDescriptor {
-                        semantic_identity: None,
-                        address: target.address,
-                        resource_kind: "applications.app".into(),
-                        resource_label: app.to_owned(),
-                        action_label: format!("Open {app}"),
-                        description: Some(format!("Open {app} on a new record in this room.")),
-                        locus: tilo_actions::ExecutionLocus::ServerPreferred,
-                        kind: tilo_actions::OperationKind::Effect,
-                        contract: tilo_actions::ActionContract::default(),
-                        params: Vec::new(),
-                        input: tilo_actions::InputSpec::None,
-                        view: None,
-                    }),
-                    has_children: false,
-                    visibility: None,
-                }
-            })
+            .map(|definition| open_row(room, definition.app_id))
             .collect()
     }
 
@@ -1555,6 +1554,27 @@ impl Worker {
             cluster_id: room.to_owned(),
             record: hosted.wire_record().to_owned(),
         };
+        // A new record's channel is opened by the steward; when that is the
+        // host itself, it opens it for the member and hands it the keys, so
+        // the first change goes out sealed instead of waiting for keys.
+        if let Some(keys) = self
+            .shared
+            .link
+            .get()
+            .and_then(|link| link.steward_keys(&route, true))
+        {
+            let keys = keys.map_err(|reason| {
+                Outcome::Rejected(ActionHostError::Unavailable {
+                    reason: format!("the host holds no keys to a new {app} record: {reason}"),
+                })
+            })?;
+            self.rooms
+                .get(&workspace_id)
+                .ok_or_else(|| refused("the room was not joined".into()))?
+                .peer
+                .install_channel_keys(route.clone(), keys)
+                .map_err(refused)?;
+        }
         if let Some(mutation) = hosted
             .take_mutation()
             .map_err(|error| refused(error.to_string()))?

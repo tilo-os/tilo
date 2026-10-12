@@ -657,22 +657,26 @@ impl Delivered {
     /// a publisher in DTX (silence) skips media time without skipping
     /// sequence numbers, and a `grouped` publisher that abandons a partial
     /// group, as it does at the end of every talk spurt, resumes at the next
-    /// group without ever sending the rest of the one it left.
+    /// group without ever sending the rest of the one it left. It abandons
+    /// a group only after sending nothing for its frame budget, so the media
+    /// time then runs past the sequence numbers it skipped; a group tail lost
+    /// on the way (the receiver's read budget ran out, or the publisher
+    /// expired it undrained) leaves the two equal and is counted.
     fn skipped(self, next: &VoiceObject, grouped: bool) -> u64 {
-        let mut first_missing = self.sequence.saturating_add(1);
-        if grouped && next.sequence.is_multiple_of(voice::FRAMES_PER_GROUP) {
-            let next_group = (self.sequence / voice::FRAMES_PER_GROUP)
-                .saturating_add(1)
-                .saturating_mul(voice::FRAMES_PER_GROUP);
-            first_missing = first_missing.max(next_group);
-        }
-        let sequences = next.sequence.saturating_sub(first_missing);
+        let first_missing = self.sequence.saturating_add(1);
         let frames = next
             .timestamp
             .saturating_sub(self.timestamp)
             .checked_div(u64::from(voice::FRAME_SAMPLES))
             .unwrap_or(0)
             .saturating_sub(1);
+        let mut sequences = next.sequence.saturating_sub(first_missing);
+        if grouped && next.sequence.is_multiple_of(voice::FRAMES_PER_GROUP) && frames > sequences {
+            let next_group = (self.sequence / voice::FRAMES_PER_GROUP)
+                .saturating_add(1)
+                .saturating_mul(voice::FRAMES_PER_GROUP);
+            sequences = next.sequence.saturating_sub(first_missing.max(next_group));
+        }
         sequences.min(frames)
     }
 }
@@ -690,22 +694,9 @@ fn deliver(
     if state.status != Status::Live {
         return false;
     }
-    let mut last = last.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some(prior) = *last {
-        if object.sequence <= prior.sequence {
-            state.counters.duplicate_dropped = state.counters.duplicate_dropped.saturating_add(1);
-            return true;
-        }
-        state.counters.late_dropped = state
-            .counters
-            .late_dropped
-            .saturating_add(prior.skipped(&object, grouped));
+    if !account(&mut state, grouped, &object, last) {
+        return true;
     }
-    *last = Some(Delivered {
-        sequence: object.sequence,
-        timestamp: object.timestamp,
-    });
-    drop(last);
     state.expire(Instant::now());
     if state
         .received
@@ -738,6 +729,45 @@ fn deliver(
     true
 }
 
+/// Count what went missing between the last object of this publication and
+/// `object`, and make `object` the last. Returns false for a duplicate.
+fn account(
+    state: &mut State,
+    grouped: bool,
+    object: &VoiceObject,
+    last: &Mutex<Option<Delivered>>,
+) -> bool {
+    let mut last = last.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(prior) = *last {
+        if object.sequence <= prior.sequence {
+            state.counters.duplicate_dropped = state.counters.duplicate_dropped.saturating_add(1);
+            return false;
+        }
+        state.counters.late_dropped = state
+            .counters
+            .late_dropped
+            .saturating_add(prior.skipped(object, grouped));
+    }
+    *last = Some(Delivered {
+        sequence: object.sequence,
+        timestamp: object.timestamp,
+    });
+    true
+}
+
+/// Drop one grouped object that arrived past its group's read budget,
+/// counting it and what it skipped. Returns false when the carrier must stop.
+fn drop_late(shared: &Shared, object: &VoiceObject, last: &Mutex<Option<Delivered>>) -> bool {
+    let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+    if state.status != Status::Live {
+        return false;
+    }
+    if account(&mut state, true, object, last) {
+        state.counters.late_dropped = state.counters.late_dropped.saturating_add(1);
+    }
+    true
+}
+
 async fn receive_datagrams(
     shared: &Shared,
     name: &str,
@@ -765,39 +795,58 @@ async fn receive_datagrams(
     }
 }
 
+async fn receive_group(
+    track: &mut moq_net::track::Subscriber,
+) -> Result<Option<(moq_net::group::Consumer, Instant)>, moq_net::Error> {
+    Ok(track
+        .recv_group()
+        .await?
+        .map(|group| (group, crate::later(Instant::now(), RECEIVE_AGE))))
+}
+
 async fn receive_groups(
     shared: &Shared,
     name: &str,
     mut track: moq_net::track::Subscriber,
     last: &Mutex<Option<Delivered>>,
 ) {
-    let mut next = track.recv_group().await;
-    while let Ok(Some(mut group)) = next {
-        let expires_at = crate::later(Instant::now(), RECEIVE_AGE);
+    let mut next = receive_group(&mut track).await;
+    while let Ok(Some((mut group, expires_at))) = next {
+        let mut pending = None;
         let mut count: u64 = 0;
         loop {
-            // Frames already buffered in this group come first: they are
-            // older than the next group's and still inside their budget, and
-            // switching groups would discard them unread.
+            // A newer QUIC stream can arrive before this group's tail. Retain
+            // one successor until this group finishes or reaches its deadline;
+            // its deadline starts on arrival, not when we start reading it.
             tokio::select! {
                 biased;
                 value = group.read_frame() => {
-                    let Ok(Some(frame)) = value else { next = track.recv_group().await; break; };
+                    let Ok(Some(frame)) = value else {
+                        next = match pending.take() {
+                            Some(queued) => queued,
+                            None => receive_group(&mut track).await,
+                        };
+                        break;
+                    };
                     if shared.check().is_err() { return; }
                     count = count.saturating_add(1);
                     let Ok(object) = VoiceObject::decode(&frame.payload) else { return; };
                     if count > voice::FRAMES_PER_GROUP || object.sequence / voice::FRAMES_PER_GROUP != group.sequence { return; }
                     // The group deadline bounds the read.
                     if Instant::now() >= expires_at {
-                        let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-                        if state.status != Status::Live { return; }
-                        state.counters.late_dropped = state.counters.late_dropped.saturating_add(1);
-                        drop(state); continue;
+                        if !drop_late(shared, &object, last) { return; }
+                        continue;
                     }
                     if !deliver(shared, name, group.sequence, true, object, last) { return; }
                 }
-                fresh = track.recv_group() => { next = fresh; break; }
-                () = tokio::time::sleep_until(expires_at.into()) => { next = track.recv_group().await; break; }
+                fresh = receive_group(&mut track), if pending.is_none() => { pending = Some(fresh); }
+                () = tokio::time::sleep_until(expires_at.into()) => {
+                    next = match pending.take() {
+                        Some(queued) => queued,
+                        None => receive_group(&mut track).await,
+                    };
+                    break;
+                }
             }
         }
     }

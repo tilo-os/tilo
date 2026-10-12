@@ -9,7 +9,6 @@ pub(crate) enum Error {
     Decode(PeerResourceError),
     Unavailable,
     CurrentDenied,
-    UnsupportedPolicy,
     Capacity,
 }
 pub(crate) struct Metadata<'a, I, J> {
@@ -29,15 +28,14 @@ pub(crate) struct Limits {
 
 use super::read::{ReadError, RoomRead, RoomValue, Selection, collections::Collections};
 use crate::resources::json;
-use collab_types::caps::{CapOverride, Principal, Scope, Subject};
+use tilo_action_policy::{Grant, Subject};
 /// Whether a grant's subject can address this consumer's person (whose
-/// document-read actor is `Person(hex(root))`). Role, room, app, agent and
-/// token subjects are kept; person-addressed grants only for this person.
-/// Allocation-free.
+/// document reads are decided for `Person(hex(root))`). Role, agent, task,
+/// Shortcut, app and foreign-device subjects are kept; person-addressed grants
+/// only for this person. Allocation-free.
 pub(super) fn consumer_subject(subject: &Subject, root: &[u8; 32]) -> bool {
     match subject {
-        Subject::User(key) => key.0 == *root,
-        Subject::Principal(Principal::Person(id)) => {
+        Subject::Person(id) => {
             let mut text = [0u8; 64];
             hex::encode_to_slice(root, &mut text).is_ok() && id.as_bytes() == text
         }
@@ -114,11 +112,11 @@ impl postcard::ser_flavors::Flavor for Hash {
     }
 }
 trait Decode {
-    fn cap(&self, bytes: &[u8]) -> Result<CapOverride, Error>;
+    fn grant(&self, bytes: &[u8]) -> Result<Grant, Error>;
 }
 struct LegacyDecode;
 impl Decode for LegacyDecode {
-    fn cap(&self, bytes: &[u8]) -> Result<CapOverride, Error> {
+    fn grant(&self, bytes: &[u8]) -> Result<Grant, Error> {
         serde_json::from_slice(bytes).map_err(|_| Error::Unavailable)
     }
 }
@@ -126,7 +124,7 @@ struct NativeDecode {
     limits: JsonLimits,
 }
 impl Decode for NativeDecode {
-    fn cap(&self, bytes: &[u8]) -> Result<CapOverride, Error> {
+    fn grant(&self, bytes: &[u8]) -> Result<Grant, Error> {
         json::decode(bytes, self.limits).map_err(|e| match e {
             PeerResourceError::Malformed => Error::Unavailable,
             PeerResourceError::Capacity => Error::Decode(PeerResourceError::Capacity),
@@ -195,9 +193,9 @@ where
     })
     .map_err(read_error)?;
     let governor = governor.ok_or(Error::Unavailable)?;
-    let mut caps = Vec::new();
+    let mut grants = Vec::new();
     let mut map = None;
-    read.visit_property(&read.root(), "capabilities", Selection::Winner, |value| {
+    read.visit_property(&read.root(), "grants", Selection::Winner, |value| {
         let RoomValue::Object {
             kind: automerge::ObjType::Map,
             object,
@@ -220,26 +218,20 @@ where
                     if bytes.len() > POLICY_BYTES {
                         return Err(Error::Capacity);
                     }
-                    let cap = &decode.cap(bytes)?;
-                    match &cap.scope {
-                        Scope::Workspace => (),
-                        Scope::Room(room) if room == meta.room => (),
-                        // Enforced only where files are opened, or where an
-                        // action is invoked; neither decides a document read.
-                        Scope::FsPath(_) | Scope::Action { .. } | Scope::ActionOnKind { .. } => {
-                            return Ok(());
-                        }
-                        _ => return Err(Error::UnsupportedPolicy),
-                    }
-                    // A grant addressed to another person can never match this
-                    // consumer's document-read actor; it is not part of its view.
-                    if !consumer_subject(&cap.subject, &person) {
+                    let grant = &decode.grant(bytes)?;
+                    // A grant on another room's nodes decides nothing here.
+                    if grant.node.room_id() != Some(meta.room) {
                         return Ok(());
                     }
-                    add(&mut total, counted(cap)?)?;
-                    let encoded = encode(cap, work)?;
+                    // A grant addressed to another person can never decide this
+                    // consumer's document reads; it is not part of its view.
+                    if !consumer_subject(&grant.subject, &person) {
+                        return Ok(());
+                    }
+                    add(&mut total, counted(grant)?)?;
+                    let encoded = encode(grant, work)?;
                     let key = work.text(key).map_err(|_| Error::Capacity)?;
-                    work.push(&mut caps, (key, encoded))
+                    work.push(&mut grants, (key, encoded))
                         .map_err(|_| Error::Capacity)
                 })
                 .map_err(read_error)?;
@@ -250,7 +242,34 @@ where
         })
         .map_err(read_error)?;
     }
-    caps.sort_unstable();
+    grants.sort_unstable();
+    // The consumer's own role is part of its view; other members' are not.
+    let mut role = None;
+    let mut members = None;
+    read.visit_property(&read.root(), "members", Selection::Winner, |value| {
+        let RoomValue::Object {
+            kind: automerge::ObjType::Map,
+            object,
+        } = value
+        else {
+            return Err(Error::Unavailable);
+        };
+        members = Some(object);
+        Ok(())
+    })
+    .map_err(read_error)?;
+    if let Some(members) = members {
+        let key = hex::encode(person);
+        read.visit_property(&members, &key, Selection::Winner, |value| {
+            let RoomValue::Bytes(bytes) = value else {
+                return Err(Error::Unavailable);
+            };
+            add(&mut total, bytes.len())?;
+            role = Some(work.bytes(bytes).map_err(|_| Error::Capacity)?);
+            Ok(())
+        })
+        .map_err(read_error)?;
+    }
     let certificates = rows(
         meta.certificates
             .filter(|cert| roots.contains(&cert.user_public_key)),
@@ -266,7 +285,7 @@ where
     // Authorization follows all metadata work but precedes final tuple quota.
     check_routes()?;
     let tuple = (
-        2_u8,
+        3_u8,
         meta.room,
         meta.workspace,
         meta.authority,
@@ -275,11 +294,12 @@ where
         governor,
         certificates,
         revocations,
-        caps,
+        grants,
+        role,
     );
     let expected = counted(&tuple)?;
     let mut value = blake3::Hasher::new();
-    value.update(b"tilo-delivery-v3-room-policy-v2\0");
+    value.update(b"tilo-delivery-v3-room-policy-v3\0");
     let (digest, length) = postcard::serialize_with_flavor(&tuple, Hash { value, length: 0 })
         .map_err(|_| Error::Capacity)?;
     if length != expected {

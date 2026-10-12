@@ -10,20 +10,12 @@ pub struct FeedbackDestination {
     pub channel: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FeedbackPublication {
-    Comment,
-    Write,
-}
-
 /// No submission asks only to inspect existing destination admission. A
 /// submission asks for its durable receipt; neither operation publishes it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FeedbackQuery {
     pub destination: FeedbackDestination,
-    pub publication: FeedbackPublication,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submission: Option<serde_json::Value>,
 }
@@ -35,13 +27,14 @@ pub struct FeedbackQuery {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FeedbackAdmission {
     pub destination: FeedbackDestination,
-    pub publication: FeedbackPublication,
     pub owner_user: String,
     pub owner_device: String,
     pub reporter_user: String,
     pub reporter_device: String,
-    pub role: serde_json::Value,
-    pub caps: serde_json::Value,
+    /// The reporter's current standing in the room.
+    pub standing: serde_json::Value,
+    /// The room's current sandbox capabilities.
+    pub sandbox: serde_json::Value,
     pub unix_time: u64,
 }
 
@@ -67,7 +60,6 @@ mod tests {
                     provider: "record:so.tilo.chat:".into(),
                     channel: "existing-channel".into(),
                 },
-                publication: FeedbackPublication::Write,
                 submission: None,
             },
         };
@@ -81,7 +73,7 @@ mod tests {
                 result: Err(ActionHostError::NotPermitted)
             }
         ));
-        let untrusted = serde_json::json!({"destination":{"room":"existing-room","provider":"record:so.tilo.chat:","channel":"existing-channel"},"publication":"write","role":"Owner"});
+        let untrusted = serde_json::json!({"destination":{"room":"existing-room","provider":"record:so.tilo.chat:","channel":"existing-channel"},"standing":{"person":"owner"}});
         assert!(serde_json::from_value::<FeedbackQuery>(untrusted).is_err());
     }
 }

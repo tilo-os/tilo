@@ -400,6 +400,38 @@ impl Ticket {
 ///
 /// Returns an error if the endpoint fails to bind.
 pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint, MemoryLookup)> {
+    let lookup = MemoryLookup::new();
+    let endpoint = endpoint_builder(secret, &lookup).bind().await?;
+    Ok((endpoint, lookup))
+}
+
+/// [`bind_endpoint_with_key`], with the default relays held back until
+/// something may need to dial this device: no home relay, net report,
+/// address discovery or port mapping until the returned
+/// [`crate::reachability::Reachability`] is woken (TIL-774). For a daemon
+/// that waits to be dialled (`fs serve`); one that dials out at once has
+/// no reason to wait.
+///
+/// # Errors
+///
+/// Returns an error if the endpoint fails to bind.
+pub async fn bind_dormant_endpoint_with_key(
+    secret: iroh::SecretKey,
+) -> Result<(Endpoint, MemoryLookup, crate::reachability::Reachability)> {
+    let lookup = MemoryLookup::new();
+    let endpoint = endpoint_builder(secret, &lookup)
+        .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::empty()))
+        .bind()
+        .await?;
+    let reachability = crate::reachability::Reachability::defer(
+        &endpoint,
+        &iroh::endpoint::default_relay_mode().relay_map(),
+        tokio::runtime::Handle::current(),
+    );
+    Ok((endpoint, lookup, reachability))
+}
+
+fn endpoint_builder(secret: iroh::SecretKey, lookup: &MemoryLookup) -> iroh::endpoint::Builder {
     use iroh::endpoint::{QuicTransportConfig, VarInt};
     /// Unacknowledged bytes one stream, and one connection, may have in
     /// flight. QUIC's defaults (1.25 MB per stream, 10 MB per connection)
@@ -413,14 +445,10 @@ pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint
         .receive_window(VarInt::from_u32(CONNECTION_WINDOW))
         .send_window(u64::from(CONNECTION_WINDOW))
         .build();
-    let lookup = MemoryLookup::new();
-    let endpoint = Endpoint::builder(presets::N0)
+    Endpoint::builder(presets::N0)
         .transport_config(transport)
         .secret_key(secret)
         .address_lookup(lookup.clone())
-        .bind()
-        .await?;
-    Ok((endpoint, lookup))
 }
 
 /// Bind an endpoint under a freshly-generated key. **The node id differs

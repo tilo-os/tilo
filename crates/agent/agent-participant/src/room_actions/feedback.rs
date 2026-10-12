@@ -5,16 +5,13 @@ use std::sync::Arc;
 
 use ed25519_dalek::Signer as _;
 use tilo_actions::door::ActionAddress;
-use tilo_actions::remote::feedback::{
-    FeedbackAdmission, FeedbackAnswer, FeedbackPublication, FeedbackQuery,
-};
+use tilo_actions::remote::feedback::{FeedbackAdmission, FeedbackAnswer, FeedbackQuery};
 use tilo_actions::remote::{ActionHostError, Caller};
 use tilo_desktop::feedback::Destination;
 use tilo_desktop::feedback::transport::{
     CanonicalDestination, CanonicalReceiptSource, Enrollment, ReceiptSigner, ReceiptSigningRequest,
 };
 use ui::feedback::{Error, Receipt, Submission};
-use ui::permissions::Verb;
 
 use super::{AppCatalogue, DocumentRoute, RoomMember, RoomRecordsLink, reads, record_of};
 
@@ -68,10 +65,6 @@ pub(super) fn answer(
         owner: owner.clone(),
         reporter: caller.clone(),
         permissions: policy.permissions(),
-        publication: match query.publication {
-            FeedbackPublication::Comment => Verb::Comment,
-            FeedbackPublication::Write => Verb::Write,
-        },
     };
     let source = RetainedSource {
         link: link.clone(),
@@ -84,8 +77,11 @@ pub(super) fn answer(
     source
         .read(
             &ActionAddress::new(
-                format!("chat.channel:{}", destination.channel),
-                "read-feedback-destination",
+                ui::feedback::destination::item(
+                    ui::feedback::destination::CHANNELS,
+                    &destination.channel,
+                ),
+                ui::feedback::destination::READ_DESTINATION,
             ),
             &serde_json::Map::new(),
         )
@@ -119,9 +115,8 @@ pub(super) fn answer(
         .view_read_policy(workspace, &caller, "so.tilo.chat", "")
         .filter(|fresh| {
             fresh.room == policy.room
-                && fresh.person == policy.person
-                && fresh.role == policy.role
-                && fresh.caps == policy.caps
+                && fresh.standing == policy.standing
+                && fresh.sandbox == policy.sandbox
         })
         .ok_or_else(|| unavailable("feedback admission retired"))?;
     Ok(FeedbackAnswer {
@@ -139,7 +134,6 @@ fn admission(
     let caller = &enrollment.reporter;
     Ok(FeedbackAdmission {
         destination: query.destination,
-        publication: query.publication,
         owner_user: hex::encode(
             owner
                 .user_public_key()
@@ -160,8 +154,8 @@ fn admission(
                 .device_public_key()
                 .ok_or_else(|| unavailable("reporter device unavailable"))?,
         ),
-        role: serde_json::to_value(fresh.role).map_err(|error| unavailable(&error))?,
-        caps: serde_json::to_value(fresh.caps).map_err(|error| unavailable(&error))?,
+        standing: serde_json::to_value(fresh.standing).map_err(|error| unavailable(&error))?,
+        sandbox: serde_json::to_value(fresh.sandbox).map_err(|error| unavailable(&error))?,
         unix_time: fresh.unix_time,
     })
 }
@@ -225,8 +219,11 @@ impl CanonicalReceiptSource for RetainedSource {
         let value = source
             .read(
                 &ActionAddress::new(
-                    format!("chat.feedback:{}", submission.id),
-                    "read-feedback-receipt",
+                    ui::feedback::destination::item(
+                        ui::feedback::destination::REPORTS,
+                        &submission.id,
+                    ),
+                    ui::feedback::destination::READ_RECEIPT,
                 ),
                 &arguments,
             )

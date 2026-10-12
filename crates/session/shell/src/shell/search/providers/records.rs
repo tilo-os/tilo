@@ -279,17 +279,11 @@ impl SearchProvider for RecordsProvider {
         }
         let exhausted = !found.more && shown == found.hits.len();
         let next = offset.saturating_add(shown);
-        SearchPage {
-            revision: revision.clone(),
+        SearchPage::continuing(
+            revision,
             results,
-            next_cursor: (!exhausted).then(|| SearchCursor {
-                revision,
-                token: format!("{needle}\u{1f}{next}"),
-            }),
-            exhausted,
-            stale_cursor: false,
-            budget_exhausted: !exhausted,
-        }
+            (!exhausted).then(|| format!("{needle}\u{1f}{next}")),
+        )
     }
 }
 
@@ -425,7 +419,7 @@ mod tests {
         let mut rooms = Vec::new();
         for name in names {
             let mut ws = Workspace::new(WorkspaceId::new(), *name);
-            ws.room = RoomId::new();
+            ws.set_room(RoomId::new());
             rooms.push(ws.room);
             tree.desktop.workspaces.push(ws);
         }

@@ -15,13 +15,7 @@ struct HostedPumpProbe {
 impl Widget for HostedPumpProbe {
     crate::provides!(dyn crate::resources::PublishesResources);
 
-    crate::testing::inert_widget_methods!(
-        unregistered_leaf_layout,
-        apply_layout,
-        draw,
-        get_rect,
-        name = "hosted-pump-probe"
-    );
+    crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "hosted-pump-probe");
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {
         self.syncs.set(self.syncs.get() + 1);
         if let Some(label) = self.pending_label.borrow_mut().take() {
@@ -374,7 +368,6 @@ fn hosted_pump_invocation_advances_and_publishes_then_idles() {
 
 #[test]
 fn hosted_pump_policy_change_and_expiry_refresh() {
-    use crate::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
     use std::sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -382,16 +375,11 @@ fn hosted_pump_policy_change_and_expiry_refresh() {
     let mut fixture = HostedPumpFixture::new(1);
     let time = Arc::new(AtomicU64::new(100));
     let sample = time.clone();
-    fixture.app.permission_ctx = PermissionContext::from_capabilities(
-        Actor::person(None, "fixture-user"),
-        vec![
-            CapOverride::grant(
-                Subject::person("fixture-user"),
-                Scope::Workspace,
-                Verb::Admin,
-            )
-            .with_expiry(110),
-        ],
+    fixture.app.permission_ctx = crate::permissions::PermissionContext::granted(
+        "fixture-user",
+        &crate::permissions::TreePath::root(),
+        crate::permissions::policy::KindSet::ALL,
+        Some(110),
     )
     .with_policy_time_sampler(Arc::new(move || Ok(sample.load(Ordering::Acquire))));
     let generation = fixture.app.actions.resource_generation.get();
@@ -494,16 +482,110 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
     );
     assert_eq!(app.actions.resource_generation.get(), generation);
     // What HostWorker::pump does with the host's recomputed authority.
-    *permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
-        crate::permissions::Actor::person(None, "fixture-user"),
-        vec![],
-    );
+    *permissions.borrow_mut() = crate::permissions::PermissionContext::stranger("fixture-user");
     let report = app.pump_hosted_model_as(false);
     assert!(report.synced && report.published);
     assert_ne!(app.actions.resource_generation.get(), generation);
     assert!(
         tilo_actions::door::survey(&app.publication_resources()).len() < before,
         "revoked authority must filter the published surface"
+    );
+}
+
+/// A component's event-queue notification reaches the App that runs it as
+/// one, not as a model-dirty wake: a directory request answered in the pass
+/// it woke keeps the directory's revision and the continuation it issued.
+#[test]
+fn a_component_queue_notification_reaches_its_app_without_forcing_a_sync() {
+    use crate::application::{
+        ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let mut owners = crate::record::RecordOwners::new(temp.path().into());
+    let records = owners
+        .open("test.directory", "00000000-0000-0000-0000-000000000006")
+        .unwrap();
+    let views = Rc::new(
+        crate::application_view::InstanceViewStore::new(
+            temp.path().into(),
+            "D",
+            "00000000-0000-0000-0000-000000000006",
+        )
+        .unwrap(),
+    );
+    let definition = ApplicationDefinition {
+        app_id: "test.directory",
+        title: "Directory",
+        icon: crate::widget::IconDescriptor::Glyph("D"),
+        record_kind: crate::record::RecordKind::new("directory"),
+        required: vec![],
+        optional: vec![],
+        opens: &[],
+        room_record: false,
+        create: owned_declared_directory_factory,
+    };
+    let context = HostContext::prepare(
+        &definition,
+        HostContextInputs {
+            records,
+            views,
+            device_id: "D".into(),
+            instance_id: 83,
+            permissions: Rc::new(RefCell::new(
+                crate::permissions::PermissionContext::permissive(),
+            )),
+            author: crate::permissions::UserId("fixture-user".into()),
+            action_context: tilo_actions::ActionContext::default(),
+        },
+        &LaunchTarget::New,
+    )
+    .unwrap();
+    let component_wake = context.wake_handle();
+    let component = definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap();
+    let binding = component.callback_binding();
+    let inputs = crate::application::ComponentRunnerInputs {
+        theme: Theme::dark(),
+        text_renderer: crate::font_catalog::fixture_renderer(),
+    };
+    let mut app = App::from_component_using(component, inputs, |_, _| {
+        AppConstructionInputs::controlled()
+    })
+    .unwrap();
+    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        route: binding.broker_route().unwrap(),
+        epoch: uuid::Uuid::new_v4(),
+    });
+    app.init_layout();
+    let mut settled = false;
+    for _ in 0..8 {
+        app.collaboration.manager.wait_for_commands_for_test();
+        if app.pump_hosted_model_as(false) == model_lifecycle::HostedPumpReport::default() {
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "hosted pump never went idle");
+    let revision = app.action_directory_revision();
+
+    component_wake.notify_events();
+    let report = app.pump_hosted_model_as(false);
+    assert!(
+        !report.synced,
+        "a component's queue notification is not model-dirty"
+    );
+    assert_eq!(
+        app.action_directory_revision(),
+        revision,
+        "a queue notification keeps the directory revision"
+    );
+
+    component_wake.wake();
+    assert!(
+        app.pump_hosted_model_as(false).synced,
+        "a component's model-dirty wake still syncs its App"
     );
 }
 
@@ -539,24 +621,22 @@ fn hosted_pump_cost_idle_before_after() {
 
 #[test]
 fn hosted_pump_action_authority_revoke_refreshes_without_forced_sync() {
-    use crate::permissions::{Actor, PermissionContext, Role};
+    use crate::permissions::{PermissionContext, Role};
     use std::sync::{Arc, Mutex};
     let current = Arc::new(Mutex::new(Some(Role::Owner)));
     let sample = current.clone();
     let mut fixture = HostedPumpFixture::new(1);
-    fixture.app.permission_ctx = PermissionContext::from_capabilities(
-        Actor::person(Some(Role::Editor), "fixture-user"),
-        vec![],
-    )
-    .with_action_authority(
-        "test.directory".into(),
-        Arc::new(move || {
-            Ok(PermissionContext::from_capabilities(
-                Actor::person(*sample.lock().unwrap(), "fixture-user"),
-                vec![],
-            ))
-        }),
-    );
+    fixture.app.permission_ctx =
+        crate::permissions::PermissionContext::member("fixture-user", Role::Editor)
+            .with_action_authority(
+                "test.directory".into(),
+                Arc::new(move || {
+                    Ok(match *sample.lock().unwrap() {
+                        Some(role) => PermissionContext::member("fixture-user", role),
+                        None => PermissionContext::stranger("fixture-user"),
+                    })
+                }),
+            );
     assert!(fixture.pump().synced);
     fixture.assert_idle();
     *current.lock().unwrap() = None;
@@ -756,9 +836,6 @@ mod input_publication {
 
         crate::testing::inert_widget_methods!(
             unregistered_leaf_layout,
-            apply_layout,
-            draw,
-            get_rect,
             name = "input-publication-probe"
         );
 

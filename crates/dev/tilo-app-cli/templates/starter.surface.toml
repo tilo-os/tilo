@@ -1,0 +1,14 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "generated.greeting"
+label = "Greeting"
+version = 1
+fields = [
+  { path = "name", type = "String" },
+]
+
+[[resources.verbs]]
+id = "clear"
+kind = "undoable"
+

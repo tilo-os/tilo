@@ -1,0 +1,17 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "example.review"
+label = "Results"
+version = 1
+fields = [
+  { path = "opened", type = "Vec<u64>" },
+]
+
+[[resources.verbs]]
+id = "open-row"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "integer", minimum = 0 } },
+]
+

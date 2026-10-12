@@ -14,6 +14,7 @@
 //! series carries its own [`Series::color`] (callers typically pull these
 //! from the theme accent / semantic ramps). Nothing is hard-coded.
 
+use crate::num::f64_of_usize;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -43,13 +44,6 @@ const LINE_WIDTH: f64 = 1.8;
 const SPARK_LINE_WIDTH: f64 = 1.5;
 /// Height reserved at the top of the plot for the title / legend strip.
 const HEADER_H: f64 = 22.0;
-
-/// Widens a sample index/count to `f64` for plot math, through `u32` (exact
-/// in `f64`) with a saturating fallback rather than an `as` cast — a series
-/// never approaches `u32::MAX` samples.
-fn count_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
 
 /// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
 /// `f64` matrix math with no overflow trap, so it cannot panic regardless of
@@ -312,11 +306,11 @@ impl Default for TrendStyle {
 /// at `plot.y0`).
 fn map_point(plot: Rect, idx: usize, len: usize, value: f64, range: TrendRange) -> Point {
     let dx = if len > 1 {
-        plot.width() / (count_f64(len) - 1.0)
+        plot.width() / (f64_of_usize(len) - 1.0)
     } else {
         0.0
     };
-    let x = plot.x0 + dx * count_f64(idx);
+    let x = plot.x0 + dx * f64_of_usize(idx);
     let y = plot.y1 - range.fraction(value) * plot.height();
     Point::new(x, y)
 }
@@ -684,7 +678,7 @@ impl Chart {
             .unwrap_or_else(|| crate::surface::edge_on(tokens.colors.surfaces.raised));
         let divisions = style.grid_divisions.max(1);
         for i in 0..=divisions {
-            let y = plot.y0 + plot.height() * (count_f64(i) / count_f64(divisions));
+            let y = plot.y0 + plot.height() * (f64_of_usize(i) / f64_of_usize(divisions));
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,

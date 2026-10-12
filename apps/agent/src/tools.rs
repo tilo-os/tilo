@@ -74,7 +74,19 @@ pub const INVOKE: &str = "invoke";
 pub const INVOKE_PARAMETERS: &str = "parameters";
 /// The optional [`INVOKE`] property carrying the task's final reply.
 pub const INVOKE_REPLY: &str = "reply";
+/// The optional [`INVOKE`] property by which the model says a step stands
+/// alone: it neither needs nor reports what the steps before it in the turn
+/// do, so it may run alongside them. Named to sort after `operation`, which
+/// stays the first property on the wire.
+pub const INVOKE_STANDALONE: &str = "standalone";
 pub const PLAN: &str = "plan";
+
+/// Whether an [`INVOKE`] call declared itself independent of the steps
+/// before it ([`INVOKE_STANDALONE`]). Anything but an explicit `true` keeps
+/// it in order.
+pub fn invoke_independent(input: &Value) -> bool {
+    input.get(INVOKE_STANDALONE).and_then(Value::as_bool) == Some(true)
+}
 
 /// How many operations one listing returns.
 ///
@@ -483,8 +495,9 @@ fn invoke_definition() -> Value {
             "Perform one listed operation now, as a person using the application would. \
              Returns the result, how your own view changed and which operations became \
              available. Several invokes in one turn run in order as soon as each is \
-             written; after a failure the rest of the turn is skipped. Put your reply \
-             on the last invoke of the task to finish in the same turn.",
+             written; after a failure the rest of the turn is skipped, except invokes \
+             marked `standalone`, which may also run alongside the ones before them. \
+             Put your reply on the last invoke of the task to finish in the same turn.",
         "input_schema": {
             "type": "object",
             // Sorted maps on the wire: `operation` precedes `parameters` (its
@@ -505,6 +518,14 @@ fn invoke_definition() -> Value {
                         "Only on the last invoke of the task: your short reply to the person \
                          (shown in your agent panel only). The task finishes when this invoke \
                          succeeds and every part is done; no plan call is needed."
+                },
+                INVOKE_STANDALONE: {
+                    "type": "boolean",
+                    "description":
+                        "true only when this step stands alone: it neither needs nor reports \
+                         the result of the steps before it in this turn (for example two \
+                         unrelated messages in different applications); it may then run \
+                         alongside them."
                 },
                 UNABLE: unable_schema()
             },
@@ -1198,9 +1219,9 @@ fn describe(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> St
     }
     let _ = writeln!(
         s,
-        "  contract: permission={:?}; risk={:?}; confirmation={:?}; retry={:?}; \
+        "  contract: kind={:?}; risk={:?}; confirmation={:?}; retry={:?}; \
          reversible={}; execution={:?}; result={:?}",
-        c.permission, c.risk, c.confirmation, c.retry, c.reversible, c.execution, c.result
+        c.kind, c.risk, c.confirmation, c.retry, c.reversible, c.execution, c.result
     );
     if !d.params.is_empty() {
         s.push_str("  structured arguments:\n");
@@ -1588,50 +1609,6 @@ mod tests {
         reason = "each case keeps its original fixture and assertions"
     )]
     fn discovery_answers_list_and_describe_only_what_the_room_offers() {
-        // Case `the_application_listing_separates_what_is_open_from_what_could_be`.
-        {
-            let word_processor_open = Catalogue {
-                held: vec!["word-processor"],
-                offers: vec![Offer {
-                    app: "chat".to_string(),
-                    broker_peer_id: None,
-                    descriptor: ActionDescriptor {
-                        semantic_identity: None,
-                        address: surface::open_address("chat"),
-                        resource_kind: APPLICATION_KIND.to_string(),
-                        resource_label: "the conversation".to_string(),
-                        action_label: "open the conversation".to_string(),
-                        description: None,
-                        locus: ExecutionLocus::ServerPreferred,
-                        kind: tilo_actions::OperationKind::Effect,
-                        contract: tilo_actions::ActionContract::default(),
-                        params: Vec::new(),
-                        input: InputSpec::None,
-                        view: None,
-                    },
-                }],
-                facts: vec![],
-            };
-            let mut revealed = Revealed::new();
-            let out = applications(&word_processor_open, &mut revealed);
-            assert!(
-                out.contains("the word processor (word-processor) — open"),
-                "{out}"
-            );
-            assert!(out.contains("the conversation (chat) — not open"), "{out}");
-            assert!(out.contains("chat.app#open"), "{out}");
-
-            // An app named in `CONTRACTS` but granted no route to opening it is
-            // still listed, with no route — the shape a denied open takes.
-            let mut revealed = Revealed::new();
-            let bare = applications(&Catalogue::default(), &mut revealed);
-            assert!(
-                bare.contains("and there is no opening it from here"),
-                "{bare}"
-            );
-            assert!(!bare.contains(".app#open"), "{bare}");
-        }
-
         // Case `a_kind_is_asked_about_across_the_room_and_not_within_one_app`.
         {
             let mut revealed = Revealed::new();
@@ -2036,7 +2013,14 @@ mod tests {
         let keys: Vec<&String> = invoke["properties"].as_object().unwrap().keys().collect();
         assert_eq!(
             keys,
-            ["operation", INVOKE_PARAMETERS, PARTS, INVOKE_REPLY, UNABLE]
+            [
+                "operation",
+                INVOKE_PARAMETERS,
+                PARTS,
+                INVOKE_REPLY,
+                INVOKE_STANDALONE,
+                UNABLE
+            ]
         );
         let wire = serde_json::to_string(invoke).unwrap();
         assert!(wire.find("\"operation\"") < wire.find(&format!("\"{INVOKE_PARAMETERS}\"")));

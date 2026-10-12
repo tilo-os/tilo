@@ -2,12 +2,19 @@
 // Edit Fluent catalogs under locales/; tilo-app maintains this registry.
 // tilo-app:locale=en-US
 
-const CATALOG_0: &str = include_str!("../locales/en-US.ftl");
+ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
 
-pub const IDS: &[&str] = &["en-US"];
-
-pub fn install() {
-    if let Err(error) = ui::i18n::I18nManager::install_system("en-US", &[("en-US", CATALOG_0)]) {
-        eprintln!("localization catalog: {error}");
-    }
+/// One constant per message of locales/en-US.ftl, for labels and placeholders.
+pub mod keys {
+    use ui::i18n::LabelKey;
+    pub const DATA_ACCESSIBLE_NAME: LabelKey = LabelKey::new("data-accessible-name");
+    pub const DATA_ACTIONS_COLUMN: LabelKey = LabelKey::new("data-actions-column");
+    pub const DATA_NAME_COLUMN: LabelKey = LabelKey::new("data-name-column");
+    pub const DATA_NONE_OPENED: LabelKey = LabelKey::new("data-none-opened");
+    pub const DATA_OPEN: LabelKey = LabelKey::new("data-open");
+    pub const DATA_RECENT: LabelKey = LabelKey::new("data-recent");
+    pub const DATA_ROW: LabelKey = LabelKey::new("data-row");
+    pub const DATA_STATUS_CLOSED: LabelKey = LabelKey::new("data-status-closed");
+    pub const DATA_STATUS_COLUMN: LabelKey = LabelKey::new("data-status-column");
+    pub const DATA_STATUS_OPEN: LabelKey = LabelKey::new("data-status-open");
 }

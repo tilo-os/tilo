@@ -251,7 +251,8 @@ impl Fixture {
             delivery,
             &self.recipient,
             &session,
-            &mut tilo_delivery_protocol::transport_v2::DeltaEncoder::default(),
+            &mut SessionCoding::default(),
+            &crate::presence_mailbox::PresenceMailbox::default(),
             wire,
         )
         .await

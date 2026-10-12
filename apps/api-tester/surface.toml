@@ -1,0 +1,172 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "api-tester.workspace"
+label = "API workspace"
+version = 1
+fields = [
+  { path = "collections", type = "Collection<SavedCollection>", stored = "collection" },
+  { path = "collections.*.name", type = "String", label = true },
+  { path = "collections.*.requests", type = "Collection<RequestRecord>", stored = "collection" },
+  { path = "collections.*.requests.*.name", type = "String", label = true },
+  { path = "collections.*.requests.*.method", type = "HttpMethod" },
+  { path = "collections.*.requests.*.url", type = "String" },
+  { path = "collections.*.requests.*.params", type = "Collection<Row>", stored = "collection" },
+  { path = "collections.*.requests.*.params.*.key", type = "String" },
+  { path = "collections.*.requests.*.params.*.value", type = "String" },
+  { path = "collections.*.requests.*.params.*.enabled", type = "bool" },
+  { path = "collections.*.requests.*.headers", type = "Collection<Row>", stored = "collection" },
+  { path = "collections.*.requests.*.headers.*.key", type = "String" },
+  { path = "collections.*.requests.*.headers.*.value", type = "String" },
+  { path = "collections.*.requests.*.headers.*.enabled", type = "bool" },
+  { path = "collections.*.requests.*.auth", type = "Credentials", stored = "record" },
+  { path = "collections.*.requests.*.auth.scheme", type = "AuthScheme" },
+  { path = "collections.*.requests.*.auth.username", type = "String" },
+  { path = "collections.*.requests.*.auth.header", type = "String" },
+  { path = "collections.*.requests.*.body_mode", type = "BodyMode" },
+  { path = "collections.*.requests.*.body", type = "String" },
+  { path = "collections.*.requests.*.form", type = "Collection<Row>", stored = "collection" },
+  { path = "collections.*.requests.*.form.*.key", type = "String" },
+  { path = "collections.*.requests.*.form.*.value", type = "String" },
+  { path = "collections.*.requests.*.form.*.enabled", type = "bool" },
+  { path = "environments", type = "Collection<Environment>", stored = "collection" },
+  { path = "environments.*.name", type = "String", label = true },
+  { path = "environments.*.variables", type = "Collection<Variable>", stored = "collection" },
+  { path = "environments.*.variables.*.key", type = "String", label = true },
+  { path = "environments.*.variables.*.value", type = "String" },
+  { path = "environments.*.variables.*.enabled", type = "bool" },
+  { path = "environments.*.variables.*.secret", type = "bool", readonly = true },
+  { path = "active_environment", type = "Option<Id>" },
+  { path = "request", type = "RequestRecord", stored = "record" },
+  { path = "request.name", type = "String", label = true },
+  { path = "request.method", type = "HttpMethod" },
+  { path = "request.url", type = "String" },
+  { path = "request.params", type = "Collection<Row>", stored = "collection" },
+  { path = "request.params.*.key", type = "String" },
+  { path = "request.params.*.value", type = "String" },
+  { path = "request.params.*.enabled", type = "bool" },
+  { path = "request.headers", type = "Collection<Row>", stored = "collection" },
+  { path = "request.headers.*.key", type = "String" },
+  { path = "request.headers.*.value", type = "String" },
+  { path = "request.headers.*.enabled", type = "bool" },
+  { path = "request.auth", type = "Credentials", stored = "record" },
+  { path = "request.auth.scheme", type = "AuthScheme" },
+  { path = "request.auth.username", type = "String" },
+  { path = "request.auth.header", type = "String" },
+  { path = "request.body_mode", type = "BodyMode" },
+  { path = "request.body", type = "String" },
+  { path = "request.form", type = "Collection<Row>", stored = "collection" },
+  { path = "request.form.*.key", type = "String" },
+  { path = "request.form.*.value", type = "String" },
+  { path = "request.form.*.enabled", type = "bool" },
+  { path = "opened", type = "Atom", readonly = true },
+  { path = "history", type = "Collection<Sent>", readonly = true, stored = "collection" },
+  { path = "history.*.route", type = "Atom", label = true },
+  { path = "history.*.method", type = "HttpMethod" },
+  { path = "history.*.url", type = "Atom" },
+  { path = "history.*.status", type = "u16" },
+  { path = "history.*.duration_ms", type = "u64" },
+  { path = "history.*.at_ms", type = "i64" },
+]
+
+[[resources.verbs]]
+id = "new-request"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "new-collection"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete-collection"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "collection", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "add-request"
+kind = "undoable"
+params = [
+  { name = "collection", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "save-request"
+kind = "undoable"
+params = [
+  { name = "collection", required = true, schema = { type = "string" } },
+  { name = "name", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "open-request"
+kind = "undoable"
+params = [
+  { name = "collection", required = true, schema = { type = "string" } },
+  { name = "request", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete-request"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "collection", required = true, schema = { type = "string" } },
+  { name = "request", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "new-environment"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete-environment"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "environment", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "use-environment"
+kind = "undoable"
+params = [
+  { name = "environment", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "add-variable"
+kind = "undoable"
+params = [
+  { name = "environment", required = true, schema = { type = "string" } },
+  { name = "key", required = true, schema = { type = "string" } },
+  { name = "value", required = false, schema = { type = ["string", "null"] } },
+  { name = "secret", required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "open-sent"
+kind = "undoable"
+params = [
+  { name = "sent", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "record-sent"
+kind = "undoable"
+params = [
+  { name = "method", required = true, schema = { type = "string" } },
+  { name = "url", required = true, schema = { type = "string" } },
+  { name = "status", required = true, schema = { type = "integer", maximum = 65535, minimum = 0 } },
+  { name = "duration_ms", required = true, schema = { type = "integer", minimum = 0 } },
+]
+

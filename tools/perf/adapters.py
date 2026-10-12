@@ -6,8 +6,10 @@ Each adapter reads what a benchmark already prints and emits records through
 
 - `fs-gate LOG...`: the tilo-fs performance gate
   (`crates/system/fs/tests/performance_gate.rs`, `TILO_FS_PERF_GATE=1`) prints
-  `PERF <name>: <x> ms (SLO <= <y> ms)` per scenario. Each log is one run;
-  repeated runs become the samples of `fs.<name>`.
+  `PERF <name>: <x> ms (SLO <= <y> ms)` per scenario, and its heap footprint
+  test (`crates/system/fs/tests/document_media_footprint.rs`) prints the same
+  shape in `MiB`. Each log is one run; repeated runs become the samples of
+  `fs.<name>`, in the unit the line names.
 - `tapp-sizes ENTRIES_JSON`: the public app registry's signed `entries`
   index (`https://apps.tilo.so/entries`). The newest version of every app per
   architecture is one sample of `footprint.tapp.bytes.<arch>`: the bytes a
@@ -32,6 +34,16 @@ Each adapter reads what a benchmark already prints and emits records through
   one run; repeated runs become the samples of `wakeups.headless_two_apps`
   (the compositor's whole process tree), `.shell` (its own process) and
   `wakeups.frame_loop_ticks.headless_two_apps` (its frame loop's iterations).
+- `files-name-index LOG...`: the Files search name-index test
+  (`a_watched_change_costs_one_record_not_a_rebuild` in
+  `crates/session/shell/src/shell/search/providers/files.rs`) prints one
+  `FILES-NAME-INDEX names=<n> rebuild_ms=<x> change_ms=<a,b,...>
+  unchanged_ms=<a,b,...> rename_ms=<y> burst64_ms=<z>` line per run: process
+  CPU for one watched change to an index of `n` names, for an unchanged
+  one, a rename, a 64-file burst, and a whole-index build. Each becomes
+  `search.files_name_index.<metric>.<size>` (`change_cpu_ms`,
+  `unchanged_cpu_ms`, `rename_cpu_ms`, `burst64_cpu_ms`, `rebuild_cpu_ms`),
+  every listed value one sample, with sizes written `50k`.
 - `framework-open LOG...`: the `FRAMEWORK-OPEN tasks=<n> samples_ms=<a,b,...>
   allocations=<x> heap_per_task=<y>` lines of
   `crates/sdk/tilo-app/examples/framework-scaling.rs` (TIL-758), one per list
@@ -39,6 +51,30 @@ Each adapter reads what a benchmark already prints and emits records through
   laid-out frame. Each size becomes `render.framework_open.ms.<size>` (every
   open is a sample), `.allocations.<size>` and `.heap_per_item.<size>` (one
   sample per run), with sizes written `5k`, `50k`.
+- `framework-scroll LOG...`: the `FRAMEWORK-SCROLL tasks=<n> step=<px>
+  copying=<bool> pixels_p50=<x> pixels_max=<y> copied_p50=<z> whole=<w>
+  frames=<f> cpu_ms=<c> gpu_ms=<g> gpu_full_ms=<h> differing=<d>` lines of
+  the same example's `scroll` mode: a long list scrolled frame by frame,
+  each frame presented as a window that copies what a scroll keeps on screen
+  presents it. The line with copies and a whole-pixel step becomes, per
+  size, `render.framework_scroll.pixels.<size>` (pixels one frame repaints,
+  p50), `.whole_frames.<size>` (frames repainted whole), `.cpu_ms.<size>`
+  (one scroll frame on the CPU, p50) and `.raster_ms.<size>` (presenting it
+  on the GPU, copies included, p50), one sample per run. A run whose
+  presented pixels differ from a full render fails. `FRAMEWORK-SCROLL-HOSTED`
+  lines are the same list shown in a region of a host's scene, as the shell
+  shows an in-process app: its line with copies and a whole-pixel step
+  becomes `render.framework_scroll.hosted_pixels.<size>` and
+  `.hosted_whole_frames.<size>`. `FRAMEWORK-SCROLL-PEER` lines are the
+  window scrolled with a collaborator's pointer resting over the list:
+  `render.framework_scroll.peer_pixels.<size>` and `.peer_whole_frames.<size>`.
+- `framework-focus LOG...`: the `FRAMEWORK-FOCUS tasks=<n> add_ms=<a,...>
+  recompute_ms=<b,...> native_ms=<c,...>` lines of the same example's `focus`
+  mode: the keyboard focus order of a window over `n` items (about four
+  widgets per item). Each size becomes `render.framework_focus.add_item_ms.<size>`
+  (an agent call adding one item, end to end), `.recompute_ms.<size>` (one
+  focus-order recomputation inside it) and `.native_recompute_ms.<size>` (one
+  recomputation of the live window's order); every timing is a sample.
 - `hosting-load REPORT_JSON`: the relay load bench's `hosting-load.json`
   (`crates/hosting/tilo-relay/examples/relay_load`). Each KPI it measured
   becomes `<kpi>.n<collaborators>`, one sample per measured minute (fan-out
@@ -53,7 +89,10 @@ Usage:
     python3 tools/perf/adapters.py runtime-sizes --env-json env.json runtime.json >> results.jsonl
     python3 tools/perf/adapters.py workspace-switch --env-json env.json session.log >> results.jsonl
     python3 tools/perf/adapters.py idle-wakeups --env-json env.json run-*.log >> results.jsonl
+    python3 tools/perf/adapters.py files-name-index --env-json env.json run-*.log >> results.jsonl
     python3 tools/perf/adapters.py framework-open --env-json env.json framework-open.log >> results.jsonl
+    python3 tools/perf/adapters.py framework-scroll --env-json env.json framework-scroll.log >> results.jsonl
+    python3 tools/perf/adapters.py framework-focus --env-json env.json framework-focus.log >> results.jsonl
     python3 tools/perf/adapters.py hosting-load --env-json env.json hosting-load.json >> results.jsonl
 
 An adapter that finds nothing to record fails: a benchmark whose output format
@@ -79,12 +118,14 @@ import tapp_size_ratchet  # noqa: E402
 
 # Searched, not anchored: with --nocapture, libtest's "test NAME ... " prefix can
 # share the line with the test's first stderr line when both streams are merged.
-FS_GATE_LINE = re.compile(r"(?:^|\s)PERF (?P<name>[a-z0-9][a-z0-9-]*): (?P<value>[0-9.]+) ms \(SLO <= [0-9.]+ ms\)$")
+FS_GATE_LINE = re.compile(r"(?:^|\s)PERF (?P<name>[a-z0-9][a-z0-9-]*): (?P<value>[0-9.]+) (?P<unit>ms|MiB) "
+                          r"\(SLO <= [0-9.]+ (?P=unit)\)$")
 
 
 def fs_gate(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
     """Records for the scenarios of one or more tilo-fs gate runs."""
     samples: dict[str, list[float]] = {}
+    units: dict[str, str] = {}
     for log in logs:
         seen = set()
         for line in log.splitlines():
@@ -95,6 +136,8 @@ def fs_gate(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
             if name in seen:
                 raise ValueError(f"fs gate scenario {name} printed twice in one run")
             seen.add(name)
+            if units.setdefault(name, match.group("unit")) != match.group("unit"):
+                raise ValueError(f"fs gate scenario {name} printed in both {units[name]} and {match.group('unit')}")
             samples.setdefault(name, []).append(float(match.group("value")))
     if not samples:
         raise ValueError("no `PERF <name>: <x> ms (SLO <= <y> ms)` lines: did the gate run with TILO_FS_PERF_GATE=1?")
@@ -103,7 +146,7 @@ def fs_gate(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
         raise ValueError(f"fs gate scenarios ran unequal times: {counts}")
     meta = {**env.get("meta", {}), "runs": str(len(logs))}
     base = {name: value for name, value in env.items() if name != "meta"}
-    return [record.from_samples(f"fs.{name}", "ms", values, meta=meta, **base)
+    return [record.from_samples(f"fs.{name}", units[name], values, meta=meta, **base)
             for name, values in sorted(samples.items())]
 
 
@@ -254,6 +297,112 @@ def framework_open(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
     return [record.from_samples(kpi, units[kpi], values, meta=meta, **base) for kpi, values in samples.items()]
 
 
+FRAMEWORK_FOCUS_LINE = re.compile(
+    r"^FRAMEWORK-FOCUS tasks=(?P<tasks>[0-9]+) add_ms=(?P<add>[0-9.]+(?:,[0-9.]+)*) "
+    r"recompute_ms=(?P<recompute>[0-9.]+(?:,[0-9.]+)*) native_ms=(?P<native>[0-9.]+(?:,[0-9.]+)*)$")
+
+
+def framework_focus(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
+    """Records for one or more runs of the framework-scaling example's focus mode."""
+    samples: dict[str, list[float]] = {}
+    for log in logs:
+        lines = [match for line in log.splitlines() if (match := FRAMEWORK_FOCUS_LINE.match(line.strip()))]
+        if not lines:
+            raise ValueError("no `FRAMEWORK-FOCUS` line: did framework-scaling run to the end?")
+        for line in lines:
+            size = framework_open_size(int(line["tasks"]))
+            for field, kpi in (("add", "add_item_ms"), ("recompute", "recompute_ms"),
+                               ("native", "native_recompute_ms")):
+                samples.setdefault(f"render.framework_focus.{kpi}.{size}", []).extend(
+                    float(value) for value in line[field].split(","))
+    if not logs:
+        raise ValueError("no framework-scaling logs")
+    meta = {**env.get("meta", {}), "runs": str(len(logs))}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    return [record.from_samples(kpi, "ms", values, meta=meta, **base) for kpi, values in samples.items()]
+
+
+FRAMEWORK_SCROLL_LINE = re.compile(
+    r"^FRAMEWORK-SCROLL(?P<kind>-HOSTED|-PEER)? tasks=(?P<tasks>[0-9]+) step=(?P<step>[0-9.]+) copying=(?P<copying>true|false) "
+    r"pixels_p50=(?P<pixels>[0-9]+) pixels_max=(?P<max>[0-9]+) copied_p50=(?P<copied>[0-9]+) "
+    r"whole=(?P<whole>[0-9]+) frames=(?P<frames>[0-9]+) cpu_ms=(?P<cpu>[0-9.]+) gpu_ms=(?P<gpu>[0-9.]+) "
+    r"gpu_full_ms=(?P<gpu_full>[0-9.]+) differing=(?P<differing>[0-9]+)$")
+
+
+def framework_scroll(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
+    """Records for one or more runs of the framework-scaling example's scroll."""
+    samples: dict[str, list[float]] = {}
+    units: dict[str, str] = {}
+    for log in logs:
+        lines = [match for line in log.splitlines() if (match := FRAMEWORK_SCROLL_LINE.match(line.strip()))]
+        if not lines:
+            raise ValueError("no `FRAMEWORK-SCROLL` line: did framework-scaling run to the end?")
+        for line in lines:
+            if int(line["differing"]) != 0:
+                raise ValueError(f"a scroll of {line['tasks']} tasks presented {line['differing']} pixels "
+                                 "a full render does not have")
+            if line["copying"] != "true" or float(line["step"]) != int(float(line["step"])):
+                continue
+            size = framework_open_size(int(line["tasks"]))
+            if line["kind"]:
+                kind = "hosted" if line["kind"] == "-HOSTED" else "peer"
+                measured = {
+                    (f"render.framework_scroll.{kind}_pixels.{size}", "pixels"): float(line["pixels"]),
+                    (f"render.framework_scroll.{kind}_whole_frames.{size}", "count"): float(line["whole"]),
+                }
+            else:
+                measured = {
+                    (f"render.framework_scroll.pixels.{size}", "pixels"): float(line["pixels"]),
+                    (f"render.framework_scroll.whole_frames.{size}", "count"): float(line["whole"]),
+                    (f"render.framework_scroll.cpu_ms.{size}", "ms"): float(line["cpu"]),
+                    (f"render.framework_scroll.raster_ms.{size}", "ms"): float(line["gpu"]),
+                }
+            for (kpi, unit), value in measured.items():
+                samples.setdefault(kpi, []).append(value)
+                units[kpi] = unit
+    if not logs:
+        raise ValueError("no framework-scaling logs")
+    if not samples:
+        raise ValueError("no `FRAMEWORK-SCROLL` line with copies and a whole-pixel step")
+    meta = {**env.get("meta", {}), "runs": str(len(logs))}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    return [record.from_samples(kpi, units[kpi], values, meta=meta, **base) for kpi, values in samples.items()]
+
+
+FILES_NAME_INDEX_LINE = re.compile(
+    r"(?:^|\s)FILES-NAME-INDEX names=(?P<names>[0-9]+) rebuild_ms=(?P<rebuild_ms>[0-9.]+) "
+    r"change_ms=(?P<change_ms>[0-9.]+(?:,[0-9.]+)*) unchanged_ms=(?P<unchanged_ms>[0-9.]+(?:,[0-9.]+)*) "
+    r"rename_ms=(?P<rename_ms>[0-9.]+) burst64_ms=(?P<burst64_ms>[0-9.]+)$")
+# Line field -> KPI metric. Fields listing several values give one sample each.
+FILES_NAME_INDEX_KPIS = {"change_ms": "change_cpu_ms", "unchanged_ms": "unchanged_cpu_ms",
+                         "rename_ms": "rename_cpu_ms", "burst64_ms": "burst64_cpu_ms",
+                         "rebuild_ms": "rebuild_cpu_ms"}
+
+
+def files_name_index(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
+    """Records for one or more runs of the Files search name-index update test."""
+    samples: dict[str, list[float]] = {}
+    sizes = set()
+    for log in logs:
+        lines = [match for line in log.splitlines() if (match := FILES_NAME_INDEX_LINE.search(line.rstrip()))]
+        if len(lines) != 1:
+            raise ValueError(f"expected one `FILES-NAME-INDEX` line per run, found {len(lines)}: "
+                             "did the test run with --nocapture?")
+        line = lines[0]
+        size = framework_open_size(int(line.group("names")))
+        sizes.add(size)
+        for field, metric in FILES_NAME_INDEX_KPIS.items():
+            kpi = f"search.files_name_index.{metric}.{size}"
+            samples.setdefault(kpi, []).extend(float(value) for value in line.group(field).split(","))
+    if not logs:
+        raise ValueError("no Files search name-index logs")
+    if len(sizes) != 1:
+        raise ValueError(f"runs measured different index sizes: {sorted(sizes)}")
+    meta = {**env.get("meta", {}), "runs": str(len(logs))}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    return [record.from_samples(kpi, "ms", values, meta=meta, **base) for kpi, values in samples.items()]
+
+
 PRICES = Path(__file__).resolve().parent / "prices.toml"
 # The relay load bench's per-minute KPIs, as `relay_load` names them.
 HOSTING_KPIS = {
@@ -261,7 +410,13 @@ HOSTING_KPIS = {
     "hosting.relay.rss_mib_per_collab": "MiB",
     "hosting.relay.egress_bytes_per_collab_hour": "bytes",
     "hosting.relay.frame_bytes_per_collab_hour": "bytes",
+    "hosting.relay.client_packets_per_collab_hour": "count",
+    "hosting.relay.client_data_packets_per_collab_hour": "count",
+    "hosting.relay.datagrams_per_collab_hour": "count",
+    "hosting.relay.ack_only_datagrams_per_collab_hour": "count",
     "hosting.relay.fanout_ms": "ms",
+    "hosting.relay.presence_pointer_ms": "ms",
+    "hosting.relay.presence_caret_ms": "ms",
     "hosting.relay.store_fsyncs_per_edit": "count",
     "hosting.relay.store_listed_entries_per_edit": "count",
     "hosting.relay.compaction_cpu_ms_per_collab_hour": "ms",
@@ -317,7 +472,10 @@ def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, 
     meta = {**env.get("meta", {}), "collaborators": str(collaborators), "rooms": str(report["rooms"]),
             "room_size": str(report["room_size"]), "window_s": str(report["window_s"]),
             "edits": str(report["edits"]), "presence": str(report["presence"]),
-            "undelivered_edits": str(report["undelivered_edits"]), "prices_checked": str(prices["checked"])}
+            "undelivered_edits": str(report["undelivered_edits"]), "prices_checked": str(prices["checked"]),
+            # The CPUs the relay was confined to (`relay_load --relay-cpus`), which sizes its
+            # runtime: "all" is the runner's, four workers; the priced VM has two vCPUs.
+            "relay_cpus": str(report.get("relay_cpus") or "all")}
     base = {name: value for name, value in env.items() if name != "meta"}
     records = [record.from_samples(f"{kpi}.{variant}", unit, kpis[kpi]["samples"], meta=meta, **base)
                for kpi, unit in present.items()]
@@ -358,9 +516,20 @@ def main(argv: list[str] | None = None) -> int:
     idle = commands.add_parser("idle-wakeups", help="records from idle-wakeup gate logs")
     idle.add_argument("--env-json", required=True, type=Path)
     idle.add_argument("logs", nargs="+", type=Path)
+    names = commands.add_parser("files-name-index", help="records from FILES-NAME-INDEX test lines")
+    names.add_argument("--env-json", required=True, type=Path)
+    names.add_argument("logs", nargs="+", type=Path)
     opening = commands.add_parser("framework-open", help="records from framework-scaling's FRAMEWORK-OPEN lines")
     opening.add_argument("--env-json", required=True, type=Path)
     opening.add_argument("logs", nargs="+", type=Path)
+    scrolling = commands.add_parser("framework-scroll",
+                                    help="records from framework-scaling's FRAMEWORK-SCROLL lines")
+    scrolling.add_argument("--env-json", required=True, type=Path)
+    scrolling.add_argument("logs", nargs="+", type=Path)
+    focusing = commands.add_parser("framework-focus",
+                                   help="records from framework-scaling's FRAMEWORK-FOCUS lines")
+    focusing.add_argument("--env-json", required=True, type=Path)
+    focusing.add_argument("logs", nargs="+", type=Path)
     hosting = commands.add_parser("hosting-load", help="records from the relay load bench's hosting-load.json")
     hosting.add_argument("--env-json", required=True, type=Path)
     hosting.add_argument("--prices", type=Path, default=PRICES)
@@ -387,8 +556,17 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "framework-open":
             records = framework_open([path.read_text(encoding="utf-8", errors="replace") for path in args.logs],
                                      env)
+        elif args.command == "framework-scroll":
+            records = framework_scroll([path.read_text(encoding="utf-8", errors="replace") for path in args.logs],
+                                       env)
+        elif args.command == "framework-focus":
+            records = framework_focus([path.read_text(encoding="utf-8", errors="replace") for path in args.logs],
+                                      env)
         elif args.command == "idle-wakeups":
             records = idle_wakeups([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
+        elif args.command == "files-name-index":
+            records = files_name_index([path.read_text(encoding="utf-8", errors="replace") for path in args.logs],
+                                       env)
         else:
             records = tapp_sizes(json.loads(args.entries.read_text(encoding="utf-8")), env,
                                  tapp_size_ratchet.load().apps())

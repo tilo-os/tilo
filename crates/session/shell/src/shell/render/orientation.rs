@@ -16,6 +16,7 @@
 use settings_store::hardware::OutputTransform;
 use vello::wgpu;
 
+use super::fullscreen_pass;
 use super::icc_lut::{IccLut, IccLutTextures};
 
 /// The `orientation` value the shaders take for `transform`.
@@ -108,84 +109,21 @@ impl OrientedCopy {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("tilo-oriented-copy"),
             entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(PARAMS_BYTES),
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D3,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D1,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
+                fullscreen_pass::texture_entry(0, wgpu::TextureViewDimension::D2, false),
+                fullscreen_pass::uniform_entry(1, PARAMS_BYTES),
+                fullscreen_pass::texture_entry(2, wgpu::TextureViewDimension::D3, false),
+                fullscreen_pass::texture_entry(3, wgpu::TextureViewDimension::D1, false),
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("tilo-oriented-copy"),
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("tilo-oriented-copy"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Bgra8Unorm,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-        let params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("tilo-oriented-copy-params"),
-            size: PARAMS_BYTES,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let pipeline = fullscreen_pass::pipeline(
+            device,
+            "tilo-oriented-copy",
+            &module,
+            &layout,
+            wgpu::TextureFormat::Bgra8Unorm,
+        );
+        let params =
+            fullscreen_pass::uniform_buffer(device, "tilo-oriented-copy-params", PARAMS_BYTES);
         Self {
             pipeline,
             layout,
@@ -257,26 +195,14 @@ impl OrientedCopy {
                 },
             ],
         });
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("tilo-oriented-copy"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    // The triangle writes every pixel, so nothing needs clearing first.
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.draw(0..3, 0..1);
+        fullscreen_pass::draw(
+            encoder,
+            "tilo-oriented-copy",
+            target,
+            wgpu::LoadOp::Load,
+            &self.pipeline,
+            &bind_group,
+        );
     }
 }
 

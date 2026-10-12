@@ -51,7 +51,7 @@ impl FrameworkHistoryTopology for FocusHistoryRoot {
 
 impl Widget for FocusHistoryRoot {
     crate::provides!(dyn FrameworkHistoryTopology);
-    crate::testing::inert_widget_methods!(draw, name = "History focus probe");
+    crate::testing::inert_widget_methods!(name = "History focus probe");
 
     fn build_layout(
         &mut self,
@@ -97,6 +97,31 @@ fn headless_focus_order_enumerates_history_once() {
     let order = frame.focus_order();
     assert!(order.len() >= 2_000, "all live rows remain focusable");
     assert_eq!(visits.get(), 1, "one History enumeration per recomputation");
+}
+
+#[test]
+fn headless_relayout_and_focus_moves_enumerate_history_independently_of_rows() {
+    // Both recover or move focus by asking every node whether History
+    // admits it; the surfaces must be enumerated per pass, not per node.
+    let visits_for = |rows| {
+        let state = crate::State::new();
+        let (root, visits) = FocusHistoryRoot::new(rows, &state);
+        let mut frame = crate::headless::FrameHarness::new_with_controlled_inputs(
+            state,
+            Box::new(root),
+            (900, 650),
+            crate::Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture".into()),
+        );
+        visits.set(0);
+        frame.relayout();
+        let relayout = visits.get();
+        visits.set(0);
+        assert!(frame.tab(false).is_some(), "a live row takes focus");
+        (relayout, visits.get())
+    };
+    assert_eq!(visits_for(2_000), visits_for(20));
 }
 
 #[test]

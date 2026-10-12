@@ -23,7 +23,7 @@
 mod client;
 #[cfg(unix)]
 pub mod connected;
-pub use client::BrokerSigningIdentity;
+pub use client::{BrokerMetadata, BrokerSigningIdentity};
 mod async_client;
 pub use async_client::AsyncBrokerSigningIdentity;
 pub use runtime_portal::NotAvailable;

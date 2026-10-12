@@ -17,12 +17,42 @@
 //!    owner's own devices are admitted, and enrolled where the plane enrols.
 //! 7. Anything else is not a member.
 //!
+//! One plane is not a room membership at all:
+//! [`RoomOperation::StewardedChannelKeys`], the relay's own application
+//! endpoint (its room actions) taking the content keys of the channels the
+//! relay stewards. The relay's device is the steward of every channel of a
+//! room it governs: it is already a member of each channel's group and holds
+//! its keys. Its room actions are an application endpoint of that same device
+//! and key, so they cannot be admitted as a second member of the group; the
+//! device hands them the keys it holds, the way a device's session service
+//! hands its apps their keys ([`channel_crypto::ChannelContentKeys`]). The
+//! rule, after steps 1 and 3: the keys go to the device that governs this
+//! room on this relay, in a room whose admission governance owns, and to no
+//! other device, ever. Every other device is admitted to a channel by its
+//! steward over the channel itself.
+//!
+//! And one plane admits a device to a room's governance itself:
+//! [`RoomOperation::AgentMembership`], a delegated agent of this relay's own
+//! user joining, as a governed member, a room this relay governs. Agents are
+//! collaborators: each has its own device key, a certificate and a
+//! delegation its person's root signed, and the governor records it on the
+//! room's roster bound to that delegation, so every member admits its
+//! changes as its own, at its person's role and never above Editor, only
+//! within the delegation, and only until the governor withdraws it. The
+//! rule, after steps 1 to 3: admit iff the room's admission is governance's,
+//! this relay governs it, and the device is a registered agent of this
+//! relay's own user whose delegation (step 2) is live and names this room. A
+//! device that is no agent, an agent of another user, and any room this
+//! relay does not govern are refused; nothing is admitted by membership,
+//! enrolment or federation. Being a governed member is what admits the agent
+//! to the room on the other planes and lets the room's steward admit it to
+//! the channels of its records.
+//!
 //! The room's admission mode is one value, so a governed room can never be
 //! left auto-enrolling by a writer that updated one flag and not the other.
 
 use std::sync::RwLock;
 
-use collab_types::caps::{Verb, role_caps};
 use tilo_user_identity::RevocationList;
 
 use crate::auth::{AuthenticatedPeer, PeerRole};
@@ -76,6 +106,14 @@ pub(crate) enum RoomOperation {
     Environment,
     /// Originating or receiving a remote (directed) action.
     RemoteAction,
+    /// The relay's own room actions taking the content keys of a channel the
+    /// relay stewards (see the module documentation).
+    #[cfg(any(test, feature = "agents"))]
+    StewardedChannelKeys,
+    /// A delegated agent of this relay's user becoming a governed member of
+    /// a room this relay governs (see the module documentation).
+    #[cfg(any(test, feature = "agents"))]
+    AgentMembership,
 }
 
 /// What a same-owner room does with one of its owner's devices it does not
@@ -109,6 +147,8 @@ impl RoomOperation {
             Self::Live => OwnerDevice::Admit,
             Self::ContentDiscovery | Self::Environment => OwnerDevice::Admit,
             Self::State | Self::Replay | Self::RemoteAction => OwnerDevice::Refuse,
+            #[cfg(any(test, feature = "agents"))]
+            Self::StewardedChannelKeys | Self::AgentMembership => OwnerDevice::Refuse,
         }
     }
 }
@@ -151,6 +191,15 @@ pub(crate) enum DenyReason {
     AgentOutOfScope,
     /// Not a member of the room.
     NotAMember,
+    /// Channel keys asked for by a device other than the one governing and
+    /// stewarding the room on this relay.
+    #[cfg(any(test, feature = "agents"))]
+    NotTheSteward,
+    /// Governed membership as an agent asked for by a device that is no
+    /// delegated agent of this relay's user, or for a room this relay does
+    /// not govern.
+    #[cfg(any(test, feature = "agents"))]
+    NotADelegatedAgent,
 }
 
 impl DenyReason {
@@ -165,6 +214,14 @@ impl DenyReason {
             Self::AgentExpired => "the agent's delegation expired",
             Self::AgentOutOfScope => "the agent is not delegated this room",
             Self::NotAMember => "device not in workspace membership",
+            #[cfg(any(test, feature = "agents"))]
+            Self::NotTheSteward => {
+                "only the device that stewards this room's channels holds their keys"
+            }
+            #[cfg(any(test, feature = "agents"))]
+            Self::NotADelegatedAgent => {
+                "only a delegated agent of this relay's user joins a room it governs as an agent"
+            }
         }
     }
 }
@@ -241,6 +298,27 @@ impl RelayTrust<'_> {
         }
     }
 
+    /// The live delegation of agent `device` for `workspace_id` at `now_ns`:
+    /// `None` for a device that is no agent, or whose delegation was
+    /// withdrawn, expired or does not name the room.
+    #[cfg(any(test, feature = "agents"))]
+    pub(crate) fn delegation(
+        &self,
+        device: &[u8; 32],
+        workspace_id: u64,
+        now_ns: u64,
+    ) -> Option<tilo_relay_protocol::agents::AgentDelegation> {
+        self.agents
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(device)
+            .cloned()
+            .flatten()
+            .filter(|delegation| {
+                delegation.expires_at_ns > now_ns && delegation.permits_workspace(workspace_id)
+            })
+    }
+
     /// Certificate and agent delegation together: everything about `peer`
     /// that does not depend on the room's membership.
     ///
@@ -289,6 +367,26 @@ impl<'a> Room<'a> {
             .membership_ceiling
             .as_ref()
             .is_none_or(|ceiling| ceiling.contains(device))
+    }
+
+    /// Whether `device` governs this room on this relay, and so stewards its
+    /// channels: governance owns the room's admission and the relay's room
+    /// authority, bound to this room, names `device` as its governor.
+    #[cfg(any(test, feature = "agents"))]
+    fn governed_by(&self, device: &[u8; 32]) -> bool {
+        self.runtime.admission == AdmissionMode::Governed
+            && self
+                .runtime
+                .room_authority
+                .as_ref()
+                .is_some_and(|authority| authority.governor() == device)
+    }
+
+    /// Whether governance owns this room's admission and this relay's own
+    /// room authority governs it.
+    #[cfg(any(test, feature = "agents"))]
+    fn governed_here(&self) -> bool {
+        self.runtime.admission == AdmissionMode::Governed && self.runtime.room_authority.is_some()
     }
 
     fn lists(&self, device: &[u8; 32]) -> bool {
@@ -346,6 +444,33 @@ pub(crate) fn decide_in(
     if peer.role == PeerRole::PeerRelay && !own_user {
         return Decision::Deny(DenyReason::CrossUserFederation);
     }
+    #[cfg(any(test, feature = "agents"))]
+    if op == RoomOperation::StewardedChannelKeys {
+        // Never by membership, enrolment or federation: only the steward.
+        return if room.governed_by(&peer.device_public_key) {
+            Decision::Admit
+        } else {
+            Decision::Deny(DenyReason::NotTheSteward)
+        };
+    }
+    #[cfg(any(test, feature = "agents"))]
+    if op == RoomOperation::AgentMembership {
+        // Never by membership, enrolment or federation: only this relay's
+        // user's own agent, inside its delegation, in a room governed here.
+        let delegated = own_user
+            && trust
+                .delegation(
+                    &peer.device_public_key,
+                    room.runtime.store.workspace_id(),
+                    now_ns,
+                )
+                .is_some_and(|delegation| delegation.user_public_key == peer.user_public_key);
+        return if delegated && room.governed_here() {
+            Decision::Admit
+        } else {
+            Decision::Deny(DenyReason::NotADelegatedAgent)
+        };
+    }
     if listed(room, peer, op) {
         return Decision::Admit;
     }
@@ -362,9 +487,11 @@ pub(crate) fn decide_in(
     Decision::Deny(DenyReason::NotAMember)
 }
 
-/// Whether `role` carries at least `verb` in a governed room.
-pub(crate) fn role_grants(role: collab_types::Role, verb: Verb) -> bool {
-    role_caps(role).is_some_and(|ceiling| ceiling.implies(verb))
+/// Whether `role`'s preset lets its members make undoable changes across a
+/// governed room ([`tilo_action_policy::roles::role_rules`]): the roles that
+/// write records.
+pub(crate) fn role_writes(role: collab_types::Role) -> bool {
+    matches!(role, collab_types::Role::Owner | collab_types::Role::Editor)
 }
 
 #[cfg(test)]

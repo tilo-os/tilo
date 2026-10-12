@@ -1,4 +1,4 @@
-// Included in the actual native/Driver ordinary-confirmation fixtures.
+// Included in the actual native/FrameHarness ordinary-confirmation fixtures.
 fn deferred_fixture() -> (
     Fixture,
     std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -223,7 +223,7 @@ fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
         unreachable!()
     };
     let target = crate::bound_dispatch::BoundActionTarget {
-        physical_text: false,
+        input: crate::bound_dispatch::Input::Discrete,
         binding: binding.clone(),
         address: crate::bound_dispatch::BoundActionAddress {
             instance_id: binding.instance_id,

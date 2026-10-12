@@ -1,0 +1,29 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "osk.keyboard"
+label = "On-screen keyboard"
+version = 1
+
+[[resources]]
+kind = "osk.learned"
+label = "What the keyboard learned"
+version = 1
+person = true
+fields = [
+  { path = "transitions", type = "BTreeMap<String, BTreeMap<String, BTreeMap<String, Counter>>>", readonly = true },
+  { path = "kept", type = "Set<String>", readonly = true },
+  { path = "touch", type = "BTreeMap<String, KeyOffset>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "learn"
+kind = "undoable"
+params = [
+  { name = "lesson", required = true, schema = { type = "object", additionalProperties = false, properties = { kept = { type = "array", items = { type = "string" } }, language = { type = "string" }, touch = { type = "array", items = { type = "array", maxItems = 2, minItems = 2 } }, transitions = { type = "array", items = { type = "array", maxItems = 2, minItems = 2 } } }, required = ["language", "transitions", "kept", "touch"] } },
+]
+
+[[resources.verbs]]
+id = "forget"
+kind = "undoable"
+

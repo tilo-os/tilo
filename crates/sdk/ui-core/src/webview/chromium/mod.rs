@@ -260,12 +260,16 @@ pub struct ChromiumEngine {
 }
 
 type Routes = Arc<Mutex<HashMap<u32, Weak<Shared>>>>;
-const PRIVATE_ROOT_PREFIX: &str = "tilo-browser-private-";
-const PRIVATE_ROOT_MARKER: &str = ".tilo-private-root-v1";
-const PRIVATE_ROOT_MARKER_CONTENT: &str = "tilo-browser-owned-private-root-v1\n";
-const PRIVATE_ROOT_HELPER: &str = ".tilo-private-helper-pid";
-#[cfg(unix)]
-const PRIVATE_ROOT_LOCK: &str = ".tilo-private-root.lock";
+/// A private window's disposable root is a temp directory named with this
+/// prefix that holds [`PRIVATE_ROOT_MARKER`] reading
+/// [`PRIVATE_ROOT_MARKER_CONTENT`]; only such a root is ever removed.
+pub const PRIVATE_ROOT_PREFIX: &str = "tilo-browser-private-";
+pub const PRIVATE_ROOT_MARKER: &str = ".tilo-private-root-v1";
+pub const PRIVATE_ROOT_MARKER_CONTENT: &str = "tilo-browser-owned-private-root-v1\n";
+/// The engine helper's pid, written once it runs inside the root.
+pub const PRIVATE_ROOT_HELPER: &str = ".tilo-private-helper-pid";
+/// Writers hold this file shared and cleanup holds it exclusive.
+pub const PRIVATE_ROOT_LOCK: &str = ".tilo-private-root.lock";
 
 struct PrivateRootCleanup(Option<PathBuf>);
 impl PrivateRootCleanup {
@@ -281,7 +285,9 @@ impl Drop for PrivateRootCleanup {
     }
 }
 
-fn owned_private_root(root: &Path) -> bool {
+/// Whether `root` is a private window root Browser allocated: a real
+/// directory with the prefix and an intact marker, never a symlink.
+pub fn is_owned_private_root(root: &Path) -> bool {
     std::fs::symlink_metadata(root)
         .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
         && root
@@ -298,7 +304,7 @@ fn owned_private_root(root: &Path) -> bool {
 /// Remove a private window's disposable root that no engine will use, if it
 /// is one Browser owns.
 pub fn release_private_root(root: &Path) {
-    if owned_private_root(root) {
+    if is_owned_private_root(root) {
         cleanup_private_root(root);
     }
 }
@@ -325,7 +331,7 @@ fn cleanup_private_root(root: &Path) {
             }
         }
     };
-    if owned_private_root(root)
+    if is_owned_private_root(root)
         && let Err(error) = std::fs::remove_dir_all(root)
         && error.kind() != std::io::ErrorKind::NotFound
     {
@@ -835,7 +841,7 @@ impl ChromiumEngine {
     ///
     /// Returns an error if the private root is not owned, the profile cannot be prepared, or the helper cannot initialize.
     pub fn with_private_host(host: &Path, root: &Path) -> Result<Arc<Self>, String> {
-        if !owned_private_root(root) {
+        if !is_owned_private_root(root) {
             return Err("Private Chromium root is not owned by Browser".into());
         }
         Self::with_host_extensions(host, &root.join("chromium"), &[], Some(root.to_owned()))
