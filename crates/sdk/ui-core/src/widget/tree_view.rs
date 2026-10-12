@@ -7,6 +7,7 @@
 //! caller persists a choice into its own (e.g. CRDT-backed) storage.
 
 use crate::num::f32_of_f64;
+use crate::num::f64_of_usize;
 use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
@@ -1003,10 +1004,6 @@ fn paint_disclosure(
         theme.tokens.colors.text_dim.with_alpha_factor(opacity),
         crate::icons::LUCIDE_DEFAULT_STROKE_PX,
     );
-}
-
-fn idx_to_f64(index: usize) -> f64 {
-    f64::from(u32::try_from(index).unwrap_or(u32::MAX))
 }
 
 type TreeRowDelegate<M> = Box<dyn FnMut(&M, NodeId, usize) -> Element>;
@@ -2158,7 +2155,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
             (DropPlacement::Before, _) => (id, placement, depth, top),
             _ => (id, placement, depth, top + height),
         };
-        let indent = self.row_inset + idx_to_f64(depth) * self.indent_px;
+        let indent = self.row_inset + f64_of_usize(depth) * self.indent_px;
         let preview = match placement {
             DropPlacement::Before | DropPlacement::After => Rect::new(
                 self.rect.x0 + indent,
@@ -2356,7 +2353,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let Some((key, depth)) = self.index.row_at(&self.model, index) else {
             return false;
         };
-        let glyph_x0 = self.rect.x0 + self.row_inset + idx_to_f64(depth) * self.indent_px;
+        let glyph_x0 = self.rect.x0 + self.row_inset + f64_of_usize(depth) * self.indent_px;
         match key {
             TreeRowKey::Node(id) => {
                 let is_branch = self.model.is_branch(id);
@@ -2881,7 +2878,9 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             let child = row.widget.build_layout(taffy, theme, node_map);
             let mut style = taffy.style(child).cloned().unwrap_or_default();
             style.position = taffy::Position::Absolute;
-            style.inset.left = length(f32_of_f64(idx_to_f64(row.depth) * indent_px + disclosure_w));
+            style.inset.left = length(f32_of_f64(
+                f64_of_usize(row.depth) * indent_px + disclosure_w,
+            ));
             style.inset.right = length(0.0_f32);
             style.inset.top = length(f32_of_f64(
                 self.viewport.item_view_top(row.index).unwrap_or_default(),
@@ -3236,7 +3235,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     );
                 }
 
-                let depth_px = idx_to_f64(depth) * indent_px;
+                let depth_px = f64_of_usize(depth) * indent_px;
                 let glyph_x = self.rect.x0 + self.row_inset + depth_px;
                 let mut label_x = glyph_x + self.disclosure_w;
                 let text_y = centered_text_top(y0, row_height, line_h);
@@ -3422,7 +3421,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 );
                 scene.pop_layer();
             }
-            let glyph_x = self.rect.x0 + self.row_inset + idx_to_f64(payload.depth) * indent_px;
+            let glyph_x = self.rect.x0 + self.row_inset + f64_of_usize(payload.depth) * indent_px;
             let text_y = centered_text_top(y0, visual.geometry.height, line_h);
             if payload.is_branch {
                 paint_disclosure(
@@ -5050,16 +5049,6 @@ mod tests {
             self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
-        }
-
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.cursor = Some(Point::new(position.x, position.y));
@@ -5470,7 +5459,7 @@ mod tests {
                 0.0,
                 0.0,
                 200.0,
-                idx_to_f64(view.visible_rows().len()) * ROW_HEIGHT,
+                f64_of_usize(view.visible_rows().len()) * ROW_HEIGHT,
             );
             let target_id = view.visible_rows()[1].0;
             let target_rect = Rect::new(0.0, ROW_HEIGHT, 200.0, ROW_HEIGHT * 2.0);
@@ -6105,7 +6094,7 @@ mod tests {
             .with_expanded([1])
             .on_load_request(move |request| captured.borrow_mut().push(request));
             view.set_viewport(66.0, f32_of_f64(ROW_HEIGHT));
-            view.set_scroll_offset(idx_to_f64(50_000_000) * ROW_HEIGHT);
+            view.set_scroll_offset(f64_of_usize(50_000_000) * ROW_HEIGHT);
 
             let demanded = view.request_visible_rows();
             assert!(demanded > 0);
@@ -6359,7 +6348,7 @@ mod tests {
                 .with_expanded([1, HugeModel::branch_id()])
                 .with_accessible_name("Huge tree");
             view.set_viewport(720.0, f32_of_f64(ROW_HEIGHT));
-            view.set_scroll_offset(idx_to_f64(HUGE_BRANCH_POSITION) * ROW_HEIGHT);
+            view.set_scroll_offset(f64_of_usize(HUGE_BRANCH_POSITION) * ROW_HEIGHT);
 
             assert_eq!(view.visible_len(), 100_000_003);
             assert_eq!(view.viewport.resident_measurements(), 0);
@@ -6392,7 +6381,7 @@ mod tests {
                 ))
             });
             view.set_viewport(110.0, f32_of_f64(ROW_HEIGHT));
-            view.set_scroll_offset(idx_to_f64(HUGE_BRANCH_POSITION) * ROW_HEIGHT);
+            view.set_scroll_offset(f64_of_usize(HUGE_BRANCH_POSITION) * ROW_HEIGHT);
             let _ = lay_out_tree(&mut view, 320.0);
 
             assert_eq!(view.visible_len(), 100_000_003);

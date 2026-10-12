@@ -2,6 +2,7 @@ use super::*;
 use crate::SeedState;
 use crate::seed_room;
 use automerge::AutoCommit;
+use collab_types::CommitNamed as _;
 use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert, sign_revocation_entry,
 };
@@ -294,7 +295,7 @@ fn room_media_security_proof_survives_signed_multi_author_unsorted_roundtrip() {
         let before = chat.get_heads();
         chat.put(ROOT, format!("author-{seed}"), u64::from(seed))
             .unwrap();
-        chat.commit();
+        chat.commit_edit("fixture", "fixture");
         peer.publish_incremental("so.tilo.chat", "", chat.save_after(&before), &author, now)
             .unwrap();
     }

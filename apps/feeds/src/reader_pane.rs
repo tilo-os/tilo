@@ -149,7 +149,7 @@ impl Core {
         }
         self.reader.scroller.set_viewport(area, theme);
         if self.reader.shown != self.selected {
-            self.reader.shown = self.selected;
+            self.reader.shown.clone_from(&self.selected);
             self.reader.scroll_to_top();
         }
         let palette = ReaderPalette::resolve(self.settings.theme, theme);
@@ -158,7 +158,7 @@ impl Core {
         }
         let page_theme = palette.page_theme(theme);
         self.reader.theme = page_theme.clone();
-        let Some(article) = self.open_article().cloned() else {
+        let Some(article) = self.open_article().map(|article| article.item().clone()) else {
             self.reader.scroller.set_content_size(area.width(), 0.0);
             // An empty library has one empty state, in the list.
             if !self.store.feeds.is_empty() {
@@ -253,7 +253,7 @@ impl Core {
         ui::surface::separator(scene, t, x, x + width, y, 0.0, palette.ground);
         y += f64::from(spacing.s6) * scale;
 
-        for (index, block) in article.blocks.iter().enumerate() {
+        for (index, block) in article.blocks.0.iter().enumerate() {
             y = self.paint_block(
                 PaintCtx::new(scene, t, text, theme),
                 &BlockFrame {
@@ -524,7 +524,7 @@ impl Core {
                     .with_action_target(format!("feeds.reader-tag:{key}")),
             )
         }));
-        children.extend(article.blocks.iter().enumerate().map(|(index, block)| {
+        children.extend(article.blocks.0.iter().enumerate().map(|(index, block)| {
             let role = match block.kind {
                 BlockKind::Heading1 => Role::Heading { level: 2 },
                 BlockKind::Heading2 => Role::Heading { level: 3 },

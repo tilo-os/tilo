@@ -56,7 +56,7 @@ priority = 90
 # burst of a whole-workspace shard (every slot starting a process at once)
 # exceeds.
 [[profile.default.overrides]]
-filter = 'package(agent) and binary(it) and (test(presence_semantics::) or test(relay_roundtrip::) or test(discovered_operations::) or test(concurrent_edit::))'
+filter = 'package(agent) and binary(it) and test(presence_semantics::)'
 test-group = "agent-collaboration"
 
 [[profile.default.overrides]]

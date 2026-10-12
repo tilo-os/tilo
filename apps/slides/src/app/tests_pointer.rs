@@ -239,6 +239,16 @@ fn every_inspector_property_edit_lands_in_the_deck() {
     bench.with(|app| app.apply_hit(Hit::SetAlign(TextAlign::Justify)));
     assert_eq!(element(&bench, &id).align, TextAlign::Justify);
 
+    // Stacking is relative: another element shares the slide.
+    let slide = bench.deck().slides[0].id.clone();
+    let other = Element::shape(ElementKind::Rect, 700.0, 400.0, 100.0, 100.0);
+    bench
+        .app
+        .invoke(
+            ui::tilo_resource::Invoke::apply(&crate::actions::add_element_action(&slide, &other))
+                .unwrap(),
+        )
+        .unwrap();
     bench.with(|app| app.apply_hit(Hit::BringFront));
     let zf = element(&bench, &id).z;
     bench.with(|app| app.apply_hit(Hit::SendBack));

@@ -6,6 +6,7 @@
 //! [`Command`] the app applies with the document in hand.
 
 use ui::icons::Icon;
+use ui::num::u32_of_usize;
 use ui::widget::{AppModel, ModelPath, NavAction, NavItem, NavList, NavSection};
 
 use crate::account::AccountStore;
@@ -55,17 +56,17 @@ pub(crate) fn sections(state: &MailState) -> Vec<NavSection> {
                     }
                     match folder {
                         // Unread mail is what waits for the person.
-                        Folder::Inbox => match count(state.mailbox.unread_count(folder)) {
+                        Folder::Inbox => match u32_of_usize(state.mailbox.unread_count(folder)) {
                             0 => item,
                             unread => item.live_count(unread),
                         },
                         // How many drafts are kept, and how much junk is
                         // unread, are plain counts.
-                        Folder::Drafts => match count(state.mailbox.count(folder)) {
+                        Folder::Drafts => match u32_of_usize(state.mailbox.count(folder)) {
                             0 => item,
                             drafts => item.count(drafts),
                         },
-                        Folder::Junk => match count(state.mailbox.unread_count(folder)) {
+                        Folder::Junk => match u32_of_usize(state.mailbox.unread_count(folder)) {
                             0 => item,
                             unread => item.count(unread),
                         },
@@ -87,10 +88,6 @@ pub(crate) fn sections(state: &MailState) -> Vec<NavSection> {
                 ))
         })
         .collect()
-}
-
-fn count(n: usize) -> u32 {
-    u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 /// The row that shows the open folder.

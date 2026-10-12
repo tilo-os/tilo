@@ -6,6 +6,7 @@
 //! has already rung) stays in that device's settings ([`OnThisDevice`]).
 
 pub mod app;
+pub mod locales;
 pub mod model;
 mod native_timers;
 pub mod resource;
@@ -20,5 +21,5 @@ pub use transport::ShellSnapshot;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<ClocksShell>()
+    ui::built_in_definition!(ClocksShell)
 }

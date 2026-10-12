@@ -2168,23 +2168,6 @@ impl App {
             .map(|(rect, label, _)| (rect, label))
     }
 
-    /// Where in the app the pointer would raise a tooltip: the centre of the
-    /// topmost, then leftmost, laid-out control that shows one there, in the
-    /// app's logical coordinates. For a test that hovers it.
-    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
-    pub fn tooltip_region_for_test(&self) -> Option<Point> {
-        self.layout
-            .node_map
-            .keys()
-            .filter_map(|&node| {
-                let centre = self
-                    .inspect_node(node, |widget| widget.get_rect().center())
-                    .ok()?;
-                self.tooltip_target_at(centre).map(|_| centre)
-            })
-            .min_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)))
-    }
-
     /// [`Self::tooltip_target_at`] with the side of its control the
     /// tooltip prefers.
     #[cfg(feature = "native")]
@@ -2425,6 +2408,9 @@ impl App {
         );
         self.bindings.clear();
         self.layout.node_map.clear();
+        // The map built now describes the tree as it is: a replacement the
+        // widgets reported before is part of it, not a change after it.
+        self.take_composition_dirty();
         tilo_startup_metrics::span("init-layout-history", || self.build_history_presentation());
         tilo_startup_metrics::span("init-layout-focus-order", || {
             self.update_focusable_order();
@@ -2494,7 +2480,10 @@ impl App {
     pub fn rebuild_structure(&mut self) {
         let _entry = self.enter_wake_scope();
         // A reported mutation can already have invalidated old widget pointers.
-        let topology_changed = self.layout.structure_dirty || self.take_composition_dirty();
+        // Always take the widgets' report, so it is not mistaken later for a
+        // change after the map this rebuild makes.
+        let reported = self.take_composition_dirty();
+        let topology_changed = self.layout.structure_dirty || reported;
         // Whether this rebuild is one the widgets describe, for a frame that
         // compares itself with the last; none is outstanding after it.
         self.layout.frame_rebuilds_described &= self.layout.rebuild_described;
@@ -3003,21 +2992,8 @@ mod legacy_owner_routing_tests {
             nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
-        fn apply_layout(&mut self, _: &taffy::TaffyTree<()>, _: NodeId, _: Point) {}
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "LegacyOwnerProbe"
-        }
-        fn get_rect(&self) -> KurboRect {
-            KurboRect::ZERO
         }
         fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
             use crate::a11y::{AccessNode, AccessState, Role};
@@ -3724,10 +3700,7 @@ pub(crate) mod ordinary_confirmation_tests {
         fn revoke(&self) {
             if let Self::Component { binding, .. } = self {
                 *binding.permissions.borrow_mut() =
-                    crate::permissions::PermissionContext::from_capabilities(
-                        crate::permissions::Actor::person(None, "fixture"),
-                        vec![],
-                    );
+                    crate::permissions::PermissionContext::stranger("fixture");
             }
         }
     }
@@ -3937,10 +3910,7 @@ pub(crate) mod ordinary_confirmation_tests {
             }
         }
         fn revoke(&mut self) {
-            let denied = crate::permissions::PermissionContext::from_capabilities(
-                crate::permissions::Actor::person(None, "fixture"),
-                vec![],
-            );
+            let denied = crate::permissions::PermissionContext::stranger("fixture");
             match self {
                 Self::Native(app) => app.set_permission_ctx(denied),
                 Self::FrameHarness(driver) => driver.set_permission_ctx(denied),
@@ -4551,7 +4521,7 @@ pub(crate) mod ordinary_confirmation_tests {
             assert_ne!(entry.after, entry.before);
             assert_eq!(entry.author.as_ref(), Some(&author));
             let committed = state.doc.get_heads();
-            assert!(state.undo_for_author(&author, None, None).is_some());
+            assert!(state.undo_as(Some(&author), None, None, None).is_some());
             assert!(
                 state
                     .doc

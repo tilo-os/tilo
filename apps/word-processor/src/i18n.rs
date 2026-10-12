@@ -12,9 +12,30 @@
 //! (`LC_ALL`, `LC_MESSAGES`, `LANGUAGE`, `LANG`, read as POSIX — `de_DE.UTF-8`
 //! resolves the `de` catalog) and falls back to `en-US`.
 
-use ui::i18n::ArgValue;
+use ui::i18n::{ArgValue, EmbeddedCatalog};
 
-ui::embedded_catalog!(pub fn, "toolbar-styles", ["en-US", "de"]);
+/// The source catalog (`en-US`), the fallback for every other locale, plus
+/// the bundled translations. Add a locale by dropping a
+/// `locales/<lang>.ftl` next to `en-US.ftl` and listing it here.
+/// Translations are best-effort: any key a catalog omits transparently falls
+/// back to the English string.
+pub(crate) static CATALOG: EmbeddedCatalog = catalog();
+
+const fn catalog() -> EmbeddedCatalog {
+    let catalog = EmbeddedCatalog::new(
+        "en-US",
+        &[
+            ("en-US", include_str!("../locales/en-US.ftl")),
+            ("de", include_str!("../locales/de.ftl")),
+        ],
+    )
+    .with_system_locale();
+    // Widget tests assert source copy; keep them independent of the locale
+    // of the machine running them. Locale tests select theirs explicitly.
+    #[cfg(test)]
+    let catalog = catalog.with_pinned_locale("en-US");
+    catalog
+}
 
 /// Switch the active locale at runtime (used by tests and by callers that want
 /// to honour a locale change without restarting). Accepts a BCP-47 or POSIX
@@ -28,6 +49,24 @@ pub fn set_locale(locale: &str) {
 /// and diagnostics.
 pub fn current_locale() -> String {
     CATALOG.current_locale()
+}
+
+/// Translate `key` to a string in the active locale.
+///
+/// Resolution order: active locale → `en-US` source → the key itself. A missing
+/// key returns the key (a safe, debuggable placeholder) rather than panicking.
+pub fn t(key: &str) -> String {
+    CATALOG.t(key)
+}
+
+/// Translate `key`, interpolating Fluent placeables (e.g. `{ $n }`) from
+/// `args`. Use [`arg`] to build the slice ergonomically:
+///
+/// ```ignore
+/// let s = t_args("status.page-of", &[arg("cur", 3), arg("total", 10)]);
+/// ```
+pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
+    CATALOG.t_args(key, args)
 }
 
 /// Build a single Fluent argument from anything convertible into an

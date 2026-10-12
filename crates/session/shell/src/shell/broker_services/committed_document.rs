@@ -155,15 +155,31 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             .as_ref()
             .ok_or("native document owner unavailable")?;
         let read = owner.with_current(room, |view| {
-            view.read_document(
+            match view.read_document(
                 context.certificate().device_public_key,
                 &route.app_id,
                 &route.record_id,
                 known_revision,
                 maximum,
                 std::time::SystemTime::now(),
-            )
+            ) {
+                Ok(read) => Ok(Some(read)),
+                // The room carries a governed checkpoint's coverage whose
+                // body has not arrived: the read is refused until it does,
+                // which the reader waits out rather than failing on.
+                Err(_)
+                    if view
+                        .peer()
+                        .checkpoint_pending(&route.app_id, &route.record_id) =>
+                {
+                    Ok(None)
+                }
+                Err(error) => Err(error),
+            }
         })?;
+        let Some(read) = read else {
+            return Ok(NativeDocumentRead::Pending);
+        };
         Ok(match read {
             DocumentRead::Unchanged(revision) => NativeDocumentRead::Unchanged(revision),
             DocumentRead::Captured(document) => NativeDocumentRead::Captured {
@@ -172,6 +188,66 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             },
             DocumentRead::CheckpointPending => NativeDocumentRead::Pending,
         })
+    }
+    fn unchanged(
+        &self,
+        context: &NativeDocumentReadContext,
+        known_revision: Option<[u8; 32]>,
+    ) -> Result<Option<bool>, String> {
+        // After `Unavailable` only a capture can tell whether the
+        // checkpoint's body arrived.
+        let Some(known) = known_revision else {
+            return Ok(None);
+        };
+        self.authorize(context)?;
+        let route = context.route();
+        let room = super::super::state::RoomId::parse(&route.cluster_id)
+            .ok_or("invalid committed document room")?;
+        let owner = self
+            .owner
+            .as_ref()
+            .ok_or("native document owner unavailable")?;
+        owner.with_current(room, |view| {
+            view.holds_revision(
+                context.certificate().device_public_key,
+                &route.app_id,
+                &route.record_id,
+                known,
+                std::time::SystemTime::now(),
+            )
+        })
+    }
+    fn next_change(
+        &self,
+        context: &NativeDocumentReadContext,
+        after: u64,
+    ) -> Result<Option<u64>, String> {
+        let route = context.route();
+        let room = super::super::state::RoomId::parse(&route.cluster_id)
+            .ok_or("invalid committed document room")?;
+        let owner = self
+            .owner
+            .as_ref()
+            .ok_or("native document owner unavailable")?;
+        let second = tilo_action_broker::policy_schedule::second_at_or_after;
+        // The room's own governance (its grants' and capabilities' expiries)
+        // and this host's custody certificate (`check_native_custody`).
+        let committed = owner.with_current(room, |view| {
+            let grants = tilo_peer_state::owner_commit::PrivatePolicyBasis::from_peer(view.peer())?
+                .next_expiry_after(after);
+            let custody = view
+                .device()
+                .expires_at_ns
+                .map(second)
+                .filter(|at| *at > after);
+            Ok(grants.into_iter().chain(custody).min())
+        })?;
+        // The projection a steward reads for the same room: its grants and
+        // the certificates of the devices it admitted, the reader's among
+        // them.
+        let projected =
+            super::super::channel_policy::next_policy_change(&self.tree.read(), room, after, &[]);
+        Ok(committed.into_iter().chain(projected).min())
     }
 }
 

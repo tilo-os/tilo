@@ -112,7 +112,6 @@ mod tests {
     use taffy::{NodeId, Style, TaffyTree};
     use ui::widget::TaffyTreeExt;
     use ui::widget::Widget;
-    use vello::kurbo::Point;
 
     struct Forgery {
         rect: Rect,
@@ -129,18 +128,6 @@ mod tests {
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             taffy.widget_leaf(Style::default(), node_map, self)
-        }
-
-        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut ui::text_render::TextRenderer,
-            _theme: &Theme,
-            _presence: &ui::presence::PresenceCtx,
-        ) {
         }
 
         fn name(&self) -> &str {

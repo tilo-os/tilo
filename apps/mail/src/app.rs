@@ -55,12 +55,11 @@ use ui::widget::{
 use ui::{ImageStore, TextRole};
 
 use crate::account::{Account, AccountStore};
-use crate::actions::{MailAction, Outgoing, ServerUpdate};
+use crate::actions::{DraftData, Outgoing, ServerUpdate};
 #[path = "contact_recipients.rs"]
 mod contact_recipients;
 
 use crate::compose::{ComposeAction, ComposeEventContext, ComposeWindow};
-use crate::doc::MailDoc;
 use crate::engine::{EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind};
 use crate::header::{BarSpec, header_actions, list_bar, reader_bar};
 use crate::list::MessageList;
@@ -68,6 +67,7 @@ use crate::model::{
     AccountConfig, Addr, Attachment, ComposeFormat, Draft, Folder, Message, MessageId,
 };
 use crate::reader::MessageReader;
+use crate::resource::{Mail, mailbox, read_mail};
 use crate::shortcuts_overlay::MailShortcutsOverlay;
 use crate::sidebar::MailSidebar;
 use crate::state::{BulkAction, Command, CtxAction, Intent, MailState, Shared};
@@ -120,22 +120,26 @@ struct PendingSend {
     outgoing: Outgoing,
     /// The copy Sent shows once it is delivered.
     message: Message,
-    done: ServerUpdateDone,
+    done: DeliveryDone,
 }
 
 /// How the drain that asked for a server update hears how it went.
 type ServerUpdateDone = Box<dyn FnOnce(Result<(), String>)>;
 
+/// How the outbox drain hears how a delivery went: delivered, or refused
+/// for good with the server's reason; an error leaves it to try again.
+type DeliveryDone = Box<dyn FnOnce(Result<ui::tilo_resource::Settled, String>)>;
+
 /// The server updates the document's projection asked for: queued until the
 /// next sync hands them to the engine, then carried out by it. Whichever
 /// device's drain asked, the engine's acknowledgement records the update as
-/// applied in the document ([`crate::actions::MailAction::ServerApplied`]).
+/// applied in the document ([`Mail::SERVER_APPLIED`](crate::resource::Mail::SERVER_APPLIED)).
 #[derive(Default)]
 pub(crate) struct ServerOutbox {
     queued: Vec<(ServerUpdate, ServerUpdateDone)>,
     sent: HashMap<EngineRequestId, (ServerUpdate, ServerUpdateDone)>,
     /// Messages from the document's outbox, waiting for the engine.
-    deliveries: Vec<(Outgoing, ServerUpdateDone)>,
+    deliveries: Vec<(Outgoing, DeliveryDone)>,
 }
 
 impl ServerOutbox {
@@ -145,7 +149,7 @@ impl ServerOutbox {
     }
 
     /// Deliver `outgoing`, then tell `done` how it went.
-    pub(crate) fn deliver(&mut self, outgoing: Outgoing, done: ServerUpdateDone) {
+    pub(crate) fn deliver(&mut self, outgoing: Outgoing, done: DeliveryDone) {
         self.deliveries.push((outgoing, done));
     }
 }
@@ -255,7 +259,7 @@ impl Drop for PendingSetupValidation {
     reason = "the bools split across unrelated concerns (shell layout flags and engine-request bookkeeping); grouping them would need a real design pass"
 )]
 pub struct MailApp {
-    shared: Shared,
+    pub(crate) shared: Shared,
     /// Where draft attachment bytes live; drafts carry only their content id.
     /// The engine worker holds a clone to build outgoing MIME.
     content: ContentStore,
@@ -289,7 +293,7 @@ pub struct MailApp {
     pending_drawer: bool,
     /// An explicit destructive confirmation for the selection toolbar. This
     /// is local presentation state; the actual purge remains one canonical
-    /// `MailAction` only after the person confirms.
+    /// verb of the mailbox, only after the person confirms.
     bulk_purge_confirmation: Option<PurgeConfirmation>,
     /// Opens the platform search from the app's own input handling.
     search: SearchOpener,
@@ -355,6 +359,9 @@ pub struct MailApp {
     compose_attachment_rx: Option<OpenFileChannel>,
     /// What effects asked to show that needs the document, for the next sync.
     reveals: Vec<Reveal>,
+    /// What search hits and agents asked to open, taken up on the next
+    /// settle.
+    opens: std::rc::Rc<std::cell::RefCell<Vec<crate::actions::MailTarget>>>,
     /// Callers waiting for a refresh to settle.
     effect_replies: Vec<(tilo_actions::InvocationId, ui::framework::EffectReply)>,
     /// Wall-clock minute of the last automatic inbox refresh, so periodic sync
@@ -538,6 +545,7 @@ impl MailApp {
             resource_refresh_result: None,
             compose_attachment_rx: None,
             reveals: Vec::new(),
+            opens: std::rc::Rc::default(),
             effect_replies: Vec::new(),
             last_auto_refresh_min: 0,
             rect: Rect::ZERO,
@@ -642,7 +650,7 @@ impl MailApp {
                 .map(|m| m.id)
         };
         if let Some(id) = id {
-            self.shared.borrow_mut().select_message(doc, id);
+            self.shared.borrow_mut().open_message(doc, id);
             self.process_intents();
         }
     }
@@ -1335,9 +1343,19 @@ impl MailApp {
         {
             let st = self.shared.borrow();
             if let Some(refused) = self.resending.take() {
-                st.dispatch_external(doc, &MailAction::CancelSend { id: refused });
+                st.submit(
+                    doc,
+                    Mail::CANCEL_SEND.with(mailbox::CancelSend { id: refused }),
+                );
             }
-            st.dispatch_external(doc, &MailAction::Send(Outgoing::new(&acct.email, &draft)));
+            st.submit(
+                doc,
+                Mail::SEND_MESSAGE.with(mailbox::SendMessage {
+                    account: acct.email,
+                    message: DraftData::from_draft(&draft),
+                    in_reply_to: draft.in_reply_to.map(|id| id.to_string()),
+                }),
+            );
         }
         // The message is in the outbox now; the draft it was written in is
         // done with.
@@ -2186,13 +2204,7 @@ impl MailApp {
         // A message joins Sent only after SMTP has accepted its bytes.
         st.ingest_messages(doc, std::slice::from_ref(&pending.message));
         st.mailbox.insert(pending.message);
-        st.dispatch_external(
-            doc,
-            &MailAction::Delivered {
-                id: pending.outgoing.id,
-            },
-        );
-        (pending.done)(Ok(()));
+        (pending.done)(Ok(ui::tilo_resource::Settled::Done(())));
         st.status = Some("Delivered".into());
         self.editing_draft = None;
         self.compose.close();
@@ -2200,7 +2212,6 @@ impl MailApp {
 
     fn apply_engine_error(
         &mut self,
-        doc: &mut ui::widget::Edits<'_>,
         st: &mut MailState,
         request_id: EngineRequestId,
         context: &str,
@@ -2226,18 +2237,11 @@ impl MailApp {
         if let Some(pending) = self.pending_send.remove(&request_id) {
             // The server refused it: it stays in the outbox with the reason,
             // and comes back to the composer to be fixed and sent again.
-            st.dispatch_external(
-                doc,
-                &MailAction::SendFailed {
-                    id: pending.outgoing.id.clone(),
-                    reason: detail.clone(),
-                },
-            );
             if !self.compose.open {
                 self.compose.open_with_draft(&pending.outgoing.to_draft());
-                self.resending = Some(pending.outgoing.id);
+                self.resending = Some(pending.outgoing.id.clone());
             }
-            (pending.done)(Err(detail.clone()));
+            (pending.done)(Ok(ui::tilo_resource::Settled::failed(detail.clone())));
         }
         if self
             .resource_refresh_invocation
@@ -2313,7 +2317,7 @@ impl MailApp {
                 context,
                 message,
             } if self.expects_engine_event(request_id, kind) => {
-                self.apply_engine_error(doc, st, request_id, &context, &message);
+                self.apply_engine_error(st, request_id, &context, &message);
             }
             EngineEvent::Completed { request_id, kind }
                 if self.expects_engine_event(request_id, kind) =>
@@ -2323,7 +2327,10 @@ impl MailApp {
                 self.pending_engine_requests.remove(&request_id);
                 let sent = self.server_outbox.borrow_mut().sent.remove(&request_id);
                 if let Some((update, done)) = sent {
-                    st.dispatch_external(doc, &MailAction::ServerApplied(update));
+                    st.submit(
+                        doc,
+                        Mail::SERVER_APPLIED.with(mailbox::ServerApplied { update }),
+                    );
                     done(Ok(()));
                 }
             }
@@ -2380,7 +2387,7 @@ impl MailApp {
     /// Hand an outbox message to the engine on the account it is sent from.
     /// One whose account this device does not hold is left for a device
     /// that does.
-    fn deliver(&mut self, outgoing: Outgoing, done: ServerUpdateDone) {
+    fn deliver(&mut self, outgoing: Outgoing, done: DeliveryDone) {
         let account = self
             .shared
             .borrow()
@@ -2669,13 +2676,14 @@ impl MailApp {
     /// Apply collaborative domain state to the local hydrated corpus. Folder,
     /// selection, search, and composer format remain local to this window.
     fn hydrate_domain_state(&self, doc: &mut ui::widget::Edits<'_>) {
+        let mail = read_mail(doc.doc()).unwrap_or_default();
         {
             let mut st = self.shared.borrow_mut();
-            MailDoc::apply_flags(doc, &mut st.mailbox);
+            mail.apply_flags(&mut st.mailbox);
         }
         // A persisted draft becomes a local Drafts projection, but does not
         // force another collaborator's composer open.
-        let draft = MailDoc::load_draft(doc);
+        let draft = mail.draft.draft();
         if !draft.is_empty() {
             self.upsert_draft_message(doc, &draft);
         } else if let Some((id, _)) = self.projected_draft.borrow_mut().take() {
@@ -2721,7 +2729,7 @@ impl MailApp {
                 .message_ids
                 .into_iter()
                 .filter_map(|id| state.mailbox.get(id))
-                .take(crate::actions::OPEN_MESSAGE_LIMIT)
+                .take(crate::resource::OPEN_MESSAGE_LIMIT)
                 .map(crate::actions::message_row)
                 .collect(),
         ))
@@ -3408,6 +3416,12 @@ impl Widget for MailApp {
     }
 
     fn settle(&mut self, state: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        let opens = std::mem::take(&mut *self.opens.borrow_mut());
+        for target in opens {
+            if let Err(error) = self.open_target(target) {
+                tracing::warn!(%error, "mail: a hit could not be opened");
+            }
+        }
         self.drain_engine(state);
         self.reveal_requested(state);
         self.deliver_effect_replies();
@@ -4002,6 +4016,40 @@ impl MailApp {
         self.begin_effect(invocation, effect)
     }
 
+    /// What opens the place a search hit or an agent's `open` names: a
+    /// folder, a message the mailbox publishes or one the window loaded.
+    pub(crate) fn opener(
+        &self,
+    ) -> impl FnMut(&str) -> Result<(), ui::tilo_resource::Refusal> + 'static {
+        use crate::actions::MailTarget;
+        let opens = std::rc::Rc::clone(&self.opens);
+        let shared = std::rc::Rc::clone(&self.shared);
+        move |anchor| {
+            let message = anchor
+                .strip_prefix("mail.message:")
+                .or_else(|| anchor.rsplit_once("/message:").map(|(_, id)| id));
+            let target = if let Some(id) = message {
+                let loaded = id
+                    .parse::<MessageId>()
+                    .is_ok_and(|id| shared.borrow().mailbox.get(id).is_some());
+                if !loaded {
+                    return Err(ui::tilo_resource::Refusal::new(
+                        "the message is not loaded here",
+                    ));
+                }
+                MailTarget::Message(id.to_owned())
+            } else {
+                let key = Folder::ALL
+                    .into_iter()
+                    .find(|folder| crate::resource::folder_resource(folder.as_key()) == anchor)
+                    .ok_or_else(|| ui::tilo_resource::Refusal::new("no such folder or message"))?;
+                MailTarget::Folder(key.as_key().to_owned())
+            };
+            opens.borrow_mut().push(target);
+            Ok(())
+        }
+    }
+
     /// Show `target`, once it is still there.
     fn open_target(&mut self, target: crate::actions::MailTarget) -> Result<(), String> {
         use crate::actions::MailTarget;
@@ -4067,7 +4115,7 @@ impl MailApp {
                     }
                 }
                 Reveal::Draft => {
-                    let draft = MailDoc::load_draft(doc);
+                    let draft = read_mail(doc.doc()).unwrap_or_default().draft.draft();
                     self.compose.open_with_draft(&draft);
                     self.editing_draft = None;
                 }
@@ -4608,7 +4656,7 @@ impl MailApp {
         if is_draft {
             mail.push_intent(Intent::EditDraft(id));
         } else {
-            mail.select_message(state, id);
+            mail.open_message(state, id);
         }
         drop(mail);
         self.process_intents();
@@ -4883,20 +4931,32 @@ impl MailApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resource::TestMail;
     use automerge::ReadDoc;
 
     fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        ui::synthetic_input::cursor_moved(p.x, p.y)
     }
-    use ui::synthetic_input::mouse_press;
+    fn left_press() -> WindowEvent {
+        ui::synthetic_input::mouse_press()
+    }
     fn esc_event() -> WindowEvent {
         named_key(NamedKey::Escape)
     }
-    use ui::synthetic_input::char_key;
-    use ui::synthetic_input::named_key;
+    fn named_key(k: NamedKey) -> WindowEvent {
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            Key::Named(k),
+            None,
+            ElementState::Pressed,
+        ))
+    }
+    fn char_key(s: &str) -> WindowEvent {
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            Key::Character(s.into()),
+            Some(s.into()),
+            ElementState::Pressed,
+        ))
+    }
 
     /// Route `ev` to the app through the tree it was last laid out in (a
     /// bare node before any layout).
@@ -4917,11 +4977,13 @@ mod tests {
         handled
     }
 
-    use ui::synthetic_input::mouse_release;
+    fn left_release() -> WindowEvent {
+        ui::synthetic_input::mouse_release()
+    }
 
     fn app() -> (MailApp, AutoCommit) {
         let mut app = MailApp::new_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::resource::TestMail::doc();
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
@@ -5037,7 +5099,7 @@ mod tests {
         app.shared
             .borrow_mut()
             .set_read(&mut ui::widget::Edits::lend(&mut doc), id, !message.read);
-        let [update] = MailDoc::server_updates(&doc).try_into().unwrap();
+        let [update] = TestMail::server_updates(&doc).try_into().unwrap();
 
         let outcome = push(&app, update.clone());
         app.flush_server_outbox();
@@ -5071,7 +5133,7 @@ mod tests {
         app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
         assert!(matches!(outcome.borrow().as_ref(), Some(Err(_))));
         assert_eq!(
-            MailDoc::server_updates(&doc),
+            TestMail::server_updates(&doc),
             std::slice::from_ref(&update),
             "still to tell"
         );
@@ -5088,7 +5150,7 @@ mod tests {
         app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
         assert!(matches!(outcome.borrow().as_ref(), Some(Ok(()))));
         assert!(
-            MailDoc::server_updates(&doc).is_empty(),
+            TestMail::server_updates(&doc).is_empty(),
             "the server has it"
         );
 
@@ -5125,10 +5187,10 @@ mod tests {
                 ics,
             )
             .unwrap();
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             let mut state = MailState::new_sample(avatar_store_offline());
             state.save_draft(&mut ui::widget::Edits::lend(&mut doc), &draft);
-            let stored = MailDoc::load_draft(&doc);
+            let stored = TestMail::load_draft(&doc);
             assert_eq!(stored.to, "guest@example.com");
             assert_eq!(stored.subject, "Invitation: Review");
             assert_eq!(stored.calendar_ics.as_deref(), Some(ics));
@@ -5162,8 +5224,8 @@ mod tests {
 
     fn click_at(app: &mut MailApp, doc: &mut AutoCommit, p: Point) -> bool {
         dispatch(app, &cursor_at(p), doc);
-        let pressed = dispatch(app, &mouse_press(), doc);
-        let released = dispatch(app, &mouse_release(), doc);
+        let pressed = dispatch(app, &left_press(), doc);
+        let released = dispatch(app, &left_release(), doc);
         pressed || released
     }
 
@@ -5474,7 +5536,7 @@ mod tests {
                 .expect("second sample message");
             app.shared
                 .borrow_mut()
-                .select_message(&mut ui::widget::Edits::lend(&mut doc), other);
+                .open_message(&mut ui::widget::Edits::lend(&mut doc), other);
             app.process_intents();
             assert!(
                 !app.perform_semantic_action(
@@ -5581,13 +5643,13 @@ mod tests {
             .expect("an unread message");
             app.shared
                 .borrow_mut()
-                .select_message(&mut ui::widget::Edits::lend(&mut doc), id);
+                .open_message(&mut ui::widget::Edits::lend(&mut doc), id);
             assert!(app.shared.borrow().mailbox.get(id).unwrap().read);
             let mut fresh = app.shared.borrow().mailbox.clone();
             for m in fresh.messages.values_mut() {
                 m.read = false;
             }
-            MailDoc::apply_flags(&doc, &mut fresh);
+            TestMail::apply_flags(&doc, &mut fresh);
             assert!(
                 fresh.get(id).unwrap().read,
                 "read flag persisted to the CRDT"
@@ -5623,7 +5685,7 @@ mod tests {
                 "Open dispatches the canonical mark-read action"
             );
             assert_eq!(
-                MailDoc::get_read(&doc, &id.to_string()),
+                TestMail::get_read(&doc, &id.to_string()),
                 Some(true),
                 "resource Open writes the same mark-read every on-screen control does"
             );
@@ -5757,7 +5819,7 @@ mod tests {
                 "unlike Open message, explicit preview never queues mark-read"
             );
             assert_ne!(
-                MailDoc::get_read(&doc, &id.to_string()),
+                TestMail::get_read(&doc, &id.to_string()),
                 Some(true),
                 "a read-state-neutral preview writes no read state"
             );
@@ -5805,7 +5867,7 @@ mod tests {
                     .is_some_and(|mail| mail.read),
                 "Enter uses the normal Open boundary, rather than silently previewing"
             );
-            assert_eq!(MailDoc::get_read(&doc, &unread.to_string()), Some(true));
+            assert_eq!(TestMail::get_read(&doc, &unread.to_string()), Some(true));
             assert_ne!(app.shared.borrow().inspection, Some(unread));
         }
 
@@ -5911,7 +5973,18 @@ mod tests {
             };
             app.compose.reattach(&draft);
             app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
-            let outbox = MailDoc::outbox(&doc);
+            assert!(
+                TestMail::outbox(&doc).is_empty(),
+                "sending asks the person first"
+            );
+            let dispatcher = app
+                .shared
+                .borrow()
+                .dispatcher
+                .clone()
+                .expect("a dispatcher");
+            TestMail::confirm(&mut doc, &dispatcher);
+            let outbox = TestMail::outbox(&doc);
             let [(outgoing, None)] = outbox.as_slice() else {
                 panic!("one message waits in the outbox: {outbox:?}");
             };
@@ -5935,9 +6008,12 @@ mod tests {
                 tx: outgoing_tx,
                 rx: incoming_rx,
             });
-            app.server_outbox()
-                .borrow_mut()
-                .deliver(outgoing.clone(), Box::new(|_| {}));
+            let heard = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let answer = std::rc::Rc::clone(&heard);
+            app.server_outbox().borrow_mut().deliver(
+                outgoing.clone(),
+                Box::new(move |result| *answer.borrow_mut() = Some(result)),
+            );
             app.flush_server_outbox();
             let (&request_id, _) = app
                 .pending_send
@@ -5953,7 +6029,15 @@ mod tests {
                 })
                 .unwrap();
             app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
-            let outbox = MailDoc::outbox(&doc);
+            let settled = heard
+                .borrow_mut()
+                .take()
+                .expect("the delivery answered")
+                .expect("refused for good, not tried again");
+            assert!(!settled.is_done());
+            // The outbox drain records how it settled.
+            TestMail::settle_delivery(&mut doc, &outgoing.id, &settled);
+            let outbox = TestMail::outbox(&doc);
             assert!(
                 matches!(outbox.as_slice(), [(_, Some(reason))] if reason.contains("relay denied")),
                 "{outbox:?}"
@@ -5965,7 +6049,8 @@ mod tests {
 
             // Sending it again replaces the refused one.
             app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
-            let outbox = MailDoc::outbox(&doc);
+            TestMail::confirm(&mut doc, &dispatcher);
+            let outbox = TestMail::outbox(&doc);
             assert!(
                 matches!(outbox.as_slice(), [(again, None)] if again.id != outgoing.id),
                 "{outbox:?}"
@@ -6629,7 +6714,7 @@ mod tests {
     fn presentation_state_stays_local() {
         // Phase `presentation_state_is_local_and_never_restored_from_a_peer_document`.
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             {
                 let mut app = MailApp::new_sample();
                 app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
@@ -6701,7 +6786,7 @@ mod tests {
         // Phase `first_run_shows_onboarding_and_add_opens_setup`.
         {
             let mut app = MailApp::new_first_run();
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
@@ -6860,7 +6945,7 @@ mod tests {
                 "'e' archived the selection"
             );
             assert_eq!(
-                MailDoc::get_folder_for(&doc, &id.to_string()),
+                TestMail::get_folder_for(&doc, &id.to_string()),
                 Some(Folder::Archive)
             );
         }
@@ -6882,13 +6967,13 @@ mod tests {
                 !was_starred
             );
             assert_eq!(
-                MailDoc::get_starred(&doc, &id.to_string()),
+                TestMail::get_starred(&doc, &id.to_string()),
                 Some(!was_starred)
             );
 
             assert!(dispatch(&mut app, &char_key("u"), &mut doc));
             assert!(!app.shared.borrow().mailbox.get(id).unwrap().read);
-            assert_eq!(MailDoc::get_read(&doc, &id.to_string()), Some(false));
+            assert_eq!(TestMail::get_read(&doc, &id.to_string()), Some(false));
         }
 
         // Phase `shortcut_arrow_down_moves_selection`.
@@ -6917,7 +7002,7 @@ mod tests {
                 "Delete moved the selection to Trash"
             );
             assert_eq!(
-                MailDoc::get_folder_for(&doc, &id.to_string()),
+                TestMail::get_folder_for(&doc, &id.to_string()),
                 Some(Folder::Trash)
             );
         }

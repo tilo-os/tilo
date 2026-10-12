@@ -855,7 +855,9 @@ async fn screencast_start_provisions_the_selected_streams_and_restores_without_r
             if let Some(ws) = t.desktop.workspaces.iter_mut().find(|w| w.id == ws_id) {
                 // Removing the ordinary capability proves this second request is
                 // using the separately app-bound portal restore authority.
-                ws.revoke_matching(|c| matches!(&c.subject, Subject::Principal(Principal::App(_))));
+                ws.revoke_sandbox_matching(|c| {
+                    matches!(&c.subject, Subject::Principal(Principal::App(_)))
+                });
             }
         }
 

@@ -1,0 +1,18 @@
+[ratchets.action_address_new]
+"apps/code-editor/src/actions.rs" = 2
+"apps/code-editor/src/app.rs" = 1
+"apps/code-editor/src/app/tests.rs" = 1
+"apps/code-editor/src/text_operations_tests.rs" = 1
+
+[ratchets.untyped_action_args]
+"apps/code-editor/src/text_operations.rs" = 2
+
+[ratchets.action_spec]
+"apps/code-editor/src/text_operations.rs" = 1
+
+[ratchets.direct_automerge_write]
+"apps/code-editor/src/app/tests.rs" = 2
+"apps/code-editor/src/diagnostics_cache_tests.rs" = 3
+"apps/code-editor/src/doc.rs" = 4
+"apps/code-editor/src/editor_view.rs" = 9
+"apps/code-editor/src/text_operations_tests.rs" = 1

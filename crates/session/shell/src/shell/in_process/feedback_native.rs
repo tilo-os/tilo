@@ -1,19 +1,18 @@
 //! Native feedback delivery on the existing certified shell network and SDK broker.
 //! Configuration selects a destination only; current enrolled custody supplies authority.
 use super::{
-    Actor, HashMap, HostContext, HostContextInputs, InProcessApps, InstanceViewStore, LaunchError,
+    HashMap, HostContext, HostContextInputs, InProcessApps, InstanceViewStore, LaunchError,
     LaunchTarget, PermissionContext, Rc, RecordCheckout, RefCell, RestoreInput,
 };
 use crate::shell::{network::ShellNetwork, remote_action_link::RemoteActionLink};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tilo_actions::remote::feedback::{
-    FeedbackAnswer, FeedbackDestination, FeedbackPublication, FeedbackQuery,
-};
+use tilo_actions::remote::feedback::{FeedbackAnswer, FeedbackDestination, FeedbackQuery};
 use tilo_actions::remote::{Caller, Pending, PendingPoll, RemoteActionMessage};
 use tilo_app::feedback::{Error, Submission};
 use tilo_desktop::feedback::transport::{Enrollment, NoCapture, SignedReceipt, Startup, Transport};
 use tilo_user_identity::DeviceCert;
+use ui::permissions::{Actor, Standing};
 
 /// The host owns a model service, not its app's rendering or teardown details.
 pub(super) trait Producer {
@@ -63,13 +62,19 @@ impl Connection {
             .native_owner()
             .map_err(|_| Error::NotDurable)?
             .with_current(room, |view| {
-                let (role, caps, person) = view.peer().permissions(
-                    self.reporter.device_public_key,
-                    std::time::SystemTime::now(),
-                )?;
-                if admission.permissions.role() != Some(role)
-                    || admission.permissions.capabilities() != caps
-                    || admission.permissions.user().0 != person
+                let standing = view
+                    .peer()
+                    .permissions(
+                        self.reporter.device_public_key,
+                        std::time::SystemTime::now(),
+                    )?
+                    .standing();
+                // Both halves of the admission must still hold: the reporter's
+                // standing (what they may write) and the room's sandbox (what
+                // the feedback window's code may touch, its capture and files).
+                let sandbox = view.peer().governed_sandbox()?;
+                if admission.permissions.standing() != &standing
+                    || admission.permissions.capabilities() != sandbox.as_slice()
                 {
                     return Err("native feedback policy changed".into());
                 }
@@ -96,7 +101,6 @@ impl Connection {
                     correlation: self.serial,
                     query: FeedbackQuery {
                         destination: self.destination.clone(),
-                        publication: FeedbackPublication::Write,
                         submission: submission.as_ref().map(serde_json::to_value).transpose()?,
                     },
                 },
@@ -109,12 +113,15 @@ impl Connection {
         self.custody()?;
         let a = &answer.admission;
         if a.destination != self.destination
-            || a.publication != FeedbackPublication::Write
             || a.owner_user != hex::encode(self.owner.user_public_key)
             || a.owner_device != hex::encode(self.owner.device_public_key)
             || a.reporter_user != hex::encode(self.reporter.user_public_key)
             || a.reporter_device != hex::encode(self.reporter.device_public_key)
         {
+            return Err(Error::ReceiptMismatch);
+        }
+        let standing: Standing = serde_json::from_value(a.standing.clone())?;
+        if standing.person != a.reporter_user {
             return Err(Error::ReceiptMismatch);
         }
         let room = self.destination.room.clone();
@@ -131,16 +138,12 @@ impl Connection {
                 self.reporter.device_public_key,
             )
             .in_room(room.clone()),
-            permissions: PermissionContext::from_capabilities(
-                Actor::person(
-                    Some(serde_json::from_value(a.role.clone())?),
-                    hex::encode(self.reporter.user_public_key),
-                )
-                .in_room(room),
-                serde_json::from_value(a.caps.clone())?,
+            permissions: PermissionContext::new(
+                Actor::person(standing.person.clone()).in_room(room),
+                serde_json::from_value(a.sandbox.clone())?,
+                standing,
             )
             .at_unix_time(a.unix_time),
-            publication: ui::permissions::Verb::Write,
         })
     }
     fn poll(&mut self) {
@@ -272,8 +275,11 @@ impl Delivery {
         if let Some(submission) = submission {
             let result = publisher.invoke_local_resource_action(
                 &tilo_actions::ActionAddress::new(
-                    format!("chat.channel:{}", admission.destination.channel),
-                    "submit-feedback",
+                    tilo_app::feedback::destination::item(
+                        tilo_app::feedback::destination::CHANNELS,
+                        &admission.destination.channel,
+                    ),
+                    tilo_app::feedback::destination::SUBMIT,
                 ),
                 serde_json::json!({"submission":submission})
                     .as_object()

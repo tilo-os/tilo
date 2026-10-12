@@ -9,42 +9,43 @@
 
 use ui::tilo_resource::SearchEntry;
 
-use crate::model::{PageMeta, Workspace};
+use crate::notebook::{Notebook, Page, page_of};
 
 /// The result group notes are listed under.
 pub const NOTE_KIND: &str = "Notes";
 /// The result group blocks are listed under.
 pub const BLOCK_KIND: &str = "Note blocks";
 
-/// The title shown for a page whose title is still blank.
-const UNTITLED: &str = "Untitled";
-
 /// The longest block label a hit shows; the whole block is still searched.
 const BLOCK_LABEL_CHARS: usize = 72;
 
 /// The display title for a page, substituting a placeholder for a blank
 /// title so an untitled page is still findable and readable in the palette.
-fn display_title(page: &PageMeta) -> &str {
+fn display_title(page: &Page) -> &str {
     if page.title.trim().is_empty() {
-        UNTITLED
+        crate::notebook::UNTITLED
     } else {
         page.title.as_str()
     }
 }
 
-/// Every page and every non-empty block of `workspace`.
-pub fn entries(workspace: &Workspace) -> Vec<SearchEntry> {
+/// Every note and every non-empty block of `notebook`, each opening its
+/// note.
+pub fn entries(notebook: &Notebook) -> Vec<SearchEntry> {
     let mut entries = Vec::new();
-    for page in workspace.pages() {
+    for (id, page) in notebook.pages.iter() {
+        let Some(page_id) = page_of(id) else {
+            continue;
+        };
+        let anchor = crate::actions::page_resource_id(page_id);
         let title = display_title(page);
         entries.push(
             SearchEntry::new(title, "")
-                .anchored(crate::actions::page_resource_id(page.id))
-                .invoking(crate::actions::open_page_address(page.id))
+                .anchored(anchor.clone())
                 .grouped(NOTE_KIND)
                 .with_icon("file-text"),
         );
-        for block in workspace.bodies.get(&page.id).into_iter().flatten() {
+        for block in page.blocks() {
             let collapsed = block.text.split_whitespace().collect::<Vec<_>>().join(" ");
             if collapsed.is_empty() {
                 continue;
@@ -60,8 +61,7 @@ pub fn entries(workspace: &Workspace) -> Vec<SearchEntry> {
             };
             entries.push(
                 SearchEntry::new(label, block.text.clone())
-                    .anchored(crate::actions::block_resource_id(page.id, &block.id))
-                    .invoking(crate::actions::open_block_address(page.id, &block.id))
+                    .anchored(anchor.clone())
                     .grouped(BLOCK_KIND)
                     .subtitled(title)
                     .with_icon("list"),
@@ -74,53 +74,48 @@ pub fn entries(workspace: &Workspace) -> Vec<SearchEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::StoredBlock;
-    use crate::model::Workspace;
-    use crate::resource::Notebook;
+    use crate::model::PageId;
     use ui::search::SearchProvider;
+    use ui::tilo_resource::{Invoke, Replica};
+    use ui::widget::BlockContent;
 
-    /// A workspace with three titled pages.
-    fn populated() -> Workspace {
-        let mut ws = Workspace::new();
-        let a = ws.create_page(None);
-        ws.rename(a, "Grocery list");
-        let b = ws.create_page(None);
-        ws.rename(b, "Meeting notes");
-        let c = ws.create_page(None);
-        ws.rename(c, "Trip planning");
-        ws
+    /// A notebook with three titled notes.
+    fn populated() -> (Replica<Notebook>, Vec<PageId>) {
+        let mut notebook = Replica::<Notebook>::new();
+        let pages: Vec<PageId> = ["Grocery list", "Meeting notes", "Trip planning"]
+            .into_iter()
+            .map(|title| add(&mut notebook, title))
+            .collect();
+        (notebook, pages)
     }
 
-    /// `ws` with `blocks` as the body of its `page`th page.
-    fn with_blocks(mut ws: Workspace, page: usize, blocks: &[(&str, &str)]) -> Workspace {
-        let id = ws.pages()[page].id;
-        let mut bodies = (*ws.bodies).clone();
-        bodies.insert(
-            id,
-            blocks
-                .iter()
-                .map(|(id, text)| StoredBlock {
-                    id: (*id).into(),
-                    kind: ui::widget::BlockKind::Paragraph,
-                    text: (*text).into(),
-                    marks: Vec::new(),
-                    nesting: 0,
-                    code_group: None,
-                })
-                .collect(),
-        );
-        ws.bodies = std::sync::Arc::new(bodies);
-        ws
+    fn add(notebook: &mut Replica<Notebook>, title: &str) -> PageId {
+        let id = PageId::new_v4();
+        notebook
+            .apply_action(&crate::actions::create_page_action(id, None, title))
+            .unwrap();
+        id
     }
 
-    fn search(ws: &Workspace) -> impl SearchProvider + use<> {
-        ui::framework::testing::search_source::<Notebook>(entries(ws))
+    /// `page`'s body made of paragraphs `texts`.
+    fn with_blocks(notebook: &mut Replica<Notebook>, page: PageId, texts: &[&str]) {
+        let blocks: Vec<BlockContent> = texts
+            .iter()
+            .map(|text| BlockContent::paragraph("", *text))
+            .collect();
+        notebook
+            .apply(Invoke::apply(&crate::actions::write_body_action(page, &blocks)).unwrap())
+            .unwrap();
+    }
+
+    fn search(notebook: &Replica<Notebook>) -> impl SearchProvider + use<> {
+        ui::framework::testing::search_source::<Notebook>(entries(&notebook.state().unwrap()))
     }
 
     #[test]
     fn search_finds_titled_and_untitled_pages_within_budget() {
         {
-            let hits = search(&populated()).search("meeting");
+            let hits = search(&populated().0).search("meeting");
             assert!(
                 hits.iter().any(|r| r.title == "Meeting notes"),
                 "the source surfaces the matching page, got {:?}",
@@ -132,9 +127,9 @@ mod tests {
             );
         }
         {
-            let mut ws = Workspace::new();
-            ws.create_page(None); // left untitled
-            let hits = search(&ws).search("untitled");
+            let mut notebook = Replica::<Notebook>::new();
+            add(&mut notebook, "");
+            let hits = search(&notebook).search("untitled");
             assert_eq!(
                 hits.len(),
                 1,
@@ -142,43 +137,34 @@ mod tests {
             );
         }
         {
-            let source = search(&populated());
+            let source = search(&populated().0);
             assert_eq!(source.search_limited("trip", 1).len(), 1);
             assert!(source.search_limited("trip", 0).is_empty());
         }
     }
 
     #[test]
-    fn search_results_address_exported_actions() {
+    fn search_results_open_the_note_they_are_in() {
         {
-            let ws = populated();
-            let top = search(&ws).search("trip").remove(0);
+            let (notebook, pages) = populated();
+            let top = search(&notebook).search("trip").remove(0);
             assert_eq!(top.title, "Trip planning", "the best match leads");
             assert_eq!(
-                top.action_address(),
-                Some(crate::actions::open_page_address(
-                    ws.pages()
-                        .iter()
-                        .find(|page| page.title == top.title)
-                        .unwrap()
-                        .id
-                )),
-                "search and the resource tree publish one canonical address"
+                top.action_id,
+                crate::actions::page_resource_id(pages[2]),
+                "a hit opens the note's item"
             );
         }
         {
-            let ws = with_blocks(populated(), 1, &[("block-object", "Budget decisions")]);
-            let page = ws.pages()[1].id;
-            let hit = search(&ws)
+            let (mut notebook, pages) = populated();
+            with_blocks(&mut notebook, pages[1], &["Budget decisions"]);
+            let hit = search(&notebook)
                 .search("budget")
                 .into_iter()
                 .find(|hit| hit.kind == BLOCK_KIND)
                 .expect("block hit");
-            assert_eq!(hit.subtitle.as_deref(), Some(ws.pages()[1].title.as_str()));
-            assert_eq!(
-                hit.action_address(),
-                Some(crate::actions::open_block_address(page, "block-object"))
-            );
+            assert_eq!(hit.subtitle.as_deref(), Some("Meeting notes"));
+            assert_eq!(hit.action_id, crate::actions::page_resource_id(pages[1]));
         }
         {
             // A long block reads as its opening words; the rest is still found.
@@ -186,8 +172,9 @@ mod tests {
                 "{}Write the migration guide with the release team",
                 "Earlier context. ".repeat(12)
             );
-            let ws = with_blocks(populated(), 0, &[("long", &long)]);
-            let hit = search(&ws)
+            let (mut notebook, pages) = populated();
+            with_blocks(&mut notebook, pages[0], &[&long]);
+            let hit = search(&notebook)
                 .search("release team")
                 .into_iter()
                 .find(|hit| hit.kind == BLOCK_KIND)
@@ -199,15 +186,11 @@ mod tests {
 
     #[test]
     fn every_block_stays_reachable_page_by_page() {
-        let blocks: Vec<(String, String)> = (0..3_000)
-            .map(|n| (format!("b{n}"), format!("ordinary record {n}")))
-            .collect();
-        let refs: Vec<(&str, &str)> = blocks
-            .iter()
-            .map(|(id, text)| (id.as_str(), text.as_str()))
-            .collect();
-        let ws = with_blocks(populated(), 0, &refs);
-        let source = search(&ws);
+        let texts: Vec<String> = (0..3_000).map(|n| format!("ordinary record {n}")).collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let (mut notebook, pages) = populated();
+        with_blocks(&mut notebook, pages[0], &refs);
+        let source = search(&notebook);
         let first =
             source.search_page(&ui::search::SearchQuery::parse("ordinary", &[]), None, 7, 3);
         assert!(first.next.is_some(), "a broad query continues");

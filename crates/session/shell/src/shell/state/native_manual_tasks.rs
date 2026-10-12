@@ -97,9 +97,8 @@ mod tests {
 
     #[test]
     fn managed_ui_queue_projects_only_current_agent_admission_without_a_run() {
-        use tilo_peer_state::workspace_membership::{
-            AgentMembershipPreset, WorkspaceMembershipCommand,
-        };
+        use tilo_action_policy::roles::AgentPreset;
+        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
         let directory = tempfile::tempdir().unwrap();
         let mut native = super::super::WorkspaceTree::bootstrap_default();
         let room = super::super::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
@@ -127,7 +126,7 @@ mod tests {
         };
         let enroll = membership(WorkspaceMembershipCommand::AddAgent {
             agent: "scribe".into(),
-            preset: AgentMembershipPreset::Contributor,
+            preset: AgentPreset::Contributor,
         });
         owner
             .commit_workspace_membership_command(enroll.clone(), &caller, &key, now)

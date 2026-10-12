@@ -6,7 +6,7 @@
 //! - the currently displayed page's id (or `None` if nothing's
 //!   selected),
 //! - the page's editor: the SDK rich-text editor bound to the page's body,
-//!   every edit a [`NotesAction::EditBody`](crate::actions::NotesAction),
+//!   every edit a [`NotesAction::EditBody`](crate::actions::Action),
 //! - the last-loaded body string, kept around so a Markdown-backed page can
 //!   compare against the editor's current content and only request a save
 //!   when the user actually changed something.
@@ -39,11 +39,11 @@ use ui::widget::Edits;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::AutoCommit;
+use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -171,10 +171,20 @@ pub struct PageBody {
 impl PageBody {
     fn attach(&mut self, notebook: &Dispatcher<crate::resource::Notebook>) {
         if let Some(page) = self.page {
-            self.field
-                .attach(crate::actions::page_body_dispatcher(notebook, page));
+            self.field.attach(body_dispatcher(notebook, page));
         }
     }
+}
+
+/// The dispatcher `page`'s body is edited through: each rich-text edit is a
+/// field edit of the notebook at the body's path.
+fn body_dispatcher(
+    notebook: &Dispatcher<crate::resource::Notebook>,
+    page: PageId,
+) -> Dispatcher<tilo_document::RichText> {
+    notebook.child(&crate::actions::page_resource_id(page), move |op| {
+        crate::actions::edit_body_action(page, &op)
+    })
 }
 
 impl RichTextSource for PageBody {
@@ -218,14 +228,17 @@ impl RichTextSource for PageBody {
 /// it edits, through the notebook's dispatcher; without a page or a
 /// dispatcher it shows what it is given and writes nothing.
 fn notes_editor(
-    page: Option<PageId>,
+    page: Option<(PageId, ObjId)>,
     notebook: Option<&Dispatcher<crate::resource::Notebook>>,
 ) -> NotesEditor {
+    let body_object = page.as_ref().map(|(_, body)| body.clone());
     let mut body = PageBody {
         field: RichTextField::view_only(move |doc| {
-            page.and_then(|page| crate::doc::NotesDoc::page_body(doc, page))
+            body_object
+                .clone()
+                .filter(|body| tilo_doc::model::open(doc, body).is_ok())
         }),
-        page,
+        page: page.map(|(page, _)| page),
     };
     if let Some(notebook) = notebook {
         body.attach(notebook);
@@ -235,6 +248,54 @@ fn notes_editor(
             .with_wrap_lines(true)
             .with_compact_paragraph_spacing(true),
     )
+}
+
+/// Where a frame shows the note's body: its scroll offset, the clip it
+/// paints into, the thumb's track with its reach, the pinned title's rule
+/// with its reach when it is shown, the transform, and the drag handle the
+/// pointer's block shows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BodyShown {
+    scroll_y: f64,
+    clip: Rect,
+    track: Rect,
+    rule: Option<Rect>,
+    transform: Affine,
+    /// The drag handle the block under the pointer shows: it stays with the
+    /// pointer while the text moves.
+    handle: Option<Rect>,
+}
+
+/// A scroll of the note's body that a host keeping its last frame may copy
+/// (`ui::scroll_copy`): where the body paints and how far it moved, what
+/// paints over it without moving (the thumb's track), and the damage beside
+/// the copy (the track, and the pinned title's rule where it came or went).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ScrollCopy {
+    clip: Rect,
+    delta: Vec2,
+    track: Rect,
+    transform: Affine,
+    pub(crate) damage: Vec<Rect>,
+}
+
+impl ScrollCopy {
+    /// Offer the copy to the host collecting damage, as `panel`. `false`
+    /// when the host does not copy: the body is then damage.
+    pub(crate) fn offer(&self, panel: &MainPanel) -> bool {
+        ui::scroll_copy::offer(
+            panel,
+            self.clip,
+            self.delta,
+            vec![self.track],
+            self.transform,
+        )
+    }
+
+    /// Where the body paints: what to damage when the copy is not made.
+    pub(crate) fn body(&self) -> Rect {
+        self.clip
+    }
 }
 
 #[allow(
@@ -325,6 +386,14 @@ pub struct MainPanel {
     scrollbar: Scrollbar,
     scroll_focused: bool,
     scroll_layout_dirty: bool,
+    /// A scroll moved the body since the last frame drawn. Unlike `dirty`,
+    /// it may leave every pixel but the body's to a copy the host makes of
+    /// what stays on screen (`ui::scroll_copy`).
+    scroll_moved: bool,
+    /// Where the frame being drawn shows the body, and where the last frame
+    /// the host presented did.
+    body_drawing: Option<BodyShown>,
+    body_presented: Option<BodyShown>,
     /// Follow an explicit reveal or keyboard edit once layout has fresh caret geometry.
     follow_caret: bool,
     /// Local user's id for authorship attribution, re-applied to the
@@ -387,6 +456,9 @@ impl MainPanel {
             scrollbar: Scrollbar::vertical(),
             scroll_focused: false,
             scroll_layout_dirty: false,
+            scroll_moved: false,
+            body_drawing: None,
+            body_presented: None,
             follow_caret: false,
             local_author: None,
             empty_action_rect: Rect::ZERO,
@@ -470,9 +542,7 @@ impl MainPanel {
         page: PageId,
         title: &str,
     ) -> Result<(), String> {
-        if crate::doc::NotesDoc::page_body(doc, page).is_none() {
-            return Err("the page has no body".into());
-        }
+        let body = crate::notebook::body_object(doc, page).ok_or("the page has no body")?;
         // Binding the page already open again (its record re-read, a reveal)
         // keeps the caret where the person left it: a rebind that put it back
         // at the start would make the next keystroke land before the last.
@@ -483,7 +553,7 @@ impl MainPanel {
                 Some((block.id.clone(), block.line.cursor_pos()))
             })
             .flatten();
-        let mut editor = self.fresh_editor(Some(page));
+        let mut editor = self.fresh_editor(Some((page, body)));
         editor
             .editor_mut()
             .set_local_author(self.local_author.clone());
@@ -519,6 +589,9 @@ impl MainPanel {
     ) -> Result<Self, String> {
         let mut panel = Self::new();
         panel.notebook.clone_from(&self.notebook);
+        if let Some(actions) = self.header.actions() {
+            panel.header.attach(actions);
+        }
         panel.set_image_store(self.image_store.clone());
         panel.set_local_author(self.local_author.clone());
         if let Some(page) = workspace.selected() {
@@ -683,12 +756,33 @@ impl MainPanel {
 
     /// Edit page bodies through `notebook` from now on, the one shown
     /// included.
-    pub(crate) fn attach_notebook(&mut self, notebook: Dispatcher<crate::resource::Notebook>) {
-        self.editor.source_mut().attach(&notebook);
-        self.notebook = Some(notebook);
+    /// What the header's controls invoke, once attached.
+    #[doc(hidden)]
+    pub fn actions(&self) -> Option<ui::framework::Actions<crate::resource::Notebook>> {
+        self.header.actions()
     }
 
-    fn fresh_editor(&self, page: Option<PageId>) -> NotesEditor {
+    /// Bind the header's controls to the notebook window's effects, for a
+    /// panel shown on its own.
+    #[doc(hidden)]
+    pub fn attach_actions_for_test(
+        &mut self,
+        actions: ui::framework::Actions<crate::resource::Notebook>,
+    ) {
+        self.header.attach(actions);
+    }
+
+    pub(crate) fn attach_notebook(
+        &mut self,
+        notebook: Dispatcher<crate::resource::Notebook>,
+        actions: ui::framework::Actions<crate::resource::Notebook>,
+    ) {
+        self.editor.source_mut().attach(&notebook);
+        self.notebook = Some(notebook);
+        self.header.attach(actions);
+    }
+
+    fn fresh_editor(&self, page: Option<(PageId, ObjId)>) -> NotesEditor {
         let mut editor = notes_editor(page, self.notebook.as_ref());
         editor
             .editor_mut()
@@ -745,8 +839,57 @@ impl MainPanel {
         if (offset - self.scroll_y).abs() > f64::EPSILON {
             self.scroll_y = offset;
             self.scroll_layout_dirty = true;
-            self.dirty = true;
+            self.scroll_moved = true;
         }
+    }
+
+    /// The copy a host may make of this frame (after its draw): when only a
+    /// scroll moved the body since the last presented frame, with the same
+    /// clip, track and transform, and nothing in the body, its header or
+    /// over it changed besides.
+    pub(crate) fn scroll_copy(&self) -> Option<ScrollCopy> {
+        let (drawing, presented) = (self.body_drawing?, self.body_presented?);
+        // Paragraphs and headings paint nothing that follows the pointer but
+        // the drag handle; other blocks' hover chrome (a code block's copy
+        // button, a table's controls, an image's) is not followed here.
+        let quiet = self.scroll_moved
+            && !self.dirty
+            && !self.editor.needs_redraw()
+            && !self.has_editor_popup()
+            && self.editor.blocks().iter().all(|block| {
+                matches!(
+                    block.kind,
+                    ui::widget::BlockKind::Paragraph | ui::widget::BlockKind::Heading(_)
+                )
+            })
+            && self
+                .header
+                .built()
+                .is_none_or(|header| !header.needs_redraw());
+        (quiet
+            && drawing.clip == presented.clip
+            && drawing.track == presented.track
+            && drawing.transform == presented.transform
+            && (drawing.scroll_y - presented.scroll_y).abs() > f64::EPSILON)
+            .then(|| ScrollCopy {
+                clip: drawing.clip,
+                delta: Vec2::new(0.0, presented.scroll_y - drawing.scroll_y),
+                track: drawing.track,
+                transform: drawing.transform,
+                // The thumb moved within its track, the pinned title's rule
+                // came or went, and the pointer's drag handle is where it is
+                // and no longer where it was (the host carries that).
+                damage: std::iter::once(drawing.track)
+                    .chain(
+                        (drawing.rule != presented.rule)
+                            .then(|| drawing.rule.into_iter().chain(presented.rule))
+                            .into_iter()
+                            .flatten(),
+                    )
+                    .chain(drawing.handle)
+                    .chain(presented.handle)
+                    .collect(),
+            })
     }
 
     fn focus_scrollbar(&mut self) -> bool {
@@ -1463,13 +1606,13 @@ impl Widget for MainPanel {
                 .draw(&mut title_scene, transform, text_renderer, theme, presence);
             // Once the document has moved under the pinned title, one hairline
             // says where the title stops and the document is cut off.
+            let pinned = Rect::new(
+                self.rect.x0,
+                self.rect.y0,
+                self.rect.x1,
+                self.rect.y0 + self.scroll_top_inset(),
+            );
             if self.scroll_y > f64::EPSILON {
-                let pinned = Rect::new(
-                    self.rect.x0,
-                    self.rect.y0,
-                    self.rect.x1,
-                    self.rect.y0 + self.scroll_top_inset(),
-                );
                 ui::widget::toolbar::paint_band(scene, transform, theme, pinned);
             }
 
@@ -1477,6 +1620,18 @@ impl Widget for MainPanel {
             // metadata first, then authored blocks. One clip keeps scrolled
             // header buttons from painting through the title.
             let body_clip = self.scroll_viewport();
+            // The thumb and its focus ring stay within a spacing step of the
+            // track.
+            let track_reach = f64::from(theme.tokens.spacing.s2);
+            self.body_drawing = Some(BodyShown {
+                scroll_y: self.scroll_y,
+                clip: body_clip,
+                track: self.scroll_track.inflate(track_reach, track_reach),
+                rule: (self.scroll_y > f64::EPSILON)
+                    .then(|| Rect::new(pinned.x0, pinned.y1 - track_reach, pinned.x1, pinned.y1)),
+                transform: ui::scroll_copy::on_screen(transform),
+                handle: None,
+            });
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
@@ -1507,6 +1662,10 @@ impl Widget for MainPanel {
             let mut editor_scene = Scene::new();
             self.editor
                 .draw(&mut editor_scene, transform, text_renderer, theme, presence);
+            let handle = self.editor.editor().hover_handle();
+            if let Some(body) = &mut self.body_drawing {
+                body.handle = handle;
+            }
             scene.append(&editor_scene, None);
             scene.pop_layer();
             outside.pop_layer();
@@ -1553,9 +1712,6 @@ impl Widget for MainPanel {
                 editor_scene,
                 editor_damage,
             ));
-            // The thumb and its focus ring stay within a spacing step of the
-            // track.
-            let track_reach = f64::from(theme.tokens.spacing.s2);
             parts.push(ui::widget::paint_damage::PaintPart::new(
                 "note-scrollbar".into(),
                 self.scroll_track,
@@ -1589,6 +1745,7 @@ impl Widget for MainPanel {
             );
         } else {
             self.title_overhang = None;
+            self.body_drawing = None;
             self.paint_damage.record(self.rect, None);
             // No note open: a composed zero-state rather than a bare line —
             // this is what a fresh, unseeded workspace shows, so it should
@@ -1753,7 +1910,6 @@ impl Widget for MainPanel {
                 // Clamp against max_scroll happens in apply_layout
                 // since that's where we know the content extent.
                 if (self.scroll_y - prev).abs() > f64::EPSILON {
-                    self.dirty = true;
                     *ctx.handled = true;
                     // This event belongs to the viewport. Lending it to the
                     // rich-text editor snapshots and compares every block as
@@ -2003,10 +2159,18 @@ impl Widget for MainPanel {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.editor.needs_redraw()
+        self.dirty || self.scroll_moved || self.editor.needs_redraw()
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        // A scroll that moved the body and changed nothing else: a host that
+        // keeps the last frame copies what stays on screen.
+        if let Some(copy) = self.scroll_copy()
+            && copy.offer(self)
+        {
+            regions.extend(copy.damage);
+            return;
+        }
         if self.needs_redraw() || self.paint_damage.is_recorded() {
             self.paint_damage.collect(self.paint_extent(), regions);
         }
@@ -2020,12 +2184,21 @@ impl Widget for MainPanel {
     }
 
     fn mark_drawn(&mut self) {
+        // Not drawn this frame, what the screen shows of the body is not
+        // known: the next scroll repaints it before copies resume.
+        self.body_presented = self.body_drawing.take();
+        self.scroll_moved = false;
         if self.paint_damage.is_recorded() {
             self.drawn_title_overhang = self.title_overhang;
         }
         self.paint_damage.mark_drawn();
         self.dirty = false;
         self.editor.mark_drawn();
+        // The header's widgets learn their paint landed too, so they say
+        // when they change rather than on every frame.
+        if let Some(header) = self.header.built_mut() {
+            header.mark_drawn();
+        }
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -2187,7 +2360,7 @@ mod tests {
             let tag = fresh_page_id();
             let backlink = fresh_page_id();
             let mut doc = AutoCommit::new();
-            crate::actions::new_page_action(page, None, "launch".into(), "Launch")
+            crate::actions::create_page_action(page, None, "Launch")
                 .apply(&mut doc)
                 .unwrap();
             doc.commit_with(
@@ -2393,25 +2566,6 @@ mod tests {
                 backlink.y1 <= editor_top,
                 "incoming-link metadata clears the first block"
             );
-            // Each visible chip publishes the exact stable resource address,
-            // so accessibility and the palette resolve the same identity.
-            let bindings = ui::widget::controls::control_action_bindings(&*panel);
-            for tag in &tags {
-                let expected = crate::actions::open_tag_binding(*tag, "label").unwrap();
-                assert!(
-                    bindings
-                        .iter()
-                        .any(|b| b.control_id == format!("notes.tag-chip:{tag}")
-                            && b.kind
-                                == ui::widget::ControlBindingKind::Action(
-                                    expected.address().clone()
-                                ))
-                );
-            }
-            let expected = crate::actions::open_page_binding(source, "label").unwrap();
-            assert!(bindings.iter().any(|b| b.control_id
-                == format!("notes.backlink-chip:{source}")
-                && b.kind == ui::widget::ControlBindingKind::Action(expected.address().clone())));
         }
     }
 }

@@ -300,7 +300,7 @@ impl MessageList {
             // A draft reopens the composer, not the reader.
             state.push_intent(Intent::EditDraft(slot.id));
         } else {
-            state.select_message(doc, slot.id);
+            state.open_message(doc, slot.id);
         }
         drop(state);
         self.revealed = Some(slot.id);
@@ -657,7 +657,7 @@ mod tests {
 
         // A press on the second row opens it.
         let (second, rect) = rows[1];
-        let mut doc = automerge::AutoCommit::new();
+        let mut doc = crate::resource::TestMail::doc();
         assert!(list.press(&mut ui::widget::Edits::lend(&mut doc), rect.center()));
         assert_eq!(shared.borrow().selected, Some(second));
 

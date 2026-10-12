@@ -66,12 +66,11 @@ fn plan_for(store: &GrantStoreHandle, ws: WorkspaceId, app: &str) -> CapabilityP
             .iter()
             .find(|w| w.id == ws)
             .expect("workspace")
-            .capabilities
-            .clone()
+            .launch_grants(tilo_clock::unix_now())
     };
     shell_launcher::set_workspace_capabilities(caps);
     let published = shell_launcher::capabilities_for_app(app);
-    CapabilityPlan::for_app(app, &published, None)
+    CapabilityPlan::for_app(app, &published.sandbox, None)
 }
 
 #[test]

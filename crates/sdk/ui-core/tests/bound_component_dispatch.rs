@@ -801,7 +801,7 @@ impl Widget for Root {
     ) {
         assert!(
             presence.permits(&tilo_ui::permissions::PermissionScope::workspace(
-                tilo_ui::permissions::Verb::Write
+                tilo_ui::permissions::ActionKind::Undoable
             )) == EXPECTED_WRITE.get(),
             "draw received outer authority"
         );
@@ -2317,13 +2317,12 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
 #[test]
 fn bound_resources_list_and_look_up_what_the_component_permissions_admit() {
     use crate::support::application::action_probe_factory;
-    use tilo_ui::permissions::{Actor, PermissionContext, Role};
+    use tilo_ui::permissions::{PermissionContext, Role};
     let host = ProbeHost::new();
     let definition = definition(action_probe_factory);
     let driver = |instance, role| {
         let permissions = std::rc::Rc::new(std::cell::RefCell::new(
-            PermissionContext::from_capabilities(Actor::person(Some(role), "probe-author"), vec![])
-                .at_unix_time(100),
+            PermissionContext::member("probe-author", role).at_unix_time(100),
         ));
         let context = host
             .prepare_with_permissions(&definition, instance, &LaunchTarget::New, permissions)
@@ -2387,12 +2386,9 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
         let host = ProbeHost::new();
         let definition = definition(action_probe_factory);
         let permissions = std::rc::Rc::new(std::cell::RefCell::new(
-            tilo_ui::permissions::PermissionContext::from_capabilities(
-                tilo_ui::permissions::Actor::person(
-                    Some(tilo_ui::permissions::Role::Owner),
-                    "probe-author",
-                ),
-                vec![],
+            tilo_ui::permissions::PermissionContext::member(
+                "probe-author",
+                tilo_ui::permissions::Role::Owner,
             )
             .at_unix_time(100),
         ));
@@ -2435,10 +2431,10 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
         assert!(observed[0].borrow().is_empty());
         assert_eq!(*observed[1].borrow(), vec!["View"]);
         host.records
-            .read_history(&checkout.id, |_, history| {
+            .read_history(&checkout.id, |doc, history| {
                 assert!(
                     history
-                        .next_undo_in(&crate::support::application::author(), 12)
+                        .next_undo_in(doc, &crate::support::application::author(), 12)
                         .is_none()
                 );
             })
@@ -2450,12 +2446,16 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
             .with_history(&checkout.id, |doc, history| {
                 let author = crate::support::application::author();
                 assert_eq!(
-                    history.next_undo_in(&author, 11).unwrap().author.as_ref(),
+                    history
+                        .next_undo_in(doc, &author, 11)
+                        .unwrap()
+                        .author
+                        .as_ref(),
                     Some(&author)
                 );
-                assert!(history.next_undo_in(&author, 12).is_none());
-                history.undo_in(doc, &author, 11, None, None).unwrap();
-                assert!(history.next_undo_in(&author, 11).is_none());
+                assert!(history.next_undo_in(doc, &author, 12).is_none());
+                history.undo_in(doc, &author, 11, None, None, None).unwrap();
+                assert!(history.next_undo_in(doc, &author, 11).is_none());
                 assert_eq!(
                     doc.get(automerge::ROOT, "body")
                         .unwrap()
@@ -2501,13 +2501,14 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
             for instance in 11..13 {
                 let allowed = instance < 11_u64.saturating_add(authorized);
                 let permissions = std::rc::Rc::new(std::cell::RefCell::new(
-                    tilo_ui::permissions::PermissionContext::from_capabilities(
-                        tilo_ui::permissions::Actor::person(
-                            allowed.then_some(tilo_ui::permissions::Role::Owner),
+                    if allowed {
+                        tilo_ui::permissions::PermissionContext::member(
                             "probe-author",
-                        ),
-                        vec![],
-                    )
+                            tilo_ui::permissions::Role::Owner,
+                        )
+                    } else {
+                        tilo_ui::permissions::PermissionContext::stranger("probe-author")
+                    }
                     .at_unix_time(100),
                 ));
                 let component = definition
@@ -2562,6 +2563,7 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
                         assert_eq!(
                             history
                                 .next_undo_in(
+                                    doc,
                                     &author(),
                                     11_u64.saturating_add(u64::try_from(index).unwrap())
                                 )

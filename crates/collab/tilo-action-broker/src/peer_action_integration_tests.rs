@@ -250,7 +250,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let mut document = automerge::AutoCommit::new();
         document.put(automerge::ROOT, "effect_count", 1_i64).unwrap();
         let artifact = document_artifact_id(&fixture.route.app_id, &fixture.route.cluster_id, &fixture.route.record_id);
-        let mut mutation = SignedOp::new_unsigned(DocumentMutation::Snapshot(document.save()).encode().unwrap(), artifact, collab_types::Ed25519PublicKey::from_bytes(device(52, false).1.device_public_key), document_attestation_id(&fixture.route.app_id, &fixture.route.cluster_id, &fixture.route.record_id), collab_types::OpClass::Splice, std::time::SystemTime::now(), 1);
+        let mut mutation = SignedOp::new_unsigned(DocumentMutation::Snapshot(document.save()).encode().unwrap(), artifact, collab_types::Ed25519PublicKey::from_bytes(device(52, false).1.device_public_key), document_attestation_id(&fixture.route.app_id, &fixture.route.cluster_id, &fixture.route.record_id), collab_types::OpKind::Change, std::time::SystemTime::now(), 1);
         collab_types::sign_op(&mut mutation, &device(52, false).0).unwrap();
         fixture.state.ensure_channel(&fixture.route.channel_key());
         let mut signed = fixture.state.subscribe_ops(&fixture.route.channel_key(), 72);
@@ -297,6 +297,14 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let receipts = serde_json::to_string(&fixture.membership.as_ref().unwrap().read().workspaces[0].effect_receipts).unwrap();
         assert!(!receipts.contains("private"));
         assert!(receipts.contains("succeeded"));
+        let recorded = fixture.membership.as_ref().unwrap().read().workspaces[0].effect_receipts[0]
+            .context
+            .what
+            .clone();
+        assert!(
+            matches!(&recorded, Some(tilo_actions::Did::Verb(verb)) if verb.action.action == request.action),
+            "the receipt records the effect it was: {recorded:?}"
+        );
         // Losing a private response and reconnecting queries the same key.
         let _lost_reply = send(&caller, room, 52, invoke(&request));
         caller.close().await;

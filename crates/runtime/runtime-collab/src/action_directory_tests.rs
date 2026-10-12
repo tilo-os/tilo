@@ -4,14 +4,13 @@
 use super::*;
 use crate::collab_capnp;
 use tilo_actions::{
-    ActionContract, ActionParam, ConfirmationPolicy, ExecutionMode, OperationKind, ParamType,
-    PermissionRequirement, ResourcePresentation, ResourceViewDescriptor, ResourceViewRangeSpec,
-    RiskLevel,
+    ActionContract, ActionKind, ActionParam, ConfirmationPolicy, ExecutionMode, OperationKind,
+    ParamType, ResourcePresentation, ResourceViewDescriptor, ResourceViewRangeSpec, RiskLevel,
 };
 
 fn contract() -> ActionContract {
     ActionContract {
-        permission: PermissionRequirement::Admin,
+        kind: ActionKind::Outside,
         risk: RiskLevel::Destructive,
         confirmation: ConfirmationPolicy::Phrase {
             phrase: "erase everything".into(),
@@ -174,7 +173,7 @@ fn a_malformed_contract_is_rejected_at_decode_with_the_row_named() {
             .get(0)
             .get_descriptor()
             .unwrap()
-            .set_contract_json("{\"permission\":\"everyone\"}");
+            .set_contract_json("{\"kind\":\"everyone\"}");
     })
     .unwrap_err();
     let message = error.to_string();

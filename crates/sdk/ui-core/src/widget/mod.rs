@@ -165,6 +165,18 @@ pub fn layout_rect(
     placed(&taffy.layout(node).copied().unwrap_or_default(), origin)
 }
 
+/// Let `node` share its row's main axis with its siblings by `grow`: it
+/// grows and shrinks from a zero basis instead of keeping its own width.
+pub fn share_row(taffy: &mut TaffyTree<()>, node: NodeId, grow: f32) {
+    if let Ok(mut style) = taffy.style(node).cloned() {
+        style.flex_grow = grow;
+        style.flex_shrink = 1.0;
+        style.flex_basis = taffy::style::Dimension::length(0.0);
+        style.size.width = taffy::style::Dimension::auto();
+        let _ = taffy.set_style(node, style);
+    }
+}
+
 /// Route `event` through a container's children, first handler wins. A
 /// child latching a drag gets it exclusively, so the drag survives the
 /// cursor crossing a peer whose handler would otherwise claim it first; a
@@ -1353,15 +1365,25 @@ pub trait Widget {
         false
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point);
+    /// Take the geometry layout gave this node. The default keeps none, for
+    /// widgets that neither draw nor hit-test.
+    fn apply_layout(
+        &mut self,
+        _taffy: &TaffyTree<()>,
+        _node: NodeId,
+        _origin: vello::kurbo::Point,
+    ) {
+    }
+    /// Paint into `scene`. The default paints nothing.
     fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    );
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+    }
 
     /// Observe this app's ordinary foreground physical input before framework
     /// shortcuts consume it. Keep feedback ephemeral; this is not an input grant.
@@ -1450,7 +1472,11 @@ pub trait Widget {
         Vec::new()
     }
 
-    fn get_rect(&self) -> vello::kurbo::Rect;
+    /// The rectangle this widget occupies. The default, for widgets that
+    /// keep no geometry, is empty.
+    fn get_rect(&self) -> vello::kurbo::Rect {
+        vello::kurbo::Rect::ZERO
+    }
 
     /// Absolute logical clip applied to ordinary children during painting and
     /// pointer routing. Inspectors and enclosing scroll regions must respect
@@ -1998,17 +2024,6 @@ pub trait Widget {
     /// one undo boundary the same way a palette dispatch does. Rising-edge:
     /// reading MUST clear it.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        None
-    }
-
-    /// Rising-edge compensating document actions for the bracket
-    /// [`Self::take_committed_action`] just opened: `(undo_via, redo_via)`.
-    /// Set when the forward action's
-    /// [`tilo_actions::Action::inverse_before`] recorded an outside
-    /// consequence. Default: none (pure CRDT undo via inverse patches).
-    fn take_action_revert(
-        &mut self,
-    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
         None
     }
 
@@ -2814,6 +2829,8 @@ pub use crate::pen::PenSample;
 pub use decorator::Decorator;
 
 pub(crate) mod layout;
+#[cfg(test)]
+pub(crate) mod replaced_tripwire;
 pub use layout::{
     AuthoredExtent, ExtentSizing, WidgetLayoutError, compute_widget_layout, insets, insets_all,
     insets_xy, layout_clip, text_control_height, with_layout_clip,
@@ -3213,13 +3230,13 @@ pub mod history_scrubber;
 pub mod name_field;
 pub use activity_timeline::ActivityTimeline;
 pub use history::{
-    HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
-    RedactionDisplay, format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
+    AuthorRelation, EntryKind, HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId,
+    HistoryFilter, RedactionDisplay, format_relative_time, hue_to_rgb,
 };
 pub use history_scrubber::HistoryScrubber;
-// The op/artifact vocabulary a `HistoryEntry` is written in. Re-exported so a
+// The artifact vocabulary a `HistoryEntry` is written in. Re-exported so a
 // caller can build one without naming the collab-types crate directly.
-pub use collab_types::{ArtifactKind, OpClass};
+pub use collab_types::ArtifactKind;
 
 // Wheel-disc spoke overflow integration lives in `shell`.
 pub mod channel_browser;
@@ -3284,18 +3301,6 @@ mod tests {
             taffy.leaf_node(taffy::Style::default())
         }
 
-        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {}
-
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
-        }
-
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
             let Some(child) = self.child.as_mut() else {
                 return Vec::new();
@@ -3306,10 +3311,6 @@ mod tests {
 
         fn name(&self) -> &'static str {
             "CollabProbe"
-        }
-
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
         }
     }
 
@@ -3378,9 +3379,6 @@ mod tests {
                 }
                 fn name(&self) -> &str {
                     "Observed"
-                }
-                fn get_rect(&self) -> vello::kurbo::Rect {
-                    vello::kurbo::Rect::ZERO
                 }
             }
             use automerge::transaction::Transactable;
@@ -3610,21 +3608,8 @@ pub(crate) mod control_result_probe {
             map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
-        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {}
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "ControlResultProbe"
-        }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
         }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &["test.control-result.run"]

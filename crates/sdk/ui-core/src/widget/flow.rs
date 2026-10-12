@@ -193,12 +193,16 @@ impl Flow {
             };
             // A tracked section compares its parts frame to frame; a part
             // drawn into this cache would otherwise vanish from it.
-            self.cache_parts = if tracked {
-                crate::scene_parts::record(&mut local, draw_children).1
-            } else {
-                draw_children(&mut local);
-                None
-            };
+            // The cache lands on screen through `transform`; a scroller
+            // drawn into it offers copies in screen space.
+            self.cache_parts = crate::scroll_copy::drawing_into_cache(transform, || {
+                if tracked {
+                    crate::scene_parts::record(&mut local, draw_children).1
+                } else {
+                    draw_children(&mut local);
+                    None
+                }
+            });
             self.cache_shows_secret = secrets.finish();
             self.cache_carries_material = crate::scene_parts::append_with(
                 scene,
@@ -439,6 +443,16 @@ macro_rules! flow_widget_methods {
             for child in &mut self.flow.children {
                 child.mark_drawn();
             }
+        }
+
+        /// A flow adds no structure of its own: a change a child can
+        /// describe stays described.
+        fn take_structure_change(&mut self) -> $crate::widget::StructureChange {
+            let mut change = $crate::widget::StructureChange::None;
+            for child in &mut self.flow.children {
+                change = change.join(child.take_structure_change());
+            }
+            change
         }
 
         fn get_rect(&self) -> vello::kurbo::Rect {

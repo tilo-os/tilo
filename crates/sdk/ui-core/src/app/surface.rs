@@ -481,6 +481,14 @@ impl App {
                 &mut handled,
                 &mut focus_target,
             );
+            // The event may have replaced widgets (a dialog closing on its
+            // own button): forget their nodes before the fallbacks below look
+            // the focused node up. A focus target named by the old map is
+            // gone with it; the next frame lays the new widgets out.
+            if app.forget_replaced_widgets() {
+                focus_target = None;
+                window.request_redraw();
+            }
             let presentation_is_floating =
                 !app.root_widget.floating_surface_presentations().is_empty();
             // Even a document-free interaction may switch which resources a
@@ -887,16 +895,21 @@ impl App {
         // A widget whose own damage this draw covers where its box was and is
         // (a block editor that grew by a paragraph) leaves its box to that
         // damage; its children's boxes still count.
+        let covered = match (&moved, &boxes_after) {
+            (Some(moved), Some(_)) if !moved.is_empty() => {
+                boxes_covered_by_own_damage(self.root_widget.as_ref())
+            }
+            _ => std::collections::HashSet::new(),
+        };
+        let uncovered = |boxes: &[(WidgetIdentity, KurboRect)]| -> Vec<_> {
+            boxes
+                .iter()
+                .filter(|(widget, _)| !covered.contains(widget))
+                .copied()
+                .collect()
+        };
         let moved = match (moved, &boxes_after) {
             (Some(moved), Some(after)) if !moved.is_empty() => {
-                let covered = boxes_covered_by_own_damage(self.root_widget.as_ref());
-                let uncovered = |boxes: &[(WidgetIdentity, KurboRect)]| -> Vec<_> {
-                    boxes
-                        .iter()
-                        .filter(|(widget, _)| !covered.contains(widget))
-                        .copied()
-                        .collect()
-                };
                 let (before, after) = (uncovered(&boxes_before), uncovered(after));
                 if covered.is_empty() {
                     Some(moved)
@@ -908,9 +921,52 @@ impl App {
             }
             (moved, _) => moved,
         };
-        damage.frame(full, &drawn, f64::from(scale_factor), |regions| {
-            collect_submitted_widget_damage(self.root_widget.as_ref(), regions);
-            regions.extend(moved.into_iter().flatten());
+        // What moved besides what scrolls copy, and what came or went in a
+        // scrolled content; `None` when a rebuild no widget described moved
+        // what cannot be said.
+        let moved_besides = |offers: &[crate::scroll_copy::ScrollOffer]| match &boxes_after {
+            Some(after) if described || relaid => {
+                let moves = crate::scroll_copy::moves_besides(
+                    &uncovered(&boxes_before),
+                    &uncovered(after),
+                    offers,
+                );
+                Some([moves.besides, moves.carried].concat())
+            }
+            _ if recomposed || structure_rebuilt => None,
+            _ => Some(Vec::new()),
+        };
+        let copying = damage.copying;
+        let scale = f64::from(scale_factor);
+        damage.frame(full, &drawn, scale, |regions| {
+            let root = self.root_widget.as_ref();
+            if !copying {
+                collect_submitted_widget_damage(root, regions);
+                regions.extend(moved.into_iter().flatten());
+                return crate::scroll_copy::CopyPlan::default();
+            }
+            let offers =
+                crate::scroll_copy::accepting(|| collect_submitted_widget_damage(root, regions));
+            if offers.is_empty() {
+                regions.extend(moved.into_iter().flatten());
+                return crate::scroll_copy::CopyPlan::default();
+            }
+            let Some(besides) = moved_besides(&offers) else {
+                regions.extend(moved.into_iter().flatten());
+                regions.extend(offers.iter().map(crate::scroll_copy::ScrollOffer::viewport));
+                return crate::scroll_copy::CopyPlan::default();
+            };
+            regions.extend(besides);
+            let history = self
+                .history
+                .as_deref()
+                .map(|history| history as &dyn Widget);
+            crate::scroll_copy::plan(
+                &offers,
+                &std::iter::once(root).chain(history).collect::<Vec<_>>(),
+                scale,
+                (size.width, size.height),
+            )
         });
         complete_native_frame_content(self, |_| {});
         search_pending
@@ -1025,13 +1081,48 @@ pub struct SurfaceDamage {
     widgets: Option<crate::presence::WidgetPresence>,
     /// Why the last frame repainted the surface whole, if it did.
     repainted: Option<&'static str>,
+    /// Whether the host copies what a scroll keeps on screen
+    /// ([`Self::copying`]).
+    copying: bool,
+    /// The copies of the frames since the last take, in the surface's scene
+    /// coordinates, to make before repainting the damage.
+    copies: Vec<crate::scroll_copy::DeviceCopy>,
 }
 
 impl SurfaceDamage {
+    /// For a host that presents each frame over the pixels of the last one
+    /// and makes the copies [`Self::take_copying`] returns before it repaints
+    /// the damage: a scroll then copies what stays on screen instead of
+    /// damaging its viewport ([`crate::scroll_copy`]).
+    pub fn copying() -> Self {
+        Self {
+            copying: true,
+            ..Self::default()
+        }
+    }
+
     /// Where the frames since the last take changed, or `None` when they
-    /// must be repainted whole.
+    /// must be repainted whole. A copy is damage here: where it would land.
     pub fn take(&mut self) -> Option<Vec<KurboRect>> {
-        self.pending.replace(Vec::new())
+        let copies = std::mem::take(&mut self.copies);
+        let mut pending = self.pending.replace(Vec::new())?;
+        pending.extend(
+            copies
+                .iter()
+                .map(crate::scroll_copy::DeviceCopy::destination_rect),
+        );
+        Some(pending)
+    }
+
+    /// The copies to make, in order, and then where the frames since the
+    /// last take changed; `None` when they must be repainted whole.
+    pub fn take_copying(
+        &mut self,
+    ) -> Option<(Vec<crate::scroll_copy::DeviceCopy>, Vec<KurboRect>)> {
+        let copies = std::mem::take(&mut self.copies);
+        self.pending
+            .replace(Vec::new())
+            .map(|pending| (copies, pending))
     }
 
     /// Why the last frame repainted the surface whole, or `None` when its
@@ -1042,6 +1133,7 @@ impl SurfaceDamage {
 
     fn repaint(&mut self, why: &'static str) {
         self.pending = None;
+        self.copies.clear();
         self.repainted = Some(why);
     }
 
@@ -1057,13 +1149,14 @@ impl SurfaceDamage {
     /// Add one drawn frame: repainted whole for the reason `full` gives,
     /// when a layer is painted over the widgets or was last frame, and
     /// otherwise the widget damage `collect` reports (logical, scaled by
-    /// `scale` to the scene) with the tooltip where it was and where it is.
+    /// `scale` to the scene) with the tooltip where it was and where it is,
+    /// and the copies and damage of the scrolls it planned (in the scene).
     fn frame(
         &mut self,
         full: Option<&'static str>,
         drawn: &DrawnFrame,
         scale: f64,
-        collect: impl FnOnce(&mut Vec<KurboRect>),
+        collect: impl FnOnce(&mut Vec<KurboRect>) -> crate::scroll_copy::CopyPlan,
     ) {
         let layer_shown = std::mem::replace(&mut self.top_layer_drawn, drawn.top_layer.is_some());
         let tooltip_shown = std::mem::replace(&mut self.tooltip, drawn.tooltip);
@@ -1079,16 +1172,33 @@ impl SurfaceDamage {
             return;
         };
         let mut regions = Vec::new();
-        collect(&mut regions);
-        pending.extend(
-            regions
-                .into_iter()
-                .map(|rect| Affine::scale(scale).transform_rect_bbox(rect)),
-        );
+        let planned = collect(&mut regions);
+        let mut changed: Vec<KurboRect> = regions
+            .into_iter()
+            .map(|rect| Affine::scale(scale).transform_rect_bbox(rect))
+            .collect();
         // The tooltip paints over the widgets: a label that changes in
         // place has no other damage.
-        pending.extend(tooltip_shown);
-        pending.extend(drawn.tooltip);
+        changed.extend(tooltip_shown);
+        changed.extend(drawn.tooltip);
+        changed.extend(planned.damage);
+        // A copy reads the pixels the last take left. After another frame
+        // since, those are not all there: that frame's damage is repainted
+        // only once the host takes, so the copy lands as damage instead.
+        if pending.is_empty() && self.copies.is_empty() {
+            crate::scroll_copy::carry(&planned.copies, &mut changed);
+            changed.extend(planned.exposed);
+            self.copies.extend(planned.copies);
+        } else {
+            changed.extend(planned.exposed);
+            changed.extend(
+                planned
+                    .copies
+                    .iter()
+                    .map(crate::scroll_copy::DeviceCopy::destination_rect),
+            );
+        }
+        pending.extend(changed);
     }
 }
 

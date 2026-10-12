@@ -5,21 +5,34 @@
 use crate::browsing_mode::BrowsingMode;
 use serde::{Deserialize, Serialize};
 use ui::framework::PersonRecord;
+use ui::tilo_resource::{self, Id, Identified, Invoke, Keyed, Model, Refusal, resource};
 
 const MAX_PROFILES: usize = 16;
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// One saved address, an item of the person's [`AddressBook`].
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Model)]
 #[serde(deny_unknown_fields)]
 pub struct AddressProfile {
+    /// The profile's id: letters, digits, `-` and `_`.
     pub id: String,
+    /// Label
+    #[model(label)]
     pub label: String,
+    /// Full name
     pub full_name: String,
+    /// Given name
     pub given_name: String,
+    /// Family name
     pub family_name: String,
+    /// Street
     pub street: String,
+    /// City
     pub city: String,
+    /// Region
     pub region: String,
+    /// Postal code
     pub postal_code: String,
+    /// Country
     pub country: String,
 }
 impl AddressProfile {
@@ -49,125 +62,45 @@ impl AddressProfile {
     }
 }
 
-/// The person's address book as their record holds it: whether autofill is
-/// on, and the saved profiles.
-#[derive(Clone, Default, PartialEq, Eq)]
-pub struct SavedProfiles {
-    enabled: bool,
-    profiles: Vec<AddressProfile>,
+impl Identified for AddressProfile {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.clone())
+    }
 }
 
-/// The person's address book, a resource of their own room.
-pub struct AddressBook;
-
-/// The edits of [`AddressBook`].
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AddressAction {
-    /// Turn address autofill on or off.
-    SetEnabled { enabled: bool },
-    /// Save a profile, replacing the one with its id.
-    Put { profile: Box<AddressProfile> },
-    /// Delete the profile with this id.
-    Delete { id: String },
-}
-
-/// `std::fmt::Debug` names the edit, never the personal data it carries.
-impl std::fmt::Debug for AddressAction {
+/// `std::fmt::Debug` names the profile, never the personal data it holds.
+impl std::fmt::Debug for AddressProfile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::SetEnabled { enabled } => write!(f, "SetEnabled({enabled})"),
-            Self::Put { profile } => write!(f, "Put({})", profile.id),
-            Self::Delete { id } => write!(f, "Delete({id})"),
+        write!(f, "AddressProfile({})", self.id)
+    }
+}
+
+/// The person's address book, a resource of their own room: whether
+/// autofill is on, and the saved profiles. Every way in keeps each profile
+/// valid and the book within its limit.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+#[model(check = AddressBook::valid)]
+pub struct AddressBook {
+    /// Address autofill
+    pub enabled: bool,
+    /// Saved addresses, by id
+    pub profiles: Keyed<AddressProfile>,
+}
+
+#[resource(kind = "browser.address-book", label = "Address book")]
+impl AddressBook {}
+
+impl AddressBook {
+    fn valid(&self) -> Result<(), Refusal> {
+        if !self.profiles.iter().all(AddressProfile::valid) {
+            return Err(Refusal::new(
+                "Address profile fields are invalid or too long",
+            ));
         }
-    }
-}
-
-const ENABLED: &str = "enabled";
-const PROFILES: &str = "profiles";
-
-fn profiles_map(doc: &tilo_actions::Doc) -> Option<automerge::ObjId> {
-    use automerge::ReadDoc;
-    match doc.get(&automerge::ROOT, PROFILES).ok().flatten() {
-        Some((automerge::Value::Object(automerge::ObjType::Map), id)) => Some(id),
-        _ => None,
-    }
-}
-
-fn read_book(doc: &tilo_actions::Doc) -> SavedProfiles {
-    use automerge::ReadDoc;
-    let enabled = ui::doc::read_bool(doc, &automerge::ROOT, ENABLED).unwrap_or(false);
-    let mut profiles: Vec<AddressProfile> = profiles_map(doc)
-        .map(|map| {
-            doc.keys(&map)
-                .filter_map(|id| {
-                    ui::doc::read_text(doc, &map, id.as_str()).or_else(|| {
-                        doc.get(&map, id.as_str())
-                            .ok()
-                            .flatten()
-                            .and_then(|(value, _)| value.into_scalar().ok())
-                            .and_then(|value| value.as_str().map(str::to_owned))
-                    })
-                })
-                .filter_map(|json| serde_json::from_str::<AddressProfile>(&json).ok())
-                .filter(AddressProfile::valid)
-                .collect()
-        })
-        .unwrap_or_default();
-    profiles.sort_by(|a, b| a.id.cmp(&b.id));
-    profiles.truncate(MAX_PROFILES);
-    SavedProfiles { enabled, profiles }
-}
-
-impl tilo_actions::Action for AddressAction {
-    fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
-        use automerge::transaction::Transactable;
-        let refused = |reason: &str| tilo_actions::ActionError::Refused(reason.into());
-        match self {
-            Self::SetEnabled { enabled } => doc.put(automerge::ROOT, ENABLED, *enabled)?,
-            Self::Put { profile } => {
-                if !profile.valid() {
-                    return Err(refused("Address profile fields are invalid or too long"));
-                }
-                let book = read_book(doc);
-                if !book.profiles.iter().any(|saved| saved.id == profile.id)
-                    && book.profiles.len() >= MAX_PROFILES
-                {
-                    return Err(refused("Address profile limit reached"));
-                }
-                let map = match profiles_map(doc) {
-                    Some(map) => map,
-                    None => doc.put_object(automerge::ROOT, PROFILES, automerge::ObjType::Map)?,
-                };
-                let json = serde_json::to_string(profile.as_ref())
-                    .map_err(|_| refused("Cannot encode the address profile"))?;
-                doc.put(&map, profile.id.as_str(), json)?;
-            }
-            Self::Delete { id } => {
-                if let Some(map) = profiles_map(doc)
-                    && automerge::ReadDoc::get(doc, &map, id.as_str())?.is_some()
-                {
-                    doc.delete(&map, id.as_str())?;
-                }
-            }
+        if self.profiles.len() > MAX_PROFILES {
+            return Err(Refusal::new("Address profile limit reached"));
         }
         Ok(())
-    }
-
-    fn locus(&self) -> tilo_actions::ExecutionLocus {
-        tilo_actions::ExecutionLocus::ClientLocal
-    }
-}
-
-impl ui::tilo_resource::Resource for AddressBook {
-    const KIND: &'static str = "browser.address-book";
-    const LABEL: &'static str = "Address book";
-    const ACTION_TYPE: &'static str = "browser.address-book.action";
-
-    type State = SavedProfiles;
-    type Action = AddressAction;
-
-    fn read(doc: &ui::tilo_resource::Doc) -> Result<SavedProfiles, ui::tilo_resource::ModelError> {
-        Ok(read_book(doc))
     }
 }
 
@@ -177,7 +110,7 @@ impl ui::tilo_resource::Resource for AddressBook {
 /// Contains personal data: deliberately has no Debug implementation.
 pub struct AutofillStore {
     record: Option<PersonRecord<AddressBook>>,
-    saved: SavedProfiles,
+    saved: AddressBook,
 }
 impl AutofillStore {
     /// The person's address book, or an empty one nothing is saved to in a
@@ -206,7 +139,7 @@ impl AutofillStore {
     /// # Errors
     /// Returns an error in a private window or when the record refuses it.
     pub fn set_enabled(&mut self, enabled: bool) -> Result<(), String> {
-        self.edit(&AddressAction::SetEnabled { enabled })
+        self.edit(&AddressBook::paths().enabled.set(enabled))
     }
     /// Save a validated address profile.
     ///
@@ -219,23 +152,50 @@ impl AutofillStore {
         if !profile.valid() {
             return Err("Address profile fields are invalid or too long".into());
         }
-        self.edit(&AddressAction::Put {
-            profile: Box::new(profile),
-        })
+        // A saved profile changes field by field, so a concurrent edit of
+        // another of its fields is kept.
+        let mut after = self.saved.profiles.clone();
+        match after.find_mut(&profile.id()) {
+            Some(saved) => *saved = profile,
+            None => after.push(profile),
+        }
+        let edits = AddressBook::paths()
+            .profiles
+            .edits(&self.saved.profiles, &after);
+        self.edit_all(&edits)
     }
     /// Delete a saved address profile by ID.
     ///
     /// # Errors
     /// Returns an error in a private window or when the record refuses it.
     pub fn delete(&mut self, id: &str) -> Result<(), String> {
-        self.edit(&AddressAction::Delete { id: id.to_owned() })
+        self.edit(
+            &AddressBook::paths()
+                .profiles
+                .remove(&Id::from_raw(id.to_owned())),
+        )
     }
-    fn edit(&mut self, action: &AddressAction) -> Result<(), String> {
+    fn edit(&mut self, edit: &tilo_resource::Edit<AddressBook>) -> Result<(), String> {
+        self.edit_all(std::slice::from_ref(edit))
+    }
+    fn edit_all(&mut self, edits: &[tilo_resource::Edit<AddressBook>]) -> Result<(), String> {
+        if edits.is_empty() {
+            return Ok(());
+        }
         let record = self
             .record
             .as_ref()
             .ok_or("Address profiles are unavailable in private windows")?;
-        record.apply(action).map_err(|error| error.to_string())?;
+        let members = edits
+            .iter()
+            .map(Invoke::edit)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        let invoke = match <[_; 1]>::try_from(members) {
+            Ok([edit]) => edit,
+            Err(members) => Invoke::group(members),
+        };
+        record.invoke(&invoke).map_err(|error| error.to_string())?;
         self.saved = (*record.get()).clone();
         Ok(())
     }
@@ -343,9 +303,7 @@ pub(crate) mod tests {
         assert!(store.put(invalid.clone()).is_err());
         assert!(
             record
-                .apply(&AddressAction::Put {
-                    profile: Box::new(invalid)
-                })
+                .invoke(&Invoke::edit(&AddressBook::paths().profiles.insert(&invalid)).unwrap())
                 .is_err()
         );
         assert!(record.with(|book| book.profiles.is_empty()));

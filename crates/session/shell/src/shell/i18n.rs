@@ -10,7 +10,7 @@
 
 use ui::i18n::ArgValue;
 
-ui::embedded_catalog!(static CATALOG, "continuity-continue", ["en-US", "de-DE"]);
+ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
 /// Load the shell's catalogue and the toolkit's widget labels on this
 /// thread, in the desktop's language. Startup calls it once; every lookup

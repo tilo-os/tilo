@@ -17,7 +17,6 @@ use ui::{LocalState, PresenceCtx, TextRenderer, Theme};
 
 use crate::model::Artwork;
 use crate::render::{Options, Renderer};
-use crate::resource::ArtworkResource;
 
 /// The part of an artwork a picture shows, worked out from the artwork
 /// as it is now: the artwork to draw (the same one, or a part cut from
@@ -227,7 +226,7 @@ fn checker(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme) {
     }
 }
 
-impl ResourceSurface<ArtworkResource> for Thumb {
+impl ResourceSurface<Artwork> for Thumb {
     fn present(&mut self, state: &Rc<Artwork>) {
         self.art = Rc::clone(state);
     }

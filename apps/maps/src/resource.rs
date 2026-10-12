@@ -1,5 +1,6 @@
-//! Maps as a [`tilo_resource::Resource`]: one action vocabulary, one publish
-//! path for the workspace document, and the effects a window answers.
+//! Maps as a resource: the shared map ([`Workspace`]) is the document, and
+//! the effects a window answers look things up, find the device and manage
+//! this device's offline tiles.
 
 use std::rc::Rc;
 
@@ -7,115 +8,12 @@ use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface, RunMode,
     SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::{ActionParam, ParamType};
-use ui::tilo_resource::{self, ActionDecl, ActionRef, Doc, Effect, Invoke, ModelError, Resource};
+use ui::tilo_resource::{self, Effect, Invoke};
 use ui::widget::Element;
 
-use crate::actions::{
-    MAPS_ACTION_TYPE, MapsAction, document_bound_actions, document_child, document_children,
-    register,
-};
 use crate::app::MapsApp;
-use crate::doc::MapsDoc;
-use crate::model::{MapModel, TravelMode};
 use crate::scenario::Sample;
-
-/// The maps workspace resource.
-pub struct Maps;
-
-impl Maps {
-    /// Save a place (`true`) or remove it from the saved places.
-    pub const SAVE_PLACE: ActionRef<Maps, (String, bool)> =
-        ActionRef::new("save-place", &["place", "saved"]);
-    /// Choose how directions travel: `car`, `transit`, `bike`, `foot`.
-    pub const SET_TRAVEL_MODE: ActionRef<Maps, String> =
-        ActionRef::new("set-travel-mode", &["mode"]);
-    /// Drop the active road route.
-    pub const CLEAR_ROUTE: ActionRef<Maps, ()> = ActionRef::new("clear-route", &[]);
-    /// Drop the accepted transit options.
-    pub const CLEAR_TRANSIT: ActionRef<Maps, ()> = ActionRef::new("clear-transit", &[]);
-}
-
-impl Resource for Maps {
-    const KIND: &'static str = "maps.workspace";
-    const LABEL: &'static str = "Maps";
-    const ACTION_TYPE: &'static str = MAPS_ACTION_TYPE;
-
-    type State = MapModel;
-    type Action = MapsAction;
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
-    }
-
-    fn read(doc: &Doc) -> Result<MapModel, ModelError> {
-        Ok(MapsDoc::load(doc).unwrap_or_default())
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        vec![
-            ActionDecl::new(
-                Self::SAVE_PLACE.id,
-                "Save place",
-                vec![
-                    ActionParam::required("place", ParamType::Text, "The place's id"),
-                    ActionParam::optional(
-                        "saved",
-                        ParamType::Boolean,
-                        "false to remove it from the saved places",
-                    ),
-                ],
-                |args, _| {
-                    let id = args
-                        .text("place")
-                        .ok_or_else(|| "missing place".to_owned())?
-                        .to_owned();
-                    let saved = args.boolean("saved").unwrap_or(true);
-                    Ok(MapsAction::SetPlaceSaved { id, saved })
-                },
-            )
-            .describe("Save a known place to the shared saved places, or remove it."),
-            ActionDecl::new(
-                Self::SET_TRAVEL_MODE.id,
-                "Set travel mode",
-                vec![
-                    ActionParam::required("mode", ParamType::Text, "car | transit | bike | foot")
-                        .with_choices(["car", "transit", "bike", "foot"]),
-                ],
-                |args, _| {
-                    let name = args.text("mode").ok_or_else(|| "missing mode".to_owned())?;
-                    let mode: TravelMode = ui::serde_json::from_value(name.into())
-                        .map_err(|_| format!("unknown travel mode {name:?}"))?;
-                    Ok(MapsAction::SetTravelMode { mode })
-                },
-            )
-            .describe("Choose how directions travel."),
-            ActionDecl::new(Self::CLEAR_ROUTE.id, "Clear route", Vec::new(), |_, _| {
-                Ok(MapsAction::ClearRoute)
-            })
-            .describe("Drop the active road route."),
-            ActionDecl::new(
-                Self::CLEAR_TRANSIT.id,
-                "Clear transit options",
-                Vec::new(),
-                |_, _| Ok(MapsAction::ClearTransit),
-            )
-            .describe("Drop the accepted transit options."),
-        ]
-    }
-
-    fn bound_actions(state: &MapModel) -> Vec<tilo_actions::ActionSpec> {
-        document_bound_actions(state)
-    }
-
-    fn children(state: &MapModel) -> Vec<tilo_actions::Resource> {
-        document_children(state)
-    }
-
-    fn child(state: &MapModel, id: &str) -> Option<tilo_actions::Resource> {
-        document_child(state, id)
-    }
-}
+use crate::workspace::Workspace;
 
 /// What a maps window does with no change to the shared map: look things
 /// up, find where the device is, show what it holds, and manage the tiles
@@ -124,57 +22,57 @@ impl Resource for Maps {
 #[effect(operation = "maps.effect")]
 pub enum MapsEffect {
     /// Search maps.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Search {
         #[param("Place, address, or category, e.g. museum near me")]
         query: String,
     },
     /// Use my location.
-    #[effect(job, device_only, permission = "read")]
+    #[effect(job, device_only, kind = "read")]
     Locate,
     /// Show traffic.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ToggleTraffic,
     /// Open place.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     OpenPlace {
         #[param("The place's id")]
         place: String,
     },
     /// Get directions.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Directions {
         #[param("The place's id")]
         place: String,
     },
     /// Open point of interest.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     OpenPoi {
         #[param("The point of interest's id")]
         poi: String,
     },
     /// Get directions to point of interest.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     PoiDirections {
         #[param("The point of interest's id")]
         poi: String,
     },
     /// Delete offline area.
-    #[effect(destructive, device_only, permission = "read")]
+    #[effect(destructive, device_only, kind = "read")]
     DeleteOfflineArea {
         #[param("The offline area's id")]
         area: String,
     },
     /// Clear offline areas.
-    #[effect(destructive, device_only, permission = "read")]
+    #[effect(destructive, device_only, kind = "read")]
     ClearOfflineAreas,
 }
 
-/// Framework app: the maps widget is the surface over [`Maps`].
+/// Framework app: the maps widget is the surface over the shared [`Workspace`].
 pub struct MapsShell;
 
 impl ResourceApp for MapsShell {
-    type Resource = Maps;
+    type Resource = Workspace;
     const ID: &'static str = "so.tilo.maps";
     const TITLE: &'static str = "Maps";
     const ICON: Option<&'static str> = Some("maps");
@@ -183,20 +81,24 @@ impl ResourceApp for MapsShell {
         crate::scenario::SCENARIOS
     }
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::CATALOG)
+    }
+
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         crate::scenario::viewport(scenario)
     }
 
     /// A capture shows the bundled sample city instead of live imagery.
-    fn fixture(fixture: &mut Fixture<Maps>) {
+    fn fixture(fixture: &mut Fixture<Workspace>) {
         crate::scenario::prepare(fixture);
     }
 
-    fn scenario(name: Option<&str>) -> Vec<Invoke<Maps>> {
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Workspace>> {
         crate::scenario::actions(name)
     }
 
-    fn view(cx: &mut ViewCx<Maps>) -> Element {
+    fn view(cx: &mut ViewCx<Workspace>) -> Element {
         // Only a live window fetches tiles, places and routes; a capture
         // draws its sample, and a past version draws what it held.
         let app = match cx.mode() {
@@ -211,16 +113,28 @@ impl ResourceApp for MapsShell {
             ),
             RunMode::Past => MapsApp::past(),
         };
+        // A search hit, or an agent's `open`, opens the place, point of
+        // interest or recent search it names.
+        let dispatcher = cx.dispatcher();
+        cx.on_open(
+            move |anchor: &str| -> Result<(), ui::tilo_resource::Refusal> {
+                let effect = crate::place_search::PlaceHit::opened(anchor).ok_or_else(|| {
+                    ui::tilo_resource::Refusal::new(format!("`{anchor}` is nothing on the map"))
+                })?;
+                dispatcher.effect(&effect);
+                Ok(())
+            },
+        );
         cx.surface(app)
     }
 }
 
-impl ResourceSurface<Maps, MapsEffect> for MapsApp {
-    fn present(&mut self, state: &Rc<MapModel>) {
+impl ResourceSurface<Workspace, MapsEffect> for MapsApp {
+    fn present(&mut self, state: &Rc<Workspace>) {
         self.adopt_resource_state(state);
     }
 
-    fn attach(&mut self, cx: SurfaceCx<Maps>) {
+    fn attach(&mut self, cx: SurfaceCx<Workspace>) {
         // A live window keeps this device's offline areas; a capture and a
         // past version show what they were staged with.
         let offline_areas = cx.mode().is_live().then(|| cx.settings());
@@ -231,7 +145,7 @@ impl ResourceSurface<Maps, MapsEffect> for MapsApp {
         self.stage_scenario(scenario);
     }
 
-    fn effect(&mut self, effect: MapsEffect, cx: &mut EffectCx<Maps, Self>) -> EffectAnswer {
+    fn effect(&mut self, effect: MapsEffect, cx: &mut EffectCx<Workspace, Self>) -> EffectAnswer {
         self.answer_effect(effect, cx)
     }
 
@@ -254,7 +168,7 @@ impl ResourceSurface<Maps, MapsEffect> for MapsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Category, LatLon, Place};
+    use crate::model::{Category, LatLon, Place, TravelMode};
     use crate::offline_areas::OfflineAreas;
     use ui::framework::testing::TestApp;
 
@@ -288,9 +202,10 @@ mod tests {
             "locate",
             "toggle-traffic",
             "clear-offline-areas",
-            "save-place",
-            "set-travel-mode",
+            "accept-places",
+            "commit-search",
             "clear-route",
+            "field-edit",
         ] {
             assert!(
                 workspace.iter().any(|action| action == id),
@@ -326,18 +241,14 @@ mod tests {
             "",
             LatLon::new(48.137, 11.575),
         );
-        app.invoke(
-            Invoke::apply(&MapsAction::UpsertPlaces {
-                places: vec![place],
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        app.invoke(Maps::SAVE_PLACE.with(("marienplatz".into(), true)))
+        app.invoke(Workspace::ACCEPT_PLACES.with(vec![place]))
+            .unwrap();
+        app.invoke(Invoke::edit(&Workspace::save("marienplatz", true)).unwrap())
             .unwrap();
         assert!(app.state().places.iter().any(|place| place.saved));
+        app.harness().relayout();
         let row = actions_on(&mut app, "maps.place:marienplatz");
-        for id in ["unsave", "open-place", "directions"] {
+        for id in ["open-place", "directions"] {
             assert!(row.iter().any(|action| action == id), "{id}: {row:?}");
         }
         app.effect(&MapsEffect::OpenPlace {
@@ -368,8 +279,9 @@ mod tests {
             "deleting an area forgets it on this device"
         );
         assert!(actions_on(&mut app, &row).is_empty());
-        assert!(
-            app.state().regions.is_empty(),
+        assert_eq!(
+            app.state(),
+            Workspace::default(),
             "the shared map never held the area"
         );
     }
@@ -431,7 +343,7 @@ mod tests {
             let state = app.state();
             if crate::scenario::Sample::of(Some(scenario)) == crate::scenario::Sample::Empty {
                 assert!(state.places.is_empty(), "`{scenario}` is a first run");
-                assert!(state.route.is_none(), "`{scenario}` plans nothing");
+                assert!(state.route().is_none(), "`{scenario}` plans nothing");
                 continue;
             }
             assert_eq!(
@@ -444,23 +356,24 @@ mod tests {
             if staged.is_transit() {
                 assert_eq!(state.mode, TravelMode::Transit);
                 assert_eq!(
-                    state.transit.len(),
+                    state.transit().len(),
                     sample.transit.len(),
                     "`{scenario}` planned transit"
                 );
-                assert!(state.route.is_none(), "`{scenario}` draws no road");
             } else if staged.has_route() {
                 assert_eq!(
-                    state.route.as_ref().map(|route| route.geometry.len()),
+                    state.route().map(|route| route.geometry.len()),
                     sample.route.as_ref().map(|route| route.geometry.len()),
                     "`{scenario}` routes"
                 );
                 assert_eq!(state.mode, sample.mode);
-                assert_eq!(state.dest_name, sample.dest_name);
+                assert_eq!(
+                    state.endpoints().map(|(_, _, _, dest)| dest.to_owned()),
+                    Some(sample.dest_name.clone())
+                );
             } else {
-                assert!(state.route.is_none(), "`{scenario}` plans no route");
+                assert!(state.route().is_none(), "`{scenario}` plans no route");
             }
-            assert!(state.regions.is_empty(), "offline areas are not the map's");
         }
         let arrive = TestApp::<MapsShell>::capture(Some("transit-arrive"))
             .unwrap()
@@ -468,5 +381,72 @@ mod tests {
             .transit_time;
         assert_eq!(arrive.offset_min, 60);
         assert!(arrive.arrive_by());
+    }
+
+    /// An agent saves a place, chooses how directions travel and clears a
+    /// route, one call each, and reads what it did as the map's sentences.
+    #[test]
+    fn an_agent_works_the_map_one_call_each_and_history_reads_it() {
+        use ui::tilo_actions::{ActionInvoker, ActorKind};
+
+        let mut app = TestApp::<MapsShell>::capture(Some("route")).unwrap();
+        let agent = ActionInvoker::actor("agent:claude")
+            .with_kind(ActorKind::Agent)
+            .acting_for("ada");
+        let kind = <Workspace as tilo_resource::Resource>::KIND;
+        let place = app.state().places[0].id.clone();
+        let paths = Workspace::paths();
+        for edit in [
+            Workspace::save(&place, true),
+            paths.mode.set(TravelMode::Bike),
+            paths.transit_time.set(crate::model::TransitTime {
+                mode: crate::model::TransitTimeMode::Arrive,
+                offset_min: 30,
+            }),
+        ] {
+            app.call_by(
+                agent.clone(),
+                kind,
+                "field-edit",
+                serde_json::json!({ "edit": edit }),
+            )
+            .unwrap();
+        }
+        for (action, args) in [
+            ("commit-search", serde_json::json!({"query": "Museum"})),
+            ("clear-route", serde_json::json!({})),
+            ("clear-recents", serde_json::json!({})),
+        ] {
+            app.call_by(agent.clone(), kind, action, args).unwrap();
+        }
+        let state = app.state();
+        assert!(state.place(&place).unwrap().saved);
+        assert_eq!(state.mode, TravelMode::Bike);
+        assert!(state.route().is_none());
+        assert!(state.recents.is_empty());
+        assert!(
+            app.call_by(agent, kind, "clear-route", serde_json::json!({}))
+                .is_err(),
+            "there is no route left to clear"
+        );
+
+        let name = state.place(&place).unwrap().name.clone();
+        let sentences = app.sentences(app.history().iter().filter(|entry| {
+            entry
+                .invoker
+                .as_ref()
+                .is_some_and(|invoker| invoker.actor == "agent:claude")
+        }));
+        assert_eq!(
+            sentences,
+            [
+                format!("Saved {name}"),
+                "Set directions to travel by bike".to_owned(),
+                "Changed when transit journeys leave or arrive".to_owned(),
+                "Searched for Museum".to_owned(),
+                "Cleared the route".to_owned(),
+                "Cleared the recent searches".to_owned(),
+            ]
+        );
     }
 }

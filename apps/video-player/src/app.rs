@@ -49,11 +49,11 @@ use ui::framework::{
     Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LaunchInput, RunMode,
     Setting, SurfaceCx,
 };
-use ui::tilo_resource::ActionDecl;
+use ui::tilo_resource::{ActionDecl, Id};
 
 use crate::actions::VideoEffect;
 use crate::preferences::{PlayerSettings, RecentMedia};
-use crate::resource::VideoPlayer as PlayerResource;
+use crate::shared::{Library as PlayerResource, library as verbs};
 
 /// The playback preferences the player follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,9 +169,6 @@ impl LibraryTab {
             .find(|tab| tab.name() == name)
     }
 }
-
-/// The shared playlist the player's Watch later button adds to.
-const WATCH_LATER: &str = "watch-later";
 
 /// A player for a window built in `mode`: only a window someone uses
 /// decodes with the system's engine and announces itself to the session's
@@ -399,7 +396,7 @@ pub struct PlayerApp {
     /// the framework's door, handed over when the surface is attached.
     dispatcher: Option<Dispatcher<PlayerResource>>,
     /// The shared library as last presented.
-    shared_library: crate::shared::SharedLibrary,
+    shared_library: crate::shared::Library,
     /// What the window is built for: only a live one starts a decoder
     /// service, media controls or collaboration.
     mode: RunMode,
@@ -806,7 +803,7 @@ impl PlayerApp {
             shot_loading: false,
             pending_pip: None,
             dispatcher: None,
-            shared_library: crate::shared::SharedLibrary::default(),
+            shared_library: crate::shared::Library::default(),
             mode,
             capture_awaits: CaptureAwaits::Nothing,
             capture_launched: None,
@@ -1031,7 +1028,7 @@ impl PlayerApp {
     }
 
     /// Show the shared library the document holds.
-    pub(crate) fn present_library(&mut self, state: &crate::shared::SharedLibrary) {
+    pub(crate) fn present_library(&mut self, state: &crate::shared::Library) {
         if state != &self.shared_library {
             self.shared_library = state.clone();
             self.dirty = true;
@@ -1568,7 +1565,7 @@ impl PlayerApp {
     }
 
     fn request_open_action(&self) {
-        self.request(&VideoEffect::Open { path: None });
+        self.request(&VideoEffect::OpenVideo { path: None });
     }
 
     fn request_library_play(&self, item_id: &str) {
@@ -1629,154 +1626,82 @@ impl PlayerApp {
         });
     }
 
-    /// Submit a shared library edit through the framework's door. The
-    /// library shown follows once the document presents the change.
-    fn dispatch_shared(&self, action: &crate::shared::SharedAction) {
+    /// Submit a shared library verb or field edit through the framework's
+    /// door. The library shown follows once the document presents the
+    /// change.
+    fn dispatch_shared(&self, submit: impl ui::framework::Submit<PlayerResource>) {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(action);
+            dispatcher.submit(submit);
         }
     }
 
     fn delete_annotation(&self, id: &str) {
-        self.dispatch_shared(&crate::shared::SharedAction::DeleteAnnotation { id: id.into() });
+        self.dispatch_shared(PlayerResource::DELETE_ANNOTATION.with(Id::from_raw(id)));
     }
 
-    /// Delete playlist `id` with the items it held when the user chose to.
+    /// Delete playlist `id` with its videos.
     fn delete_playlist(&self, id: &str) {
-        self.dispatch_shared(&crate::shared::SharedAction::DeletePlaylist {
-            id: id.into(),
-            observed_item_ids: self
-                .shared_library
-                .items
-                .iter()
-                .filter(|item| item.playlist_id == id)
-                .map(|item| item.id.clone())
-                .collect(),
-        });
+        self.dispatch_shared(PlayerResource::DELETE_PLAYLIST.with(Id::from_raw(id)));
     }
 
-    /// The edits that add the open video to the shared Watch later playlist,
-    /// creating the playlist first when it is missing.
-    fn watch_later_actions(&self) -> Vec<crate::shared::SharedAction> {
-        let Some(media_ref) = self.current_media_ref.clone() else {
-            return Vec::new();
-        };
-        let library = &self.shared_library;
-        let playlist_id = WATCH_LATER.to_string();
-        if library
-            .items
-            .iter()
-            .any(|item| item.playlist_id == playlist_id && item.media_ref == media_ref)
-        {
-            return Vec::new();
-        }
-        let mut actions = Vec::new();
-        if !library
-            .playlists
-            .iter()
-            .any(|playlist| playlist.id == playlist_id)
-        {
-            actions.push(crate::shared::SharedAction::CreatePlaylist {
-                id: playlist_id.clone(),
-                name: "Watch later".into(),
-            });
-        }
-        let position = library
-            .items
-            .iter()
-            .filter(|item| item.playlist_id == playlist_id)
-            .map(|item| item.position)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1024);
-        actions.push(crate::shared::SharedAction::AddPlaylistItem {
-            id: format!(
-                "item-{}-{}",
-                crate::actions::identity_token_for_action(&media_ref),
-                unix_now_ms()
-            ),
-            playlist_id,
+    /// The open video, added to the shared Watch later playlist; `None`
+    /// without an open video or when it is already there.
+    fn watch_later(&self) -> Option<verbs::AddToWatchLater> {
+        let media_ref = self.current_media_ref.clone()?;
+        (!self.shared_library.on_watch_later(&media_ref)).then(|| verbs::AddToWatchLater {
             media_ref,
             title: self.title.clone(),
-            position,
-        });
-        actions
+        })
     }
 
     fn add_current_to_watch_later(&self) {
-        let actions = self.watch_later_actions();
-        if let Some(dispatcher) = &self.dispatcher {
-            // Creating the playlist and adding the video is one step.
-            dispatcher.group(|| {
-                for action in &actions {
-                    dispatcher.apply(action);
-                }
-            });
+        if let Some(add) = self.watch_later() {
+            self.dispatch_shared(PlayerResource::ADD_TO_WATCH_LATER.with(add));
         }
     }
 
     /// A bookmark of the moment the player shows, on the open video.
-    fn bookmark_action(&self) -> Option<crate::shared::SharedAction> {
-        let media_ref = self.current_media_ref.clone()?;
-        let time_ms = self.player.position_ms();
-        Some(crate::shared::SharedAction::CreateAnnotation {
-            id: format!(
-                "annotation-{}-{}-{time_ms}",
-                crate::actions::identity_token_for_action(&media_ref),
-                unix_now_ms()
-            ),
-            media_ref,
-            time_ms,
-            text: String::new(),
+    fn bookmark(&self) -> Option<verbs::AddAnnotation> {
+        Some(verbs::AddAnnotation {
+            media_ref: self.current_media_ref.clone()?,
+            time_ms: self.player.position_ms(),
+            text: None,
         })
     }
 
     fn bookmark_current_time(&self) {
-        if let Some(action) = self.bookmark_action() {
-            self.dispatch_shared(&action);
+        if let Some(bookmark) = self.bookmark() {
+            self.dispatch_shared(PlayerResource::ADD_ANNOTATION.with(bookmark));
         }
     }
 
-    /// The shared library edits bound to the playhead, for the palette and
+    /// The shared library verbs bound to the playhead, for the palette and
     /// agents: bookmark the moment shown, add the open video to Watch later.
     pub(crate) fn playhead_declarations(&self) -> Vec<ActionDecl<PlayerResource>> {
-        if self.current_media_ref.is_none() {
+        let Some(bookmark) = self.bookmark() else {
             return Vec::new();
-        }
-        let media_ref = self.current_media_ref.clone().unwrap_or_default();
-        let time_ms = self.player.position_ms();
-        let watch_later = self.watch_later_actions();
-        let mut declarations = vec![
-            ActionDecl::new(
-                "bookmark-current-time",
-                "Bookmark this moment",
-                Vec::new(),
-                move |_, now_ms| {
-                    Ok(crate::shared::SharedAction::CreateAnnotation {
-                        id: format!(
-                            "annotation-{}-{now_ms}-{time_ms}",
-                            crate::actions::identity_token_for_action(&media_ref)
-                        ),
-                        media_ref: media_ref.clone(),
-                        time_ms,
-                        text: String::new(),
-                    })
-                },
-            )
-            .describe("Add a shared bookmark at the playback time shown."),
-        ];
-        // Only the item when the playlist exists; a missing playlist is
-        // created by the button, which submits both as one step.
-        if let [crate::shared::SharedAction::AddPlaylistItem { .. }] = watch_later.as_slice() {
-            let add = watch_later.into_iter().next();
-            declarations.push(
-                ActionDecl::new(
-                    "add-to-watch-later",
-                    "Add to Watch later",
-                    Vec::new(),
-                    move |_, _| add.clone().ok_or_else(|| "nothing to add".to_owned()),
-                )
-                .describe("Add the open video to the shared Watch later playlist."),
+        };
+        let paths = verbs::AddAnnotation::paths();
+        let mut declarations: Vec<ActionDecl<PlayerResource>> = PlayerResource::ADD_ANNOTATION
+            .bind(paths.media_ref, bookmark.media_ref)
+            .and(paths.time_ms, bookmark.time_ms)
+            .declaration("bookmark-current-time", "Bookmark this moment")
+            .into_iter()
+            .map(|decl| decl.describe("Add a shared bookmark at the playback time shown."))
+            .collect();
+        if let Some(add) = self.watch_later() {
+            let paths = verbs::AddToWatchLater::paths();
+            declarations.extend(
+                PlayerResource::ADD_TO_WATCH_LATER
+                    .bind(paths.media_ref, add.media_ref)
+                    .and(paths.title, add.title)
+                    .declaration(
+                        "add-this-video-to-watch-later",
+                        "Add this video to Watch later",
+                    )
+                    .map(|decl| {
+                        decl.describe("Add the open video to the shared Watch later playlist.")
+                    }),
             );
         }
         declarations
@@ -1866,7 +1791,7 @@ impl PlayerApp {
         {
             pending
                 .reply
-                .finish(outcome.map(|()| tilo_actions::ActionOutput::default()));
+                .finish(outcome.map(|()| ui::tilo_actions::ActionOutput::default()));
         }
     }
 
@@ -1888,11 +1813,11 @@ impl PlayerApp {
             return Err("open a video before using this playback control".into());
         }
         match effect {
-            VideoEffect::Open { path: None } => {
+            VideoEffect::OpenVideo { path: None } => {
                 self.trigger_open(Some(cx.reply()))?;
                 Ok(Effected::Pending)
             }
-            VideoEffect::Open { path: Some(path) } => {
+            VideoEffect::OpenVideo { path: Some(path) } => {
                 self.open_named(&path)?;
                 self.await_open_frame(cx.reply());
                 Ok(Effected::Pending)
@@ -1980,8 +1905,8 @@ impl PlayerApp {
                 }
                 ui::portal::open_uri_detached("settings://updates");
             }
-            VideoEffect::Open { path: Some(path) } => self.open_named(&path)?,
-            VideoEffect::Open { path: None } => self.trigger_open(None)?,
+            VideoEffect::OpenVideo { path: Some(path) } => self.open_named(&path)?,
+            VideoEffect::OpenVideo { path: None } => self.trigger_open(None)?,
             VideoEffect::PlayQueued { item } => self.open_local_entry(&item)?,
             VideoEffect::RemoveQueued { item } => self.remove_queue_entry(&item)?,
             VideoEffect::ClearRecent => self.clear_recent_history()?,
@@ -2090,8 +2015,7 @@ impl PlayerApp {
                 let time_ms = self
                     .shared_library
                     .annotations
-                    .iter()
-                    .find(|candidate| candidate.id == annotation)
+                    .get(&Id::from_raw(annotation))
                     .ok_or("the review note is gone")?;
                 if self.current_media_ref.as_deref() != Some(time_ms.media_ref.as_str()) {
                     return Err("this review note belongs to a different video".into());
@@ -2254,13 +2178,13 @@ impl PlayerApp {
                 self.dirty = true;
             }
             TogetherStep::Publish(state) if !dispatcher.read_only() => {
-                dispatcher.apply(&crate::shared::SharedAction::SetTransport {
+                dispatcher.submit(PlayerResource::SET_TRANSPORT.with(verbs::SetTransport {
                     media_ref,
                     playing: state.playing,
                     position_ms: state.position_ms,
                     rate: f64::from(state.rate),
                     epoch_ms: state.epoch_ms,
-                });
+                }));
             }
             TogetherStep::Publish(_) | TogetherStep::Stay => {}
         }
@@ -3102,7 +3026,7 @@ impl Widget for PlayerApp {
 /// The top strip is the window's header row: it holds the History control
 /// the host offers, over the picture, hiding with the other controls.
 impl ui::widget::controls::ActionControls for PlayerApp {
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.history.take()
     }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
@@ -3407,23 +3331,24 @@ mod tests {
             app.open_path(Path::new("/tmp/review-cut.mp4"))
                 .expect("source identity");
             let media_ref = app.current_media_ref.clone().expect("durable media ref");
-            app.present_library(&crate::shared::SharedLibrary {
-                annotations: vec![
-                    crate::shared::TimestampAnnotation {
-                        id: "review-marker".into(),
-                        media_ref,
-                        time_ms: 12_500,
-                        text: "Tighten this cut".into(),
-                    },
-                    crate::shared::TimestampAnnotation {
-                        id: "elsewhere".into(),
-                        media_ref: "another-video".into(),
-                        time_ms: 30_000,
-                        text: String::new(),
-                    },
-                ],
-                ..crate::shared::SharedLibrary::default()
-            });
+            let mut library = crate::shared::Library::default();
+            library.annotations.push(
+                Id::from_raw("review-marker"),
+                crate::shared::TimestampAnnotation {
+                    media_ref,
+                    time_ms: 12_500,
+                    text: "Tighten this cut".into(),
+                },
+            );
+            library.annotations.push(
+                Id::from_raw("elsewhere"),
+                crate::shared::TimestampAnnotation {
+                    media_ref: "another-video".into(),
+                    time_ms: 30_000,
+                    text: String::new(),
+                },
+            );
+            app.present_library(&library);
             app.perform(VideoEffect::JumpToAnnotation {
                 annotation: "review-marker".into(),
             })
@@ -3616,7 +3541,7 @@ mod tests {
                 tracks.children.iter().all(|track| track
                     .actions
                     .iter()
-                    .all(|action| action.kind != tilo_actions::OperationKind::Document)),
+                    .all(|action| action.kind != ui::tilo_actions::OperationKind::Document)),
                 "a live row never changes the document"
             );
             let source_id = app.current_source_id.clone().unwrap();
@@ -4073,7 +3998,6 @@ mod tests {
 
     fn shared(state: media::TransportState) -> crate::shared::SharedTransport {
         crate::shared::SharedTransport {
-            media_ref: "clip".into(),
             playing: state.playing,
             position_ms: state.position_ms,
             rate: f64::from(state.rate),

@@ -296,7 +296,7 @@ pub fn index_file(
     photo.captured_at = exif
         .captured_at
         .as_deref()
-        .and_then(crate::actions::canonical_capture_at_value);
+        .and_then(crate::model::canonical_capture_at_value);
     if options.retain_exif_location {
         photo.location.clone_from(&exif.location);
     }

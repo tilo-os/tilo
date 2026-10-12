@@ -1289,21 +1289,21 @@ mod tests {
                 .filter(|descriptor| {
                     descriptor.address.resource == super::super::history_actions::RESOURCE
                 })
-                .map(|descriptor| (descriptor.address.action, descriptor.contract.permission))
+                .map(|descriptor| (descriptor.address.action, descriptor.contract.kind))
                 .collect::<std::collections::BTreeMap<_, _>>();
-            use tilo_actions::PermissionRequirement::{Read, Write};
+            use tilo_actions::ActionKind::{Read, Undoable};
             assert_eq!(
                 history,
                 [
-                    ("history.close", Write),
-                    ("history.compare", Write),
+                    ("history.close", Undoable),
+                    ("history.compare", Undoable),
                     ("history.list", Read),
                     ("history.open", Read),
-                    ("history.restore", Write),
-                    ("history.view_at", Write),
+                    ("history.restore", Undoable),
+                    ("history.view_at", Undoable),
                 ]
                 .into_iter()
-                .map(|(action, permission)| (action.to_owned(), permission))
+                .map(|(action, kind)| (action.to_owned(), kind))
                 .collect(),
                 "the broker gates each History action on the permission it declares"
             );
@@ -1530,10 +1530,13 @@ mod tests {
             .and_then(|change| change.message())
             .and_then(tilo_actions::ActionContext::from_change_message)
             .expect("restore carries its action context");
-        assert_eq!(
-            context.action_label,
-            crate::i18n::I18nManager::lookup_plain("standalone-history-restore-action")
-        );
+        assert!(matches!(
+            context.what,
+            Some(tilo_actions::Did::History(tilo_actions::HistoryStep {
+                op: tilo_actions::HistoryOp::Restore,
+                ..
+            }))
+        ));
 
         // The autosaved document reopens at the restored version.
         app.autosave().unwrap().flush();
@@ -1541,7 +1544,7 @@ mod tests {
 
         // Ctrl+Z on an app-owned document is this call in the native runner.
         let author = app.local_author().clone();
-        assert!(app.state.undo_as(Some(&author), None, None).is_some());
+        assert!(app.state.undo_as(Some(&author), None, None, None).is_some());
         assert_eq!(title(&app).as_deref(), Some("v3"));
 
         // A review that the live document outgrows is refused, unwritten.
@@ -1578,13 +1581,10 @@ mod tests {
         app.state.doc.put(ROOT, "title", "v2").unwrap();
         app.state.commit_action(None, None);
         let app_id = crate::collaboration::local_app_id();
-        app.permission_ctx = crate::permissions::PermissionContext::from_capabilities(
-            crate::permissions::Actor::agent("reader"),
-            vec![crate::permissions::CapOverride::grant(
-                crate::permissions::Subject::agent("reader"),
-                crate::permissions::Scope::App(app_id),
-                crate::permissions::Verb::Read,
-            )],
+        app.permission_ctx = crate::permissions::PermissionContext::agent_granted(
+            "reader",
+            &crate::permissions::TreePath::root().app(app_id),
+            crate::permissions::policy::KindSet::READ,
         );
         app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
         app.init_layout();
@@ -1748,17 +1748,6 @@ impl Widget for FrameworkPresentation<'_> {
         _: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         self.layout_root
-    }
-    fn apply_layout(&mut self, _: &taffy::TaffyTree<()>, _: taffy::NodeId, _: vello::kurbo::Point) {
-    }
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut crate::text_render::TextRenderer,
-        _: &crate::Theme,
-        _: &crate::presence::PresenceCtx,
-    ) {
     }
     fn children(&self) -> Vec<&dyn Widget> {
         self.roots.clone()

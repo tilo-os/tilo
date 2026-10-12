@@ -109,9 +109,8 @@ mod app_authorship_tests;
 mod tests {
     use super::*;
     use crate::application_record::tests::{Fixture, fixture};
-    use tilo_peer_state::workspace_membership::{
-        AgentMembershipPreset, WorkspaceMembershipCommand,
-    };
+    use tilo_action_policy::roles::AgentPreset;
+    use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
     use tilo_peer_state::{NeighbourMsg, TransportOrigin};
 
     fn request(fixture: &Fixture, command: WorkspaceMembershipCommand) -> OwnerCommitRequest {
@@ -128,15 +127,17 @@ mod tests {
     fn agent_caps(
         owner: &NativeWorkspaceOwner,
         fixture: &Fixture,
-    ) -> Vec<collab_types::caps::CapOverride> {
+    ) -> Vec<tilo_action_policy::Grant> {
         owner
             .with_current(RoomId::parse(crate::testing::ROOM).unwrap(), |view| {
-                let (_, caps, _) = view
+                let authority = view
                     .peer()
                     .permissions(fixture.certificate.device_public_key, fixture.now)?;
-                Ok(caps
+                Ok(authority
+                    .policy
+                    .grants
                     .into_iter()
-                    .filter(|cap| cap.subject == collab_types::caps::Subject::agent("scribe"))
+                    .filter(|grant| grant.subject == tilo_action_policy::Subject::agent("scribe"))
                     .collect())
             })
             .unwrap()
@@ -149,7 +150,7 @@ mod tests {
             &fixture,
             WorkspaceMembershipCommand::AddAgent {
                 agent: "scribe".into(),
-                preset: AgentMembershipPreset::Observer,
+                preset: AgentPreset::Observer,
             },
         );
         assert!(agent_caps(&fixture.owner, &fixture).is_empty());
@@ -164,12 +165,13 @@ mod tests {
             .unwrap();
         receipt.validate_for(&request).unwrap();
         let caps = agent_caps(&fixture.owner, &fixture);
-        assert_eq!(caps.len(), 1);
+        assert_eq!(caps.len(), 2, "reading the room, and no governing it");
         assert_eq!(
-            caps[0].scope,
-            collab_types::caps::Scope::Room(crate::testing::ROOM.into())
+            caps[0].node,
+            tilo_action_policy::TreePath::room(crate::testing::ROOM)
         );
-        assert_eq!(caps[0].verb, collab_types::caps::Verb::Read);
+        assert_eq!(caps[0].kinds, tilo_action_policy::KindSet::READ);
+        assert_eq!(caps[0].answer, tilo_action_policy::Answer::Allow);
         let reopened = crate::open_file(&fixture.directory.path().join("owner.json")).unwrap();
         assert_eq!(agent_caps(&reopened, &fixture), caps);
         let retry = reopened
@@ -212,7 +214,7 @@ mod tests {
                     &fixture,
                     WorkspaceMembershipCommand::AddAgent {
                         agent: "scribe".into(),
-                        preset: AgentMembershipPreset::Operator,
+                        preset: AgentPreset::Operator,
                     },
                 ),
                 &fixture.certificate,
@@ -261,7 +263,7 @@ mod tests {
             &fixture,
             WorkspaceMembershipCommand::AddAgent {
                 agent: "scribe".into(),
-                preset: AgentMembershipPreset::Observer,
+                preset: AgentPreset::Observer,
             },
         );
         if let CommitOperation::WorkspaceMembershipCommand { caller, .. } = &mut add.operation {
@@ -289,7 +291,7 @@ mod tests {
             &fixture,
             WorkspaceMembershipCommand::AddAgent {
                 agent: "scribe".into(),
-                preset: AgentMembershipPreset::Contributor,
+                preset: AgentPreset::Contributor,
             },
         );
         fixture
@@ -330,8 +332,12 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(
-            fixture.governor.agent_role("scribe", fixture.now).unwrap(),
-            Some(collab_types::Role::Commenter)
+            fixture.governor.agent_grants("scribe").unwrap(),
+            [
+                "agent-member:scribe:contributor",
+                "agent-member:scribe:contributor:comments",
+                "agent-member:scribe:contributor:no-governance",
+            ]
         );
     }
 
@@ -342,7 +348,7 @@ mod tests {
             &fixture,
             WorkspaceMembershipCommand::AddAgent {
                 agent: "scribe".into(),
-                preset: AgentMembershipPreset::Operator,
+                preset: AgentPreset::Operator,
             },
         );
         let path = fixture.directory.path().join("owner.json");

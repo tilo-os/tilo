@@ -371,6 +371,9 @@ const DIRECT_RETIREMENT_TIMEOUT: Duration = Duration::from_millis(250);
 /// The GPU budget for one direct frame. Missing it hands the output to the
 /// readback presenter until the retry the failure earns.
 const DIRECT_FRAME_DEADLINE: Duration = Duration::from_secs(1);
+/// The GPU budget for warming the strip layers at rest: several whole
+/// layers, not one frame, and nothing waits on it.
+const WARM_DEADLINE: Duration = Duration::from_secs(10);
 
 /// What the frame that just submitted does about one direct output's pending page flip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3227,6 +3230,49 @@ impl Presenter for DrmPresenter {
         for e in &mut self.scanouts {
             e.scanout.set_dpms(on && !e.powered_off);
             e.direct_targets = None;
+        }
+    }
+
+    /// While the desktop rests, a lone output on the direct path brings the
+    /// layers its strip pans are composited from up to the desktop
+    /// (`VelloDrmBridge::warm_layers`), so the next pan's first frame does
+    /// not rasterise them. Nothing reaches KMS.
+    fn warm(&mut self, frame: &FramePaint, keep_going: &dyn Fn() -> bool) {
+        let Some(cache) = frame.cache.as_ref() else {
+            return;
+        };
+        if self.blanked || self.paused || cpu_present::cpu_render_reason().is_some() {
+            return;
+        }
+        let [entry] = self.scanouts.as_slice() else {
+            return;
+        };
+        if entry.powered_off || entry.present_by_readback || entry.direct_targets.is_none() {
+            return;
+        }
+        let view = output_view(entry, &self.outputs);
+        let Some(bridge) = self
+            .paint
+            .as_mut()
+            .filter(|bridge| bridge.view_is_whole_scene(&view))
+        else {
+            return;
+        };
+        let started = Instant::now();
+        let deadline = started.checked_add(WARM_DEADLINE).unwrap_or(started);
+        match bridge.warm_layers(cache, deadline, keep_going) {
+            Ok(Some(pixels)) if pixels > 0 => {
+                // A measurement line for the session log, like RENDERER-MEMORY.
+                eprintln!(
+                    "STRIP-LAYERS-WARM raster_px={pixels} us={} finished={}",
+                    started.elapsed().as_micros(),
+                    keep_going()
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, "DRM backend: warming the strip layers at rest failed");
+            }
         }
     }
 }

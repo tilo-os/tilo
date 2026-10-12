@@ -333,11 +333,16 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
             0..11,
             Mark::Transclusion(uuid::Uuid::new_v4()),
         )]);
-        for block in [
-            Block::table("| Key | Value |\n| --- | --- |\n| Name | Test |", true),
-            Block::paragraph("![Diagram](diagram.png)"),
-            embedded,
-        ] {
+        // Pushed one by one: a literal array of three blocks is too large
+        // for the stack.
+        let mut blocks = Vec::with_capacity(3);
+        blocks.push(Block::table(
+            "| Key | Value |\n| --- | --- |\n| Name | Test |",
+            true,
+        ));
+        blocks.push(Block::paragraph("![Diagram](diagram.png)"));
+        blocks.push(embedded);
+        for block in blocks {
             let mut editor = BlockEditor::new().with_wrap_lines(true);
             editor.set_blocks(vec![block]);
             let mut editor = layout_block_editor(editor, 400.0);
@@ -918,11 +923,10 @@ use ui::synthetic_input::cursor_moved;
 use ui::synthetic_input::mouse_press;
 
 fn mouse_press_right() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Right,
-    }
+    ui::synthetic_input::mouse_input(
+        ui::winit::event::ElementState::Pressed,
+        ui::winit::event::MouseButton::Right,
+    )
 }
 
 use ui::synthetic_input::mouse_release;
@@ -1201,6 +1205,8 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         let handled = dispatch(&mut app, no_mods, &named_key(NamedKey::Delete));
 
         assert!(handled, "Delete must be consumed by the focused tree");
+        // Deleting a page asks first; the person confirms.
+        assert!(app.confirm_asked().is_some(), "the host asks first");
         let pages = n(&mut app).workspace_pages_for_test();
         assert_eq!(pages.len(), 1, "Delete must remove the page");
         assert_eq!(pages[0].id, welcome);
@@ -1295,7 +1301,6 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         let order_ids = |app: &mut TestApp<NotesShell>| -> Vec<uuid::Uuid> {
             let mut ps = n(app).workspace_pages_for_test();
             ps.retain(|p| p.parent.is_none());
-            ps.sort_by(notes::model::sibling_order);
             ps.into_iter().map(|p| p.id).collect()
         };
         assert_eq!(order_ids(&mut app), vec![welcome, p1, p2]);

@@ -11,9 +11,10 @@
 
 use std::collections::BTreeMap;
 use ui::num::f32_of_f64;
+use ui::num::f64_of_usize;
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, JsonSchema};
+use ui::tilo_resource::{self, Id, Identified, JsonSchema, Keyed, Model};
 use ui::vello::kurbo::{Affine, BezPath, Point, Rect, Shape as _};
 
 /// The largest artwork side, in units.
@@ -48,17 +49,23 @@ impl Default for Ground {
     clippy::struct_excessive_bools,
     reason = "shown, held still, an inverted or unlinked mask and clipped are independent settings"
 )]
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Model)]
 pub struct Layer {
+    #[model(atom, readonly)]
     pub id: String,
+    /// Name
+    #[model(label)]
     pub name: String,
     /// Organisational folder; empty for an ungrouped layer. It does not
     /// change stacking, clipping or how the layers composite.
+    #[model(atom)]
     pub group: String,
     /// Fractional position among layers; later is on top.
+    #[model(atom, readonly)]
     pub order: String,
     /// The medium preset that paints this layer's marks, or empty for plain
     /// vector art.
+    #[model(atom)]
     pub medium: String,
     pub opacity: f64,
     pub visible: bool,
@@ -72,6 +79,7 @@ pub struct Layer {
     /// The layer this layer masks, or empty for an ordinary layer. A mask's
     /// marks are drawn in greys: where it is light that layer shows, where
     /// it is dark it is hidden. Hiding the mask turns it off.
+    #[model(atom, readonly)]
     pub mask_of: String,
     /// A mask's grey before any mark, `0..=1`: 1 shows all of its layer,
     /// 0 hides all of it.
@@ -85,6 +93,17 @@ pub struct Layer {
     pub unlinked: bool,
 }
 
+impl Identified for Layer {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.clone())
+    }
+
+    /// Bottom to top.
+    fn order(&self, other: &Self) -> std::cmp::Ordering {
+        self.order.cmp(&other.order)
+    }
+}
+
 impl Layer {
     /// Whether this layer is another layer's mask.
     pub fn is_mask(&self) -> bool {
@@ -95,7 +114,7 @@ impl Layer {
 /// The area selected for the next edit: a region of the artwork, kept with
 /// it like the reference picture and never drawn into it. Fills, masks and
 /// copies take its shape; its feather softens their edge.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Selection {
     /// SVG path data in artwork units, filled non-zero.
     pub d: String,
@@ -407,7 +426,7 @@ pub struct Shadow {
 
 /// A picture to work from, laid over the artwork like tracing paper. It is
 /// not part of the artwork: exports never show it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Reference {
     /// The picture's content address.
     pub image: String,
@@ -434,25 +453,45 @@ impl Style {
 }
 
 /// A mark as stored: its geometry, style and placement.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Model)]
 pub struct Mark {
+    #[model(atom, readonly)]
     pub id: String,
+    #[model(atom)]
     pub layer: String,
     /// Fractional position within its layer; later is on top.
+    #[model(atom, readonly)]
     pub order: String,
+    /// Name
+    #[model(label)]
     pub name: String,
     pub shape: Shape,
     pub style: Style,
     /// An affine transform `[a, b, c, d, e, f]` applied to the geometry.
     pub transform: Option<[f64; 6]>,
     /// The group the mark belongs to, or empty.
+    #[model(atom)]
     pub group: String,
     /// The mark whose shape this mark is cut to, or empty.
+    #[model(atom)]
     pub clip: String,
     /// SVG path data of the area the mark is kept inside (the selection's
     /// shape when it was laid), in the units of its geometry so it travels
     /// with it, or empty.
+    #[model(atom, readonly)]
     pub area: String,
+}
+
+impl Identified for Mark {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.clone())
+    }
+
+    /// Bottom to top within a layer; [`Artwork::settle`] stacks the
+    /// layers.
+    fn order(&self, other: &Self) -> std::cmp::Ordering {
+        self.order.cmp(&other.order)
+    }
 }
 
 /// The stored body of a mark: everything that is replaced together.
@@ -505,16 +544,19 @@ impl Mark {
 }
 
 /// The whole artwork as views and actions read it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Model)]
 pub struct Artwork {
+    /// Title
+    #[model(label)]
     pub title: String,
     pub width: f64,
     pub height: f64,
     pub ground: Ground,
     /// Bottom to top.
-    pub layers: Vec<Layer>,
-    /// Bottom to top within each layer, layers bottom to top.
-    pub marks: Vec<Mark>,
+    pub layers: Keyed<Layer>,
+    /// Bottom to top within each layer, layers bottom to top (see
+    /// [`Artwork::settle`]).
+    pub marks: Keyed<Mark>,
     /// Media presets saved in this artwork, by id.
     pub media: BTreeMap<String, crate::media::MediumSpec>,
     pub reference: Option<Reference>,
@@ -528,12 +570,111 @@ impl Default for Artwork {
             width: 1200.0,
             height: 900.0,
             ground: Ground::default(),
-            layers: Vec::new(),
-            marks: Vec::new(),
+            layers: Keyed::new(),
+            marks: Keyed::new(),
             media: BTreeMap::new(),
             reference: None,
             selection: None,
         }
+    }
+}
+
+tilo_resource::json_model!(
+    Ground,
+    Shape,
+    Style,
+    Adjust,
+    Reference,
+    Selection,
+    crate::media::MediumSpec
+);
+
+/// A blank rectangle: what a mark is before it is given a shape.
+impl Default for Shape {
+    fn default() -> Self {
+        Self::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+            radius: 0.0,
+        }
+    }
+}
+
+impl Artwork {
+    /// The artwork as `doc` holds it, stacked (see [`Self::settle`]).
+    ///
+    /// # Errors
+    /// Returns why the document does not hold an artwork.
+    pub fn from_doc(doc: &tilo_resource::Doc) -> Result<Self, tilo_resource::ModelError> {
+        let mut art = <Self as tilo_resource::Fields>::read_fields(doc, &ui::automerge::ROOT)?;
+        art.settle();
+        Ok(art)
+    }
+
+    /// Stack the marks as they are drawn: layers bottom to top, each
+    /// layer's marks bottom to top. A mark whose layer is gone (removed
+    /// while someone drew on it) is not part of the artwork.
+    pub fn settle(&mut self) {
+        // A document no one has started yet (a viewer joining before the
+        // artwork's first change reached it) is the blank default size.
+        let blank = Self::default();
+        if self.width <= 0.0 || self.height <= 0.0 {
+            (self.width, self.height) = (blank.width, blank.height);
+        }
+        let rank: std::collections::HashMap<&str, usize> = self
+            .layers
+            .iter()
+            .enumerate()
+            .map(|(at, layer)| (layer.id.as_str(), at))
+            .collect();
+        let mut marks: Vec<(usize, Mark)> = std::mem::take(&mut *self.marks)
+            .into_iter()
+            .filter_map(|mark| Some((*rank.get(mark.layer.as_str())?, mark)))
+            .collect();
+        marks.sort_by(|(a_rank, a), (b_rank, b)| {
+            a_rank
+                .cmp(b_rank)
+                .then_with(|| a.order.cmp(&b.order))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        *self.marks = marks.into_iter().map(|(_, mark)| mark).collect();
+    }
+
+    /// This artwork, stacked.
+    #[must_use]
+    pub fn settled(&self) -> Self {
+        let mut art = self.clone();
+        art.settle();
+        art
+    }
+
+    /// Add `mark`, or replace the mark with its id.
+    pub fn put_mark(&mut self, mark: Mark) {
+        match self.marks.iter_mut().find(|held| held.id == mark.id) {
+            Some(held) => *held = mark,
+            None => self.marks.push(mark),
+        }
+    }
+
+    /// Add `layer`, or replace the layer with its id.
+    pub fn put_layer(&mut self, layer: Layer) {
+        match self.layers.iter_mut().find(|held| held.id == layer.id) {
+            Some(held) => *held = layer,
+            None => self.layers.push(layer),
+        }
+    }
+
+    /// Remove the mark `id`, if there is one.
+    pub fn remove_mark(&mut self, id: &str) {
+        self.marks.retain(|mark| mark.id != id);
+    }
+
+    /// Remove the layer `id`, if there is one; its marks stay until
+    /// removed too.
+    pub fn drop_layer(&mut self, id: &str) {
+        self.layers.retain(|layer| layer.id != id);
     }
 }
 
@@ -1256,10 +1397,6 @@ pub fn path_data(path: &BezPath) -> String {
     parts.join(" ")
 }
 
-fn count(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
 impl Shape {
     /// The box a text's lines take, estimated from its characters: what
     /// selection, hit-testing and `inspect` use without shaping it.
@@ -1293,7 +1430,7 @@ impl Shape {
             } + tracking.unwrap_or(0.0) / 1000.0);
         let lines: Vec<f64> = text
             .split('\n')
-            .map(|line| advance * count(line.chars().count()))
+            .map(|line| advance * f64_of_usize(line.chars().count()))
             .collect();
         let natural = lines.iter().copied().fold(0.0, f64::max);
         let (rows, wide) = match width {
@@ -1304,7 +1441,7 @@ impl Shape {
                     .sum::<f64>(),
                 *width,
             ),
-            None => (count(lines.len()), natural),
+            None => (f64_of_usize(lines.len()), natural),
         };
         let left = match (width, align.as_deref()) {
             (None, Some("center")) => x - wide / 2.0,

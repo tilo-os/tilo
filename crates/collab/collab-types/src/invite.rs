@@ -1,12 +1,12 @@
 //! Attenuable capability invite tokens.
 //!
 //! An invite is a **signed, delegable capability**: it grants `{subject
-//! identity, workspace, role, cap-bundle, optionally one sub-resource,
-//! optionally time-boxed}`, handed to a person to join a workspace with
-//! exactly those caps — the "ad-hoc / limited invite" tier.
+//! identity, workspace, role, optionally one sub-resource, optionally
+//! time-boxed}`, handed to a person to join a workspace with that role
+//! preset — the "ad-hoc / limited invite" tier.
 //!
 //! The defining property is **monotone attenuation**: a holder may mint a
-//! *child* token that drops caps, lowers the role, shortens validity, or
+//! *child* token that lowers the role, shortens validity, or
 //! pins to a sub-resource — but **never** one that adds authority the
 //! parent lacked. Widening is rejected at mint time
 //! ([`InviteError::Widens`]) and, redundantly, at verification (a forged
@@ -22,14 +22,12 @@
 //! [`verify_chain`] walks root-first, checking each link's signature,
 //! that every step narrows, and that no token has expired.
 
-use std::collections::BTreeSet;
 use web_time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::canonical::CanonicalError;
-use crate::caps::{Verb, role_caps};
 use crate::channel::ArtifactId;
 use crate::crypto::{Ed25519PublicKey, Signature, VerifyError, sign_event, verify_event};
 use crate::role::Role;
@@ -41,10 +39,8 @@ pub const INVITE_DOMAIN_TAG: &str = "tilo-invite-v1";
 
 /// A signed capability grant into a workspace.
 ///
-/// `caps` is the concrete cap-bundle the token confers; `role` is the
-/// headline label it was minted from — attenuation narrows both
-/// independently. The verifier enforces `caps`, not the label; the label
-/// is for UI + the role→caps sanity bound.
+/// `role` is the role preset the token admits its subject with; attenuation
+/// only ever lowers it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InviteToken {
@@ -53,12 +49,9 @@ pub struct InviteToken {
     /// The workspace the grant is scoped to. Every token in a chain must name
     /// the same workspace.
     pub workspace: u64,
-    /// The headline role label, narrowed monotonically down the chain
-    /// (`Owner ≥ Editor ≥ Commenter ≥ Viewer ≥ Denied`, by cap ceiling).
+    /// The role preset, narrowed monotonically down the chain
+    /// (`Owner ≥ Editor ≥ Commenter ≥ Viewer`).
     pub role: Role,
-    /// The concrete granted cap-bundle — a child's caps must be a subset of
-    /// its parent's.
-    pub caps: BTreeSet<Verb>,
     /// Optional single sub-resource pin. `None` means the whole workspace. A
     /// child may pin an unpinned parent or keep the same pin, but may not
     /// unpin or repoint to a different artifact.
@@ -79,7 +72,7 @@ pub struct InviteToken {
 
 /// The desired grant for a fresh or derived token — everything except
 /// issuer/parent/signature, supplied by the mint call.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InviteSpec {
     /// See [`InviteToken::subject`].
     pub subject: Ed25519PublicKey,
@@ -87,8 +80,6 @@ pub struct InviteSpec {
     pub workspace: u64,
     /// See [`InviteToken::role`].
     pub role: Role,
-    /// See [`InviteToken::caps`].
-    pub caps: BTreeSet<Verb>,
     /// See [`InviteToken::sub_resource`].
     pub sub_resource: Option<ArtifactId>,
     /// See [`InviteToken::not_after`].
@@ -98,8 +89,8 @@ pub struct InviteSpec {
 /// Failure modes for minting / attenuating / verifying invites.
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum InviteError {
-    /// A derived token tried to grant authority the parent lacked (added
-    /// cap, higher role, widened resource, later expiry) — attenuation must only narrow.
+    /// A derived token tried to grant authority the parent lacked (higher
+    /// role, widened resource, later expiry) — attenuation must only narrow.
     #[error("derived invite widens the parent grant: {0}")]
     Widens(&'static str),
     /// The delegator's key doesn't match the parent token's subject — only
@@ -136,7 +127,6 @@ struct InviteView<'a> {
     subject: &'a Ed25519PublicKey,
     workspace: u64,
     role: &'a Role,
-    caps: &'a BTreeSet<Verb>,
     sub_resource: &'a Option<ArtifactId>,
     not_after: &'a Option<SystemTime>,
     issuer: &'a Ed25519PublicKey,
@@ -150,7 +140,6 @@ impl InviteToken {
             subject: &self.subject,
             workspace: self.workspace,
             role: &self.role,
-            caps: &self.caps,
             sub_resource: &self.sub_resource,
             not_after: &self.not_after,
             issuer: &self.issuer,
@@ -187,21 +176,6 @@ impl InviteToken {
     }
 }
 
-/// The cap ceiling of a role, `None` for [`Role::Denied`].
-fn role_ceiling(role: Role) -> Option<Verb> {
-    role_caps(role)
-}
-
-/// Is `child`'s role privilege ≤ `parent`'s, by cap ceiling:
-/// `Owner(Admin) ≥ Editor(Write) ≥ Commenter(Comment) ≥ Viewer(Read) ≥ Denied(∅)`?
-fn role_le(child: Role, parent: Role) -> bool {
-    match (role_ceiling(child), role_ceiling(parent)) {
-        (None, _) => true,        // Denied grants nothing — always ≤.
-        (Some(_), None) => false, // parent grants nothing; child grants more.
-        (Some(c), Some(p)) => p.implies(c),
-    }
-}
-
 /// Does `child_expiry` end no later than `parent_expiry`? (`None` =
 /// "never", so a child may only tighten.)
 fn expiry_le(child: Option<SystemTime>, parent: Option<SystemTime>) -> bool {
@@ -229,10 +203,7 @@ fn check_narrows(spec: &InviteSpec, parent: &InviteToken) -> Result<(), InviteEr
     if spec.workspace != parent.workspace {
         return Err(InviteError::WorkspaceMismatch);
     }
-    if !spec.caps.is_subset(&parent.caps) {
-        return Err(InviteError::Widens("caps not a subset of parent"));
-    }
-    if !role_le(spec.role, parent.role) {
+    if !parent.role.includes(spec.role) {
         return Err(InviteError::Widens("role higher than parent"));
     }
     if !expiry_le(spec.not_after, parent.not_after) {
@@ -261,7 +232,6 @@ pub fn mint_root(
         subject: spec.subject,
         workspace: spec.workspace,
         role: spec.role,
-        caps: spec.caps,
         sub_resource: spec.sub_resource,
         not_after: spec.not_after,
         issuer,
@@ -297,7 +267,6 @@ pub fn attenuate(
         subject: spec.subject,
         workspace: spec.workspace,
         role: spec.role,
-        caps: spec.caps,
         sub_resource: spec.sub_resource,
         not_after: spec.not_after,
         issuer,
@@ -366,7 +335,6 @@ pub fn verify_chain<'a>(
                 subject: token.subject,
                 workspace: token.workspace,
                 role: token.role,
-                caps: token.caps.clone(),
                 sub_resource: token.sub_resource,
                 not_after: token.not_after,
             },

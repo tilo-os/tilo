@@ -45,9 +45,7 @@ use crate::color_compat::ColorCompat;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 pub use crate::table_model::*;
-use crate::table_model::{
-    DEFAULT_COL_W, MIN_COL_W, cell_key, cells_map, child_obj, col_width, usize_to_f64,
-};
+use crate::table_model::{DEFAULT_COL_W, MIN_COL_W, cell_key, cells_map, child_obj, col_width};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{TextInput, Widget};
@@ -570,7 +568,7 @@ impl Table {
         self.rect.x0 + LEFT_GUTTER + self.col_widths.iter().sum::<f64>()
     }
     fn grid_bottom(&self) -> f64 {
-        self.rect.y0 + TOP_GUTTER + usize_to_f64(self.n_rows()) * ROW_H
+        self.rect.y0 + TOP_GUTTER + crate::num::f64_of_usize(self.n_rows()) * ROW_H
     }
 
     /// Rect of the delete handle for column `c` (centred in the top gutter).
@@ -665,7 +663,7 @@ impl Table {
         }
         (
             LEFT_GUTTER + self.col_widths.iter().sum::<f64>() + RIGHT_PAD,
-            TOP_GUTTER + usize_to_f64(self.n_rows()) * ROW_H + BOTTOM_PAD,
+            TOP_GUTTER + crate::num::f64_of_usize(self.n_rows()) * ROW_H + BOTTOM_PAD,
         )
     }
 

@@ -8,8 +8,9 @@
 //!     compositor reads; the fine half of the colour grade.
 //!   * [`media`]   — the FUSE-media seam: clips reference workspace paths
 //!     (`/var/workspace/…`); bytes hydrate on demand.
-//!   * [`doc`]     — Automerge projection of the project (the collaborative,
-//!     undoable source of truth) + the demo project seed.
+//!   * [`resource`] — the project's verbs and the app: the
+//!     collaborative, undoable source of truth is [`model::Project`] itself,
+//!     stored by `#[derive(Model)]`; [`seed`] holds the demo project.
 //!   * [`project_file`] — the versioned `.qvp` file behind Save / Save As /
 //!     Open: the same Automerge document, framed and stamped,
 //!     so a project can be copied and handed to someone.
@@ -54,7 +55,6 @@ pub mod actions;
 pub mod app;
 pub mod audio;
 pub mod curve;
-pub mod doc;
 pub mod export;
 mod files;
 pub mod gpu;
@@ -69,15 +69,17 @@ pub mod probe;
 pub mod project_file;
 pub mod resource;
 pub mod search;
+pub mod seed;
 pub mod shot;
 pub mod thumbnail;
 pub mod timecode;
 pub mod waveform;
 
 pub use app::VideoEditorApp;
-pub use resource::{VideoEditor, VideoProject};
+pub use model::Project;
+pub use resource::VideoEditor;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<VideoEditor>()
+    ui::built_in_definition!(VideoEditor)
 }

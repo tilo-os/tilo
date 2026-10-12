@@ -38,12 +38,11 @@ use std::time::{Duration, Instant};
 use crate::shell::app_action_consent::{AppActionConsent, SheetPrompter};
 use crate::shell::automation_triggers::{Firing, ManualClock, TriggerEvent, TriggerHost, armed};
 use crate::shell::portal_dialog::{DialogView, PortalDialogController, PortalDialogQueue};
-use crate::shell::state::WorkspaceAuthority as _;
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ReadDoc};
-use collab_types::{PermissionProfileRule, Scope, Verb};
 use ed25519_dalek::{Signer as _, SigningKey};
 use serde_json::{Map, Value, json};
+use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvokeArgument,
     InvokeRequest, MAX_CATALOGUE_PAGE, Pending, ReceiptStatus, RemoteActionMessage,
@@ -55,7 +54,7 @@ use tilo_actions::{
 };
 use tilo_automation::{
     Binding, CatchUp, RunId, SHORTCUTS_APP_ID, Schedule, Selector, Shortcut, Step, StepKind,
-    TriggerSpec, UnattendedConsent, shortcut_resource_id,
+    TriggerSpec, action_rule, shortcut_resource_id,
 };
 use ui::collaboration::{
     CertifiedEndpointIdentity, CollabEvent, CollabRequest, CollaborationManager, ExportedAction,
@@ -68,6 +67,7 @@ const FIXTURE: &str = "so.tilo.fixture-drafts";
 const FIXTURE_HANDLE: &str = "drafts";
 const RECORD: &str = "file:drafts.qdoc";
 const INBOX: &str = "fixture.drafts:inbox";
+const INBOX_KIND: &str = "fixture.drafts";
 /// A second resource offering `draft`, so a grant on the inbox's `draft`
 /// can be shown not to reach it.
 const OUTBOX: &str = "fixture.outbox:outbox";
@@ -84,10 +84,6 @@ fn session_person() -> String {
     crate::shell::state::local_user_id_for_room(
         &crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id"),
     )
-}
-
-fn membership_id(member: &str) -> String {
-    format!("{member}-membership")
 }
 
 fn device_key(handle: &str) -> SigningKey {
@@ -148,38 +144,32 @@ fn spawn_broker(
     let owner = owner_principal();
     let mut workspace =
         crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Drafts room");
-    workspace.room = crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id");
+    workspace.set_room(crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id"));
     workspace.set_owner(owner.clone());
-    workspace
-        .grant_as(
-            &owner,
-            ui::permissions::CapOverride::membership(
-                ui::permissions::Subject::agent(FIXTURE_HANDLE),
-                workspace.room.to_string(),
-                ui::permissions::Verb::Write,
-            ),
-        )
-        .expect("the owner admits the fixture");
-    workspace
-        .grant_as(
-            &owner,
-            ui::permissions::CapOverride::grant(
-                ui::permissions::Subject::agent(FIXTURE_HANDLE),
-                ui::permissions::Scope::App(FIXTURE.to_string()),
-                ui::permissions::Verb::Write,
-            ),
-        )
-        .expect("the owner grants the fixture its own surface");
+    let by = tilo_action_policy::Subject::person(owner.clone());
+    workspace.admit_agent_preset(
+        FIXTURE_HANDLE,
+        tilo_action_policy::roles::AgentPreset::Operator,
+        &by,
+    );
+    let fixture = workspace.node().app(FIXTURE);
+    workspace.grant(tilo_action_policy::Grant::new(
+        "fixture-surface",
+        tilo_action_policy::Subject::agent(FIXTURE_HANDLE),
+        fixture,
+        KindSet::ALL,
+        Answer::Allow,
+        by,
+    ));
     for member in [BOB.to_string(), session_person()] {
         workspace
-            .grant_as(
+            .govern_as_at(
                 &owner,
-                ui::permissions::CapOverride::membership(
-                    ui::permissions::Subject::person(member.clone()),
-                    workspace.room.to_string(),
-                    ui::permissions::Verb::Write,
-                )
-                .with_id(membership_id(&member)),
+                tilo_action_policy::Change::AddMember {
+                    person: member,
+                    role: tilo_action_policy::Role::Editor,
+                },
+                tilo_clock::unix_now(),
             )
             .expect("the owner admits a member who may edit");
     }
@@ -638,9 +628,8 @@ fn invoke_step(id: &str, action: &str, args: &[(&str, Binding)]) -> Step {
     Step::new(
         id,
         StepKind::Invoke {
-            app_id: FIXTURE.into(),
+            action: tilo_actions::ActionKey::new(FIXTURE, "fixture.drafts", action),
             resource: Selector::Fixed(INBOX.into()),
-            action: action.into(),
             args: args
                 .iter()
                 .map(|(name, binding)| ((*name).to_string(), binding.clone()))
@@ -674,18 +663,17 @@ fn publish_draft(id: &str, granted: &[&str]) -> Shortcut {
         grant: granted
             .iter()
             .map(|action| {
-                PermissionProfileRule::grant(
-                    Scope::Action {
-                        app: FIXTURE.into(),
-                        resource: INBOX.into(),
-                        action: (*action).to_string(),
-                    },
-                    Verb::Write,
+                action_rule(
+                    FIXTURE,
+                    INBOX_KIND,
+                    Some(INBOX),
+                    action,
+                    KindSet::READ_UNDOABLE,
+                    Answer::Allow,
                 )
             })
             .collect(),
         triggers: Vec::new(),
-        consents: Vec::new(),
         saved_by: None,
     }
 }
@@ -789,7 +777,7 @@ fn a_saved_shortcut_runs_its_steps_through_the_door_and_undoes_as_one() {
     );
     assert_eq!(recorded.apps(), [FIXTURE]);
     assert_eq!(recorded.steps[0].record, RECORD);
-    assert_eq!(recorded.steps[0].summary, "Write draft, Publish draft");
+    assert_eq!(recorded.steps[0].sentence(), "Draft, Publish");
 
     // Undoing the run reverts both steps.
     let mut doc = std::mem::take(&mut door.app.doc);
@@ -1196,13 +1184,12 @@ fn an_unattended_run_takes_a_confirmed_step_only_with_advance_consent() {
     let mut tidy = triggered_draft("tidy", vec![schedule.clone()]);
     tidy.steps = vec![invoke_step("archive", "archive", &[])];
     tidy.output = None;
-    tidy.grant.push(PermissionProfileRule::grant(
-        Scope::Action {
-            app: FIXTURE.into(),
-            resource: INBOX.into(),
-            action: "archive".into(),
-        },
-        Verb::Write,
+    // A grant on the whole app lets the run take the step, but consents to
+    // no confirmation in advance.
+    tidy.grant.push(Rule::new(
+        TreePath::root().any(Level::Room).app(FIXTURE),
+        KindSet::READ_UNDOABLE,
+        Answer::Allow,
     ));
     door.save(&tidy).expect("saved without consent");
     let job = door
@@ -1218,7 +1205,7 @@ fn an_unattended_run_takes_a_confirmed_step_only_with_advance_consent() {
     }
     assert!(door.app.served.is_empty(), "nothing was archived");
 
-    tidy.consents = vec![UnattendedConsent::new(FIXTURE, INBOX, "archive")];
+    tidy.grant.push(archive_grant());
     door.invoke(
         "shortcuts",
         "update",
@@ -1239,9 +1226,9 @@ fn an_unattended_run_takes_a_confirmed_step_only_with_advance_consent() {
     .find_map(|row| row.action)
     .expect("the shortcut is offered");
     assert!(
-        run.description.as_deref().is_some_and(
-            |text| text.contains("Confirmed in advance: `archive` on fixture.drafts:inbox")
-        ),
+        run.description.as_deref().is_some_and(|text| text
+            .split_once("Confirmed in advance: ")
+            .is_some_and(|(_, consents)| consents.contains("`archive` on fixture.drafts:inbox"))),
         "the consent is shown with the shortcut: {:?}",
         run.description
     );
@@ -1295,10 +1282,10 @@ fn revoking_the_savers_membership_or_deleting_the_shortcut_stops_its_triggers() 
 
     // The owner revokes Bob's membership: the next fire starts nothing.
     let owner = owner_principal();
-    assert!(door.membership.write().revoke_in_workspace(
+    assert!(door.membership.write().remove_from_workspace(
         crate::shell::state::WorkspaceId(1),
         &owner,
-        &membership_id(BOB),
+        BOB,
     ));
     clock.advance(chrono::Duration::hours(1));
     let fired = tick(&mut triggers, &door, BOB);
@@ -1650,15 +1637,22 @@ fn an_app_that_may_invoke_still_needs_the_workspace_to_grant_it() {
         .desktop
         .workspaces
         .get_mut(0)
+        .map(|room| {
+            let node = room.node().app(FIXTURE);
+            room.govern_as_at(
+                &owner,
+                tilo_action_policy::Change::Grant(tilo_action_policy::Grant::new(
+                    "invoker-fixture",
+                    tilo_action_policy::Subject::app(INVOKER_APP),
+                    node,
+                    KindSet::READ_UNDOABLE,
+                    Answer::Allow,
+                    tilo_action_policy::Subject::person(owner.clone()),
+                )),
+                tilo_clock::unix_now(),
+            )
+        })
         .expect("the room")
-        .grant_as(
-            &owner,
-            ui::permissions::CapOverride::grant(
-                ui::permissions::Subject::app(INVOKER_APP),
-                ui::permissions::Scope::App(FIXTURE.to_string()),
-                ui::permissions::Verb::Write,
-            ),
-        )
         .expect("the owner grants the invoker the fixture");
     if let ReceiptStatus::Rejected { error } =
         invoker.invoke(&mut door, draft, &json!({"title": "Granted"}))
@@ -1694,26 +1688,21 @@ fn door_asking(present: bool) -> (Door, PortalDialogController) {
 }
 
 /// Grants that let the invoker use the fixture's `draft`.
-fn invoker_draft_grants(door: &Door) -> Vec<ui::permissions::CapOverride> {
-    door.membership
-        .read()
-        .desktop
-        .workspaces
-        .first()
-        .expect("the room")
-        .capabilities
+fn invoker_draft_grants(door: &Door) -> Vec<tilo_action_policy::Grant> {
+    let tree = door.membership.read();
+    let room = tree.desktop.workspaces.first().expect("the room");
+    let draft = tilo_actions::action_node(&room.node(), FIXTURE, INBOX_KIND, INBOX, None, "draft");
+    let grants = room
+        .policy
+        .grants
         .iter()
-        .filter(|capability| {
-            capability.subject == ui::permissions::Subject::app(INVOKER_APP)
-                && capability.scope
-                    == ui::permissions::Scope::Action {
-                        app: FIXTURE.to_string(),
-                        resource: INBOX.into(),
-                        action: "draft".to_string(),
-                    }
+        .filter(|grant| {
+            grant.subject == tilo_action_policy::Subject::app(INVOKER_APP) && grant.node == draft
         })
         .cloned()
-        .collect()
+        .collect();
+    drop(tree);
+    grants
 }
 
 fn history_mentions(door: &Door, text: &str) -> bool {
@@ -1725,7 +1714,10 @@ fn history_mentions(door: &Door, text: &str) -> bool {
         .expect("the room")
         .effect_receipts
         .iter()
-        .any(|receipt| receipt.context.action_label.contains(text))
+        .any(|receipt| {
+            ui::history_source::sentence::step_summary(&receipt.context)
+                .is_some_and(|sentence| sentence.contains(text))
+        })
 }
 
 fn served_until(door: &mut Door, count: usize) {
@@ -1809,6 +1801,108 @@ fn allowing_once_admits_that_call_and_the_next_asks_again() {
     assert_eq!(door.app.served.len(), 1, "the denied call never ran");
 }
 
+/// An app whose grant asks first does not confirm the action by its own
+/// word: the person is asked on their sheet each time, and the call runs
+/// only on their answer.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a confirmed call and a declined one are one grant's life"
+)]
+fn a_grant_that_asks_first_runs_each_call_on_the_persons_confirmation() {
+    let (mut door, mut sheet) = door_asking(true);
+    let socket = door.dir.path().join("collab.sock");
+    let mut invoker = AppConnection::connect(&socket, INVOKER_APP, INVOKER_HANDLE);
+    let draft = fixture_draft(&door);
+    door.membership
+        .write()
+        .desktop
+        .workspaces
+        .first_mut()
+        .map(|room| {
+            let node =
+                tilo_actions::action_node(&room.node(), FIXTURE, INBOX_KIND, INBOX, None, "draft");
+            room.grant(tilo_action_policy::Grant::new(
+                "invoker-drafts-when-asked",
+                tilo_action_policy::Subject::app(INVOKER_APP),
+                node,
+                KindSet::READ_UNDOABLE,
+                Answer::Ask,
+                tilo_action_policy::Subject::person(owner_principal()),
+            ))
+        })
+        .expect("the room");
+
+    // The app claims a confirmation of its own; it counts for nothing.
+    let mut confirm = |door: &mut Door, answer: AppActionConsent, title: &str| {
+        let invocation = InvocationId::new();
+        let mut seen = None;
+        let reply = invoker.ask_while(
+            door,
+            RemoteActionMessage::Invoke(InvokeRequest {
+                on_behalf_of: None,
+                invocation,
+                target: draft.clone(),
+                argument: InvokeArgument::Json(
+                    json!({ "title": title })
+                        .as_object()
+                        .cloned()
+                        .expect("an object"),
+                ),
+                context: None,
+                confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
+                revision: None,
+                wait_ms: None,
+            }),
+            |message| {
+                matches!(
+                    message,
+                    RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation
+                )
+            },
+            || {
+                sheet.pump();
+                if let Some(view) = sheet.view() {
+                    seen = Some(view);
+                    answer_sheet(&mut sheet, answer);
+                }
+            },
+        );
+        let RemoteActionMessage::Receipt(receipt) = reply else {
+            panic!("not a receipt: {reply:?}");
+        };
+        (receipt.status, seen)
+    };
+
+    let (status, seen) = confirm(&mut door, AppActionConsent::Once, "Confirmed");
+    if let ReceiptStatus::Rejected { error } = status {
+        panic!("confirmed by the person, the call goes ahead: {error:?}");
+    }
+    let seen = seen.expect("the person was asked, not the app's word taken");
+    assert!(
+        seen.title().contains("wants to act for you"),
+        "the sheet asks to confirm one call: {seen:?}"
+    );
+    assert_eq!(seen.app_name(), "Inbox · Write draft");
+    assert_eq!(
+        seen.choices(),
+        ["Allow once"],
+        "confirming grants nothing beyond this call"
+    );
+    served_until(&mut door, 1);
+    assert_eq!(
+        invoker_draft_grants(&door).len(),
+        1,
+        "nothing was granted beyond the grant that asks"
+    );
+
+    let (status, seen) = confirm(&mut door, AppActionConsent::Deny, "Declined");
+    assert!(seen.is_some(), "every call asks again");
+    assert!(not_permitted(&status), "{status:?}");
+    door.serve_briefly();
+    assert_eq!(door.app.served.len(), 1, "the declined call never ran");
+}
+
 /// A grant names one resource's action: the same action on another
 /// resource is another action, asked about afresh and refused when denied.
 #[test]
@@ -1867,11 +1961,14 @@ fn always_allowing_records_a_grant_that_asks_no_more_until_revoked() {
     }
     let grants = invoker_draft_grants(&door);
     assert_eq!(grants.len(), 1, "one grant is recorded");
-    assert_eq!(grants[0].expiry, ui::permissions::Expiry::Never);
-    assert_eq!(grants[0].effect, ui::permissions::Effect::Grant);
+    assert_eq!(
+        grants[0].lifetime,
+        tilo_action_policy::Lifetime::UntilRevoked
+    );
+    assert_eq!(grants[0].answer, Answer::Allow);
     assert_eq!(
         grants[0].granted_by,
-        Some(collab_types::Principal::Person(owner_principal())),
+        tilo_action_policy::Subject::person(owner_principal()),
         "granted by the person who answered"
     );
 
@@ -1999,14 +2096,15 @@ fn session_host(door: &Door) -> crate::shell::overlay_host::ShellOverlayHost {
     host
 }
 
-fn archive_grant() -> PermissionProfileRule {
-    PermissionProfileRule::grant(
-        Scope::Action {
-            app: FIXTURE.into(),
-            resource: INBOX.into(),
-            action: "archive".into(),
-        },
-        Verb::Write,
+/// The inbox's `archive`, named exactly: an advance consent too.
+fn archive_grant() -> Rule {
+    action_rule(
+        FIXTURE,
+        INBOX_KIND,
+        Some(INBOX),
+        "archive",
+        KindSet::READ_UNDOABLE,
+        Answer::Allow,
     )
 }
 

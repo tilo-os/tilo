@@ -100,14 +100,14 @@ must pass durability barriers. Registered Chat projection runs in a confined
 worker; only the purpose-specific receipt digest reaches the existing owner
 signer. `read-feedback-destination` confirms an existing text channel and
 `read-feedback-receipt` can require the exact attributed reporter root. A
-signed acknowledgment binds the owner, reporter, destination, publication verb,
-submission identity and approved digest. Screenshot receipts remain refused
+signed acknowledgment binds the owner, reporter, destination, submission
+identity and approved digest. Screenshot receipts remain refused
 until an actual owner content store supplies a durable content witness.
 
 The browser's existing `CertifiedPeer.configureFeedback({room, provider, channel})`
 selects a destination before desktop mounting. `WasmPeer` requests admission from
 its connected host, matches both roots/devices against retained certificates,
-requires actual current role/capabilities, and installs the trusted Rust startup
+requires the reporter's actual current standing and the room's sandbox, and installs the trusted Rust startup
 custody. The helper waits for this acknowledgment and never joins another room.
 Sending queues the registered ClientLocal action on the existing Chat record and
 uses the peer's ordinary Write publication. It does not invoke a document write

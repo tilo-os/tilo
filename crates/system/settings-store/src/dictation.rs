@@ -21,6 +21,9 @@ impl<'de> Deserialize<'de> for DictationLanguage {
     }
 }
 
+#[cfg(feature = "model")]
+tilo_resource::json_model!(DictationLanguage);
+
 impl DictationLanguage {
     pub const ALL: &'static [Self] = &[
         Self("auto"),

@@ -108,7 +108,7 @@ fn seed_person<P: Resource<State = P> + Fields + SharedRecord>(
     )
     .unwrap();
     let record = records
-        .open_record(ui::record::RecordKind::new(P::KIND), |doc| {
+        .open_record(ui::record::RecordKind::new(P::KIND), &|doc| {
             P::initialize(doc).map_err(|error| error.to_string())
         })
         .unwrap();

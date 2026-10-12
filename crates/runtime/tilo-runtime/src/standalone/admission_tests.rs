@@ -46,7 +46,13 @@ impl LauncherServices for RecordingLauncher {
             unconfined: true,
         }]
     }
-    fn launch(&self, app: &str, workspace: &Workspace) -> Result<(), String> {
+    fn launch(
+        &self,
+        app: &str,
+        workspace: &Workspace,
+        _: Option<&str>,
+        _: &tilo_action_broker::services::LaunchPlace,
+    ) -> Result<(), String> {
         self.0
             .lock()
             .unwrap()

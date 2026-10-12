@@ -180,3 +180,8 @@ git-worktree-host-required = Ein Worktree benötigt ein aktives Repository.
 git-worktree-running = Worktree wird erstellt…
 git-worktree-read-failed = Arbeitsverzeichnisse konnten nicht gelesen werden
 git-worktree-read-error = Arbeitsverzeichnisse konnten nicht gelesen werden: { $error }
+
+## History of the record
+
+git-client-git-client-repository = Repository { $new } geöffnet
+git-client-record-repository = Zweige und Verlauf des Repositorys festgehalten

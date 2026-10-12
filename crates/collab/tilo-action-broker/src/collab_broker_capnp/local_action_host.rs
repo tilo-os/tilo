@@ -130,6 +130,26 @@ impl CapnpBrokerState {
         Ok(self.checked_local_host(caller, presentation)?)
     }
 
+    /// [`Self::certified_local_action_host`] handed to agent `agent` by the
+    /// person's own device (an MCP client): the session stays the person's
+    /// admission, every action through it is the agent's, acting for the
+    /// person with the delegation a device gives its agents.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::certified_local_action_host`].
+    pub fn certified_local_agent_host(
+        self: &Arc<Self>,
+        caller: &Caller,
+        presentation: &[u8],
+        agent: &str,
+    ) -> Result<Arc<dyn ActionHost + Send + Sync>, String> {
+        Ok(Arc::new(
+            self.checked_local_host(caller, presentation)?
+                .delegated_to(agent),
+        ))
+    }
+
     fn checked_local_host(
         self: &Arc<Self>,
         caller: &Caller,
@@ -237,6 +257,16 @@ impl CapnpBrokerState {
 }
 
 impl CertifiedLocalActionHost {
+    /// This door, handed to agent `agent` by the person's own device.
+    fn delegated_to(&self, agent: &str) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+            caller: self.caller.clone(),
+            effective: self.effective.clone().delegated_to(agent),
+            admission: self.admission.clone().delegated_to(agent),
+        }
+    }
+
     /// The exact caller, its live execution, an accepting host and the
     /// original policy clock. No verification of the presentation.
     fn check_lease(&self, caller: &Caller) -> Result<(), ActionHostError> {

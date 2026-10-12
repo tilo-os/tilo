@@ -10,6 +10,7 @@ pub const DEFAULT_RATE: u16 = 100;
 const RATE_RANGE: std::ops::RangeInclusive<u16> = 50..=200;
 
 /// Backend-neutral voice/language preset.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScreenReaderVoice {

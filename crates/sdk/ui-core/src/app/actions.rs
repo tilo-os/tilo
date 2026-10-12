@@ -389,6 +389,7 @@ impl App {
         ) {
             resources.extend(legacy);
         }
+        crate::history_source::sentence::learn_labels(&resources);
         resources
     }
 
@@ -1742,26 +1743,19 @@ impl App {
                 });
             return;
         }
-        // The invoker is the delivered actor plus the participant the host
-        // set for it in the delivery context (never trusted from anywhere
-        // else). Resolution below rebuilds that participant's own tree, and
+        // The invoker is the delivered actor plus the participant and the
+        // person it acts for that the host set for it in the delivery context
+        // (never trusted from anywhere else). Resolution below rebuilds that participant's own tree, and
         // durable attribution carries the same invoker.
-        let participant =
-            crate::invocation_scope::PublishedInvocationRequest::delivered_participant(
-                actor,
-                ambient_context,
-            );
-        let invoker = tilo_actions::ActionInvoker {
-            actor: actor.to_owned(),
-            participant: participant.clone(),
-        };
+        let invoker = tilo_actions::ActionInvoker::delivered(actor, ambient_context);
+        let participant = invoker.participant.clone();
         let attributed =
             ambient_context.map(|context| context.clone().with_invoker(invoker.clone()));
         let ambient_context = attributed.as_ref();
         if let Some(participant) = &participant {
             self.join_participant(participant);
         }
-        let admitted = self.admitted_requirement(&address, argument);
+        let admitted = self.admitted_kind(&address, argument);
         self.actions.acting_for.insert(
             invocation,
             crate::invocation_scope::Continuation {
@@ -1872,13 +1866,13 @@ impl App {
     }
 
     /// What the invoker of `address` was admitted for: the action's own
-    /// requirement for its `argument`, which the admitting host checked
-    /// they hold. Nothing when it no longer resolves.
-    fn admitted_requirement(
+    /// kind, which the admitting host checked they may perform. Only reading
+    /// when it no longer resolves.
+    fn admitted_kind(
         &self,
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
-    ) -> tilo_actions::PermissionRequirement {
+    ) -> tilo_actions::ActionKind {
         let key = self.ensure_resource_cache();
         let mut resources = self
             .actions
@@ -1909,13 +1903,13 @@ impl App {
                 .find_map(|snapshot| {
                     tilo_actions::door::resolve(snapshot.resources(), &target.address.address)
                 })
-                .map_or(tilo_actions::PermissionRequirement::None, |spec| {
-                    spec.permission_for_argument(argument)
+                .map_or(tilo_actions::ActionKind::Read, |spec| {
+                    spec.need_for(None, argument).kind
                 });
         }
         tilo_actions::door::resolve(&resources, address)
-            .map_or(tilo_actions::PermissionRequirement::None, |spec| {
-                spec.permission_for_argument(argument)
+            .map_or(tilo_actions::ActionKind::Read, |spec| {
+                spec.need_for(None, argument).kind
             })
     }
 
@@ -2066,16 +2060,21 @@ impl App {
             });
         }
         let request_id = Self::allocate_broker_request_id(next_request_id)?;
-        let arguments = typed_arguments.cloned().unwrap_or_else(|| {
-            let mut arguments = serde_json::Map::new();
-            if let Some(value) = argument {
-                arguments.insert(
-                    tilo_actions::PROMPTED_PARAM.to_string(),
-                    serde_json::Value::String(value.to_string()),
-                );
-            }
-            arguments
-        });
+        // The argument travels as the caller gave it: typed arguments as
+        // such, a text argument as text, which the owning app binds to the
+        // action's input as its own door does (a single parameter, a prompt).
+        let argument = match (typed_arguments, argument) {
+            (Some(arguments), _) => tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
+            (None, Some(text)) => match text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX) {
+                Some(json) => {
+                    tilo_actions::remote::InvokeArgument::Json(serde_json::from_str(json).map_err(
+                        |error| tilo_actions::DoorError::InvalidArguments(error.to_string()),
+                    )?)
+                }
+                None => tilo_actions::remote::InvokeArgument::Text(text.to_owned()),
+            },
+            (None, None) => tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new()),
+        };
         send(
             request_id,
             tilo_actions::remote::InvokeRequest {
@@ -2085,7 +2084,7 @@ impl App {
                     provider: tilo_actions::remote::OWN_PROVIDER.into(),
                     address: address.clone(),
                 },
-                argument: tilo_actions::remote::InvokeArgument::Json(arguments),
+                argument,
                 context: None,
                 confirmation: Self::broker_confirmation(confirmation_evidence),
                 revision: None,
@@ -2511,7 +2510,7 @@ impl App {
             ..
         } = *request;
         use crate::bound_dispatch::legacy_document::{
-            LegacyDocumentServices, LegacyInvocation, invoke_legacy_document_scoped,
+            LegacyDocumentServices, LegacyInvocation, invoke_legacy_document,
             resolve_legacy_invocation,
         };
         let resources = resolve_legacy_invocation(self.root_widget.as_ref(), target)?;
@@ -2530,7 +2529,7 @@ impl App {
                 Some(target),
             );
         }
-        let outcome = invoke_legacy_document_scoped(
+        let outcome = invoke_legacy_document(
             self.root_widget.as_mut(),
             target,
             LegacyDocumentServices {
@@ -2653,18 +2652,15 @@ impl App {
         }
         crate::invocation_scope::check_continuation(
             resolved,
-            match typed_arguments.as_ref() {
-                Some(arguments) => resolved.permission_for_json(arguments),
-                None => resolved.permission_for_argument(argument),
-            },
+            resolved.need_for(typed_arguments.as_ref(), argument).kind,
         )?;
         // The local participant's tree offers an action under the least it
         // needs; this invocation needs what its value asks.
         if actor == self.collaboration.local_author.0
-            && !crate::bound_dispatch::permits_local_value(
+            && !crate::bound_dispatch::permits_local_action(
                 &self.permission_ctx,
                 &crate::collaboration::local_app_id(),
-                &address.resource,
+                resource,
                 resolved,
                 typed_arguments.as_ref(),
                 argument,
@@ -2917,7 +2913,7 @@ impl App {
                     &self.permission_ctx,
                     resolved,
                 )?;
-                let started = crate::bound_dispatch::legacy_document::invoke_legacy_effect_scoped(
+                let started = crate::bound_dispatch::legacy_document::invoke_legacy_effect(
                     self.root_widget.as_mut(),
                     target,
                     operation_invocation,
@@ -3074,6 +3070,7 @@ impl App {
                 self.root_widget.as_mut(),
                 target,
                 &result,
+                on_behalf_of,
             ) {
                 tracing::warn!(?error, "bound control feedback unavailable");
             }
@@ -3086,12 +3083,14 @@ impl App {
         let scopes = acting
             .as_ref()
             .map(crate::invocation_scope::Continuation::enter);
+        let answering = crate::bound_dispatch::Answering::enter(on_behalf_of.is_some());
         let result = self.invoke_bound_target(
             target,
             &ResourceInvocation::new(&target.address.address, &actor)
                 .argument(Some(&argument))
                 .ambient_context(acting.as_ref().and_then(|acting| acting.context.as_ref())),
         );
+        drop(answering);
         drop(scopes);
         // Nobody here asked for it: the person at the device is never
         // prompted to confirm another invoker's edit.
@@ -3102,6 +3101,7 @@ impl App {
                     self.root_widget.as_mut(),
                     target,
                     &result,
+                    on_behalf_of,
                 ) {
                     tracing::warn!(?error, "bound control feedback unavailable");
                 }
@@ -3114,6 +3114,7 @@ impl App {
             self.root_widget.as_mut(),
             target,
             &result,
+            on_behalf_of,
         ) {
             tracing::warn!(?error, "bound control feedback unavailable");
         }
@@ -3167,13 +3168,7 @@ impl App {
             crate::history_mode::embedded::drain_pending_commands(self.root_widget.as_mut());
         if !commands.is_empty() || !embedded.is_empty() {
             if self.history_focus.is_none() {
-                self.history_focus = unsafe {
-                    crate::widget::layout::CompositionFocus::capture(
-                        self.focused_node,
-                        &self.layout.node_map,
-                        &self.bindings,
-                    )
-                };
+                self.history_focus = self.capture_focus_identity();
             }
             self.layout.node_map.clear();
             self.bindings.clear();
@@ -4206,18 +4201,10 @@ impl App {
         if self.actions.action_palette.is_none() {
             // Native semantic focus is authoritative even before the next
             // retained render propagates the widget's focused flag.
-            // SAFETY: modal admission has not retired either map; both still
-            // describe this exclusively held, live background widget tree.
-            self.actions.ordinary_palette_return_focus = unsafe {
-                crate::widget::layout::CompositionFocus::capture(
-                    self.focused_node,
-                    &self.layout.node_map,
-                    &self.bindings,
-                )
-            }
-            .or_else(|| {
-                crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref())
-            });
+            self.actions.ordinary_palette_return_focus =
+                self.capture_focus_identity().or_else(|| {
+                    crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref())
+                });
         }
         self.open_action_palette();
         self.bindings.clear();
@@ -4305,23 +4292,10 @@ impl App {
 
     fn filter_resource_for_local_actor(
         &self,
-        mut resource: tilo_actions::Resource,
+        resource: tilo_actions::Resource,
     ) -> Option<tilo_actions::Resource> {
-        let resource_id = resource.id.as_str().to_owned();
-        resource.actions.retain(|action| {
-            crate::bound_dispatch::permits_local_action(
-                &self.permission_ctx,
-                &crate::collaboration::local_app_id(),
-                &resource_id,
-                action,
-            )
-        });
-        resource.children = resource
-            .children
-            .into_iter()
-            .filter_map(|child| self.filter_resource_for_local_actor(child))
-            .collect();
-        (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
+        self.permission_ctx
+            .permitted_resource(&crate::collaboration::local_app_id(), resource)
     }
 
     pub fn close_action_palette(&mut self) {
@@ -4360,8 +4334,64 @@ impl App {
         };
     }
 
+    /// Run `f` on the root of the app component this window shows, inside
+    /// that component's own frame: for a test, or a host, reaching into the
+    /// mounted app between frames. `None` without a mounted component.
+    pub fn with_component_root<U>(&mut self, f: impl FnOnce(&mut dyn Widget) -> U) -> Option<U> {
+        let bound = self
+            .root_widget
+            .as_any_mut()?
+            .downcast_mut::<crate::widget::BoundAppWidget>()?;
+        let binding = bound.component.callback_binding();
+        let _entry = binding.enter().ok()?;
+        Some(f(bound.component.root.as_deref_mut()?))
+    }
+
     pub fn action_palette(&self) -> Option<&crate::action_palette::ActionPalette> {
         self.actions.action_palette.as_ref()
+    }
+
+    /// The action the host's confirmation is asking about, and the text
+    /// that confirms it, while it asks.
+    #[must_use]
+    pub fn asking(&self) -> Option<(tilo_actions::ActionAddress, String)> {
+        self.actions
+            .action_palette
+            .as_ref()
+            .and_then(crate::action_palette::ActionPalette::asking)
+            .map(|(address, expected)| (address.clone(), expected.to_owned()))
+    }
+
+    /// Confirm what the host asks through its own dialog, as the person
+    /// does: the confirming text, then Enter; what it confirmed is applied.
+    /// Answers the action confirmed; `None`, changing nothing, when nothing
+    /// is asked.
+    #[cfg(feature = "native")]
+    pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
+        use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+        let (address, expected) = self.asking()?;
+        self.actions.action_palette.as_mut()?.set_query(&expected);
+        let event = winit::event::KeyEvent::synthetic(
+            winit::event::RawKeyEvent {
+                physical_key: PhysicalKey::Unidentified(
+                    winit::keyboard::NativeKeyCode::Unidentified,
+                ),
+                state: winit::event::ElementState::Pressed,
+            },
+            Key::Named(NamedKey::Enter),
+            None,
+            KeyLocation::Standard,
+            false,
+            None,
+            Key::Named(NamedKey::Enter),
+        );
+        self.action_palette_handle_key(&winit::event::WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event,
+            is_synthetic: false,
+        });
+        self.dispatch_control_invocations();
+        Some(address)
     }
 
     #[cfg(feature = "native")]

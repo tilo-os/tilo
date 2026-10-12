@@ -15,8 +15,7 @@ use std::time::Duration;
 
 use settings_store::hardware::{InputDeviceKind, TouchpadClickMethod, TouchpadScrollMethod};
 
-/// Settings section these values live in.
-pub const SECTION: &str = "input";
+pub use settings_store::hardware::INPUT_SECTION as SECTION;
 
 /// Settings section of [`AccessibilityInputSettings`].
 pub const ACCESSIBILITY_SECTION: &str = "accessibility";
@@ -80,9 +79,7 @@ impl KeyboardSettings {
     }
 
     pub fn load() -> Self {
-        let config = settings_store::hardware::RichInputConfig::from_section(
-            &settings_store::load_section(SECTION),
-        );
+        let config = settings_store::hardware::RichInputConfig::load();
         Self::from_config(&settings_store::keyboard_sources::current(&config))
     }
 

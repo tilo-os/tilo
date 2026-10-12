@@ -5,7 +5,7 @@
 
 use ui::ArgValue;
 
-ui::embedded_catalog!(pub fn, "backups-health-ok", ["en-US"]);
+ui::embedded_catalog!(pub fn, ["en-US"]);
 
 /// Resolve a counted string: `count` picks the plural form and is offered
 /// to the message both as `$count` and, digit-grouped, as `$files` and
