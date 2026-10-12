@@ -3029,6 +3029,7 @@ fn a_blurred_surface_joins_only_the_damage_its_blur_can_see() {
         "an unchanged frame stays unchanged"
     );
     assert_eq!(frame.with_backdrop_damage(None, &[near]), None);
+}
 
 /// Moving focus to the other strip changes no geometry: the old and new
 /// focused windows' edges, the strip ribbon and the strip rail. The frame
