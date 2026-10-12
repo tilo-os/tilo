@@ -74,7 +74,6 @@ static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
         "en-US",
         "scaling-draft = Next task\nscaling-done = Completed\n",
     )],
-    "scaling-draft",
 );
 
 /// The system allocator, counting allocations and the bytes held.

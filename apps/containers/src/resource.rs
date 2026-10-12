@@ -21,8 +21,7 @@ use crate::model::{DetailTab, Engine, Section};
 /// Containers' Fluent catalogs, source locale first.
 pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
 
-static CATALOG: EmbeddedCatalog =
-    EmbeddedCatalog::new("en-US", LOCALES, "containers-clear-create").with_system_locale();
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
 
 /// What the record holds: the new-container draft.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]

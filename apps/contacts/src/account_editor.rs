@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::resource::Contacts;
 
-ui::embedded_catalog!(pub(crate) static CATALOG, "contacts-accounts", ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
 
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "contacts.accounts")]
