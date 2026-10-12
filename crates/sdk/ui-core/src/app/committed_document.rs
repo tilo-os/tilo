@@ -119,6 +119,11 @@ impl App {
                 Ok(None)
             });
             if lacks_base {
+                #[cfg(any(test, feature = "test-support"))]
+                tracing::warn!(
+                    ?route,
+                    "committed changes refused: the owner lacks their base"
+                );
                 read.refuse();
                 continue;
             }
