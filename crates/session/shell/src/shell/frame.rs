@@ -2008,7 +2008,7 @@ impl FrameBuilder {
                     image: surface.image,
                     rect,
                     blur_px: surface.blur_px * scale,
-                    below: self.to_scene(below),
+                    below: self.below_to_scene(below),
                     ground: surface.ground,
                 })
             })
@@ -2077,6 +2077,21 @@ impl FrameBuilder {
             Some(outputs) if !output_scene::is_identity(outputs) => {
                 let mut scene = Scene::new();
                 output_scene::compose(outputs, &logical, &mut scene);
+                scene
+            }
+            _ => logical,
+        }
+    }
+
+    /// What a floating surface is drawn over, in scene pixels: the scene
+    /// cut where the surface begins, so it may stop inside the layers that
+    /// enclose the surface (a fade, a panel's clip). Each display's pass
+    /// closes them, as the end of a scene does, without reporting a leak.
+    fn below_to_scene(&self, logical: Scene) -> Scene {
+        match &self.outputs {
+            Some(outputs) if !output_scene::is_identity(outputs) => {
+                let mut scene = Scene::new();
+                let _enclosing = output_scene::compose_closing_leaks(outputs, &logical, &mut scene);
                 scene
             }
             _ => logical,

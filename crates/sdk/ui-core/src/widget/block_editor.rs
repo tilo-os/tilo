@@ -6759,6 +6759,22 @@ fn draw_block(
     );
 }
 
+/// Whether [`draw_block`] paints the line of every block of `kind`, the
+/// line whose caret the editor can paint as a part of its own: not a code
+/// line (a visual formula stands in for it), a table (its cells take the
+/// caret) or a rule (no line).
+fn always_draws_its_line(kind: &BlockKind) -> bool {
+    matches!(
+        kind,
+        BlockKind::Paragraph
+            | BlockKind::Heading(_)
+            | BlockKind::Quote
+            | BlockKind::Bullet { .. }
+            | BlockKind::Numbered { .. }
+            | BlockKind::Checklist { .. }
+    )
+}
+
 /// Whether a change to a block of `kind` can be damaged where the block
 /// paints: its row of the editor, the whole ground of the run a code block
 /// starts, a table's cells. Not a formula, whose preview and visual editor
@@ -8137,9 +8153,19 @@ impl Widget for BlockEditor {
                     &b.line.get_rect(),
                 );
             }
-            b.line
-                .inner_mut()
-                .suppress_caret_paint(preceding.is_some() || self.caret_paint_suppressed);
+            // A tracked line paints its caret as a part of its own, so a caret
+            // that comes, goes or moves damages where it is and was, not the
+            // line (focus entering an empty paragraph, an arrow key).
+            let caret_apart = track_paragraphs
+                && preceding.is_none()
+                && !self.caret_paint_suppressed
+                && always_draws_its_line(&b.kind)
+                && !matches!(self.image_preview_rects.get(idx), Some(Some(_)))
+                && !matches!(self.transclusion_rects.get(idx), Some(Some(_)))
+                && b.line.inner().paints_shaped_caret();
+            b.line.inner_mut().suppress_caret_paint(
+                preceding.is_some() || self.caret_paint_suppressed || caret_apart,
+            );
             if let Some(Some((rect, id))) = self.transclusion_rects.get(idx) {
                 draw_transclusion_card(
                     ctx.scene,
@@ -8379,6 +8405,24 @@ impl Widget for BlockEditor {
                     drawn,
                     damage,
                 ));
+                if caret_apart {
+                    let mut caret_scene = Scene::new();
+                    if let Some(caret) = b.line.inner_mut().draw_caret_apart(
+                        &mut caret_scene,
+                        ctx.transform,
+                        ctx.theme,
+                    ) {
+                        // Its antialiased edges reach the pixels beside it.
+                        let damage = vec![caret.inflate(1.0, 1.0)];
+                        paragraph_scene.append(&caret_scene, None);
+                        paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
+                            format!("{}:caret", b.id),
+                            caret,
+                            caret_scene,
+                            damage,
+                        ));
+                    }
+                }
             }
             if let Some(preceding) = preceding {
                 let preview = std::mem::replace(ctx.scene, preceding);

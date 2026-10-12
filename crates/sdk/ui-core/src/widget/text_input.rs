@@ -242,6 +242,10 @@ pub struct TextInput {
     is_focused: bool,
     /// Paint-only suppression for drag previews; focus, selection and IME remain intact.
     caret_paint_suppressed: bool,
+    /// The caret the last shaped multiline draw painted, or would have
+    /// painted had it not been suppressed, with the clip it paints under:
+    /// what [`Self::draw_caret_apart`] paints.
+    ml_caret: Option<(Rect, RoundedRect)>,
     text: String,
     pending_paste: Option<PendingPaste>,
     /// Caret, selection (always on grapheme boundaries), the IME composition,
@@ -564,6 +568,7 @@ impl TextInput {
             invalid: false,
             is_focused: false,
             caret_paint_suppressed: false,
+            ml_caret: None,
             text: String::new(),
             pending_paste: None,
             core: EditCore::new(),
@@ -2360,13 +2365,14 @@ impl TextInput {
     }
 
     fn draw_ml_caret(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
-        caret_position: TextPosition,
+        (caret_position, shape): (TextPosition, &RoundedRect),
     ) {
-        if self.caret_paint_suppressed || !self.is_focused || self.effectively_disabled() {
+        self.ml_caret = None;
+        if !self.is_focused || self.effectively_disabled() {
             return;
         }
         let Some(layout) = self.single_layout.as_ref() else {
@@ -2379,6 +2385,10 @@ impl TextInput {
             self.single_origin.x + f64::from(x) + theme.caret_width,
             self.single_origin.y + f64::from(top + height),
         );
+        self.ml_caret = Some((caret, *shape));
+        if self.caret_paint_suppressed {
+            return;
+        }
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -2386,6 +2396,63 @@ impl TextInput {
             None,
             &caret,
         );
+    }
+
+    /// Whether this field paints its caret in a shaped multiline body, the
+    /// caret [`Self::draw_caret_apart`] can paint on its own.
+    pub(crate) fn paints_shaped_caret(&self) -> bool {
+        self.multiline && !self.masked()
+    }
+
+    /// Paint the caret the last draw left out ([`Self::suppress_caret_paint`])
+    /// within the field's clip, so a host can keep it in a damage part of
+    /// its own: where the caret is, not the whole field, changes when it
+    /// comes, goes or moves. Returns where it painted; `None` when the last
+    /// draw showed no caret (unfocused, disabled, or not a shaped multiline
+    /// body), the clip hides it, or this already painted it.
+    pub(crate) fn draw_caret_apart(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+    ) -> Option<Rect> {
+        let (caret, shape) = self.ml_caret.take()?;
+        let bounds = shape.rect();
+        let painted = caret.intersect(bounds);
+        if painted.width() <= 0.0 || painted.height() <= 0.0 {
+            return None;
+        }
+        let color = theme.tokens.colors.intent.you;
+        // Clear of the clip's rounded corners, the clip is its rectangle:
+        // the caret's part of it needs no layer of its own.
+        let radii = shape.radii();
+        let radius = radii
+            .top_left
+            .max(radii.top_right)
+            .max(radii.bottom_left)
+            .max(radii.bottom_right);
+        let clear_of_corners = (caret.x0 >= bounds.x0 + radius && caret.x1 <= bounds.x1 - radius)
+            || (caret.y0 >= bounds.y0 + radius && caret.y1 <= bounds.y1 - radius);
+        if clear_of_corners {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                color,
+                None,
+                &painted,
+            );
+        } else {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                transform,
+                &shape,
+            );
+            scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &caret);
+            scene.pop_layer();
+        }
+        Some(painted)
     }
 
     /// Every unmasked multiline input—including attributed source code—uses
@@ -2500,7 +2567,7 @@ impl TextInput {
             caret_byte,
             gutter_width,
         );
-        self.draw_ml_caret(scene, transform, theme, caret_position);
+        self.draw_ml_caret(scene, transform, theme, (caret_position, shape));
         scene.pop_layer();
     }
 
@@ -5031,6 +5098,7 @@ impl Widget for TextInput {
         presence: &crate::presence::PresenceCtx,
     ) {
         self.last_caret_width = theme.caret_width;
+        self.ml_caret = None;
         self.gutter_text_scale = f64::from(self.scale_for(theme.text_scale));
         self.adopt_field_theme(theme);
         if self.holds_secret() && (!self.text.is_empty() || self.core.has_preedit()) {
