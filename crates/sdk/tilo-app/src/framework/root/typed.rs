@@ -246,7 +246,7 @@ fn own_actions<R: Resource>(encoded: &tilo_actions::EncodedAction) -> Vec<R::Act
     }
     if encoded.type_id == tilo_resource::group::group_type::<R>() {
         return tilo_actions::decode_json::<tilo_resource::ActionGroup<R::Action>>(
-            &encoded.payload,
+            &tilo_actions::group_form::readable(&encoded.type_id, &encoded.payload),
         )
         .map(|group| group.actions)
         .unwrap_or_default();

@@ -52,6 +52,7 @@
     )
 )]
 
+mod accessibility_settings;
 pub mod account_probe;
 pub mod accounts;
 pub mod categories;
