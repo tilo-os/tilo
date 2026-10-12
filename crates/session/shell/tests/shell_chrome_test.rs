@@ -118,17 +118,20 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
 
     // Phase `workspace_settings_members_tab_reads_the_real_roster`.
     {
-        // What a member may do is the verb on their membership capability,
+        // What a member may do is their role in the room,
         // and that is what the Members pane renders.
-        use shell::shell::state::{CapOverride, CapRole, Subject, Verb, Workspace, WorkspaceId};
+        use shell::shell::state::{CapRole, Workspace, WorkspaceId};
         use tilo_desktop::workspace_settings::{WsTab, members_pane_rows};
         let host_str = "host".to_string();
         let mut ws = Workspace::new(WorkspaceId::new(), "Design");
         ws.set_owner("host");
-        let room = ws.id.raw().to_string();
-        ws.grant_as(
+        ws.govern_as_at(
             &host_str,
-            CapOverride::membership(Subject::person("viewer-user"), room, Verb::Read),
+            tilo_action_policy::Change::AddMember {
+                person: ("viewer-user").to_string(),
+                role: tilo_action_policy::Role::Viewer,
+            },
+            tilo_clock::unix_now(),
         )
         .expect("the owner may write a membership");
 
@@ -149,7 +152,7 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
     // Phase `workspace_settings_permissions_tab_lists_granted_capabilities`.
     {
         use shell::shell::state::{
-            CapOverride, Expiry, Scope, Subject, Verb, Workspace, WorkspaceId,
+            Access, CapOverride, Expiry, Scope, Subject, Workspace, WorkspaceId,
         };
         use tilo_desktop::workspace_settings::{SubjectKind, WsTab, permissions_pane_layout};
         let host_str = "host".to_string();
@@ -160,7 +163,7 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
             CapOverride::grant(
                 Subject::app("Terminal"),
                 Scope::FsPath("/var/workspace".into()),
-                Verb::Write,
+                Access::Write,
             )
             .expiring(Expiry::EndOfSession),
         )
@@ -294,4 +297,62 @@ fn topbar_chrome_renders_tray_avatars_clock_glyph_and_dots() {
             chrome.inactive_dot_radius(),
         );
     }
+}
+
+fn topbar_editor_actions(frame: &ui::headless::FrameHarness) -> Vec<ui::a11y::AccessNode> {
+    frame
+        .focus_access_nodes()
+        .into_iter()
+        .flat_map(|node| node.children)
+        .filter(|node| {
+            node.action_target.as_deref().is_some_and(|target| {
+                target.starts_with("topbar:editor:") && target != "topbar:editor:open"
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn topbar_editor_semantic_open_focus_resize_and_escape_use_the_native_host() {
+    use shell::shell::overlay_host::ShellOverlayHost;
+    use ui::{a11y::Action, headless::FrameHarness, state::State, theme::Theme};
+    let tree = WorkspaceTree::bootstrap_demo();
+    let (host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
+    let mut frame = FrameHarness::for_root(State::new(), host, (1280, 800), Theme::dark());
+    frame
+        .perform_semantic_named("topbar:editor:open", None, &Action::Activate)
+        .unwrap();
+    let controls = topbar_editor_actions(&frame);
+    assert!(
+        !controls.is_empty(),
+        "the production editor publishes actions"
+    );
+    for control in controls {
+        let bounds = control.bounds.expect("painted editor bounds").to_rect();
+        assert!(bounds.width() > 0.0 && bounds.height() > 0.0);
+    }
+    assert!(frame.inspection_json().unwrap().contains("Edit top bar"));
+    let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../target/topbar-editor-native");
+    std::fs::create_dir_all(&out).unwrap();
+    frame.render_png(&out.join("native-open.png"));
+    frame.resize((640, 600)).unwrap();
+    frame.render_png(&out.join("native-resized-open.png"));
+    let open = frame.render_rgba();
+    frame.key("Escape");
+    let closed = frame.render_rgba();
+    assert!(topbar_editor_actions(&frame).is_empty());
+    assert!(
+        ui::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(&open, &closed) > 2000,
+        "Esc removes the actual editor pixels"
+    );
+    frame.render_png(&out.join("native-resized-closed.png"));
+    assert!(!frame.root::<ShellOverlayHost>().palette_visible());
+    assert!(!chrome.borrow().overlays.overview);
+    // Registry requests use the same production native adapter.
+    chrome.borrow_mut().request_topbar_editor();
+    frame.relayout();
+    assert!(!topbar_editor_actions(&frame).is_empty());
+    frame.key("Escape");
+    assert!(topbar_editor_actions(&frame).is_empty());
 }

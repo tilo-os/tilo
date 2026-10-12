@@ -209,12 +209,6 @@ impl Notification {
     }
 
     #[must_use]
-    pub fn with_sender_id(mut self, id: u32) -> Self {
-        self.sender_id = Some(id);
-        self
-    }
-
-    #[must_use]
     pub fn with_severity(mut self, severity: NotificationSeverity) -> Self {
         self.severity = severity;
         self

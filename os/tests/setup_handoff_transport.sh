@@ -42,6 +42,29 @@ import sys
 data = open(sys.argv[1], "rb").read()
 assert data[:1000] == b"\xab" * 1000
 PY
+# A payload carrying the human root secret is refused whole.
+secret_media="$work/secret.img"
+python3 - "$secret_media" <<'PY'
+import hashlib, sys
+secret = b"human-root-secret"
+wifi = b"ssid=studio\n"
+payload = (
+    b"etc/NetworkManager/system-connections/tilo-setup.nmconnection\n"
+    + str(len(wifi)).encode() + b"\n" + wifi
+    + b"var/lib/tilo/user-identity/privkey.bin\n" + str(len(secret)).encode() + b"\n" + secret
+)
+digest = hashlib.sha256(payload).hexdigest().encode()
+header = b"TILO_SETUP_HANDOFF_V1\n" + digest + b"\n" + str(len(payload)).encode() + b"\n"
+header = header.ljust(4096, b"\0")
+open(sys.argv[1], "wb").write(b"\xab" * 1000 + payload + header + b"\0" * 65536)
+PY
+TILO_INSTALLER_PROFILE_DEVICE="$secret_media" \
+TILO_INSTALLER_PROFILE_ALLOW_FILE=1 \
+TILO_INSTALLER_PROFILE_OUT_DIR="$work/secret-out" \
+  "$extractor"
+test ! -e "$work/secret-out/setup-handoff"
+grep -q "human root secret" "$work/secret-out/profile.error"
+
 # Automatic discovery on a non-removable composefs installer must find the
 # parent of /sysroot's partition. Model lsblk's real tree-vs-raw behaviour;
 # no explicit profile device or removable-media fallback can hide a failure.

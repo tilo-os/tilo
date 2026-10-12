@@ -23,11 +23,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -38,7 +34,6 @@ pub use tilo_app_package::version::{ReleaseChannel, compare as compare_versions}
 
 pub mod client;
 pub mod config;
-pub mod dev_env;
 pub mod install;
 
 use serde::{Deserialize, Serialize};
@@ -167,11 +162,6 @@ fn os_interfaces() -> Option<&'static registry_types::ProvidedInterfaces> {
         .as_ref()
 }
 
-/// Whether this OS serves every system interface `version` requires.
-pub fn serves_interfaces(version: &registry_types::RegistryVersion) -> bool {
-    os_interfaces().is_none_or(|provided| provided.meets_wire(&version.target.interfaces))
-}
-
 /// [`installable_versions`] on an OS serving `provided`: a version that
 /// requires an interface version the OS does not serve is not offered, so
 /// an update never takes an app past what its system can run.
@@ -205,6 +195,47 @@ pub fn runtime_installed(runtime: &str) -> bool {
     runtime
         .split_once('/')
         .is_some_and(|(_, version)| runtime_bundle::resolve_bundle_path(version).is_some())
+}
+
+/// The version of an app to install when it is opened for the first time:
+/// `newest` when it runs on a runtime this device already has, else the
+/// newest offered version that does, else `newest`.
+///
+/// A thin app runs only against the exact runtime build it names, and the
+/// runtime is rebuilt with every release, so the newest version usually names
+/// a runtime no device has yet: opening it would first download the whole
+/// runtime (hundreds of megabytes) for an app of a few. Every candidate comes
+/// from the same publisher-signed entry and is installed through the same
+/// verified pipeline; this chooses among signed versions, it does not relax
+/// which runtime a version may run on. An update (`app update`) still moves
+/// the app to the newest version and its runtime.
+#[must_use]
+pub fn first_open_offer(newest: &CatalogueApp) -> CatalogueApp {
+    if newest.runtime.as_deref().is_none_or(runtime_installed) {
+        return newest.clone();
+    }
+    // Without the version index the newest version is still a correct
+    // answer, only a slower one.
+    version_offers(&newest.package_id, &newest.registry)
+        .ok()
+        .and_then(|offers| {
+            prefer_installed_runtime(&offers, &newest.version, runtime_installed).cloned()
+        })
+        .unwrap_or_else(|| newest.clone())
+}
+
+/// The newest of `offers`, no newer than `ceiling`, that needs no runtime or
+/// one `installed` reports present.
+pub fn prefer_installed_runtime<'a>(
+    offers: impl IntoIterator<Item = &'a CatalogueApp>,
+    ceiling: &str,
+    installed: impl Fn(&str) -> bool,
+) -> Option<&'a CatalogueApp> {
+    offers
+        .into_iter()
+        .filter(|offer| tilo_app_package::version::compare(&offer.version, ceiling).is_le())
+        .filter(|offer| offer.runtime.as_deref().is_none_or(&installed))
+        .max_by(|a, b| tilo_app_package::version::compare(&a.version, &b.version))
 }
 
 /// The registry `registry_name`'s offer of the runtime `runtime`: a version
@@ -465,7 +496,7 @@ pub fn installed_versions() -> Result<std::collections::HashMap<String, String>,
 }
 
 fn installed_manifest_version(path: &std::path::Path) -> Option<String> {
-    launcher::manifest::read_manifest(path)
+    tilo_app_package::view::read_manifest(path)
         .ok()
         .map(|manifest| manifest.version)
         .filter(|version| !version.is_empty())
@@ -944,6 +975,18 @@ mod tests {
     [package]
     id = "so.tilo.browser"
     version = "1.2.3"
+    kind = "app"
+
+    [publisher]
+    identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+
+    [sandbox]
+    namespaces = []
+    seccomp = "tilo-default"
+    landlock = "strict"
+
+    [sandbox.net]
+    mode = "off"
 
     [entrypoint]
     bin = "bin/browser"
@@ -973,5 +1016,46 @@ mod tests {
                 "partial names must not guess"
             );
         }
+    }
+
+    fn offer_on(version: &str, runtime: Option<&str>) -> CatalogueApp {
+        let mut app = entry_to_app(&verified(entry("so.tilo.notes", "Notes", vec![])), "main")
+            .expect("an offerable entry");
+        app.version = version.into();
+        app.runtime = runtime.map(str::to_string);
+        app
+    }
+
+    #[test]
+    fn first_open_prefers_a_version_on_an_installed_runtime() {
+        let r1 = "tilo-runtime/2026.07+native.11111111111111111111111111111111";
+        let r2 = "tilo-runtime/2026.07+native.22222222222222222222222222222222";
+        let offers = vec![
+            offer_on("0.1.3", Some(r2)),
+            offer_on("0.1.2", Some(r1)),
+            offer_on("0.1.1", Some(r1)),
+        ];
+        let installed = |runtime: &str| runtime == r1;
+        let chosen = prefer_installed_runtime(&offers, "0.1.3", installed).expect("a local fit");
+        assert_eq!(chosen.version, "0.1.2");
+        assert_eq!(chosen.runtime.as_deref(), Some(r1));
+        // Never newer than what was asked for.
+        let chosen = prefer_installed_runtime(&offers, "0.1.1", installed).expect("a local fit");
+        assert_eq!(chosen.version, "0.1.1");
+        // A version that needs no runtime runs anywhere.
+        let fat = vec![offer_on("0.1.3", Some(r2)), offer_on("0.1.0", None)];
+        let chosen = prefer_installed_runtime(&fat, "0.1.3", |_| false).expect("needs no runtime");
+        assert_eq!(chosen.version, "0.1.0");
+    }
+
+    #[test]
+    fn first_open_falls_back_to_newest_without_a_local_runtime() {
+        let r2 = "tilo-runtime/2026.07+native.22222222222222222222222222222222";
+        let r1 = "tilo-runtime/2026.07+native.11111111111111111111111111111111";
+        let offers = vec![offer_on("0.1.3", Some(r2)), offer_on("0.1.2", Some(r1))];
+        assert!(prefer_installed_runtime(&offers, "0.1.3", |_| false).is_none());
+        // A version that needs no runtime is taken as is, without a lookup.
+        let fat = offer_on("0.1.3", None);
+        assert_eq!(first_open_offer(&fat), fat);
     }
 }

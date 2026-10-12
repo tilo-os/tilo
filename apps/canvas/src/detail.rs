@@ -22,6 +22,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
+use ui::num::f32_of_f64;
 
 use tilo_wet_media::{
     Canvas, Heightfield, LayerPainter, MediumEngine, Painted, Rgb, Settings, Texture, windowed,
@@ -236,7 +237,7 @@ impl Job {
     fn run(&self) -> ImageData {
         let [x0, y0, x1, y1] = self.tile;
         let (width, height) = (x1 - x0, y1 - y0);
-        let scale = narrow(self.scale);
+        let scale = f32_of_f64(self.scale);
         match &self.work {
             Work::Ground { texture, colour } => {
                 // One cell more above and to the left: the light falls
@@ -303,14 +304,6 @@ fn crop(
     }
     out.resize(width * height * 4, 0);
     out
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "simulation scales are small"
-)]
-fn narrow(value: f64) -> f32 {
-    value as f32
 }
 
 #[allow(

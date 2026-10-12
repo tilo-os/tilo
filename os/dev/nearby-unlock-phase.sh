@@ -2,7 +2,8 @@
 # The --unlock phase of os/dev/test-nearby-pairing.sh, sourced once B has
 # joined A's identity and both are signed in: B's encrypted root opens at boot
 # with A's consent (docs/device-reach.md, "Unlocking it after a reboot"). It
-# uses that script's vm_a/vm_b/sudo_b/die/note, $out, $run_b and $TILO_USER.
+# uses that script's vm_a/vm_b/sudo_b/die/note/session_log, $out, $run_b and
+# $TILO_USER.
 # A created the identity, so it holds the person's root and can release.
 #
 #   8. B's root moves onto a LUKS2 volume (online, with btrfs replace) whose
@@ -30,8 +31,7 @@ b_root_part=""
 
 # The `device unlock:` lines in A's history with outcome $1 (and reason $2).
 a_history() {
-  vm_a ssh "journalctl --no-pager -o cat _UID=\$(id -u)" 2>/dev/null \
-    | grep -F 'device unlock:' | grep -- "outcome=$1" | grep -c -- "${2:-}" || true
+  session_log vm_a | grep -F 'device unlock:' | grep -- "outcome=$1" | grep -c -- "${2:-}" || true
 }
 await_history() {
   local outcome=$1 before=$2 label=$3 reason=${4:-}
@@ -39,8 +39,7 @@ await_history() {
     [ "$(a_history "$outcome" "$reason")" -gt "$before" ] && return 0
     sleep 2
   done
-  vm_a ssh "journalctl --no-pager -o cat _UID=\$(id -u)" 2>/dev/null \
-    | grep -F 'device unlock:' > "$out/unlock-$label-a-history.txt" || true
+  session_log vm_a | grep -F 'device unlock:' > "$out/unlock-$label-a-history.txt" || true
   die "A's history has no new outcome=$outcome for the $label case"
 }
 # The six-digit code of B's pending request, once A lists it.
@@ -100,14 +99,45 @@ at_prompt_then_type() {
 
 # --- 8. B's root on LUKS2 with the sibling slot ----------------------------------
 # The overlay was grown before boot (test-nearby-pairing.sh), so the root can
-# move onto a new partition of at least its own size.
+# move onto a new partition of at least its own size. The GPT still describes
+# the disk's size before it grew: its backup header and last usable sector sit
+# at the old end until they are moved. Every step of that records the geometry
+# it saw and fails by name, so a disk without room says why.
+grown="$(qemu-img info -U --output=json "$run_b/disk.qcow2" | jq -r '."virtual-size"')"
+[[ $grown =~ ^[0-9]+$ ]] || die "B's overlay reports no size: $grown"
 sudo_b "set -eu
   tilo_root=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab
   linux=0FC63DAF-8483-4772-8E79-3D69D8477DE4
   old=\$(lsblk -lnpo NAME,PARTTYPE | awk -v t=\$tilo_root 'tolower(\$2)==t {print \$1}')
   [ -b \"\$old\" ]
   disk=/dev/\$(lsblk -no PKNAME \"\$old\")
-  sfdisk --relocate gpt-bak-std \"\$disk\" >/dev/null 2>&1 || true
+  geometry() {
+    echo \"--- \$1\"
+    echo \"\$disk: \$(blockdev --getsize64 \"\$disk\") bytes as the kernel sees it\"
+    sfdisk --dump \"\$disk\"
+    sfdisk --list-free \"\$disk\"
+  }
+  geometry 'before moving the backup GPT header'
+  size=\$(blockdev --getsize64 \"\$disk\")
+  [ \"\$size\" -ge $grown ] || {
+    echo \"nearby unlock: B's kernel sees \$size bytes on \$disk, not the grown overlay's $grown\" >&2
+    exit 1
+  }
+  # The root on this disk is mounted, and sfdisk refuses to write a disk in
+  # use unless it is told not to re-read it, as the append below is.
+  sfdisk --relocate gpt-bak-std --no-reread --no-tell-kernel \"\$disk\" || {
+    echo 'nearby unlock: sfdisk could not move the backup GPT header to the end of the grown disk' >&2
+    exit 1
+  }
+  geometry 'after moving the backup GPT header'
+  # The new partition holds the root and a LUKS2 header (16 MiB).
+  wanted=\$((\$(cat /sys/class/block/\${old##*/}/size) + 32768))
+  gap=\$(sfdisk --list-free \"\$disk\" \
+    | awk '\$1 ~ /^[0-9]+\$/ && \$2 ~ /^[0-9]+\$/ && \$3 ~ /^[0-9]+\$/ {s = \$3} END {print s + 0}')
+  [ \"\$gap\" -ge \"\$wanted\" ] || {
+    echo \"nearby unlock: \$disk ends in \$gap free sectors; the encrypted root needs \$wanted\" >&2
+    exit 1
+  }
   printf ',,%s\n' \"\$linux\" | sfdisk --append --no-reread --no-tell-kernel \"\$disk\" >/dev/null
   partx -a \"\$disk\" 2>/dev/null || partx -u \"\$disk\"
   udevadm settle
@@ -126,7 +156,10 @@ sudo_b "set -eu
   sfdisk --no-reread --no-tell-kernel --part-type \"\$disk\" \"\${new##*[!0-9]}\" \"\$tilo_root\" >/dev/null
   partx -u \"\$disk\" 2>/dev/null || true
   printf '%s\n' \"\$new\" > /root/unlock-e2e/part
-" > "$out/unlock-prepare.txt" 2>&1 || { cat "$out/unlock-prepare.txt" >&2; die "B's root could not move onto LUKS2"; }
+" > "$out/unlock-prepare.txt" 2>&1 || {
+  cat "$out/unlock-prepare.txt" >&2
+  die "B's root could not move onto LUKS2: $(tail -n 1 "$out/unlock-prepare.txt")"
+}
 b_root_part="$(sudo_b 'cat /root/unlock-e2e/part')"
 [[ $b_root_part == /dev/* ]] || die "B's new root partition is unknown: $b_root_part"
 note "B's root is on LUKS2 at $b_root_part"
@@ -240,6 +273,5 @@ await_history refused "$refused_before" revoked reason=Revoked
 at_prompt_then_type revoked
 grep -q 'removed from the fleet' "$out/unlock-revoked-b-initrd.txt" \
   || die "B's attempt did not see that it was removed"
-vm_a ssh "journalctl --no-pager -o cat _UID=\$(id -u)" 2>/dev/null | grep -F 'device unlock:' \
-  > "$out/unlock-a-history.txt" || true
+session_log vm_a | grep -F 'device unlock:' > "$out/unlock-a-history.txt" || true
 note "a device removed from the fleet falls back to the passphrase"

@@ -980,3 +980,96 @@ fn captured_scenes_render_identically() {
         assert_eq!(compare(&a, &b).max, 0);
     }
 }
+
+/// Every pixel a scene paints lies inside [`tilo_cpu_raster::DrawBounds`]:
+/// fills, strokes, gradients, images, blurs, blending layers and glyphs.
+#[test]
+fn draw_bounds_hold_every_painted_pixel() {
+    type Built = (&'static str, fn() -> Scene);
+    let mut bounds = tilo_cpu_raster::DrawBounds::default();
+    let scenes: [Built; 11] = [
+        ("fills", fills),
+        ("strokes", strokes),
+        ("linear", linear),
+        ("radial", radial),
+        ("sweep", sweep),
+        ("skewed", skewed),
+        ("images", images),
+        ("blur", blur),
+        ("layers", layers),
+        ("text", text),
+        ("emoji", emoji),
+    ];
+    // Two grounds, so a pixel a draw leaves at one ground's colour is still
+    // seen on the other.
+    for base in [color(255, 255, 255, 255), color(0, 0, 0, 255)] {
+        for (name, build) in scenes {
+            let scene = build();
+            let rects = bounds
+                .of(scene.encoding())
+                .unwrap_or_else(|| panic!("{name}: every draw is bounded"));
+            let mut raster = support::new_raster();
+            let painted = support::cpu_render(&mut raster, &scene, W, H, base, None);
+            let ground = support::cpu_render(&mut raster, &Scene::new(), W, H, base, None);
+            let mut outside = 0;
+            for y in 0..H as usize {
+                for x in 0..W as usize {
+                    let at = (y * W as usize + x) * 4;
+                    if painted[at..at + 4] == ground[at..at + 4] {
+                        continue;
+                    }
+                    let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+                    let held = rects.iter().any(|rect| {
+                        let rect = rect.inflate(1.0, 1.0);
+                        px >= rect.x0 && px <= rect.x1 && py >= rect.y0 && py <= rect.y1
+                    });
+                    if !held {
+                        outside += 1;
+                    }
+                }
+            }
+            assert_eq!(outside, 0, "{name}: painted pixels outside the draw bounds");
+        }
+    }
+}
+
+#[test]
+fn only_plain_clips_and_opaque_groups_leave_a_draw_unblended() {
+    let open = |blend: Option<(BlendMode, f32)>| {
+        let mut scene = Scene::new();
+        let shape = Rect::new(8.0, 8.0, 56.0, 56.0);
+        match blend {
+            Some((blend, alpha)) => {
+                scene.push_layer(Fill::NonZero, blend, alpha, Affine::IDENTITY, &shape);
+            }
+            None => scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &shape),
+        }
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            color(200, 100, 50, 255),
+            None,
+            &Rect::new(0.0, 0.0, 64.0, 64.0),
+        );
+        scene
+    };
+    let normal = BlendMode::new(Mix::Normal, Compose::SrcOver);
+    let multiply = BlendMode::new(Mix::Multiply, Compose::SrcOver);
+    let plain = |scene: &Scene, draws: usize| {
+        tilo_cpu_raster::plain_layers_open_at(scene.encoding(), draws)
+    };
+    // After the layer opened (its one draw tag), inside it.
+    assert!(plain(&open(None), 1), "a clip");
+    assert!(plain(&open(Some((normal, 1.0))), 1), "an opaque group");
+    assert!(!plain(&open(Some((normal, 0.5))), 1), "a translucent group");
+    assert!(!plain(&open(Some((multiply, 1.0))), 1), "a multiply layer");
+    // Before it opened, nothing is open.
+    assert!(plain(&open(Some((multiply, 1.0))), 0));
+    // Closed again, it is no longer open.
+    let mut closed = open(Some((multiply, 1.0)));
+    closed.pop_layer();
+    let draws = closed.encoding().draw_tags.len();
+    assert!(plain(&closed, draws));
+    // Past the end is refused.
+    assert!(!plain(&closed, draws + 1));
+}

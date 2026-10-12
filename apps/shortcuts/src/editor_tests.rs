@@ -34,15 +34,15 @@ fn draft(steps: Vec<Step>) -> Draft {
 
 fn list() -> Step {
     step(
-        json!({"id": "list", "step": "invoke", "app_id": "so.tilo.notes",
-                "resource": {"fixed": "notes.folder:inbox"}, "action": "list"}),
+        json!({"id": "list", "step": "invoke", "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "list"},
+                "resource": {"fixed": "notes.folder:inbox"}}),
     )
 }
 
 fn create(args: &serde_json::Value) -> Step {
     step(
-        json!({"id": "create", "step": "invoke", "app_id": "so.tilo.notes",
-                "resource": {"fixed": "notes.folder:inbox"}, "action": "create",
+        json!({"id": "create", "step": "invoke", "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "create"},
+                "resource": {"fixed": "notes.folder:inbox"},
                 "args": args}),
     )
 }
@@ -118,13 +118,13 @@ fn the_proposed_grant_is_the_least_each_step_needs() {
         list(),
     ];
     let permissions = grant::least_privilege(&steps, &catalog);
-    let named: Vec<(String, String, collab_types::Verb)> = permissions
+    let named: Vec<(String, String, tilo_action_policy::ActionKind)> = permissions
         .iter()
         .map(|permission| {
             (
                 permission.app_id.clone(),
                 permission.action.clone(),
-                permission.verb,
+                permission.kind,
             )
         })
         .collect();
@@ -134,17 +134,17 @@ fn the_proposed_grant_is_the_least_each_step_needs() {
             (
                 "so.tilo.notes".into(),
                 "list".into(),
-                collab_types::Verb::Read
+                tilo_action_policy::ActionKind::Read
             ),
             (
                 "so.tilo.notes".into(),
                 "create".into(),
-                collab_types::Verb::Write
+                tilo_action_policy::ActionKind::Undoable
             ),
             (
                 tilo_automation::AGENT_APP_ID.into(),
                 "summarise".into(),
-                collab_types::Verb::Read
+                tilo_action_policy::ActionKind::Read
             ),
         ]
     );
@@ -193,8 +193,8 @@ fn the_picker_groups_the_catalogue_by_app_then_kind() {
 fn steps_are_numbered_in_reading_order_and_bindings_name_them_so() {
     let branch = step(json!({
         "id": "branch", "step": "if", "cond": {"truthy": {"input": "who"}},
-        "then": [{"id": "create", "step": "invoke", "app_id": "so.tilo.notes",
-                  "resource": {"fixed": "notes.folder:inbox"}, "action": "create"}]
+        "then": [{"id": "create", "step": "invoke", "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "create"},
+                  "resource": {"fixed": "notes.folder:inbox"}}]
     }));
     let steps = vec![list(), branch];
     assert_eq!(step_number(&steps, "list"), Some(1));
@@ -236,8 +236,8 @@ fn a_step_is_titled_by_what_it_does_and_placed_by_where_it_acts() {
         Some("Inbox in Notes")
     );
     let unknown = step(
-        json!({"id": "x", "step": "invoke", "app_id": "so.tilo.gone",
-                              "resource": {"fixed": "gone"}, "action": "vanish"}),
+        json!({"id": "x", "step": "invoke", "action": {"app": "so.tilo.gone", "kind": "gone", "action": "vanish"},
+                              "resource": {"fixed": "gone"}}),
     );
     assert_eq!(title(&unknown, &catalog, &steps), "vanish");
     assert_eq!(

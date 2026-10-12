@@ -1,6 +1,6 @@
 //! One state-file writer shared by UI snapshots and committed native owners.
 use super::{NativeAuthorityStorage, NativeWorkspaceOwner};
-use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
+use crate::shell::state::{WeakWorkspaceTreeHandle, WorkspaceTreeHandle};
 use parking_lot::{Mutex, RwLock};
 use std::{
     io::{self, Write},
@@ -17,13 +17,13 @@ pub(crate) use tilo_joined_room::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct StateSequence(u64);
 
-/// A file written from a snapshot of the tree, beside the state file.
+/// A file written from a snapshot of the tree, beside the state file. The
+/// tree document is not one: it is written as a log of changes, in the
+/// order they were made (see [`NativeStateRuntime::document_log`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Companion {
-    /// The tree document and its meta.
-    Document = 0,
     /// The capability list the filesystem enforces.
-    FsCapabilities = 1,
+    FsCapabilities = 0,
 }
 
 /// What [`NativeStateRuntime::publish`] did with a snapshot.
@@ -40,7 +40,70 @@ pub struct NativeStateRuntime(pub(super) Arc<Runtime>);
 /// Policy observers must not retain the state writer or its exclusive file lease.
 #[derive(Clone)]
 pub(crate) struct NativeStateWitness(Weak<Runtime>);
+/// Static rejection categories contain no peer, capability, path or process data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AuthorityRejection {
+    WriterRetired,
+    WriterFenced,
+    RoomUncertain,
+    InvalidSnapshot,
+    StaleAcceptedSnapshot,
+    RoomOwnerRetired,
+    RoomOwnerNotCurrent,
+}
+impl AuthorityRejection {
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            Self::WriterRetired => "writer_retired",
+            Self::WriterFenced => "writer_fenced",
+            Self::RoomUncertain => "room_uncertain",
+            Self::InvalidSnapshot => "invalid_snapshot",
+            Self::StaleAcceptedSnapshot => "stale_accepted_snapshot",
+            Self::RoomOwnerRetired => "room_owner_retired",
+            Self::RoomOwnerNotCurrent => "room_owner_not_current",
+        }
+    }
+}
 impl NativeStateWitness {
+    /// Borrow the protected ordinary-room writer for one host operation.
+    /// Enrolled rooms must instead borrow their committed native view.
+    pub(crate) fn with_current_ordinary<T>(
+        &self,
+        storage: &NativeAuthorityStorage,
+        observed: &NativeAuthorityStorage,
+        room: crate::shell::state::RoomId,
+        operation: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let runtime = self
+            .0
+            .upgrade()
+            .ok_or("The accepted desktop writer has retired.")?;
+        if storage.requires(room)
+            || !runtime.healthy.load(Ordering::Acquire)
+            || runtime.uncertain_rooms.read().contains(&room)
+        {
+            return Err("The ordinary desktop policy is not current.".into());
+        }
+        let expected = digest(storage).map_err(|error| error.to_string())?;
+        if digest(observed).map_err(|error| error.to_string())? != expected {
+            return Err("The accepted desktop authority has changed.".into());
+        }
+        let writer = runtime.writer.lock();
+        if writer.expected != Some(expected)
+            || writer.lease.is_none()
+            || writer
+                .owner
+                .as_ref()
+                .is_some_and(|(owner, _)| owner.upgrade().is_none())
+        {
+            return Err("The accepted desktop writer is unavailable or stale.".into());
+        }
+        let result = operation();
+        drop(writer);
+        drop(runtime);
+        result
+    }
+
     #[cfg(test)]
     pub(crate) fn retained_owners(&self) -> usize {
         self.0.strong_count()
@@ -50,9 +113,15 @@ impl NativeStateWitness {
         storage: &NativeAuthorityStorage,
         room: crate::shell::state::RoomId,
     ) -> bool {
-        self.0
-            .upgrade()
-            .is_some_and(|runtime| NativeStateRuntime(runtime).authority_is_current(storage, room))
+        self.authority_status(storage, room).is_ok()
+    }
+    pub(crate) fn authority_status(
+        &self,
+        storage: &NativeAuthorityStorage,
+        room: crate::shell::state::RoomId,
+    ) -> Result<(), AuthorityRejection> {
+        let runtime = self.0.upgrade().ok_or(AuthorityRejection::WriterRetired)?;
+        NativeStateRuntime(runtime).authority_status(storage, room)
     }
 }
 impl std::fmt::Debug for NativeStateRuntime {
@@ -69,7 +138,9 @@ pub(super) struct Runtime {
     sequence: AtomicU64,
     /// Per [`Companion`], the newest snapshot it was written from. Held
     /// across the write, so a companion file never goes backwards.
-    companions: Mutex<[u64; 2]>,
+    companions: Mutex<[u64; 1]>,
+    /// The tree document beside the state file.
+    document: crate::shell::persist::DocLog,
 }
 impl Default for Runtime {
     fn default() -> Self {
@@ -79,7 +150,8 @@ impl Default for Runtime {
             healthy: AtomicBool::new(true),
             uncertain_rooms: RwLock::new(std::collections::BTreeSet::default()),
             sequence: AtomicU64::new(0),
-            companions: Mutex::new([0; 2]),
+            companions: Mutex::new([0; 1]),
+            document: crate::shell::persist::DocLog::default(),
         }
     }
 }
@@ -93,7 +165,7 @@ pub(super) struct Writer {
     /// The attached owner and the tree whose state file it publishes into.
     owner: Option<(
         tilo_joined_room::WeakNativeWorkspaceOwner,
-        Weak<RwLock<WorkspaceTree>>,
+        WeakWorkspaceTreeHandle,
     )>,
 }
 
@@ -136,41 +208,42 @@ impl NativeStateRuntime {
         let Some(owner) = owner.upgrade() else {
             return Ok(None);
         };
-        if !Weak::ptr_eq(&bound, &Arc::downgrade(tree)) {
+        if !bound.ptr_eq(&tree.downgrade()) {
             return Err("state writer already belongs to a different native tree handle".into());
         }
         Ok(Some(owner))
     }
     pub(super) fn attach(&self, owner: &NativeWorkspaceOwner, tree: &WorkspaceTreeHandle) {
-        self.0.writer.lock().owner = Some((owner.downgrade(), Arc::downgrade(tree)));
+        self.0.writer.lock().owner = Some((owner.downgrade(), tree.downgrade()));
     }
     pub(crate) fn requires_uncertain(&self, room: crate::shell::state::RoomId) -> bool {
         self.0.uncertain_rooms.read().contains(&room)
     }
     /// Read-only witness for host policy exports. A stale/fenced native
     /// authority must not renew an application action lease.
-    pub(crate) fn authority_is_current(
+    fn authority_status(
         &self,
         storage: &NativeAuthorityStorage,
         room: crate::shell::state::RoomId,
-    ) -> bool {
-        if !self.healthy() || self.requires_uncertain(room) {
-            return false;
+    ) -> Result<(), AuthorityRejection> {
+        if !self.healthy() {
+            return Err(AuthorityRejection::WriterFenced);
         }
-        let Ok(expected) = digest(storage) else {
-            return false;
-        };
+        if self.requires_uncertain(room) {
+            return Err(AuthorityRejection::RoomUncertain);
+        }
+        let expected = digest(storage).map_err(|_| AuthorityRejection::InvalidSnapshot)?;
         let current = self.0.writer.lock().expected;
         if current.is_some_and(|current| current != expected) {
-            return false;
+            return Err(AuthorityRejection::StaleAcceptedSnapshot);
         }
         if storage.requires(room) {
-            let Some(owner) = self.owner() else {
-                return false;
-            };
-            return owner.with_current(room, |_| Ok(())).is_ok();
+            let owner = self.owner().ok_or(AuthorityRejection::RoomOwnerRetired)?;
+            return owner
+                .with_current(room, |_| Ok(()))
+                .map_err(|_| AuthorityRejection::RoomOwnerNotCurrent);
         }
-        true
+        Ok(())
     }
     pub(super) fn healthy(&self) -> bool {
         self.0.healthy.load(Ordering::Acquire)
@@ -187,6 +260,12 @@ impl NativeStateRuntime {
                 .fetch_add(1, Ordering::AcqRel)
                 .wrapping_add(1),
         )
+    }
+
+    /// The tree document beside this state file: every copy of the tree
+    /// cuts its changes into it, and every save writes them.
+    pub(crate) fn document_log(&self) -> &crate::shell::persist::DocLog {
+        &self.0.document
     }
 
     /// Run `write` for `companion` of snapshot `sequence`, unless that file

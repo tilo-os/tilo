@@ -203,24 +203,6 @@ impl ScanSession {
         self.pages.push(Page::new(image));
         self.selected = self.pages.len().saturating_sub(1);
     }
-    /// Capture from the system's typed SANE boundary and append only after the
-    /// complete PNG has decoded. A failed page never corrupts the session.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when scanning fails or the scanner response is not a
-    /// valid PNG image.
-    pub fn capture_from_sane(
-        &mut self,
-        device: &str,
-        settings: tilo_capture::scanner::ScanSettings,
-    ) -> Result<(), String> {
-        let bytes = tilo_capture::scanner::scan_page(device, settings)?;
-        let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-            .map_err(|error| format!("scanner returned an invalid PNG: {error}"))?;
-        self.add_page(image);
-        Ok(())
-    }
     pub fn move_page(&mut self, from: usize, to: usize) -> bool {
         if from >= self.pages.len() || to >= self.pages.len() || from == to {
             return false;

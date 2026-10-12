@@ -2,16 +2,16 @@
 //!
 //! `SlidesApp` is a single full-window widget that lays out and paints the
 //! whole editor itself (toolbar, thumbnail rail, slide canvas, inspector)
-//! plus a full-screen present mode. The deck lives in the shared CRDT
-//! ([`crate::doc::SlidesDoc`]); this widget keeps an in-memory mirror that
-//! is reloaded from the document every `sync`, so undo/redo and live
-//! collaboration work without extra plumbing. View state — current slide,
-//! selection, mode — is per-peer and stays local.
+//! plus a full-screen present mode. The deck is the [`crate::deck::Deck`]
+//! record; this widget shows the mirror of it the framework presents, so
+//! undo/redo and live collaboration work without extra plumbing. View state
+//! — current slide, selection, mode — is per-peer and stays local.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -27,7 +27,6 @@ use tilo_rich_text::{FieldOutcome, RichTextField, RichTextSurface, SubmitKey};
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, Effected, TextControl, ViewCx};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -35,16 +34,16 @@ use ui::theme::Theme;
 use ui::tilo_resource::ActionDecl;
 use ui::widget::Embedded;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::{Notice, ToastAnchor, ToastKind};
 use ui::widget::{
     AudiencePresentationProvider, ColorPicker, Dropdown, FullscreenProvider, NumberInput,
     PageSidebar, PageSidebarEvent, Scrollable, SidebarDrawer, SplitLayout, TextInput, Widget,
 };
 
-use crate::actions::{self, SlidesDeck};
+use crate::actions;
 use crate::assets::ImageStore;
+use crate::deck::Deck as DeckRecord;
 
-use crate::doc::SlidesDoc;
 use crate::help_overlay::HelpOverlay;
 use crate::model::{
     Background, Deck, Element, ElementKind, FILL_ROLES, Id, Layout, Palette, PaletteKind, SLIDE_H,
@@ -306,12 +305,25 @@ struct RoutedEvent<'a, 'doc> {
 
 /// The words of one text box being edited on the canvas: the SDK editor,
 /// embedded where the box is drawn and laid out at the slide's size, editing
-/// the element's rich-text body as the deck's child resource, each edit a
-/// `SlidesAction::EditElementText`.
+/// the element's rich-text body, each edit a field edit of the deck at the
+/// body's path.
 struct TextBoxEditor {
     slide_id: String,
     element_id: String,
     host: Embedded<RichTextSurface<RichTextField>>,
+}
+
+/// The editor of slide `slide`'s speaker notes, each edit a field edit of
+/// them through `deck`.
+fn notes_control(deck: &Dispatcher<DeckRecord>, slide: &str) -> TextControl<TextInput, DeckRecord> {
+    TextControl::at(
+        TextInput::local()
+            .multiline(true)
+            .with_plain_chrome()
+            .with_id("slides-speaker-notes"),
+        deck.clone(),
+        actions::slide_paths(slide).notes,
+    )
 }
 
 impl TextBoxEditor {
@@ -319,11 +331,12 @@ impl TextBoxEditor {
         doc: &AutoCommit,
         slide_id: &str,
         element: &Element,
-        deck: &Dispatcher<SlidesDeck>,
+        deck: &Dispatcher<DeckRecord>,
     ) -> Self {
-        let (locate_slide, locate_element) = (slide_id.to_owned(), element.id.clone());
+        let body = crate::deck::body_object(doc, slide_id, &element.id);
         let field = RichTextField::view_only(move |doc| {
-            SlidesDoc::element_body(doc, &locate_slide, &locate_element)
+            body.clone()
+                .filter(|body| tilo_doc::model::open(doc, body).is_ok())
         });
         let surface = RichTextSurface::field(field)
             .with_editor(render::text_box_editor(element))
@@ -344,13 +357,22 @@ impl TextBoxEditor {
     }
 
     /// Edit through the deck's dispatcher.
-    fn attach(&mut self, deck: &Dispatcher<SlidesDeck>) {
-        let (id, wrap) = actions::element_text_child(&self.slide_id, &self.element_id);
-        self.host
-            .widget_mut()
-            .source_mut()
-            .attach(deck.child::<tilo_document::RichText>(&id, wrap));
+    fn attach(&mut self, deck: &Dispatcher<DeckRecord>) {
+        let (slide, element) = (self.slide_id.clone(), self.element_id.clone());
+        self.host.widget_mut().source_mut().attach(
+            deck.child::<tilo_document::RichText>(&actions::slide_resource_id(&slide), move |op| {
+                actions::edit_text_action(&slide, &element, op)
+            }),
+        );
     }
+}
+
+/// The slides an opener may show, and the ones asked for since the last
+/// sync.
+#[derive(Default)]
+struct Opened {
+    known: std::collections::HashSet<String>,
+    requests: Vec<String>,
 }
 
 #[allow(
@@ -361,13 +383,14 @@ pub struct SlidesApp {
     /// The deck as last presented, with any gesture in flight previewed on
     /// it (a drag moves its element here until the drop dispatches).
     deck: Deck,
-    /// The slides' order keys, in deck order, as last presented.
-    ranks: Vec<i64>,
     /// The slide to show once the deck holds it: one this editor just added
     /// or moved.
     focus_slide: Option<Id>,
     /// A deck presented while a gesture was in flight, shown once it ends.
-    deferred: Option<std::rc::Rc<crate::actions::SlidesResourceCtx>>,
+    deferred: Option<std::rc::Rc<DeckRecord>>,
+    /// Slides a search hit or an agent's `open` asked to show, taken up in
+    /// the next sync.
+    opened: Rc<RefCell<Opened>>,
     rect: Rect,
     node: Option<NodeId>,
     bootstrapped: bool,
@@ -420,8 +443,8 @@ pub struct SlidesApp {
     text_edit_box: Rect,
 
     /// Every edit of the deck goes through the resource's dispatcher as a
-    /// [`SlidesAction`](crate::actions::SlidesAction).
-    dispatch: Dispatcher<SlidesDeck>,
+    /// deck's action.
+    dispatch: Dispatcher<DeckRecord>,
 
     /// Responsive slide-rail flap. On a wide window the rail is docked beside
     /// the canvas; on a narrow window it collapses to an overlay flap behind a
@@ -490,7 +513,7 @@ pub struct SlidesApp {
     tooltip_text: Option<String>,
     /// Visible result of a fallible open/save/image operation. Previously those
     /// paths failed silently, leaving users unsure whether a click worked.
-    io_toast: Option<(String, ToastKind)>,
+    io_toast: Notice,
 
     /// Right-click context menu (element / slide actions) — the shared
     /// [`ui::widget::ContextMenu`] primitive, driven standalone. `ctx_hits`
@@ -510,12 +533,11 @@ pub struct SlidesApp {
     /// (full selection: double-click word, Shift+Arrow, drag, Ctrl+A/C/X/V). Live
     /// while [`Self::editing_title`]; its edits diff-splice into the CRDT title.
     title_input: TextInput,
-    /// The current slide's speaker notes, edited as the deck's child text
-    /// (each edit a [`SlidesAction::EditNotes`](crate::actions::SlidesAction::EditNotes)).
-    /// The shared editor owns multiline layout, selection, clipboard,
-    /// scrolling and IME; `editing_notes` only owns the inspector's open
-    /// state.
-    notes: TextControl<TextInput>,
+    /// The current slide's speaker notes, each edit a field edit of the
+    /// slide's notes. The shared editor owns multiline layout, selection,
+    /// clipboard, scrolling and IME; `editing_notes` only owns the
+    /// inspector's open state.
+    notes: TextControl<TextInput, DeckRecord>,
     notes_preview: TextInput,
     /// The slide whose notes [`Self::notes`] edits.
     notes_slide: Rc<RefCell<String>>,
@@ -549,7 +571,7 @@ enum DemoMenu {
 impl SlidesApp {
     /// The editor of the deck the view `cx` shows: its edits go through the
     /// view's dispatcher, and its pictures are in the view's content store.
-    pub fn new(cx: &ViewCx<SlidesDeck>) -> Self {
+    pub fn new(cx: &ViewCx<DeckRecord>) -> Self {
         let content = cx.content().unwrap_or_else(crate::assets::app_content);
         let state = cx.live().get();
         let mut app = Self::build(cx.dispatcher(), content);
@@ -557,21 +579,14 @@ impl SlidesApp {
         app
     }
 
-    fn build(dispatch: Dispatcher<SlidesDeck>, content: ContentStore) -> Self {
+    fn build(dispatch: Dispatcher<DeckRecord>, content: ContentStore) -> Self {
         let deck = starter_deck();
         let notes_slide = Rc::new(RefCell::new(String::new()));
-        let located = Rc::clone(&notes_slide);
-        let notes = TextControl::view_only(
-            TextInput::local()
-                .multiline(true)
-                .with_plain_chrome()
-                .with_id("slides-speaker-notes"),
-            move |doc| SlidesDoc::notes_text(doc, &located.borrow()),
-        );
+        let notes = notes_control(&dispatch, "");
         SlidesApp {
-            ranks: Vec::new(),
             focus_slide: None,
             deferred: None,
+            opened: Rc::default(),
             deck,
             rect: Rect::ZERO,
             node: None,
@@ -612,7 +627,7 @@ impl SlidesApp {
             chrome_metrics: ChromeMetrics::fallback(),
             inspector_scroll: Scrollable::new_vertical().always_visible(),
             tooltip_text: None,
-            io_toast: None,
+            io_toast: Notice::default(),
             ctx_menu: ContextMenu::new(),
             ctx_hits: Vec::new(),
             font_input: NumberInput::new(40.0)
@@ -630,7 +645,7 @@ impl SlidesApp {
             notes_preview: TextInput::local()
                 .multiline(true)
                 .with_text_role(ui::TextRole::Body)
-                .with_placeholder(&tr("slides-notes-placeholder"))
+                .with_placeholder(tr("slides-notes-placeholder"))
                 .with_id("slides-speaker-notes-preview"),
             notes,
             notes_slide,
@@ -758,7 +773,8 @@ impl SlidesApp {
             }
             // The failure toast a presentation the decoder rejects shows.
             "open_error" => {
-                self.io_toast = Some((tr("slides-toast-open-failed"), ToastKind::Error));
+                self.io_toast
+                    .show(tr("slides-toast-open-failed"), ToastKind::Error);
             }
             // Context menus open once the layout is known (see `draw`).
             "element_menu" => {
@@ -907,17 +923,17 @@ impl SlidesApp {
     /// Show the deck the resource holds now: an edit of this participant's,
     /// a collaborator's, an undo or a restore. While a gesture is in flight
     /// its preview stays on screen, and the deck is shown once it ends.
-    pub(crate) fn adopt_resource_state(&mut self, state: &Rc<crate::actions::SlidesResourceCtx>) {
+    pub(crate) fn adopt_resource_state(&mut self, state: &Rc<DeckRecord>) {
         if self.gesture_in_flight() {
             self.deferred = Some(Rc::clone(state));
             return;
         }
         self.deferred = None;
-        self.ranks.clone_from(&state.ranks);
-        let deck = state.deck();
+        let deck = crate::deck::mirror(state);
         if deck != self.deck {
             if !actions::deck_within_aggregate_limits(&deck) {
-                self.io_toast = Some((tr("slides-toast-shared-limit"), ToastKind::Error));
+                self.io_toast
+                    .show(tr("slides-toast-shared-limit"), ToastKind::Error);
                 return;
             }
             // The slide shown stays shown wherever the change moved it; a
@@ -927,6 +943,12 @@ impl SlidesApp {
                 .clone()
                 .or_else(|| self.slide().map(|slide| slide.id.clone()));
             self.deck = deck;
+            self.opened.borrow_mut().known = self
+                .deck
+                .slides
+                .iter()
+                .map(|slide| slide.id.clone())
+                .collect();
             if let Some(index) = shown.and_then(|id| self.deck.index_of(&id)) {
                 self.cur_slide = index;
                 self.focus_slide = None;
@@ -997,52 +1019,71 @@ impl SlidesApp {
     /// every control, the palette and an agent do: it is checked against
     /// the participant's permission, applied, recorded as one undo step and
     /// shared. The deck shows it when it is presented back.
-    fn submit(&self, action: &crate::actions::SlidesAction) {
+    fn submit(&self, action: &crate::actions::Action) {
         self.dispatch.apply(action);
+    }
+
+    /// [`Self::submit`] for the edits of one gesture: one undo step.
+    fn submit_all(&self, actions: &[crate::actions::Action]) {
+        self.dispatch.group(|| {
+            for action in actions {
+                self.dispatch.apply(action);
+            }
+        });
     }
 
     /// The edits bound to the selected element, published on the deck
     /// beside its declared actions: delete it, bring it to the front, send
     /// it to the back.
-    pub(crate) fn selection_declarations(&self) -> Vec<ActionDecl<SlidesDeck>> {
+    pub(crate) fn selection_declarations(&self) -> Vec<ActionDecl<DeckRecord>> {
         if self.mode != Mode::Edit {
             return Vec::new();
         }
         let (Some(slide), Some(element)) = (self.slide(), self.selected_element()) else {
             return Vec::new();
         };
-        let (index, slide_id, element_id) = (self.cur_slide, slide.id.clone(), element.id.clone());
-        let label = crate::actions::element_label(element.kind, &element.text);
-        let mut declarations = vec![{
-            let element_id = element_id.clone();
-            ActionDecl::new(
-                "delete-selection",
-                format!("Delete {label}"),
-                Vec::new(),
-                move |_, _| Ok(actions::delete_element_action(index, element_id.clone())),
+        let (slide, element) = (
+            ui::tilo_resource::Id::from(slide.id.as_str()),
+            ui::tilo_resource::Id::from(element.id.as_str()),
+        );
+        let label = crate::actions::element_label(
+            self.selected_element()
+                .map_or(ElementKind::Text, |element| element.kind),
+            &self
+                .selected_element()
+                .map(|element| element.text.clone())
+                .unwrap_or_default(),
+        );
+        let mut declarations = Vec::new();
+        if let Some(delete) = DeckRecord::DELETE_ELEMENT
+            .bind(
+                crate::deck::deck::DeleteElement::paths().slide,
+                slide.clone(),
             )
-            .describe("Delete the element selected in the editor.")
-            .destructive()
-        }];
-        for (id, front, verb) in [
-            ("bring-selection-front", true, "Bring to front"),
-            ("send-selection-back", false, "Send to back"),
-        ] {
-            let Some(z) = actions::restack_z_for_author(&self.deck, &slide_id, &element_id, front)
-            else {
-                continue;
-            };
-            let (slide_id, element_id) = (slide_id.clone(), element_id.clone());
-            declarations.push(
-                ActionDecl::new(id, format!("{verb}: {label}"), Vec::new(), move |_, _| {
-                    Ok(actions::set_element_z_action(
-                        slide_id.clone(),
-                        element_id.clone(),
-                        z,
-                    ))
-                })
-                .describe("Restack the element selected in the editor."),
-            );
+            .and(
+                crate::deck::deck::DeleteElement::paths().element,
+                element.clone(),
+            )
+            .declaration("delete-selection", format!("Delete {label}"))
+        {
+            declarations.push(delete.describe("Delete the element selected in the editor."));
+        }
+        let front = DeckRecord::BRING_TO_FRONT
+            .bind(
+                crate::deck::deck::BringToFront::paths().slide,
+                slide.clone(),
+            )
+            .and(
+                crate::deck::deck::BringToFront::paths().element,
+                element.clone(),
+            )
+            .declaration("bring-selection-front", format!("Bring to front: {label}"));
+        let back = DeckRecord::SEND_TO_BACK
+            .bind(crate::deck::deck::SendToBack::paths().slide, slide)
+            .and(crate::deck::deck::SendToBack::paths().element, element)
+            .declaration("send-selection-back", format!("Send to back: {label}"));
+        for restack in [front, back].into_iter().flatten() {
+            declarations.push(restack.describe("Restack the element selected in the editor."));
         }
         declarations
     }
@@ -1129,10 +1170,7 @@ impl SlidesApp {
                 // receiver-relative destination index. This keeps the same
                 // encoded action deterministic if remote inserts land before
                 // it is replayed elsewhere.
-                let Some(rank) = crate::doc::rank_for_move(&self.ranks, from, to) else {
-                    return;
-                };
-                self.submit(&actions::set_slide_order_action(id.clone(), rank));
+                self.submit(&actions::move_slide_action(&id, to));
                 self.focus_slide = Some(id);
                 self.cur_slide = to;
                 self.scroll_rail_to_current();
@@ -1292,12 +1330,12 @@ impl SlidesApp {
             Hit::DeleteElement => self.delete_element(),
             Hit::SetLayout(l) => {
                 if let Some(id) = self.slide().map(|slide| slide.id.clone()) {
-                    self.submit(&actions::set_slide_layout_action(self.cur_slide, id, l));
+                    self.submit(&actions::set_slide_layout_action(&id, l));
                 }
             }
             Hit::SetBackground(b) => {
                 if let Some(id) = self.slide().map(|slide| slide.id.clone()) {
-                    self.submit(&actions::set_slide_background_action(self.cur_slide, id, b));
+                    self.submit(&actions::set_slide_background_action(&id, b));
                 }
             }
             Hit::SetPalette(p) => {
@@ -1333,20 +1371,35 @@ impl SlidesApp {
         self.inspector_drawer.toggle();
     }
 
+    /// Set one style of the selected element.
+    fn restyle(&self, style: &actions::Style) {
+        let (Some(slide), Some(element)) = (self.slide(), self.selected_element()) else {
+            return;
+        };
+        self.submit(&actions::restyle_action(&slide.id, element, style));
+    }
     fn set_sel_str(&self, key: &str, v: &str) {
-        if let Some(id) = self.sel.clone() {
-            self.submit(&actions::restyle_str_action(self.cur_slide, id, key, v));
-        }
+        let style = match key {
+            "fill" => actions::Style::Fill(v.to_owned()),
+            "stroke" => actions::Style::Stroke(v.to_owned()),
+            _ => actions::Style::Align(TextAlign::from_str(v)),
+        };
+        self.restyle(&style);
     }
     fn set_sel_f64(&self, key: &str, v: f64) {
-        if let Some(id) = self.sel.clone() {
-            self.submit(&actions::restyle_f64_action(self.cur_slide, id, key, v));
-        }
+        let style = match key {
+            "stroke_width" => actions::Style::StrokeWidth(v),
+            "radius" => actions::Style::Radius(v),
+            _ => actions::Style::FontSize(v),
+        };
+        self.restyle(&style);
     }
     fn set_sel_bool(&self, key: &str, v: bool) {
-        if let Some(id) = self.sel.clone() {
-            self.submit(&actions::restyle_bool_action(self.cur_slide, id, key, v));
-        }
+        self.restyle(&if key == "italic" {
+            actions::Style::Italic(v)
+        } else {
+            actions::Style::Bold(v)
+        });
     }
 
     fn restack(&self, front: bool) {
@@ -1354,17 +1407,13 @@ impl SlidesApp {
         let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
             return;
         };
-        let Some(rank) = actions::restack_z_for_author(&self.deck, &slide_id, &id, front) else {
-            return;
-        };
-        self.submit(&actions::set_element_z_action(slide_id, id, rank));
+        self.submit(&actions::restack_action(&slide_id, &id, front));
     }
 
     fn new_slide(&mut self) {
         let s = actions::new_slide_template();
         let at = self.cur_slide + 1;
-        let rank = crate::doc::rank_for_insert(&self.ranks, at);
-        self.submit(&actions::insert_slide_with_order_action(&s, rank));
+        self.submit(&actions::insert_slide_action(at, &s));
         self.focus_slide = Some(s.id);
         self.cur_slide = at;
         self.sel = None;
@@ -1382,8 +1431,7 @@ impl SlidesApp {
             e.id = new_id();
         }
         let at = self.cur_slide + 1;
-        let rank = crate::doc::rank_for_insert(&self.ranks, at);
-        self.submit(&actions::insert_slide_with_order_action(&copy, rank));
+        self.submit(&actions::insert_slide_action(at, &copy));
         self.focus_slide = Some(copy.id);
         self.cur_slide = at;
         self.sel = None;
@@ -1397,7 +1445,7 @@ impl SlidesApp {
         let Some(id) = self.slide().map(|slide| slide.id.clone()) else {
             return;
         };
-        self.submit(&actions::delete_slide_action(self.cur_slide, id));
+        self.submit(&actions::delete_slide_action(&id));
         if self.cur_slide > 0 {
             self.cur_slide -= 1;
         }
@@ -1410,7 +1458,7 @@ impl SlidesApp {
         let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
             return;
         };
-        self.submit(&actions::add_element_action(self.cur_slide, slide_id, &el));
+        self.submit(&actions::add_element_action(&slide_id, &el));
         self.sel = Some(id);
         self.editing_text = false;
     }
@@ -1418,14 +1466,14 @@ impl SlidesApp {
     /// Ask the person for a picture with the host's chooser (the app never
     /// draws its own picker), then keep its bytes in the content store and
     /// place it on the current slide. A cancelled choice places nothing.
-    fn choose_picture(cx: &mut EffectCx<SlidesDeck, Self>) -> Effected {
+    fn choose_picture(cx: &mut EffectCx<DeckRecord, Self>) -> Effected {
         cx.choose_file(image_open_request(), |app: &mut Self, chosen, _| {
             let Some(file) = chosen else {
                 return Ok(Effected::done());
             };
             let Some(src) = crate::assets::store_asset(&app.content, &file.bytes) else {
                 let message = tr("slides-toast-image-import-failed");
-                app.io_toast = Some((message.clone(), ToastKind::Error));
+                app.io_toast.show(message.clone(), ToastKind::Error);
                 return Err(message);
             };
             app.insert_picture(&src);
@@ -1439,7 +1487,7 @@ impl SlidesApp {
     fn open_presentation(
         &self,
         path: Option<String>,
-        cx: &mut EffectCx<SlidesDeck, Self>,
+        cx: &mut EffectCx<DeckRecord, Self>,
     ) -> Effected {
         match path {
             Some(path) => {
@@ -1455,7 +1503,8 @@ impl SlidesApp {
                 };
                 let pptx = is_pptx(std::path::Path::new(&file.name));
                 if pptx {
-                    app.io_toast = Some((tr("slides-toast-opening-pptx"), ToastKind::Info));
+                    app.io_toast
+                        .show(tr("slides-toast-opening-pptx"), ToastKind::Info);
                 }
                 let content = app.content.clone();
                 Ok(cx.thread(
@@ -1471,17 +1520,19 @@ impl SlidesApp {
     fn finish_open(
         &mut self,
         loaded: Result<Deck, String>,
-        cx: &EffectCx<SlidesDeck, Self>,
+        cx: &EffectCx<DeckRecord, Self>,
     ) -> EffectAnswer {
         match loaded {
             Ok(deck) => {
                 cx.apply(&actions::replace_deck_action(&deck));
                 self.show_opened_deck();
-                self.io_toast = Some((tr("slides-toast-opened"), ToastKind::Success));
+                self.io_toast
+                    .show(tr("slides-toast-opened"), ToastKind::Success);
                 Ok(Effected::done())
             }
             Err(error) => {
-                self.io_toast = Some((tr("slides-toast-process-failed"), ToastKind::Error));
+                self.io_toast
+                    .show(tr("slides-toast-process-failed"), ToastKind::Error);
                 Err(error)
             }
         }
@@ -1493,11 +1544,11 @@ impl SlidesApp {
     fn save_presentation(
         &mut self,
         path: Option<String>,
-        cx: &mut EffectCx<SlidesDeck, Self>,
+        cx: &mut EffectCx<DeckRecord, Self>,
     ) -> EffectAnswer {
         if !actions::deck_within_aggregate_limits(&self.deck) {
             let message = tr("slides-toast-export-limit");
-            self.io_toast = Some((message.clone(), ToastKind::Error));
+            self.io_toast.show(message.clone(), ToastKind::Error);
             return Err(message);
         }
         let deck = self.deck.clone();
@@ -1529,15 +1580,13 @@ impl SlidesApp {
     fn finish_save(&mut self, saved: Result<bool, String>) -> EffectAnswer {
         match saved {
             Ok(true) => {
-                self.io_toast = Some(("Presentation saved".into(), ToastKind::Success));
+                self.io_toast.show("Presentation saved", ToastKind::Success);
                 Ok(Effected::done())
             }
             Ok(false) => Ok(Effected::done()),
             Err(error) => {
-                self.io_toast = Some((
-                    "Could not process the presentation".into(),
-                    ToastKind::Error,
-                ));
+                self.io_toast
+                    .show("Could not process the presentation", ToastKind::Error);
                 Err(error)
             }
         }
@@ -1579,7 +1628,7 @@ impl SlidesApp {
         let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
             return;
         };
-        self.submit(&actions::add_element_action(self.cur_slide, slide_id, &el));
+        self.submit(&actions::add_element_action(&slide_id, &el));
         self.sel = Some(id);
         self.editing_text = false;
     }
@@ -1596,17 +1645,13 @@ impl SlidesApp {
         let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
             return;
         };
-        self.submit(&actions::add_element_action(
-            self.cur_slide,
-            slide_id,
-            &copy,
-        ));
+        self.submit(&actions::add_element_action(&slide_id, &copy));
         self.sel = Some(id);
     }
 
     fn delete_element(&mut self) {
-        if let Some(id) = self.sel.clone() {
-            self.submit(&actions::delete_element_action(self.cur_slide, id));
+        if let (Some(id), Some(slide)) = (self.sel.clone(), self.slide().map(|s| s.id.clone())) {
+            self.submit(&actions::delete_element_action(&slide, &id));
             self.sel = None;
             self.editing_text = false;
         }
@@ -1616,7 +1661,9 @@ impl SlidesApp {
         if let Some(el) = self.selected_element().cloned() {
             let nx = (el.x + dx).clamp(-el.w + 20.0, SLIDE_W - 20.0);
             let ny = (el.y + dy).clamp(-el.h + 20.0, SLIDE_H - 20.0);
-            self.submit(&actions::move_element_action(self.cur_slide, el.id, nx, ny));
+            if let Some(slide) = self.slide() {
+                self.submit_all(&actions::move_element_actions(&slide.id, &el.id, nx, ny));
+            }
         }
     }
 
@@ -1752,12 +1799,8 @@ impl SlidesApp {
         };
         let rebound = *self.notes_slide.borrow() != slide_id;
         if rebound {
-            let (id, wrap) = actions::notes_child(&slide_id);
+            self.notes = notes_control(&self.dispatch, &slide_id);
             *self.notes_slide.borrow_mut() = slide_id;
-            self.notes.attach(
-                self.dispatch
-                    .child::<ui::tilo_resource::PlainText>(&id, wrap),
-            );
         }
         self.notes.pull(doc);
         if std::mem::take(&mut self.notes_caret_to_end) || rebound {
@@ -2574,13 +2617,21 @@ impl AudiencePresentationProvider for SlidesApp {
 impl Widget for SlidesApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
-        dyn ui::widget::AudiencePresentationProvider,
-        dyn ui::resources::PublishesResources
+        dyn ui::widget::AudiencePresentationProvider
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document_ref(state, path);
         self.adopt_deferred();
+        let opened = std::mem::take(&mut self.opened.borrow_mut().requests);
+        for slide in opened {
+            if let Ok(index) = self.slide_index(&slide) {
+                self.mode = Mode::Edit;
+                self.editing_notes = false;
+                self.goto_slide(index);
+                self.scroll_rail_to_current();
+            }
+        }
         // One-time view bootstrap: open on the second slide with its title
         // selected so the editor demonstrates selection + the element
         // inspector immediately (also what `--shots` captures).
@@ -2607,43 +2658,23 @@ impl Widget for SlidesApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // `Widget::build_layout` returns a bare `NodeId`, not a `Result` — a
-        // framework-wide contract this one widget can't change — so a
-        // `new_leaf` failure (which a freshly-created tree with one valid
-        // leaf style cannot produce) has no propagation path here.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "new_leaf on a fresh tree with a valid Style cannot fail; Widget::build_layout's Result-free signature is shared by every implementor and out of this crate's scope to change"
-        )]
-        let node = taffy
-            .new_leaf(Style {
+        let node = taffy.widget_leaf(
+            Style {
                 size: Size {
                     width: Dimension::percent(1.0),
                     height: Dimension::percent(1.0),
                 },
                 ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            },
+            node_map,
+            self,
+        );
         self.node = Some(node);
         node
     }
 
-    // `taffy.layout(...)` only errors for a `NodeId` from a different tree,
-    // which never happens here — every id it's called with is one this
-    // widget received from its own `build_layout`. `Widget::apply_layout`
-    // returns `()` across every implementor, so surfacing a theoretical
-    // error here would mean threading a `Result` through the whole toolkit
-    // for a branch that can't be taken.
-    #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -2720,17 +2751,14 @@ impl Widget for SlidesApp {
         // flag, suppress the overlay, and swallow all later navigation keys.
         self.help_overlay
             .draw(scene, transform, text_renderer, theme, self.rect);
-        if let Some((message, kind)) = self.io_toast.as_ref() {
-            paint_transient(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                self.rect,
-                ToastAnchor::BottomCenter,
-                &ToastCard::new(message, *kind),
-            );
-        }
+        self.io_toast.paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.rect,
+            ToastAnchor::BottomCenter,
+        );
         // Right-click context menu floats above everything else.
         self.ctx_menu
             .draw(scene, transform, text_renderer, theme, presence);
@@ -2762,18 +2790,6 @@ impl Widget for SlidesApp {
         }
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, text_renderer, theme, presence);
-    }
-
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // A restore replaces the notes' text object; the first event may
         // precede the sync that follows it.
@@ -2793,7 +2809,7 @@ impl Widget for SlidesApp {
                 ..
             }
         ) {
-            self.io_toast = None;
+            self.io_toast.dismiss();
         }
         let mut routed = RoutedEvent {
             event,
@@ -2866,7 +2882,7 @@ impl Widget for SlidesApp {
         reason = "the custom-painted editor has editor, presentation, and modal semantic projections in one Widget hook"
     )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+        use ui::a11y::{AccessNode, AccessState, Role};
 
         if self.help_overlay.is_visible() {
             let shortcuts = [
@@ -3052,17 +3068,7 @@ impl Widget for SlidesApp {
                 .with_name(format!("Slide {} canvas", self.cur_slide + 1))
                 .with_children(elements),
         ];
-        if let Some((message, kind)) = &self.io_toast {
-            children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(message)
-                    .with_live(if *kind == ToastKind::Error {
-                        Politeness::Assertive
-                    } else {
-                        Politeness::Polite
-                    }),
-            );
-        }
+        children.extend(self.io_toast.access_node());
         Some(
             AccessNode::new(Role::Document)
                 .with_name(self.deck.title.clone())
@@ -3185,33 +3191,13 @@ impl Widget for SlidesApp {
     }
 }
 
-impl ui::resources::PublishesResources for SlidesApp {
-    /// The deck's edits answer their caller with the deck's outline, so an
-    /// agent sees what it changed without reading the deck again. The deck
-    /// itself is published by its resource; the editor publishes nothing
-    /// beside it.
-    fn document_action_result(
-        &self,
-        doc: &AutoCommit,
-        address: &tilo_actions::ActionAddress,
-        _changes: &[automerge::Patch],
-    ) -> Option<serde_json::Value> {
-        address
-            .resource
-            .as_str()
-            .starts_with("slides.")
-            .then(|| crate::outline::of_document(doc).map(serde_json::Value::String))
-            .flatten()
-    }
-}
-
 impl SlidesApp {
     /// Answer one of the editor's effects, from a control, a key, the
     /// palette or an agent.
     pub(crate) fn answer_effect(
         &mut self,
         effect: SlidesEffect,
-        cx: &mut EffectCx<SlidesDeck, Self>,
+        cx: &mut EffectCx<DeckRecord, Self>,
     ) -> EffectAnswer {
         match effect {
             SlidesEffect::Editor => self.mode = Mode::Edit,
@@ -3247,11 +3233,30 @@ impl SlidesApp {
                 self.scroll_rail_to_current();
             }
             SlidesEffect::InsertPicture => return Ok(Self::choose_picture(cx)),
-            SlidesEffect::Open { path } => return Ok(self.open_presentation(path, cx)),
+            SlidesEffect::OpenPresentation { path } => return Ok(self.open_presentation(path, cx)),
             SlidesEffect::SaveAs { path } => return self.save_presentation(path, cx),
-            SlidesEffect::Read => return Ok(Effected::value(crate::outline::of_deck(&self.deck))),
+            SlidesEffect::ReadDeck => {
+                return Ok(Effected::value(crate::outline::of_deck(&self.deck)));
+            }
         }
         Ok(Effected::done())
+    }
+
+    /// What shows slide `id` when a search hit or an agent's `open` names
+    /// it; a slide the deck no longer holds is refused.
+    pub(crate) fn opener(
+        &self,
+    ) -> impl FnMut(&ui::tilo_resource::Id) -> Result<(), ui::tilo_resource::Refusal> + 'static
+    {
+        let opened = Rc::clone(&self.opened);
+        move |id| {
+            let mut opened = opened.borrow_mut();
+            if !opened.known.contains(id.as_str()) {
+                return Err(ui::tilo_resource::Refusal::new("there is no such slide"));
+            }
+            opened.requests.push(id.to_string());
+            Ok(())
+        }
     }
 
     fn slide_index(&self, slide: &str) -> Result<usize, String> {
@@ -4233,14 +4238,13 @@ impl SlidesApp {
         {
             // The drag preview lived only in the in-memory deck; submit the
             // element's final rect once, on drop — never an edit per frame.
-            self.submit(&actions::resize_element_action(
-                self.cur_slide,
-                id,
-                el.x,
-                el.y,
-                el.w,
-                el.h,
-            ));
+            if let Some(slide) = self.slide() {
+                self.submit_all(&actions::resize_element_actions(
+                    &slide.id,
+                    &id,
+                    (el.x, el.y, el.w, el.h),
+                ));
+            }
             *handled = true;
         }
     }
@@ -4524,7 +4528,8 @@ impl SlidesApp {
             return;
         }
         if ctrl && lc == "o" {
-            self.dispatch.effect(&SlidesEffect::Open { path: None });
+            self.dispatch
+                .effect(&SlidesEffect::OpenPresentation { path: None });
             *handled = true;
             return;
         }

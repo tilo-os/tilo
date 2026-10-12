@@ -1,4 +1,4 @@
-//! `CalendarApp` — the root widget. Owns the in-memory [`Model`], the
+//! `CalendarApp` — the root widget. Owns the in-memory [`Calendar`], the
 //! current view + selection, and a single SDK rich-text editor
 //! ([`RichTextSurface`]) for the **notes** attached to the selected
 //! event/task.
@@ -20,6 +20,10 @@
 
 use automerge::transaction::Transactable;
 use std::collections::{HashMap, HashSet};
+use ui::widget::TaffyTreeExt;
+
+/// How many attendees the calendar publishes as rows of their own.
+const ATTENDEE_ROWS: usize = 256;
 
 /// The files the calendar imports and exports.
 fn ics_filter() -> ui::portal::FileFilter {
@@ -42,12 +46,13 @@ use winit::keyboard::{Key, NamedKey};
 use ui::Widget;
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::paint::PaintCtx;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::modal_dialog::ModalLayout;
-use ui::widget::{DatePicker, Popover, TextInput};
+use ui::widget::{
+    DatePicker, Popover, SegmentedTouch, SegmentedTouchGroup, SegmentedTouchResult, TextInput,
+};
 
 use tilo_rich_text::{RichTextField, RichTextSurface};
 
@@ -55,12 +60,12 @@ use crate::account::AccountStore;
 use crate::agenda::{AgendaAction, AgendaSource, AgendaView};
 use crate::caldav::{self, SyncOutcome};
 use crate::date;
-use crate::doc::CalDoc;
 use crate::event_popovers::{EventPopovers, PopoverEdit, PopoverKind as FormPopover};
 use crate::ics;
 use crate::input_context::InputContext;
-use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View};
+use crate::model::{Calendar, Event, Id, ListSel, Palette, Priority, Task, View};
 use crate::sidebar::{Mode as SidebarMode, Sidebar};
+use crate::tasks::{TasksAction, TasksSource, TasksView};
 use crate::timeline_interaction::{
     TIMELINE_SNAP_MIN, TimelineEffect, TimelineInteraction, TimelineRenderEvent,
     TimelineRenderModel, TimelineSpan,
@@ -132,6 +137,10 @@ enum Action {
     ShiftTaskDueMonth(i32),
     /// Select a task to view its detail (without toggling completion).
     OpenTask(Id),
+    /// Focus the Tasks screen entry to create a task.
+    NewTask,
+    /// Focus the Tasks screen entry.
+    FocusTaskEntry,
     /// Show or hide the sidebar: the docked column when the window is wide,
     /// the floating drawer when it is narrow.
     ToggleSidebar,
@@ -210,7 +219,7 @@ type SyncWorkerResult = (caldav::SyncResult, SyncOutcome);
     reason = "each bool is an independent, unrelated flag (demo mode, sidebar state, sync status, form scratch state); grouping them into enums would not express any real invariant between them and would touch every read/write site across this file"
 )]
 pub struct CalendarApp {
-    model: Model,
+    model: Calendar,
     today: NaiveDate,
     /// The moment shown as now, when a capture pins it; else the clock's.
     pinned_now: Option<chrono::NaiveDateTime>,
@@ -278,9 +287,6 @@ pub struct CalendarApp {
     /// Shots-only: spawn a fresh event on the first sync so the offscreen
     /// renderer can capture the New-Event form. No effect on live runtime.
     staged_new_event: bool,
-    /// A deterministic visual form state should not include a transient toast
-    /// that only exists after an interactive creation action.
-    shots_suppress_status: bool,
     /// Shots-only: open this popover once the form is bound.
     staged_popover: Option<FormPopover>,
     /// Shots-only: open the calendar dropdown once the form is bound.
@@ -328,6 +334,7 @@ pub struct CalendarApp {
 
     hits: Vec<(Rect, Action)>,
     last_mouse: Point,
+    segmented_touch: SegmentedTouch,
     status: Option<String>,
     /// The status toast's close button as last painted.
     status_close: Rect,
@@ -348,6 +355,8 @@ pub struct CalendarApp {
     /// Self-contained upcoming-list view: scroll state, input, drawing and row
     /// actions live together instead of leaking into the root widget.
     agenda: AgendaView,
+    /// The Tasks screen: the selected list in full, with its entry field.
+    tasks: TasksView,
     /// Receiver for an in-flight background `CalDAV` pull. The live sync runs on a
     /// worker thread (the `ui` event loop is synchronous and must never block on
     /// the network); its result is drained here on the next `sync` pass.
@@ -364,16 +373,19 @@ pub struct CalendarApp {
     sync_requested: bool,
     /// The caller of the sync effect, answered when its pull lands.
     sync_reply: Option<ui::framework::EffectReply>,
+    /// What a search hit or an agent's `open` asked to show, shown on the
+    /// next sync.
+    opens: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
 
     /// Where the calendar's edits go: the framework's dispatcher, attached
     /// before the first frame.
-    dispatcher: Option<ui::framework::Dispatcher<crate::resource::Calendar>>,
+    dispatcher: Option<ui::framework::Dispatcher<Calendar>>,
     /// The last edit an on-screen control dispatched, for the tests that
     /// check a control and its published action build the same edit.
     #[cfg(test)]
-    last_dispatched: std::cell::RefCell<Option<tilo_actions::EncodedAction>>,
+    last_dispatched: std::cell::RefCell<Option<ui::tilo_resource::Invoke<Calendar>>>,
 
-    /// The document heads the in-memory [`Model`] was last derived from. When the
+    /// The document heads the in-memory [`Calendar`] was last derived from. When the
     /// document moves past this out of band — a Ctrl+K palette action, a peer's
     /// change merged in — the next `sync` re-reads the model so those mutations
     /// show up in the views, exactly as an on-screen edit already does.
@@ -420,7 +432,7 @@ impl CalendarApp {
     )]
     fn build() -> Self {
         let today = ui::clock::today();
-        let model = Model::default();
+        let model = Calendar::default();
         let selection = None;
         let accounts = AccountStore::default();
         let detail_open = false;
@@ -471,7 +483,6 @@ impl CalendarApp {
                 .with_accessible_name("Month"),
             search_opener: ui::search::SearchOpener::new(),
             staged_new_event: false,
-            shots_suppress_status: false,
             staged_popover: None,
             shots_pending_calendar_menu: false,
             shots_detail_scroll_to_end: false,
@@ -492,16 +503,19 @@ impl CalendarApp {
             built_notes_w: -1.0,
             hits: Vec::new(),
             last_mouse: Point::ZERO,
+            segmented_touch: SegmentedTouch::default(),
             status: None,
             status_close: Rect::ZERO,
             fresh_draft: None,
             dirty: true,
             timeline: TimelineInteraction::new(),
             agenda: AgendaView::new(),
+            tasks: TasksView::new(),
             sync_rx: None,
             syncing: false,
             sync_requested: false,
             sync_reply: None,
+            opens: std::rc::Rc::default(),
             dispatcher: None,
             #[cfg(test)]
             last_dispatched: std::cell::RefCell::default(),
@@ -510,7 +524,7 @@ impl CalendarApp {
     }
 
     /// Adopt the framework's live model projection.
-    pub(crate) fn adopt_resource_state(&mut self, state: &std::rc::Rc<crate::model::Model>) {
+    pub(crate) fn adopt_resource_state(&mut self, state: &std::rc::Rc<crate::model::Calendar>) {
         self.model = (**state).clone();
         self.dirty = true;
     }
@@ -537,7 +551,7 @@ impl CalendarApp {
 
     pub(crate) fn attach_framework(
         &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Calendar>,
+        dispatcher: ui::framework::Dispatcher<Calendar>,
         accounts: Option<AccountStore>,
         sample: bool,
     ) {
@@ -566,13 +580,6 @@ impl CalendarApp {
         }
     }
 
-    /// Pin the week/day timeline scroll to `hour` for a screenshot (`0.0` = top
-    /// of the day, `24.0` = clamped to the bottom). Proves the full 24h scrolls.
-    pub fn shots_scroll_timeline(&mut self, hour: f64) {
-        self.timeline.pin_hour(hour);
-        self.dirty = true;
-    }
-
     /// Show the calendar screen (close the detail panel) for a screenshot.
     pub fn shots_show_calendar(&mut self) {
         self.detail_open = false;
@@ -597,8 +604,16 @@ impl CalendarApp {
             "week" | "empty_week" => Some(View::Week),
             "day" => Some(View::Day),
             "agenda" | "empty_agenda" => Some(View::Agenda),
+            "tasks" | "empty_tasks" => Some(View::Tasks),
             _ => None,
         };
+        match name {
+            // The sample's richest list: due dates, priorities and subtasks.
+            "tasks" => self.list_sel = Some(ListSel::Upcoming),
+            // A first run as `show-tasks` opens it.
+            "empty_tasks" => self.list_sel = Some(ListSel::Inbox),
+            _ => {}
+        }
         if let Some(view) = view {
             self.view = view;
         }
@@ -644,30 +659,6 @@ impl CalendarApp {
         }
     }
 
-    /// Show the Today task list in the sidebar for a screenshot.
-    pub fn shots_show_task_list(&mut self) {
-        self.list_sel = Some(ListSel::Today);
-        self.dirty = true;
-    }
-
-    /// Open the sidebar's overflow menu for a screenshot.
-    pub fn shots_open_sidebar_menu(&mut self) {
-        self.shots_pending_sidebar_menu = true;
-        self.dirty = true;
-    }
-
-    /// Open the sidebar drawer for a screenshot of a narrow window.
-    pub fn shots_open_flap(&mut self) {
-        self.sidebar.open_after_layout();
-        self.dirty = true;
-    }
-
-    /// Collapse the persistent sidebar for a screenshot (wide layout only).
-    pub fn shots_collapse_sidebar(&mut self) {
-        self.sidebar.set_collapsed(true);
-        self.dirty = true;
-    }
-
     /// Deterministic transport-state presentation for visual regression shots.
     pub fn shots_set_sync_state(&mut self, state: &str) {
         self.syncing = state == "syncing";
@@ -683,63 +674,10 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Add a deterministic overlapping event to the demo model for visual
-    /// review of the editor's local scheduling warning. This is screenshot
-    /// staging only: the live app never fabricates a conflicting booking.
-    pub fn shots_show_schedule_conflict(&mut self) {
-        let Some(Sel::Event(id)) = self.selection else {
-            return;
-        };
-        let Some(edited) = self.model.event(id).cloned() else {
-            return;
-        };
-        let mut overlapping = edited.clone();
-        overlapping.id = Uuid::new_v4();
-        overlapping.title = "Design review follow-up".into();
-        overlapping.start = edited.start + Duration::minutes(15);
-        overlapping.end = edited.end + Duration::minutes(30);
-        overlapping.recurrence = Recurrence::Weekly;
-        self.model.events.push(overlapping);
-        self.detail_open = true;
-        self.dirty = true;
-    }
-
-    /// Create a fresh event on the next sync and open its edit form — the
-    /// New-Event screenshot. The event has an empty title (so the field shows
-    /// its placeholder) and empty notes (so the notes editor shows its hint).
-    pub fn shots_new_event(&mut self) {
-        self.staged_new_event = true;
-        self.shots_suppress_status = true;
-        self.dirty = true;
-    }
-
-    /// Open the start-date grid popover over the New-Event form for a
-    /// screenshot of the date picker.
-    pub fn shots_open_date_popover(&mut self) {
-        self.staged_new_event = true;
-        self.staged_popover = Some(FormPopover::StartDate);
-        self.dirty = true;
-    }
-
-    /// Open the start-time spinner popover over the New-Event form for a
-    /// screenshot.
-    pub fn shots_open_time_popover(&mut self) {
-        self.staged_new_event = true;
-        self.staged_popover = Some(FormPopover::StartTime);
-        self.dirty = true;
-    }
-
     /// Open the calendar dropdown of a new event's form for a screenshot.
     pub fn shots_open_calendar_popover(&mut self) {
         self.staged_new_event = true;
         self.shots_pending_calendar_menu = true;
-        self.dirty = true;
-    }
-
-    /// Scroll the event sheet to its lower bound after layout, for a truthful
-    /// visual proof that large-text content below the fold remains reachable.
-    pub fn shots_scroll_detail_to_end(&mut self) {
-        self.shots_detail_scroll_to_end = true;
         self.dirty = true;
     }
 
@@ -796,12 +734,16 @@ impl CalendarApp {
                 return;
             }
         };
-        let protected_hrefs: Vec<(String, String)> = CalDoc::outbox(doc)
+        let current = Calendar::read_whole(doc.doc()).unwrap_or_default();
+        let protected_hrefs: Vec<(String, String)> = crate::outbox::pending_copies(&current)
             .into_iter()
-            .filter_map(|id| CalDoc::remote_binding(doc, id))
-            .map(|(calendar_id, href, _)| (calendar_id, href))
+            .map(|copy| (copy.calendar.clone(), copy.href.clone()))
             .collect();
-        let sync_tokens = CalDoc::sync_tokens(doc);
+        let sync_tokens: Vec<(String, String)> = current
+            .sync_tokens
+            .iter()
+            .map(|(calendar, token)| (calendar.clone(), token.clone()))
+            .collect();
         let (tx, rx) = std::sync::mpsc::channel();
         let today = self.today;
         for id in &sync_account_ids {
@@ -952,8 +894,26 @@ impl CalendarApp {
         let mut added = 0usize;
         let mut updated = 0usize;
         let mut removed = 0usize;
+        let current = Calendar::read_whole(doc.doc()).unwrap_or_default();
+        // Where each item a server holds lives there, as the calendar knows
+        // it and as this pull adds to it.
+        let mut known: Vec<(Id, String, String)> = current
+            .remote
+            .iter()
+            .filter_map(|(id, copy)| {
+                Some((id.parse().ok()?, copy.calendar.clone(), copy.href.clone()))
+            })
+            .collect();
+        let find = |known: &[(Id, String, String)], calendar: &str, href: &str| {
+            known
+                .iter()
+                .find(|(_, held_calendar, held_href)| {
+                    held_calendar == calendar && caldav::hrefs_equal(held_href, href)
+                })
+                .map(|(id, _, _)| *id)
+        };
 
-        // Demo/import results have no DAV resource envelope.
+        // Sample results carry no server address of their own.
         for mut e in result.events {
             if self
                 .model
@@ -964,17 +924,16 @@ impl CalendarApp {
                 continue;
             }
             e.id = Uuid::new_v4();
-            self.dispatch_action(
-                doc,
-                &crate::actions::CalendarAction::AdoptRemoteEvent(
-                    crate::actions::EventData::from_event(&e),
-                ),
-            );
+            let at = crate::resource::RemoteAt {
+                calendar: e.calendar_id.clone().unwrap_or_else(|| "sample".into()),
+                href: String::new(),
+                etag: None,
+            };
+            self.adopt_event(doc, &e, at);
             self.model.events.push(e);
             added += 1;
         }
         for resource in result.resources {
-            let existing = CalDoc::remote_id_for_href(doc, &resource.calendar_id, &resource.href);
             for (index, mut event) in resource.events.into_iter().enumerate() {
                 // Current parser represents recurrence as one event. If a
                 // server returns multiple components in one object, retain
@@ -984,19 +943,14 @@ impl CalendarApp {
                 } else {
                     format!("{}#tilo-component-{index}", resource.href)
                 };
-                let id = if index == 0 {
-                    existing
-                } else {
-                    CalDoc::remote_id_for_href(doc, &resource.calendar_id, &binding_href)
-                }
-                .unwrap_or_else(Uuid::new_v4);
-                // A locally deleted ID is permanent. A late server pull may
-                // still carry its old href, but it must not repopulate the
-                // transient model while the durable tombstone hides it from
-                // every other replica.
-                if CalDoc::event_tombstoned(doc, id) {
+                let id = find(&known, &resource.calendar_id, &binding_href);
+                // An item deleted here keeps what its server held until the
+                // server deleted it too: a late pull still carrying it does
+                // not bring it back.
+                if id.is_some_and(|id| current.event(id).is_none()) {
                     continue;
                 }
+                let id = id.unwrap_or_else(Uuid::new_v4);
                 event.id = id;
                 event.calendar_id = Some(resource.calendar_id.clone());
                 if let Some(slot) = self.model.events.iter_mut().find(|item| item.id == id) {
@@ -1006,27 +960,24 @@ impl CalendarApp {
                     self.model.events.push(event.clone());
                     added += 1;
                 }
-                self.dispatch_action(
+                known.push((id, resource.calendar_id.clone(), binding_href.clone()));
+                self.adopt_event(
                     doc,
-                    &crate::actions::CalendarAction::AdoptRemoteEvent(
-                        crate::actions::EventData::from_event(&event),
-                    ),
-                );
-                self.record_remote_binding(
-                    doc,
-                    id,
-                    &resource.calendar_id,
-                    &binding_href,
-                    resource.etag.as_deref(),
+                    &event,
+                    crate::resource::RemoteAt {
+                        calendar: resource.calendar_id.clone(),
+                        href: binding_href,
+                        etag: resource.etag.clone(),
+                    },
                 );
             }
             for (index, mut task) in resource.tasks.into_iter().enumerate() {
                 let binding_href = format!("{}#tilo-task-{index}", resource.href);
-                let id = CalDoc::remote_id_for_href(doc, &resource.calendar_id, &binding_href)
-                    .unwrap_or_else(Uuid::new_v4);
-                if CalDoc::task_tombstoned(doc, id) {
+                let id = find(&known, &resource.calendar_id, &binding_href);
+                if id.is_some_and(|id| current.task(id).is_none()) {
                     continue;
                 }
+                let id = id.unwrap_or_else(Uuid::new_v4);
                 task.id = id;
                 if let Some(slot) = self.model.tasks.iter_mut().find(|item| item.id == id) {
                     *slot = task.clone();
@@ -1035,23 +986,30 @@ impl CalendarApp {
                     self.model.tasks.push(task.clone());
                     added += 1;
                 }
-                self.dispatch_action(
+                known.push((id, resource.calendar_id.clone(), binding_href.clone()));
+                self.submit(
                     doc,
-                    &crate::actions::CalendarAction::AdoptRemoteTask(
-                        crate::actions::TaskData::from_task(&task),
-                    ),
-                );
-                self.record_remote_binding(
-                    doc,
-                    id,
-                    &resource.calendar_id,
-                    &binding_href,
-                    resource.etag.as_deref(),
+                    Calendar::ADOPT_REMOTE_TASK.with(crate::resource::calendar::AdoptRemoteTask {
+                        task: crate::actions::TaskData::from_task(&task),
+                        at: crate::resource::RemoteAt {
+                            calendar: resource.calendar_id.clone(),
+                            href: binding_href,
+                            etag: resource.etag.clone(),
+                        },
+                    }),
                 );
             }
         }
+        let held_in = |calendar: &str| -> Vec<(Id, String)> {
+            current
+                .remote
+                .iter()
+                .filter(|(_, copy)| copy.calendar == calendar && !copy.href.is_empty())
+                .filter_map(|(id, copy)| Some((id.parse().ok()?, copy.href.clone())))
+                .collect()
+        };
         for deletion in result.deletions {
-            let victims: Vec<Id> = CalDoc::remote_bindings_for_calendar(doc, &deletion.calendar_id)
+            let victims: Vec<Id> = held_in(&deletion.calendar_id)
                 .into_iter()
                 .filter(|(_, href)| {
                     caldav::hrefs_equal(href.split("#tilo-").next().unwrap_or(href), &deletion.href)
@@ -1059,12 +1017,7 @@ impl CalendarApp {
                 .map(|(id, _)| id)
                 .collect();
             for id in victims {
-                self.dispatch_action(
-                    doc,
-                    &crate::actions::CalendarAction::DropRemoteItem { id: id.to_string() },
-                );
-                self.model.events.retain(|event| event.id != id);
-                self.model.tasks.retain(|task| task.id != id);
+                self.drop_remote(doc, id);
                 removed += 1;
             }
         }
@@ -1074,19 +1027,13 @@ impl CalendarApp {
             if checkpoint.full {
                 let seen: HashSet<&str> =
                     checkpoint.seen_hrefs.iter().map(String::as_str).collect();
-                for (id, href) in CalDoc::remote_bindings_for_calendar(doc, &checkpoint.calendar_id)
-                {
+                for (id, href) in held_in(&checkpoint.calendar_id) {
                     let base = href.split("#tilo-").next().unwrap_or(&href);
                     if !seen
                         .iter()
                         .any(|seen_href| caldav::hrefs_equal(base, seen_href))
                     {
-                        self.dispatch_action(
-                            doc,
-                            &crate::actions::CalendarAction::DropRemoteItem { id: id.to_string() },
-                        );
-                        self.model.events.retain(|event| event.id != id);
-                        self.model.tasks.retain(|task| task.id != id);
+                        self.drop_remote(doc, id);
                         removed += 1;
                     }
                 }
@@ -1095,15 +1042,15 @@ impl CalendarApp {
         // Commit markers are deliberately last: a crash before here repeats a
         // response idempotently; a crash after here sees fully reconciled data.
         for checkpoint in result.checkpoints {
-            self.dispatch_action(
+            self.submit(
                 doc,
-                &crate::actions::CalendarAction::SetSyncToken {
-                    calendar_id: checkpoint.calendar_id.clone(),
+                Calendar::PULLED.with(crate::resource::calendar::Pulled {
+                    calendar: checkpoint.calendar_id.clone(),
                     token: checkpoint.token.clone(),
-                },
+                }),
             );
         }
-        self.model.events.sort_by_key(|e| e.start);
+        self.model.events.settle();
         self.status = Some(match outcome {
             SyncOutcome::Synced { calendars, .. } => {
                 format!(
@@ -1122,30 +1069,49 @@ impl CalendarApp {
         self.dirty = true;
     }
 
+    /// Write `event` as its server holds it, at `at`.
+    fn adopt_event(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        event: &Event,
+        at: crate::resource::RemoteAt,
+    ) {
+        self.submit(
+            doc,
+            Calendar::ADOPT_REMOTE_EVENT.with(crate::resource::calendar::AdoptRemoteEvent {
+                event: crate::actions::EventData::from_event(event),
+                at,
+            }),
+        );
+    }
+
+    /// Drop the item `id` its server no longer holds.
+    fn drop_remote(&mut self, doc: &mut ui::widget::Edits<'_>, id: Id) {
+        self.submit(
+            doc,
+            Calendar::DROP_REMOTE_ITEM.with(crate::resource::calendar::DropRemoteItem { item: id }),
+        );
+        self.model.events.retain(|event| event.id != id);
+        self.model.tasks.retain(|task| task.id != id);
+    }
+
     /// The notes editor, bound to `owner`'s notes: every edit is the
-    /// calendar's own [`EditNotes`](crate::actions::CalendarAction::EditNotes)
-    /// action on that event or task, through the notes' child of the
+    /// calendar's field edit at their path, through the notes' child of the
     /// calendar's dispatcher. Until the calendar is hosted there is none, and
     /// the notes are shown, not edited.
     fn new_notes_editor(
         owner: Option<Sel>,
-        calendar: Option<&ui::framework::Dispatcher<crate::resource::Calendar>>,
+        calendar: Option<&ui::framework::Dispatcher<Calendar>>,
     ) -> NotesEditor {
-        let (event, id) = match owner {
-            Some(Sel::Event(id)) => (true, Some(id)),
-            Some(Sel::Task(id)) => (false, Some(id)),
-            None => (true, None),
+        let id = match owner {
+            Some(Sel::Event(id) | Sel::Task(id)) => Some(id),
+            None => None,
         };
+        let notes = id.map(crate::resource::notes_path);
         let mut field =
-            RichTextField::view_only(move |doc| id.and_then(|id| CalDoc::notes(doc, event, id)));
+            RichTextField::view_only(move |doc| notes.as_ref().and_then(|notes| notes.object(doc)));
         if let (Some(calendar), Some(id)) = (calendar, id) {
-            let id = id.to_string();
-            let owner = if event {
-                crate::actions::NoteOwner::Event { id }
-            } else {
-                crate::actions::NoteOwner::Task { id }
-            };
-            field.attach(crate::resource::notes_dispatcher(calendar, &owner));
+            field.attach(crate::resource::notes_dispatcher(calendar, id));
         }
         RichTextSurface::field(field).with_placeholder(NOTES_PLACEHOLDER)
     }
@@ -1189,11 +1155,8 @@ impl CalendarApp {
             return;
         }
         // Every action that creates an event or a task starts its notes.
-        let exists = match sel {
-            Sel::Event(id) => CalDoc::notes(doc, true, id),
-            Sel::Task(id) => CalDoc::notes(doc, false, id),
-        };
-        if exists.is_some() {
+        let (Sel::Event(id) | Sel::Task(id)) = sel;
+        if crate::resource::notes_path(id).object(doc).is_some() {
             self.notes_editor = Self::new_notes_editor(Some(sel), self.dispatcher.as_ref());
             self.bound = Some(sel);
             self.dirty = true;
@@ -1243,22 +1206,18 @@ impl CalendarApp {
         }
         let title = self.title_input.value().to_string();
         let location = self.location_input.value().to_string();
-        let patch = if let Some(e) = self.model.event_mut(id) {
-            let mut patch = crate::actions::EventPatch::default();
-            if title_dirty.is_some() && e.title != title {
-                e.title = title;
-                patch.title = Some(e.title.clone());
-            }
-            if loc_dirty.is_some() && e.location != location {
-                e.location = location;
-                patch.location = Some(e.location.clone());
-            }
-            (!patch.is_empty()).then_some(patch)
-        } else {
-            None
+        let Some(e) = self.model.event_mut(id) else {
+            return;
         };
-        if let Some(patch) = patch {
-            self.dispatch_action(doc, &crate::actions::patch_event_action(id, patch));
+        let before = e.clone();
+        if title_dirty.is_some() {
+            e.title = title;
+        }
+        if loc_dirty.is_some() {
+            e.location = location;
+        }
+        let after = e.clone();
+        if self.submit_event_change(doc, &before, &after) {
             self.dirty = true;
         }
     }
@@ -1286,26 +1245,12 @@ impl CalendarApp {
             self.status = Some(format!("{email} is already invited"));
             return;
         }
-        let attendee = crate::model::Attendee {
-            id: Uuid::new_v4(),
-            name: String::new(),
-            email: email.clone(),
-            status: crate::model::InviteStatus::NeedsAction,
-        };
-        self.dispatch_action(
+        self.submit(
             doc,
-            &crate::actions::CalendarAction::UpsertAttendee {
-                event_id: event_id.to_string(),
-                attendee: crate::actions::AttendeeData {
-                    id: attendee.id.to_string(),
-                    name: attendee.name.clone(),
-                    email: attendee.email.clone(),
-                    status: attendee.status.as_ical().into(),
-                },
-            },
+            Calendar::INVITE.with((crate::model::key(event_id), email.clone(), String::new())),
         );
-        if let Some(event) = self.model.event_mut(event_id) {
-            event.attendees.push(attendee);
+        if let Ok(read) = Calendar::read_whole(doc.doc()) {
+            self.model = read;
         }
         self.invite_input.set_text("");
         self.status = Some(format!(
@@ -1328,81 +1273,65 @@ impl CalendarApp {
         }
     }
 
-    // --- action dispatch -------------------------------------------------
+    // --- submitting edits ------------------------------------------------
 
-    /// Apply one [`CalendarAction`](crate::actions::CalendarAction) through
-    /// the calendar's dispatcher — the one write path, shared with the
-    /// palette, agents and scripts: checked against the participant's
-    /// permissions, attributed and recorded in history. The in-memory model
-    /// is updated by the caller for immediate feedback and reconciled from
-    /// the document on the next `sync`.
-    fn dispatch_action(
+    /// Submit one edit or verb through the calendar's dispatcher — the one
+    /// write path, shared with the palette, agents and scripts: checked
+    /// against the participant's permissions, attributed and recorded in
+    /// history. The in-memory calendar is updated by the caller for
+    /// immediate feedback and re-read from the document on the next `sync`.
+    fn submit(
         &self,
         doc: &mut ui::widget::Edits<'_>,
-        action: &crate::actions::CalendarAction,
+        submit: impl ui::framework::Submit<Calendar>,
     ) {
-        if let Err(error) = self.try_dispatch_action(doc, action) {
+        if let Err(error) = self.try_submit(doc, submit) {
             tracing::debug!(%error, "calendar: an edit was refused");
         }
     }
 
-    /// [`Self::dispatch_action`], reporting a refusal.
-    fn try_dispatch_action(
+    /// [`Self::submit`], reporting a refusal.
+    fn try_submit(
         &self,
         doc: &mut ui::widget::Edits<'_>,
-        action: &crate::actions::CalendarAction,
+        submit: impl ui::framework::Submit<Calendar>,
     ) -> Result<(), tilo_actions::ActionError> {
+        let invoke = submit
+            .into_invoke()
+            .map_err(tilo_actions::ActionError::Refused)?;
         #[cfg(test)]
         {
-            *self.last_dispatched.borrow_mut() = Some(crate::actions::encode(action));
+            *self.last_dispatched.borrow_mut() = Some(invoke.clone());
         }
         let Some(dispatcher) = &self.dispatcher else {
             return Err(tilo_actions::ActionError::Refused(
                 "the calendar is not attached to a window".into(),
             ));
         };
-        let context = crate::actions::history_context_in_document(action, doc.doc());
-        dispatcher.apply_now_with(doc, action, context)
+        dispatcher.submit_now(doc, invoke)
     }
 
-    fn record_remote_binding(
+    /// Submit the field edits that make `before` the event `after`, one by
+    /// one.
+    fn submit_event_change(
         &self,
         doc: &mut ui::widget::Edits<'_>,
-        id: Id,
-        calendar_id: &str,
-        href: &str,
-        etag: Option<&str>,
-    ) {
-        self.dispatch_action(
-            doc,
-            &crate::actions::CalendarAction::SetRemoteBinding {
-                id: id.to_string(),
-                calendar_id: calendar_id.to_string(),
-                href: href.to_string(),
-                etag: etag.unwrap_or_default().to_string(),
-            },
-        );
+        before: &Event,
+        after: &Event,
+    ) -> bool {
+        let edits = Calendar::paths().events.upsert(Some(before), after);
+        let changed = !edits.is_empty();
+        for edit in edits {
+            self.submit(doc, edit);
+        }
+        changed
     }
 
-    /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-screen
-    /// affordance dispatched, for the button == [`ActionSpec`](tilo_actions::ActionSpec)
-    /// covenant test: a control and its Ctrl+K entry must build the identical
-    /// action.
+    /// The last invocation an on-screen affordance submitted, for the tests
+    /// that check a control and its published action build the same edit.
     #[cfg(test)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    fn last_dispatched(&self) -> Option<tilo_actions::EncodedAction> {
+    fn last_dispatched(&self) -> Option<ui::tilo_resource::Invoke<Calendar>> {
         self.last_dispatched.borrow().clone()
-    }
-
-    /// The remote calendar to queue a `CalDAV` delete for when an event is
-    /// removed: the one it was synced from, whichever device holds that
-    /// account. Shared by the trash button and the published "Delete event"
-    /// so both build the identical
-    /// [`CalendarAction`](crate::actions::CalendarAction).
-    fn resolve_remote_delete(&self, id: Id) -> Option<String> {
-        self.model
-            .event(id)
-            .and_then(|event| event.calendar_id.clone())
     }
 
     /// The calendar collections as live rows of the calendar.
@@ -1410,6 +1339,29 @@ impl CalendarApp {
         self.calendar_collections()
             .iter()
             .map(crate::actions::calendar_collection_row)
+            .collect()
+    }
+
+    /// Each event's attendees as rows offering to prepare their invitation
+    /// in Mail, as many as [`ATTENDEE_ROWS`].
+    pub(crate) fn attendee_rows(&self) -> Vec<ui::framework::LiveRow> {
+        self.model
+            .events
+            .iter()
+            .flat_map(|event| {
+                event.attendees.iter().map(move |attendee| {
+                    ui::framework::LiveRow::new(
+                        crate::actions::attendee_resource_id(event.id, attendee.id),
+                        "calendar.attendee",
+                        attendee.email.clone(),
+                    )
+                    .effect(&crate::resource::CalendarEffect::PrepareInMail {
+                        event_id: event.id.to_string(),
+                        attendee_id: attendee.id.to_string(),
+                    })
+                })
+            })
+            .take(ATTENDEE_ROWS)
             .collect()
     }
 
@@ -1481,21 +1433,11 @@ impl CalendarApp {
         Rect::new(self.rect.x0, self.rect.y0, button.x1, self.rect.y1)
     }
 
-    /// Delete an event: drop it from the model + CRDT, clear any pending upload,
-    /// and — for an event synced from a configured remote calendar — queue a
-    /// `CalDAV` delete so the server copy is removed on the next sync. Closes the
-    /// editor if the deleted event was the one on screen.
+    /// Delete an event and its notes; a server holding it deletes it next.
+    /// Closes the editor if the deleted event was the one on screen.
     fn delete_event(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
-        // Resolve the CalDAV delete target (a synced event on a still-configured
-        // calendar) before the row leaves the model. The action removes the
-        // event, clears any queued upload, and — given a target — queues the
-        // remote delete, so every doc write is one replayable envelope.
-        let remote_delete = self.resolve_remote_delete(id);
         self.model.events.retain(|e| e.id != id);
-        self.dispatch_action(
-            doc,
-            &crate::actions::delete_event_action(id.to_string(), remote_delete),
-        );
+        self.submit(doc, Calendar::DELETE_EVENT.with(crate::model::key(id)));
         if self.selection == Some(Sel::Event(id)) {
             self.close_after_delete();
         }
@@ -1506,27 +1448,17 @@ impl CalendarApp {
     /// Delete a task (and any subtasks) from the model + CRDT. Closes the editor
     /// if the deleted task was the one on screen.
     fn delete_task(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
-        let subtasks: Vec<Id> = self
-            .model
-            .tasks
-            .iter()
-            .filter(|t| t.parent == Some(id))
-            .map(|t| t.id)
-            .collect();
         let victims: Vec<Id> = std::iter::once(id)
-            .chain(subtasks.iter().copied())
+            .chain(
+                self.model
+                    .tasks
+                    .iter()
+                    .filter(|t| t.parent == Some(id))
+                    .map(|t| t.id),
+            )
             .collect();
         self.model.tasks.retain(|t| !victims.contains(&t.id));
-        self.dispatch_action(
-            doc,
-            &crate::actions::delete_task_action(
-                id.to_string(),
-                subtasks
-                    .iter()
-                    .map(std::string::ToString::to_string)
-                    .collect(),
-            ),
-        );
+        self.submit(doc, Calendar::DELETE_TASK.with(crate::model::key(id)));
         if matches!(self.selection, Some(Sel::Task(sel)) if victims.contains(&sel)) {
             self.close_after_delete();
         }
@@ -1561,9 +1493,13 @@ impl CalendarApp {
             None
         };
         if let Some(done) = done {
-            self.dispatch_action(
+            self.submit(
                 doc,
-                &crate::actions::set_task_done_action(id.to_string(), done),
+                Calendar::paths()
+                    .tasks
+                    .item(&crate::model::key(id))
+                    .done
+                    .set(done),
             );
             self.dirty = true;
         }
@@ -1575,15 +1511,13 @@ impl CalendarApp {
         };
         if let Some(task) = self.model.task_mut(id) {
             task.due = due;
-            self.dispatch_action(
+            self.submit(
                 doc,
-                &crate::actions::patch_task_action(
-                    id,
-                    crate::actions::TaskPatch {
-                        due: Some(due.map(|date| date.to_string()).unwrap_or_default()),
-                        ..crate::actions::TaskPatch::default()
-                    },
-                ),
+                Calendar::paths()
+                    .tasks
+                    .item(&crate::model::key(id))
+                    .due
+                    .set(due),
             );
         }
         self.task_popover = None;
@@ -1595,15 +1529,13 @@ impl CalendarApp {
         };
         if let Some(task) = self.model.task_mut(id) {
             task.priority = priority;
-            self.dispatch_action(
+            self.submit(
                 doc,
-                &crate::actions::patch_task_action(
-                    id,
-                    crate::actions::TaskPatch {
-                        priority: Some(priority.rank()),
-                        ..crate::actions::TaskPatch::default()
-                    },
-                ),
+                Calendar::paths()
+                    .tasks
+                    .item(&crate::model::key(id))
+                    .priority
+                    .set(priority),
             );
         }
         self.task_popover = None;
@@ -1615,15 +1547,13 @@ impl CalendarApp {
         };
         if let Some(task) = self.model.task_mut(id) {
             task.project = project;
-            self.dispatch_action(
+            self.submit(
                 doc,
-                &crate::actions::patch_task_action(
-                    id,
-                    crate::actions::TaskPatch {
-                        project: Some(project.map(|value| value.to_string()).unwrap_or_default()),
-                        ..crate::actions::TaskPatch::default()
-                    },
-                ),
+                Calendar::paths()
+                    .tasks
+                    .item(&crate::model::key(id))
+                    .project
+                    .set(project),
             );
         }
         self.task_popover = None;
@@ -1644,23 +1574,11 @@ impl CalendarApp {
             title: String::new(),
             start,
             end: start + Duration::hours(1),
-            all_day: false,
-            location: String::new(),
             color: self.model.next_event_order_color(),
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: Vec::new(),
             reminder_min: Some(10),
             // Filed on the local (on-device) calendar by default; the form's
             // calendar selector can retarget it to a configured account.
-            calendar_id: None,
-            project: None,
+            ..Event::default()
         };
         self.spawn_event(ev, doc);
     }
@@ -1672,10 +1590,15 @@ impl CalendarApp {
     /// placeholder until the user types.
     fn spawn_event(&mut self, ev: Event, doc: &mut ui::widget::Edits<'_>) {
         let id = ev.id;
-        self.dispatch_action(doc, &crate::actions::upsert_event_action(&ev));
+        self.submit(
+            doc,
+            Calendar::NEW_EVENT.with(crate::resource::calendar::NewEvent {
+                event: crate::actions::EventData::from_event(&ev),
+            }),
+        );
         self.fresh_draft = Some(ev.clone());
         self.model.events.push(ev);
-        self.model.events.sort_by_key(|e| e.start);
+        self.model.events.settle();
         self.select_event(id);
         self.title_input.set_text("");
         self.location_input.set_text("");
@@ -1696,9 +1619,9 @@ impl CalendarApp {
         let Some(current) = self.model.event(id).cloned() else {
             return false;
         };
-        if !crate::actions::EventPatch::between(&initial, &current).is_empty()
-            || CalDoc::event_has_notes(doc, id)
-        {
+        let has_notes = Calendar::read_whole(doc.doc())
+            .is_ok_and(|calendar| !calendar.notes_text(id).trim().is_empty());
+        if initial != current || has_notes {
             return false;
         }
         self.delete_event(id, doc);
@@ -1728,21 +1651,9 @@ impl CalendarApp {
             title: String::new(),
             start,
             end,
-            all_day: false,
-            location: String::new(),
             color: self.model.next_event_order_color(),
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: Vec::new(),
             reminder_min: Some(10),
-            calendar_id: None,
-            project: None,
+            ..Event::default()
         };
         self.spawn_event(ev, doc);
         self.dirty = true;
@@ -1761,22 +1672,20 @@ impl CalendarApp {
     ) {
         let start = day.and_time(min_to_time(start_min));
         let end = start + Duration::minutes(dur_min.max(TIMELINE_SNAP_MIN));
-        let patch = if let Some(e) = self.model.event_mut(id) {
+        let moved = match self.model.event_mut(id) {
             // An all-day event has no place on the timed grid; leave it alone.
-            if e.all_day {
-                None
-            } else {
-                let before = e.clone();
+            Some(e) if !e.all_day && (e.start != start || e.end != end) => {
                 e.start = start;
                 e.end = end;
-                let patch = crate::actions::EventPatch::between(&before, e);
-                (!patch.is_empty()).then_some(patch)
+                true
             }
-        } else {
-            None
+            _ => false,
         };
-        if let Some(patch) = patch {
-            self.dispatch_action(doc, &crate::actions::patch_event_action(id, patch));
+        if moved {
+            self.submit(
+                doc,
+                Calendar::RESCHEDULE.with((crate::model::key(id), start, end)),
+            );
             self.status = Some("Event rescheduled".into());
             self.dirty = true;
         }
@@ -1803,6 +1712,9 @@ impl CalendarApp {
         }
         if matches!(self.view, View::Agenda) {
             return self.handle_agenda_timeline_input(input);
+        }
+        if matches!(self.view, View::Tasks) {
+            return self.handle_tasks_scroll_input(input);
         }
         if !matches!(self.view, View::Week | View::Day) {
             return false;
@@ -1862,6 +1774,177 @@ impl CalendarApp {
             }
         }
         false
+    }
+
+    /// The Tasks screen's scroll input: wheel and scrollbar over its rows.
+    fn handle_tasks_scroll_input(&mut self, input: &mut InputContext<'_>) -> bool {
+        if !matches!(
+            input.event,
+            WindowEvent::MouseWheel { .. }
+                | WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput {
+                    button: MouseButton::Left,
+                    ..
+                }
+        ) {
+            return false;
+        }
+        if self.tasks.wants_pointer_capture() || self.tasks.list_rect().contains(self.last_mouse) {
+            let handled = self.tasks.handle_scroll_event(input);
+            if handled {
+                self.dirty = true;
+            }
+            return handled;
+        }
+        false
+    }
+
+    fn draw_tasks(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        _area: Rect,
+        presence: &PresenceCtx,
+    ) -> Vec<(Rect, Action)> {
+        let source = TasksSource {
+            model: &self.model,
+            list: self.list_sel.as_ref().unwrap_or(&ListSel::Inbox),
+            today: self.today,
+        };
+        self.tasks
+            .draw(ctx, &source, self.last_mouse, presence)
+            .into_iter()
+            .map(|(rect, action)| {
+                (
+                    rect,
+                    match action {
+                        TasksAction::OpenTask(id) => Action::OpenTask(id),
+                        TasksAction::ToggleTask(id) => Action::ToggleTask(id),
+                        TasksAction::FocusEntry => Action::FocusTaskEntry,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// What the Tasks screen lists: the sidebar's selected list.
+    fn tasks_source(&self) -> TasksSource<'_> {
+        TasksSource {
+            model: &self.model,
+            list: self.list_sel.as_ref().unwrap_or(&ListSel::Inbox),
+            today: self.today,
+        }
+    }
+
+    /// Add a task titled `title` to the list on screen, through the same
+    /// action the root's `new-task` builds, filed so the list shows it.
+    fn add_task(&mut self, title: &str, doc: &mut ui::widget::Edits<'_>) {
+        let (project, due) = self.tasks_source().placement();
+        let task = Task {
+            id: Uuid::new_v4(),
+            title: title.trim().to_owned(),
+            due,
+            project,
+            ..Task::default()
+        };
+        if let Err(error) = self.try_submit(
+            doc,
+            Calendar::NEW_TASK.with(crate::resource::calendar::NewTask {
+                task: crate::actions::TaskData::from_task(&task),
+            }),
+        ) {
+            self.status = Some(error.to_string());
+            return;
+        }
+        self.status = Some(crate::resource::t_args(
+            "calendar-tasks-added",
+            &[("title", ui::i18n::ArgValue::from(task.title.clone()))],
+        ));
+        self.model.tasks.push(task);
+        self.model.tasks.settle();
+        self.dirty = true;
+    }
+
+    /// Show the Tasks screen with its entry field focused. Completed takes
+    /// no new task, so a new one is typed into the Inbox instead.
+    fn start_new_task(&mut self) {
+        if matches!(self.list_sel, Some(ListSel::Completed)) {
+            self.list_sel = Some(ListSel::Inbox);
+        }
+        self.view = View::Tasks;
+        self.blur_editor();
+        self.tasks.set_entry_focus(true);
+    }
+
+    /// The Tasks screen to assistive technology, only while it is on
+    /// screen: the "Task list" region with one item per task (empty when the
+    /// list is), and the empty state's explanation when it shows one. Each
+    /// row's open and complete controls are published from the hit map.
+    fn task_list_access_nodes(&self) -> Vec<AccessNode> {
+        if self.view != View::Tasks || self.content_rect.area() <= 0.0 {
+            return Vec::new();
+        }
+        let source = self.tasks_source();
+        let rows = source.rows();
+        let count = rows.len();
+        let items = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let task = row.task;
+                let mut name = task.title.clone();
+                if let Some(due) = task.due {
+                    name = crate::resource::t_args(
+                        "calendar-tasks-row-due",
+                        &[
+                            ("title", ui::i18n::ArgValue::from(name)),
+                            (
+                                "due",
+                                ui::i18n::ArgValue::from(date::relative_label(due, self.today)),
+                            ),
+                        ],
+                    );
+                }
+                if task.priority != Priority::None {
+                    name = crate::resource::t_args(
+                        "calendar-tasks-row-priority",
+                        &[
+                            ("title", ui::i18n::ArgValue::from(name)),
+                            ("priority", ui::i18n::ArgValue::from(task.priority.label())),
+                        ],
+                    );
+                }
+                if row.depth > 0 {
+                    name = crate::resource::t_args(
+                        "calendar-tasks-row-subtask",
+                        &[("title", ui::i18n::ArgValue::from(name))],
+                    );
+                }
+                AccessNode::new(Role::ListItem)
+                    .with_name(name)
+                    .with_state(AccessState::new().checked(task.done))
+                    .with_position(index + 1, count)
+            })
+            .collect();
+        let mut nodes = vec![
+            AccessNode::new(Role::List)
+                .with_name(crate::resource::t("calendar-tasks-list"))
+                .with_description(source.title())
+                .with_bounds(self.tasks.list_rect())
+                .with_children(items),
+        ];
+        if count == 0 {
+            let (title, message) = source.empty_copy();
+            nodes.push(
+                AccessNode::new(Role::StaticText).with_name(crate::resource::t_args(
+                    "calendar-tasks-empty-description",
+                    &[
+                        ("title", ui::i18n::ArgValue::from(title)),
+                        ("message", ui::i18n::ArgValue::from(message)),
+                    ],
+                )),
+            );
+        }
+        nodes
     }
 
     // --- event form model edits -----------------------------------------
@@ -2025,8 +2108,8 @@ impl CalendarApp {
     }
 
     /// File the selected event on `target`. A remote target tags the event
-    /// with the calendar id, adopts that calendar's colour, and queues it for
-    /// upload; the local target clears the tag and drops it from the queue.
+    /// with the calendar id and adopts that calendar's colour, and its server
+    /// takes it next; the local target clears the tag.
     fn set_event_calendar(&mut self, target: &CalTarget, doc: &mut ui::widget::Edits<'_>) {
         let Some(Sel::Event(id)) = self.selection else {
             return;
@@ -2058,12 +2141,13 @@ impl CalendarApp {
             None
         };
         if let Some(snap) = snap {
-            // One action writes the retargeted event AND updates the push queue
-            // (enqueue for a remote target, dequeue for the local one).
-            let enqueue = matches!(target, CalTarget::Remote(_));
-            self.dispatch_action(
+            self.submit(
                 doc,
-                &crate::actions::set_event_calendar_action(&snap, enqueue),
+                Calendar::MOVE_TO_CALENDAR.with((
+                    crate::model::key(id),
+                    snap.calendar_id.clone(),
+                    snap.color,
+                )),
             );
         }
         self.event_popovers.close();
@@ -2283,7 +2367,7 @@ impl CalendarApp {
     /// Save every event and task to an iCalendar file the person chooses.
     fn export_ics(
         &mut self,
-        cx: &mut ui::framework::EffectCx<crate::resource::Calendar, Self>,
+        cx: &mut ui::framework::EffectCx<Calendar, Self>,
     ) -> ui::framework::EffectAnswer {
         let (ics, name) = self.ics_export()?;
         let request =
@@ -2308,9 +2392,7 @@ impl CalendarApp {
     /// Import the events and tasks of an iCalendar file the person chooses
     /// through the real [`ics::parse`] path, as one action. Items already in
     /// the calendar are not added twice.
-    fn import_ics(
-        cx: &mut ui::framework::EffectCx<crate::resource::Calendar, Self>,
-    ) -> ui::framework::Effected {
+    fn import_ics(cx: &mut ui::framework::EffectCx<Calendar, Self>) -> ui::framework::Effected {
         let request = ui::portal::PickRequest::open("Import a calendar", "Import")
             .filter(ics_filter())
             .all_files();
@@ -2320,9 +2402,9 @@ impl CalendarApp {
             };
             let payload = String::from_utf8(file.bytes)
                 .map_err(|_| format!("{} is not an iCalendar file", file.name))?;
-            let action = crate::actions::import_action(&payload)
+            let import = crate::resource::import(&payload)
                 .ok_or_else(|| format!("{} holds no events or tasks", file.name))?;
-            cx.apply(&action);
+            cx.submit(import);
             app.status = Some(format!("Imported calendar items from {}", file.name));
             app.dirty = true;
             Ok(ui::framework::Effected::done())
@@ -2330,17 +2412,13 @@ impl CalendarApp {
     }
 
     fn cycle_event<F: Fn(&mut Event)>(&mut self, doc: &mut ui::widget::Edits<'_>, f: F) {
-        if let Some(Sel::Event(id)) = self.selection {
-            let patch = if let Some(e) = self.model.event_mut(id) {
-                let before = e.clone();
-                f(e);
-                let patch = crate::actions::EventPatch::between(&before, e);
-                (!patch.is_empty()).then_some(patch)
-            } else {
-                None
-            };
-            if let Some(patch) = patch {
-                self.dispatch_action(doc, &crate::actions::patch_event_action(id, patch));
+        if let Some(Sel::Event(id)) = self.selection
+            && let Some(e) = self.model.event_mut(id)
+        {
+            let before = e.clone();
+            f(e);
+            let after = e.clone();
+            if self.submit_event_change(doc, &before, &after) {
                 self.dirty = true;
             }
         }
@@ -2356,6 +2434,7 @@ impl CalendarApp {
             View::Month => date::add_months(self.anchor, dir),
             View::Week | View::Agenda => self.anchor + Duration::days(7 * i64::from(dir)),
             View::Day => self.anchor + Duration::days(i64::from(dir)),
+            View::Tasks => self.anchor,
         };
         self.dirty = true;
     }
@@ -2397,7 +2476,19 @@ impl CalendarApp {
                     &theme,
                 );
             }
+            View::Tasks => {
+                let area = self.view_rect();
+                let source = TasksSource {
+                    model: &self.model,
+                    list: self.list_sel.as_ref().unwrap_or(&ListSel::Inbox),
+                    today: self.today,
+                };
+                self.tasks.layout(area, &source, &theme);
+            }
             View::Month => {}
+        }
+        if self.view != View::Tasks || self.content_rect.area() <= 0.0 {
+            self.tasks.park_entry();
         }
 
         self.seed_choices();
@@ -2515,6 +2606,49 @@ impl CalendarApp {
         })
     }
 
+    fn segmented_rects(&self) -> (Vec<Rect>, Vec<Rect>) {
+        if self.detail_open || self.sidebar_menu.is_open() {
+            return (Vec::new(), Vec::new());
+        }
+        let sidebar = self.sidebar.rect();
+        self.hits
+            .iter()
+            .filter_map(|(rect, action)| matches!(action, Action::View(_)).then_some(*rect))
+            .partition(|rect| !sidebar.contains(rect.center()))
+    }
+
+    fn handle_segmented_touch(
+        &mut self,
+        touch: &winit::event::Touch,
+        scale: f64,
+        edits: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        let (header, sidebar) = self.segmented_rects();
+        let selected = View::ALL
+            .iter()
+            .position(|view| *view == self.view)
+            .unwrap_or(0);
+        let groups = [
+            SegmentedTouchGroup::new(0, &header, selected),
+            SegmentedTouchGroup::new(1, &sidebar, selected),
+        ];
+        let result = self.segmented_touch.handle(touch, scale, &groups);
+        if let SegmentedTouchResult::Selected { index, .. } = result {
+            let Some(&view) = View::ALL.get(index) else {
+                return true;
+            };
+            if self.dispatcher.is_some() {
+                self.invoke_effect(&crate::resource::CalendarEffect::ShowView {
+                    view: view.label().to_lowercase(),
+                });
+            } else {
+                self.apply_action(Action::View(view), edits);
+            }
+            self.dirty = true;
+        }
+        result.handled()
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the complete local action routing table remains intentionally centralized so every hit and semantic action shares one persistence boundary"
@@ -2540,6 +2674,7 @@ impl CalendarApp {
             }
             Action::OpenEvent(id) => self.select_event(id),
             Action::OpenTask(id) => self.select_task(id),
+            Action::NewTask | Action::FocusTaskEntry => self.start_new_task(),
             Action::ToggleTask(id) => self.toggle_task(id, doc),
             Action::List(s) => {
                 // The list's tasks show in the sidebar, under the lists, so
@@ -2636,7 +2771,7 @@ impl CalendarApp {
         let (target, name, role, state) = match action {
             Action::View(view) => (
                 format!("calendar.view:{}", view.label().to_lowercase()),
-                format!("{} view", view.label()),
+                crate::resource::t_args("calendar-view-name", &[("view", ui::i18n::ArgValue::from(view.display_label()))]),
                 Role::RadioButton,
                 AccessState::new()
                     .focusable(true)
@@ -2665,6 +2800,20 @@ impl CalendarApp {
                 "New event".into(),
                 Role::Button,
                 AccessState::new().focusable(true),
+            ),
+            Action::NewTask => (
+                "calendar.new-task".into(),
+                "New task".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::FocusTaskEntry => (
+                "calendar.tasks:entry".into(),
+                crate::resource::t_args("calendar-tasks-add-to", &[("list", ui::i18n::ArgValue::from(self.model.list_title(self.list_sel.as_ref().unwrap_or(&ListSel::Inbox))))]),
+                Role::Button,
+                AccessState::new()
+                    .focusable(true)
+                    .focused(self.tasks.entry_focused()),
             ),
             Action::ToggleSidebar => (
                 "calendar.sidebar".into(),
@@ -3205,7 +3354,8 @@ impl CalendarApp {
         let form_active = editor_active && matches!(self.selection, Some(Sel::Event(_)));
         let field_focused = self.title_input.is_focused()
             || self.location_input.is_focused()
-            || self.invite_input.is_focused();
+            || self.invite_input.is_focused()
+            || self.tasks.entry_focused();
         let notes_focused = editor_active && self.notes_editor.is_focused();
 
         if matches!(logical_key, Key::Named(NamedKey::Escape))
@@ -3293,6 +3443,7 @@ impl CalendarApp {
             self.title_input.set_focus(false);
             self.location_input.set_focus(false);
             self.invite_input.set_focus(false);
+            self.tasks.set_entry_focus(false);
             self.notes_editor.set_focus(false);
             *handled = true;
             self.dirty = true;
@@ -3362,6 +3513,7 @@ impl CalendarApp {
                 "d" => Some(Action::View(View::Day)),
                 "a" => Some(Action::View(View::Agenda)),
                 "t" => Some(Action::Today),
+                "n" if self.view == View::Tasks => Some(Action::NewTask),
                 "n" => Some(Action::NewEvent),
                 "e" => Some(Action::Export),
                 "i" => Some(Action::Import),
@@ -3420,19 +3572,8 @@ impl CalendarApp {
             self.invite_input.set_focus(false);
             self.notes_editor.set_focus(false);
             self.title_input.set_focus(true);
-            self.title_input.handle_event(
-                input.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: input.scale_factor,
-                    modifiers: &input.modifiers,
-                    state: input.state.reborrow(),
-                    path: input.path,
-                    handled: input.handled,
-                    focus_target: input.focus_target,
-                    node_id: input.node_id,
-                    taffy: input.taffy,
-                },
-            );
+            self.title_input
+                .handle_event(input.event, &mut input.event_ctx());
             *input.handled = true;
             self.dirty = true;
             return true;
@@ -3442,19 +3583,8 @@ impl CalendarApp {
             self.invite_input.set_focus(false);
             self.notes_editor.set_focus(false);
             self.location_input.set_focus(true);
-            self.location_input.handle_event(
-                input.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: input.scale_factor,
-                    modifiers: &input.modifiers,
-                    state: input.state.reborrow(),
-                    path: input.path,
-                    handled: input.handled,
-                    focus_target: input.focus_target,
-                    node_id: input.node_id,
-                    taffy: input.taffy,
-                },
-            );
+            self.location_input
+                .handle_event(input.event, &mut input.event_ctx());
             *input.handled = true;
             self.dirty = true;
             return true;
@@ -3464,19 +3594,23 @@ impl CalendarApp {
             self.location_input.set_focus(false);
             self.notes_editor.set_focus(false);
             self.invite_input.set_focus(true);
-            self.invite_input.handle_event(
-                input.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: input.scale_factor,
-                    modifiers: &input.modifiers,
-                    state: input.state.reborrow(),
-                    path: input.path,
-                    handled: input.handled,
-                    focus_target: input.focus_target,
-                    node_id: input.node_id,
-                    taffy: input.taffy,
-                },
-            );
+            self.invite_input
+                .handle_event(input.event, &mut input.event_ctx());
+            *input.handled = true;
+            self.dirty = true;
+            return true;
+        }
+        // A click in the Tasks screen's entry field focuses it and lands the
+        // caret, unless the editor floats over it.
+        if !form_active
+            && !in_notes
+            && self.view == View::Tasks
+            && self.calendar_content_interactive()
+            && self.tasks.entry_rect().is_some_and(|rect| rect.contains(p))
+        {
+            self.blur_editor();
+            self.tasks.set_entry_focus(true);
+            self.tasks.handle_entry_event(input);
             *input.handled = true;
             self.dirty = true;
             return true;
@@ -3487,19 +3621,8 @@ impl CalendarApp {
             self.location_input.set_focus(false);
             self.invite_input.set_focus(false);
             if let Some(n) = self.editor_node {
-                self.notes_editor.handle_event(
-                    input.event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: input.scale_factor,
-                        modifiers: &input.modifiers,
-                        state: input.state.reborrow(),
-                        path: input.path,
-                        handled: input.handled,
-                        focus_target: input.focus_target,
-                        node_id: n,
-                        taffy: input.taffy,
-                    },
-                );
+                self.notes_editor
+                    .handle_event(input.event, &mut input.event_ctx_at(n));
             }
             self.dirty = true;
             return true;
@@ -3509,6 +3632,7 @@ impl CalendarApp {
             self.title_input.set_focus(false);
             self.location_input.set_focus(false);
             self.invite_input.set_focus(false);
+            self.tasks.set_entry_focus(false);
             self.notes_editor.set_focus(false);
             self.apply_action(a, &mut input.state);
             *input.handled = true;
@@ -3522,54 +3646,28 @@ impl CalendarApp {
     /// [`Self::flush_form_edits`] (part of [`Widget::handle_event`]).
     /// Returns `true` if the caller should stop dispatching.
     fn handle_form_field_input(&mut self, input: &mut InputContext<'_>) -> bool {
+        if self.tasks.entry_focused() {
+            if let Some(title) = self.tasks.handle_entry_event(input) {
+                self.add_task(&title, &mut input.state);
+            }
+            self.dirty = true;
+            return *input.handled;
+        }
         if self.title_input.is_focused() {
-            self.title_input.handle_event(
-                input.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: input.scale_factor,
-                    modifiers: &input.modifiers,
-                    state: input.state.reborrow(),
-                    path: input.path,
-                    handled: input.handled,
-                    focus_target: input.focus_target,
-                    node_id: input.node_id,
-                    taffy: input.taffy,
-                },
-            );
+            self.title_input
+                .handle_event(input.event, &mut input.event_ctx());
             self.flush_form_edits(&mut input.state);
             self.dirty = true;
             return *input.handled;
         } else if self.location_input.is_focused() {
-            self.location_input.handle_event(
-                input.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: input.scale_factor,
-                    modifiers: &input.modifiers,
-                    state: input.state.reborrow(),
-                    path: input.path,
-                    handled: input.handled,
-                    focus_target: input.focus_target,
-                    node_id: input.node_id,
-                    taffy: input.taffy,
-                },
-            );
+            self.location_input
+                .handle_event(input.event, &mut input.event_ctx());
             self.flush_form_edits(&mut input.state);
             self.dirty = true;
             return *input.handled;
         } else if self.invite_input.is_focused() {
-            self.invite_input.handle_event(
-                input.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: input.scale_factor,
-                    modifiers: &input.modifiers,
-                    state: input.state.reborrow(),
-                    path: input.path,
-                    handled: input.handled,
-                    focus_target: input.focus_target,
-                    node_id: input.node_id,
-                    taffy: input.taffy,
-                },
-            );
+            self.invite_input
+                .handle_event(input.event, &mut input.event_ctx());
             self.submit_invite(&mut input.state);
             self.dirty = true;
             return *input.handled;
@@ -3612,11 +3710,7 @@ impl Widget for CalendarApp {
         self.adopt_person_accounts();
         if !self.seeded {
             // Whatever the document holds is now authoritative for the UI.
-            if CalDoc::is_empty(state) {
-                self.model = Model::default();
-            } else {
-                self.model = CalDoc::read_model(state);
-            }
+            self.model = Calendar::read_whole(state).unwrap_or_default();
             self.revalidate_selection();
             self.model_heads = (state.base_heads(), state.pending_ops());
             self.seeded = true;
@@ -3631,9 +3725,15 @@ impl Widget for CalendarApp {
         // and are read by the editor directly, so this never disturbs them.)
         let heads = (state.base_heads(), state.pending_ops());
         if heads != self.model_heads {
-            self.model = CalDoc::read_model(state);
+            self.model = Calendar::read_whole(state).unwrap_or_default();
             self.revalidate_selection();
             self.model_heads.clone_from(&heads);
+        }
+        let opens = std::mem::take(&mut *self.opens.borrow_mut());
+        for item in opens {
+            if let Err(error) = self.open_item(&item) {
+                tracing::debug!(%error, "calendar: an item to open is gone");
+            }
         }
         self.ensure_bound(state);
         // Seed the form's title/location/time widgets from the current event
@@ -3711,34 +3811,19 @@ impl Widget for CalendarApp {
         // comment) — and `Widget::build_layout` returns a bare `NodeId`
         // across every implementor, so there is nowhere to surface a
         // theoretical error.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "child was just built in this tree; see ui::widget::TaffyTreeExt"
-        )]
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[editor_node],
-            )
-            .unwrap();
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[editor_node], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        let new_rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        let new_rect = ui::widget::placed(&layout, origin);
         let size_changed = (new_rect.width() - self.rect.width()).abs() > f64::EPSILON
             || (new_rect.height() - self.rect.height()).abs() > f64::EPSILON;
         if size_changed {
@@ -3767,7 +3852,7 @@ impl Widget for CalendarApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         let t = transform;
         // No ground of our own: the framework painted the window ground.
@@ -3789,6 +3874,7 @@ impl Widget for CalendarApp {
                             TopbarAction::Today => Action::Today,
                             TopbarAction::Previous => Action::Prev,
                             TopbarAction::Next => Action::Next,
+                            TopbarAction::NewEvent if self.view == View::Tasks => Action::NewTask,
                             TopbarAction::NewEvent => Action::NewEvent,
                             TopbarAction::ShowSidebar => Action::ToggleSidebar,
                             TopbarAction::Search => Action::OpenSearch,
@@ -3852,6 +3938,7 @@ impl Widget for CalendarApp {
                             }),
                     );
                 }
+                View::Tasks => hits.extend(self.draw_tasks(&mut ctx, area, presence)),
             }
         }
 
@@ -3899,6 +3986,13 @@ impl Widget for CalendarApp {
             self.last_mouse =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             self.dirty = true;
+        }
+
+        if let WindowEvent::Touch(touch) = event
+            && self.handle_segmented_touch(touch, ctx.scale_factor, &mut ctx.state)
+        {
+            *ctx.handled = true;
+            return;
         }
 
         // The sidebar's overflow menu owns input while it is open.
@@ -4017,6 +4111,20 @@ impl Widget for CalendarApp {
         Some(self)
     }
 
+    fn claims_raw_touch(&self, point: Point) -> bool {
+        let (header, sidebar) = self.segmented_rects();
+        header
+            .iter()
+            .chain(&sidebar)
+            .any(|rect| rect.contains(point))
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.segmented_touch.is_active()
+            || self.agenda.wants_pointer_capture()
+            || self.tasks.wants_pointer_capture()
+    }
+
     fn name(&self) -> &'static str {
         "CalendarApp"
     }
@@ -4045,6 +4153,7 @@ impl Widget for CalendarApp {
             .with_name("Calendar")
             .with_bounds(self.rect)
             .with_children(controls);
+        root.children.extend(self.task_list_access_nodes());
         if self.syncing {
             root.children.push(
                 AccessNode::new(Role::StaticText)
@@ -4104,6 +4213,7 @@ impl Widget for CalendarApp {
             || self.invite_input.needs_redraw()
             || self.timeline.needs_redraw()
             || self.agenda.needs_redraw()
+            || self.tasks.needs_redraw()
     }
 
     fn mark_drawn(&mut self) {
@@ -4114,15 +4224,21 @@ impl Widget for CalendarApp {
         self.invite_input.mark_drawn();
         self.timeline.mark_drawn();
         self.agenda.mark_drawn();
+        self.tasks.mark_drawn();
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         // Rebuild when the editor's own structure changed, OR when the notes
         // column width the editor was built at no longer matches the current
-        // layout (a resize crossed the breakpoint). The rebuild re-runs
-        // `build_layout`, which resets `built_notes_w`, so this settles in one
-        // frame and never loops while the width is stable.
-        let width_changed = (self.detail_body_w() - self.built_notes_w).abs() > 0.5;
+        // layout (a resize crossed the breakpoint). Taking the change adopts
+        // the width the rebuild will use: a host may update the tree again
+        // before it lays it out, and must not be asked for the same rebuild
+        // twice.
+        let notes_w = self.detail_body_w();
+        let width_changed = (notes_w - self.built_notes_w).abs() > 0.5;
+        if width_changed {
+            self.built_notes_w = notes_w;
+        }
         self.notes_editor.take_structure_dirty() || width_changed
     }
 
@@ -4131,7 +4247,10 @@ impl Widget for CalendarApp {
         // so its result is drained in `sync` the moment it arrives, without
         // waiting for an unrelated input event — and while a scroll container is
         // still settling momentum / fading its bar.
-        self.syncing || self.timeline.needs_animation_frame() || self.agenda.needs_animation_frame()
+        self.syncing
+            || self.timeline.needs_animation_frame()
+            || self.agenda.needs_animation_frame()
+            || self.tasks.needs_animation_frame()
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -4142,6 +4261,7 @@ impl Widget for CalendarApp {
             || self.invite_input.needs_redraw()
             || self.timeline.is_layout_dirty()
             || self.agenda.is_layout_dirty()
+            || self.tasks.is_layout_dirty()
     }
 
     /// While the event/task editor is open it OWNS the keyboard. Reporting the
@@ -4158,18 +4278,6 @@ impl Widget for CalendarApp {
             None
         }
     }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, text_renderer, theme, presence);
-    }
 }
 
 impl ui::widget::controls::ActionControls for CalendarApp {
@@ -4184,25 +4292,31 @@ impl ui::widget::controls::ActionControls for CalendarApp {
 }
 
 impl CalendarApp {
+    /// Where a search hit or an agent's `open` queues the item to show.
+    pub(crate) fn opens(&self) -> std::rc::Rc<std::cell::RefCell<Vec<String>>> {
+        std::rc::Rc::clone(&self.opens)
+    }
+
     /// Open an item — an event, an occurrence, a task, a project or a
     /// calendar — by its resource id, as its `open` asks.
     pub(crate) fn open_item(&mut self, item: &str) -> Result<(), String> {
-        let open = if let Some(id) = item.strip_prefix("calendar.event:") {
-            Open::Event { id }
-        } else if let Some((event_id, original_date)) = item
-            .strip_prefix("calendar.occurrence:")
-            .and_then(|rest| rest.rsplit_once(':'))
-        {
-            Open::Occurrence {
-                event_id,
-                original_date,
-            }
-        } else if let Some(id) = item.strip_prefix("calendar.task:") {
-            Open::Task { id }
-        } else if let Some(id) = item.strip_prefix("calendar.project:") {
-            Open::Project { id }
-        } else if let Some(id) = item.strip_prefix("calendar.collection:") {
+        let of_calendar = item
+            .strip_prefix(<Calendar as ui::tilo_resource::Resource>::KIND)
+            .and_then(|rest| rest.strip_prefix('/'));
+        let open = if let Some(id) = item.strip_prefix("calendar.collection:") {
             Open::Calendar { id }
+        } else if let Some(rest) = of_calendar.and_then(|rest| rest.strip_prefix("events/")) {
+            match rest.split_once("/occurrences/") {
+                Some((event_id, original_date)) => Open::Occurrence {
+                    event_id,
+                    original_date,
+                },
+                None => Open::Event { id: rest },
+            }
+        } else if let Some(id) = of_calendar.and_then(|rest| rest.strip_prefix("tasks/")) {
+            Open::Task { id }
+        } else if let Some(id) = of_calendar.and_then(|rest| rest.strip_prefix("projects/")) {
+            Open::Project { id }
         } else {
             return Err(format!("`{item}` is no event, task, project or calendar"));
         };
@@ -4310,7 +4424,7 @@ impl CalendarApp {
     pub(crate) fn answer_effect(
         &mut self,
         effect: crate::resource::CalendarEffect,
-        cx: &mut ui::framework::EffectCx<crate::resource::Calendar, Self>,
+        cx: &mut ui::framework::EffectCx<Calendar, Self>,
     ) -> ui::framework::EffectAnswer {
         use crate::resource::CalendarEffect;
         use ui::framework::Effected;
@@ -4329,6 +4443,7 @@ impl CalendarApp {
                     "week" => View::Week,
                     "day" => View::Day,
                     "agenda" => View::Agenda,
+                    "tasks" => View::Tasks,
                     other => return Err(format!("there is no `{other}` view")),
                 });
                 Ok(Effected::done())
@@ -4343,6 +4458,18 @@ impl CalendarApp {
             }
             CalendarEffect::ShowDay => {
                 self.show_view(View::Day);
+                Ok(Effected::done())
+            }
+            CalendarEffect::ShowTasks => {
+                self.view = View::Tasks;
+                self.list_sel = Some(ListSel::Inbox);
+                self.detail_open = false;
+                self.selection = None;
+                self.blur_editor();
+                if matches!(self.sidebar.mode(), SidebarMode::Overlay) {
+                    self.sidebar.set_open(false);
+                }
+                self.dirty = true;
                 Ok(Effected::done())
             }
             CalendarEffect::ShowAgenda => {
@@ -4444,7 +4571,7 @@ impl CalendarApp {
             "You’re invited to {} on {} at {} ({}).\n\nReview the attached calendar invitation for details.",
             event.display_title(),
             event.start.format("%A, %d %B %Y"),
-            event.start.format("%H:%M"),
+            ui::clock::time_of_day(&event.start),
             event.timezone
         );
         let calendar_ics = crate::ics::invitation_request(event);
@@ -4478,5 +4605,3 @@ fn min_to_time(min: i64) -> NaiveTime {
 #[cfg(test)]
 #[path = "app/tests.rs"]
 mod tests;
-#[cfg(test)]
-pub(crate) use tests::demo_document;

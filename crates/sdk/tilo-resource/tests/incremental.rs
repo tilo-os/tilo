@@ -18,7 +18,7 @@ use tilo_automerge::ApplyIncoming;
 use tilo_resource::__private::{ObjId, Value};
 use tilo_resource::history;
 use tilo_resource::{
-    ActionCx, Collection, Doc, Id, Model, ModelError, Replica, Resource, Slot, resource,
+    ActionCx, Collection, Doc, Grid, Id, Model, ModelError, Replica, Resource, Slot, resource,
 };
 
 thread_local! {
@@ -30,6 +30,13 @@ thread_local! {
 pub struct Counted(pub String);
 
 impl Model for Counted {
+    tilo_resource::leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        self.0.to_json()
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        String::from_json(value).map(Self)
+    }
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         LOADS.with(|loads| loads.set(loads.get() + 1));
         String::load(doc, value, id).map(Self)
@@ -227,6 +234,57 @@ fn the_refreshed_state_equals_a_full_read_after_actions_and_merges() {
 }
 
 #[test]
+fn a_collection_keeps_its_membership_exactly_while_its_ids_hold() {
+    let ids = |notebook: &Notebook| notebook.notes.ids().cloned().collect::<Vec<_>>();
+    let mut rng = Lcg(23);
+    let mut replica = Replica::<Notebook>::new();
+    let live = replica.live().unwrap();
+    let mut last = (live.notes.membership(), ids(live));
+    let mut kept = 0_usize;
+    for step in 0..400 {
+        random_action(&mut replica, &mut rng, step);
+        let live = replica.live().unwrap();
+        let now = (live.notes.membership(), ids(live));
+        if now.0 == last.0 {
+            assert_eq!(
+                now.1, last.1,
+                "the same membership, other ids at step {step}"
+            );
+            kept = kept.saturating_add(1);
+        }
+        last = now;
+    }
+    assert!(kept > 0, "some steps edit without moving an item");
+
+    // Editing an item keeps the membership; adding, moving and removing
+    // one change it.
+    let notes = replica.state().unwrap().notes;
+    assert!(notes.len() > 1, "a move needs somewhere to go");
+    let last_place = notes.len();
+    let target = notes.ids().next().cloned().unwrap();
+    let before = replica.live().unwrap().notes.membership();
+    replica
+        .apply(Notebook::EDIT.with((target.clone(), "edited".into())))
+        .unwrap();
+    replica
+        .apply(Notebook::DECORATE.with((target.clone(), "blue".into())))
+        .unwrap();
+    replica
+        .apply(Notebook::RENAME.with("Kept".to_owned()))
+        .unwrap();
+    assert_eq!(replica.live().unwrap().notes.membership(), before);
+    for change in [
+        Notebook::ADD.with("another".to_owned()),
+        Notebook::MOVE_NOTE.with((target.clone(), last_place)),
+        Notebook::DELETE.with(target),
+    ] {
+        let before = replica.live().unwrap().notes.membership();
+        replica.apply(change).unwrap();
+        assert_ne!(replica.live().unwrap().notes.membership(), before);
+    }
+}
+
+#[test]
 fn editing_one_note_of_many_reads_only_that_note() {
     let mut replica = Replica::<Notebook>::new();
     for n in 0..500 {
@@ -257,9 +315,7 @@ fn editing_one_note_of_many_reads_only_that_note() {
     replica
         .apply(Notebook::DECORATE.with((target.clone(), "red".into())))
         .unwrap();
-    replica
-        .apply(Notebook::RENAME.with("Renamed".into()))
-        .unwrap();
+    replica.apply(Notebook::RENAME.with("Renamed")).unwrap();
     let before = loads();
     replica.live().unwrap();
     assert_eq!(loads() - before, 0, "no note text read for other fields");
@@ -276,7 +332,7 @@ fn editing_one_note_of_many_reads_only_that_note() {
 #[test]
 fn history_pages_newest_first_and_lists_every_change_once() {
     let mut left = Replica::<Notebook>::new();
-    left.apply(Notebook::ADD.with("shared".into())).unwrap();
+    left.apply(Notebook::ADD.with("shared")).unwrap();
     let mut right = left.fork();
     let mut rng = Lcg(3);
     for round in 0..15 {
@@ -352,7 +408,118 @@ fn the_first_page_of_a_long_history_reads_only_that_page() {
         paged < listed,
         "a page ({paged:?}) should cost less than the whole history ({listed:?})"
     );
-    // Summaries come from the action that made each change.
-    assert!(page.versions.iter().all(|v| v.summary().is_some()));
+    // Every change records what the action that made it did.
+    assert!(
+        page.versions
+            .iter()
+            .all(|v| v.context.as_ref().is_some_and(|c| c.what.is_some()))
+    );
     assert_eq!(<Notebook as Resource>::KIND, "test.notebook");
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Sheet {
+    pub grid: Grid<Counted>,
+}
+
+#[resource(kind = "test.sheet", label = "Sheet")]
+impl Sheet {
+    /// Add a row.
+    #[action]
+    pub fn add_row(&mut self, cx: &mut ActionCx) {
+        let at = self.grid.rows().len();
+        self.grid.insert_row(at, cx.id());
+    }
+
+    /// Add a column.
+    #[action]
+    pub fn add_column(&mut self, cx: &mut ActionCx) {
+        let at = self.grid.columns().len();
+        self.grid.insert_column(at, cx.id());
+    }
+
+    /// Write a cell, or clear it with no text.
+    #[action]
+    pub fn write(&mut self, cell: (String, String), text: String) {
+        let value = (!text.is_empty()).then_some(Counted(text));
+        self.grid
+            .set_cell(&Id::from_raw(cell.0), &Id::from_raw(cell.1), value);
+    }
+
+    /// Remove a row.
+    #[action]
+    pub fn drop_row(&mut self, line: String) {
+        self.grid.remove_row(&Id::from_raw(line));
+    }
+
+    /// Remove a column.
+    #[action]
+    pub fn drop_column(&mut self, line: String) {
+        self.grid.remove_column(&Id::from_raw(line));
+    }
+}
+
+fn cell(row: &Id, column: &Id) -> (String, String) {
+    (row.as_str().to_owned(), column.as_str().to_owned())
+}
+
+fn random_sheet_action(replica: &mut Replica<Sheet>, rng: &mut Lcg, step: usize) {
+    let state = replica.state().unwrap();
+    let rows: Vec<Id> = state.grid.rows().cloned().collect();
+    let columns: Vec<Id> = state.grid.columns().cloned().collect();
+    let row = rows.get(rng.next(rows.len())).cloned();
+    let column = columns.get(rng.next(columns.len())).cloned();
+    let result = match (rng.next(10), row, column) {
+        (0, ..) => replica.apply(Sheet::ADD_ROW.with(())),
+        (1, ..) => replica.apply(Sheet::ADD_COLUMN.with(())),
+        (2, Some(row), _) => replica.apply(Sheet::DROP_ROW.with(row.as_str().to_owned())),
+        (3, _, Some(column)) => replica.apply(Sheet::DROP_COLUMN.with(column.as_str().to_owned())),
+        (4, Some(row), Some(column)) => {
+            replica.apply(Sheet::WRITE.with((cell(&row, &column), String::new())))
+        }
+        (_, Some(row), Some(column)) => {
+            replica.apply(Sheet::WRITE.with((cell(&row, &column), format!("v{step}"))))
+        }
+        _ => replica.apply(Sheet::ADD_ROW.with(())),
+    };
+    result.unwrap();
+}
+
+#[test]
+fn a_grid_refreshes_only_the_cells_a_change_touched() {
+    // phase: the_refreshed_grid_equals_a_full_read_after_every_action
+    {
+        let mut rng = Lcg(5);
+        let mut replica = Replica::<Sheet>::new();
+        replica.live().unwrap();
+        for step in 0..300 {
+            random_sheet_action(&mut replica, &mut rng, step);
+            let full = replica.state().unwrap();
+            assert_eq!(replica.live().unwrap(), &full, "after step {step}");
+        }
+    }
+    // phase: writing_one_cell_of_many_reads_only_that_cell
+    {
+        let mut replica = Replica::<Sheet>::new();
+        replica.apply(Sheet::ADD_COLUMN.with(())).unwrap();
+        for _ in 0..200 {
+            replica.apply(Sheet::ADD_ROW.with(())).unwrap();
+        }
+        let state = replica.state().unwrap();
+        let rows: Vec<Id> = state.grid.rows().cloned().collect();
+        let column = state.grid.columns().next().cloned().unwrap();
+        for (n, row) in rows.iter().enumerate() {
+            replica
+                .apply(Sheet::WRITE.with((cell(row, &column), format!("cell {n}"))))
+                .unwrap();
+        }
+        replica.live().unwrap();
+        replica
+            .apply(Sheet::WRITE.with((cell(&rows[100], &column), "changed".into())))
+            .unwrap();
+        let before = loads();
+        let live = replica.live().unwrap();
+        assert_eq!(loads() - before, 1, "one cell read again");
+        assert_eq!(live.grid.cell(&rows[100], &column).unwrap().0, "changed");
+    }
 }

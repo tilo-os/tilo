@@ -404,16 +404,9 @@ fn recognize_path_with_program_args_timeout(
         _ => Error::Engine("OCR engine process failed".into()),
     })?;
     if !output.status.success() {
-        return Err(Error::Engine(
-            String::from_utf8_lossy(&output.stderr)
-                .trim()
-                .chars()
-                .filter(|character| {
-                    !character.is_control() || matches!(character, ' ' | '\n' | '\t')
-                })
-                .take(500)
-                .collect(),
-        ));
+        // Keep OCR's existing 500-character boundary after shared sanitisation.
+        let diagnostic = output.stderr_diagnostic().chars().take(500).collect();
+        return Err(Error::Engine(diagnostic));
     }
     parse_tsv(&String::from_utf8_lossy(&output.stdout), language)
 }

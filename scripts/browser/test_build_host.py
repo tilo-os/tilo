@@ -13,6 +13,31 @@ SPEC.loader.exec_module(build_host)
 
 
 class AcquisitionTests(unittest.TestCase):
+    def test_rebuilt_sdk_source_is_bound_to_the_locked_immutable_package(self):
+        name = "cef_binary_test+revision_linux64_minimal.tar.bz2"
+        source = "a" * 64
+        url = "https://code.tilo.so/api/packages/tilo/generic/tilo-cef-sdk/" + source + "/cef_binary_test%2Brevision_linux64_minimal.tar.bz2"
+        entry = {"name": name, "url": url, "source_patch_sha256": source}
+        self.assertEqual(build_host.archive_url(entry), url)
+        self.assertEqual(build_host.archive_url({"name": name}),
+                         "https://cef-builds.spotifycdn.com/cef_binary_test%2Brevision_linux64_minimal.tar.bz2")
+        with self.assertRaises(ValueError):
+            build_host.archive_url({"name": name, "source_patch_sha256": source})
+        for candidate in (
+            url.replace("https:", "http:"),
+            url.replace("code.tilo.so", "foreign.example"),
+            url.replace("code.tilo.so", "user@code.tilo.so"),
+            url.replace(source, "b" * 64),
+            url.replace("tilo-cef-sdk", "another-package"),
+            url + "?version=latest",
+            url + "#latest",
+        ):
+            with self.subTest(url=candidate), self.assertRaises(ValueError):
+                build_host.archive_url({**entry, "url": candidate})
+        for source in (None, "latest", "A" * 64):
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                build_host.archive_url({**entry, "source_patch_sha256": source})
+
     def test_blocker_uses_cargos_native_artifact_instead_of_guessing_the_target_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifact = Path(tmp) / "native-target/aarch64/thin-app/libtilo_chromium_blocker.a"

@@ -1,0 +1,18 @@
+[Unit]
+Description=Tilo screen projection broker
+PartOf=tilo-graphical-session.target
+# Started by tilo-projector.socket when the shell first connects, after the
+# compositor has exported the session's display environment to the user
+# manager. It runs at most one projection, and stops it when the shell's
+# connection closes.
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/tilo-projector serve
+Restart=on-failure
+RestartSec=2
+UMask=0077
+NoNewPrivileges=yes
+# The sender helpers (AirPlay, Miracast, GStreamer) share the broker's cgroup;
+# stopping the unit must stop every one of them.
+KillMode=control-group

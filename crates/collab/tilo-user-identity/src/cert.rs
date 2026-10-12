@@ -346,7 +346,7 @@ pub struct DeviceCert {
 
     /// Ed25519 signature. 64 bytes. Covers everything else in this
     /// struct via `blake3(DEVCERT_PREIMAGE_TAG || postcard(view))`.
-    #[serde(with = "serde_bytes_64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 
@@ -563,32 +563,6 @@ pub fn verify_device_cert_at(cert: &DeviceCert, now_ns: u64) -> Result<(), Devic
         return Err(DeviceCertError::Expired);
     }
     Ok(())
-}
-
-/// Serde helper: a 64-byte-array serialiser that emits a length-
-/// prefixed byte string rather than 64 separate `u8`s. Saves 63
-/// bytes of varint overhead per signature on the wire.
-pub(crate) mod serde_bytes_64 {
-    use serde::de::Error as _;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &[u8; 64], s: S) -> Result<S::Ok, S::Error> {
-        serde_bytes::Bytes::new(bytes).serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 64], D::Error> {
-        let v: serde_bytes::ByteBuf = serde_bytes::ByteBuf::deserialize(d)?;
-        let bytes = v.into_vec();
-        if bytes.len() != 64 {
-            return Err(D::Error::custom(format!(
-                "expected 64-byte signature, got {}",
-                bytes.len()
-            )));
-        }
-        let mut out = [0u8; 64];
-        out.copy_from_slice(&bytes);
-        Ok(out)
-    }
 }
 
 #[cfg(test)]
@@ -935,7 +909,7 @@ mod tests {
             pub capabilities: DeviceCapabilities,
             pub issued_at_ns: u64,
             pub expires_at_ns: Option<u64>,
-            #[serde(with = "super::serde_bytes_64")]
+            #[serde(with = "serde_bytes")]
             pub signature: [u8; 64],
         }
     }

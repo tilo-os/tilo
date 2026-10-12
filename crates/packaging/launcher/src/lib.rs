@@ -29,11 +29,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -54,6 +50,8 @@ pub mod landlock;
 #[cfg(target_os = "linux")]
 pub mod landlock_shim;
 #[cfg(target_os = "linux")]
+pub mod lease;
+#[cfg(target_os = "linux")]
 pub mod loader_preflight;
 pub mod managed;
 pub mod manifest;
@@ -65,6 +63,8 @@ pub mod performance;
 pub mod profile;
 #[cfg(target_os = "linux")]
 pub mod provider_sandbox;
+#[cfg(unix)]
+pub mod registration_gate;
 #[cfg(target_os = "linux")]
 pub mod run;
 #[cfg(target_os = "linux")]

@@ -2,12 +2,15 @@
 // Edit Fluent catalogs under locales/; tilo-app maintains this registry.
 // tilo-app:locale=en-US
 
-const CATALOG_0: &str = include_str!("../locales/en-US.ftl");
+ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
 
-pub const IDS: &[&str] = &["en-US"];
-
-pub fn install() {
-    if let Err(error) = ui::i18n::I18nManager::install_system("en-US", &[("en-US", CATALOG_0)]) {
-        eprintln!("localization catalog: {error}");
-    }
+/// One constant per message of locales/en-US.ftl, for labels and placeholders.
+pub mod keys {
+    use ui::i18n::LabelKey;
+    pub const LIST_ACCESSIBLE_NAME: LabelKey = LabelKey::new("list-accessible-name");
+    pub const LIST_LAST_OPENED: LabelKey = LabelKey::new("list-last-opened");
+    pub const LIST_LOADING: LabelKey = LabelKey::new("list-loading");
+    pub const LIST_NONE_OPENED: LabelKey = LabelKey::new("list-none-opened");
+    pub const LIST_OPEN: LabelKey = LabelKey::new("list-open");
+    pub const LIST_ROW: LabelKey = LabelKey::new("list-row");
 }

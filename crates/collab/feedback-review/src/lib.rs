@@ -514,6 +514,24 @@ pub fn review_without_model(
     review(request, None)
 }
 
+/// Validate and review text fields without generating walkthrough titles.
+/// Uses the same deterministic floor, proposal merging and review bounds as
+/// recording review; callers displaying only fields need no unused titles.
+///
+/// # Errors
+/// Refuses invalid requests and oversized redaction sets without truncating.
+pub fn review_redactions_without_model(
+    request: &ReviewTraceRequest,
+) -> Result<Vec<RedactionProposal>, ContractError> {
+    request.validate()?;
+    let answer = ReviewProposals {
+        redactions: merge::merge_redactions(request, floor(request), Vec::new()),
+        titles: Vec::new(),
+    };
+    answer.validate_against(request)?;
+    Ok(answer.redactions)
+}
+
 /// Validate and review a request, retaining the deterministic floor even when
 /// the model proposes no redactions. No capture or submission happens here.
 ///
@@ -622,6 +640,35 @@ mod tests {
     }
 
     #[test]
+    fn checked_text_review_preserves_declared_and_pattern_redactions() {
+        let trace = request(vec![step(
+            StepKind::Invoked,
+            "Send",
+            vec![
+                text("issue", DeclaredSensitivity::Public, "Jana token=abcd"),
+                text("name", DeclaredSensitivity::Personal, "Jana"),
+            ],
+        )]);
+        let redactions = review_redactions_without_model(&trace).unwrap();
+        assert_eq!(redactions.len(), 3);
+        for (node, value, basis) in [
+            ("issue", "Jana", RedactionBasis::Declared),
+            ("issue", "abcd", RedactionBasis::Pattern),
+            ("name", "Jana", RedactionBasis::Declared),
+        ] {
+            assert!(redactions.iter().any(|proposal| {
+                proposal.node == node
+                    && proposal.basis == basis
+                    && trace.redacted(proposal) == Some(value)
+            }));
+        }
+        assert_eq!(redactions, review_without_model(&trace).unwrap().redactions);
+        let mut invalid = trace;
+        invalid.steps[0].texts[0].node.clear();
+        assert!(review_redactions_without_model(&invalid).is_err());
+    }
+
+    #[test]
     fn checked_review_refuses_an_oversized_floor_without_dropping_redactions() {
         let mut steps = Vec::new();
         for index in 0..MAX_STEPS {
@@ -640,6 +687,10 @@ mod tests {
         trace.validate().unwrap();
         assert!(floor(&trace).len() > MAX_REDACTIONS);
         assert_eq!(review(&trace, None), Err(ContractError::TooManyRedactions));
+        assert_eq!(
+            review_redactions_without_model(&trace),
+            Err(ContractError::TooManyRedactions)
+        );
     }
 
     #[test]

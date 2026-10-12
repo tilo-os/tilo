@@ -13,7 +13,7 @@
 use store::StoreApp;
 use ui::headless::Framed;
 use ui::tilo_resource::Resource as _;
-use ui::widget::Widget;
+use ui::widget::{Widget, find_test_id};
 use vello::kurbo::{Point, Rect};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -34,22 +34,18 @@ fn staged(scenario: &str) -> StoreApp {
 }
 
 fn rect_of(root: &dyn Widget, id: &str) -> Rect {
-    fn find(w: &dyn Widget, id: &str) -> Option<Rect> {
-        if w.test_id() == Some(id) {
-            return Some(w.get_rect());
-        }
-        w.children().into_iter().find_map(|child| find(child, id))
-    }
-    find(root, id).unwrap_or_else(|| panic!("no widget with test id {id:?}"))
+    find_test_id(root, id)
+        .unwrap_or_else(|| panic!("no widget with test id {id:?}"))
+        .get_rect()
 }
 
 fn has_test_id(w: &dyn Widget, id: &str) -> bool {
-    w.test_id() == Some(id) || w.children().into_iter().any(|child| has_test_id(child, id))
+    find_test_id(w, id).is_some()
 }
 
 fn cursor(app: &mut Framed<StoreApp>, at: Point) {
     Framed::harness_mut(app).dispatch_to_root(&WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: PhysicalPosition::new(at.x, at.y),
     });
 }
@@ -58,7 +54,7 @@ fn click(app: &mut Framed<StoreApp>, at: Point) {
     cursor(app, at);
     for state in [ElementState::Pressed, ElementState::Released] {
         Framed::harness_mut(app).dispatch_to_root(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state,
             button: MouseButton::Left,
         });
@@ -111,7 +107,7 @@ fn a_remote_rows_action_invokes_the_remotes_own_remove_action() {
     );
     let invocation = ui::widget::controls::take_control_invocation(&mut *app)
         .expect("the row action queued an invocation");
-    assert_eq!(invocation.address.resource, store::Store::KIND);
+    assert_eq!(invocation.address.resource, store::Reports::KIND);
     assert_eq!(invocation.address.action, "remove-remote");
     assert_eq!(invocation.arguments["name"], "flathub");
 }
@@ -124,7 +120,7 @@ fn a_remote_rows_persistent_toggle_invokes_its_own_disable_action() {
     click(&mut app, toggle.center());
     let invocation = ui::widget::controls::take_control_invocation(&mut *app)
         .expect("the persistent toggle queued an invocation");
-    assert_eq!(invocation.address.resource, store::Store::KIND);
+    assert_eq!(invocation.address.resource, store::Reports::KIND);
     assert_eq!(invocation.address.action, "disable-remote");
     assert_eq!(invocation.arguments["remote"], "remote:flathub");
 }
@@ -137,7 +133,7 @@ fn a_narrowed_catalogue_offers_to_clear_its_filters() {
     click(&mut app, clear.center());
     let invocation = ui::widget::controls::take_control_invocation(&mut *app)
         .expect("clearing filters is an exported action");
-    assert_eq!(invocation.address.resource, store::Store::KIND);
+    assert_eq!(invocation.address.resource, store::Reports::KIND);
     assert_eq!(invocation.address.action, "clear-filters");
 
     let plain = lay_out(store::fixture::seeded_app());

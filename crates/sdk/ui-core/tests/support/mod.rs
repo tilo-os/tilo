@@ -273,7 +273,7 @@ fn document_event(mutation: &collab_types::DocumentMutation, from_user_id: &str)
         collab_types::ArtifactId::new(),
         collab_types::Ed25519PublicKey::from_bytes([0; 32]),
         collab_types::AttestationId::new(),
-        collab_types::OpClass::Splice,
+        collab_types::OpKind::Change,
         std::time::SystemTime::UNIX_EPOCH,
         0,
     );

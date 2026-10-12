@@ -66,11 +66,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
@@ -95,7 +91,7 @@ pub mod futo;
 mod i18n;
 pub mod imclient;
 pub mod inject;
-pub mod layout;
+pub use tilo_keyboard_map::touch as layout;
 pub mod learned;
 pub mod output;
 pub mod predict;

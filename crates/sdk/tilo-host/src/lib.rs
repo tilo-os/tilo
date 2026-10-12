@@ -8,10 +8,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
@@ -37,6 +34,10 @@
 //! Apps do not depend on this crate: `tilo-ui` re-exports every module here
 //! under the same path (`ui::portal`, `ui::host`, `ui::time`, …), and
 //! `tilo-app` turns every service on by default.
+
+/// Network hints shared with the app-facing SDK. Host transport integration only.
+#[doc(hidden)]
+pub use tilo_net::status as network_status;
 
 pub mod action_authority;
 pub mod background;
