@@ -749,6 +749,44 @@ mod tests {
         assert!(app.try_recv().is_err(), "nothing ran");
     }
 
+    #[test]
+    fn a_waiting_legacy_task_still_bounds_unnamed_agent_actions() {
+        use crate::test_support::{Answer, Grants as _, KindSet, Subject, TreePath};
+        let mut workspace = workspace();
+        workspace.admit_agent("scribe", KindSet::READ_UNDOABLE);
+        workspace.answer(
+            Subject::Task("task:waiting".into()),
+            &TreePath::root().app(APP).rest().action("new-window"),
+            KindSet::READ_UNDOABLE,
+            Answer::Deny,
+        );
+        workspace.tasks.push(tilo_desktop_model::WorkspaceTask {
+            id: "task:waiting".into(),
+            title: "Waiting for input".into(),
+            created_by: "owner".into(),
+            assigned_agent: Some("scribe".into()),
+            route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+            status: tilo_desktop_model::WorkspaceTaskStatus::Waiting,
+            resource: None,
+            created_at: 1,
+            updated_at: 1,
+            audit: Vec::new(),
+        });
+        let (state, room) = broker(&workspace);
+        state
+            .surfaces
+            .lock()
+            .expect("surfaces")
+            .insert(5, surface(5, &room));
+        let mut app = state.capture_invocations_for_test(5);
+        let agent = Caller::local_agent("scribe").in_room(&room);
+        assert!(invoke(&state, &agent, "5", "new-window", None).is_err());
+        assert!(
+            app.try_recv().is_err(),
+            "the waiting task's denied action did not run"
+        );
+    }
+
     /// The broker reads a field edit without the app's code: only removing
     /// an item of a collection not published as quiet asks for confirmation;
     /// sets and an outbox's settle do not.

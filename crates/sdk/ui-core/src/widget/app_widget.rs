@@ -5,6 +5,8 @@
 //! `AppKind` is the tile-host enum re-exported from `tile_host`: one enum,
 //! `Terminal, Files, Editor, Browser, Settings`.
 
+// Optional floating capabilities remain available through `dyn AppWidget`.
+// Re-export the extension at the app contract for hosts that import this module.
 use crate::widget::{AppKind, Widget};
 use std::cell::RefCell;
 use std::fmt;
@@ -439,6 +441,25 @@ mod component_adapter {
     }
 
     impl FloatingSurfaceProvider for BoundAppWidget {
+        fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+            self.in_root_mut(|root| root.on_floating_surface_ime_source_changed(id));
+        }
+
+        fn draw_floating_surface(
+            &mut self,
+            id: &str,
+            scene: &mut vello::Scene,
+            transform: vello::kurbo::Affine,
+            text_renderer: &mut crate::text_render::TextRenderer,
+            theme: &crate::theme::Theme,
+            presence: &crate::presence::PresenceCtx,
+        ) -> bool {
+            self.in_root_mut(|root| {
+                root.draw_floating_surface(id, scene, transform, text_renderer, theme, presence)
+            })
+            .unwrap_or_default()
+        }
+
         fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
             self.in_root_mut(|root| root.on_floating_surface_focus_changed(id, focused));
         }

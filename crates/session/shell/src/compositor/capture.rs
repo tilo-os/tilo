@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use ui::num::f64_of_usize;
 
-use ui::floating_surface::{FloatingRole, FloatingSource, FloatingSurfaceRequest};
+use ui::floating_surface::{FloatingSource, FloatingSurfaceRequest};
 use ui::offscreen::OffscreenRenderer;
 use ui::widget::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
@@ -510,10 +510,7 @@ impl CaptureExecutor {
             // Calls use the exact app widget in the shell's second paint pass,
             // retaining controls and pointer capture. Other app-region/media
             // sources use the generic live mirror host below.
-            if matches!(
-                request.role,
-                FloatingRole::ActiveCall | FloatingRole::Navigation
-            ) {
+            if request.role.uses_app_owned_host() {
                 frame_builder.on_floating_surface_host_message(
                     &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
                         id: public_id,
