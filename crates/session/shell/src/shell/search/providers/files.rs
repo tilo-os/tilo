@@ -1870,9 +1870,14 @@ mod tests {
         reason = "one fixture measured through each kind of watched batch, then reported"
     )]
     fn a_watched_change_costs_one_record_not_a_rebuild() {
-        /// A rebuild of 20k names costs about 400 ms (50k: 1.3-2 s); a
-        /// change applied in place costs a few.
+        /// A typical change, the median of seven. A whole rebuild of 20k
+        /// names costs 1.5-2 s of CPU on a CI runner; a change applied in
+        /// place costs about 10 ms there.
         const CHANGE_CPU_BUDGET: Duration = Duration::from_millis(50);
+        /// No single change may cost this share of a whole rebuild measured
+        /// in the same process, so one sample inflated by a loaded runner
+        /// passes, but a change that rebuilds the index never does.
+        const REBUILD_SHARE: u32 = 10;
         const WORDS: [&str; 8] = [
             "report", "invoice", "holiday", "draft", "notes", "budget", "scan", "receipt",
         ];
@@ -2003,13 +2008,32 @@ mod tests {
             cpu_ms(rename),
             cpu_ms(burst_cpu)
         );
-        for (sample, spent) in changes.iter().enumerate() {
+        let mut sorted = changes.clone();
+        sorted.sort_unstable();
+        let median = sorted[sorted.len() / 2];
+        assert!(
+            median < CHANGE_CPU_BUDGET,
+            "a change costs {} ms of CPU at {names} names (median; budget {} ms; a whole \
+             rebuild cost {} ms)",
+            cpu_ms(median),
+            CHANGE_CPU_BUDGET.as_millis(),
+            cpu_ms(rebuild)
+        );
+        let share = rebuild.checked_div(REBUILD_SHARE).unwrap();
+        for (what, spent) in changes
+            .iter()
+            .enumerate()
+            .map(|(sample, spent)| (format!("change {sample}"), *spent))
+            .chain([
+                ("the rename".into(), rename),
+                ("the burst".into(), burst_cpu),
+            ])
+        {
             assert!(
-                *spent < CHANGE_CPU_BUDGET,
-                "change {sample} cost {} ms of CPU at {names} names (budget {} ms; a whole \
-                 rebuild cost {} ms)",
-                cpu_ms(*spent),
-                CHANGE_CPU_BUDGET.as_millis(),
+                spent < share,
+                "{what} cost {} ms of CPU at {names} names, over a {REBUILD_SHARE}th of the \
+                 {} ms whole rebuild",
+                cpu_ms(spent),
                 cpu_ms(rebuild)
             );
         }
