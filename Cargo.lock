@@ -5970,8 +5970,11 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 name = "hello"
 version = "0.1.0"
 dependencies = [
- "runtime",
+ "runtime-collab",
  "runtime-dylib",
+ "runtime-fs",
+ "runtime-identity",
+ "runtime-portal",
  "workspace-hack",
 ]
 
@@ -12956,18 +12959,6 @@ checksum = "bdaec2ab84d663ce7c77cacfa68187683532808eabad844e3213571df5fdd11d"
 dependencies = [
  "rten-base",
  "rten-simd",
-]
-
-[[package]]
-name = "runtime"
-version = "0.1.0"
-dependencies = [
- "runtime-collab",
- "runtime-fs",
- "runtime-identity",
- "runtime-portal",
- "tilo-test-env",
- "workspace-hack",
 ]
 
 [[package]]
