@@ -168,10 +168,13 @@ def verify_response(request, request_path, response, work):
             raise ValueError('broker changed package header or payload')
         checked = run('rpmkeys', '--dbpath', str(rpmdb), '--checksig', '--verbose', str(file))
         signatures = re.findall(r'Signature, key ID ([a-fA-F0-9]+): OK', checked)
-        if not signatures or re.search(r'NOT OK|NOKEY|BAD', checked):
+        full_fingerprints = re.findall(r'signature, key fingerprint: ([a-fA-F0-9]+): OK', checked)
+        if not (signatures or full_fingerprints) or re.search(r'NOT OK|NOKEY|BAD', checked):
             raise ValueError('RPM signature was not verified')
         if not all(len(key_id) >= 8 and any(f.lower().endswith(key_id.lower()) for f in fingerprints) for key_id in signatures):
             raise ValueError('RPM signed by an unexpected key')
+        if not all(len(f) in (40, 64) and f.upper() in fingerprints for f in full_fingerprints):
+            raise ValueError('RPM signed by an unexpected full fingerprint')
     return receipt
 
 
