@@ -210,7 +210,7 @@ fn a_changes_read_between_the_frames_of_one_checkpoint_is_left_to_the_whole_read
 }
 
 /// Characters in the large document, one text op each, written in
-/// [`LARGE_EDITS`] edits of its own lines, as a collaborator's typing leaves
+/// [`LARGE_EDITS`] changes of a line each, as a collaborator's typing leaves
 /// a document's history.
 const LARGE_CHARACTERS: usize = 50_000;
 const LARGE_EDITS: usize = 100;
@@ -246,24 +246,25 @@ fn fastest<T>(runs: usize, mut run: impl FnMut() -> T) -> (std::time::Duration, 
 fn a_remote_edit_of_a_large_document_costs_its_reader_the_edit() {
     let joined = enrolled();
     let member = member().verifying_key().to_bytes();
+    // One signed write carrying the document's whole history: an edit per
+    // line, as typing leaves it.
     commit(&joined, |chat| {
-        chat.put_object(ROOT, "body", ObjType::Text).unwrap();
-    });
-    let line_characters = LARGE_CHARACTERS / LARGE_EDITS;
-    for edit in 0..LARGE_EDITS {
-        commit(&joined, |chat| {
-            let body = chat.get(ROOT, "body").unwrap().unwrap().1;
-            let mut line = format!("{edit:04} {:x} ", edit * 7919);
-            while line.len() < line_characters - 1 {
+        let body = chat.put_object(ROOT, "body", ObjType::Text).unwrap();
+        let line_characters = LARGE_CHARACTERS / LARGE_EDITS;
+        for edit in 0..LARGE_EDITS {
+            chat.commit();
+            let mut line = format!("{edit:04} {:x} ", edit.wrapping_mul(7919));
+            while line.len() < line_characters.saturating_sub(1) {
+                let letter = line.len().wrapping_mul(31).wrapping_add(edit) % 26;
                 line.push(char::from(
-                    b'a' + u8::try_from((line.len() * 31 + edit) % 26).unwrap(),
+                    b'a'.saturating_add(u8::try_from(letter).unwrap()),
                 ));
             }
             line.push('\n');
             let end = chat.length(&body);
             chat.splice_text(&body, end, 0, &line).unwrap();
-        });
-    }
+        }
+    });
     let held = full(&joined, member);
     commit(&joined, |chat| {
         let body = chat.get(ROOT, "body").unwrap().unwrap().1;

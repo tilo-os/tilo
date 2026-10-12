@@ -41,7 +41,7 @@ impl Service {
         })
     }
     fn edit(&self, revision: u8) {
-        *self.at.lock().unwrap() = ([revision; 32], [revision + 10; 32]);
+        *self.at.lock().unwrap() = ([revision; 32], [revision.wrapping_add(10); 32]);
     }
     fn at(&self) -> ([u8; 32], [u8; 32]) {
         *self.at.lock().unwrap()
@@ -76,13 +76,13 @@ impl NativeDocumentReads for Service {
         if self.pending.load(Ordering::Acquire) {
             return Ok(NativeDocumentRead::Pending);
         }
-        let (revision, head) = self.at();
+        let (revision, tip) = self.at();
         if Some(revision) == known {
             return Ok(NativeDocumentRead::Unchanged(revision));
         }
         Ok(NativeDocumentRead::Captured {
             revision,
-            heads: vec![head],
+            heads: vec![tip],
             body: Box::new(Bytes(vec![1; self.bytes])),
         })
     }
@@ -100,7 +100,7 @@ impl NativeDocumentReads for Service {
         if self.pending.load(Ordering::Acquire) {
             return Ok(NativeDocumentRead::Pending);
         }
-        let (revision, head) = self.at();
+        let (revision, tip) = self.at();
         if revision == held.revision {
             return Ok(NativeDocumentRead::Unchanged(revision));
         }
@@ -111,7 +111,7 @@ impl NativeDocumentReads for Service {
         };
         Ok(NativeDocumentRead::Changes {
             revision,
-            heads: vec![head],
+            heads: vec![tip],
             base,
             body: Box::new(Bytes(vec![2; self.bytes])),
         })
@@ -171,12 +171,12 @@ impl Channel {
     /// What the dispatcher does for `OpenChanges { known }`.
     fn open_changes(&mut self, known: [u8; 32]) -> Result<Reply, String> {
         let held = self.slot.held(known);
-        self.request(Some(known), held)
+        self.request(Some(known), held.as_ref())
     }
     fn request(
         &mut self,
         known: Option<[u8; 32]>,
-        held: Option<HeldRevision>,
+        held: Option<&HeldRevision>,
     ) -> Result<Reply, String> {
         let reading = Reading {
             context: context(&self.custody),
@@ -184,7 +184,7 @@ impl Channel {
             budget: &self.budget,
             ids: &self.ids,
         };
-        open_read(&mut self.slot, reading, known, held.as_ref()).map(|(reply, _)| reply)
+        open_read(&mut self.slot, reading, known, held).map(|(reply, _)| reply)
     }
     /// Read every remaining piece after `first`, and the last token.
     fn read_rest(&mut self, first: &Reply) -> Result<(u64, Vec<u8>, [u8; 16]), String> {
