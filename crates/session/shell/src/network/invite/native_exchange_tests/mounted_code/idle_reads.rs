@@ -34,14 +34,18 @@ async fn an_idle_shared_document_asks_its_owner_nothing() {
 
 /// Set in the child process the announced journey runs in.
 const ANNOUNCED_CHILD: &str = "TILO_TEST_IDLE_READS_ANNOUNCED";
-/// Owner checks an idle reader may cause per second when every change it
-/// depends on is announced: at most one in the window, none on a clock
-/// (the unannounced re-check makes five a second).
-const ANNOUNCED_CHECKS_PER_S_BUDGET: f64 = 0.2;
+/// With every change announced the broker checks a held read only when told:
+/// once per waiting reader per announcement (the app holds at most this
+/// many reads), plus one for an announcement just before the window. The
+/// unannounced re-check makes five a second per reader with none.
+const CHECKS_PER_ANNOUNCEMENT: usize = 4;
 /// Blocking wakeups per second of the broker's thread while its readers
-/// idle with every change announced. It wakes 22-24 times a second on the
-/// unannounced re-check; 0.2 measured announced (focused run 101274).
+/// idle with every change announced and nothing announces: 0.2 measured
+/// (focused runs 101274, 101558); 21-24 on the unannounced re-check.
 const ANNOUNCED_BROKER_WAKEUPS_PER_S_BUDGET: f64 = 1.0;
+/// What one announcement may add to them: each waiting reader's check and
+/// the broker's answer to it (about 8 measured, focused run 101557).
+const BROKER_WAKEUPS_PER_ANNOUNCEMENT: f64 = 10.0;
 
 /// The same idle journey with identity directories to watch, in a child
 /// process so its environment is its own: the broker holds each reader's
@@ -269,13 +273,19 @@ pub(super) async fn run(device: &Device, mounted: &mut Mounted, announced: bool)
             reliable,
             "the announced journey must run with a reliable clock and watched identity files"
         );
+        let announced_count = usize::try_from(announcements_seen).unwrap_or(usize::MAX);
         assert!(
-            per_second(idle_checks) <= ANNOUNCED_CHECKS_PER_S_BUDGET,
-            "with every change announced the broker checked an idle read {idle_checks} times in {WINDOW:?} (budget {ANNOUNCED_CHECKS_PER_S_BUDGET}/s): is it re-checking on a clock?"
+            idle_checks
+                <= CHECKS_PER_ANNOUNCEMENT
+                    .saturating_mul(announced_count)
+                    .saturating_add(1),
+            "with every change announced the broker checked an idle read {idle_checks} times in {WINDOW:?} for {announced_count} announcements: is it re-checking on a clock?"
         );
+        let wakeup_budget = ANNOUNCED_BROKER_WAKEUPS_PER_S_BUDGET
+            + BROKER_WAKEUPS_PER_ANNOUNCEMENT * per_second(announced_count);
         assert!(
-            broker_wakeups <= ANNOUNCED_BROKER_WAKEUPS_PER_S_BUDGET,
-            "the broker thread woke {broker_wakeups:.2} times a second while its readers idled with every change announced (budget {ANNOUNCED_BROKER_WAKEUPS_PER_S_BUDGET}/s)"
+            broker_wakeups <= wakeup_budget,
+            "the broker thread woke {broker_wakeups:.2} times a second while its readers idled with every change announced ({announced_count} announcements; budget {wakeup_budget:.2}/s)"
         );
     }
     changes_reach_the_idle_reader(device, mounted, &counter).await;
