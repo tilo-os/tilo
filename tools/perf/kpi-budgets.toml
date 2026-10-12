@@ -684,8 +684,13 @@ source = "KPI document: Frame time p99 at 4K/144 Hz; the CPU share of a pan fram
 # rasterises nothing: the strips' layer is no longer rasterised again in a
 # desktop's first pan (8.03 M px before, run 100092; 155,628 px at 100 %,
 # 231,684 at 150 %, 334,264 at 200 % after, run 100497). On two strips a
-# window on screen in the still strip changes between the warm and the first
-# pan (2.2-2.5 M px, its group's area). The max is enforced about 50 % above
+# window on screen in the still strip changed between the warm and the first
+# pan (2.2-2.5 M px, its group's area): an in-process app's content, made on
+# its own thread, landed while the 4K warm ran, and the bench, which has no
+# event loop to draw it as it lands, left it to the pan's first frame. The
+# bench now rests and warms again until a frame after the warm changes
+# nothing, as a session reaches rest (`rest_and_warm`); the two-strip maxima
+# stay until a run measures that. The max is enforced about 50 % above
 # those. Frame time is reported like the pan frames'.
 
 [kpi."render.shell.pan_start_pixels.4k"]
