@@ -22,7 +22,8 @@ fn provision() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use std::path::Path;

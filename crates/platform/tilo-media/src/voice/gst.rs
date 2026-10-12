@@ -327,6 +327,12 @@ impl VoiceAudio {
                 .map_err(|_| AudioError::Codec)?
                 .as_slice()
                 .to_vec();
+            if !super::needs_transmission(&payload) {
+                // DTX: the microphone is live and silent. Receivers play
+                // comfort noise until the encoder's next update.
+                capture.pipeline.mark_sample();
+                continue;
+            }
             let timestamp = self.timeline.frame_timestamp(captured_at)?;
             self.captured.push(
                 CapturedOpus {
@@ -722,11 +728,19 @@ fn check_bus(pipeline: &gst::Pipeline) -> Result<(), AudioError> {
     Ok(())
 }
 
+/// 32 kbit/s 20 ms voice with DTX: in silence the encoder emits a 1-byte
+/// "nothing to send" packet ([`super::needs_transmission`]) for all but one
+/// comfort-noise update every 400 ms, so a silent participant sends ~2.5
+/// packets a second instead of 50. Opus enters DTX only after ~200 ms of
+/// inactivity and leaves it on the first active frame, so speech onsets are
+/// coded normally. In-band FEC stays off: native publishers send on QUIC
+/// streams, which already retransmit, and browser receivers cannot decode it.
 fn encoder() -> Result<gst::Element, AudioError> {
     gst::ElementFactory::make("opusenc")
         .property("bitrate", 32_000i32)
         .property_from_str("audio-type", "voice")
         .property_from_str("frame-size", "20")
+        .property("dtx", true)
         .build()
         .map_err(|_| AudioError::Codec)
 }
@@ -1587,6 +1601,95 @@ mod tests {
                 .as_str(),
             "voice"
         );
+        assert!(encoder.property::<bool>("dtx"), "silence must not stream");
+        assert!(!encoder.property::<bool>("inband-fec"));
+    }
+
+    /// The tilo-voice/1 object header each transmitted packet travels in.
+    const OBJECT_HEADER: usize = 32;
+
+    /// 48 kHz mono speech-band signal: a 140 Hz voice with formant-like
+    /// harmonics and a 4 Hz syllable envelope that never falls silent.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the signal peaks below 13000, which always fits i16"
+    )]
+    fn voiced(frames: usize) -> Vec<i16> {
+        (0..frames.saturating_mul(FRAME_SAMPLES))
+            .map(|index| {
+                let t = f64::from(u32::try_from(index).unwrap()) / 48_000.0;
+                let envelope = 0.55 + 0.45 * (t * 4.0 * std::f64::consts::TAU).sin();
+                let voice: f64 = [(1, 1.0), (4, 0.6), (9, 0.35), (17, 0.2)]
+                    .iter()
+                    .map(|(harmonic, gain)| {
+                        gain * (t * 140.0 * f64::from(*harmonic) * std::f64::consts::TAU).sin()
+                    })
+                    .sum();
+                (voice * envelope * 6_000.0) as i16
+            })
+            .collect()
+    }
+
+    /// (transmitted packets, transmitted Opus bytes) among `packets`.
+    fn transmitted(packets: &[Vec<u8>]) -> (usize, usize) {
+        let sent: Vec<&Vec<u8>> = packets
+            .iter()
+            .filter(|packet| crate::voice::needs_transmission(packet))
+            .collect();
+        (sent.len(), sent.iter().map(|packet| packet.len()).sum())
+    }
+
+    #[test]
+    fn a_silent_microphone_sends_a_few_comfort_noise_updates_per_second() {
+        let _device_test = device_test_lock();
+        let mut encoder = OpusEncoder::new().unwrap();
+        // 4 s of silence; the encoder enters DTX after its ~200 ms hangover.
+        let packets = encoder.encode(&vec![0; 4 * 48_000]);
+        assert!(packets.len() >= 200, "{}", packets.len());
+        let steady = &packets[50..200];
+        // Over 3 s: at most 5 packets and 5 kbit/s of voice objects a second.
+        let (sent, bytes) = transmitted(steady);
+        let objects = bytes.saturating_add(sent.saturating_mul(OBJECT_HEADER));
+        eprintln!("silent: {sent} packets and {objects} B of voice objects in 3 s");
+        assert!(sent <= 15, "{sent} updates in 3 s");
+        assert!(
+            sent > 0,
+            "comfort-noise updates keep the receiver's noise floor"
+        );
+        assert!(objects.saturating_mul(8) <= 15_000, "{objects} B in 3 s");
+    }
+
+    #[test]
+    fn speech_is_sent_every_frame_from_its_onset_at_the_opus_bitrate() {
+        let _device_test = device_test_lock();
+        let mut encoder = OpusEncoder::new().unwrap();
+        // 1 s of silence (deep in DTX), then 3 s of voice.
+        let mut pcm = vec![0; 48_000];
+        pcm.extend(voiced(150));
+        let packets = encoder.encode(&pcm);
+        assert!(packets.len() >= 200, "{}", packets.len());
+        // The encoder was in DTX right up to the onset...
+        assert!(
+            transmitted(&packets[25..50]).0 <= 3,
+            "not in DTX before the onset"
+        );
+        // ...and the first voiced frame and every one after it is
+        // transmitted: DTX never clips an onset.
+        let speech = &packets[50..200];
+        assert!(
+            speech
+                .iter()
+                .all(|packet| crate::voice::needs_transmission(packet)),
+            "{:?}",
+            speech.iter().map(Vec::len).collect::<Vec<_>>()
+        );
+        let (sent, bytes) = transmitted(speech);
+        let objects = bytes.saturating_add(sent.saturating_mul(OBJECT_HEADER));
+        eprintln!("speaking: {sent} packets, {bytes} B Opus, {objects} B of voice objects in 3 s");
+        assert_eq!(sent, 150);
+        // Constrained VBR at 32 kbit/s, with a little room for the encoder's
+        // short-term rate control.
+        assert!(bytes.saturating_mul(8) <= 3 * 36_000, "{bytes} B in 3 s");
     }
 
     #[test]

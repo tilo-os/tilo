@@ -23,14 +23,11 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_browser_peer::invite::{ask_to_join, guest_certificate, join};
 use tilo_browser_peer::{HttpClient, HttpsLink, carrier};
-use tilo_relay::RelayConfig;
-use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::{TlsSource, WebConfig};
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::rooms::{JoinReply, JoinStep, Room, RoomRole, RoomsReply, RoomsRequest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
-use support::enrol;
+use support::{TestHost, enrol, start_room_host};
 
 async fn rooms(link: &HttpsLink, request: RoomsRequest) -> RoomsReply {
     carrier::rooms(link.client().as_ref(), link.session(), &request)
@@ -98,42 +95,13 @@ async fn subscribe(link: &mut HttpsLink, workspace_id: u64) -> Result<(), String
     .await
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "async Relay::shutdown consumes the relay; the suggested later drop is a use-after-move"
-)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_owner_admits_and_removes_a_different_person_over_https() {
     let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
     let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
     let page = enrol(&alice, "alice-browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = Relay::start(
-        RelayConfig {
-            state_root: state.path().to_path_buf(),
-            ..RelayConfig::default()
-        },
-        RelayIdentity {
-            user_public_key: alice.verifying_key().to_bytes(),
-            device_signing_key: host.key.clone(),
-            device_cert: host.cert.clone(),
-            revocations: RevocationList::new(),
-        },
-    )
-    .await
-    .unwrap();
-    let web = relay
-        .serve_web(WebConfig {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            tls: TlsSource::Development {
-                hosts: vec!["localhost".into(), "127.0.0.1".into()],
-                store: None,
-            },
-            allowed_origins: Vec::new(),
-            plain_listen: None,
-        })
-        .await
-        .unwrap();
+    let TestHost { relay, web } = start_room_host(&alice, &host, state.path(), false).await;
     let https: Arc<dyn HttpClient> =
         support::https::DevHttps::new(web.addr, web.certificate_sha256.as_ref().unwrap());
     let connect = |cert: DeviceCert, key: SigningKey| {
@@ -562,38 +530,9 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_invited_peer_resumes_with_its_own_identity_after_page_and_host_reload() {
-    use support::{Device, TestHost, ready, start_peer_with_store, wait_for};
+    use support::{ready, start_peer_with_store, wait_for};
     use tilo_browser_peer::{Host, MemoryPeerStore, PeerStore};
 
-    async fn start(root: &SigningKey, host: &Device, state: &std::path::Path) -> TestHost {
-        let relay = Relay::start(
-            RelayConfig {
-                state_root: state.to_path_buf(),
-                ..RelayConfig::default()
-            },
-            RelayIdentity {
-                user_public_key: root.verifying_key().to_bytes(),
-                device_signing_key: host.key.clone(),
-                device_cert: host.cert.clone(),
-                revocations: RevocationList::new(),
-            },
-        )
-        .await
-        .unwrap();
-        let web = relay
-            .serve_web(WebConfig {
-                listen: "127.0.0.1:0".parse().unwrap(),
-                tls: TlsSource::Development {
-                    hosts: vec!["localhost".into(), "127.0.0.1".into()],
-                    store: Some(state.join("web-dev-identity")),
-                },
-                allowed_origins: Vec::new(),
-                plain_listen: None,
-            })
-            .await
-            .unwrap();
-        TestHost { relay, web }
-    }
     async fn peer_rooms(peer: &tilo_browser_peer::PeerHandle, request: RoomsRequest) -> RoomsReply {
         let (send, recv) = tokio::sync::oneshot::channel();
         peer.rooms_then(
@@ -621,7 +560,7 @@ async fn an_invited_peer_resumes_with_its_own_identity_after_page_and_host_reloa
     let owner = enrol(&alice, "owner page", DeviceCapabilities::member());
     let bob = guest("Bob").await;
     let state = tempfile::tempdir().unwrap();
-    let running = start(&alice, &host, state.path()).await;
+    let running = start_room_host(&alice, &host, state.path(), true).await;
     let owner_peer = start_peer_with_store(
         Host::Https(running.https()),
         owner.cert.clone(),
@@ -752,7 +691,7 @@ async fn an_invited_peer_resumes_with_its_own_identity_after_page_and_host_reloa
 
     // Both the host's committed governance and the page's saved peer
     // record survive. No reissue, certification by Alice, or owner root.
-    let running = start(&alice, &host, state.path()).await;
+    let running = start_room_host(&alice, &host, state.path(), true).await;
     assert!(matches!(
         status(running.https().as_ref(), &bob, request).await,
         JoinReply::Admitted {

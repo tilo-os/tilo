@@ -21,6 +21,13 @@ watch it in virt-manager (File > Add Connection > QEMU/KVM user session).
 `vm create` needs a forge token (`FORGEJO_TOKEN`, or an fgj or tea login) to
 download the disk; `tilo-vm guide platforms` covers the rest.
 
+For libvirt, QEMU and WHPX, creation selects and records an unused host SSH
+forwarding port starting at 2222. It checks registered VMs and local TCP bind
+availability. `--ssh-port PORT` requests an exact port and refuses a busy one
+before creating VM files. This is a preflight check, not a reservation: another
+process can take the port before the VM starts. Creating an already registered
+VM remains a no-op and keeps its existing port.
+
 A board, a laptop or another real machine that runs a Tilo dev image is
 registered instead: `tilo-vm vm add <name> --ssh root@<address>`, or as its
 owner's account, `--ssh <user>@<address> --key <file>` (`tilo-vm guide
@@ -69,10 +76,10 @@ What each picture is:
 - Your slot is named after your branch, unless `TILO_VM_SLOT` or
   `slot = "<name>"` in the worktree's `.tilo-vm` names another.
 - Every command that works on a slot accepts `--slot <name>`: `status`,
-  `swap`, `input`, `control`, `rollback`, `logs`, `shot`,
+  `swap`, `swap-artifact`, `input`, `control`, `rollback`, `logs`, `shot`,
   `seat claim|release`, `slot create|show|exec|restart|rm` and
   `slot apps install`. All but
-  `status`, `swap`, `input` and `control` also take the name as a
+  `status`, `swap`, `swap-artifact`, `input` and `control` also take the name as a
   positional argument (`tilo-vm logs review-a`).
 - After a command on a slot other than your default one, its `next:` hints
   carry the same `--slot`.

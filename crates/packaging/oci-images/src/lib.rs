@@ -16,11 +16,6 @@
 //! signed by a publisher it trusts. Manifests already scanned are
 //! remembered, so each published set is downloaded once.
 
-#![cfg_attr(
-    test,
-    allow(clippy::unwrap_used, reason = "in a test this is the assertion")
-)]
-
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

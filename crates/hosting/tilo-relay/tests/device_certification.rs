@@ -19,12 +19,8 @@ use tilo_user_identity::{
 
 use crate::common::{TestUser, client_endpoint};
 
-fn now_ns() -> u64 {
-    tilo_clock::unix_now_ns()
-}
-
 fn browser_request(user: [u8; 32], device: &SigningKey) -> CertificationRequest {
-    let now = now_ns();
+    let now = tilo_clock::unix_now_ns();
     CertificationRequest {
         version: CERTIFICATION_SCHEMA_VERSION,
         user_public_key: user,
@@ -129,7 +125,7 @@ async fn root_holder_certifies_a_browser_device_through_the_host() {
         &user.user_sk,
         &CertificationPolicy::browser(),
         &RevocationList::new(),
-        now_ns(),
+        tilo_clock::unix_now_ns(),
     )
     .unwrap();
     assert_eq!(
@@ -202,7 +198,7 @@ async fn host_refuses_escalation_and_relays_a_denial() {
         user.user_pk,
         &CertificationPolicy::browser(),
         &RevocationList::new(),
-        now_ns(),
+        tilo_clock::unix_now_ns(),
     )
     .unwrap();
     escalated.capabilities = DeviceCapabilities::primary();

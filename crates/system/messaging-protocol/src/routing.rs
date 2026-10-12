@@ -46,6 +46,30 @@ pub fn check(
     expected: &Owner,
     live: &LiveBinding,
 ) -> Result<(), Refusal> {
+    if route.service() == Service::Tilo {
+        return Err(Refusal::WrongService);
+    }
+    check_owned(store, route, expected, live)
+}
+
+/// Check a direct private Tilo route without admitting it to external adapters.
+pub(crate) fn check_native(
+    store: &AccountStore,
+    route: &Route,
+    expected: &Owner,
+    live: &LiveBinding,
+) -> Result<(), Refusal> {
+    if route.service() != Service::Tilo {
+        return Err(Refusal::WrongService);
+    }
+    check_owned(store, route, expected, live)
+}
+fn check_owned(
+    store: &AccountStore,
+    route: &Route,
+    expected: &Owner,
+    live: &LiveBinding,
+) -> Result<(), Refusal> {
     if !expected.valid_principal() || expected.principal != live.owner.principal {
         return Err(Refusal::WrongPrincipal);
     }
@@ -76,7 +100,7 @@ pub fn check(
         Service::Whatsapp => "whatsapp",
         Service::Signal => "signal",
         Service::Sms => "sms",
-        Service::Tilo => return Err(Refusal::WrongService),
+        Service::Tilo => "tilo",
     };
     if account.type_id.as_str() != required {
         return Err(Refusal::WrongService);

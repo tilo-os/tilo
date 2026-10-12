@@ -9,8 +9,6 @@ fn retired_execution_retained_server_refuses_tools_after_delete() {
         let id = open(&endpoint, "retained execution").await;
         let retained = endpoint.find(&id).unwrap();
         let live_reply = retained
-            .lock()
-            .await
             .handle(json!({
                 "jsonrpc": "2.0", "id": 2, "method": "tools/call",
                 "params": {"name": "tilo_list_apps", "arguments": {}}
@@ -42,8 +40,6 @@ fn retired_execution_retained_server_refuses_tools_after_delete() {
             ),
         ] {
             let reply = retained
-                .lock()
-                .await
                 .handle(json!({
                     "jsonrpc": "2.0", "id": 3, "method": "tools/call",
                     "params": {"name": name, "arguments": arguments}

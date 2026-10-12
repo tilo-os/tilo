@@ -36,7 +36,7 @@ use anyhow::{Context, anyhow};
 use tilo_content::{ContentState, ContentStore};
 use vello::peniko::{Blob, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
 
-use crate::doc::{ImportedPage, PagePlanEntry};
+use crate::markup::{ImportedPage, PagePlanEntry};
 use crate::model::{
     AnnoKind, Annotation, Comment, Document, FormEntry, MarkupStyle, OutlineItem, PtRect,
     Signature, SignatureInk,
@@ -717,36 +717,6 @@ impl RasterBackend {
             self.rotations
                 .insert((idx + 1).min(self.rotations.len()), rotation);
         }
-    }
-
-    /// Import every page of the PDF in `bytes`, inserting them starting at
-    /// displayed index `at`. Returns the number of pages added.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `bytes` is not a PDF the engine can parse (corrupt,
-    /// encrypted without a supplied password, or zero pages).
-    pub fn import_pdf(&mut self, bytes: &[u8], at: usize) -> anyhow::Result<usize> {
-        let source = Self::load_source(&self.engine, bytes)
-            .ok_or_else(|| anyhow!("the file is not a readable PDF"))?;
-        let n = source.page_sizes.len();
-        let src_idx = self.sources.len();
-        self.sources.push(source);
-        let at = at.min(self.plan.len());
-        for page in 0..n {
-            self.plan.insert(
-                at + page,
-                Some(PageSlot {
-                    source: src_idx,
-                    page,
-                }),
-            );
-            self.pending_sizes.insert(at + page, None);
-            self.pending_hashes.insert(at + page, None);
-            self.rotations
-                .insert((at + page).min(self.rotations.len()), 0);
-        }
-        Ok(n)
     }
 
     /// Import an image (`bytes` = PNG/JPEG/… file contents) as a new page,

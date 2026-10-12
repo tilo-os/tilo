@@ -56,10 +56,11 @@ impl ResourceApp for ChecklistApp {
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
         Box::new(
             Column::new()
-                .push(Box::new(
-                    cx.input(|list| list.title.clone(), Checklist::RENAME)
-                        .with_id("title"),
-                ))
+                .push(Box::new(cx.control_with(
+                    |shown| TextInput::from_state(shown).with_id("title"),
+                    |list| list.title.clone(),
+                    Checklist::RENAME,
+                )))
                 .push(Box::new(cx.text(|list| {
                     let open = list.items.values().filter(|item| !item.done).count();
                     format!("{open} open")
@@ -68,8 +69,15 @@ impl ResourceApp for ChecklistApp {
                     |list| &list.items,
                     |row| {
                         let id = row.item().cloned().unwrap_or_else(|| Id::from_raw(""));
-                        Box::new(row.checkbox(
-                            row.read(|item| item.map(|item| item.text.clone()).unwrap_or_default()),
+                        let label =
+                            row.read(|item| item.map(|item| item.text.clone()).unwrap_or_default());
+                        let control = format!("set-done-{id}");
+                        Box::new(row.control_with(
+                            |shown| {
+                                Checkbox::from_state(shown)
+                                    .with_id(&control)
+                                    .with_label(label)
+                            },
                             |item| item.done,
                             Checklist::SET_DONE.map(move |done| (id.clone(), done)),
                         ))
@@ -163,8 +171,8 @@ fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
     // phase: actions_through_the_door_update_the_record_and_the_view
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
-        app.invoke(Checklist::ADD.with("milk".into())).unwrap();
-        app.invoke(Checklist::ADD.with("eggs".into())).unwrap();
+        app.invoke(Checklist::ADD.with("milk")).unwrap();
+        app.invoke(Checklist::ADD.with("eggs")).unwrap();
         assert_eq!(
             texts(&app),
             [("milk".into(), false), ("eggs".into(), false)]
@@ -205,8 +213,8 @@ fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
     // phase: undo_and_redo_revert_actions
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
-        app.invoke(Checklist::RENAME.with("First".into())).unwrap();
-        app.invoke(Checklist::RENAME.with("Second".into())).unwrap();
+        app.invoke(Checklist::RENAME.with("First")).unwrap();
+        app.invoke(Checklist::RENAME.with("Second")).unwrap();
         assert!(app.undo());
         assert_eq!(app.state().title, "First");
         assert!(app.redo());
@@ -215,9 +223,8 @@ fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
     // phase: undo_reverts_a_text_splice_exactly
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
-        app.invoke(Checklist::RENAME.with("first thought".into()))
-            .unwrap();
-        app.invoke(Checklist::RENAME.with("second thought".into()))
+        app.invoke(Checklist::RENAME.with("first thought")).unwrap();
+        app.invoke(Checklist::RENAME.with("second thought"))
             .unwrap();
         assert!(app.undo());
         assert_eq!(app.state().title, "first thought");
@@ -230,19 +237,22 @@ fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
     // phase: state_survives_a_relaunch
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
-        app.invoke(Checklist::ADD.with("persisted".into())).unwrap();
+        app.invoke(Checklist::ADD.with("persisted")).unwrap();
         let app = app.reopen().unwrap();
         assert_eq!(texts(&app), [("persisted".into(), false)]);
     }
     // phase: every_action_is_an_attributed_version
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
-        app.invoke(Checklist::RENAME.with("Weekly".into())).unwrap();
+        app.invoke(Checklist::RENAME.with("Weekly")).unwrap();
         let last = app.versions().pop().unwrap();
-        assert_eq!(
-            last.summary().as_deref(),
-            Some("Rename the checklist · Checklist")
-        );
+        let entry = last.context.expect("an action records an entry");
+        let Some(tilo_actions::Did::Verb(verb)) = &entry.what else {
+            panic!("a verb: {entry:?}");
+        };
+        assert_eq!(verb.action.action, "rename");
+        assert_eq!(verb.args["title"].as_str(), Some("Weekly"));
+        assert!(entry.invoker.is_some(), "attributed: {entry:?}");
     }
 }
 
@@ -251,7 +261,7 @@ fn actions_are_gated_by_role_and_confirmed_for_every_surface() {
     // phase: a_viewer_cannot_edit
     {
         let mut app = TestApp::<ChecklistApp>::with_role(tilo_app::Role::Viewer).unwrap();
-        assert!(app.invoke(Checklist::ADD.with("sneaky".into())).is_err());
+        assert!(app.invoke(Checklist::ADD.with("sneaky")).is_err());
         assert!(app.state().items.is_empty());
     }
     // phase: the_palette_and_agents_see_every_action
@@ -294,24 +304,24 @@ fn actions_are_gated_by_role_and_confirmed_for_every_surface() {
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
         // An ordinary typed edit applies directly.
-        app.invoke(typed(ChecklistAction::Rename {
+        app.invoke(typed(ChecklistAction::Rename(checklist::Rename {
             title: "Weekly".into(),
-        }))
+        })))
         .unwrap();
         assert_eq!(app.state().title, "Weekly");
 
-        app.invoke(Checklist::ADD.with("milk".into())).unwrap();
+        app.invoke(Checklist::ADD.with("milk")).unwrap();
         let id = app.state().items.ids().next().cloned().unwrap();
-        app.invoke(typed(ChecklistAction::SetDone {
+        app.invoke(typed(ChecklistAction::SetDone(checklist::SetDone {
             item: id,
             done: true,
-        }))
+        })))
         .unwrap();
 
         // `clear_done` is `#[action(destructive)]`: reached through `apply` it
         // needs the same confirmation its named declaration does.
         assert!(matches!(
-            app.invoke(typed(ChecklistAction::ClearDone {})),
+            app.invoke(typed(ChecklistAction::ClearDone(checklist::ClearDone {}))),
             Err(tilo_actions::DoorError::ConfirmationRequired)
         ));
         assert_eq!(
@@ -319,7 +329,7 @@ fn actions_are_gated_by_role_and_confirmed_for_every_surface() {
             1,
             "the refused edit changed nothing"
         );
-        app.invoke_confirmed(typed(ChecklistAction::ClearDone {}))
+        app.invoke_confirmed(typed(ChecklistAction::ClearDone(checklist::ClearDone {})))
             .unwrap();
         assert!(app.state().items.is_empty());
     }
@@ -336,14 +346,12 @@ fn typed(operation: ChecklistAction) -> Invoke<Checklist> {
 #[test]
 fn history_restores_a_past_version_through_the_host() {
     let mut app = TestApp::<ChecklistApp>::new().unwrap();
-    app.invoke(Checklist::RENAME.with("Groceries".into()))
-        .unwrap();
-    app.invoke(Checklist::ADD.with("milk".into())).unwrap();
+    app.invoke(Checklist::RENAME.with("Groceries")).unwrap();
+    app.invoke(Checklist::ADD.with("milk")).unwrap();
     let past = app.state();
     let version = app.versions().pop().unwrap().hash;
-    app.invoke(Checklist::RENAME.with("Hardware".into()))
-        .unwrap();
-    app.invoke(Checklist::ADD.with("nails".into())).unwrap();
+    app.invoke(Checklist::RENAME.with("Hardware")).unwrap();
+    app.invoke(Checklist::ADD.with("nails")).unwrap();
     assert_ne!(app.state(), past);
 
     let harness = app.harness();
@@ -467,4 +475,71 @@ fn a_light_capture_repaints_framework_buttons_in_the_light_theme() {
             "channel {channel}: the button paints {probe:?}, the light neutral face is {expected:?}"
         );
     }
+}
+
+/// A grant given once is spent by the in-app call it admits: the host
+/// revokes it as part of admitting the call, and the next call asks again.
+/// Where nothing can revoke it, it is never relied on at all.
+#[test]
+fn allowing_once_in_app_admits_one_call_and_the_next_asks_again() {
+    use std::sync::{Arc, Mutex};
+    use tilo_app::permissions::policy::{
+        Answer, Grant, GrantId, KindSet, Lifetime, Subject, TreePath,
+    };
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    app.set_role(tilo_app::permissions::Role::Viewer);
+    let viewer = app.permissions();
+    let mut standing = viewer.standing().clone();
+    let room = TreePath::room(&standing.policy.room);
+    let person = Subject::person(standing.person.clone());
+    standing.policy.grants.extend([
+        Grant::new(
+            "asks",
+            person.clone(),
+            room.clone(),
+            KindSet::UNDOABLE,
+            Answer::Ask,
+            Subject::person("owner"),
+        ),
+        Grant::new(
+            "once",
+            person,
+            room.app(ChecklistApp::ID),
+            KindSet::UNDOABLE,
+            Answer::Allow,
+            Subject::person("owner"),
+        )
+        .with_lifetime(Lifetime::Once),
+    ]);
+    let granted = viewer.with_standing(standing);
+
+    // Nothing here can revoke it: the grant given once is not relied on.
+    app.set_permissions(granted.clone());
+    let without_host = app.invoke(Checklist::RENAME.with("Without a host"));
+    assert!(
+        matches!(
+            without_host,
+            Err(tilo_actions::DoorError::ConfirmationRequired)
+        ),
+        "{without_host:?}"
+    );
+
+    let revoked: Arc<Mutex<Vec<GrantId>>> = Arc::default();
+    let host = Arc::clone(&revoked);
+    app.set_permissions(granted.with_once_spender(Arc::new(move |spent| {
+        host.lock().unwrap().extend_from_slice(spent);
+        Ok(())
+    })));
+    app.invoke(Checklist::RENAME.with("Once")).unwrap();
+    assert_eq!(app.state().title, "Once");
+    assert_eq!(
+        *revoked.lock().unwrap(),
+        vec![GrantId::new("once")],
+        "admitting the call handed the spent grant to the host"
+    );
+    assert!(matches!(
+        app.invoke(Checklist::RENAME.with("Twice")),
+        Err(tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    assert_eq!(app.state().title, "Once", "the second call changed nothing");
 }

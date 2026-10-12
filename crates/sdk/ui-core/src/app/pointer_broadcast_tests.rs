@@ -126,7 +126,7 @@ fn document_broadcast_merges_snapshots_and_leaves_commits_incremental() {
             collab_types::document_artifact_id(&route.app_id, &route.cluster_id.to_string(), ""),
             collab_types::Ed25519PublicKey::from_bytes([0; 32]),
             collab_types::document_attestation_id(&route.app_id, &route.cluster_id.to_string(), ""),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             crate::time::SystemTime::UNIX_EPOCH,
             0,
         );
@@ -155,8 +155,7 @@ fn presence_publishes_on_workspace_scope_through_the_sink() {
     {
         let room = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_WORKSPACE_ID", room)
-            .remove("QUICK_CLUSTER_ID");
+        env.set("TILO_WORKSPACE_ID", room);
         let app = App::new(State::new(), Box::new(crate::widget::Text::new("t")));
         assert_eq!(
             app.presence_broadcast_scope(),
@@ -171,7 +170,7 @@ fn presence_publishes_on_workspace_scope_through_the_sink() {
     // The nil cluster addresses nobody, so no room means nothing published.
     {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove("TILO_WORKSPACE_ID").remove("QUICK_CLUSTER_ID");
+        env.remove("TILO_WORKSPACE_ID");
         let app = App::new(State::new(), Box::new(crate::widget::Text::new("t")));
         assert!(app.presence_broadcast_scope().is_none());
     }

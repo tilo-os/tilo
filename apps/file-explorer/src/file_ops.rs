@@ -1,20 +1,19 @@
 //! Filesystem changes as the Files document records them.
 //!
-//! Creating a folder, renaming, moving to Trash, moving and copying files are document
-//! actions: [`FileOp`]s queued in the Files document
-//! ([`crate::resource::FilesDocAction::QueueFileOp`]) by the device whose
-//! filesystem they change, then carried out there by a projection drain that
-//! records what was done ([`Outcome`]) with
-//! [`crate::resource::FilesDocAction::SettleFileOp`]. Being document actions,
-//! they are in the document's history and undoable: undoing one queues a
-//! [`FileOp::Revert`], which the same drain carries out by compensating each
-//! recorded [`Change`] in reverse order — renaming back, moving back,
-//! restoring from Trash, removing the created folder, moving a copy to
-//! Trash.
+//! Creating a folder, renaming, moving to Trash, moving and copying files are
+//! the Files resource's verbs: each queues a [`FileOp`] in the document's
+//! outbox ([`crate::resource::FileExplorer::ops`]) for the device whose
+//! filesystem it changes, which carries it out and settles it with what was
+//! done ([`Outcome`]). Being document actions, they are in the document's
+//! history and undoable: undoing one queues a [`FileOp::Revert`], which the
+//! same device carries out by compensating each recorded [`Change`] in
+//! reverse order — renaming back, moving back, restoring from Trash, removing
+//! the created folder, moving a copy to Trash.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::Settled;
 
 use crate::fileops;
 
@@ -37,8 +36,8 @@ pub enum FileOp {
     /// Copy `paths` into `folder`; a copy whose name is taken gets a free
     /// one.
     Copy { paths: Vec<String>, folder: String },
-    /// A transfer already settled by the native host. It is never executed
-    /// by a path-based projection; only its exact receipt can be compensated.
+    /// A transfer the native host already carried out, by its receipt's
+    /// operation. It is never carried out here; only the host compensates it.
     ClipboardReceipt { operation: String },
     /// Undo the queued operation `op`: compensate what it changed.
     Revert { op: String },
@@ -60,59 +59,30 @@ pub enum Change {
     Restored { entry: String, to: String },
     /// The empty folder `path` was removed.
     Removed { path: String },
-    /// Exact opaque receipt of the native host's published objects.
+    /// The native host's transfer `operation` is in effect.
     ClipboardTransfer { operation: String },
-    /// A native receipt already compensated; redo needs native restoration.
+    /// The native host took the transfer `operation` back.
     ClipboardUndo { operation: String },
 }
 
-/// What carrying out an operation came to.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Outcome {
-    /// Every change was made.
-    Done { changes: Vec<Change> },
-    /// `error` stopped it after `changes` were made.
-    Failed { error: String, changes: Vec<Change> },
-}
-
-impl Outcome {
-    /// The changes that were made.
-    pub fn changes(&self) -> &[Change] {
-        match self {
-            Self::Done { changes } | Self::Failed { changes, .. } => changes,
-        }
-    }
-
-    /// Why it failed, when it did.
-    pub fn error(&self) -> Option<&str> {
-        match self {
-            Self::Done { .. } => None,
-            Self::Failed { error, .. } => Some(error),
-        }
+impl Default for FileOp {
+    /// Nothing to do: Trash of no paths.
+    fn default() -> Self {
+        Self::Trash { paths: Vec::new() }
     }
 }
 
-/// An operation queued in the Files document.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct QueuedOp {
-    pub id: String,
-    /// The device whose filesystem it changes, which alone carries it out.
-    pub device: String,
-    pub op: FileOp,
-    /// `None` until the device has carried it out.
-    pub outcome: Option<Outcome>,
-    /// Its place in the queue, for keeping the most recent.
-    pub order: i64,
-}
+/// What carrying out an operation came to: every change it made, or why it
+/// stopped after the ones it made.
+pub type Outcome = Settled<Vec<Change>>;
 
 fn text(path: &Path) -> String {
     path.display().to_string()
 }
 
-/// Carry out `op` on this device's filesystem. A revert is given the outcome
-/// of the operation it takes back (`None` when that operation is unknown or
-/// not carried out yet).
-pub fn execute(op: &FileOp, reverting: Option<&Outcome>) -> Outcome {
+/// Carry out `op` on this device's filesystem. A revert is given the changes
+/// the operation it takes back made (`None` when that operation is unknown).
+pub fn execute(op: &FileOp, reverting: Option<&[Change]>) -> Outcome {
     let mut changes = Vec::new();
     let result = match op {
         FileOp::NewFolder { parent, name } => {
@@ -146,8 +116,7 @@ pub fn execute(op: &FileOp, reverting: Option<&Outcome>) -> Outcome {
         }),
         FileOp::ClipboardReceipt { .. } => Err("clipboard receipt requires its native host".into()),
         FileOp::Revert { .. } => match reverting {
-            Some(outcome) => outcome
-                .changes()
+            Some(done) => done
                 .iter()
                 .rev()
                 .try_for_each(|change| compensate(change).map(|done| changes.push(done))),
@@ -155,8 +124,11 @@ pub fn execute(op: &FileOp, reverting: Option<&Outcome>) -> Outcome {
         },
     };
     match result {
-        Ok(()) => Outcome::Done { changes },
-        Err(error) => Outcome::Failed { error, changes },
+        Ok(()) => Settled::Done(changes),
+        Err(reason) => Settled::Failed {
+            reason,
+            partial: changes,
+        },
     }
 }
 
@@ -263,8 +235,8 @@ mod tests {
     use super::*;
 
     fn done(outcome: &Outcome) -> &[Change] {
-        assert!(outcome.error().is_none(), "{outcome:?}");
-        outcome.changes()
+        assert!(outcome.is_done(), "{outcome:?}");
+        outcome.result()
     }
 
     /// Each operation records what it changed, and its revert takes exactly
@@ -309,28 +281,28 @@ mod tests {
         assert!(root.path().join("Archive/final.txt").exists());
 
         let revert = FileOp::Revert { op: "move".into() };
-        let reverted = execute(&revert, Some(&moved));
+        let reverted = execute(&revert, Some(moved.result().as_slice()));
         done(&reverted);
         assert!(root.path().join("final.txt").exists());
         assert!(
             !root.path().join("Archive").exists(),
             "the created folder goes"
         );
-        let again = execute(&revert, Some(&reverted));
+        let again = execute(&revert, Some(reverted.result().as_slice()));
         done(&again);
         assert!(root.path().join("Archive/final.txt").exists(), "redone");
-        done(&execute(&revert, Some(&again)));
+        done(&execute(&revert, Some(again.result().as_slice())));
 
-        done(&execute(&revert, Some(&renamed)));
+        done(&execute(&revert, Some(renamed.result().as_slice())));
         assert!(
             root.path().join("draft.txt").exists(),
             "the old name is back"
         );
-        done(&execute(&revert, Some(&created)));
+        done(&execute(&revert, Some(created.result().as_slice())));
         assert!(!root.path().join("Projects").exists());
 
         let nothing = execute(&revert, None);
-        assert!(nothing.error().is_some());
+        assert!(!nothing.is_done());
     }
 
     /// A move stops at the first failure and records what it moved before.
@@ -351,9 +323,12 @@ mod tests {
             },
             None,
         );
-        assert!(outcome.error().is_some());
-        assert_eq!(outcome.changes().len(), 1);
-        done(&execute(&FileOp::Revert { op: "m".into() }, Some(&outcome)));
+        assert!(!outcome.is_done());
+        assert_eq!(outcome.result().len(), 1);
+        done(&execute(
+            &FileOp::Revert { op: "m".into() },
+            Some(outcome.result().as_slice()),
+        ));
         assert!(root.path().join("a.txt").exists());
     }
 }

@@ -97,7 +97,7 @@ impl Collected {
         if !metadata.is_file()
             || metadata.nlink() != 1
             || metadata.uid() != unsafe { libc::geteuid() }
-            || !private_fs::is_owner_only(&metadata)
+            || !tilo_files::native::private::is_owner_only(&metadata)
         {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
@@ -125,7 +125,8 @@ impl Collected {
     }
 }
 
-#[cfg(all(test, feature = "signal-profile-native-test"))]
+#[cfg(test)]
+#[cfg(feature = "signal-profile-native-test")]
 mod tests {
     use super::*;
     use std::{

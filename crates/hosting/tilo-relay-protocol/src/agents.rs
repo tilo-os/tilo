@@ -87,9 +87,6 @@ pub struct AgentScope {
     pub rooms: Vec<String>,
     /// App ids; empty means every app in those rooms.
     pub apps: Vec<String>,
-    /// Whether the agent may satisfy an action's confirmation step itself.
-    /// Without it, an action that asks a person to confirm is refused.
-    pub may_confirm: bool,
 }
 
 /// A root-signed statement that `agent_device_public_key` is an agent of
@@ -113,7 +110,7 @@ pub struct AgentDelegation {
     /// Expiry, ns since the epoch. Delegations always expire.
     pub expires_at_ns: u64,
     /// Root signature over everything above.
-    #[serde(with = "crate::sig64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 
@@ -348,9 +345,6 @@ impl AgentProposal {
         {
             return Err("the delegation names an app that was not proposed");
         }
-        if scope.may_confirm && !self.scope.may_confirm {
-            return Err("the delegation may confirm, which was not proposed");
-        }
         if delegation.expires_at_ns > self.expires_at_ns {
             return Err("the delegation outlasts the proposal");
         }
@@ -374,9 +368,6 @@ pub struct GrantRequest {
     pub apps: Vec<String>,
     /// How long the grant lasts, in seconds.
     pub expires_in_secs: u64,
-    /// Whether the agent may satisfy confirmation steps.
-    #[serde(default)]
-    pub may_confirm: bool,
 }
 
 /// Parse `#rrggbb`.
@@ -544,9 +535,6 @@ pub struct AgentGrant {
     /// Expiry, ms since the epoch.
     #[serde(default)]
     pub expires_at_ms: u64,
-    /// Whether its agent may satisfy confirmation steps.
-    #[serde(default)]
-    pub may_confirm: bool,
     /// The code the approving device shows while pending.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pairing_code: Option<String>,
@@ -592,7 +580,6 @@ mod tests {
             AgentScope {
                 rooms: vec![ROOM.into()],
                 apps: vec!["so.tilo.scratchpad".into()],
-                may_confirm: false,
             },
             10,
             1_000,
@@ -694,7 +681,6 @@ mod tests {
             scope: AgentScope {
                 rooms: vec![ROOM.into()],
                 apps: vec!["so.tilo.notes".into(), "so.tilo.sheets".into()],
-                may_confirm: false,
             },
             expires_at_ns: 1_000,
         };
@@ -718,13 +704,6 @@ mod tests {
         assert!(
             proposal
                 .admits(&longer.sign(&root, [7; 32], 10).unwrap())
-                .is_err()
-        );
-        let mut confirming = proposal.clone();
-        confirming.scope.may_confirm = true;
-        assert!(
-            proposal
-                .admits(&confirming.sign(&root, [7; 32], 10).unwrap())
                 .is_err()
         );
         assert_eq!(parse_color_hex("#7c3aed"), Some([0x7c, 0x3a, 0xed]));

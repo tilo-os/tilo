@@ -14,7 +14,7 @@ use std::sync::{Arc, RwLock};
 
 use sha2::{Digest as _, Sha256};
 
-use ui::tilo_actions::{ActionAddress, Resource};
+use ui::tilo_actions::Resource;
 use ui::tilo_resource::SearchEntry;
 
 use crate::favorites::Favorite;
@@ -63,23 +63,8 @@ pub fn entry_resource_id(path: &std::path::Path) -> String {
     format!("files.entry:{}", path_identity_suffix(path))
 }
 
-pub fn place_open_address(path: &std::path::Path) -> ActionAddress {
-    ActionAddress::new(place_resource_id(path), OPEN_ACTION)
-}
-
 pub fn record_resource_id(record_id: uuid::Uuid) -> String {
     format!("files.record:{record_id}")
-}
-
-pub fn record_reveal_address(record_id: uuid::Uuid) -> ActionAddress {
-    ActionAddress::new(record_resource_id(record_id), REVEAL_ACTION)
-}
-
-pub fn remote_account_open_address(account: &RemoteAccount) -> ActionAddress {
-    ActionAddress::new(
-        crate::remote_accounts::resource_id(&account.id),
-        REMOTE_ACCOUNT_OPEN_ACTION,
-    )
 }
 
 /// A revision-gated snapshot of the private Places list, the search entries
@@ -163,7 +148,7 @@ impl PlacesSearch {
             .values()
             .map(|favorite| {
                 SearchEntry::new(favorite.label.clone(), String::new())
-                    .invoking(place_open_address(&favorite.path))
+                    .anchored(place_resource_id(&favorite.path))
                     .grouped(self.kind.clone())
                     .subtitled(favorite.path.display().to_string())
                     .with_icon(favorite.icon().name())
@@ -249,7 +234,7 @@ impl CollaborativeRecordSearch {
             .values()
             .map(|entry| {
                 SearchEntry::new(entry.name.clone(), String::new())
-                    .invoking(record_reveal_address(entry.record_id))
+                    .anchored(record_resource_id(entry.record_id))
                     .grouped(self.kind.clone())
                     .subtitled(crate::i18n::t_args(
                         "files-search-record-provenance",
@@ -371,7 +356,7 @@ impl RemoteAccountSearch {
             .values()
             .map(|account| {
                 SearchEntry::new(account.label.clone(), account.kind.label())
-                    .invoking(remote_account_open_address(account))
+                    .anchored(crate::remote_accounts::resource_id(&account.id))
                     .grouped(self.kind.clone())
                     .subtitled(format!(
                         "{} on {} ({})",
@@ -394,6 +379,7 @@ mod tests {
     use crate::favorites::{FavKind, Favorite};
     use std::path::PathBuf;
     use ui::search::SearchProvider;
+    use ui::tilo_actions::ActionAddress;
 
     /// The app's search source over `entries`, as the framework builds it.
     fn source(entries: Vec<SearchEntry>) -> impl SearchProvider {
@@ -472,10 +458,9 @@ mod tests {
                 .find(|r| r.title == "Documents")
                 .expect("Documents is findable");
             assert_eq!(
-                hit.action_address(),
-                Some(place_open_address(
-                    PathBuf::from("/home/tester/Documents").as_path()
-                ))
+                hit.action_id,
+                place_resource_id(PathBuf::from("/home/tester/Documents").as_path()),
+                "a hit is anchored at its place's row"
             );
         }
 
@@ -494,15 +479,20 @@ mod tests {
             for query in ["personal", "example", "nextcloud"] {
                 assert_eq!(provider.search(query).len(), 1, "{query}");
             }
+            let anchor = provider.search("personal")[0].action_id.clone();
+            assert_eq!(anchor, crate::remote_accounts::resource_id(&account.id));
             assert_eq!(
-                provider.search("personal")[0].action_address(),
-                Some(remote_account_open_address(&account))
+                crate::remote_accounts::account_of_resource(&anchor).as_deref(),
+                Some("cloud")
             );
         }
 
         // --- phase: place_resource_ids_are_wire_safe ---
         {
-            let address = place_open_address(PathBuf::from("/tmp/a\u{1f}b").as_path());
+            let address = ActionAddress::new(
+                place_resource_id(PathBuf::from("/tmp/a\u{1f}b").as_path()),
+                OPEN_ACTION,
+            );
             assert_eq!(ActionAddress::parse(&address.encode()), Some(address));
         }
 
@@ -533,7 +523,7 @@ mod tests {
 
         // --- phase: widget_hooks_find_then_navigate_to_the_place ---
         {
-            use automerge::{AutoCommit, ROOT};
+            use automerge::AutoCommit;
 
             // Build the app against real temp dirs so navigation actually loads.
             let base = std::env::temp_dir().join(format!("tilo-fe-search-{}", std::process::id()));
@@ -554,32 +544,25 @@ mod tests {
             let hit = source(app.search_entries_shown())
                 .search("")
                 .into_iter()
-                .find(|r| r.action_address() == Some(place_open_address(&home)))
+                .find(|r| r.action_id == place_resource_id(&home))
                 .expect("the Home favourite is findable through the real hook");
 
-            let mut doc = AutoCommit::new();
-            let address = hit.action_address().expect("canonical action address");
+            let doc = AutoCommit::new();
             let resources = crate::files_app::published::tree(&app, &doc);
-            let spec = ui::tilo_actions::door::resolve(&resources, &address)
-                .expect("search address is exported");
+            let row = resources
+                .iter()
+                .flat_map(|resource| std::iter::once(resource).chain(&resource.children))
+                .find(|resource| resource.id.as_str() == hit.action_id)
+                .expect("the hit's anchor is a published row");
+            let spec = row
+                .actions
+                .iter()
+                .find(|spec| spec.id == OPEN_ACTION)
+                .expect("the place's row opens it");
             assert_eq!(spec.kind, ui::tilo_actions::OperationKind::View);
             assert_eq!(spec.contract, ui::tilo_actions::ActionContract::view());
-            let kind = spec.kind;
-            let encoded =
-                ui::tilo_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
-                    .expect("search address is exported");
-            assert!(matches!(
-                crate::files_app::published::start(
-                    &mut app,
-                    kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &mut doc,
-                    &ROOT
-                )
-                .unwrap(),
-                Some(ui::framework::Effected::Done(_))
-            ));
+            app.open_anchor(&hit.anchor())
+                .expect("the window opens the hit's anchor");
             assert_eq!(
                 app.current_path(),
                 home,
@@ -646,14 +629,16 @@ mod tests {
             );
 
             let hit = first.results.first().expect("a page has a result");
-            let address = hit.action_address().expect("canonical account address");
             let resource = remote
-                .resource(&address.resource)
+                .resource(&hit.anchor())
                 .expect("the omitted account is materialized exactly");
-            let resources = [resource];
-            let spec = ui::tilo_actions::door::resolve(&resources, &address)
-                .expect("the lazy action matches the search address");
-            assert_eq!(spec.id, REMOTE_ACCOUNT_OPEN_ACTION);
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .any(|spec| spec.id == REMOTE_ACCOUNT_OPEN_ACTION),
+                "the anchored row opens the account"
+            );
         }
     }
 
@@ -668,7 +653,7 @@ mod tests {
             entry.record_id = record_id;
             let provider = source(CollaborativeRecordSearch::new(&[entry]).entries());
             let hit = provider.search("workspace").pop().expect("path matches");
-            assert_eq!(hit.action_address(), Some(record_reveal_address(record_id)));
+            assert_eq!(hit.action_id, record_resource_id(record_id));
             assert!(hit.subtitle.unwrap().contains("/Workspace/old-name.txt"));
         }
 

@@ -1,12 +1,15 @@
-//! CPU-only SHM conversion, frame-store publication and snapshot costs.
-//! Excludes guarded pool copying, queues, GPU upload, drawing and presentation.
+//! CPU-only SHM conversion, frame-store publication and snapshot costs, and
+//! the capture route's pool copy plus conversion for whole and damaged commits.
+//! Excludes the SIGBUS guard, queues, GPU upload, drawing and presentation.
 //! Run with `cargo run --locked -p shell --release --example shm_pipeline_bench` in the benchmark environment.
 
 use std::hint::black_box;
 use std::time::Instant;
 
 use shell::compositor::foreign::store;
-use shell::compositor::surface_readback::swizzle_row_to_rgba;
+use shell::compositor::surface_readback::{
+    ShmCopy, ShmLayout, ShmRegion, ShmShape, apply_owned_shm, copy_from_pool, swizzle_row_to_rgba,
+};
 use smithay::reexports::wayland_server::protocol::wl_shm;
 
 const SURFACE: u64 = 0x53_48_4d_03;
@@ -38,6 +41,85 @@ fn main() -> BenchResult<()> {
             measure(width, height, format)?;
         }
     }
+    for format in [wl_shm::Format::Argb8888, wl_shm::Format::Xrgb8888] {
+        // A whole 4K commit, and a caret's worth of damage on one.
+        measure_capture(format, None)?;
+        measure_capture(
+            format,
+            Some(ShmRegion {
+                x: 1900,
+                y: 1000,
+                width: 64,
+                height: 32,
+            }),
+        )?;
+    }
+    Ok(())
+}
+
+/// The capture route per commit: the copy out of the pool (inside the guard
+/// in production) and its conversion into the retained frame.
+fn measure_capture(format: wl_shm::Format, damage: Option<ShmRegion>) -> BenchResult<()> {
+    let (width, height) = (3840_usize, 2160_usize);
+    let bytes = width.saturating_mul(height).saturating_mul(4);
+    let pool: Vec<u8> = (0..bytes)
+        .map(|index| {
+            let [byte, ..] = index.wrapping_mul(131).wrapping_add(17).to_le_bytes();
+            byte
+        })
+        .collect();
+    let layout = ShmLayout {
+        offset: 0,
+        width: i32::try_from(width)?,
+        height: i32::try_from(height)?,
+        stride: i32::try_from(width.saturating_mul(4))?,
+        format,
+    };
+    let regions: Vec<ShmRegion> = damage.into_iter().collect();
+    let request = ShmCopy {
+        damage: damage.map(|_| regions.as_slice()),
+        base: Some(ShmShape {
+            width,
+            height,
+            format,
+        }),
+    };
+    let mut frame = vec![0_u8; bytes];
+    let mut scratch = Vec::new();
+    let mut copy_times = Vec::with_capacity(100);
+    let mut conversions = Vec::with_capacity(100);
+    let mut copied_bytes = 0;
+    for sample in 0..108 {
+        let began = Instant::now();
+        let owned = copy_from_pool(black_box(&pool), &layout, &request, scratch)?;
+        let copied_at = Instant::now();
+        apply_owned_shm(&owned, black_box(&mut frame))?;
+        let converted = Instant::now();
+        copied_bytes = owned.copied_bytes();
+        scratch = owned.into_bytes();
+        if sample >= 8 {
+            copy_times.push(copied_at.duration_since(began).as_nanos());
+            conversions.push(converted.duration_since(copied_at).as_nanos());
+        }
+    }
+    let totals = copy_times
+        .iter()
+        .zip(&conversions)
+        .map(|(copy, conversion)| copy.saturating_add(*conversion))
+        .collect();
+    println!(
+        "{}",
+        serde_json::json!({
+            "workload": "shm-capture-copy-conversion", "width": width, "height": height,
+            "format": format!("{format:?}"),
+            "damage": damage.map(|region| [region.x, region.y, region.width, region.height]),
+            "arch": std::env::consts::ARCH, "debug_assertions": cfg!(debug_assertions),
+            "copied_bytes": copied_bytes,
+            "copy": percentiles(copy_times)?,
+            "conversion": percentiles(conversions)?,
+            "total": percentiles(totals)?,
+        })
+    );
     Ok(())
 }
 

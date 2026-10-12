@@ -172,7 +172,7 @@ static ASKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::ne
 
 /// Where this user's relays' answers are kept: their cache directory.
 pub fn offers_path() -> Option<PathBuf> {
-    xdg_paths::cache_dir().map(|cache| cache.join(tilo_relay_protocol::RELAY_OFFERS_FILE))
+    tilo_paths::cache_dir().map(|cache| cache.join(tilo_relay_protocol::RELAY_OFFERS_FILE))
 }
 
 /// The answers recorded at `path`; nothing when absent or unreadable.
@@ -195,16 +195,22 @@ pub fn needs_asking(peers: &[RelayPeer], now_ms: u64) -> bool {
 /// Where `tilo-relay-offers` is: `$TILO_RELAY_OFFERS_BIN`, the installed
 /// location, then `PATH`.
 pub fn offers_binary() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("TILO_RELAY_OFFERS_BIN") {
+    helper_binary("TILO_RELAY_OFFERS_BIN", "tilo-relay-offers")
+}
+
+/// Where the helper `name` is: `$override_var`, `/usr/libexec/<name>`, then
+/// `PATH`.
+fn helper_binary(override_var: &str, name: &str) -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os(override_var) {
         return Some(PathBuf::from(explicit));
     }
-    let installed = PathBuf::from("/usr/libexec/tilo-relay-offers");
+    let installed = Path::new("/usr/libexec").join(name);
     if installed.exists() {
         return Some(installed);
     }
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
-        .map(|dir| dir.join("tilo-relay-offers"))
+        .map(|dir| dir.join(name))
         .find(|candidate| candidate.is_file())
 }
 
@@ -234,17 +240,15 @@ pub fn ask_in_background(binary: &Path, identity_root: &Path, offers: &Path) -> 
         return false;
     };
     std::thread::spawn(move || {
-        // The asker bounds itself; this bounds a hung one.
-        let deadline = std::time::Instant::now()
-            .checked_add(OFFER_BUDGET.saturating_mul(3))
-            .unwrap_or_else(std::time::Instant::now);
-        while matches!(child.try_wait(), Ok(None)) {
-            if std::time::Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
+        // The asker bounds itself; this bounds a hung one, sleeping on its
+        // exit rather than looking every few milliseconds.
+        let deadline = std::time::Instant::now().checked_add(OFFER_BUDGET.saturating_mul(3));
+        if matches!(
+            bounded_command::wait_child_or(&mut child, None, deadline),
+            Ok(bounded_command::Wakeup::Deadline)
+        ) {
+            let _ = child.kill();
+            let _ = child.wait();
         }
         ASKING.store(false, Ordering::Release);
     });
@@ -265,17 +269,7 @@ pub fn ask_relays_again(identity: &IdentityPaths) {
 /// Where `tilo-relay-environment` is: `$TILO_RELAY_ENVIRONMENT_BIN`, the
 /// installed location, then `PATH`.
 pub fn bridge_binary() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("TILO_RELAY_ENVIRONMENT_BIN") {
-        return Some(PathBuf::from(explicit));
-    }
-    let installed = PathBuf::from("/usr/libexec/tilo-relay-environment");
-    if installed.exists() {
-        return Some(installed);
-    }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("tilo-relay-environment"))
-        .find(|candidate| candidate.is_file())
+    helper_binary("TILO_RELAY_ENVIRONMENT_BIN", "tilo-relay-environment")
 }
 
 /// A relay session to open from a record, or to re-attach to.

@@ -1,0 +1,60 @@
+renderer-mutation-16 exit=1
+test_renderer_beforeinput_focus_cancel (__main__.RendererMutation.test_renderer_beforeinput_focus_cancel) ... ok
+test_renderer_beforeinput_selection_cancel (__main__.RendererMutation.test_renderer_beforeinput_selection_cancel) ... ok
+test_renderer_beforeinput_undo_cancel (__main__.RendererMutation.test_renderer_beforeinput_undo_cancel) ... ok
+test_renderer_beforeinput_value_cancel (__main__.RendererMutation.test_renderer_beforeinput_value_cancel) ... ok
+test_renderer_beforeinput_value_commit (__main__.RendererMutation.test_renderer_beforeinput_value_commit) ... ok
+test_renderer_beforeinput_value_update (__main__.RendererMutation.test_renderer_beforeinput_value_update) ... ok
+test_renderer_compositionstart_focus_preserved (__main__.RendererMutation.test_renderer_compositionstart_focus_preserved) ... ok
+test_renderer_compositionstart_selection_preserved (__main__.RendererMutation.test_renderer_compositionstart_selection_preserved) ... ok
+test_renderer_compositionstart_value_preserved (__main__.RendererMutation.test_renderer_compositionstart_value_preserved) ... ok
+test_renderer_compositionupdate_value_cancel (__main__.RendererMutation.test_renderer_compositionupdate_value_cancel) ... ok
+test_renderer_idle_beforeinput_replacement_preserved (__main__.RendererMutation.test_renderer_idle_beforeinput_replacement_preserved) ... ok
+test_renderer_ordinary_cancel_event_semantics (__main__.RendererMutation.test_renderer_ordinary_cancel_event_semantics) ... ok
+test_renderer_repeated_actions_after_replacement (__main__.RendererMutation.test_renderer_repeated_actions_after_replacement) ... ok
+test_renderer_style_handler_commit_and_undo (__main__.RendererMutation.test_renderer_style_handler_commit_and_undo) ... ok
+test_renderer_textinput_commit_focus_preserved (__main__.RendererMutation.test_renderer_textinput_commit_focus_preserved) ... FAIL
+test_renderer_textinput_commit_value_preserved (__main__.RendererMutation.test_renderer_textinput_commit_value_preserved) ... FAIL
+
+======================================================================
+FAIL: test_renderer_textinput_commit_focus_preserved (__main__.RendererMutation.test_renderer_textinput_commit_focus_preserved)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/qualified-builder/native-qualification/renderer_mutation.py", line 115, in test_renderer_textinput_commit_focus_preserved
+    self.assertTrue(self.main_world('document.activeElement===second'))
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_renderer_textinput_commit_value_preserved (__main__.RendererMutation.test_renderer_textinput_commit_value_preserved)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/qualified-builder/native-qualification/renderer_mutation.py", line 107, in test_renderer_textinput_commit_value_preserved
+    self.assert_replacement()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/qualified-builder/native-qualification/renderer_mutation.py", line 20, in assert_replacement
+    self.assertEqual(self.main_world('[first.selectionStart,first.selectionEnd]'), [0,5])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Lists differ: [5, 5] != [0, 5]
+
+First differing element 0:
+5
+0
+
+- [5, 5]
+?  ^
+
++ [0, 5]
+?  ^
+
+
+----------------------------------------------------------------------
+Ran 16 tests in 11.903s
+
+FAILED (failures=2)
+
+Traceback (most recent call last):
+  File "/qualified-builder/native-qualification/run-native-direct-tests.py", line 24, in <module>
+    assert run.returncode==0,'Native regression failed; preserve exact log and assertions: '+name
+           ^^^^^^^^^^^^^^^^^
+AssertionError: Native regression failed; preserve exact log and assertions: renderer-mutation-16
