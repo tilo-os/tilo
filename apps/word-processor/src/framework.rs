@@ -198,7 +198,7 @@ impl ResourceSurface<Document, WordProcessorEffect> for WordProcessorWidget {
         if let Some(path) = cx.launch_arguments().first() {
             self.show_record_of(std::path::PathBuf::from(path));
         }
-        self.follow_personal_dictionary(cx.settings());
+        self.follow_personal_dictionary();
         // A past version and a capture show the layout they are given.
         if cx.mode() == RunMode::Live {
             self.follow_preferences(cx.settings(), cx.settings());
