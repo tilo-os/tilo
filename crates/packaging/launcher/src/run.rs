@@ -1165,19 +1165,13 @@ fn enforce_bundle_policy(
     opts: &RunOptions,
     system_bundle: bool,
 ) -> Result<(), RunError> {
-    let trusted =
-        load_trusted_publisher_list().map_err(|error| RunError::RuntimeBundleSignature {
+    let trusted = load_trusted_publishers_for_bundle(path).map_err(|error| {
+        RunError::RuntimeBundleSignature {
             path: path.to_path_buf(),
             reason: error.to_string(),
-        })?;
-    let require_publisher = match opts.require_runtime_publisher.clone() {
-        Some(explicit) => Some(explicit),
-        None => trusted
-            .as_ref()
-            .filter(|keys| keys.len() == 1)
-            .and_then(|keys| keys.first())
-            .cloned(),
-    };
+        }
+    })?;
+    let require_publisher = opts.require_runtime_publisher.clone();
     let verify_opts = runtime_bundle::VerifyOptions {
         require_publisher,
         require_signature: !opts.allow_unsigned_runtime,
@@ -1212,25 +1206,12 @@ fn enforce_bundle_policy(
     };
     match verified {
         Ok(manifest) => {
-            // Multi-publisher trust list: `require_publisher` above was `None`
-            // (only one key can be pinned there), so check by hand here.
-            if let Some(list) = &trusted
-                && !list.is_empty()
-            {
-                let ok = manifest
-                    .publisher_hex
-                    .as_deref()
-                    .is_some_and(|pk| list.iter().any(|t| t.eq_ignore_ascii_case(pk)));
-                if !ok {
-                    return Err(RunError::RuntimeBundleSignature {
-                        path: path.to_path_buf(),
-                        reason: format!(
-                            "publisher {:?} not in trust list",
-                            manifest.publisher_hex.as_deref().unwrap_or("<none>"),
-                        ),
-                    });
-                }
-            }
+            trusted
+                .check(&manifest)
+                .map_err(|error| RunError::RuntimeBundleSignature {
+                    path: path.to_path_buf(),
+                    reason: error.to_string(),
+                })?;
             Ok(())
         }
         Err(runtime_bundle::BundleError::NotSigned) => Err(RunError::RuntimeBundleUnsigned {
@@ -1517,11 +1498,13 @@ mod per_user_runtime_verification_tests {
 /// Read operator policy and canonical immutable component publisher pins.
 /// A present invalid component pin fails closed, including when another key
 /// would otherwise validate the bundle.
-pub(crate) fn load_trusted_publisher_list() -> std::io::Result<Option<Vec<String>>> {
+pub(crate) fn load_trusted_publishers_for_bundle(
+    bundle: &Path,
+) -> std::io::Result<runtime_bundle::component_pins::BundleTrust> {
     let path = trusted_publishers_path_from(package_store::dev_env::dev_override(
         crate::dev_env::TRUSTED_PUBLISHERS_FILE_ENV,
     ));
-    runtime_bundle::component_pins::load_with_components(&path)
+    runtime_bundle::component_pins::load_for_bundle(&path, bundle)
 }
 
 /// The image's runtime trusted-publisher list.

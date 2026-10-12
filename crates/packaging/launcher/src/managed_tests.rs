@@ -346,6 +346,10 @@ fn runtime(root: &std::path::Path) -> ManagedRuntime {
     )
     .unwrap();
     ManagedRuntime {
+        runtime_identity: runtime_bundle::component_pins::RetainedBundleTrust::from_verified(
+            &built,
+        )
+        .unwrap(),
         bundle_root: runtime_root,
         runtime_publisher: built.publisher_hex.unwrap(),
         sandbox_shim: std::env::current_exe().unwrap(),
@@ -375,6 +379,19 @@ fn managed_runtime_resolves_the_declared_bundle_only_with_host_policy() {
     let selected = resolve(&options).unwrap();
     assert_eq!(selected.bundle_root, fixture.bundle_root);
     assert_eq!(selected.runtime_publisher, fixture.runtime_publisher);
+    let mut mismatched = selected;
+    mismatched.runtime_identity.root_hash = "00".repeat(32);
+    assert!(
+        ManagedLauncher::new(
+            package,
+            trust,
+            mismatched,
+            std::sync::Arc::new(CurrentAuthority(true.into()))
+        )
+        .err()
+        .unwrap()
+        .contains("identity differs")
+    );
     options.require_runtime_publisher = Some("00".repeat(32));
     assert!(resolve(&options).is_err());
     options.require_runtime_publisher = Some(fixture.runtime_publisher);
