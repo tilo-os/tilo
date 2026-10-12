@@ -1,0 +1,1402 @@
+{
+  "id": "test.shelf",
+  "kind": "test.shelf",
+  "label": "Shelf",
+  "detail": null,
+  "actions": [
+    {
+      "address": {
+        "resource": "test.shelf",
+        "action": "grow"
+      },
+      "semantic_identity": {
+        "kind": "test.shelf",
+        "key": "test.shelf"
+      },
+      "resource_kind": "test.shelf",
+      "resource_label": "Shelf",
+      "action_label": "Grow the shelf",
+      "description": "Add items to the shelf.",
+      "locus": "ClientLocal",
+      "kind": "Document",
+      "contract": {
+        "availability": {
+          "state": "available"
+        },
+        "kind": "undoable",
+        "risk": "low",
+        "confirmation": {
+          "mode": "none"
+        },
+        "retry": "at_most_once",
+        "reversible": true,
+        "execution": {
+          "mode": "immediate"
+        },
+        "result": {
+          "type": "none"
+        }
+      },
+      "input": {
+        "Text": {
+          "prompt": "How many",
+          "placeholder": "Grow the shelf",
+          "collects": "Words"
+        }
+      },
+      "params": [
+        {
+          "name": "by",
+          "ty": "integer",
+          "required": true,
+          "description": "How many"
+        }
+      ]
+    },
+    {
+      "address": {
+        "resource": "test.shelf",
+        "action": "double"
+      },
+      "semantic_identity": {
+        "kind": "test.shelf",
+        "key": "test.shelf"
+      },
+      "resource_kind": "test.shelf",
+      "resource_label": "Shelf",
+      "action_label": "Double the shelf",
+      "description": null,
+      "locus": "ClientLocal",
+      "kind": "Document",
+      "contract": {
+        "availability": {
+          "state": "available"
+        },
+        "kind": "undoable",
+        "risk": "low",
+        "confirmation": {
+          "mode": "none"
+        },
+        "retry": "at_most_once",
+        "reversible": true,
+        "execution": {
+          "mode": "immediate"
+        },
+        "result": {
+          "type": "none"
+        }
+      },
+      "input": "None",
+      "params": []
+    },
+    {
+      "address": {
+        "resource": "test.shelf",
+        "action": "apply"
+      },
+      "semantic_identity": {
+        "kind": "test.shelf",
+        "key": "test.shelf"
+      },
+      "resource_kind": "test.shelf",
+      "resource_label": "Shelf",
+      "action_label": "Apply Shelf edit",
+      "description": "One edit as a typed JSON value: {action: id, ...its params}. The named action does the same and says more.",
+      "locus": "ClientLocal",
+      "kind": "Document",
+      "contract": {
+        "availability": {
+          "state": "available"
+        },
+        "kind": "undoable",
+        "risk": "low",
+        "confirmation": {
+          "mode": "none"
+        },
+        "retry": "at_most_once",
+        "reversible": true,
+        "execution": {
+          "mode": "immediate"
+        },
+        "result": {
+          "type": "none"
+        },
+        "tags": [
+          "surface:programmatic",
+          "confirmation:by-argument"
+        ]
+      },
+      "input": {
+        "Text": {
+          "prompt": "A Shelf action, as JSON",
+          "placeholder": "Action as JSON",
+          "collects": "Words"
+        }
+      },
+      "params": [
+        {
+          "name": "action",
+          "ty": "object",
+          "required": true,
+          "description": "A Shelf action, as JSON"
+        }
+      ]
+    },
+    {
+      "address": {
+        "resource": "test.shelf",
+        "action": "group"
+      },
+      "semantic_identity": {
+        "kind": "test.shelf",
+        "key": "test.shelf"
+      },
+      "resource_kind": "test.shelf",
+      "resource_label": "Shelf",
+      "action_label": "Apply several Shelf edits as one",
+      "description": "Several actions as one all-or-nothing step: one undo, and if any member refuses nothing is applied. actions: [{action: id, args: {..}}].",
+      "locus": "ClientLocal",
+      "kind": "Document",
+      "contract": {
+        "availability": {
+          "state": "available"
+        },
+        "kind": "undoable",
+        "risk": "low",
+        "confirmation": {
+          "mode": "none"
+        },
+        "retry": "at_most_once",
+        "reversible": true,
+        "execution": {
+          "mode": "immediate"
+        },
+        "result": {
+          "type": "none"
+        },
+        "tags": [
+          "surface:programmatic",
+          "confirmation:by-argument"
+        ]
+      },
+      "input": {
+        "Text": {
+          "prompt": "Shelf actions to apply in order as one step, each {\"action\": id, \"args\": {..}}",
+          "placeholder": "Invocations as JSON",
+          "collects": "Words"
+        }
+      },
+      "params": [
+        {
+          "name": "actions",
+          "ty": "array",
+          "required": true,
+          "description": "Shelf actions to apply in order as one step, each {\"action\": id, \"args\": {..}}",
+          "schema": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "action"
+                  ],
+                  "properties": {
+                    "action": {
+                      "type": "string",
+                      "enum": [
+                        "grow",
+                        "double"
+                      ]
+                    },
+                    "args": {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "A named action, args as it takes them"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "action",
+                    "args"
+                  ],
+                  "properties": {
+                    "action": {
+                      "type": "string",
+                      "const": "apply"
+                    },
+                    "args": {
+                      "type": "object",
+                      "required": [
+                        "action"
+                      ],
+                      "properties": {
+                        "action": {
+                          "type": "object"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "address": {
+        "resource": "test.shelf",
+        "action": "step"
+      },
+      "semantic_identity": {
+        "kind": "test.shelf",
+        "key": "test.shelf"
+      },
+      "resource_kind": "test.shelf",
+      "resource_label": "Shelf",
+      "action_label": "Step",
+      "description": null,
+      "locus": "ClientLocal",
+      "kind": "Document",
+      "contract": {
+        "availability": {
+          "state": "available"
+        },
+        "kind": "undoable",
+        "risk": "low",
+        "confirmation": {
+          "mode": "none"
+        },
+        "retry": "at_most_once",
+        "reversible": true,
+        "execution": {
+          "mode": "immediate"
+        },
+        "result": {
+          "type": "none"
+        }
+      },
+      "input": "None",
+      "params": []
+    },
+    {
+      "address": {
+        "resource": "test.shelf",
+        "action": "wave"
+      },
+      "semantic_identity": {
+        "kind": "test.shelf",
+        "key": "test.shelf"
+      },
+      "resource_kind": "test.shelf",
+      "resource_label": "Shelf",
+      "action_label": "Wave at nobody",
+      "description": null,
+      "locus": "ClientLocal",
+      "kind": "Document",
+      "contract": {
+        "availability": {
+          "state": "available"
+        },
+        "kind": "undoable",
+        "risk": "low",
+        "confirmation": {
+          "mode": "none"
+        },
+        "retry": "at_most_once",
+        "reversible": true,
+        "execution": {
+          "mode": "immediate"
+        },
+        "result": {
+          "type": "none"
+        }
+      },
+      "input": "None",
+      "params": []
+    },
+    {
+      "address": {
+        "resource": "test.shelf",
+        "action": "render"
+      },
+      "semantic_identity": {
+        "kind": "test.shelf",
+        "key": "test.shelf"
+      },
+      "resource_kind": "test.shelf",
+      "resource_label": "Shelf",
+      "action_label": "See the app",
+      "description": "See the app's window as a picture: answers with the image and the revision of the document it shows.",
+      "locus": "ClientLocal",
+      "kind": "View",
+      "contract": {
+        "availability": {
+          "state": "available"
+        },
+        "kind": "read",
+        "risk": "none",
+        "confirmation": {
+          "mode": "none"
+        },
+        "retry": "idempotent",
+        "reversible": false,
+        "execution": {
+          "mode": "immediate"
+        },
+        "result": {
+          "type": "json",
+          "schema": {
+            "type": "object"
+          }
+        }
+      },
+      "input": {
+        "Text": {
+          "prompt": "Pixels per point, 0.5 to 2 (default 1)",
+          "placeholder": "See the app",
+          "collects": "Words"
+        }
+      },
+      "params": [
+        {
+          "name": "scale",
+          "ty": "number",
+          "description": "Pixels per point, 0.5 to 2 (default 1)",
+          "nullable": true
+        },
+        {
+          "name": "version",
+          "ty": "text",
+          "description": "A past version: change id from history, or checkpoint name",
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "address": {
+        "resource": "test.shelf",
+        "action": "activate-window"
+      },
+      "semantic_identity": {
+        "kind": "test.shelf",
+        "key": "test.shelf"
+      },
+      "resource_kind": "test.shelf",
+      "resource_label": "Shelf",
+      "action_label": "Show this window",
+      "description": "Ask the platform to reveal the existing window, keeping its document owner.",
+      "locus": "ClientLocal",
+      "kind": "View",
+      "contract": {
+        "availability": {
+          "state": "available"
+        },
+        "kind": "read",
+        "risk": "none",
+        "confirmation": {
+          "mode": "none"
+        },
+        "retry": "idempotent",
+        "reversible": false,
+        "execution": {
+          "mode": "immediate"
+        },
+        "result": {
+          "type": "json",
+          "schema": {
+            "type": "object"
+          }
+        }
+      },
+      "input": "None",
+      "params": []
+    },
+    {
+      "address": {
+        "resource": "test.shelf",
+        "action": "undo"
+      },
+      "semantic_identity": {
+        "kind": "test.shelf",
+        "key": "test.shelf"
+      },
+      "resource_kind": "test.shelf",
+      "resource_label": "Shelf",
+      "action_label": "Undo",
+      "description": "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps; with by, that author's steps outside a run; with to, all after a version.",
+      "locus": "ClientLocal",
+      "kind": "Document",
+      "contract": {
+        "availability": {
+          "state": "available"
+        },
+        "kind": "undoable",
+        "risk": "low",
+        "confirmation": {
+          "mode": "none"
+        },
+        "retry": "at_most_once",
+        "reversible": true,
+        "execution": {
+          "mode": "immediate"
+        },
+        "result": {
+          "type": "json",
+          "schema": {
+            "type": "object"
+          }
+        }
+      },
+      "input": {
+        "Text": {
+          "prompt": "How many steps, newest first",
+          "placeholder": "Undo",
+          "collects": "Words"
+        }
+      },
+      "params": [
+        {
+          "name": "steps",
+          "ty": "integer",
+          "description": "How many steps, newest first",
+          "nullable": true
+        },
+        {
+          "name": "run",
+          "ty": "text",
+          "description": "An agent run id from history",
+          "nullable": true
+        },
+        {
+          "name": "by",
+          "ty": "text",
+          "description": "Exact author id from history, for steps outside a run",
+          "nullable": true
+        },
+        {
+          "name": "to",
+          "ty": "text",
+          "description": "A change id from history, or a checkpoint name",
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "address": {
+        "resource": "test.shelf",
+        "action": "redo"
+      },
+      "semantic_identity": {
+        "kind": "test.shelf",
+        "key": "test.shelf"
+      },
+      "resource_kind": "test.shelf",
+      "resource_label": "Shelf",
+      "action_label": "Redo",
+      "description": "Bring back what your last undo took back.",
+      "locus": "ClientLocal",
+      "kind": "Document",
+      "contract": {
+        "availability": {
+          "state": "available"
+        },
+        "kind": "undoable",
+        "risk": "low",
+        "confirmation": {
+          "mode": "none"
+        },
+        "retry": "at_most_once",
+        "reversible": true,
+        "execution": {
+          "mode": "immediate"
+        },
+        "result": {
+          "type": "json",
+          "schema": {
+            "type": "object"
+          }
+        }
+      },
+      "input": {
+        "Text": {
+          "prompt": "How many undos, newest first",
+          "placeholder": "Redo",
+          "collects": "Words"
+        }
+      },
+      "params": [
+        {
+          "name": "steps",
+          "ty": "integer",
+          "description": "How many undos, newest first",
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "address": {
+        "resource": "test.shelf",
+        "action": "restore"
+      },
+      "semantic_identity": {
+        "kind": "test.shelf",
+        "key": "test.shelf"
+      },
+      "resource_kind": "test.shelf",
+      "resource_label": "Shelf",
+      "action_label": "Restore version",
+      "description": "Bring the document back to a version as a new change, or only the items named by ids.",
+      "locus": "ClientLocal",
+      "kind": "Document",
+      "contract": {
+        "availability": {
+          "state": "available"
+        },
+        "kind": "undoable",
+        "risk": "low",
+        "confirmation": {
+          "mode": "none"
+        },
+        "retry": "at_most_once",
+        "reversible": true,
+        "execution": {
+          "mode": "immediate"
+        },
+        "result": {
+          "type": "json",
+          "schema": {
+            "type": "object"
+          }
+        }
+      },
+      "input": {
+        "Text": {
+          "prompt": "A change id from history, or a checkpoint name",
+          "placeholder": "Restore version",
+          "collects": "Words"
+        }
+      },
+      "params": [
+        {
+          "name": "version",
+          "ty": "text",
+          "required": true,
+          "description": "A change id from history, or a checkpoint name"
+        },
+        {
+          "name": "ids",
+          "ty": "array",
+          "description": "Only these item ids",
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "address": {
+        "resource": "test.shelf",
+        "action": "checkpoint"
+      },
+      "semantic_identity": {
+        "kind": "test.shelf",
+        "key": "test.shelf"
+      },
+      "resource_kind": "test.shelf",
+      "resource_label": "Shelf",
+      "action_label": "Checkpoint",
+      "description": "Name the current version, to restore or compare with later.",
+      "locus": "ClientLocal",
+      "kind": "Document",
+      "contract": {
+        "availability": {
+          "state": "available"
+        },
+        "kind": "undoable",
+        "risk": "low",
+        "confirmation": {
+          "mode": "none"
+        },
+        "retry": "at_most_once",
+        "reversible": true,
+        "execution": {
+          "mode": "immediate"
+        },
+        "result": {
+          "type": "json",
+          "schema": {
+            "type": "object"
+          }
+        }
+      },
+      "input": {
+        "Text": {
+          "prompt": "The name",
+          "placeholder": "Checkpoint",
+          "collects": "Words"
+        }
+      },
+      "params": [
+        {
+          "name": "name",
+          "ty": "text",
+          "required": true,
+          "description": "The name"
+        }
+      ]
+    },
+    {
+      "address": {
+        "resource": "test.shelf",
+        "action": "history"
+      },
+      "semantic_identity": {
+        "kind": "test.shelf",
+        "key": "test.shelf"
+      },
+      "resource_kind": "test.shelf",
+      "resource_label": "Shelf",
+      "action_label": "History",
+      "description": "List the versions, oldest first: change id (what undo to, restore and diff take), action and its arguments, run, author, time, undone, checkpoints.",
+      "locus": "ClientLocal",
+      "kind": "View",
+      "contract": {
+        "availability": {
+          "state": "available"
+        },
+        "kind": "read",
+        "risk": "none",
+        "confirmation": {
+          "mode": "none"
+        },
+        "retry": "idempotent",
+        "reversible": false,
+        "execution": {
+          "mode": "immediate"
+        },
+        "result": {
+          "type": "json",
+          "schema": {
+            "type": "object"
+          }
+        }
+      },
+      "input": {
+        "Text": {
+          "prompt": "How many recent versions (default 50)",
+          "placeholder": "History",
+          "collects": "Words"
+        }
+      },
+      "params": [
+        {
+          "name": "last",
+          "ty": "integer",
+          "description": "How many recent versions (default 50)",
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "address": {
+        "resource": "test.shelf",
+        "action": "diff"
+      },
+      "semantic_identity": {
+        "kind": "test.shelf",
+        "key": "test.shelf"
+      },
+      "resource_kind": "test.shelf",
+      "resource_label": "Shelf",
+      "action_label": "Compare versions",
+      "description": "List the items that differ between two versions.",
+      "locus": "ClientLocal",
+      "kind": "View",
+      "contract": {
+        "availability": {
+          "state": "available"
+        },
+        "kind": "read",
+        "risk": "none",
+        "confirmation": {
+          "mode": "none"
+        },
+        "retry": "idempotent",
+        "reversible": false,
+        "execution": {
+          "mode": "immediate"
+        },
+        "result": {
+          "type": "json",
+          "schema": {
+            "type": "object"
+          }
+        }
+      },
+      "input": {
+        "Text": {
+          "prompt": "A change id from history, or a checkpoint name",
+          "placeholder": "Compare versions",
+          "collects": "Words"
+        }
+      },
+      "params": [
+        {
+          "name": "from",
+          "ty": "text",
+          "required": true,
+          "description": "A change id from history, or a checkpoint name"
+        },
+        {
+          "name": "to",
+          "ty": "text",
+          "description": "The later version (default now)",
+          "nullable": true
+        }
+      ]
+    }
+  ],
+  "views": 0,
+  "children": [
+    {
+      "id": "shelf/item:0",
+      "kind": "test.shelf.item",
+      "label": "Item 0",
+      "detail": null,
+      "actions": [
+        {
+          "address": {
+            "resource": "shelf/item:0",
+            "action": "take"
+          },
+          "resource_kind": "test.shelf.item",
+          "resource_label": "Item 0",
+          "action_label": "Take the item",
+          "description": null,
+          "locus": "ClientLocal",
+          "kind": "Document",
+          "contract": {
+            "availability": {
+              "state": "available"
+            },
+            "kind": "undoable",
+            "risk": "low",
+            "confirmation": {
+              "mode": "none"
+            },
+            "retry": "at_most_once",
+            "reversible": true,
+            "execution": {
+              "mode": "immediate"
+            },
+            "result": {
+              "type": "none"
+            }
+          },
+          "input": "None",
+          "params": []
+        },
+        {
+          "address": {
+            "resource": "shelf/item:0",
+            "action": "label"
+          },
+          "resource_kind": "test.shelf.item",
+          "resource_label": "Item 0",
+          "action_label": "Label from the left",
+          "description": null,
+          "locus": "ClientLocal",
+          "kind": "Document",
+          "contract": {
+            "availability": {
+              "state": "available"
+            },
+            "kind": "undoable",
+            "risk": "low",
+            "confirmation": {
+              "mode": "none"
+            },
+            "retry": "at_most_once",
+            "reversible": true,
+            "execution": {
+              "mode": "immediate"
+            },
+            "result": {
+              "type": "none"
+            }
+          },
+          "input": "None",
+          "params": []
+        },
+        {
+          "address": {
+            "resource": "shelf/item:0",
+            "action": "mark-left"
+          },
+          "resource_kind": "test.shelf.item",
+          "resource_label": "Item 0",
+          "action_label": "Mark left",
+          "description": null,
+          "locus": "ClientLocal",
+          "kind": "Document",
+          "contract": {
+            "availability": {
+              "state": "available"
+            },
+            "kind": "undoable",
+            "risk": "low",
+            "confirmation": {
+              "mode": "none"
+            },
+            "retry": "at_most_once",
+            "reversible": true,
+            "execution": {
+              "mode": "immediate"
+            },
+            "result": {
+              "type": "none"
+            }
+          },
+          "input": "None",
+          "params": []
+        },
+        {
+          "address": {
+            "resource": "shelf/item:0",
+            "action": "mark-right"
+          },
+          "resource_kind": "test.shelf.item",
+          "resource_label": "Item 0",
+          "action_label": "Mark right",
+          "description": null,
+          "locus": "ClientLocal",
+          "kind": "Document",
+          "contract": {
+            "availability": {
+              "state": "available"
+            },
+            "kind": "undoable",
+            "risk": "low",
+            "confirmation": {
+              "mode": "none"
+            },
+            "retry": "at_most_once",
+            "reversible": true,
+            "execution": {
+              "mode": "immediate"
+            },
+            "result": {
+              "type": "none"
+            }
+          },
+          "input": "None",
+          "params": []
+        }
+      ],
+      "views": 0,
+      "children": []
+    },
+    {
+      "id": "shelf/item:1",
+      "kind": "test.shelf.item",
+      "label": "Item 1",
+      "detail": "being looked at",
+      "actions": [
+        {
+          "address": {
+            "resource": "shelf/item:1",
+            "action": "take"
+          },
+          "resource_kind": "test.shelf.item",
+          "resource_label": "Item 1",
+          "action_label": "Take the item",
+          "description": null,
+          "locus": "ClientLocal",
+          "kind": "Document",
+          "contract": {
+            "availability": {
+              "state": "available"
+            },
+            "kind": "undoable",
+            "risk": "low",
+            "confirmation": {
+              "mode": "none"
+            },
+            "retry": "at_most_once",
+            "reversible": true,
+            "execution": {
+              "mode": "immediate"
+            },
+            "result": {
+              "type": "none"
+            }
+          },
+          "input": "None",
+          "params": []
+        },
+        {
+          "address": {
+            "resource": "shelf/item:1",
+            "action": "mark-left"
+          },
+          "resource_kind": "test.shelf.item",
+          "resource_label": "Item 1",
+          "action_label": "Mark left",
+          "description": null,
+          "locus": "ClientLocal",
+          "kind": "Document",
+          "contract": {
+            "availability": {
+              "state": "available"
+            },
+            "kind": "undoable",
+            "risk": "low",
+            "confirmation": {
+              "mode": "none"
+            },
+            "retry": "at_most_once",
+            "reversible": true,
+            "execution": {
+              "mode": "immediate"
+            },
+            "result": {
+              "type": "none"
+            }
+          },
+          "input": "None",
+          "params": []
+        },
+        {
+          "address": {
+            "resource": "shelf/item:1",
+            "action": "mark-right"
+          },
+          "resource_kind": "test.shelf.item",
+          "resource_label": "Item 1",
+          "action_label": "Mark right",
+          "description": null,
+          "locus": "ClientLocal",
+          "kind": "Document",
+          "contract": {
+            "availability": {
+              "state": "available"
+            },
+            "kind": "undoable",
+            "risk": "low",
+            "confirmation": {
+              "mode": "none"
+            },
+            "retry": "at_most_once",
+            "reversible": true,
+            "execution": {
+              "mode": "immediate"
+            },
+            "result": {
+              "type": "none"
+            }
+          },
+          "input": "None",
+          "params": []
+        },
+        {
+          "address": {
+            "resource": "shelf/item:1",
+            "action": "label"
+          },
+          "resource_kind": "test.shelf.item",
+          "resource_label": "Item 1",
+          "action_label": "Label from the right",
+          "description": null,
+          "locus": "ClientLocal",
+          "kind": "Document",
+          "contract": {
+            "availability": {
+              "state": "available"
+            },
+            "kind": "undoable",
+            "risk": "low",
+            "confirmation": {
+              "mode": "none"
+            },
+            "retry": "at_most_once",
+            "reversible": true,
+            "execution": {
+              "mode": "immediate"
+            },
+            "result": {
+              "type": "none"
+            }
+          },
+          "input": "None",
+          "params": []
+        }
+      ],
+      "views": 0,
+      "children": []
+    },
+    {
+      "id": "shelf/item:2",
+      "kind": "test.shelf.item",
+      "label": "Item 2",
+      "detail": null,
+      "actions": [
+        {
+          "address": {
+            "resource": "shelf/item:2",
+            "action": "take"
+          },
+          "resource_kind": "test.shelf.item",
+          "resource_label": "Item 2",
+          "action_label": "Take the item",
+          "description": null,
+          "locus": "ClientLocal",
+          "kind": "Document",
+          "contract": {
+            "availability": {
+              "state": "available"
+            },
+            "kind": "undoable",
+            "risk": "low",
+            "confirmation": {
+              "mode": "none"
+            },
+            "retry": "at_most_once",
+            "reversible": true,
+            "execution": {
+              "mode": "immediate"
+            },
+            "result": {
+              "type": "none"
+            }
+          },
+          "input": "None",
+          "params": []
+        },
+        {
+          "address": {
+            "resource": "shelf/item:2",
+            "action": "label"
+          },
+          "resource_kind": "test.shelf.item",
+          "resource_label": "Item 2",
+          "action_label": "Label from the left",
+          "description": null,
+          "locus": "ClientLocal",
+          "kind": "Document",
+          "contract": {
+            "availability": {
+              "state": "available"
+            },
+            "kind": "undoable",
+            "risk": "low",
+            "confirmation": {
+              "mode": "none"
+            },
+            "retry": "at_most_once",
+            "reversible": true,
+            "execution": {
+              "mode": "immediate"
+            },
+            "result": {
+              "type": "none"
+            }
+          },
+          "input": "None",
+          "params": []
+        },
+        {
+          "address": {
+            "resource": "shelf/item:2",
+            "action": "mark-left"
+          },
+          "resource_kind": "test.shelf.item",
+          "resource_label": "Item 2",
+          "action_label": "Mark left",
+          "description": null,
+          "locus": "ClientLocal",
+          "kind": "Document",
+          "contract": {
+            "availability": {
+              "state": "available"
+            },
+            "kind": "undoable",
+            "risk": "low",
+            "confirmation": {
+              "mode": "none"
+            },
+            "retry": "at_most_once",
+            "reversible": true,
+            "execution": {
+              "mode": "immediate"
+            },
+            "result": {
+              "type": "none"
+            }
+          },
+          "input": "None",
+          "params": []
+        },
+        {
+          "address": {
+            "resource": "shelf/item:2",
+            "action": "mark-right"
+          },
+          "resource_kind": "test.shelf.item",
+          "resource_label": "Item 2",
+          "action_label": "Mark right",
+          "description": null,
+          "locus": "ClientLocal",
+          "kind": "Document",
+          "contract": {
+            "availability": {
+              "state": "available"
+            },
+            "kind": "undoable",
+            "risk": "low",
+            "confirmation": {
+              "mode": "none"
+            },
+            "retry": "at_most_once",
+            "reversible": true,
+            "execution": {
+              "mode": "immediate"
+            },
+            "result": {
+              "type": "none"
+            }
+          },
+          "input": "None",
+          "params": []
+        }
+      ],
+      "views": 0,
+      "children": []
+    },
+    {
+      "id": "shelf/visitor",
+      "kind": "test.shelf.visitor",
+      "label": "Visitor",
+      "detail": null,
+      "actions": [
+        {
+          "address": {
+            "resource": "shelf/visitor",
+            "action": "mark-left"
+          },
+          "resource_kind": "test.shelf.visitor",
+          "resource_label": "Visitor",
+          "action_label": "Mark left",
+          "description": null,
+          "locus": "ClientLocal",
+          "kind": "Document",
+          "contract": {
+            "availability": {
+              "state": "available"
+            },
+            "kind": "undoable",
+            "risk": "low",
+            "confirmation": {
+              "mode": "none"
+            },
+            "retry": "at_most_once",
+            "reversible": true,
+            "execution": {
+              "mode": "immediate"
+            },
+            "result": {
+              "type": "none"
+            }
+          },
+          "input": "None",
+          "params": []
+        },
+        {
+          "address": {
+            "resource": "shelf/visitor",
+            "action": "mark-right"
+          },
+          "resource_kind": "test.shelf.visitor",
+          "resource_label": "Visitor",
+          "action_label": "Mark right",
+          "description": null,
+          "locus": "ClientLocal",
+          "kind": "Document",
+          "contract": {
+            "availability": {
+              "state": "available"
+            },
+            "kind": "undoable",
+            "risk": "low",
+            "confirmation": {
+              "mode": "none"
+            },
+            "retry": "at_most_once",
+            "reversible": true,
+            "execution": {
+              "mode": "immediate"
+            },
+            "result": {
+              "type": "none"
+            }
+          },
+          "input": "None",
+          "params": []
+        },
+        {
+          "address": {
+            "resource": "shelf/visitor",
+            "action": "label"
+          },
+          "resource_kind": "test.shelf.visitor",
+          "resource_label": "Visitor",
+          "action_label": "Label from the right",
+          "description": null,
+          "locus": "ClientLocal",
+          "kind": "Document",
+          "contract": {
+            "availability": {
+              "state": "available"
+            },
+            "kind": "undoable",
+            "risk": "low",
+            "confirmation": {
+              "mode": "none"
+            },
+            "retry": "at_most_once",
+            "reversible": true,
+            "execution": {
+              "mode": "immediate"
+            },
+            "result": {
+              "type": "none"
+            }
+          },
+          "input": "None",
+          "params": []
+        }
+      ],
+      "views": 0,
+      "children": [
+        {
+          "id": "shelf/visitor/guest",
+          "kind": "test.shelf.guest",
+          "label": "Guest",
+          "detail": null,
+          "actions": [
+            {
+              "address": {
+                "resource": "shelf/visitor/guest",
+                "action": "mark-left"
+              },
+              "resource_kind": "test.shelf.guest",
+              "resource_label": "Guest",
+              "action_label": "Mark left",
+              "description": null,
+              "locus": "ClientLocal",
+              "kind": "Document",
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "kind": "undoable",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "result": {
+                  "type": "none"
+                }
+              },
+              "input": "None",
+              "params": []
+            },
+            {
+              "address": {
+                "resource": "shelf/visitor/guest",
+                "action": "mark-right"
+              },
+              "resource_kind": "test.shelf.guest",
+              "resource_label": "Guest",
+              "action_label": "Mark right",
+              "description": null,
+              "locus": "ClientLocal",
+              "kind": "Document",
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "kind": "undoable",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "result": {
+                  "type": "none"
+                }
+              },
+              "input": "None",
+              "params": []
+            },
+            {
+              "address": {
+                "resource": "shelf/visitor/guest",
+                "action": "label"
+              },
+              "resource_kind": "test.shelf.guest",
+              "resource_label": "Guest",
+              "action_label": "Label from the right",
+              "description": null,
+              "locus": "ClientLocal",
+              "kind": "Document",
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "kind": "undoable",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "result": {
+                  "type": "none"
+                }
+              },
+              "input": "None",
+              "params": []
+            }
+          ],
+          "views": 0,
+          "children": []
+        }
+      ]
+    }
+  ]
+}

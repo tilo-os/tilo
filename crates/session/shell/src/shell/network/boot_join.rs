@@ -2,7 +2,7 @@
 //! nobody sits at (a provider guest). The host issues the invitation; the
 //! session redeems it through the same canonical native enrollment a person
 //! uses, into the active workspace, once per room.
-use super::*;
+use super::{Path, RoomId, ShellNetwork};
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
 use std::time::{Duration, Instant};
 
@@ -73,7 +73,12 @@ impl ShellNetwork {
             let now = tilo_clock::try_unix_now()
                 .ok_or_else(|| "the system clock is before the Unix epoch".to_owned())?;
             if tree.read().desktop.workspaces.iter().any(|workspace| {
-                workspace.room == target && workspace.may_administer_at(&person, now)
+                workspace.room == target
+                    && workspace.may_govern_at(
+                        &person,
+                        tilo_action_policy::roles::governance::GRANT,
+                        now,
+                    )
             }) {
                 return Ok(());
             }

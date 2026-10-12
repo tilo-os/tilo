@@ -55,7 +55,7 @@ if (( run_cargo )); then
         --bin tilo-cli-shim --bin tilo-app-host --bin app --bin tilo-ush \
         --bin tilo-model-catalog --bin tilo-model-manager --bin tilo-speech-worker \
         --bin tilo-model-gateway --bin imager \
-        --bin tilo-relay-environment --bin tilo-relay-offers --bin tilo-relay-admin --bin fs --bin tilo-legacy )
+        --bin tilo-relay-environment --bin tilo-relay-offers --bin tilo-relay-admin --bin tilo-enroll --bin fs --bin tilo-legacy )
     say "cargo build --release (compositor, no default features)"
     # `shell` also owns developer tools such as `shots` and `tilo-control`.
     # Building the package without an explicit target compiles and LTO-links
@@ -70,7 +70,7 @@ target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 [[ $target_dir = /* ]] || target_dir=$repo_root/$target_dir
 target_dir=$(realpath -m "$target_dir")
 rel=${TILO_BIN_DIR:-$target_dir/release}
-for bin in shell fs tilo-relay-admin imager tilo-launcher tilo-unlock-helper tilo-install tilo-runtime-bundle \
+for bin in shell fs tilo-relay-admin tilo-enroll imager tilo-launcher tilo-unlock-helper tilo-install tilo-runtime-bundle \
            tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway \
            tilo-relay-environment tilo-relay-offers tilo-legacy app; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }

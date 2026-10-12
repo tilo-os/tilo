@@ -20,12 +20,11 @@ use ui::icons::Icon;
 use crate::account::AccountStore;
 use ui::framework::Dispatcher;
 
-use crate::actions::{
-    MailAction, move_action, purge_action, save_draft_action, set_read_action, set_starred_action,
-};
+use crate::actions::IngestBaseline;
 use crate::engine::EngineRequest;
 use crate::model::{Draft, Folder, Mailbox, MessageId, Thread};
-use crate::resource::Mail;
+use crate::resource::{Mail, mailbox};
+use ui::framework::Submit;
 
 /// Cheap-to-clone handle every pane holds.
 pub type Shared = Rc<RefCell<MailState>>;
@@ -47,7 +46,7 @@ pub enum CtxAction {
 
 /// A deliberately small set of inbox-triage operations that can act on a
 /// local selection.  The selection itself is presentation state; every actual
-/// mailbox change below is still emitted as a bounded canonical `MailAction`
+/// mailbox change below is still one bounded verb of the mailbox
 /// so it converges, is undoable, and reaches the IMAP mirror exactly as the
 /// corresponding one-message control does.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -217,7 +216,7 @@ pub struct MailState {
     /// IDs selected for the compact bulk-triage surface.  This is explicitly
     /// device-local presentation state: a collaborator seeing the same inbox
     /// must not have their selection/focus changed.  The resulting archive,
-    /// delete, or flag mutations do replicate through `MailAction`.
+    /// delete, or flag changes do replicate through the mailbox.
     pub bulk_selection: Vec<MessageId>,
     pub bulk_selecting: bool,
     /// The selected message was explicitly inspected rather than opened. This
@@ -243,11 +242,11 @@ pub struct MailState {
     /// Any pane sets this to request a repaint.
     pub dirty: bool,
 
-    /// The framework dispatcher every document-mutating message operation
-    /// (mark read/unread, star, move/archive/delete-to-trash) goes through,
-    /// so it is checked, one undo step, replayed on peers and the same
-    /// [`crate::actions::MailAction`] the palette and agents invoke. `None`
-    /// until the surface is attached; edits before then change nothing.
+    /// The framework dispatcher every change of the mailbox (mark
+    /// read/unread, star, move/archive/delete-to-trash) goes through, so it
+    /// is checked, one undo step, replayed on peers and the same field edit
+    /// or verb the palette and agents invoke. `None` until the surface is
+    /// attached; edits before then change nothing.
     pub(crate) dispatcher: Option<Dispatcher<Mail>>,
 
     intents: Vec<Intent>,
@@ -318,29 +317,21 @@ impl MailState {
         }
     }
 
-    /// Dispatch one [`MailAction`] — the single document-mutation path shared
-    /// with the palette and agents. The in-memory mailbox is updated by the
-    /// caller for immediate feedback and reconciled from the document on the
-    /// next `sync`.
-    fn dispatch_action(&self, doc: &mut ui::widget::Edits<'_>, action: &MailAction) {
+    /// Submit one of the mailbox's field edits or verbs — the single path
+    /// shared with the palette and agents. The in-memory mailbox is updated
+    /// by the caller for immediate feedback and reconciled from the document
+    /// on the next `sync`.
+    pub(crate) fn submit(&self, doc: &mut ui::widget::Edits<'_>, submit: impl Submit<Mail>) {
         let Some(dispatcher) = &self.dispatcher else {
             return;
         };
-        let context = tilo_actions::ActionContext::for_action("so.tilo.mail", "Mail", action);
-        if let Err(error) = dispatcher.apply_now_with(doc, action, context) {
+        if let Err(error) = dispatcher.submit_now(doc, submit) {
             tracing::warn!(%error, "mail: an edit was refused");
         }
     }
 
-    /// Record content from outside — what a mail server reported or
-    /// confirmed — as one document action.
-    pub(crate) fn dispatch_external(&self, doc: &mut ui::widget::Edits<'_>, action: &MailAction) {
-        self.dispatch_action(doc, action);
-    }
-
-    /// Record server baselines as one document action
-    /// ([`MailAction::IngestBaselines`](crate::actions::MailAction::IngestBaselines)).
-    /// Existing flags win, so a later fetch cannot overwrite a `MailAction`.
+    /// Record what the source of `messages` reports of them, as one
+    /// [`Mail::INGEST`]. What the mailbox already says wins.
     pub(crate) fn ingest_messages(
         &self,
         doc: &mut ui::widget::Edits<'_>,
@@ -349,19 +340,14 @@ impl MailState {
         if messages.is_empty() {
             return;
         }
-        self.dispatch_action(
+        self.ingest(
             doc,
-            &crate::actions::MailAction::IngestBaselines {
-                messages: messages
-                    .iter()
-                    .map(crate::actions::IngestBaseline::from_message)
-                    .collect(),
-            },
+            messages.iter().map(IngestBaseline::from_message).collect(),
         );
     }
 
     /// Record what `account`'s server reported for `messages`: where each
-    /// lives there and its flags ([`IngestBaseline::fetched`](crate::actions::IngestBaseline::fetched)).
+    /// lives there and its flags ([`IngestBaseline::fetched`]).
     pub(crate) fn ingest_fetched(
         &self,
         doc: &mut ui::widget::Edits<'_>,
@@ -371,41 +357,53 @@ impl MailState {
         if messages.is_empty() {
             return;
         }
-        self.dispatch_action(
+        self.ingest(
             doc,
-            &crate::actions::MailAction::IngestBaselines {
-                messages: messages
-                    .iter()
-                    .map(|message| crate::actions::IngestBaseline::fetched(message, account))
-                    .collect(),
-            },
+            messages
+                .iter()
+                .map(|message| IngestBaseline::fetched(message, account))
+                .collect(),
         );
+    }
+
+    fn ingest(&self, doc: &mut ui::widget::Edits<'_>, messages: Vec<IngestBaseline>) {
+        self.submit(doc, Mail::INGEST.with(mailbox::Ingest { messages }));
     }
 
     pub(crate) fn register_message_target(&self, doc: &mut ui::widget::Edits<'_>, id: &str) {
-        self.dispatch_action(
-            doc,
-            &crate::actions::MailAction::IngestBaselines {
-                messages: vec![crate::actions::IngestBaseline::register_only(id)],
-            },
-        );
+        self.ingest(doc, vec![IngestBaseline::register_only(id)]);
     }
 
     /// Ensure an action target discovered in the already-loaded external
-    /// corpus has an eligibility record before emitting its action. Normal UI
-    /// flow seeds these records during sync; this tiny idempotent bridge also
-    /// covers a just-hydrated message acted on before the next frame.
+    /// corpus is in the mailbox before it is changed. Normal UI flow seeds
+    /// these records during sync; this idempotent bridge also covers a
+    /// just-hydrated message acted on before the next frame.
     fn register_loaded_target(&self, doc: &mut ui::widget::Edits<'_>, id: MessageId) {
-        if self.mailbox.get(id).is_some() {
+        let known = crate::resource::read_mail(doc.doc())
+            .is_some_and(|mail| mail.message(&id.to_string()).is_some());
+        if !known && self.mailbox.get(id).is_some() {
             self.register_message_target(doc, &id.to_string());
         }
     }
 
-    /// Persist the in-progress draft as an action (undo boundary + replay + the
-    /// same [`MailAction`] the palette's draft actions use). The visible Drafts
+    /// Save the draft being written, as one step. The visible Drafts
     /// message is materialised separately by the app.
     pub fn save_draft(&mut self, doc: &mut ui::widget::Edits<'_>, draft: &Draft) {
-        self.dispatch_action(doc, &save_draft_action(draft));
+        self.submit(
+            doc,
+            Mail::SAVE_DRAFT.with(mailbox::SaveDraft {
+                message: crate::actions::DraftData::from_draft(draft),
+            }),
+        );
+    }
+
+    /// Where the message `id`'s state is edited.
+    fn message_paths(
+        id: MessageId,
+    ) -> <crate::resource::MessageState as ui::tilo_resource::Model>::Paths<Mail> {
+        Mail::paths()
+            .messages
+            .item(&ui::tilo_resource::Id::from_raw(id.to_string()))
     }
 
     // ---- intents ----
@@ -487,13 +485,6 @@ impl MailState {
         }
         self.push_intent(Intent::ShowDetail);
         true
-    }
-
-    /// Compatibility entry point for the existing painted list controls.
-    /// New code should name the domain boundary explicitly with
-    /// [`Self::open_message`].
-    pub fn select_message(&mut self, doc: &mut ui::widget::Edits<'_>, id: MessageId) {
-        let _ = self.open_message(doc, id);
     }
 
     /// Select a device-local account. Account identity/credentials live in the
@@ -646,14 +637,25 @@ impl MailState {
                 for id in &ids {
                     self.mailbox.mark_read(*id, read);
                 }
-                self.dispatch_action(doc, &set_read_action(encoded_ids, read));
+                self.submit(
+                    doc,
+                    Mail::MARK_READ.with(mailbox::MarkRead {
+                        messages: encoded_ids,
+                        read,
+                    }),
+                );
                 ids.len()
             }
             BulkAction::Archive => {
                 for id in &ids {
                     self.mailbox.move_to(*id, Folder::Archive);
                 }
-                self.dispatch_action(doc, &move_action(encoded_ids, Folder::Archive));
+                self.submit(
+                    doc,
+                    Mail::ARCHIVE.with(mailbox::Archive {
+                        messages: encoded_ids,
+                    }),
+                );
                 self.bulk_selection.clear();
                 self.reselect_after_remove(doc);
                 ids.len()
@@ -678,12 +680,11 @@ impl MailState {
                     for id in &move_to_trash {
                         self.mailbox.move_to(*id, Folder::Trash);
                     }
-                    self.dispatch_action(
+                    self.submit(
                         doc,
-                        &move_action(
-                            move_to_trash.iter().map(ToString::to_string).collect(),
-                            Folder::Trash,
-                        ),
+                        Mail::TRASH.with(mailbox::Trash {
+                            messages: move_to_trash.iter().map(ToString::to_string).collect(),
+                        }),
                     );
                 }
                 self.bulk_selection.clear();
@@ -697,7 +698,12 @@ impl MailState {
                 for id in &ids {
                     self.mailbox.purge(*id);
                 }
-                self.dispatch_action(doc, &purge_action(encoded_ids));
+                self.submit(
+                    doc,
+                    Mail::PURGE.with(mailbox::Purge {
+                        messages: encoded_ids,
+                    }),
+                );
                 self.bulk_selection.clear();
                 self.reselect_after_remove(doc);
                 ids.len()
@@ -736,13 +742,13 @@ impl MailState {
         items
     }
 
-    // ---- action-routed message mutations ----
+    // ---- message changes through the mailbox ----
     //
-    // Each mutates the in-memory mailbox for immediate feedback AND dispatches
-    // the matching [`MailAction`] through the framework host, so the flag change
-    // is one undo boundary, replays byte-identically on peers, and is the same
-    // action the Ctrl+K palette dispatches. The mail server learns of it from
-    // the document, as it does of a change the palette or a peer made.
+    // Each mutates the in-memory mailbox for immediate feedback AND submits
+    // the matching field edit or verb through the framework host, so the
+    // change is one undo boundary, replays on peers, and is what the Ctrl+K
+    // palette and agents submit. The mail server learns of it from the
+    // document, as it does of a change the palette or a peer made.
 
     /// Set a message's read flag through the action path.
     pub fn set_read(&mut self, doc: &mut ui::widget::Edits<'_>, id: MessageId, read: bool) {
@@ -751,7 +757,13 @@ impl MailState {
         }
         self.register_loaded_target(doc, id);
         self.mailbox.mark_read(id, read);
-        self.dispatch_action(doc, &set_read_action(vec![id.to_string()], read));
+        self.submit(
+            doc,
+            Mail::MARK_READ.with(mailbox::MarkRead {
+                messages: vec![id.to_string()],
+                read,
+            }),
+        );
         self.dirty = true;
     }
 
@@ -762,7 +774,7 @@ impl MailState {
         };
         self.register_loaded_target(doc, id);
         self.mailbox.toggle_star(id);
-        self.dispatch_action(doc, &set_starred_action(vec![id.to_string()], target));
+        self.submit(doc, Self::message_paths(id).starred.set(target));
         self.dirty = true;
     }
 
@@ -773,7 +785,7 @@ impl MailState {
         }
         self.register_loaded_target(doc, id);
         self.mailbox.move_to(id, folder);
-        self.dispatch_action(doc, &move_action(vec![id.to_string()], folder));
+        self.submit(doc, Self::message_paths(id).folder.set(folder));
     }
 
     /// Apply a message action. Reply/forward raise an intent (the app owns the
@@ -812,9 +824,14 @@ impl MailState {
                 self.mailbox.delete(id);
                 let moved_to = self.mailbox.get(id).map(|m| m.folder);
                 if let Some(to) = moved_to {
-                    self.dispatch_action(doc, &move_action(vec![id.to_string()], to));
+                    self.submit(doc, Self::message_paths(id).folder.set(to));
                 } else if purging {
-                    self.dispatch_action(doc, &purge_action(vec![id.to_string()]));
+                    self.submit(
+                        doc,
+                        Mail::PURGE.with(mailbox::Purge {
+                            messages: vec![id.to_string()],
+                        }),
+                    );
                 }
                 self.after_remove(doc, was_selected);
             }
@@ -903,7 +920,10 @@ mod tests {
             .skip(before)
             .filter_map(|version| version.context)
             .filter(|context| context.change.is_step())
-            .map(|context| context.action_label)
+            .filter_map(|context| match context.what {
+                Some(ui::tilo_actions::Did::Verb(verb)) => Some(verb.action.action),
+                _ => None,
+            })
             .collect()
     }
 
@@ -923,17 +943,18 @@ mod tests {
             .next()
             .cloned()
             .expect("sample inbox");
-        let mut doc = automerge::AutoCommit::new();
+        let mut doc = crate::resource::TestMail::doc();
+        let before = version_count(&doc);
         st.ingest_messages(
             &mut ui::widget::Edits::lend(&mut doc),
             std::slice::from_ref(&message),
         );
         assert_eq!(
-            crate::doc::MailDoc::get_read(&doc, &message.id.to_string()),
+            crate::resource::TestMail::get_read(&doc, &message.id.to_string()),
             Some(message.read)
         );
-        assert_eq!(version_count(&doc), 1, "one ingest is one version");
-        assert!(steps_since(&doc, 0).is_empty(), "and no undo step");
+        assert_eq!(version_count(&doc), before + 1, "one ingest is one version");
+        assert!(steps_since(&doc, before).is_empty(), "and no undo step");
     }
 
     #[test]
@@ -971,7 +992,7 @@ mod tests {
             }
             let target = rows[unread_index].0;
             let delta = if unread_index > 0 { 1 } else { -1 };
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             let heads_before = doc.get_heads();
             st.move_selection(&mut ui::widget::Edits::lend(&mut doc), delta);
             assert_eq!(st.selected, Some(target));
@@ -982,7 +1003,7 @@ mod tests {
         // Phase `reply_all_action_raises_distinct_reply_all_intent`.
         {
             let mut st = state();
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
             st.apply_message_action(
                 &mut ui::widget::Edits::lend(&mut doc),
@@ -1027,7 +1048,7 @@ mod tests {
         };
 
         let mut st = state();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::resource::TestMail::doc();
         let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
         fetch(&mut st, &mut doc, id);
         st.apply_message_action(
@@ -1037,7 +1058,7 @@ mod tests {
         );
         posts_nothing(&mut st);
         assert!(matches!(
-            crate::doc::MailDoc::server_updates(&doc).as_slice(),
+            crate::resource::TestMail::server_updates(&doc).as_slice(),
             [ServerUpdate::Flags {
                 starred: true,
                 folder: Folder::Inbox,
@@ -1046,7 +1067,7 @@ mod tests {
         ));
 
         let mut st = state();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::resource::TestMail::doc();
         let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
         fetch(&mut st, &mut doc, id);
         st.apply_message_action(
@@ -1056,7 +1077,7 @@ mod tests {
         );
         posts_nothing(&mut st);
         assert!(matches!(
-            crate::doc::MailDoc::server_updates(&doc).as_slice(),
+            crate::resource::TestMail::server_updates(&doc).as_slice(),
             [ServerUpdate::Move {
                 from: Folder::Inbox,
                 to: Folder::Archive,
@@ -1065,7 +1086,7 @@ mod tests {
         ));
 
         let mut st = state();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::resource::TestMail::doc();
         let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
         fetch(&mut st, &mut doc, id);
         st.apply_message_action(
@@ -1078,10 +1099,13 @@ mod tests {
             id,
             CtxAction::Delete,
         );
+        // Deleting for good asks the person first.
+        let dispatcher = st.dispatcher.clone().expect("a dispatcher");
+        crate::resource::TestMail::confirm(&mut doc, &dispatcher);
         posts_nothing(&mut st);
         assert!(
             matches!(
-                crate::doc::MailDoc::server_updates(&doc).as_slice(),
+                crate::resource::TestMail::server_updates(&doc).as_slice(),
                 [ServerUpdate::Remove {
                     folder: Folder::Inbox,
                     ..
@@ -1100,7 +1124,7 @@ mod tests {
         // Phase `bulk_archive_is_one_bounded_canonical_move_action_and_keeps_selection_local`.
         {
             let mut st = state();
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             let ids: Vec<MessageId> = st
                 .list_rows()
                 .into_iter()
@@ -1129,7 +1153,7 @@ mod tests {
             );
             for id in &ids {
                 assert_eq!(
-                    crate::doc::MailDoc::get_folder_for(&doc, &id.to_string()),
+                    crate::resource::TestMail::get_folder_for(&doc, &id.to_string()),
                     Some(Folder::Archive)
                 );
             }
@@ -1144,7 +1168,7 @@ mod tests {
         // Phase `bulk_marking_read_retains_the_local_selection_for_follow_up_triage`.
         {
             let mut st = state();
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             let ids: Vec<MessageId> = st
                 .list_rows()
                 .into_iter()
@@ -1168,7 +1192,7 @@ mod tests {
         // Phase `bulk_move_to_trash_never_purges_trash_rows_from_a_mixed_virtual_view`.
         {
             let mut st = state();
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             let ids: Vec<MessageId> = st
                 .mailbox
                 .messages_in(Folder::Inbox)
@@ -1200,11 +1224,11 @@ mod tests {
                 Some(Folder::Trash)
             );
             assert_eq!(
-                crate::doc::MailDoc::get_folder_for(&doc, &inbox.to_string()),
+                crate::resource::TestMail::get_folder_for(&doc, &inbox.to_string()),
                 Some(Folder::Trash)
             );
             assert!(
-                crate::doc::MailDoc::is_present_message(&doc, &already_trash.to_string()),
+                crate::resource::TestMail::is_present_message(&doc, &already_trash.to_string()),
                 "the row already in Trash is never purged"
             );
         }
@@ -1212,7 +1236,7 @@ mod tests {
         // Phase `bulk_purge_refuses_mixed_or_stale_rows_without_a_partial_mutation`.
         {
             let mut st = state();
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             let ids: Vec<MessageId> = st
                 .mailbox
                 .messages_in(Folder::Inbox)

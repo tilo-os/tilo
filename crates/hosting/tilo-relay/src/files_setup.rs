@@ -254,14 +254,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn room_administration_never_substitutes_for_files_authorization() {
-        use collab_types::{CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject, Verb};
+    fn a_device_grant_never_substitutes_for_files_authorization() {
+        use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject};
         let person = [41; 32];
         let mut grant = CapOverride {
             id: String::default(),
             subject: Subject::User(Ed25519PublicKey(person)),
-            scope: Scope::Room("existing-room".into()),
-            verb: Verb::Admin,
+            scope: Scope::Device("camera".into()),
+            access: Access::Write,
             effect: Effect::Grant,
             expiry: Expiry::Never,
             granted_by: None,
@@ -271,6 +271,48 @@ mod tests {
         require_files_access(person, std::slice::from_ref(&grant))
             .expect("explicit existing Files grant");
         assert!(require_files_access([42; 32], &[grant]).is_err());
+    }
+
+    #[test]
+    fn normal_files_scope_authorizes_namespace_without_host_root_grant() {
+        use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject};
+        let person = [41; 32];
+        let read = CapOverride::grant(
+            Subject::User(Ed25519PublicKey(person)),
+            Scope::FsPath("/var/workspace".into()),
+            Access::Read,
+        );
+        assert!(require_files_access(person, std::slice::from_ref(&read)).is_err());
+        let mut write = read.clone();
+        write.access = Access::Write;
+        require_files_access(person, std::slice::from_ref(&write))
+            .expect("normal Edit files includes Read without Admin");
+        let mut ui_person = write.clone();
+        ui_person.subject = Subject::person(hex::encode(person));
+        require_files_access(person, &[ui_person])
+            .expect("normal Permissions member subject matches certified person");
+        let policy = vec![read, write.clone()];
+        require_files_access(person, &policy).expect("normal scoped Read/Write choice");
+        assert!(require_files_access([42; 32], &policy).is_err());
+        assert!(
+            policy
+                .iter()
+                .all(|cap| cap.scope == Scope::FsPath("/var/workspace".into()))
+        );
+        write.scope = Scope::FsPath("/var/workspace/documents".into());
+        assert!(require_files_access(person, std::slice::from_ref(&write)).is_err());
+        write.scope = Scope::FsPath("/var/workspace-other".into());
+        assert!(require_files_access(person, std::slice::from_ref(&write)).is_err());
+        write.scope = Scope::FsPath("/var/workspace".into());
+        write.expiry = Expiry::AtUnix(1);
+        assert!(require_files_access(person, std::slice::from_ref(&write)).is_err());
+        let mut restricted = policy;
+        write.expiry = Expiry::Never;
+        write.scope = Scope::FsPath("/var".into());
+        write.effect = Effect::Restrict;
+        write.access = Access::Read;
+        restricted.push(write);
+        assert!(require_files_access(person, &restricted).is_err());
     }
 
     #[test]
@@ -306,7 +348,7 @@ mod tests {
 
     #[test]
     fn certified_saved_workspace_check_requires_exact_signed_files_access() {
-        use collab_types::{CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject, Verb};
+        use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject};
         use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
         let temp = tempfile::tempdir().unwrap();
         let paths = IdentityPaths::under(temp.path().join("identity"));
@@ -330,8 +372,8 @@ mod tests {
         let grant = CapOverride {
             id: String::default(),
             subject: Subject::User(Ed25519PublicKey(person)),
-            scope: Scope::FsPath("/".into()),
-            verb: Verb::Admin,
+            scope: Scope::FsPath("/var/workspace".into()),
+            access: Access::Write,
             effect: Effect::Grant,
             expiry: Expiry::Never,
             granted_by: None,

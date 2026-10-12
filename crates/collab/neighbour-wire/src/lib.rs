@@ -13,22 +13,13 @@
 //! The crate is pure data plus pure helpers ([`mod@retention`]); it owns no
 //! transport, runtime or state machine.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod colorimetry;
 pub mod contribution;
 pub mod hdr_metadata;
+pub mod presence_slot;
 pub mod retention;
 
+pub use presence_slot::PresenceSlot;
 pub use retention::{Retention, app_document_channel, retention};
 
 use serde::{Deserialize, Serialize};
@@ -212,9 +203,13 @@ pub enum NeighbourMsg {
     PermissionRequest { peer: PeerId, capability: String },
     /// `peer` was granted permission `capability`.
     PermissionGrant { peer: PeerId, capability: String },
-    /// Periodic liveness beacon — Actor publishes one per joined workspace every
-    /// 5s; direct peers are evicted after 15s without any traffic. `peer` is the hashed Iroh
-    /// `PeerId`; `ts` is unix-millis.
+    /// Liveness beacon of builds that evict a direct peer after 15 s without
+    /// traffic and beat every 5 s on every joined workspace; `ts` is their
+    /// unix-millis. Current builds keep liveness on the transport and send
+    /// one only to a neighbour of such a build, numbering it with a `ts`
+    /// below [`Self::COMPAT_HEARTBEAT_TS_LIMIT`] so that it is not mistaken
+    /// for one (see [`Self::is_timed_heartbeat`]). `peer` is the hashed Iroh
+    /// `PeerId`.
     Heartbeat { peer: PeerId, ts: u64 },
     /// Authenticated identity chain for the transport peer on this workspace.
     ///
@@ -498,6 +493,54 @@ impl NeighbourMsg {
             | Self::RecordContentPiece { .. } => false,
         }
     }
+
+    /// A [`Self::Heartbeat`] `ts` below this (September 2001 in unix
+    /// milliseconds) is no time: it numbers a heartbeat a transport-liveness
+    /// build sends only for an older neighbour's sake. No build ever sent a
+    /// real time this early, and none read the field.
+    pub const COMPAT_HEARTBEAT_TS_LIMIT: u64 = 1_000_000_000_000;
+
+    /// Whether this is the timed heartbeat of a build that keeps liveness by
+    /// heartbeat and evicts a peer that stops beating: the sign that its
+    /// neighbours must keep beating too.
+    pub fn is_timed_heartbeat(&self) -> bool {
+        matches!(self, Self::Heartbeat { ts, .. } if *ts >= Self::COMPAT_HEARTBEAT_TS_LIMIT)
+    }
+
+    /// The variant's name, for diagnostics and traffic tallies. Never a
+    /// wire value: the postcard discriminant is.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::SyncReq { .. } => "SyncReq",
+            Self::SyncResp { .. } => "SyncResp",
+            Self::PresenceMoved { .. } => "PresenceMoved",
+            Self::PresenceCleared { .. } => "PresenceCleared",
+            Self::SurfaceFrame { .. } => "SurfaceFrame",
+            Self::SurfaceStreamStart { .. } => "SurfaceStreamStart",
+            Self::SurfaceStreamEnd { .. } => "SurfaceStreamEnd",
+            Self::RemoteInput { .. } => "RemoteInput",
+            Self::PermissionRequest { .. } => "PermissionRequest",
+            Self::PermissionGrant { .. } => "PermissionGrant",
+            Self::Heartbeat { .. } => "Heartbeat",
+            Self::IdentityHello { .. } => "IdentityHello",
+            Self::AppDocument { .. } => "AppDocument",
+            Self::AppPresenceV2 { .. } => "AppPresenceV2",
+            Self::ScrollbackRequest { .. } => "ScrollbackRequest",
+            Self::ScrollbackResponse { .. } => "ScrollbackResponse",
+            Self::IdentityAnnouncement { .. } => "IdentityAnnouncement",
+            Self::IdentityAnnouncementV2 { .. } => "IdentityAnnouncementV2",
+            Self::PersonalContinuityRequest { .. } => "PersonalContinuityRequest",
+            Self::PersonalContinuityCheckpoint { .. } => "PersonalContinuityCheckpoint",
+            Self::RemoteAction { .. } => "RemoteAction",
+            Self::MediaCapabilities { .. } => "MediaCapabilities",
+            Self::MlsGovernance { .. } => "MlsGovernance",
+            Self::MlsAccessRequest { .. } => "MlsAccessRequest",
+            Self::MlsGovernanceAck { .. } => "MlsGovernanceAck",
+            Self::PersonalWorkspaces { .. } => "PersonalWorkspaces",
+            Self::RecordContentWant { .. } => "RecordContentWant",
+            Self::RecordContentPiece { .. } => "RecordContentPiece",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -507,14 +550,14 @@ mod tests {
     /// Syntactically valid but unsigned; only the postcard framing needs to
     /// round-trip.
     fn dummy_envelope() -> Box<collab_types::SignedOp> {
-        use collab_types::{AttestationId, Ed25519PublicKey, OpClass, SignedOp};
+        use collab_types::{AttestationId, Ed25519PublicKey, OpKind, SignedOp};
         use std::time::SystemTime;
         Box::new(SignedOp::new_unsigned(
             vec![0xDE, 0xAD, 0xBE, 0xEF],
             artifact(0x11),
             Ed25519PublicKey::from_bytes([7u8; 32]),
             AttestationId(uuid::Uuid::from_bytes([0x22; 16])),
-            OpClass::Splice,
+            OpKind::Change,
             SystemTime::UNIX_EPOCH,
             42,
         ))
@@ -939,47 +982,27 @@ mod tests {
     /// Names every variant through an exhaustive match, so adding a variant
     /// fails to compile until it has a fixture and a golden encoding.
     fn variant(message: &NeighbourMsg) -> &'static str {
-        match message {
-            NeighbourMsg::SyncReq { .. } => "SyncReq",
-            NeighbourMsg::SyncResp { .. } => "SyncResp",
-            NeighbourMsg::PresenceMoved { .. } => "PresenceMoved",
-            NeighbourMsg::PresenceCleared { .. } => "PresenceCleared",
-            NeighbourMsg::SurfaceFrame { .. } => "SurfaceFrame",
-            NeighbourMsg::SurfaceStreamStart { .. } => "SurfaceStreamStart",
-            NeighbourMsg::SurfaceStreamEnd { .. } => "SurfaceStreamEnd",
-            NeighbourMsg::RemoteInput { .. } => "RemoteInput",
-            NeighbourMsg::PermissionRequest { .. } => "PermissionRequest",
-            NeighbourMsg::PermissionGrant { .. } => "PermissionGrant",
-            NeighbourMsg::Heartbeat { .. } => "Heartbeat",
-            NeighbourMsg::IdentityHello { .. } => "IdentityHello",
-            NeighbourMsg::AppDocument { .. } => "AppDocument",
-            NeighbourMsg::AppPresenceV2 { .. } => "AppPresenceV2",
-            NeighbourMsg::ScrollbackRequest { .. } => "ScrollbackRequest",
-            NeighbourMsg::ScrollbackResponse { .. } => "ScrollbackResponse",
-            NeighbourMsg::IdentityAnnouncement { .. } => "IdentityAnnouncement",
-            NeighbourMsg::IdentityAnnouncementV2 { .. } => "IdentityAnnouncementV2",
-            NeighbourMsg::PersonalContinuityRequest { .. } => "PersonalContinuityRequest",
-            NeighbourMsg::PersonalContinuityCheckpoint { .. } => "PersonalContinuityCheckpoint",
-            NeighbourMsg::RemoteAction { .. } => "RemoteAction",
-            NeighbourMsg::MediaCapabilities { .. } => "MediaCapabilities",
-            NeighbourMsg::MlsGovernance { .. } => "MlsGovernance",
-            NeighbourMsg::MlsAccessRequest { .. } => "MlsAccessRequest",
-            NeighbourMsg::MlsGovernanceAck { .. } => "MlsGovernanceAck",
-            NeighbourMsg::PersonalWorkspaces { .. } => "PersonalWorkspaces",
-            NeighbourMsg::RecordContentWant { .. } => "RecordContentWant",
-            NeighbourMsg::RecordContentPiece { .. } => "RecordContentPiece",
-        }
+        message.kind()
+    }
+
+    #[test]
+    fn only_a_wall_clock_heartbeat_asks_its_neighbours_to_keep_beating() {
+        let beat = |ts| NeighbourMsg::Heartbeat { peer: 9, ts };
+        // What a heartbeat-keeping build sends: unix milliseconds, October 2026.
+        assert!(beat(1_791_500_000_000).is_timed_heartbeat());
+        // What a transport-liveness build sends such a neighbour: a number.
+        assert!(!beat(1).is_timed_heartbeat());
+        assert!(!beat(NeighbourMsg::COMPAT_HEARTBEAT_TS_LIMIT - 1).is_timed_heartbeat());
+        assert!(
+            !NeighbourMsg::PresenceCleared {
+                peer: 9,
+                key: String::new()
+            }
+            .is_timed_heartbeat()
+        );
     }
 
     const VARIANT_COUNT: usize = 28;
-
-    fn hex(bytes: &[u8]) -> String {
-        use std::fmt::Write;
-        bytes.iter().fold(String::new(), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
-    }
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1099,9 +1122,9 @@ mod tests {
                 "3030302d30303030303030303030306309757569643a3163326604deadbeef10",
                 "1111111111111111111111111111111107070707070707070707070707070707",
                 "0707070707070707070707070707070710222222222222222222222222222222",
-                "220000002a004000000000000000000000000000000000000000000000000000",
+                "220000002a000000400000000000000000000000000000000000000000000000",
                 "0000000000000000000000000000000000000000000000000000000000000000",
-                "00000000000000",
+                "000000000000000000",
             ),
         ),
         (
@@ -1129,14 +1152,14 @@ mod tests {
             concat!(
                 "0f10444444444444444444444444444444440204deadbeef1011111111111111",
                 "1111111111111111110707070707070707070707070707070707070707070707",
-                "07070707070707070710222222222222222222222222222222220000002a0040",
+                "07070707070707070710222222222222222222222222222222220000002a0000",
+                "0040000000000000000000000000000000000000000000000000000000000000",
                 "0000000000000000000000000000000000000000000000000000000000000000",
+                "000004deadbeef10111111111111111111111111111111110707070707070707",
+                "0707070707070707070707070707070707070707070707071022222222222222",
+                "2222222222222222220000002a00000040000000000000000000000000000000",
                 "0000000000000000000000000000000000000000000000000000000000000000",
-                "04deadbeef101111111111111111111111111111111107070707070707070707",
-                "0707070707070707070707070707070707070707070710222222222222222222",
-                "222222222222220000002a004000000000000000000000000000000000000000",
-                "0000000000000000000000000000000000000000000000000000000000000000",
-                "00000000000000000000000000d6e848",
+                "0000000000000000000000000000000000d6e848",
             ),
         ),
         (
@@ -1190,7 +1213,7 @@ mod tests {
         let mut actual = Vec::new();
         for (case, message) in &fixtures {
             let bytes = postcard::to_allocvec(message).expect("fixture encodes");
-            actual.push((*case, hex(&bytes)));
+            actual.push((*case, hex::encode(&bytes)));
         }
         let expected: Vec<_> = GOLDEN
             .iter()

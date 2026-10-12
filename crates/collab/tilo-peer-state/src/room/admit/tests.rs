@@ -3,8 +3,8 @@
 use super::*;
 use automerge::transaction::Transactable;
 use automerge::{ObjType, ROOT, ReadDoc, ScalarValue};
-use collab_types::caps::{CapOverride, Subject};
 use std::collections::BTreeMap;
+use tilo_action_policy::{Role, Subject, roles};
 
 const ROOM: &str = "0b5c3f1e-7d2a-4c1b-9e8f-6a5d4c3b2a19";
 const OWNER: [u8; 32] = [0x11; 32];
@@ -27,16 +27,21 @@ fn governed() -> AutoCommit {
     doc.put(ROOT, "room", ROOM).unwrap();
     doc.put(ROOT, "name", "Room").unwrap();
     doc.put(ROOT, "owner", person_id(OWNER)).unwrap();
-    let caps = doc.put_object(ROOT, "capabilities", ObjType::Map).unwrap();
-    for (id, root, verb) in [
-        ("editor", EDITOR, Verb::Write),
-        ("viewer", VIEWER, Verb::Read),
-    ] {
-        let cap = CapOverride::membership(Subject::person(person_id(root)), ROOM, verb).with_id(id);
+    let members = doc.put_object(ROOT, "members", ObjType::Map).unwrap();
+    for (root, role) in [(EDITOR, Role::Editor), (VIEWER, Role::Viewer)] {
         doc.put(
-            &caps,
-            id,
-            ScalarValue::Bytes(serde_json::to_vec(&cap).unwrap()),
+            &members,
+            person_id(root),
+            ScalarValue::Bytes(serde_json::to_vec(&role).unwrap()),
+        )
+        .unwrap();
+    }
+    let grants = doc.put_object(ROOT, "grants", ObjType::Map).unwrap();
+    for grant in roles::room_role_grants(ROOM, &Subject::Person(person_id(OWNER))) {
+        doc.put(
+            &grants,
+            grant.id.as_str(),
+            ScalarValue::Bytes(serde_json::to_vec(&grant).unwrap()),
         )
         .unwrap();
     }
@@ -70,10 +75,13 @@ fn all_changes(doc: &AutoCommit) -> Vec<Vec<u8>> {
         .collect()
 }
 
-fn member(writer_key: &str, root: [u8; 32], role: Option<Role>) -> Writer<'_> {
+fn member(writer_key: &str, root: [u8; 32]) -> Writer<'_> {
     Writer {
         key: writer_key,
-        standing: Standing::Member { person: root, role },
+        standing: Standing::Member {
+            person: root,
+            foreign: false,
+        },
     }
 }
 
@@ -113,7 +121,7 @@ fn authority_bootstrap_needs_no_roster_and_others_need_held_governance() {
     let snapshot = all_changes(&governed());
     let admitted = admit(
         None,
-        member(&authority, OWNER, None),
+        member(&authority, OWNER),
         AuthorityPin::Device(&authority),
         ContentOwnership::Registry,
         &snapshot,
@@ -127,7 +135,7 @@ fn authority_bootstrap_needs_no_roster_and_others_need_held_governance() {
     assert_eq!(
         admit(
             None,
-            member(&stranger, EDITOR, Some(Role::Editor)),
+            member(&stranger, EDITOR),
             AuthorityPin::Device(&authority),
             ContentOwnership::Registry,
             &snapshot,
@@ -147,7 +155,7 @@ fn sender_needs_write_on_the_room_it_already_governs() {
     assert_eq!(
         admit(
             Some(&before),
-            member(&writer, VIEWER, Some(Role::Viewer)),
+            member(&writer, VIEWER),
             AuthorityPin::Device(&authority),
             salted,
             &edit,
@@ -159,7 +167,7 @@ fn sender_needs_write_on_the_room_it_already_governs() {
     assert_eq!(
         admit(
             Some(&before),
-            member(&writer, [0x44; 32], None),
+            member(&writer, [0x44; 32]),
             AuthorityPin::Device(&authority),
             salted,
             &edit,
@@ -171,7 +179,7 @@ fn sender_needs_write_on_the_room_it_already_governs() {
     assert!(
         admit(
             Some(&before),
-            member(&writer, EDITOR, Some(Role::Editor)),
+            member(&writer, EDITOR),
             AuthorityPin::Device(&authority),
             salted,
             &edit,
@@ -201,7 +209,7 @@ fn malformed_batch_and_foreign_room_are_refused() {
     assert!(matches!(
         admit(
             Some(&before),
-            member(&authority, OWNER, Some(Role::Owner)),
+            member(&authority, OWNER),
             AuthorityPin::Device(&authority),
             ContentOwnership::Registry,
             &[vec![0x85, 0x6f, 0x4a, 0x83, 0xff]],
@@ -215,7 +223,7 @@ fn malformed_batch_and_foreign_room_are_refused() {
     assert_eq!(
         admit(
             Some(&before),
-            member(&authority, OWNER, Some(Role::Owner)),
+            member(&authority, OWNER),
             AuthorityPin::Device(&authority),
             ContentOwnership::Registry,
             &moved,
@@ -231,7 +239,7 @@ fn governance_changes_only_from_the_pinned_writer() {
     let seize = changes_after(&before, |doc| take_ownership(doc, EDITOR));
     let authority = key(0xA0);
     let editor = key(0x02);
-    let as_editor = member(&editor, EDITOR, Some(Role::Editor));
+    let as_editor = member(&editor, EDITOR);
     let salted = ContentOwnership::Salted { local_salt: 0x0001 };
     for pin in [
         AuthorityPin::Device(&authority),
@@ -248,7 +256,7 @@ fn governance_changes_only_from_the_pinned_writer() {
     assert!(
         admit(
             Some(&before),
-            member(&authority, OWNER, Some(Role::Owner)),
+            member(&authority, OWNER),
             AuthorityPin::Device(&authority),
             salted,
             &seize,
@@ -259,7 +267,7 @@ fn governance_changes_only_from_the_pinned_writer() {
     assert!(
         admit(
             Some(&before),
-            member(&key(0x05), OWNER, Some(Role::Owner)),
+            member(&key(0x05), OWNER),
             AuthorityPin::Person(&OWNER),
             salted,
             &seize,
@@ -321,7 +329,7 @@ fn durable_and_import_governance_count_as_governance() {
     assert_eq!(
         admit(
             Some(&before),
-            member(&editor, EDITOR, Some(Role::Editor)),
+            member(&editor, EDITOR),
             AuthorityPin::Local,
             ContentOwnership::Salted { local_salt: 0x0001 },
             &receipts,
@@ -346,7 +354,7 @@ fn registry_contents_change_only_by_their_owner() {
     assert!(matches!(
         admit(
             Some(&before),
-            member(&second, EDITOR, Some(Role::Editor)),
+            member(&second, EDITOR),
             AuthorityPin::Device(&authority),
             ContentOwnership::Registry,
             &theirs,
@@ -357,7 +365,7 @@ fn registry_contents_change_only_by_their_owner() {
     assert!(
         admit(
             Some(&before),
-            member(&second, EDITOR, Some(Role::Editor)),
+            member(&second, EDITOR),
             AuthorityPin::Device(&authority),
             ContentOwnership::Registry,
             &own,
@@ -374,7 +382,7 @@ fn salted_contents_protect_the_receivers_own_entries() {
     assert_eq!(
         admit(
             Some(&before),
-            member(&editor, EDITOR, Some(Role::Editor)),
+            member(&editor, EDITOR),
             AuthorityPin::Local,
             ContentOwnership::Salted { local_salt: 0x0001 },
             &rewrite,
@@ -386,7 +394,7 @@ fn salted_contents_protect_the_receivers_own_entries() {
     assert!(
         admit(
             Some(&before),
-            member(&editor, EDITOR, Some(Role::Editor)),
+            member(&editor, EDITOR),
             AuthorityPin::Local,
             ContentOwnership::Salted { local_salt: 0x0001 },
             &own,
@@ -422,7 +430,7 @@ fn effect_receipts_are_immutable_even_for_the_governor() {
     assert_eq!(
         admit(
             Some(&before),
-            member(&authority, OWNER, Some(Role::Owner)),
+            member(&authority, OWNER),
             AuthorityPin::Device(&authority),
             ContentOwnership::Registry,
             &rewrite,
@@ -461,7 +469,7 @@ fn coverage_never_rewinds_even_from_the_governor() {
     assert!(matches!(
         admit(
             Some(&before),
-            member(&authority, OWNER, Some(Role::Owner)),
+            member(&authority, OWNER),
             AuthorityPin::Device(&authority),
             ContentOwnership::Registry,
             &rewind,
@@ -487,7 +495,7 @@ fn durability_never_rewinds_even_from_the_governor() {
     assert!(matches!(
         admit(
             Some(&before),
-            member(&authority, OWNER, Some(Role::Owner)),
+            member(&authority, OWNER),
             AuthorityPin::Device(&authority),
             ContentOwnership::Registry,
             &rewind,
@@ -506,7 +514,7 @@ fn malformed_media_policy_is_refused_even_from_the_governor() {
     assert!(matches!(
         admit(
             Some(&before),
-            member(&authority, OWNER, Some(Role::Owner)),
+            member(&authority, OWNER),
             AuthorityPin::Device(&authority),
             ContentOwnership::Registry,
             &malformed,

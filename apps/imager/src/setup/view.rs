@@ -8,13 +8,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::Politeness;
 use ui::icons::Icon;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::typography::TextRole;
 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -23,9 +22,6 @@ use ui::widget::{
     Button, ButtonRole, Column, Container, ControlSize, ListRow, Row, Section, SectionHeader,
     Spacer, Text, ToggleGroup, Widget, toggle_group::Segment,
 };
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
 
 use super::actions::SetupEffect;
 use super::controller::{SetupController, SetupPage};
@@ -43,7 +39,7 @@ use super::known_folders::{self, KnownFolder, KnownFolderKind};
 use super::model::{Capabilities, Experience, FolderMode, HostOs};
 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
 use super::staging::helper::Action as HelperAction;
-use crate::resource::{Imager, ImagerState};
+use crate::resource::Imager;
 use ui::LocalState;
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, ResourceSurface, RunMode, SurfaceCx,
@@ -161,9 +157,7 @@ pub struct SetupApp {
     show_help: bool,
     status: String,
     status_is_error: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
-    structure_dirty: bool,
+    composed: ui::widget::Composed,
     import_requested: bool,
     /// Whether the view shows folder imports in place of setup.
     imports: Option<LocalState<bool>>,
@@ -307,9 +301,7 @@ impl SetupApp {
             show_help: false,
             status: "Choose an available experience to begin.".into(),
             status_is_error: false,
-            composed: None,
-            rect: Rect::ZERO,
-            structure_dirty: true,
+            composed: ui::widget::Composed::default(),
             import_requested: false,
             imports: None,
             starts_when_live: false,
@@ -763,7 +755,7 @@ impl SetupApp {
             }
             _ => unreachable!("validated Desktop effect"),
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
         if self.status_is_error {
             return Err(self.status.clone());
         }
@@ -975,7 +967,7 @@ impl SetupApp {
             | SetupCommand::InternalDisableFastStartup
             | SetupCommand::RecheckInternal => self.apply_internal_install_command(command),
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
     }
 
     #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -997,13 +989,13 @@ impl SetupApp {
             self.status =
                 "Wait for the current folder scan to finish before adding another.".into();
             self.status_is_error = true;
-            self.structure_dirty = true;
+            self.composed.invalidate();
             return;
         }
         if let Some(error) = self.scan_source_error(&source) {
             self.status = error;
             self.status_is_error = true;
-            self.structure_dirty = true;
+            self.composed.invalidate();
             return;
         }
         let source_label = source.display().to_string();
@@ -1027,7 +1019,7 @@ impl SetupApp {
             self.pending_scans = self.pending_scans.saturating_sub(1);
             self.status = format!("Folder scan could not start for {source_label}: {error}");
             self.status_is_error = true;
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
     }
 
@@ -1045,7 +1037,7 @@ impl SetupApp {
             self.known_folders = unavailable_suggestions("Known-folder lookup could not start.");
             self.status = format!("Known-folder lookup could not start: {error}");
             self.status_is_error = true;
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
     }
 
@@ -1111,7 +1103,7 @@ impl SetupApp {
                         if let Some(error) = self.scan_source_error(&scan.source) {
                             self.status = error;
                             self.status_is_error = true;
-                            self.structure_dirty = true;
+                            self.composed.invalidate();
                             return;
                         }
                         let skipped_count = scan.skipped_count;
@@ -1165,7 +1157,7 @@ impl SetupApp {
                 self.apply_host_command_result(command, result);
             }
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
     }
 
     fn poll_background(&mut self) -> bool {
@@ -1215,7 +1207,7 @@ impl SetupApp {
                     _ => {}
                 }
             }
-            self.structure_dirty = true;
+            self.composed.invalidate();
             changed = true;
         }
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -1232,7 +1224,7 @@ impl SetupApp {
                         Some(super::internal_cache::coordinator::Phase::Failed)
                     );
                 }
-                self.structure_dirty = true;
+                self.composed.invalidate();
                 changed = true;
             }
         }
@@ -2111,7 +2103,7 @@ impl SetupApp {
                     &[("gib", gib.into())],
                 );
                 self.status_is_error = false;
-                self.structure_dirty = true;
+                self.composed.invalidate();
                 return Ok(None);
             }
             Op::InstallInternal { reviewed } => {
@@ -2172,7 +2164,7 @@ impl SetupApp {
             );
             self.status_is_error = true;
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
     }
 
     /// Mirror the gated readiness into the capabilities the controller and
@@ -2328,7 +2320,7 @@ impl SetupApp {
                 self.status_is_error = true;
             }
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
     }
 
     /// Follow helper runs and stepper commits; announce finished runs.
@@ -2377,7 +2369,7 @@ impl SetupApp {
                 self.status = status;
                 self.status_is_error = is_error;
             }
-            self.structure_dirty = true;
+            self.composed.invalidate();
             changed = true;
         }
         if self.internal_install.take_reprobe() {
@@ -3074,15 +3066,13 @@ impl Widget for SetupApp {
         self.poll_background();
         self.drain_commands();
         self.open_requested_imports();
-        if let Some(composed) = &mut self.composed {
-            composed.sync(state, path);
-        }
+        self.composed.sync(state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = self.poll_background() || self.drain_commands();
         self.open_requested_imports();
-        if let Some(composed) = &mut self.composed {
+        if let Some(composed) = self.composed.element_mut() {
             changed |= composed.update(state, path);
         }
         changed
@@ -3094,81 +3084,26 @@ impl Widget for SetupApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let composition = self.build_composition();
+        let child = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-        if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&child) = children.first()
-        {
-            composed.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if let Some(composed) = &mut self.composed {
-            composed.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(composed) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&child) = children.first()
-        {
-            composed.handle_event(event, &mut ctx.reborrow(ctx.path, child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|child| child.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|child| child.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
+    ui::forward_to_composed!(composed);
 
     fn name(&self) -> &'static str {
         "SetupApp"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -3192,14 +3127,6 @@ impl Widget for SetupApp {
                 }
             }
     }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.structure_dirty)
-            || self
-                .composed
-                .as_mut()
-                .is_some_and(|child| child.take_structure_dirty())
-    }
 }
 
 /// The screenshot scenarios guided setup stages.
@@ -3217,7 +3144,7 @@ pub const SCENARIOS: &[&str] = &[
 ];
 
 impl ResourceSurface<Imager, SetupEffect> for SetupApp {
-    fn present(&mut self, _state: &Rc<ImagerState>) {}
+    fn present(&mut self, _state: &Rc<Imager>) {}
 
     fn attach(&mut self, cx: SurfaceCx<Imager>) {
         self.actions = Some(cx.actions());
@@ -3239,7 +3166,7 @@ impl ResourceSurface<Imager, SetupEffect> for SetupApp {
         self.imports = imports;
         self.actions = actions;
         self.usb = usb;
-        self.structure_dirty = true;
+        self.composed.invalidate();
     }
 
     fn effect(&mut self, effect: SetupEffect, _cx: &mut EffectCx<Imager, Self>) -> EffectAnswer {
@@ -3308,7 +3235,8 @@ pub(crate) fn mount(
 }
 
 // View fixtures depend on the Unix installer and cache worker test adapters.
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use std::path::PathBuf;
 
@@ -5414,21 +5342,11 @@ mod tests {
     }
 
     fn retained_value(root: &dyn Widget, id: &str) -> Option<String> {
-        if root.test_id() == Some(id) {
-            return root.accessibility().and_then(|node| node.value);
-        }
-        root.children()
-            .into_iter()
-            .find_map(|child| retained_value(child, id))
+        ui::widget::find_test_id(root, id)?.accessibility()?.value
     }
 
     fn retained_name(root: &dyn Widget, id: &str) -> Option<String> {
-        if root.test_id() == Some(id) {
-            return root.accessibility().and_then(|node| node.name);
-        }
-        root.children()
-            .into_iter()
-            .find_map(|child| retained_name(child, id))
+        ui::widget::find_test_id(root, id)?.accessibility()?.name
     }
 
     fn internal_action(app: &SetupApp, id: &str) -> tilo_actions::ActionSpec {

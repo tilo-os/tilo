@@ -4,9 +4,6 @@ use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::thread::JoinHandle;
 
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
-use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
-
 use crate::app_host_capnp::app_host;
 
 /// A test's server transport. Dropping it stops and joins only its own driver.
@@ -86,16 +83,11 @@ where
     tokio::task::LocalSet::new().block_on(&runtime, async move {
         let connection =
             tokio::net::UnixStream::from_std(connection).map_err(|error| error.to_string())?;
-        let (read, write) = tokio::io::split(connection);
-        let network = Box::new(twoparty::VatNetwork::new(
-            read.compat(),
-            write.compat_write(),
-            rpc_twoparty_capnp::Side::Server,
-            capnp::message::ReaderOptions::default(),
-        ));
         let service: app_host::Client = capnp_rpc::new_client(server);
-        let rpc = RpcSystem::new(network, Some(service.client));
-        let mut rpc = Box::pin(rpc);
+        let mut rpc = Box::pin(runtime_portal::serve_connected_io(
+            connection,
+            service.client,
+        ));
         tokio::select! {
             biased;
             result = &mut rpc => driver_result(result),

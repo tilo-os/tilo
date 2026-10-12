@@ -104,7 +104,7 @@ pub fn render(title: &str, build: &BuildInfo, panic: &Panic<'_>) -> String {
 pub fn install(title: &'static str) {
     let dir = tilo_paths::cache_dir()
         .map(|cache| cache.join("tilo").join("crashes"))
-        .filter(|dir| private_fs::directory(dir).is_ok());
+        .filter(|dir| tilo_files::native::private::directory(dir).is_ok());
     let build = BuildInfo::current();
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -142,7 +142,7 @@ pub fn install(title: &'static str) {
         if let Some(dir) = &dir {
             use std::io::Write as _;
             let path = dir.join(format!("{timestamp}-{}.log", std::process::id()));
-            let wrote = private_fs::create_new(&path)
+            let wrote = tilo_files::native::private::create_new(&path)
                 .and_then(|mut file| file.write_all(body.as_bytes()))
                 .is_ok();
             if wrote {
@@ -217,11 +217,7 @@ fn gnu_build_id(mut notes: &[u8]) -> Option<String> {
         let name = notes.get(12..name_end)?;
         let desc = notes.get(desc_start..desc_end)?;
         if kind == NT_GNU_BUILD_ID && name == b"GNU\0" {
-            let mut hex = String::with_capacity(desc.len().saturating_mul(2));
-            for byte in desc {
-                let _ = write!(hex, "{byte:02x}");
-            }
-            return Some(hex);
+            return Some(hex::encode(desc));
         }
         notes = notes.get(desc_end.checked_next_multiple_of(4)?..)?;
     }

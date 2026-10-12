@@ -256,7 +256,8 @@ impl std::fmt::Display for CoeditError {
 
 impl std::error::Error for CoeditError {}
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::{CoeditPayload, RetentionKind, retention_view};
 

@@ -103,12 +103,42 @@ class UkiPipelineTests(unittest.TestCase):
     def test_a_uki_stage_that_skips_uki_sh_or_its_kernel_is_reported(self):
         root = self.fixture()
         self.edit(root / "os/Containerfile.dev-installer-base",
-                  "    --mount=type=bind,from=split,source=/kernel,target=/kernel,rw \\\n"
+                  "    --mount=type=bind,from=kernel,source=/kernel,target=/kernel,rw \\\n"
                   "    bash /usr/local/bin/uki.sh\n",
                   "    bash /usr/local/bin/uki.sh && true\n")
         found = self.findings(root)
         self.assertIn("os/Containerfile.dev-installer-base:", found)
-        self.assertIn("--mount=type=bind,from=split,source=/kernel,target=/kernel,rw", found)
+        self.assertIn("--mount=type=bind,from=kernel,source=/kernel,target=/kernel,rw", found)
+
+    def test_a_uki_stage_that_embeds_the_shipped_split_is_reported(self):
+        # The production `split` drops its initramfs; the UKI must take the
+        # kernel from the throwaway `kernel` stage, never from what ships.
+        root = self.fixture()
+        self.edit(root / "os/Containerfile", "from=kernel,source=/kernel,target=/kernel,rw",
+                  "from=split,source=/kernel,target=/kernel,rw")
+        self.assertIn("--mount=type=bind,from=kernel,source=/kernel,target=/kernel,rw", self.findings(root))
+
+    def test_a_missing_or_foreign_kernel_stage_is_reported(self):
+        root = self.fixture()
+        self.edit(root / "os/Containerfile.board", "FROM board-root AS kernel\n", "FROM board-root AS kernel-gone\n")
+        self.assertIn("no kernel stage", self.findings(root))
+        root = self.fixture()
+        self.edit(root / "os/Containerfile.dev-installer-base", "FROM ${BASE_IMAGE} AS kernel\n",
+                  "FROM ${BASE_REF} AS kernel\n")
+        self.assertIn("`kernel` builds FROM ${BASE_REF}, not ${BASE_IMAGE}", self.findings(root))
+
+    def test_a_kernel_stage_that_does_not_end_in_the_split_is_reported(self):
+        root = self.fixture()
+        self.edit(root / "os/Containerfile",
+                  "RUN mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel\n",
+                  "RUN mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel"
+                  " && rm /kernel/*/initramfs.img\n")
+        self.assertIn("the `kernel` stage does not end with", self.findings(root))
+
+    def test_split_may_drop_only_the_initramfs_after_the_split(self):
+        root = self.fixture()
+        self.edit(root / "os/Containerfile", "    && rm /kernel/*/initramfs.img\n", "    && rm -rf /kernel\n")
+        self.assertIn("the `split` stage does not end with", self.findings(root))
 
     def test_a_layer_added_after_the_split_is_reported(self):
         root = self.fixture()

@@ -108,19 +108,25 @@ fn full_access_acl(path: &Path, person_seed: [u8; 32]) {
     let person = SigningKey::from_bytes(&person_seed)
         .verifying_key()
         .to_bytes();
-    let caps: Vec<collab_types::CapOverride> =
-        [collab_types::Verb::Read, collab_types::Verb::Write]
-            .into_iter()
-            .map(|verb| {
-                collab_types::CapOverride::new(
-                    collab_types::Subject::User(collab_types::Ed25519PublicKey(person)),
-                    collab_types::Scope::FsPath("/".into()),
-                    collab_types::Effect::Grant,
-                    verb,
-                )
-            })
-            .collect();
-    std::fs::write(path, serde_json::to_vec(&caps).unwrap()).unwrap();
+    let caps: Vec<collab_types::CapOverride> = [
+        collab_types::caps::Access::Read,
+        collab_types::caps::Access::Write,
+    ]
+    .into_iter()
+    .map(|verb| {
+        collab_types::CapOverride::new(
+            collab_types::Subject::User(collab_types::Ed25519PublicKey(person)),
+            collab_types::Scope::FsPath("/".into()),
+            collab_types::Effect::Grant,
+            verb,
+        )
+    })
+    .collect();
+    std::fs::write(
+        path,
+        serde_json::to_vec(&collab_types::FsAuthority::from(caps)).unwrap(),
+    )
+    .unwrap();
 }
 
 struct Daemon {
@@ -681,8 +687,8 @@ fn assert_records_follow_writer_order(pair: &mut Pair, m1: &Path, m2: &Path) {
     // runs from that creation through the rename.
     let history = provenance(&pair.dir.join("host-cache"), "objects/3");
     assert!(
-        history.first() == Some(&collab_types::FileProvenance::Create)
-            && history.contains(&collab_types::FileProvenance::Rename),
+        history.first() == Some(&fs_protocol::FileProvenance::Create)
+            && history.contains(&fs_protocol::FileProvenance::Rename),
         "history follows the renamed record: {history:?}"
     );
     assert!(pair.host.log_count("epoch ") >= 1);
@@ -702,7 +708,7 @@ fn persisted_namespace(cache: &Path) -> fs::Namespace {
 }
 
 /// The provenance of every version of the record at `path`, oldest first.
-fn provenance(cache: &Path, path: &str) -> Vec<collab_types::FileProvenance> {
+fn provenance(cache: &Path, path: &str) -> Vec<fs_protocol::FileProvenance> {
     let ns = persisted_namespace(cache);
     let history = fs::FileHistoryStore::open(cache.join("file-history.json")).unwrap();
     let entry = ns

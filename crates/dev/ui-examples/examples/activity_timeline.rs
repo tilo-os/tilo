@@ -24,12 +24,9 @@ use tilo_automerge::ApplyIncoming;
 use automerge::{ActorId, AutoCommit, AutomergeError, ROOT};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::permissions::PermissionContext;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::widget::{ActivityTimeline, Column, HistoryScrubber};
-use tilo_ui::{
-    App, AuthorDirectory, HistoryAuthor, HistorySource, PresenceCtx, State, Theme, Widget,
-};
+use tilo_ui::{App, AuthorDirectory, HistoryAuthor, HistorySource, PresenceCtx, State, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
@@ -165,7 +162,10 @@ pub fn run(args: &[String]) {
         entries.len()
     );
     for e in &entries {
-        println!("  {:<14} {:<10?} {}", e.author.name, e.op_class, e.summary);
+        println!(
+            "  {:<14} {:<10?} {}",
+            e.author.name, e.entry_kind, e.summary
+        );
     }
 
     let timeline = ActivityTimeline::with_entries(entries.clone())
@@ -195,12 +195,8 @@ pub fn run(args: &[String]) {
 fn render_shot(mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) {
     let (w, h) = viewport;
     let state = State::new();
-    let theme = std::env::var("TILO_SHOTS_THEME")
-        .ok()
-        .and_then(|name| Theme::named(&name))
-        .unwrap_or_else(Theme::dark);
+    let theme = crate::registry::shot_theme();
     let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -248,14 +244,7 @@ fn render_shot(mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) {
     widget.apply_layout(&taffy, child, Point::ORIGIN);
 
     let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut tr,
-        &theme,
-        &presence,
-        &permission,
-    );
+    widget.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
     }

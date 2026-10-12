@@ -5,6 +5,13 @@ ARG BASE_IMAGE
 ARG RPMS_REF
 FROM ${RPMS_REF} AS rpms
 
+# The kernel the UKI embeds, split out of the same root (os/Containerfile's
+# `kernel` stage). This image keeps its own split-out pair as well: it is a
+# development target, whose kernel tilo-installer-dev-target-uki.py checks
+# against the UKI.
+FROM ${BASE_IMAGE} AS kernel
+RUN mkdir -p /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
+
 FROM ${BASE_IMAGE} AS split
 RUN test "$(cat /usr/lib/tilo/image-flavour)" = dev \
     && test -x /usr/bin/tilo-installer \
@@ -35,7 +42,7 @@ ENV TILO_SEAL_GENERATION=${TILO_SEAL_GENERATION}
 RUN --mount=type=tmpfs,target=/tmp \
     --mount=type=tmpfs,target=/run \
     --mount=type=bind,from=split,target=/target,rw \
-    --mount=type=bind,from=split,source=/kernel,target=/kernel,rw \
+    --mount=type=bind,from=kernel,source=/kernel,target=/kernel,rw \
     bash /usr/local/bin/uki.sh
 
 FROM split AS final

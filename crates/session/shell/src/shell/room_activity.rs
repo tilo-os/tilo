@@ -13,16 +13,75 @@ use crate::shell::room_records::RoomRecords;
 use crate::shell::state::WorkspaceAuthority as _;
 use crate::shell::state::{
     Workspace, WorkspaceId, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
-    WorkspaceTree,
+    WorkspaceTree, WorkspaceTreeHandle,
 };
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
+use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
 use tilo_desktop::activity::{
     ActivityHost, ActivityTree, WorkspaceDeparture, WorkspaceSeenFrontier,
 };
 pub use tilo_desktop::activity::{ActivityView, Period, RoomActivityOutcome, RoomScope};
 use ui::record::{RecordId, RecordStore};
+
+/// History derivation owns its document cursor, not the live workspace lock.
+/// Only the admitted desktop, causal document and native task routing are
+/// copied; persistence and mutation authority remain on the original tree.
+#[derive(Clone)]
+struct ActivityObservation {
+    desktop: tilo_desktop_model::DesktopTree,
+    doc: automerge::AutoCommit,
+    native_rooms: BTreeSet<super::state::RoomId>,
+}
+
+impl ActivityObservation {
+    fn capture(handle: &WorkspaceTreeHandle) -> Self {
+        let mut tree = handle.write();
+        tree.commit_room_change();
+        Self {
+            desktop: tree.desktop.clone(),
+            doc: tree.doc.clone(),
+            native_rooms: tree
+                .desktop
+                .workspaces
+                .iter()
+                .filter(|workspace| tree.requires_native_owner(workspace.room))
+                .map(|workspace| workspace.room)
+                .collect(),
+        }
+    }
+}
+
+impl std::ops::Deref for ActivityObservation {
+    type Target = tilo_desktop_model::DesktopTree;
+    fn deref(&self) -> &Self::Target {
+        &self.desktop
+    }
+}
+
+impl std::ops::DerefMut for ActivityObservation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.desktop
+    }
+}
+
+impl ActivityTree for ActivityObservation {
+    fn document(&self) -> &automerge::AutoCommit {
+        &self.doc
+    }
+    fn document_mut(&mut self) -> &mut automerge::AutoCommit {
+        &mut self.doc
+    }
+    fn resync_activity_cache(&mut self) -> Result<(), String> {
+        tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
+        Ok(())
+    }
+    fn native_manual_tasks(&self, workspace: WorkspaceId) -> bool {
+        self.room_of(workspace)
+            .is_some_and(|room| self.native_rooms.contains(&room))
+    }
+}
 
 /// How long a finished shortcut run waits, on the wall clock, for its changes
 /// to reach a document on this device before it is given up.
@@ -36,6 +95,7 @@ const SHORTCUT_RUN_LOOK_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) struct NativeActivityHost {
     broker: Option<crate::shell::collab_broker::AppActionBroker>,
     review: Option<super::task_review::NativeTaskReview>,
+    morning: Option<Rc<super::morning_sources::NativeMorningSources>>,
 }
 
 /// A document's revision when a waiting run last looked at it: the heads of
@@ -245,25 +305,43 @@ fn load_history_map_at<T: serde::de::DeserializeOwned>(
 
 /// Replace `key`'s map in the history file at `path`, keeping its other maps:
 /// directory `0700`, file `0600`, written atomically.
+#[cfg(test)]
 fn save_history_map_at<T: serde::Serialize>(
     path: &std::path::Path,
     key: &str,
     values: &HashMap<u64, T>,
+) -> std::io::Result<()> {
+    write_history_maps_at(path, std::iter::once((key, history_map_value(values))))
+}
+
+/// `values` as the JSON object the history file keeps under one key.
+fn history_map_value<T: serde::Serialize>(values: &HashMap<u64, T>) -> serde_json::Value {
+    serde_json::Value::Object(
+        values
+            .iter()
+            .filter_map(|(id, value)| {
+                serde_json::to_value(value)
+                    .ok()
+                    .map(|value| (id.to_string(), value))
+            })
+            .collect(),
+    )
+}
+
+/// Replace each named map in the history file at `path`, keeping the others,
+/// in one atomic write.
+fn write_history_maps_at<'a>(
+    path: &std::path::Path,
+    maps: impl IntoIterator<Item = (&'a str, serde_json::Value)>,
 ) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     let mut doc: serde_json::Map<String, serde_json::Value> = std::fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default();
-    let values = values
-        .iter()
-        .filter_map(|(id, value)| {
-            serde_json::to_value(value)
-                .ok()
-                .map(|value| (id.to_string(), value))
-        })
-        .collect();
-    doc.insert(key.into(), serde_json::Value::Object(values));
+    for (key, values) in maps {
+        doc.insert(key.into(), values);
+    }
     let bytes = serde_json::to_vec(&doc).map_err(std::io::Error::other)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -273,16 +351,216 @@ fn save_history_map_at<T: serde::Serialize>(
 }
 
 fn load_history_map<T: serde::de::DeserializeOwned>(key: &str) -> HashMap<u64, T> {
+    // A save still on its way to disk is part of what the file holds.
+    settle_history_writes();
     load_history_map_at(history_path().as_deref(), key)
 }
 
-fn save_history_map<T: serde::Serialize>(key: &str, values: &HashMap<u64, T>) {
-    let Some(path) = history_path() else {
+/// Hand `key`'s map to the history writer. Leaving a workspace saves both
+/// maps, and the compositor leaves one inside a frame: an atomic replacement
+/// syncs the file and its directory, which held a workspace switch's first
+/// frame for 2.1 s on a busy disk. The writer keeps the newest map per key
+/// and writes them in one replacement once saves pause
+/// ([`HISTORY_SAVE_QUIET`]).
+fn save_history_map<T: serde::Serialize>(key: &'static str, values: &HashMap<u64, T>) {
+    if let Some(path) = history_path() {
+        queue_history_save(path, key, history_map_value(values));
+    }
+}
+
+/// Queue `values` as `key`'s map in the history file at `path`; returns at
+/// once unless the writer thread could not start.
+fn queue_history_save(path: std::path::PathBuf, key: &'static str, values: serde_json::Value) {
+    let request = HistoryWrite::Save { path, key, values };
+    let unsent = match history_writer() {
+        Some(writer) => writer.send(request).err().map(|error| error.0),
+        None => Some(request),
+    };
+    // No writer thread: write here rather than lose the save.
+    if let Some(HistoryWrite::Save { path, key, values }) = unsent {
+        write_history_now(&path, [(key, values)]);
+    }
+}
+
+fn write_history_now<'a>(
+    path: &std::path::Path,
+    maps: impl IntoIterator<Item = (&'a str, serde_json::Value)>,
+) {
+    if let Err(error) = write_history_maps_at(path, maps) {
+        tracing::warn!(%error, path = %path.display(), "could not persist history state");
+    }
+}
+
+enum HistoryWrite {
+    Save {
+        path: std::path::PathBuf,
+        key: &'static str,
+        values: serde_json::Value,
+    },
+    /// Answer once every earlier save is on disk.
+    Settle(mpsc::SyncSender<()>),
+}
+
+static HISTORY_WRITER: OnceLock<Option<mpsc::Sender<HistoryWrite>>> = OnceLock::new();
+
+/// The thread that writes the history file, started by the first save.
+/// `None` when it cannot start; saves are then written on the caller's thread.
+fn history_writer() -> Option<&'static mpsc::Sender<HistoryWrite>> {
+    HISTORY_WRITER
+        .get_or_init(|| {
+            let (requests, received) = mpsc::channel();
+            match std::thread::Builder::new()
+                .name("tilo-activity-history".into())
+                .spawn(move || write_history_requests(&received))
+            {
+                Ok(_) => Some(requests),
+                Err(error) => {
+                    tracing::warn!(%error, "history writer did not start");
+                    None
+                }
+            }
+        })
+        .as_ref()
+}
+
+/// Wait until every history save made so far is on disk. Free while nothing
+/// was ever saved.
+fn settle_history_writes() {
+    let Some(Some(writer)) = HISTORY_WRITER.get() else {
         return;
     };
-    if let Err(error) = save_history_map_at(&path, key, values) {
-        tracing::warn!(%error, key, "could not persist history state");
+    let (done, wait) = mpsc::sync_channel(1);
+    if writer.send(HistoryWrite::Settle(done)).is_ok() {
+        let _ = wait.recv();
     }
+}
+
+/// How long the history writer waits for another save before writing: a
+/// burst of workspace switches becomes one synced write after it. A sync
+/// forces a journal commit that every other write on the filesystem waits
+/// for, the compositor thread's own included, so one per switch kept landing
+/// inside a later switch's frames.
+const HISTORY_SAVE_QUIET: Duration = Duration::from_secs(2);
+
+/// The longest a save waits for the burst it is part of to end.
+const HISTORY_SAVE_LATEST: Duration = Duration::from_secs(10);
+
+/// The writer thread: gather saves until they pause (or a caller settles),
+/// keep the newest map per file and key, and write each file once.
+fn write_history_requests(received: &mpsc::Receiver<HistoryWrite>) {
+    while let Ok(first) = received.recv() {
+        let mut batch = HistoryBatch::default();
+        let started = Instant::now();
+        batch.take(first);
+        while batch.settled.is_empty() {
+            let waited = started.elapsed();
+            let Some(left) = HISTORY_SAVE_LATEST.checked_sub(waited) else {
+                break;
+            };
+            match received.recv_timeout(HISTORY_SAVE_QUIET.min(left)) {
+                Ok(request) => batch.take(request),
+                Err(_) => break,
+            }
+        }
+        for request in received.try_iter() {
+            batch.take(request);
+        }
+        for (path, maps) in batch.files {
+            write_history_now(&path, maps);
+        }
+        for done in batch.settled {
+            let _ = done.send(());
+        }
+    }
+}
+
+/// The saves and settle requests one write of the history files answers.
+#[derive(Default)]
+struct HistoryBatch {
+    files: Vec<(std::path::PathBuf, Vec<(&'static str, serde_json::Value)>)>,
+    settled: Vec<mpsc::SyncSender<()>>,
+}
+
+impl HistoryBatch {
+    fn take(&mut self, request: HistoryWrite) {
+        match request {
+            HistoryWrite::Save { path, key, values } => {
+                let index = self
+                    .files
+                    .iter()
+                    .position(|(known, _)| *known == path)
+                    .unwrap_or_else(|| {
+                        self.files.push((path, Vec::new()));
+                        self.files.len().saturating_sub(1)
+                    });
+                if let Some((_, maps)) = self.files.get_mut(index) {
+                    maps.retain(|(known, _)| *known != key);
+                    maps.push((key, values));
+                }
+            }
+            HistoryWrite::Settle(done) => self.settled.push(done),
+        }
+    }
+}
+
+/// Palette actions use only this device's explicit choices for the active room.
+pub(crate) fn morning_source_actions(workspace: &Workspace) -> Vec<(String, String)> {
+    use crate::shell::i18n::t;
+    use tilo_desktop::activity::morning::{
+        MORNING_DRAFT, MORNING_NEXT, MORNING_OPEN, MORNING_REFRESH, MORNING_REMOVE,
+        MorningPreferences,
+    };
+    let choices: HashMap<u64, MorningPreferences> = load_history_map("morning_sources");
+    choices
+        .get(&workspace.id.raw())
+        .map_or_else(Vec::new, |preferences| {
+            preferences
+                .for_room(&workspace.room.to_string())
+                .iter()
+                .flat_map(|source| {
+                    let app = crate::shell::launcher::display_name_for_app_id(&source.app)
+                        .unwrap_or_else(|| source.app.clone());
+                    [
+                        (
+                            format!("{MORNING_NEXT}{}.{}", workspace.room, source.key()),
+                            t("activity-morning-next"),
+                        ),
+                        (
+                            format!("{MORNING_OPEN}{}.{}", workspace.room, source.key()),
+                            format!(
+                                "{}: {app} · {}",
+                                t("activity-morning-open"),
+                                source.resource
+                            ),
+                        ),
+                        (
+                            format!("{MORNING_REFRESH}{}.{}", workspace.room, source.key()),
+                            format!(
+                                "{}: {app} · {}",
+                                t("activity-morning-refresh"),
+                                source.resource
+                            ),
+                        ),
+                        (
+                            format!("{MORNING_DRAFT}{}.{}", workspace.room, source.key()),
+                            format!(
+                                "{}: {app} · {}",
+                                t("activity-morning-draft"),
+                                source.resource
+                            ),
+                        ),
+                        (
+                            format!("{MORNING_REMOVE}{}.{}", workspace.room, source.key()),
+                            format!(
+                                "{}: {app} · {}",
+                                t("activity-morning-remove"),
+                                source.resource
+                            ),
+                        ),
+                    ]
+                })
+                .collect()
+        })
 }
 
 impl ActivityHost for NativeActivityHost {
@@ -326,6 +604,45 @@ impl ActivityHost for NativeActivityHost {
             (!user.is_empty()).then_some(user)
         }
     }
+    fn morning_sources_available(&self) -> bool {
+        true
+    }
+    fn morning_payload(
+        &self,
+        room: &str,
+        source: &tilo_desktop::activity::morning::MorningSource,
+    ) -> Option<tilo_desktop::activity::morning::MorningPayload> {
+        self.morning.as_ref()?.payload(room, source)
+    }
+    fn submit_morning_command(
+        &self,
+        room: &str,
+        source: &tilo_desktop::activity::morning::MorningSource,
+        command: tilo_desktop::activity::morning::MorningCommand,
+    ) -> Result<(), String> {
+        self.morning
+            .as_ref()
+            .ok_or_else(|| super::i18n::t("activity-morning-command-unavailable"))?
+            .submit(room, source, command)
+    }
+    fn morning_command_status(
+        &self,
+        room: &str,
+        source: &tilo_desktop::activity::morning::MorningSource,
+    ) -> Option<String> {
+        self.morning.as_ref()?.command_status(room, source)
+    }
+    fn load_morning_sources(
+        &self,
+    ) -> HashMap<u64, tilo_desktop::activity::morning::MorningPreferences> {
+        load_history_map("morning_sources")
+    }
+    fn save_morning_sources(
+        &self,
+        sources: &HashMap<u64, tilo_desktop::activity::morning::MorningPreferences>,
+    ) {
+        save_history_map("morning_sources", sources);
+    }
     fn load_frontiers(&self) -> HashMap<u64, WorkspaceSeenFrontier> {
         load_history_map("seen_frontiers")
     }
@@ -347,7 +664,7 @@ impl ActivityHost for NativeActivityHost {
     fn app_display_name(&self, app: &str) -> Option<String> {
         crate::shell::launcher::display_name_for_app_id(app)
     }
-    fn agent_members(&self, workspace: &Workspace) -> Vec<(String, collab_types::role::Role)> {
+    fn agent_members(&self, workspace: &Workspace) -> Vec<(String, tilo_action_policy::KindSet)> {
         workspace.agent_members()
     }
     fn agent_is_live(&self, room: &str, agent: &str) -> bool {
@@ -431,7 +748,31 @@ impl Default for RoomActivityPane {
         Self::new()
     }
 }
+impl Drop for RoomActivityPane {
+    /// The session is ending: the departure it saved last is on disk before
+    /// the compositor goes.
+    fn drop(&mut self) {
+        settle_history_writes();
+    }
+}
 impl RoomActivityPane {
+    /// Derive history and load referenced records after releasing the shared
+    /// workspace lock. Admission and output may read the current tree while
+    /// expensive history reconstruction uses this coherent observation.
+    pub(crate) fn refresh_observed(
+        &mut self,
+        tree: &WorkspaceTreeHandle,
+        records: &RecordStore,
+        local: &dyn tilo_desktop::activity::PersistedRecordHistory,
+    ) -> u64 {
+        let mut observed = ActivityObservation::capture(tree);
+        let workspace = observed.active.raw();
+        self.observe_workspace(workspace);
+        self.refresh(&mut observed);
+        self.refresh_records_with_local(&mut observed, records, local);
+        workspace
+    }
+
     pub fn new() -> Self {
         let mut pane = tilo_desktop::activity::RoomActivityPane::new();
         pane.set_host(Rc::new(NativeActivityHost::default()));
@@ -454,6 +795,9 @@ impl RoomActivityPane {
     pub fn attach_task_broker(&mut self, broker: crate::shell::collab_broker::AppActionBroker) {
         self.1 = Some(broker.clone());
         self.set_host(Rc::new(NativeActivityHost {
+            morning: Some(Rc::new(super::morning_sources::NativeMorningSources::new(
+                broker.clone(),
+            ))),
             broker: Some(broker),
             review: None,
         }));
@@ -461,6 +805,9 @@ impl RoomActivityPane {
     pub(crate) fn attach_task_review(&mut self, review: super::task_review::NativeTaskReview) {
         let broker = self.1.clone();
         self.set_host(Rc::new(NativeActivityHost {
+            morning: broker
+                .clone()
+                .map(|broker| Rc::new(super::morning_sources::NativeMorningSources::new(broker))),
             broker,
             review: Some(review),
         }));
@@ -552,12 +899,130 @@ fn activity_launch_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::ReadDoc as _;
     use automerge::transaction::{CommitOptions, Transactable};
     use ui::record::{RecordId, RecordStore};
+
+    #[test]
+    fn history_refresh_releases_workspace_authority_before_loading_records() {
+        struct LocalHistory {
+            tree: WorkspaceTreeHandle,
+            record: RecordId,
+            document: automerge::AutoCommit,
+            loads: std::cell::Cell<usize>,
+        }
+        impl tilo_desktop::activity::PersistedRecordHistory for LocalHistory {
+            fn load_record(&self, id: &RecordId) -> Option<automerge::AutoCommit> {
+                assert_eq!(id, &self.record);
+                // The production refresh calls this after taking its coherent
+                // observation. Neither a writer nor an admission reader must
+                // wait for history I/O and reconstruction to finish.
+                let mut live = self.tree.try_write().expect("history holds no tree lock");
+                if self.loads.get() == 0 {
+                    live.doc
+                        .put(automerge::ROOT, "during-history", true)
+                        .unwrap();
+                    live.commit_room_change();
+                }
+                drop(live);
+                self.loads.set(self.loads.get() + 1);
+                Some(self.document.clone())
+            }
+        }
+
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let room = tree.active_workspace().expect("workspace").room;
+        let record = RecordId::for_file("history-lock.qdoc");
+        let kind = ui::RecordKind::new("document");
+        tree.room_records_held
+            .entry(room)
+            .or_default()
+            .insert(record.to_string(), kind.to_string());
+        tree.commit_room_change();
+        let handle = WorkspaceTreeHandle::new(tree);
+        let mut document = automerge::AutoCommit::new();
+        ui::record::init(&mut document, &record, &kind, &room.to_string());
+        document
+            .put(automerge::ROOT, "draft", "History remains available")
+            .unwrap();
+        tilo_resource::history::commit_stamped_at(&mut document, 21);
+        let local = LocalHistory {
+            tree: handle.clone(),
+            record,
+            document,
+            loads: std::cell::Cell::new(0),
+        };
+        let mut pane = RoomActivityPane::with_local_user("local".into());
+        let records = RecordStore::in_memory();
+        pane.refresh_observed(&handle, &records, &local);
+        assert!(
+            local.loads.get() > 0,
+            "the production path loaded record history"
+        );
+        let heads = handle.read().doc.base_heads();
+        assert!(
+            handle
+                .read()
+                .doc
+                .get(automerge::ROOT, "during-history")
+                .unwrap()
+                .is_some()
+        );
+        assert!(!pane.entries().is_empty(), "history is still projected");
+        pane.refresh_observed(&handle, &records, &local);
+        drop(pane);
+        assert_eq!(
+            handle.read().doc.base_heads(),
+            heads,
+            "derived cursors never replace live state"
+        );
+    }
 
     /// Leaving a workspace rewrites the history file and nothing else: a
     /// write to `settings.json` would make every settings reader re-apply
     /// its preferences on each workspace switch.
+    #[test]
+    fn morning_sources_private_persistence_preserves_review_boundaries_and_room_identity() {
+        use std::os::unix::fs::PermissionsExt;
+        use tilo_desktop::activity::morning::{MorningPreferences, MorningSource};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("activity-history.json");
+        let frontier = HashMap::from([(4, WorkspaceSeenFrontier::default())]);
+        save_history_map_at(&path, "seen_frontiers", &frontier).unwrap();
+        let room = uuid::Uuid::new_v4().to_string();
+        let source = MorningSource {
+            app: "so.tilo.weather".into(),
+            resource: "weather.location:fixture".into(),
+        };
+        let preferences = HashMap::from([(
+            4,
+            MorningPreferences {
+                room: room.clone(),
+                sources: vec![source.clone()],
+            },
+        )]);
+        save_history_map_at(&path, "morning_sources", &preferences).unwrap();
+        let reloaded: HashMap<u64, MorningPreferences> =
+            load_history_map_at(Some(&path), "morning_sources");
+        assert_eq!(reloaded[&4].for_room(&room), &[source]);
+        assert!(
+            reloaded[&4]
+                .for_room(&uuid::Uuid::new_v4().to_string())
+                .is_empty()
+        );
+        let observed: HashMap<u64, WorkspaceSeenFrontier> =
+            load_history_map_at(Some(&path), "seen_frontiers");
+        assert_eq!(observed, frontier);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
     #[test]
     fn workspace_history_keeps_both_maps_in_its_own_private_file() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -598,6 +1063,58 @@ mod tests {
         assert!(missing.is_empty());
     }
 
+    /// Leaving a workspace hands the history to the writer thread instead
+    /// of syncing the file inside the frame: saves queue without touching
+    /// the disk, the newest map per key wins, and a settled writer has both
+    /// maps in one private file.
+    #[test]
+    fn queued_history_saves_reach_disk_with_the_newest_map_per_key() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state/tilo/activity-history.json");
+        let departure = |secs| {
+            HashMap::from([(
+                7_u64,
+                WorkspaceDeparture {
+                    departed_at_secs: secs,
+                    frontier: WorkspaceSeenFrontier::default(),
+                },
+            )])
+        };
+        queue_history_save(
+            path.clone(),
+            "departures",
+            history_map_value(&departure(1_700_000_000)),
+        );
+        queue_history_save(
+            path.clone(),
+            "seen_frontiers",
+            history_map_value(&HashMap::from([(9_u64, WorkspaceSeenFrontier::default())])),
+        );
+        queue_history_save(
+            path.clone(),
+            "departures",
+            history_map_value(&departure(1_700_000_060)),
+        );
+        settle_history_writes();
+
+        let loaded: HashMap<u64, WorkspaceDeparture> =
+            load_history_map_at(Some(&path), "departures");
+        assert_eq!(
+            loaded.get(&7).map(|departure| departure.departed_at_secs),
+            Some(1_700_000_060),
+            "the newest departure wins"
+        );
+        let loaded: HashMap<u64, WorkspaceSeenFrontier> =
+            load_history_map_at(Some(&path), "seen_frontiers");
+        assert!(loaded.contains_key(&9), "both maps share the file");
+        let mode = std::fs::metadata(&path)
+            .expect("saved")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
     /// A shortcut run the broker finished lands in the workspace document
     /// as one undoable run as soon as a document it changed is open here.
     #[test]
@@ -613,7 +1130,6 @@ mod tests {
             ui::record::init(doc, &record, &checkout.kind, &room.to_string());
             doc.put(automerge::ROOT, "draft", "Launch notes").unwrap();
             let context = ui::tilo_actions::ActionContext::for_resource(
-                "Write draft",
                 "fixture.drafts:inbox",
                 "fixture.drafts",
                 "Inbox",
@@ -671,12 +1187,21 @@ mod tests {
     fn commit_draft_step(doc: &mut automerge::AutoCommit, run: tilo_automation::RunId) {
         doc.put(automerge::ROOT, "draft", "Launch notes").unwrap();
         let context = ui::tilo_actions::ActionContext::for_resource(
-            "Write draft",
             "fixture.drafts:inbox",
             "fixture.drafts",
             "Inbox",
         )
         .with_app("so.tilo.fixture-drafts", "Drafts")
+        .with_described(ui::tilo_actions::Described::new(
+            ui::tilo_actions::Did::verb(
+                ui::tilo_actions::ActionKey::new(
+                    "so.tilo.fixture-drafts",
+                    "fixture.drafts",
+                    "write-draft",
+                ),
+                [],
+            ),
+        ))
         .with_group(run.0.to_string(), "Publish a draft", "shortcut");
         doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
     }
@@ -780,7 +1305,7 @@ mod tests {
         assert_eq!(runs[0].steps.len(), 1, "one step, for the closed record");
         assert_eq!(runs[0].steps[0].record, record.to_string());
         assert_eq!(runs[0].steps[0].app, "so.tilo.fixture-drafts");
-        assert_eq!(runs[0].steps[0].summary, "Write draft");
+        assert_eq!(runs[0].steps[0].sentence(), "Write draft");
         assert_eq!(
             runs[0].steps[0].run.start,
             ui::history_source::entry_id_from_hash(
@@ -826,5 +1351,14 @@ mod tests {
         drop(pane);
         assert!(!still_pending, "given up once settled");
         assert!(ui::read_runs(&tree.doc).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod morning_host_regression {
+    use super::*;
+    #[test]
+    fn native_morning_sources_advertise_private_selection() {
+        assert!(NativeActivityHost::default().morning_sources_available());
     }
 }

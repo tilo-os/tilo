@@ -774,6 +774,14 @@ fn cmd_status(config: &std::path::Path) -> anyhow::Result<()> {
         println!("  deltas received:      {}", metrics.deltas_received);
         println!("  deltas fanned out:    {}", metrics.deltas_fanned_out);
         println!("  bytes queued:         {}", metrics.bytes_queued);
+        println!("  bytes sent:           {}", metrics.bytes_sent);
+        println!("  bytes sent live:      {}", metrics.bytes_sent_live);
+        for (workspace_id, egress) in &metrics.rooms {
+            println!(
+                "  {workspace_id}\tbytes sent={}\tlive={}",
+                egress.bytes_sent, egress.bytes_sent_live
+            );
+        }
     }
     Ok(())
 }

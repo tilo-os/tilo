@@ -24,12 +24,6 @@ tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["priority-contacts"] }
-# The Tilo action model: every document-mutating operation is a serializable,
-# replayable action dispatched through one executor, so undo, multi-peer replay
-# and the Ctrl+K command palette all work from a single implementation. The
-# SearchProvider stays the navigation side (find a contact); actions are the
-# mutation side (create / delete / edit / favourite a contact).
-tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 serde.workspace = true
@@ -65,6 +59,7 @@ serial_test.workspace = true
 # file-type association it declares is checked against the packaging schema.
 # Already resolved in the workspace lockfile.
 tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
+# Reads the history sentences the book's changes record.
 
 [[test]]
 name = "it"

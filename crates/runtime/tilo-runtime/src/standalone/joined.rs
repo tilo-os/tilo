@@ -60,6 +60,8 @@ pub(super) struct Joined {
     requesters: content::Requesters,
     /// Channel governance the sessions received, for the channel service.
     governance: Mutex<Vec<InboundChannelGovernance>>,
+    /// Wakes the channel service's pump when governance arrives.
+    governance_wake: Arc<super::channels::PumpWake>,
     /// This device's channel keys, once the channel service runs: the only
     /// renewer of its sealed writes that expire in custody.
     keys: ChannelKeyProvider,
@@ -97,6 +99,7 @@ impl Joined {
             content: std::sync::OnceLock::new(),
             requesters: content::Requesters::default(),
             governance: Mutex::new(Vec::new()),
+            governance_wake: Arc::default(),
             keys: ChannelKeyProvider::default(),
         });
         for room in joined.owner.rooms() {
@@ -146,6 +149,20 @@ impl Joined {
             .collect()
     }
 
+    /// One joined room as [`Self::workspaces`] describes it, built alone:
+    /// asking about one room never rebuilds every other joined room.
+    pub(super) fn workspace(&self, room: RoomId) -> Option<Workspace> {
+        if !self.owner.rooms().contains(&room) {
+            return None;
+        }
+        self.current_room(room).ok().map(|(workspace, _)| workspace)
+    }
+
+    /// Whether this profile has joined any room.
+    pub(super) fn is_empty(&self) -> bool {
+        self.owner.rooms().is_empty()
+    }
+
     // Use the same current custody check as an enrolled relay session. Merely
     // retaining a peer or its device key cannot authenticate a selected root.
     fn current_room(&self, room: RoomId) -> Result<(Workspace, String), String> {
@@ -155,17 +172,17 @@ impl Joined {
             if view.continuity() != continuity || view.device() != &cert {
                 return Err("room identity changed while selecting the audience".into());
             }
-            let (_, _, principal) = view
+            let principal = view
                 .peer()
-                .permissions(cert.device_public_key, SystemTime::now())?;
+                .permissions(cert.device_public_key, SystemTime::now())?
+                .person;
             let document = view.peer().admitted_room().ok_or("no admitted room")?;
-            let (name, owner, capabilities) =
-                tilo_peer_state::room::extract_governed_fields(document);
+            let (name, policy) = tilo_peer_state::room::extract_governed_fields(document);
             let mut workspace =
                 Workspace::new(WorkspaceId(view.workspace()), name.unwrap_or_default());
-            workspace.room = room;
-            workspace.owner = owner;
-            workspace.capabilities = capabilities;
+            workspace.set_room(room);
+            workspace.policy = policy;
+            workspace.sandbox = view.peer().governed_sandbox()?;
             Ok((workspace, principal))
         })
     }
@@ -184,6 +201,12 @@ impl Joined {
     /// The slot the channel service fills with this device's channel keys.
     pub(super) fn channel_keys(&self) -> ChannelKeyProvider {
         self.keys.clone()
+    }
+
+    /// What the sessions poke when governance arrives for the channel
+    /// service, whose pump otherwise sleeps while no channel is live.
+    pub(super) fn governance_wake(&self) -> Arc<super::channels::PumpWake> {
+        Arc::clone(&self.governance_wake)
     }
 
     /// The device key of `room`'s governor, which stewards its channels.
@@ -315,6 +338,7 @@ impl Joined {
         if let Ok(mut governance) = self.governance.lock() {
             governance.push(inbound);
         }
+        self.governance_wake.poke();
     }
 
     fn publish(&self, scope: &Scope, session: &RelayCoeditSession) {
@@ -356,7 +380,9 @@ impl Joined {
         else {
             return;
         };
-        let Ok(role) = input.role() else { return };
+        let Ok(author_standing) = input.standing() else {
+            return;
+        };
         if cluster_id != &input.room().to_string() {
             return;
         }
@@ -368,7 +394,7 @@ impl Joined {
                 app_id: app_id.clone(),
                 cluster_id: cluster_id.clone(),
                 record_id: record_id.clone(),
-                role,
+                author: author_standing,
                 replayed: input.retained(),
                 envelope: (**envelope).clone(),
             },

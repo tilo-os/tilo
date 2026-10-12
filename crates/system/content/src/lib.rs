@@ -560,10 +560,12 @@ impl<R: Read> Read for Verifying<R> {
     }
 }
 
-#[cfg(all(test, feature = "dir"))]
+#[cfg(test)]
+#[cfg(feature = "dir")]
 mod tests;
 
-#[cfg(all(test, not(all(unix, feature = "device"))))]
+#[cfg(test)]
+#[cfg(not(all(unix, feature = "device")))]
 mod device_api_tests {
     #[test]
     fn device_store_is_unavailable_without_device_transport() {

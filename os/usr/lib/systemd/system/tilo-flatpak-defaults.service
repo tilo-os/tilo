@@ -9,7 +9,13 @@ RemainAfterExit=yes
 # Listing as root initializes new predefined remotes, including on upgrades.
 # Flatpak's xa.applied-remotes history preserves later disable/removal choices.
 # This uses the shipped descriptor and embedded signing key, without network.
+# Applying is needed only when the predefined remotes changed (the first boot, an image
+# update) or the system repository is new. On every other boot the listing changes
+# nothing and only held the greeter (0.26 s, more on a loaded machine), so the unit skips
+# when the descriptors match the copy it kept after its last successful run (TIL-767).
+ExecCondition=/bin/sh -c '[ -e /var/lib/flatpak/repo/config ] && cat /usr/share/flatpak/remotes.d/* /etc/flatpak/remotes.d/* 2>/dev/null | cmp -s - /var/lib/flatpak/.tilo-applied-remotes && exit 1; exit 0'
 ExecStart=/usr/bin/flatpak remotes --system --columns=name
+ExecStartPost=/bin/sh -c 'cat /usr/share/flatpak/remotes.d/* /etc/flatpak/remotes.d/* 2>/dev/null > /var/lib/flatpak/.tilo-applied-remotes; exit 0'
 TimeoutStartSec=30
 StateDirectory=flatpak
 StateDirectoryMode=0755

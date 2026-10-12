@@ -31,6 +31,92 @@ struct TreeCell {
     /// held, so a reader that loads `n` and then takes the read lock sees
     /// every write up to `n`.
     generation: AtomicU64,
+    /// What authorization last read from the tree; a released write that
+    /// changes it announces a policy change.
+    policy: parking_lot::Mutex<PolicySnapshot>,
+}
+
+/// The parts of the tree an authorization decision reads (TIL-707): each
+/// workspace's room, owner, roster, grants, permission profiles, tasks and
+/// pending ownership transfer, and the session's room authorities, admitted
+/// devices, authenticated persons and stewarded rooms. Strips, records,
+/// presence and effect receipts are written on every frame or by the broker
+/// itself and decide nothing.
+#[derive(Default, PartialEq)]
+struct PolicySnapshot {
+    workspaces: Vec<WorkspacePolicy>,
+    room_authority: std::collections::HashMap<tilo_desktop_model::RoomId, super::RoomAuthority>,
+    room_peer_identities: std::collections::HashMap<
+        tilo_desktop_model::RoomId,
+        std::collections::BTreeMap<String, super::GovernedPeerIdentity>,
+    >,
+    local_person: Option<[u8; 32]>,
+    authenticated_persons: std::collections::HashMap<super::PeerOrigin, [u8; 32]>,
+    stewarded_rooms: std::collections::BTreeSet<tilo_desktop_model::RoomId>,
+}
+
+#[derive(PartialEq)]
+struct WorkspacePolicy {
+    id: tilo_desktop_model::WorkspaceId,
+    room: tilo_desktop_model::RoomId,
+    owner: Option<tilo_desktop_model::UserId>,
+    collaborators: Vec<tilo_desktop_model::Collaborator>,
+    policy: tilo_action_policy::RoomPolicy,
+    sandbox: Vec<collab_types::caps::CapOverride>,
+    tasks: Vec<tilo_desktop_model::WorkspaceTask>,
+    pending_ownership_transfer: Option<collab_types::OwnershipTransferProposalV1>,
+}
+
+impl PolicySnapshot {
+    fn of(tree: &WorkspaceTree) -> Self {
+        Self {
+            workspaces: tree
+                .desktop
+                .workspaces
+                .iter()
+                .map(|workspace| WorkspacePolicy {
+                    id: workspace.id,
+                    room: workspace.room,
+                    owner: workspace.owner().cloned(),
+                    collaborators: workspace.collaborators.clone(),
+                    policy: workspace.policy.clone(),
+                    sandbox: workspace.sandbox.clone(),
+                    tasks: workspace.tasks.clone(),
+                    pending_ownership_transfer: workspace.pending_ownership_transfer.clone(),
+                })
+                .collect(),
+            room_authority: tree.room_authority.clone(),
+            room_peer_identities: tree.room_peer_identities.clone(),
+            local_person: tree.local_person,
+            authenticated_persons: tree.authenticated_persons.clone(),
+            stewarded_rooms: tree.stewarded_rooms.clone(),
+        }
+    }
+
+    /// Whether `tree` still reads as this snapshot. Allocates nothing: the
+    /// common write changes none of it.
+    fn matches(&self, tree: &WorkspaceTree) -> bool {
+        self.workspaces.len() == tree.desktop.workspaces.len()
+            && self
+                .workspaces
+                .iter()
+                .zip(&tree.desktop.workspaces)
+                .all(|(seen, workspace)| {
+                    seen.id == workspace.id
+                        && seen.room == workspace.room
+                        && seen.owner.as_ref() == workspace.owner()
+                        && seen.collaborators == workspace.collaborators
+                        && seen.policy == workspace.policy
+                        && seen.sandbox == workspace.sandbox
+                        && seen.tasks == workspace.tasks
+                        && seen.pending_ownership_transfer == workspace.pending_ownership_transfer
+                })
+            && self.room_authority == tree.room_authority
+            && self.room_peer_identities == tree.room_peer_identities
+            && self.local_person == tree.local_person
+            && self.authenticated_persons == tree.authenticated_persons
+            && self.stewarded_rooms == tree.stewarded_rooms
+    }
 }
 
 /// Exclusive access to the tree; releasing it advances the generation.
@@ -39,14 +125,17 @@ struct TreeCell {
 pub struct WorkspaceTreeWriteGuard<'a> {
     guard: parking_lot::RwLockWriteGuard<'a, WorkspaceTree>,
     generation: &'a AtomicU64,
+    policy: &'a parking_lot::Mutex<PolicySnapshot>,
 }
 
 impl WorkspaceTreeHandle {
     /// Wrap `tree` in a new handle at generation 0.
     pub fn new(tree: WorkspaceTree) -> Self {
+        let policy = parking_lot::Mutex::new(PolicySnapshot::of(&tree));
         Self(Arc::new(TreeCell {
             lock: parking_lot::RwLock::new(tree),
             generation: AtomicU64::new(0),
+            policy,
         }))
     }
 
@@ -67,6 +156,7 @@ impl WorkspaceTreeHandle {
         WorkspaceTreeWriteGuard {
             guard: self.0.lock.write(),
             generation: &self.0.generation,
+            policy: &self.0.policy,
         }
     }
 
@@ -75,6 +165,7 @@ impl WorkspaceTreeHandle {
         Some(WorkspaceTreeWriteGuard {
             guard: self.0.lock.try_write()?,
             generation: &self.0.generation,
+            policy: &self.0.policy,
         })
     }
 
@@ -150,6 +241,24 @@ impl Drop for WorkspaceTreeWriteGuard<'_> {
     fn drop(&mut self) {
         // Runs before `guard` releases the lock.
         self.generation.fetch_add(1, Ordering::Release);
+        // Rosters, roles, grants and the devices a room admitted live here:
+        // the collaboration broker re-checks what it admitted on this
+        // announcement rather than on a clock (TIL-707). Only a write that
+        // changed them announces; most writes are a frame's strips and
+        // records, and announcing each kept the broker on a one-second
+        // cadence. A reader it wakes takes the read lock once this guard has
+        // released it, and the snapshot is replaced before it can look.
+        let changed = {
+            let mut policy = self.policy.lock();
+            let changed = !policy.matches(&self.guard);
+            if changed {
+                *policy = PolicySnapshot::of(&self.guard);
+            }
+            changed
+        };
+        if changed {
+            tilo_identity_host::policy_change::announce();
+        }
     }
 }
 
@@ -176,6 +285,59 @@ mod tests {
 
         drop(handle.try_write().expect("nobody holds the tree"));
         assert_eq!(handle.generation(), start.wrapping_add(2));
+    }
+
+    /// TIL-707: the collaboration broker re-checks rosters, roles and
+    /// grants on the policy announcement a released write makes when it
+    /// changed them, so no writer can change who may do what without it
+    /// hearing; and the frame's writes to strips and records, which decide
+    /// nothing, do not wake it.
+    #[test]
+    fn a_write_announces_a_policy_change_only_when_it_changed_policy() {
+        use std::time::Duration;
+        let handle = WorkspaceTreeHandle::new(WorkspaceTree::default());
+        let workspace = handle.write().append_empty_workspace("Shared");
+        let (woke, wakes) = std::sync::mpsc::channel();
+        let woke = std::sync::Mutex::new(woke);
+        let watch = tilo_identity_host::policy_change::Watch::new(move || {
+            let _ = woke.lock().unwrap().send(());
+        });
+
+        // A layout-only write: the watch stays armed and unwoken, unless
+        // another test of this process announced meanwhile.
+        let before = watch.arm();
+        handle.write().desktop.external_revision = 9;
+        drop(handle.try_write().expect("nobody holds the tree"));
+        if tilo_identity_host::policy_change::epoch() == before {
+            assert!(
+                wakes.recv_timeout(Duration::from_millis(200)).is_err(),
+                "a write that changed no policy woke the watch"
+            );
+        }
+
+        // A new owner: announced.
+        let _ = watch.arm();
+        let before = tilo_identity_host::policy_change::epoch();
+        handle
+            .write()
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|candidate| candidate.id == workspace)
+            .unwrap()
+            .set_owner("someone");
+        wakes
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the new owner woke the armed watch");
+        assert_ne!(tilo_identity_host::policy_change::epoch(), before);
+
+        // A room this device now stewards: announced.
+        let _ = watch.arm();
+        let room = handle.read().room_of(workspace).unwrap();
+        handle.write().stewarded_rooms.insert(room);
+        wakes
+            .recv_timeout(Duration::from_secs(5))
+            .expect("stewarding a room woke the armed watch");
     }
 
     #[test]

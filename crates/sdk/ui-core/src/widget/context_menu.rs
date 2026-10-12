@@ -243,6 +243,11 @@ pub struct ContextMenu {
     /// `MouseInput` carries no position, so this is tracked from
     /// `CursorMoved` to map a press to a row.
     last_cursor: Point,
+    /// Where the menu was opened at the pointer, until the pointer moves
+    /// away from there. A host repeats a still pointer's position after a
+    /// rebuild ([`crate::pointer_replay`]); that repeat is not the person
+    /// pointing at a row, so it leaves the keyboard's row where it is.
+    opened_under: Option<Point>,
     /// Set by `handle_event`, drained by [`ContextMenu::take_selection`].
     /// The `&mut self` + CRDT-friendly action channel: instead of forcing
     /// every menu action through an `Arc<dyn Fn()>` (which can't splice
@@ -291,6 +296,7 @@ impl ContextMenu {
             rect: Rect::ZERO,
             hovered: None,
             last_cursor: Point::ZERO,
+            opened_under: None,
             selection: None,
             bounds: None,
             row_height: ROW_HEIGHT,
@@ -374,6 +380,7 @@ impl ContextMenu {
         self.bounds = None;
         self.scroll_offset = 0.0;
         self.open = true;
+        self.opened_under = Some(Point::new(f64::from(position[0]), f64::from(position[1])));
         self.position = Some(position);
         self.measured_width = MENU_WIDTH * self.text_scale;
         self.row_height = ROW_HEIGHT * self.text_scale;
@@ -429,6 +436,7 @@ impl ContextMenu {
     /// call `layout_within` with the renderer before painting to settle text metrics.
     pub fn open_anchored(&mut self, anchor: Rect, viewport: Rect) {
         self.open = true;
+        self.opened_under = None;
         self.hovered = None;
         self.scroll_offset = 0.0;
         self.reanchor(anchor, viewport);
@@ -704,6 +712,7 @@ impl ContextMenu {
     /// Safe to call when already closed.
     pub fn close(&mut self) {
         self.open = false;
+        self.opened_under = None;
         self.active_touch = None;
         self.anchor_row = None;
         self.submenu = None;
@@ -712,6 +721,29 @@ impl ContextMenu {
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// Every pixel the open menu painted in its last
+    /// [`Widget::draw_overlay`], in the coordinates it was drawn in: its
+    /// Panel with the floating shadow, the ring on its anchor row and its
+    /// open nested menu. Nothing while it is closed.
+    pub fn painted_bounds(&self, theme: &Theme) -> Vec<Rect> {
+        if !self.open {
+            return Vec::new();
+        }
+        // `floating_surface::paint_rounded` clips the shadow to this reach;
+        // two more pixels cover the panel's edge stroke and antialiasing.
+        let elevation = &theme.tokens.elevation.floating;
+        let reach = f64::from(elevation.blur) * 2.0 + f64::from(elevation.offset_y).abs() + 2.0;
+        let mut bounds = vec![self.rect.inflate(reach, reach)];
+        if let Some(row) = self.anchor_row {
+            // A 2 px stroke on the row's outline.
+            bounds.push(row.inflate(2.0, 2.0));
+        }
+        if let Some((_, nested)) = &self.submenu {
+            bounds.extend(nested.painted_bounds(theme));
+        }
+        bounds
     }
 
     /// Preserved across `close()` so callers can re-open at the same spot.
@@ -781,7 +813,7 @@ impl ContextMenu {
             return;
         }
         let Some(items) = self.items.get(idx).and_then(MenuItem::submenu_items) else {
-            self.submenu = None;
+            self.close_submenu();
             return;
         };
         let Some(row) = self.item_rect(idx) else {
@@ -811,11 +843,16 @@ impl ContextMenu {
         self.hovered = Some(idx);
         self.submenu_focused = keyboard;
         self.submenu = Some((idx, Box::new(menu)));
+        // Hover opens it without marking the move handled.
+        crate::widget::note_resource_presentation_changed();
     }
 
     /// Close the nested menu, keeping this one open.
     pub fn close_submenu(&mut self) {
-        self.submenu = None;
+        if self.submenu.take().is_some() {
+            // Hover closes it without marking the move handled.
+            crate::widget::note_resource_presentation_changed();
+        }
         self.submenu_focused = false;
     }
 
@@ -1026,6 +1063,10 @@ const SEPARATOR_HEIGHT: f64 = 9.0;
 )]
 const ANCHOR_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
 const MENU_WIDTH: f64 = 220.0;
+/// How far, in logical pixels, the pointer may be from where the menu opened
+/// and still count as not having moved: the opening position went through
+/// `f32`, the pointer's did not.
+const STILL_POINTER: f64 = 0.5;
 /// The panel's vertical inset around its rows: the `s2` menu inset
 /// (`floating_surface::menu_inset`), so the armed row runs concentric with
 /// the panel at the top and bottom too.
@@ -1084,15 +1125,14 @@ impl Widget for ContextMenu {
             clippy::cast_possible_truncation,
             reason = "bounded logical-pixel menu dimensions; f32 precision is sufficient"
         )]
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(self.legacy_width() as f32),
                 height: Dimension::length(height as f32),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1381,6 +1421,15 @@ impl Widget for ContextMenu {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                // Hover follows the pointer once it moves; until then the
+                // row the menu opened on (or the keyboard moved to) stays.
+                if self
+                    .opened_under
+                    .is_some_and(|at| at.distance(self.last_cursor) <= STILL_POINTER)
+                {
+                    return;
+                }
+                self.opened_under = None;
                 self.hovered = self
                     .item_at([self.last_cursor.x, self.last_cursor.y])
                     .filter(|index| self.items[*index].is_enabled());
@@ -1783,6 +1832,7 @@ impl crate::widget::Decorator for MenuButton {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
@@ -1794,7 +1844,7 @@ impl crate::widget::Decorator for MenuButton {
             }
             return true;
         }
-        Widget::perform_action(&mut self.button, action, state, root)
+        Widget::perform_action(&mut self.button, action, &[], state, root)
     }
 
     fn draw_overlay(
@@ -1827,13 +1877,6 @@ impl crate::widget::Decorator for MenuButton {
 
     // A host reaches its menu button in a tree it does not own (a shell
     // header) to refresh the rows or open it from a stage hook.
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
 
     fn modal_capture(&self) -> Option<Rect> {
         self.menu.modal_capture()
@@ -1957,6 +2000,9 @@ mod a11y_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::synthetic_input::mouse_press;
+    use crate::synthetic_input::named_key;
+    use crate::testing::dispatch;
     use automerge::AutoCommit;
     use std::sync::Arc;
 
@@ -2096,7 +2142,7 @@ mod tests {
     }
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use winit::event::{DeviceId, TouchPhase};
+    use winit::event::TouchPhase;
 
     /// A shared counter the rows' callbacks bump.
     fn open_menu() -> (ContextMenu, Arc<AtomicU32>) {
@@ -2133,25 +2179,15 @@ mod tests {
         m.apply_layout(&taffy, node, Point::ZERO);
     }
 
-    fn synth_device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
-    }
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
         }
     }
     fn touch(phase: TouchPhase, id: u64, point: Point) -> WindowEvent {
         WindowEvent::Touch(winit::event::Touch {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             phase,
             location: winit::dpi::PhysicalPosition::new(point.x, point.y),
             force: None,
@@ -2160,48 +2196,10 @@ mod tests {
     }
     fn wheel_lines(y: f32) -> WindowEvent {
         WindowEvent::MouseWheel {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             delta: MouseScrollDelta::LineDelta(0.0, y),
             phase: TouchPhase::Moved,
         }
-    }
-    fn key(named: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(named);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-    fn dispatch(m: &mut ContextMenu, event: &WindowEvent) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        m.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
     }
 
     #[test]
@@ -2213,7 +2211,7 @@ mod tests {
             let row0_y = r.y0 + PADDING + ROW_HEIGHT / 2.0;
             let p = Point::new(r.x0 + 20.0, row0_y);
             dispatch(&mut m, &cursor_at(p));
-            let handled = dispatch(&mut m, &left_press());
+            let handled = dispatch(&mut m, &mouse_press());
             assert!(handled, "a row click is consumed");
             assert_eq!(
                 fired.load(Ordering::SeqCst),
@@ -2230,7 +2228,7 @@ mod tests {
             let r = m.get_rect();
             let p = Point::new(r.x1 + 50.0, r.y1 + 50.0);
             dispatch(&mut m, &cursor_at(p));
-            let handled = dispatch(&mut m, &left_press());
+            let handled = dispatch(&mut m, &mouse_press());
             assert!(handled, "outside click is swallowed (not passed through)");
             assert!(!m.is_open(), "outside click dismisses the menu");
             assert_eq!(
@@ -2242,7 +2240,7 @@ mod tests {
 
         fn esc_dismisses() {
             let (mut m, _f) = open_menu();
-            let handled = dispatch(&mut m, &key(NamedKey::Escape));
+            let handled = dispatch(&mut m, &named_key(NamedKey::Escape));
             assert!(handled);
             assert!(!m.is_open(), "Esc closes the menu");
         }
@@ -2291,18 +2289,46 @@ mod tests {
         modal_capture_when_open();
     }
 
+    /// Every widget that opens a menu at the pointer shares this: the
+    /// host's replay of the still pointer after a rebuild is not a hover,
+    /// so the keyboard keeps its row; the pointer's first real move takes
+    /// hover from there.
+    #[test]
+    fn a_still_pointer_replayed_where_the_menu_opened_keeps_the_keyboard_row() {
+        let (mut m, fired) = open_menu();
+        dispatch(&mut m, &named_key(NamedKey::ArrowDown));
+        dispatch(&mut m, &named_key(NamedKey::ArrowDown));
+        assert_eq!(m.hovered(), Some(2));
+        dispatch(&mut m, &cursor_at(Point::new(100.0, 100.0)));
+        assert_eq!(
+            m.hovered(),
+            Some(2),
+            "the replayed pointer where the menu opened leaves the keyboard row"
+        );
+        let first = m.item_rect(0).expect("first action row").center();
+        dispatch(&mut m, &cursor_at(first));
+        assert_eq!(
+            m.hovered(),
+            Some(0),
+            "hover follows the pointer once it moves"
+        );
+        dispatch(&mut m, &named_key(NamedKey::Enter));
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
+        assert_eq!(m.take_selection(), Some(0));
+    }
+
     #[test]
     fn disabled_and_destructive_rows_are_not_implicit_targets() {
         fn keyboard_nav_skips_separator_and_enter_selects() {
             let (mut m, fired) = open_menu();
             // Down → first action (idx 0).
-            dispatch(&mut m, &key(NamedKey::ArrowDown));
+            dispatch(&mut m, &named_key(NamedKey::ArrowDown));
             assert_eq!(m.hovered(), Some(0));
             // Down again → must skip the separator (idx 1) and land on idx 2.
-            dispatch(&mut m, &key(NamedKey::ArrowDown));
+            dispatch(&mut m, &named_key(NamedKey::ArrowDown));
             assert_eq!(m.hovered(), Some(2), "ArrowDown skips the separator");
             // Enter selects the hovered row.
-            dispatch(&mut m, &key(NamedKey::Enter));
+            dispatch(&mut m, &named_key(NamedKey::Enter));
             assert_eq!(
                 fired.load(Ordering::SeqCst),
                 100,
@@ -2319,7 +2345,7 @@ mod tests {
 
             dispatch(&mut menu, &cursor_at(point));
             assert_eq!(menu.hovered(), None, "disabled rows are not hover targets");
-            assert!(dispatch(&mut menu, &left_press()));
+            assert!(dispatch(&mut menu, &mouse_press()));
             assert_eq!(fired.load(Ordering::SeqCst), 0);
             assert_eq!(menu.take_selection(), None);
             assert!(menu.is_open(), "a rejected activation keeps the menu open");
@@ -2329,9 +2355,9 @@ mod tests {
             let (mut menu, fired) = open_menu();
             menu.set_item_enabled(0, false);
 
-            dispatch(&mut menu, &key(NamedKey::ArrowDown));
+            dispatch(&mut menu, &named_key(NamedKey::ArrowDown));
             assert_eq!(menu.hovered(), Some(2));
-            dispatch(&mut menu, &key(NamedKey::Enter));
+            dispatch(&mut menu, &named_key(NamedKey::Enter));
 
             assert_eq!(fired.load(Ordering::SeqCst), 100);
             assert_eq!(menu.take_selection(), Some(2));
@@ -2416,7 +2442,7 @@ mod tests {
             let point = menu.get_rect().center();
             dispatch(&mut menu, &cursor_at(point));
             let wheel = |y| WindowEvent::MouseWheel {
-                device_id: synth_device(),
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, y),
                 phase: winit::event::TouchPhase::Moved,
             };
@@ -2425,17 +2451,17 @@ mod tests {
             let last = menu.item_rect(19).unwrap().center();
             assert_eq!(menu.item_at([last.x, last.y]), Some(19));
             dispatch(&mut menu, &cursor_at(last));
-            dispatch(&mut menu, &left_press());
+            dispatch(&mut menu, &mouse_press());
             assert_eq!(menu.take_selection(), Some(19));
             assert_eq!(menu.take_selection(), None);
             menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 180.0, 100.0));
             menu.focus_first_action();
             for _ in 0..19 {
-                dispatch(&mut menu, &key(NamedKey::ArrowDown));
+                dispatch(&mut menu, &named_key(NamedKey::ArrowDown));
             }
             assert_eq!(menu.hovered(), Some(19));
             assert!(menu.item_rect(19).is_some());
-            dispatch(&mut menu, &key(NamedKey::Enter));
+            dispatch(&mut menu, &named_key(NamedKey::Enter));
             assert_eq!(menu.take_selection(), Some(19));
             menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 180.0, 100.0));
             dispatch(&mut menu, &wheel(100.0));
@@ -2690,65 +2716,20 @@ mod bounded_tests {
 #[cfg(test)]
 mod nested_and_anchored_tests {
     use super::*;
-    use automerge::AutoCommit;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use winit::event::DeviceId;
 
     const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
 
-    fn synth_device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-    fn key(named: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(named);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-    fn dispatch(m: &mut ContextMenu, event: &WindowEvent) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        m.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
-    }
+    use crate::synthetic_input::mouse_press;
+    use crate::synthetic_input::named_key;
+    use crate::testing::dispatch;
     fn paint(m: &mut ContextMenu) {
         let presence = PresenceCtx::default();
         let previous = presence.push_viewport(WINDOW);
@@ -2804,7 +2785,7 @@ mod nested_and_anchored_tests {
             .and_then(|(_, menu)| menu.item_rect(1))
             .unwrap();
         dispatch(&mut m, &cursor_at(nested_row.center()));
-        dispatch(&mut m, &left_press());
+        dispatch(&mut m, &mouse_press());
         assert_eq!(fired.load(Ordering::SeqCst), 1);
         assert_eq!(m.take_submenu_selection(), Some((1, 1)));
         assert!(!m.is_open());
@@ -2814,13 +2795,13 @@ mod nested_and_anchored_tests {
         m.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
         paint(&mut m);
         m.focus_item(1);
-        dispatch(&mut m, &key(NamedKey::ArrowRight));
+        dispatch(&mut m, &named_key(NamedKey::ArrowRight));
         assert!(m.is_submenu_open());
         assert_eq!(
             m.submenu.as_ref().and_then(|(_, menu)| menu.hovered()),
             Some(0)
         );
-        dispatch(&mut m, &key(NamedKey::ArrowLeft));
+        dispatch(&mut m, &named_key(NamedKey::ArrowLeft));
         assert!(!m.is_submenu_open());
         assert!(m.is_open(), "Left closes only the nested menu");
         let node = Widget::accessibility(&m).unwrap();

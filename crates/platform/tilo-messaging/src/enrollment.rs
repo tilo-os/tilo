@@ -44,6 +44,8 @@ impl std::fmt::Debug for SimChoice {
 pub type SimChoicesFuture =
     Pin<Box<dyn Future<Output = Result<Vec<SimChoice>, SendError>> + Send + 'static>>;
 pub trait EnrollmentHost: Send + Sync {
+    /// Prepare private storage review before a service can create device keys.
+    /// The original protected credential owner still decides its grant.
     fn prepare(&self, _service: String) -> EnrollmentReviewFuture {
         Box::pin(async { Err(SendError::Unavailable) })
     }

@@ -284,6 +284,7 @@ enum Command {
     Join(u64),
     Publish(DocumentRoute, Vec<Vec<u8>>),
     InstallCipher(DocumentRoute, Box<dyn ContentCipher>),
+    InstallChannelKeys(DocumentRoute, channel_crypto::ChannelContentKeys),
     OpenRoute(DocumentRoute),
     PinGovernor(String, [u8; 32]),
     LiveJoin(u64),
@@ -384,6 +385,20 @@ fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Apply `change` to the status, bump its generation and wake the watchers
+/// once the lock is released.
+fn change_status(shared: &Mutex<Shared>, change: impl FnOnce(&mut PeerStatus)) {
+    let wakes = {
+        let mut shared = lock(shared);
+        change(&mut shared.status);
+        shared.status.generation = shared.status.generation.wrapping_add(1);
+        shared.wakes.clone()
+    };
+    for wake in &wakes {
+        wake();
+    }
+}
+
 /// Add `failure`, replacing the one it supersedes: a session failure
 /// replaces one with its code, any other one its subject's.
 fn upsert(status: &mut PeerStatus, failure: Failure) {
@@ -463,6 +478,7 @@ impl PeerHandle {
             StoredChannels::Current(saved) => channels.restore(saved),
             StoredChannels::Legacy(legacy) => channels.restore_legacy(legacy),
         }
+        channels.restore_requests(saved.requests);
         let task = Task {
             config,
             signer,
@@ -564,6 +580,25 @@ impl PeerHandle {
         cipher: Box<dyn ContentCipher>,
     ) -> Result<(), String> {
         self.send(Command::InstallCipher(route, cipher))
+    }
+
+    /// Hold `keys` as `route`'s channel keys, exactly as if the channel's
+    /// steward had admitted this session to it: documents held for them
+    /// open, the route's status stops awaiting keys, and edits held for them
+    /// go out sealed. For an application endpoint of the device that
+    /// stewards the channel, which hands it the keys it already holds
+    /// ([`channel_crypto::ChannelSteward::content_keys`]); any other session
+    /// is admitted by the steward over the channel itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn install_channel_keys(
+        &self,
+        route: DocumentRoute,
+        keys: channel_crypto::ChannelContentKeys,
+    ) -> Result<(), String> {
+        self.send(Command::InstallChannelKeys(route, keys))
     }
 
     /// Take part in `route`'s encrypted channel: when a steward governs it,
@@ -819,15 +854,7 @@ impl PeerHandle {
     }
 
     fn change(&self, change: impl FnOnce(&mut PeerStatus)) {
-        let wakes = {
-            let mut shared = lock(&self.shared);
-            change(&mut shared.status);
-            shared.status.generation = shared.status.generation.wrapping_add(1);
-            shared.wakes.clone()
-        };
-        for wake in &wakes {
-            wake();
-        }
+        change_status(&self.shared, change);
     }
 
     /// Record the page store's durability of `route`. A failed write is the
@@ -1136,15 +1163,7 @@ impl Task {
     }
 
     fn update(&self, change: impl FnOnce(&mut PeerStatus)) {
-        let wakes = {
-            let mut shared = lock(&self.shared);
-            change(&mut shared.status);
-            shared.status.generation = shared.status.generation.wrapping_add(1);
-            shared.wakes.clone()
-        };
-        for wake in &wakes {
-            wake();
-        }
+        change_status(&self.shared, change);
     }
 
     fn emit(&self, event: &PeerEvent) {
@@ -1552,6 +1571,15 @@ impl Task {
             Command::InstallCipher(route, cipher) => {
                 self.ciphers.insert(route.clone(), cipher);
                 self.release_live(&route, client);
+                true
+            }
+            Command::InstallChannelKeys(route, keys) => {
+                // Settled with the next channel changes, the same way as
+                // keys the channel's own governance hands this session.
+                self.absorb(crate::channels::Changes {
+                    keys: vec![(route, keys)],
+                    outgoing: Vec::new(),
+                });
                 true
             }
             Command::OpenRoute(route) => {
@@ -2244,6 +2272,7 @@ impl Task {
         };
         let saved = SavedPeerChannels {
             channels,
+            requests: self.channels.pending_requests(),
             held: self
                 .held_outbound
                 .iter()
@@ -2336,6 +2365,15 @@ impl Task {
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct SavedPeerChannels {
     channels: crate::channels::SavedChannels,
+    requests: Vec<collab_types::MlsAccessRequestV1>,
+    held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
+}
+
+/// Version two retained channel membership and held edits but did not
+/// retain the pending access request that belongs to its member keys.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct V2SavedPeerChannels {
+    channels: crate::channels::SavedChannels,
     held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
 }
 
@@ -2361,13 +2399,15 @@ impl Default for StoredChannels {
 #[derive(Default)]
 struct LoadedChannels {
     channels: StoredChannels,
+    requests: Vec<collab_types::MlsAccessRequestV1>,
     held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
 }
 
 /// Opens stored channel state that keeps its vault apart. State stored
 /// before starts with 32 random vault bytes instead, which match this only
 /// by a 2^-192 chance.
-const SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v2";
+const SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v3";
+const V2_SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v2";
 
 impl SavedPeerChannels {
     fn encode(&self) -> Result<Vec<u8>, String> {
@@ -2381,12 +2421,22 @@ impl SavedPeerChannels {
             let saved: Self = postcard::from_bytes(current).ok()?;
             return Some(LoadedChannels {
                 channels: StoredChannels::Current(saved.channels),
+                requests: saved.requests,
+                held: saved.held,
+            });
+        }
+        if let Some(v2) = bytes.strip_prefix(V2_SAVED_CHANNELS_TAG) {
+            let saved: V2SavedPeerChannels = postcard::from_bytes(v2).ok()?;
+            return Some(LoadedChannels {
+                channels: StoredChannels::Current(saved.channels),
+                requests: Vec::new(),
                 held: saved.held,
             });
         }
         let legacy: LegacySavedPeerChannels = postcard::from_bytes(bytes).ok()?;
         Some(LoadedChannels {
             channels: StoredChannels::Legacy(legacy.channels),
+            requests: Vec::new(),
             held: legacy.held,
         })
     }
@@ -2565,7 +2615,7 @@ fn commit(entry: &OutboxEntry, cert: &DeviceCert) -> Envelope {
 enum Link {
     Https(HttpsLink),
     #[cfg(feature = "iroh")]
-    Iroh(tilo_relay_client::RelayClient),
+    Iroh(tilo_relay_session::RelayClient),
 }
 
 impl Link {
@@ -2627,7 +2677,7 @@ async fn connect(config: &PeerConfig, signer: &dyn DeviceSigner) -> Result<Link,
         .map(Link::Https),
         #[cfg(feature = "iroh")]
         Host::Iroh { addr, relay_url } => {
-            use tilo_relay_client::{ClientError, RelayClient};
+            use tilo_relay_session::{ClientError, RelayClient};
             let mut builder = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal);
             if let Some(url) = relay_url {
                 builder = builder.relay_mode(iroh::RelayMode::Custom(url.clone().into()));
@@ -2676,6 +2726,83 @@ async fn live_grant(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_pending_requests_and_held_edits_survive_reopen()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let route = DocumentRoute {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: "room".into(),
+            record: "note".into(),
+        };
+        let request = collab_types::MlsAccessRequestV1::unsigned(
+            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record),
+            collab_types::Ed25519PublicKey::from_bytes([3; 32]),
+            vec![1, 2, 3],
+            7,
+        );
+        let saved = SavedPeerChannels {
+            channels: crate::channels::SavedChannels::default(),
+            requests: vec![request.clone()],
+            held: vec![(route, vec![b"before the reload".to_vec()])],
+        };
+        let decoded =
+            SavedPeerChannels::decode(&saved.encode()?).ok_or("stored state did not decode")?;
+        if postcard::to_stdvec(&decoded.requests)? != postcard::to_stdvec(&vec![request])? {
+            return Err("the pending access request changed on reopen".into());
+        }
+        if decoded.held != saved.held {
+            return Err("the held edit changed on reopen".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn version_two_keeps_held_edits_when_reopened() -> Result<(), Box<dyn std::error::Error>> {
+        let route = DocumentRoute {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: "room".into(),
+            record: "note".into(),
+        };
+        let saved = V2SavedPeerChannels {
+            channels: crate::channels::SavedChannels::default(),
+            held: vec![(route, vec![b"before the reload".to_vec()])],
+        };
+        let mut bytes = V2_SAVED_CHANNELS_TAG.to_vec();
+        postcard::to_io(&saved, &mut bytes)?;
+        let decoded = SavedPeerChannels::decode(&bytes).ok_or("version two did not decode")?;
+        if !decoded.requests.is_empty()
+            || decoded.held != saved.held
+            || !matches!(decoded.channels, StoredChannels::Current(_))
+        {
+            return Err("version two lost held edits or decoded as another version".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_state_keeps_held_edits_when_reopened() -> Result<(), Box<dyn std::error::Error>> {
+        let route = DocumentRoute {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: "room".into(),
+            record: "note".into(),
+        };
+        let channels = crate::channels::LegacySavedChannels {
+            vault: [4; 32],
+            governors: Vec::new(),
+            members: Vec::new(),
+        };
+        let held = vec![(route, vec![b"before the reload".to_vec()])];
+        let bytes = postcard::to_stdvec(&(channels, &held))?;
+        let decoded = SavedPeerChannels::decode(&bytes).ok_or("legacy state did not decode")?;
+        if !decoded.requests.is_empty()
+            || decoded.held != held
+            || !matches!(decoded.channels, StoredChannels::Legacy(_))
+        {
+            return Err("legacy state lost held edits or decoded as another version".into());
+        }
+        Ok(())
+    }
 
     fn status(rooms: &[(u64, bool)]) -> PeerStatus {
         PeerStatus {

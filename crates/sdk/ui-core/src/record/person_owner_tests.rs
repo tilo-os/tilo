@@ -58,7 +58,7 @@ fn cross_app_person_records_read_current_original_writer_without_replica_or_file
         .unwrap()
         .of_package("so.tilo.settings")
         .unwrap()
-        .open_record(kind, |doc| {
+        .open_record(kind, &|doc| {
             doc.put(automerge::ROOT, "enabled", false)
                 .map_err(|error| error.to_string())
         })

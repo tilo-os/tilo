@@ -117,7 +117,8 @@ fn open_object(_: &Path) -> io::Result<File> {
     ))
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
     fn observation(path: &Path) -> io::Result<ObservedObject> {

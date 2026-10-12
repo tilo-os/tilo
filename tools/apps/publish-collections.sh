@@ -7,11 +7,12 @@
 # sets: MAIN_AUDIENCE, VERSION, COLLECTION, COMPLETE, BUILDER_IMAGE, the
 # PRIOR_* collection inputs, TILO_PACKAGE_PUBLIC_BASE_URL, TILO_REGISTRY_URL,
 # TAPP_PUBLISHER_IDENTITY and, with VERIFY_FINAL_RECEIPT=true, the
-# FINAL_RECEIPT_POLICY inputs. It uploads immutable packages, submits each
-# tapp to the signed registry, assembles each collection and, for main's
-# default collection, advances the TILO_APP_COLLECTION_* repository variables.
-# Last, it offers the runtime build the apps link as the registry package
-# so.tilo.runtime, so a device without that build fetches it with the apps.
+# FINAL_RECEIPT_POLICY inputs. It uploads immutable packages, assembles each
+# collection and, for main's default collection, advances the
+# TILO_APP_COLLECTION_* repository variables, then submits each tapp to the
+# signed registry. Last, it offers the runtime build the apps link as the
+# registry package so.tilo.runtime, so a device without that build fetches it
+# with the apps.
 set -euo pipefail
 audience=$MAIN_AUDIENCE
 [[ -n $audience ]] || { printf 'app release Authorized Integration audience is required\n' >&2; exit 1; }
@@ -40,21 +41,187 @@ package_public_api=${TILO_PACKAGE_PUBLIC_BASE_URL%/}
   exit 1
 }
 
+host_arch=$(uname -m)
+registry_cli=
+for index in release/*/index.json; do
+  if [[ $(jq -er .architecture "$index") == "$host_arch" ]]; then
+    registry_cli="${index%/index.json}/tilo-app-package"
+    break
+  fi
+done
+[[ -n $registry_cli && -f $registry_cli ]] || {
+  printf 'no native tilo-app-package registry client artifact found for %s\n' "$host_arch" >&2
+  exit 1
+}
+chmod 0755 "$registry_cli"
+
 # Every app/version/architecture is independently addressable. A
 # one-app update uploads one tapp; collection assembly below fetches
-# all unchanged members instead of rebuilding them.
+# all unchanged members instead of rebuilding them. Beside each tapp
+# goes its compressed twin, <file>.zst, which clients download first
+# (a third of the bytes) and decompress, bounded by the signed size,
+# before the signed hash check; the registry entry signs only the tapp.
 upload_manifest="$RUNNER_TEMP/tilo-package-uploads.tsv"
+twins="$RUNNER_TEMP/tilo-tapp-twins"
+mkdir -p "$twins"
 : > "$upload_manifest"
 for index in release/*/index.json; do
   while IFS=$'\t' read -r name version file; do
     tapp="${index%/index.json}/tapp/$file"
     test -f "$tapp"
+    "$registry_cli" compress -o "$twins/$file.zst" "$tapp"
     printf '%s\t%s\n' "$tapp" \
       "$package_api/tilo-app-$name/$VERSION/$file" >> "$upload_manifest"
+    printf '%s\t%s\n' "$twins/$file.zst" \
+      "$package_api/tilo-app-$name/$VERSION/$file.zst" >> "$upload_manifest"
   done < <(jq -r '.apps[] | [.name,.version,.file] | @tsv' "$index")
 done
 TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=8 \
   tools/upload_immutable_packages.sh "$upload_manifest"
+
+# Assemble each collection from this run's tapps and the prior collection's
+# unchanged members, upload it, and, for main's default collection, advance
+# the OS input channel. This runs before the store registry is touched: a
+# release image takes its apps from this channel, never from the registry,
+# so a registry refusal or outage must not hold the OS back. The registry
+# submission below still fails the job loudly. The channel has then moved
+# past this run's apps, so the next main run does not resubmit the ones it
+# does not rebuild: they reach the registry with their next change, or at
+# once through a Release / apps dispatch that names them with publish on.
+publish_collections() {
+  collection_plan="$RUNNER_TEMP/tilo-collection-plan.json"
+  python3 -I tools/ci/python.py tools/apps/app_release.py --collection "$COLLECTION" > "$collection_plan"
+  source_epoch=$(git show -s --format=%ct "$GITHUB_SHA")
+  [[ $source_epoch =~ ^[0-9]+$ ]]
+  channel_url=
+  channel_sha=
+  for index in release/*/index.json; do
+    arch=$(jq -er '.architecture | select(. == "x86_64" or . == "aarch64")' "$index")
+    tapp_dir="$RUNNER_TEMP/tilo-collection-$arch"
+    mkdir -p "$tapp_dir"
+    prior_url=
+    prior_sha=
+    # Both continuous pushes and explicitly publishing manual runs on
+    # main may replace one app in the immutable prior collection.
+    # Tags remain self-contained release boundaries and rebuild their
+    # complete requested set instead of depending on a moving channel.
+    if [[ $GITHUB_REF == refs/heads/main ]]; then
+      case "$arch" in
+        x86_64) prior_url=$PRIOR_X86_URL; prior_sha=$PRIOR_X86_SHA256 ;;
+        aarch64) prior_url=$PRIOR_ARM64_URL; prior_sha=$PRIOR_ARM64_SHA256 ;;
+      esac
+    fi
+    TILO_PACKAGE_TOKEN="$jwt" tools/reuse_prior_app_collection.sh \
+      "$index" "$collection_plan" "$tapp_dir" "$arch" "$prior_url" "$prior_sha"
+    while IFS=$'\t' read -r name version; do
+      file="$name-$version-$arch.tapp"
+      built="${index%/index.json}/tapp/$file"
+      if [[ -f $built ]]; then
+        find "$tapp_dir" -maxdepth 1 -type f -name "$name-*-$arch.tapp" -delete
+        cp "$built" "$tapp_dir/$file"
+      fi
+      test -f "$tapp_dir/$file" || {
+        printf 'collection member %s was neither rebuilt nor reusable\n' "$file" >&2
+        exit 1
+      }
+    done < <(jq -r '.catalog[] | [.name,.version] | @tsv' "$collection_plan")
+    out="dist/app-collections/$arch"
+    TILO_APP_COLLECTION_PLAN="$collection_plan" \
+      TILO_APP_ARCH="$arch" TILO_APP_TAPP_DIR="$tapp_dir" \
+      TILO_APP_RUNTIME_DIR="${index%/index.json}/runtime" \
+      TILO_APP_COLLECTION_OUT="$out" SOURCE_DATE_EPOCH="$source_epoch" \
+      dist/apps/assemble-collection.sh
+    bundle="$out/tilo-apps-$arch.tar.gz"
+    digest_file="$bundle.sha256"
+    # Runs for one source can select different apps and reuse different prior
+    # members. Their immutable collection address must identify the bytes too.
+    bundle_sha=$(sha256sum "$bundle" | cut -d' ' -f1)
+    collection_version="$VERSION-$bundle_sha"
+    bundle_upload_url="$package_api/tilo-app-collections/$collection_version/${bundle##*/}"
+    bundle_url="$package_public_api/tilo-app-collections/$collection_version/${bundle##*/}"
+    if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
+      python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
+        --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" verify \
+        --collection "$out" --pkg-binary "$verifier_tools/tilo-app-package" \
+        --runtime-binary "$verifier_tools/tilo-runtime-bundle" \
+        --source-sha "$GITHUB_SHA" --architecture "$arch"
+    fi
+    bundle_upload="$RUNNER_TEMP/tilo-collection-bundle-$arch.tsv"
+    printf '%s\t%s\n' "$bundle" "$bundle_upload_url" > "$bundle_upload"
+    TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=1 \
+      tools/upload_immutable_packages.sh "$bundle_upload"
+    metadata_uploads="$RUNNER_TEMP/tilo-collection-metadata-$arch.tsv"
+    : > "$metadata_uploads"
+    if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
+      # A successful PUT alone is not evidence that consumers can read the bytes.
+      readback="$RUNNER_TEMP/tilo-upload-readback-$arch.tar.gz"
+      curl --fail --silent --show-error --header "Authorization: Bearer $jwt" \
+        "$bundle_upload_url" --output "$readback"
+      final_receipt="$out/final-publication-receipt.json"
+      python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
+        --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" bind-readback \
+        --receipt "$final_receipt" --receipt-sha256 "$(sha256sum "$final_receipt" | cut -d' ' -f1)" \
+        --downloaded "$readback" --url "$bundle_url" --output "$out/published-receipt.json"
+      rm -f "$readback"
+      printf '%s\t%s\n' \
+        "$out/published-receipt.json" \
+        "$package_api/tilo-app-collections/$collection_version/tilo-apps-$arch.receipt.json" \
+        "$out/published-receipt.upload.json" \
+        "$package_api/tilo-app-collections/$collection_version/tilo-apps-$arch.upload.json" \
+        >> "$metadata_uploads"
+    fi
+    printf '%s\t%s\n' "$digest_file" \
+      "$package_api/tilo-app-collections/$collection_version/${digest_file##*/}" \
+      >> "$metadata_uploads"
+    TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=3 \
+      tools/upload_immutable_packages.sh "$metadata_uploads"
+    if [[ $arch == x86_64 ]]; then
+      channel_url=$bundle_url
+      channel_sha=$(awk '{print $1}' "$digest_file")
+    else
+      arm64_channel_url=$bundle_url
+      arm64_channel_sha=$(awk '{print $1}' "$digest_file")
+    fi
+  done
+
+  # Keep the OS input channel current after a successful default/main
+  # collection publish. The package URL remains immutable; only these
+  # two repository variables move.
+  if [[ $GITHUB_REF == refs/heads/main && $COLLECTION == default ]]; then
+    [[ -n $channel_url && $channel_sha =~ ^[0-9a-f]{64}$ ]]
+    variable_api="${GITHUB_API_URL:-$GITHUB_SERVER_URL/api/v1}/repos/$GITHUB_REPOSITORY/actions/variables"
+    update_variable() {
+      local name=$1 value=$2 endpoint status method
+      endpoint="$variable_api/$name"
+      status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+        --header "Authorization: Bearer $jwt" "$endpoint")
+      case "$status" in 200) method=PUT ;; 404) method=POST ;; *) return 1 ;; esac
+      curl --fail --silent --show-error --request "$method" \
+        --header "Authorization: Bearer $jwt" \
+        --header 'Content-Type: application/json' \
+        --data "$(jq -cn --arg value "$value" '{value:$value}')" "$endpoint"
+    }
+    update_variable TILO_APP_COLLECTION_URL "$channel_url"
+    update_variable TILO_APP_COLLECTION_SHA256 "$channel_sha"
+    update_variable TILO_APP_COLLECTION_URL_X86_64 "$channel_url"
+    update_variable TILO_APP_COLLECTION_SHA256_X86_64 "$channel_sha"
+    if [[ -n ${arm64_channel_url:-} ]]; then
+      update_variable TILO_APP_COLLECTION_URL_AARCH64 "$arm64_channel_url"
+      update_variable TILO_APP_COLLECTION_SHA256_AARCH64 "$arm64_channel_sha"
+    fi
+    # Its runtime carries this builder's system libraries; the next
+    # main run may reuse the collection only with the same builder.
+    update_variable TILO_APP_COLLECTION_BUILDER "$BUILDER_IMAGE"
+    # The next main run selects its tapps relative to this commit.
+    if [[ $COMPLETE == true ]]; then
+      update_variable TILO_APP_COLLECTION_SOURCE "$GITHUB_SHA"
+    fi
+    echo '::notice::advanced the default OS app-collection channel'
+  fi
+}
+if [[ -n ${COLLECTION:-} ]]; then
+  publish_collections
+fi
 
 # Product artwork is immutable alongside its tapp release.  The
 # metadata builder always emits an accessible owned icon, and adds
@@ -154,24 +321,12 @@ tr '\t' '\n' < "$registry_media_urls" \
 registry_identity="$RUNNER_TEMP/tilo-registry-publisher.json"
 (umask 077; printf '%s' "$TAPP_PUBLISHER_IDENTITY" > "$registry_identity")
 trap 'rm -f "$registry_identity"' EXIT
-host_arch=$(uname -m)
-registry_cli=
-for index in release/*/index.json; do
-  if [[ $(jq -er .architecture "$index") == "$host_arch" ]]; then
-    registry_cli="${index%/index.json}/tilo-app-package"
-    break
-  fi
-done
-[[ -n $registry_cli && -f $registry_cli ]] || {
-  printf 'no native tilo-app-package registry client artifact found for %s\n' "$host_arch" >&2
-  exit 1
-}
-chmod 0755 "$registry_cli"
 export SOURCE_DATE_EPOCH
 SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
 snapshot="$RUNNER_TEMP/tilo-registry-snapshot.json"
 response="$RUNNER_TEMP/tilo-registry-response.txt"
 publication_plan="$RUNNER_TEMP/tilo-registry-publication.tsv"
+: "${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:?existing registry owner pin required}"
 : > "$publication_plan"
 for index in release/*/index.json; do
   arch=$(jq -er '.architecture | select(. == "x86_64" or . == "aarch64")' "$index")
@@ -229,7 +384,9 @@ while IFS= read -r id; do
       test -f "$metadata"
       tapp_url="$registry_url/artifacts/$owner/generic/tilo-app-$name/$VERSION/$file"
       args=(entry --arch "$arch" --identity "$registry_identity" \
-        --metadata "$metadata" --action "$action" --url "$tapp_url")
+        --metadata "$metadata" --action "$action" --url "$tapp_url"
+        --runtime-catalogue "$snapshot"
+        --registry-owner-pubkey "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY")
       [[ -f $aggregate ]] && args+=(--previous-entry "$aggregate")
       "$registry_cli" "${args[@]}" "$tapp" > "$request"
       jq -e --arg id "$id" '.entry | select(.package_id == $id)' \
@@ -300,139 +457,5 @@ publish_runtimes() {
     return 1
   }
 }
-
-if [[ -z ${COLLECTION:-} ]]; then
-  publish_runtimes
-  exit
-fi
-collection_plan="$RUNNER_TEMP/tilo-collection-plan.json"
-python3 -I tools/ci/python.py tools/apps/app_release.py --collection "$COLLECTION" > "$collection_plan"
-source_epoch=$(git show -s --format=%ct "$GITHUB_SHA")
-[[ $source_epoch =~ ^[0-9]+$ ]]
-channel_url=
-channel_sha=
-for index in release/*/index.json; do
-  arch=$(jq -er '.architecture | select(. == "x86_64" or . == "aarch64")' "$index")
-  tapp_dir="$RUNNER_TEMP/tilo-collection-$arch"
-  mkdir -p "$tapp_dir"
-  prior_url=
-  prior_sha=
-  # Both continuous pushes and explicitly publishing manual runs on
-  # main may replace one app in the immutable prior collection.
-  # Tags remain self-contained release boundaries and rebuild their
-  # complete requested set instead of depending on a moving channel.
-  if [[ $GITHUB_REF == refs/heads/main ]]; then
-    case "$arch" in
-      x86_64) prior_url=$PRIOR_X86_URL; prior_sha=$PRIOR_X86_SHA256 ;;
-      aarch64) prior_url=$PRIOR_ARM64_URL; prior_sha=$PRIOR_ARM64_SHA256 ;;
-    esac
-  fi
-  TILO_PACKAGE_TOKEN="$jwt" tools/reuse_prior_app_collection.sh \
-    "$index" "$collection_plan" "$tapp_dir" "$arch" "$prior_url" "$prior_sha"
-  while IFS=$'\t' read -r name version; do
-    file="$name-$version-$arch.tapp"
-    built="${index%/index.json}/tapp/$file"
-    if [[ -f $built ]]; then
-      find "$tapp_dir" -maxdepth 1 -type f -name "$name-*-$arch.tapp" -delete
-      cp "$built" "$tapp_dir/$file"
-    fi
-    test -f "$tapp_dir/$file" || {
-      printf 'collection member %s was neither rebuilt nor reusable\n' "$file" >&2
-      exit 1
-    }
-  done < <(jq -r '.catalog[] | [.name,.version] | @tsv' "$collection_plan")
-  out="dist/app-collections/$arch"
-  TILO_APP_COLLECTION_PLAN="$collection_plan" \
-    TILO_APP_ARCH="$arch" TILO_APP_TAPP_DIR="$tapp_dir" \
-    TILO_APP_RUNTIME_DIR="${index%/index.json}/runtime" \
-    TILO_APP_COLLECTION_OUT="$out" SOURCE_DATE_EPOCH="$source_epoch" \
-    dist/apps/assemble-collection.sh
-  bundle="$out/tilo-apps-$arch.tar.gz"
-  digest_file="$bundle.sha256"
-  # Runs for one source can select different apps and reuse different prior
-  # members. Their immutable collection address must identify the bytes too.
-  bundle_sha=$(sha256sum "$bundle" | cut -d' ' -f1)
-  collection_version="$VERSION-$bundle_sha"
-  bundle_upload_url="$package_api/tilo-app-collections/$collection_version/${bundle##*/}"
-  bundle_url="$package_public_api/tilo-app-collections/$collection_version/${bundle##*/}"
-  if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
-    python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
-      --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" verify \
-      --collection "$out" --pkg-binary "$verifier_tools/tilo-app-package" \
-      --runtime-binary "$verifier_tools/tilo-runtime-bundle" \
-      --source-sha "$GITHUB_SHA" --architecture "$arch"
-  fi
-  bundle_upload="$RUNNER_TEMP/tilo-collection-bundle-$arch.tsv"
-  printf '%s\t%s\n' "$bundle" "$bundle_upload_url" > "$bundle_upload"
-  TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=1 \
-    tools/upload_immutable_packages.sh "$bundle_upload"
-  metadata_uploads="$RUNNER_TEMP/tilo-collection-metadata-$arch.tsv"
-  : > "$metadata_uploads"
-  if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
-    # A successful PUT alone is not evidence that consumers can read the bytes.
-    readback="$RUNNER_TEMP/tilo-upload-readback-$arch.tar.gz"
-    curl --fail --silent --show-error --header "Authorization: Bearer $jwt" \
-      "$bundle_upload_url" --output "$readback"
-    final_receipt="$out/final-publication-receipt.json"
-    python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
-      --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" bind-readback \
-      --receipt "$final_receipt" --receipt-sha256 "$(sha256sum "$final_receipt" | cut -d' ' -f1)" \
-      --downloaded "$readback" --url "$bundle_url" --output "$out/published-receipt.json"
-    rm -f "$readback"
-    printf '%s\t%s\n' \
-      "$out/published-receipt.json" \
-      "$package_api/tilo-app-collections/$collection_version/tilo-apps-$arch.receipt.json" \
-      "$out/published-receipt.upload.json" \
-      "$package_api/tilo-app-collections/$collection_version/tilo-apps-$arch.upload.json" \
-      >> "$metadata_uploads"
-  fi
-  printf '%s\t%s\n' "$digest_file" \
-    "$package_api/tilo-app-collections/$collection_version/${digest_file##*/}" \
-    >> "$metadata_uploads"
-  TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=3 \
-    tools/upload_immutable_packages.sh "$metadata_uploads"
-  if [[ $arch == x86_64 ]]; then
-    channel_url=$bundle_url
-    channel_sha=$(awk '{print $1}' "$digest_file")
-  else
-    arm64_channel_url=$bundle_url
-    arm64_channel_sha=$(awk '{print $1}' "$digest_file")
-  fi
-done
-
-# Keep the OS input channel current after a successful default/main
-# collection publish. The package URL remains immutable; only these
-# two repository variables move.
-if [[ $GITHUB_REF == refs/heads/main && $COLLECTION == default ]]; then
-  [[ -n $channel_url && $channel_sha =~ ^[0-9a-f]{64}$ ]]
-  variable_api="${GITHUB_API_URL:-$GITHUB_SERVER_URL/api/v1}/repos/$GITHUB_REPOSITORY/actions/variables"
-  update_variable() {
-    local name=$1 value=$2 endpoint status method
-    endpoint="$variable_api/$name"
-    status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
-      --header "Authorization: Bearer $jwt" "$endpoint")
-    case "$status" in 200) method=PUT ;; 404) method=POST ;; *) return 1 ;; esac
-    curl --fail --silent --show-error --request "$method" \
-      --header "Authorization: Bearer $jwt" \
-      --header 'Content-Type: application/json' \
-      --data "$(jq -cn --arg value "$value" '{value:$value}')" "$endpoint"
-  }
-  update_variable TILO_APP_COLLECTION_URL "$channel_url"
-  update_variable TILO_APP_COLLECTION_SHA256 "$channel_sha"
-  update_variable TILO_APP_COLLECTION_URL_X86_64 "$channel_url"
-  update_variable TILO_APP_COLLECTION_SHA256_X86_64 "$channel_sha"
-  if [[ -n ${arm64_channel_url:-} ]]; then
-    update_variable TILO_APP_COLLECTION_URL_AARCH64 "$arm64_channel_url"
-    update_variable TILO_APP_COLLECTION_SHA256_AARCH64 "$arm64_channel_sha"
-  fi
-  # Its runtime carries this builder's system libraries; the next
-  # main run may reuse the collection only with the same builder.
-  update_variable TILO_APP_COLLECTION_BUILDER "$BUILDER_IMAGE"
-  # The next main run selects its tapps relative to this commit.
-  if [[ $COMPLETE == true ]]; then
-    update_variable TILO_APP_COLLECTION_SOURCE "$GITHUB_SHA"
-  fi
-  echo '::notice::advanced the default OS app-collection channel'
-fi
 
 publish_runtimes

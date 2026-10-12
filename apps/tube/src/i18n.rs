@@ -7,13 +7,12 @@
 
 use ui::i18n::{ArgValue, EmbeddedCatalog};
 
-const SOURCE_FTL: &str = include_str!("../locales/en-US.ftl");
+pub(crate) const SOURCE_FTL: &str = include_str!("../locales/en-US.ftl");
 
-static CATALOG: EmbeddedCatalog = catalog();
+pub(crate) static CATALOG: EmbeddedCatalog = catalog();
 
 const fn catalog() -> EmbeddedCatalog {
-    let catalog = EmbeddedCatalog::new("en-US", &[("en-US", SOURCE_FTL)], "tube-nav-home")
-        .with_system_locale();
+    let catalog = EmbeddedCatalog::new("en-US", &[("en-US", SOURCE_FTL)]).with_system_locale();
     // Unit tests assert the source copy on any developer or CI machine.
     #[cfg(test)]
     let catalog = catalog.with_pinned_locale("en-US");

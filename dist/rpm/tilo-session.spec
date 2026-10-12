@@ -203,6 +203,7 @@ makes before it execs anything, and DEVELOPMENT.md for the threat model.
 install -Dpm 0755 bin/tilo-shell             %{buildroot}%{_bindir}/tilo-shell
 install -Dpm 0755 bin/fs %{buildroot}%{_bindir}/fs
 install -Dpm 0755 bin/tilo-relay-admin %{buildroot}%{_bindir}/tilo-relay-admin
+install -Dpm 0755 bin/tilo-enroll %{buildroot}%{_bindir}/tilo-enroll
 install -Dpm 0755 libexec/tilo-files-workspace %{buildroot}%{_libexecdir}/tilo-files-workspace
 install -Dpm 0644 systemd-user/tilo-files-workspace.service %{buildroot}%{_userunitdir}/tilo-files-workspace.service
 install -Dpm 0755 bin/tilo-launcher          %{buildroot}%{_bindir}/tilo-launcher
@@ -271,6 +272,12 @@ install -Dpm 0644 wayland-sessions/tilo-app.desktop \
                   %{buildroot}%{_datadir}/wayland-sessions/tilo-app.desktop
 
 %check
+# Files readiness and normal same-person enrollment are first-party tools.
+# Keep automatic ELF requirements enabled for these host executables; only the
+# separately signed private app/runtime stores are excluded above.
+for program in fs tilo-relay-admin tilo-enroll; do
+    test -x %{buildroot}%{_bindir}/$program
+done
 test -x %{buildroot}%{_bindir}/tilo-import-folders
 grep -Fxq "Exec=/usr/bin/tilo-import-folders --import-folders" %{buildroot}%{_datadir}/applications/tilo-import-folders.desktop
 %{buildroot}%{_bindir}/tilo-import-folders --tilo-package-smoke
@@ -318,6 +325,9 @@ test ! -e %{buildroot}%{_datadir}/tilo-apps/pkgs
 # One runtime build of the 2026.07 release, named by its ABI digest.
 test -f %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07+native.*/bundle.toml
 test "$(stat -c %%a %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07+native.*/bundle.toml)" = 644
+# The runtime collector's lock lives in a per-user root; the system root is
+# read-only and never collected, so staging leaves no .gc.lock to ship.
+test ! -e %{buildroot}%{_prefix}/lib/tilo-runtime/.gc.lock
 grep -q '/usr/lib/tilo-apps/bin' %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.sh
 test -s %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
 # What the ush supervisor runs, at the paths it looks for them.
@@ -334,6 +344,7 @@ done
 %{_bindir}/tilo-shell
 %{_bindir}/fs
 %{_bindir}/tilo-relay-admin
+%{_bindir}/tilo-enroll
 %{_libexecdir}/tilo-files-workspace
 %{_userunitdir}/tilo-files-workspace.service
 %{_bindir}/tilo-launcher

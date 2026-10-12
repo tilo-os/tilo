@@ -8,8 +8,6 @@
 //! dropdown, data table) and returns the root widget: a vertical column of titled
 //! cards, one per component family.
 
-#![allow(dead_code)]
-
 use automerge::transaction::Transactable;
 
 use tilo_ui::icons::Icon;

@@ -381,15 +381,11 @@ impl Widget for NativeView {
         });
         self.fallback_node = child;
         let children = child.into_iter().collect::<Vec<_>>();
-        let node = taffy.parent_node(
-            Style {
-                size: self.requested_size,
-                ..Default::default()
-            },
-            &children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: self.requested_size,
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -621,7 +617,7 @@ impl Widget for NativeView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::Dispatch;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -774,47 +770,20 @@ mod tests {
             ));
             let mut taffy = TaffyTree::new();
             let node = taffy.leaf_node(Style::default());
-            let mut state = AutoCommit::new();
-            let mut handled = false;
-            let mut focus = None;
-            let modifiers = winit::event::Modifiers::default();
+            let mut at_node = Dispatch::new().layout(&taffy, node);
             let cursor = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(40.0, 70.0),
             };
-            view.handle_event(
-                &cursor,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            at_node.send(&mut view, &cursor);
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: winit::event::ElementState::Pressed,
                 button: winit::event::MouseButton::Left,
             };
-            view.handle_event(
-                &press,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            assert!(handled);
-            assert_eq!(focus, Some(node));
+            let pressed = at_node.send(&mut view, &press);
+            assert!(pressed.handled);
+            assert_eq!(pressed.focus_target, Some(node));
             assert!(
                 calls
                     .borrow()

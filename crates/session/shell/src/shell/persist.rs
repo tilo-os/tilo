@@ -188,8 +188,7 @@ impl DurableTree {
         let mut package_launches = tree.package_launches.clone();
         WorkspaceTree::prune_package_launches_of(&desktop, &mut package_launches);
         for ws in &mut desktop.workspaces {
-            ws.capabilities
-                .retain(ui::CapOverride::persists_across_restart);
+            ws.sandbox.retain(ui::CapOverride::persists_across_restart);
         }
         Self {
             native_authority: tree.native_authority.clone(),
@@ -998,13 +997,8 @@ mod tests {
                 room,
                 Collaborator::new("bob", "Bob").with_cursor_color("#f97316"),
             ));
-            let owner_before = original.desktop.active_workspace().unwrap().owner.clone();
-            let caps_before = original
-                .desktop
-                .active_workspace()
-                .unwrap()
-                .capabilities
-                .len();
+            let policy_before = original.desktop.active_workspace().unwrap().policy.clone();
+            let caps_before = original.desktop.active_workspace().unwrap().sandbox.len();
 
             save_tree_to(&original, &path).expect("save");
             let (loaded, notice) = load_or_default(&path);
@@ -1029,11 +1023,11 @@ mod tests {
                 .find(|w| w.room == room)
                 .expect("the room survives the round trip");
             assert_eq!(
-                after.owner, owner_before,
-                "dropping presence must not disturb who owns the workspace"
+                after.policy, policy_before,
+                "dropping presence must not disturb who owns the workspace or its grants"
             );
             assert_eq!(
-                after.capabilities.len(),
+                after.sandbox.len(),
                 caps_before,
                 "dropping presence must not disturb granted capabilities"
             );
@@ -1528,8 +1522,7 @@ mod tests {
         durable.prune_local_app_records();
         durable.prune_package_launches();
         for ws in &mut durable.desktop.workspaces {
-            ws.capabilities
-                .retain(ui::CapOverride::persists_across_restart);
+            ws.sandbox.retain(ui::CapOverride::persists_across_restart);
         }
         durable
     }
@@ -1538,8 +1531,8 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn durable_tree_serialises_exactly_like_workspace_tree() {
         use crate::shell::state::{
-            CapOverride, Expiry, LocalAppRecord, NativeDocumentReference, RoomAuthority, Scope,
-            Subject, Tab, TileContent, Verb,
+            Access, CapOverride, Expiry, LocalAppRecord, NativeDocumentReference, RoomAuthority,
+            Scope, Subject, Tab, TileContent,
         };
 
         let mut tree = WorkspaceTree::bootstrap_demo();
@@ -1562,12 +1555,12 @@ mod tests {
                 note: crate::shell::peer_windows::OPENING.into(),
             },
         });
-        let capabilities = &mut tree.desktop.workspaces[0].capabilities;
+        let capabilities = &mut tree.desktop.workspaces[0].sandbox;
         capabilities.push(
             CapOverride::grant(
                 Subject::app("so.tilo.books"),
                 Scope::FsPath("/var/workspace/kept".into()),
-                Verb::Read,
+                Access::Read,
             )
             .with_id("kept"),
         );
@@ -1575,7 +1568,7 @@ mod tests {
             CapOverride::grant(
                 Subject::app("so.tilo.books"),
                 Scope::FsPath("/var/workspace/session".into()),
-                Verb::Write,
+                Access::Write,
             )
             .with_id("session-only")
             .expiring(Expiry::EndOfSession),

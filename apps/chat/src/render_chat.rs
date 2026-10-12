@@ -38,13 +38,11 @@ use crate::model::{
     self, AgentRoute, AgentStepOutcome, AgentWork, AgentWorkState, Attachment, ChannelKind,
     Message, Presence,
 };
-use crate::paint::{
-    band_at_least, blend_toward, elide, line_in, line_of, push_clip, text, width_of,
-};
+use crate::paint::{band_at_least, elide, line_in, line_of, push_clip, text, width_of};
 
 /// How much of the participant's colour a mention *of you* keeps when it is
 /// tinted toward the surface. A filled band, so it can be found by scanning.
-const MENTION_SELF_BAND_MIX: f64 = 0.78;
+const MENTION_SELF_BAND_MIX: f32 = 0.78;
 
 /// Contrast floors for the mention run, measured rather than eyeballed:
 /// AA body text wherever it lands, and the non-text floor for the filled band
@@ -86,7 +84,7 @@ pub(crate) fn mention_colors(
     }
     let band = band_at_least(
         colors,
-        blend_toward(own, ground, MENTION_SELF_BAND_MIX),
+        ui::tokens::colors::mix8(own, ground, MENTION_SELF_BAND_MIX),
         own,
         ground,
         MENTION_BAND_CONTRAST,

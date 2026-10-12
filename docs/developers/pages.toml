@@ -55,6 +55,13 @@ nav = "Collaboration and undo"
 description = "The offline tilo-app guide collaborate workflow: shared state, per-author undo, history and the device transport boundary."
 
 [[page]]
+slug = "task-permissions"
+source = "docs/developers/tasks/permissions.md"
+section = "Quick tasks"
+nav = "Permissions and roles"
+description = "The offline tilo-app guide permissions workflow: live access, action requirements, revocation and agents as ordinary collaborators."
+
+[[page]]
 slug = "task-network"
 source = "docs/developers/tasks/network.md"
 section = "Quick tasks"

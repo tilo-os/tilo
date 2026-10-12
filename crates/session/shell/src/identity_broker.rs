@@ -10,7 +10,8 @@ pub use tilo_identity_host::broker::{
 
 /// Start the identity broker at `path`, authorizing against `tree` and
 /// handing out route keys from `channels` once the collaboration broker
-/// installs its channel service.
+/// installs its channel service, and signing in the person's own room only
+/// for the records of theirs an app's surface declares.
 ///
 /// # Errors
 ///
@@ -21,7 +22,12 @@ pub fn spawn(
     tree: WorkspaceTreeHandle,
     channels: ChannelKeyProvider,
 ) -> io::Result<IdentityBrokerHandle> {
-    tilo_identity_host::broker::spawn(path, Arc::new(Membership(tree)), Arc::new(channels))
+    tilo_identity_host::broker::spawn(
+        path,
+        Arc::new(Membership(tree)),
+        Arc::new(channels),
+        Arc::new(tilo_action_broker::SurfacePersonRecords),
+    )
 }
 
 struct Membership(WorkspaceTreeHandle);

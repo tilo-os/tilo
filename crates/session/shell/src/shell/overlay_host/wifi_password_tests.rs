@@ -105,7 +105,7 @@ fn host_on_wifi_pane(
 }
 
 fn press(h: &mut ShellOverlayHost, key: &Key) -> bool {
-    let event = crate::shell::test_support::typed_key_event(key.clone());
+    let event = ui::synthetic_input::key_input(key, winit::event::ElementState::Pressed);
     crate::shell::test_support::with_scratch_event_ctx(|ctx| {
         h.route_wifi_password_event(&event, ctx)
     })

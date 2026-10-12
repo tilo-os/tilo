@@ -1,0 +1,111 @@
+{
+  "schema": 1,
+  "reviewed_on": "2026-10-08",
+  "status": "primary-source interface review plus separately recorded pinned CLI development comparison; no C API qualification, installation or production admission",
+  "identity": {
+    "confirmed_by": "https://code.tilo.so/tilo/tilo/pulls/3561",
+    "model": "Cactus-Compute/whistle",
+    "unrelated_prior_guess": "0xDAEF0F/whistle"
+  },
+  "model": {
+    "revision": "b358ddadd89b7a713b5aa131f23032d3cca1b251",
+    "url": "https://huggingface.co/Cactus-Compute/whistle/tree/b358ddadd89b7a713b5aa131f23032d3cca1b251",
+    "artifact": {
+      "file": "whistle.cact",
+      "bytes": 16919407,
+      "sha256": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb"
+    },
+    "license": "Apache-2.0",
+    "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "languages": [
+      "en",
+      "de",
+      "fr",
+      "es",
+      "it",
+      "nl",
+      "pl"
+    ],
+    "publisher_benchmarks": "Not independently reproduced; publisher Apple M4 Pro timings are not Tilo worker measurements."
+  },
+  "runtime": {
+    "revision": "2ae11323dc000f5e70c49f7403efa6af12ba9e67",
+    "url": "https://huggingface.co/Cactus-Compute/needle3/tree/2ae11323dc000f5e70c49f7403efa6af12ba9e67",
+    "license": "Apache-2.0",
+    "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "artifacts": [
+      {
+        "file": "linux-x86_64/needle",
+        "bytes": 1541680,
+        "sha256": "f38dc4b0345d66b4e385734ad0f12af43ac6e2cfa1752d0795af5c137200c8e4"
+      },
+      {
+        "file": "linux-x86_64/libneedle.a",
+        "bytes": 2187484,
+        "sha256": "8556785e3f3562bb6e402d48770f34c0797f23b9571c07457cdc577928b0b9d3"
+      },
+      {
+        "file": "linux-arm64/needle",
+        "bytes": 1431816,
+        "sha256": "6fc25a97def475e1c7d1933a4a219d4e37076be77974e76dd331d9e0cd97f3cb"
+      },
+      {
+        "file": "linux-arm64/libneedle.a",
+        "bytes": 2009256,
+        "sha256": "3c1053149e48f0ae9917f4d336e60f841dddeb3062a8d7b56c7ddf06fdfac33e"
+      }
+    ],
+    "header_sha256": "914bbd00423939b02fc349f91cdb7c12531b3f5bb7105b743e0e93c7e409d7b1",
+    "api": [
+      "needle_load",
+      "needle_transcribe",
+      "needle_stream_transcribe_process",
+      "needle_stream_transcribe_stop"
+    ],
+    "observed_contract": [
+      "Process-global non-thread-safe state requires serialized worker calls.",
+      "Load takes memory and length, not a descriptor; keep verification tied to an immutable descriptor before mapping or bounded copying.",
+      "Input is 16 kHz mono float PCM, up to 30 seconds per call.",
+      "Streaming returns committed words and a pending tail; stop flushes the tail and the next process call begins a new stream.",
+      "The header exposes neither asynchronous cancellation nor a thread-count setter; retain owned-process confinement and cancellation/reaping."
+    ],
+    "native_execution": "Pinned CLI completed four exposed complete-file cases and six separately source-paced prefix trials. Direct C API initially failed to link; it subsequently linked with a privately verified runtime closure, then failed native thread admission. The current wrapper-selected 3.2.0 shared runtime also fails the same guard. See dictation-whistle-native-review.json and dictation-whistle-paced-review.json; no production admission.",
+    "native_telemetry": "not established by wrapper or header inspection",
+    "physical_devices": "not run",
+    "current_shared_runtime_comparison": "dictation-whistle-paced-review.json"
+  },
+  "wrapper": {
+    "url": "https://github.com/cactus-compute/needle/tree/af2654dffa4987f7e2cbbacdf59c2f854fd18302",
+    "revision": "af2654dffa4987f7e2cbbacdf59c2f854fd18302",
+    "complete_tree": true,
+    "native_C_CXX_Rust_source_files_in_this_tree": 0,
+    "file_sha256": {
+      "needle/agent/whistle.py": "51dbc1edcf7b5757379f555172f360b7c61891f9e82d54b374faa1f969cef055",
+      "needle/_telemetry.py": "28cc691445c91700b4b894ecc797085e9985d0bd7c113da2539fce74fd0612cc",
+      "needle/__init__.py": "ac165eeaae8a896ac1f6ac0d8a430dbce781beb938c55fa14daafa57e7b4928d",
+      "needle/agent/fetch.py": "eff3ac9ab72cfa4c798b9eb1d0eb3da271dbf658e66da75ce96b94a43a50d9e6"
+    },
+    "observed_behavior": [
+      "Automatic runtime/model fetch and a whole-weight read are upstream wrapper behavior, not Tilo catalogue authority.",
+      "Top-level transcribe and stream calls invoke usage tracking.",
+      "Tracking defaults enabled, creates an installation identifier and sends event/version/platform metadata; source states prompts and outputs are excluded.",
+      "Disable tracking in confined review and deny network independently; do not import this wrapper into the live compositor."
+    ],
+    "source_scope": "No native engine sources were present in this inspected GitHub tree. This does not establish whether sources exist elsewhere.",
+    "package_version": "3.1.0 (pyproject inspected, not installed or imported)",
+    "selected_engine_version": "3.2.0 for _load_cdll(3) used by Whistle"
+  },
+  "remaining_qualification": [
+    "Supported native thread control: both exact static archive and current wrapper-selected shared library start 12 threads against the unchanged two-thread budget.",
+    "Audited native provenance and complete runtime closure under existing trust policy.",
+    "Existing speech worker actor/protocol, signed catalogue and licence acceptance; no alternate downloader or access authority.",
+    "Original-field identity, explicit supported-language validation, bounded drafts, atomic final insertion and undo.",
+    "Public development-fixture streaming, cancellation/repeat/silence and memory under unchanged guards, then a separately frozen untouched holdout.",
+    "Physical microphone, older x86-64/ARM and native/browser/terminal field journeys."
+  ],
+  "constraints": [
+    "Do not label .cact as Whisper GGML or Nemotron GGUF.",
+    "Do not tune on the consumed Nemotron holdout.",
+    "No model signing/install/deploy, microphone grant or paid API."
+  ]
+}

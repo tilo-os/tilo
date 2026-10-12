@@ -339,7 +339,8 @@ impl SignalLinking {
         };
         let mut runtime = self.runtime.lock().map_err(|_| SendError::Unavailable)?;
         // Pinned signal-cli finishLink returns only the linked number. The ACI
-        // must come from a subsequent account query, never from that response.
+        // comes from the selected account's local own-identity query, not an
+        // invented listAccounts ACI field or a public registration lookup.
         let reply: Reply<Completed> = runtime.exchange("finishLink", &params)?;
         self.authority.check()?;
         if self.phase.load(Ordering::Acquire) != FINISHING {
@@ -351,7 +352,6 @@ impl SignalLinking {
         }
         let accounts: Reply<serde_json::Value> =
             runtime.exchange("listAccounts", &serde_json::json!({}))?;
-        drop(runtime);
         drop(pending);
         self.authority.check()?;
         if self.phase.load(Ordering::Acquire) != FINISHING {
@@ -363,8 +363,32 @@ impl SignalLinking {
         {
             return Err(SendError::InvalidRequest);
         }
-        let account =
-            crate::signal_setup::account(&rows, &number).map_err(|_| SendError::InvalidRequest)?;
+        if rows.as_array().is_none_or(|rows| {
+            rows.iter()
+                .filter(|row| {
+                    row.get("number").and_then(serde_json::Value::as_str) == Some(&number)
+                })
+                .count()
+                != 1
+        }) {
+            return Err(SendError::InvalidRequest);
+        }
+        self.authority.check()?;
+        let identities: Reply<serde_json::Value> = runtime.exchange(
+            "listIdentities",
+            &serde_json::json!({"account":number,"number":number}),
+        )?;
+        drop(runtime);
+        self.authority.check()?;
+        if self.phase.load(Ordering::Acquire) != FINISHING {
+            return Err(SendError::Revoked);
+        }
+        let account = crate::signal_setup::account(
+            &rows,
+            &identities.result.ok_or(SendError::Unavailable)?,
+            &number,
+        )
+        .map_err(|_| SendError::InvalidRequest)?;
         if matches!(&self.target, Target::Existing(expected) if &account.aci != expected) {
             return Err(SendError::Revoked);
         }

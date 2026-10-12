@@ -21,6 +21,7 @@
 //! [`FormSection`]: crate::widget::FormSection
 //! [`StatTile`]: crate::widget::StatTile
 
+use crate::num::f64_of_usize;
 use std::collections::HashMap;
 
 use automerge::ObjId;
@@ -38,11 +39,6 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::activation::{Activation, Interaction, activation_controls};
 use crate::widget::{Button, Element, TaffyTreeExt, Text, Tone, Widget};
-
-/// Lossless `usize -> f64` widening for grid geometry.
-fn usize_to_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
 
 // ---------------------------------------------------------------------------
 // Pure reflow geometry, shared by CardGrid, MediaGrid and immediate callers.
@@ -70,8 +66,8 @@ pub fn card_columns(avail_w: f64, min_card_w: f64, gap: f64) -> usize {
 /// `avail_w` exactly. Never negative.
 pub fn card_column_width(avail_w: f64, cols: usize, gap: f64) -> f64 {
     let cols = cols.max(1);
-    let total_gap = usize_to_f64(cols.saturating_sub(1)) * gap;
-    ((avail_w - total_gap) / usize_to_f64(cols)).max(0.0)
+    let total_gap = f64_of_usize(cols.saturating_sub(1)) * gap;
+    ((avail_w - total_gap) / f64_of_usize(cols)).max(0.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -621,7 +617,7 @@ impl Widget for Card {
             if *ctx.handled {
                 // A child's own control took the press; the card stays put.
                 if self.activation.state.pressed {
-                    self.activation.state.pressed = false;
+                    self.activation.cancel_press();
                     self.dirty = true;
                 }
                 return;
@@ -711,6 +707,7 @@ impl Widget for Card {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &crate::widget::ModelPath,
     ) -> bool {
@@ -771,15 +768,6 @@ impl Actions {
     pub fn secondary(mut self, button: Button) -> Self {
         let index = self.parts.children.len().saturating_sub(1);
         self.parts.children.insert(index, Box::new(button));
-        self
-    }
-
-    /// Replace the primary (last) action.
-    #[must_use]
-    pub fn replace_primary(mut self, button: Button) -> Self {
-        if let Some(last) = self.parts.children.last_mut() {
-            *last = Box::new(button);
-        }
         self
     }
 }
@@ -964,7 +952,12 @@ impl Widget for CardGrid {
         node
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let Ok(layout) = taffy.layout(node) else {
             return false;
         };
@@ -986,14 +979,7 @@ impl Widget for CardGrid {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         let origin = Point::new(self.rect.x0, self.rect.y0);
         for (card, &child) in self.cards.iter_mut().zip(&self.child_nodes) {
             card.apply_layout(taffy, child, origin);

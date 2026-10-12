@@ -14,11 +14,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -81,6 +77,15 @@ fn dispatch(args: &[String]) -> anyhow::Result<i32> {
     match args.first().map(String::as_str) {
         Some("serve") => cmd_serve(rest),
         Some("guest-init") => guest::init(rest),
+        Some("__approved-check-supervise") => {
+            let path = rest.first().filter(|_| rest.len() == 1).ok_or_else(|| {
+                anyhow::anyhow!("approved-check supervisor requires one private config")
+            })?;
+            ush::approved_checks::run_guest(Path::new(path)).map_err(anyhow::Error::msg)
+        }
+        Some("__approved-check-init") => {
+            ush::approved_checks::run_init(rest).map_err(anyhow::Error::msg)
+        }
         Some("ush" | "run") => host(rest),
         Some("pkg") => guest::pkg(rest),
         Some("perm") => guest::perm(rest),
@@ -145,6 +150,19 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
             }
             "--host-root" => {
                 opts.host_root = PathBuf::from(value()?);
+                i = i.saturating_add(2);
+            }
+            "--editor-fd" => {
+                use std::os::fd::{FromRawFd, OwnedFd};
+                let fd: i32 = value()?.parse()?;
+                // SAFETY: fcntl only probes the supplied integer; ownership begins below.
+                if fd < 3 || opts.editor.is_some() || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0
+                {
+                    anyhow::bail!("invalid inherited editor descriptor");
+                }
+                // SAFETY: this explicit startup argument transfers one inherited FD.
+                let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+                opts.editor = Some(Arc::new(runtime_portal::editor::Socket::adopt(fd)?));
                 i = i.saturating_add(2);
             }
             "--" => {

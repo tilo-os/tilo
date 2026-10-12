@@ -1,5 +1,6 @@
 use super::*;
 use crate::widget::ModelPath;
+use crate::widget::TaffyTreeExt;
 use crate::widget::{Button, Text, TextInput};
 use automerge::AutoCommit;
 use vello::kurbo::Rect;
@@ -58,29 +59,15 @@ impl Widget for RebuildHarness {
             .iter_mut()
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
-        let node = taffy
-            .new_with_children(taffy::Style::default(), &child_nodes)
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(taffy::Style::default(), &child_nodes, node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        self.rect = crate::widget::placed(layout, origin);
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if let Ok(child_nodes) = taffy.children(node) {
             for (c, &cn) in self.children.iter_mut().zip(child_nodes.iter()) {
                 c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
             }
         }
-    }
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _tr: &mut TextRenderer,
-        _theme: &Theme,
-        _p: &PresenceCtx,
-    ) {
     }
     fn children(&self) -> Vec<&dyn Widget> {
         self.children.iter().map(Box::as_ref).collect()

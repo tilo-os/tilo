@@ -255,9 +255,6 @@ impl SidebarDrawer {
     pub fn set_docked_width(&mut self, px: f64) {
         self.docked_width = self.docked_width.with_px(px);
     }
-    pub fn set_overlay_width(&mut self, px: f64) {
-        self.overlay_width = self.overlay_width.with_px(px);
-    }
     pub fn set_breakpoint(&mut self, px: f64) {
         self.breakpoint = self.breakpoint.with_px(px);
         self.content_min_width = None;
@@ -316,9 +313,6 @@ impl SidebarDrawer {
 
     // --- state --------------------------------------------------------------
 
-    pub fn anchored_side(&self) -> SidebarSide {
-        self.side
-    }
     /// Docked at/above the (resolved) breakpoint; always an overlay for
     /// [`Self::overlay_only`].
     pub fn layout_for(&self, width: f64) -> SplitLayout {
@@ -636,7 +630,7 @@ impl SidebarDrawer {
     }
 
     /// Toggle from the toggle's node (`key_path` from
-    /// `Widget::perform_action_at`); returns whether it did.
+    /// `Widget::perform_action`); returns whether it did.
     pub fn perform_toggle_action(
         &mut self,
         action: &crate::a11y::Action,
@@ -1514,7 +1508,7 @@ mod tests {
         );
 
         // The system shortcut closes it, as in every app.
-        let key = crate::synthetic_input::key_event(
+        let key = crate::synthetic_input::key_input(
             &winit::keyboard::Key::Character("L".into()),
             ElementState::Pressed,
         );

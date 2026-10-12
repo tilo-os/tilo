@@ -215,7 +215,7 @@ fn empty_workspace_cards_offer_accessible_collaboration_entry_points() {
 
 #[test]
 fn app_cards_open_their_app_directly() {
-    /// Without an action host (as in this fixture) the call card
+    /// Without an action host (as in this fixture) the Tasks and call cards
     /// still open their app; with one they invoke its action, below.
     fn app_cards_open_their_app_without_the_launcher() {
         use tilo_desktop::launchpad::LaunchpadAction;
@@ -345,14 +345,22 @@ fn host_with_live_app(
 }
 
 #[test]
-fn the_call_card_invokes_chats_start_call() {
+fn tasks_and_call_cards_invoke_their_apps_action() {
     use tilo_desktop::launchpad::LaunchpadAction;
-    for (card, app, resource, action) in [(
-        LaunchpadAction::Meet,
-        "so.tilo.chat",
-        "chat.workspace",
-        "start-call",
-    )] {
+    for (card, app, resource, action) in [
+        (
+            LaunchpadAction::Tasks,
+            "so.tilo.calendar",
+            "calendar.calendar",
+            "show-tasks",
+        ),
+        (
+            LaunchpadAction::Meet,
+            "so.tilo.chat",
+            "chat.workspace",
+            "start-call",
+        ),
+    ] {
         let (mut host, mut delivered) = host_with_live_app(
             app,
             resource,
@@ -507,21 +515,10 @@ fn launchpad_journey_deliver(
     tree: &TaffyTree<()>,
     node: NodeId,
 ) {
-    let mut handled = false;
-    let mut focus_target = None;
-    host.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: tree,
-        },
-    );
+    ui::testing::Dispatch::new()
+        .doc(doc)
+        .layout(tree, node)
+        .send(host, event);
     host.settle(&mut ui::widget::Edits::lend(doc), &automerge::ROOT);
 }
 fn launchpad_journey_escape() -> WindowEvent {
@@ -586,11 +583,11 @@ fn app_opener_pointer_press_waits_and_drag_cancel_keeps_native_search_closed() {
         .expect("production app opener must be mounted")
         .center();
     let moved = |point: Point| WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(point.x, point.y),
     };
     let mouse = |state| WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state,
         button: winit::event::MouseButton::Left,
     };

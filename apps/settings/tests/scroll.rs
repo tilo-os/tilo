@@ -56,7 +56,7 @@ impl Harness {
 
     fn wheel(&mut self, notches_down: f32) {
         let ev = WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             delta: MouseScrollDelta::LineDelta(0.0, -notches_down),
             phase: TouchPhase::Moved,
         };
@@ -113,7 +113,7 @@ fn content_pane_scrolls_with_the_mouse_wheel() {
     // Wheel down: the content pane's Scrollable shifts its child up.
     let content_point = Point::new(800.0, 170.0);
     let cursor = WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(content_point.x, content_point.y),
     };
     h.dispatch(&cursor);
@@ -150,7 +150,7 @@ fn a_rebuilt_pane_keeps_its_scroll_position() {
     let mut h = Harness::new(Category::Power, 1100.0, 340.0);
     let content_point = Point::new(800.0, 170.0);
     h.dispatch(&WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(content_point.x, content_point.y),
     });
     h.wheel(3.0);

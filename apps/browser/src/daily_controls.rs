@@ -81,14 +81,6 @@ impl DailyControls {
             }
         }
     }
-    /// Review fixture: the bar open on a query with matches found.
-    pub(crate) fn stage_for_review(&mut self) {
-        self.open = true;
-        self.query.set("web browser".into());
-        self.sent = "web browser".into();
-        self.count = 12;
-        self.active = 3;
-    }
     pub fn buffer_text(&mut self, text: &str) {
         if !self.buffered {
             self.query.set(String::new());

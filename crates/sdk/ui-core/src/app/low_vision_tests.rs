@@ -1,6 +1,7 @@
 use super::*;
 use crate::a11y::contrast_ratio;
 use crate::tokens::TextRole;
+use crate::widget::TaffyTreeExt;
 
 fn app() -> App {
     App::new(State::new(), Box::new(crate::widget::Text::new("t")))
@@ -169,28 +170,13 @@ impl Widget for AppearanceRoot {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _tr: &mut TextRenderer,
-        _theme: &Theme,
-        _p: &crate::presence::PresenceCtx,
-    ) {
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
         Some(self.intent.clone())
     }
     fn name(&self) -> &'static str {
         "AppearanceRoot"
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
     }
 }
 

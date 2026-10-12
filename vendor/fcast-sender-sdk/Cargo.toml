@@ -81,11 +81,7 @@ uniffi = ["dep:uniffi"]
 
 [lib]
 name = "fcast_sender_sdk"
-crate-type = [
-    "cdylib",
-    "rlib",
-    "staticlib",
-]
+crate-type = ["rlib"]
 path = "src/lib.rs"
 
 [dependencies.anyhow]

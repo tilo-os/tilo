@@ -12,9 +12,9 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
+use tilo_identity_ceremony::IdentityRecord;
 use tilo_user_identity::persist::DeviceKeyCustody;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist};
-use ui::widget::identity_flow::IdentityRecord;
 
 /// Where a newly provisioned personal identity's private share is kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -676,57 +676,12 @@ fn copy_home_peers(
         &tilo_relay_protocol::home_peer_registry_path(parent),
         &encoded,
     )?;
-    remember_personal_device(
-        &tilo_relay_protocol::home_peer_registry_path(parent)
-            .with_file_name("personal-device-peers.json"),
+    tilo_relay_protocol::remember_personal_device(
+        &tilo_relay_protocol::personal_device_peer_path(parent),
         local_cert.device_public_key,
     )?;
     let local_peers = source.with_file_name("personal-device-peers.json");
-    remember_personal_device(&local_peers, joined_device)?;
-    Ok(())
-}
-
-fn remember_personal_device(path: &Path, device_public_key: [u8; 32]) -> io::Result<()> {
-    let id = hex::encode(device_public_key);
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(error),
-    };
-    if bytes.len() > 64 * 1024 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "personal device list exceeds 64 KiB",
-        ));
-    }
-    let mut ids: Vec<String> = if bytes.is_empty() {
-        Vec::new()
-    } else {
-        serde_json::from_slice(&bytes)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
-    };
-    if ids.len() > 128
-        || ids.iter().any(|known| {
-            known.len() != 64
-                || hex::decode(known)
-                    .ok()
-                    .is_none_or(|decoded| decoded.len() != 32)
-        })
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "personal device list is invalid",
-        ));
-    }
-    if !ids.iter().any(|known| known == &id) {
-        ids.push(id);
-    }
-    let encoded = serde_json::to_vec_pretty(&ids)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    tilo_files::native::atomic::write(path, &encoded)?;
+    tilo_relay_protocol::remember_personal_device(&local_peers, joined_device)?;
     Ok(())
 }
 

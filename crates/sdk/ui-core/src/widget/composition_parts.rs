@@ -38,15 +38,8 @@ impl Parts {
     }
 
     pub(super) fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let start = Point::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-        );
-        self.rect = Rect::from_origin_size(
-            start,
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        let start = self.rect.origin();
         for (child, &node) in self.children.iter_mut().zip(&self.nodes) {
             child.apply_layout(taffy, node, start);
         }
@@ -166,7 +159,6 @@ mod tests {
     use automerge::{AutoCommit, ObjId, ReadDoc, transaction::Transactable};
     use std::{cell::RefCell, rc::Rc};
     use tilo_actions::{InvocationId, OperationKind};
-    use vello::kurbo::Point;
 
     struct MutableAdmission {
         calls: Rc<RefCell<Vec<InvocationId>>>,
@@ -176,9 +168,6 @@ mod tests {
         fn name(&self) -> &str {
             "MutableAdmission"
         }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
-        }
         fn build_layout(
             &mut self,
             tree: &mut TaffyTree<()>,
@@ -186,16 +175,6 @@ mod tests {
             _: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             tree.leaf_node(Style::default())
-        }
-        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
         }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &["mutable.effect"]

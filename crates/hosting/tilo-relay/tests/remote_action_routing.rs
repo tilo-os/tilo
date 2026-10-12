@@ -93,6 +93,7 @@ fn invoke(invocation: InvocationId) -> RemoteActionMessage {
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
     })
 }
 
@@ -414,7 +415,6 @@ async fn expired_agent_delegation_cannot_invoke_host() {
         AgentScope {
             rooms: vec![room.into()],
             apps: Vec::new(),
-            may_confirm: false,
         },
         issued,
         expires,
@@ -463,6 +463,7 @@ struct RecordingHost {
 }
 
 /// Lets the test keep a handle on the host the relay owns.
+#[derive(Clone)]
 struct SharedHost(Arc<RecordingHost>);
 
 impl ActionHost for SharedHost {
