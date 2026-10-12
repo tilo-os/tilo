@@ -218,7 +218,7 @@ impl Relay {
         let grants = live::LiveGrants::new();
         let live = LiveRelay::new(Arc::new(live::Authority(grants.clone())));
         let legacy =
-            legacy::LegacyWindows::new(live.clone(), context.relay.own_cert.device_public_key);
+            legacy::LegacyWindows::new(live.clone(), context.relay.identity.cert.device_public_key);
         let _ = context.relay.live_bridge.set(Arc::new(Bridge {
             live: live.clone(),
             legacy: legacy.clone(),
@@ -231,7 +231,7 @@ impl Relay {
             legacy: legacy.clone(),
             live,
             host_info: HostInfo {
-                host_cert: context.relay.own_cert,
+                host_cert: context.relay.identity.cert,
                 webtransport_port: addr.port(),
                 certificate_sha256: identity.pinned_sha256.clone(),
             },
@@ -393,6 +393,7 @@ async fn maintain_legacy(legacy: Arc<legacy::LegacyWindows>, context: crate::dae
             };
             let revoked = context
                 .relay
+                .identity
                 .revocations
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -402,9 +403,7 @@ async fn maintain_legacy(legacy: Arc<legacy::LegacyWindows>, context: crate::dae
                     Some(rooms) => rooms
                         .legacy_writer_role(authority.room(), device)
                         .await
-                        .is_some_and(|role| {
-                            crate::room_access::role_grants(role, collab_types::caps::Verb::Write)
-                        }),
+                        .is_some_and(crate::room_access::role_writes),
                     None => false,
                 },
                 None => true,
@@ -469,9 +468,7 @@ async fn legacy_input(
         Some((rooms, room)) => rooms
             .legacy_writer_role(&room, member.device_public_key)
             .await
-            .is_some_and(|role| {
-                crate::room_access::role_grants(role, collab_types::caps::Verb::Write)
-            }),
+            .is_some_and(crate::room_access::role_writes),
         None => member.user_public_key == publisher_user,
     };
     if !may {
@@ -487,7 +484,7 @@ async fn legacy_input(
             publisher,
             surface,
             events,
-            &relay.own_cert,
+            &relay.identity.cert,
             std::time::Instant::now(),
         )
         .map_err(|_| status(StatusCode::NOT_FOUND, "no such window"))?;

@@ -60,8 +60,6 @@ impl Widget for MailRoot {
         let child = taffy.children(node).unwrap()[0];
         self.search.apply_layout(taffy, child, origin);
     }
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         vec![&self.search]
     }
@@ -70,9 +68,6 @@ impl Widget for MailRoot {
     }
     fn name(&self) -> &'static str {
         "mail-root"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 }
 
@@ -121,6 +116,7 @@ fn press_launcher(app: &mut App) {
     let launcher = app.root_widget.children_mut().into_iter().next().unwrap();
     assert!(launcher.perform_action(
         &crate::a11y::Action::Activate,
+        &[],
         &mut crate::widget::Edits::lend(&mut app.state.doc),
         &app.state.root
     ));

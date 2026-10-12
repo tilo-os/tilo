@@ -302,7 +302,7 @@ mod imp_web {
             _capacity: usize,
             _accept: impl Fn(&[u8]) -> Option<T> + Send + Sync + 'static,
         ) -> Result<Self, NetError> {
-            Err(crate::caps::unsupported(Feature::PeerToPeer).into())
+            Err(crate::Unsupported::of(Feature::PeerToPeer).into())
         }
     }
 

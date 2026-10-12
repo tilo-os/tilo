@@ -231,6 +231,37 @@ pub fn take_attributed_control_invocation(
         .find_map(take_attributed_control_invocation)
 }
 
+thread_local! {
+    static RESULT_FOR: std::cell::Cell<Option<tilo_actions::InvocationId>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The operation the result being reported continues, while a host reports
+/// one: the invocation of the effect that submitted the edit, which waits
+/// for it to land. `None` for a submission nobody waits on.
+#[must_use]
+pub fn result_on_behalf_of() -> Option<tilo_actions::InvocationId> {
+    RESULT_FOR.with(std::cell::Cell::get)
+}
+
+/// [`on_control_invocation_result`] for a submission that continues the
+/// operation `on_behalf_of`, which [`result_on_behalf_of`] names meanwhile.
+pub fn on_control_invocation_result_for(
+    widget: &mut dyn Widget,
+    address: &tilo_actions::ActionAddress,
+    result: &ControlResult,
+    on_behalf_of: Option<tilo_actions::InvocationId>,
+) {
+    struct Restore(Option<tilo_actions::InvocationId>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            RESULT_FOR.with(|cell| cell.set(self.0));
+        }
+    }
+    let _restore = Restore(RESULT_FOR.with(|cell| cell.replace(on_behalf_of)));
+    on_control_invocation_result(widget, address, result);
+}
+
 /// Report a control invocation's admission result through `widget`'s subtree.
 pub fn on_control_invocation_result(
     widget: &mut dyn Widget,

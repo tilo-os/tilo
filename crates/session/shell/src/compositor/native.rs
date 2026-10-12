@@ -26,7 +26,7 @@ use automerge::{AutoCommit, ObjId};
 
 use crate::shell::collab_broker_capnp::LocalSessionLifecycle;
 use crate::shell::search::action_api::{ActionArgs, ActionVisibility, ResourceRef};
-use crate::shell::search::visibility::CapabilityVisibility;
+use crate::shell::search::visibility::PolicyVisibility;
 
 /// The gate makes the action API answer *for a caller*: a resource the
 /// capability model denies is absent from enumeration and selection alike.
@@ -69,7 +69,7 @@ fn with_action_gate<R>(
     };
     let actor_id = chrome.local_user_for_room(&workspace.room);
     let actor = workspace.actor_for_person(&actor_id);
-    let gate = CapabilityVisibility::new(&workspace, actor);
+    let gate = PolicyVisibility::new(&workspace, actor);
     Ok(f(&chrome, &gate))
 }
 use smithay::reexports::calloop::{self, EventLoop, Interest, Mode, PostAction, generic::Generic};
@@ -79,7 +79,7 @@ use taffy::NodeId;
 use vello::kurbo::Rect;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey, SmolStr};
+use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
 use crate::compositor::accessibility::{NativeAccessibility, Request as AccessibilityRequest};
 use crate::compositor::backend::drm::runtime::{DirectTouchDown, DirectTouchOwnership};
@@ -448,6 +448,70 @@ impl NativeRedrawReasons {
             || (!session_locked && self.keepalive)
             || (session_locked && (self.lock_clock || self.lock_animation || self.lock_osd))
     }
+
+    /// The reasons [`Self::content_changed`] counts, as frame-trace
+    /// [`metrics::paint_reason`] bits, gated exactly as it gates them.
+    /// `transition` separates a compositor transition's frame run from the
+    /// other animations folded into `hidden_desktop_animation`.
+    fn paint_reason_bits(self, session_locked: bool, transition: bool) -> u16 {
+        use metrics::paint_reason as r;
+        let desktop = !session_locked;
+        [
+            (self.force, r::FORCE),
+            (self.backend_event, r::INPUT),
+            (self.visible_input, r::CURSOR),
+            (self.session, r::SESSION),
+            (self.revision, r::REVISION),
+            (desktop && self.hidden_desktop_animation, r::ANIMATION),
+            (
+                desktop && self.hidden_desktop_animation && transition,
+                r::TRANSITION,
+            ),
+            (desktop && self.apps, r::APPS),
+            (desktop && self.peers, r::PEERS),
+            (desktop && self.presentation, r::PRESENTATION),
+            (desktop && self.capture, r::CAPTURE),
+            (desktop && self.keepalive, r::KEEPALIVE),
+            (session_locked && self.lock_clock, r::LOCK_CLOCK),
+            (session_locked && self.lock_animation, r::LOCK_ANIMATION),
+            (session_locked && self.lock_osd, r::LOCK_OSD),
+        ]
+        .into_iter()
+        .filter(|(held, _)| *held)
+        .fold(0, |bits, (_, bit)| bits | bit)
+    }
+}
+
+/// `+`-joined app ids of the tiles whose surfaces committed since the last
+/// painted tick, for the frame trace. Characters that would break the CSV
+/// row or the join are replaced; a surface no tab has adopted yet is named
+/// by its id.
+fn paint_client_label(
+    tree: &crate::shell::state::WorkspaceTree,
+    surfaces: &[crate::shell::foreign::SurfaceId],
+) -> &'static str {
+    let mut names: Vec<String> = surfaces
+        .iter()
+        .map(|surface| {
+            crate::shell::tab_binding::app_id_for_surface(tree, *surface).map_or_else(
+                || format!("surface-{surface}"),
+                |app| {
+                    app.chars()
+                        .map(|c| {
+                            if c == ',' || c == '+' || c.is_control() {
+                                '_'
+                            } else {
+                                c
+                            }
+                        })
+                        .collect()
+                },
+            )
+        })
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    metrics::intern_clients(&names.join("+"))
 }
 
 /// An animation's resting frame is owed after its demand clears. The last
@@ -478,6 +542,18 @@ impl AnimationSettle {
 
 const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
 const IDLE_BACKEND_POLL: Duration = Duration::from_millis(50);
+
+/// Loop iterations of work after which a quiet park asks for a heap trim: startup
+/// or a burst of input, not the one tick of a minute's clock repaint.
+const QUIET_TRIM_AFTER_TICKS: u32 = 30;
+
+/// A park at least this long (or one only an fd ends) is the loop going quiet.
+const QUIET_PARK: Duration = Duration::from_secs(1);
+
+/// How long the desktop rests after a frame that changed it before the
+/// layers its strip pans are composited from are drawn again
+/// (`FrameBuilder::layers_at_rest`): a pause in typing, not every key.
+const LAYER_WARM_SETTLE: Duration = Duration::from_secs(1);
 const WAYLAND_CLIENT_SERVICE_FALLBACK: Duration = Duration::from_millis(4);
 const WAYLAND_REQUESTS_PER_CLIENT_PER_TICK: usize = 64;
 const WAYLAND_PENDING_RETRY_FLOOR: Duration = Duration::from_millis(1);
@@ -723,9 +799,9 @@ struct LockClock {
 
 impl LockClock {
     fn now() -> Self {
-        let now = chrono::Local::now();
+        let now = ui::clock::local_now();
         Self {
-            clock: now.format("%H:%M").to_string(),
+            clock: ui::clock::time_of_day(&now),
             date: now.format("%A, %B %-d").to_string(),
         }
     }
@@ -802,6 +878,14 @@ fn cadence_wait_needed(pipe_ready: bool, frame_pending: bool) -> bool {
     pipe_ready && frame_pending
 }
 
+/// Whether a tick that is about to park leaves its inputs answered without a
+/// frame: it painted nothing, nothing is dirty (a frame held back by a full
+/// presenter is dirty), and no frame is awaited (no cadence wait is armed and
+/// no redraw was asked for after the paint decision).
+fn unpainted_input_settled(painted: bool, content_changed: bool, frame_awaited: bool) -> bool {
+    !(painted || content_changed || frame_awaited)
+}
+
 /// A transition the presenter could not take stays pending. The park while
 /// the pipe is full with a frame due is not animation time; the next submit
 /// still has the frame run ahead of it. A full pipe before the frame is due is
@@ -819,6 +903,15 @@ fn widget_deadline_for_presenter(
     widget_deadline: Option<Instant>,
 ) -> Option<Instant> {
     widget_deadline.filter(|_| pipe_ready)
+}
+
+/// A widget deadline wakes the loop once. A widget may keep an overdue
+/// deadline until a paint consumes it, while a due deadline alone does not
+/// paint (`present_for_app_poll`): a deadline that was already due when
+/// this tick started was answered by it, and waking for it again would run
+/// the loop flat out without painting until something unrelated paints.
+fn widget_park_deadline(tick_started: Instant, deadline: Option<Instant>) -> Option<Instant> {
+    deadline.filter(|deadline| *deadline > tick_started)
 }
 
 // A due animation remains dirty until it paints, but is no longer a wake
@@ -2820,7 +2913,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         &self,
         subject: &str,
         scope: &str,
-        verb: &str,
+        access: &str,
         id: Option<&str>,
     ) -> Result<serde_json::Value, String> {
         use crate::shell::state::CapOverride;
@@ -2836,22 +2929,123 @@ impl ControlState for FrameBuilderControlState<'_> {
             .active_workspace()
             .map(|w| w.id)
             .ok_or_else(|| "no active workspace".to_string())?;
-        let room_key = ws_id.raw().to_string();
         let subject = test_control::parse_subject(subject)?;
-        let scope = test_control::parse_scope(scope, &room_key)?;
-        let verb = test_control::parse_verb(verb)?;
-        let mut cap = CapOverride::grant(subject, scope, verb);
+        let scope = test_control::parse_scope(scope)?;
+        let access = test_control::parse_access(access)?;
+        let mut cap = CapOverride::grant(subject, scope, access);
         if let Some(id) = id {
             cap = cap.with_id(id);
         }
         // Through the tree's entry point, not `grant_as` directly, so this answers
         // with the same authority the rest of the compositor grants under.
-        let granted = tree.grant_in_workspace(ws_id, &user, cap).ok_or_else(|| {
-            format!("{user} may not administer this workspace, so nothing was granted")
-        })?;
+        let granted = tree
+            .grant_sandbox_in_workspace(ws_id, &user, cap)
+            .ok_or_else(|| {
+                format!("{user} may not administer this workspace, so nothing was granted")
+            })?;
         // Nothing past this point touches the tree.
         drop(tree);
         Ok(serde_json::json!({ "granted": granted, "grantor": user }))
+    }
+
+    /// Give a grant on the active workspace through the room's governance,
+    /// as the user at this session.
+    fn allow(
+        &self,
+        subject: &str,
+        node: &str,
+        kinds: &[String],
+        answer: &str,
+        id: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let subject = test_control::parse_policy_subject(subject)?;
+        let node: tilo_action_policy::TreePath = node
+            .parse()
+            .map_err(|error: tilo_action_policy::PathError| error.to_string())?;
+        let kinds = kinds
+            .iter()
+            .map(|kind| test_control::parse_kind(kind))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .fold(
+                tilo_action_policy::KindSet::NONE,
+                tilo_action_policy::KindSet::with,
+            );
+        let answer = test_control::parse_answer(answer)?;
+        let chrome = self.fb.chrome();
+        let user = chrome.local_user_id.clone();
+        let tree_handle = chrome.tree_handle();
+        drop(chrome);
+        let mut tree = tree_handle.write();
+        let (ws_id, room) = tree
+            .desktop
+            .active_workspace()
+            .map(|w| (w.id, w.node()))
+            .ok_or_else(|| "no active workspace".to_string())?;
+        let grant = tilo_action_policy::Grant::new(
+            id.map_or_else(|| format!("grant:{}", uuid::Uuid::new_v4()), str::to_owned),
+            subject,
+            room.join(&node),
+            kinds,
+            answer,
+            tilo_action_policy::Subject::person(user.clone()),
+        );
+        let granted = tree
+            .grant_in_workspace(ws_id, &user, grant)
+            .ok_or_else(|| format!("{user} may not grant that in this workspace"))?;
+        drop(tree);
+        Ok(serde_json::json!({ "granted": granted, "grantor": user }))
+    }
+
+    /// Take back a grant on the active workspace through its governance.
+    fn disallow(&self, id: &str) -> Result<serde_json::Value, String> {
+        let chrome = self.fb.chrome();
+        let user = chrome.local_user_id.clone();
+        let tree_handle = chrome.tree_handle();
+        drop(chrome);
+        let mut tree = tree_handle.write();
+        let ws_id = tree
+            .desktop
+            .active_workspace()
+            .map(|w| w.id)
+            .ok_or_else(|| "no active workspace".to_string())?;
+        let revoked = tree.revoke_in_workspace(ws_id, &user, &tilo_action_policy::GrantId::new(id));
+        drop(tree);
+        if revoked {
+            Ok(serde_json::json!({ "revoked": id, "revoker": user }))
+        } else {
+            Err(format!("{user} took back nothing named {id}"))
+        }
+    }
+
+    /// Admit a person with a role on the active workspace, as the user at
+    /// this session.
+    fn admit(&self, person: &str, role: &str) -> Result<serde_json::Value, String> {
+        let role = match role {
+            "viewer" => tilo_action_policy::Role::Viewer,
+            "commenter" => tilo_action_policy::Role::Commenter,
+            "editor" => tilo_action_policy::Role::Editor,
+            _ => {
+                return Err(format!(
+                    "role must be viewer / commenter / editor, got `{role}`"
+                ));
+            }
+        };
+        let chrome = self.fb.chrome();
+        let user = chrome.local_user_id.clone();
+        let tree_handle = chrome.tree_handle();
+        drop(chrome);
+        let mut tree = tree_handle.write();
+        let ws_id = tree
+            .desktop
+            .active_workspace()
+            .map(|w| w.id)
+            .ok_or_else(|| "no active workspace".to_string())?;
+        let admitted = tree.admit_in_workspace(ws_id, &user, person, role);
+        drop(tree);
+        admitted
+            .map(|_| serde_json::json!({ "admitted": person, "admitter": user }))
+            .ok_or_else(|| format!("{user} may not admit {person} to this workspace"))
     }
 
     /// Revoke on the active workspace through `Workspace::revoke_as` — same authority check as a grant.
@@ -2871,28 +3065,23 @@ impl ControlState for FrameBuilderControlState<'_> {
         let ws = tree
             .desktop
             .workspaces
-            .iter_mut()
+            .iter()
             .find(|w| w.id == ws_id)
             .ok_or_else(|| "no active workspace".to_string())?;
-        // Distinguish the two failures: `revoke_as` returns false both for "you
+        // Distinguish the two failures: a revoke returns false both for "you
         // may not" and "no such capability" — conflating them hides an unauthorised revoke as a no-op.
-        let may = ws.may_administer(&user);
-        if !may {
+        if !ws.may_administer(&user) {
             return Err(format!(
                 "{user} may not administer this workspace, so nothing was revoked"
             ));
         }
-        let removed = ws.revoke_as(&user, id);
-        if removed {
-            tree.doc_revoke_capability(ws_id, id);
-            tree.queue_save();
-        }
+        let removed = tree.revoke_sandbox_in_workspace(ws_id, &user, id);
         // Nothing past this point touches the tree.
         drop(tree);
         Ok(serde_json::json!({ "revoked": removed, "revoker": user, "id": id }))
     }
 
-    /// Answer the in-app action gate for the live workspace.
+    /// What the room's policy answers the live workspace's actor for one action.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "ws (borrowed from tree) is read all the way through building the final \
@@ -2905,11 +3094,9 @@ impl ControlState for FrameBuilderControlState<'_> {
         app: &str,
         resource: &str,
         action: &str,
-        verb: &str,
+        kind: &str,
         destructive: bool,
     ) -> Result<serde_json::Value, String> {
-        use crate::shell::actions::{ActionDecl, ActionRegistry, check_action};
-        use crate::shell::state::ResourceRef;
         let chrome = self.fb.chrome();
         // Same early-drop as `grant_capability`: only the tree is read below.
         let tree_handle = chrome.tree_handle();
@@ -2919,7 +3106,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             .desktop
             .active_workspace()
             .ok_or_else(|| "no active workspace".to_string())?;
-        let verb = test_control::parse_verb(verb)?;
+        let kind = test_control::parse_kind(kind)?;
         let actor = match actor.split_once(':') {
             Some(("person", id)) => ws.actor_for_person(&id.to_string()),
             Some(("app", id)) => ws.actor_for_app(id),
@@ -2930,21 +3117,16 @@ impl ControlState for FrameBuilderControlState<'_> {
                 ));
             }
         };
-        let mut registry = ActionRegistry::new();
-        let mut decl = ActionDecl::new(app, action, verb);
-        if destructive {
-            decl = decl.destructive();
-        }
-        registry.declare(decl);
-        let resource = ResourceRef::Action {
-            app: app.to_string(),
-            resource: resource.to_string(),
-            action: action.to_string(),
-        };
-        let outcome = check_action(ws, &registry, &actor, app, action, &resource);
+        let node = tilo_action_policy::TreePath::root()
+            .app(app)
+            .resource(resource)
+            .action(action);
+        let answer = crate::shell::search::visibility::answer_for(ws, &actor, &node, kind);
+        let permitted = crate::shell::search::visibility::permits(ws, &actor, &node, kind);
         Ok(serde_json::json!({
-            "outcome": format!("{outcome:?}"),
-            "permitted": outcome.is_permitted(),
+            "answer": format!("{answer:?}"),
+            "permitted": permitted,
+            "needs_confirmation": permitted && destructive,
             "workspace": ws.id.raw(),
             "room": ws.room.to_string(),
         }))
@@ -4511,9 +4693,16 @@ fn write_snapshot_png(
                 }
             }
         }
-        let Some(rgba) = slot.as_mut().map(|renderer| renderer.render_rgba(&scene)) else {
+        // A shot is one render with no next frame to repair it, so it waits
+        // out Vello growing its buffers: one that did not fit drops the paths
+        // encoded last, and the scene draws every display in turn, so the
+        // second display came back empty while the first looked whole.
+        let Some(rendered) = slot.as_mut().map(|renderer| {
+            renderer.try_render_resilient(&scene, vello::peniko::Color::TRANSPARENT)
+        }) else {
             return Err("no offscreen renderer".to_string());
         };
+        let rgba = rendered?;
         // `rgba` is now an owned buffer with no tie to the renderer, so the
         // mutex guard can go before the encode/write work below.
         drop(slot);
@@ -5700,112 +5889,13 @@ fn portal_capture_event(
             };
             Some(CapturedInput::Scroll { dx, dy })
         }
-        WindowEvent::KeyboardInput { event, .. } => {
-            keycode_for_eis(event.physical_key).map(|keycode| CapturedInput::Keyboard {
+        WindowEvent::KeyboardInput { event, .. } => ui::evdev::from_physical(event.physical_key)
+            .map(|keycode| CapturedInput::Keyboard {
                 keycode,
                 pressed: event.state == ElementState::Pressed,
-            })
-        }
+            }),
         _ => None,
     }
-}
-
-/// USB HID / evdev keycodes for keys whose physical positions winit exposes.
-/// This deliberately maps physical keys, never characters, so a non-US layout
-/// still sees the correct key event over EIS.
-fn keycode_for_eis(key: PhysicalKey) -> Option<u32> {
-    let PhysicalKey::Code(code) = key else {
-        return None;
-    };
-    Some(match code {
-        KeyCode::Escape => 1,
-        KeyCode::Digit1 => 2,
-        KeyCode::Digit2 => 3,
-        KeyCode::Digit3 => 4,
-        KeyCode::Digit4 => 5,
-        KeyCode::Digit5 => 6,
-        KeyCode::Digit6 => 7,
-        KeyCode::Digit7 => 8,
-        KeyCode::Digit8 => 9,
-        KeyCode::Digit9 => 10,
-        KeyCode::Digit0 => 11,
-        KeyCode::Minus => 12,
-        KeyCode::Equal => 13,
-        KeyCode::Backspace => 14,
-        KeyCode::Tab => 15,
-        KeyCode::KeyQ => 16,
-        KeyCode::KeyW => 17,
-        KeyCode::KeyE => 18,
-        KeyCode::KeyR => 19,
-        KeyCode::KeyT => 20,
-        KeyCode::KeyY => 21,
-        KeyCode::KeyU => 22,
-        KeyCode::KeyI => 23,
-        KeyCode::KeyO => 24,
-        KeyCode::KeyP => 25,
-        KeyCode::BracketLeft => 26,
-        KeyCode::BracketRight => 27,
-        KeyCode::Enter => 28,
-        KeyCode::ControlLeft => 29,
-        KeyCode::KeyA => 30,
-        KeyCode::KeyS => 31,
-        KeyCode::KeyD => 32,
-        KeyCode::KeyF => 33,
-        KeyCode::KeyG => 34,
-        KeyCode::KeyH => 35,
-        KeyCode::KeyJ => 36,
-        KeyCode::KeyK => 37,
-        KeyCode::KeyL => 38,
-        KeyCode::Semicolon => 39,
-        KeyCode::Quote => 40,
-        KeyCode::Backquote => 41,
-        KeyCode::ShiftLeft => 42,
-        KeyCode::Backslash => 43,
-        KeyCode::KeyZ => 44,
-        KeyCode::KeyX => 45,
-        KeyCode::KeyC => 46,
-        KeyCode::KeyV => 47,
-        KeyCode::KeyB => 48,
-        KeyCode::KeyN => 49,
-        KeyCode::KeyM => 50,
-        KeyCode::Comma => 51,
-        KeyCode::Period => 52,
-        KeyCode::Slash => 53,
-        KeyCode::ShiftRight => 54,
-        KeyCode::AltLeft => 56,
-        KeyCode::Space => 57,
-        KeyCode::CapsLock => 58,
-        KeyCode::F1 => 59,
-        KeyCode::F2 => 60,
-        KeyCode::F3 => 61,
-        KeyCode::F4 => 62,
-        KeyCode::F5 => 63,
-        KeyCode::F6 => 64,
-        KeyCode::F7 => 65,
-        KeyCode::F8 => 66,
-        KeyCode::F9 => 67,
-        KeyCode::F10 => 68,
-        KeyCode::NumLock => 69,
-        KeyCode::ScrollLock => 70,
-        KeyCode::F11 => 87,
-        KeyCode::F12 => 88,
-        KeyCode::ControlRight => 97,
-        KeyCode::AltRight => 100,
-        KeyCode::Home => 102,
-        KeyCode::ArrowUp => 103,
-        KeyCode::PageUp => 104,
-        KeyCode::ArrowLeft => 105,
-        KeyCode::ArrowRight => 106,
-        KeyCode::End => 107,
-        KeyCode::ArrowDown => 108,
-        KeyCode::PageDown => 109,
-        KeyCode::Insert => 110,
-        KeyCode::Delete => 111,
-        KeyCode::SuperLeft => 125,
-        KeyCode::SuperRight => 126,
-        KeyCode::ContextMenu => 127,
-        _ => return None,
-    })
 }
 
 #[derive(Clone, Debug)]
@@ -6491,7 +6581,7 @@ fn forward_spatial_window_event(
             }
         }
         WindowEvent::KeyboardInput { event, .. } => {
-            let Some(keycode) = keycode_for_eis(event.physical_key) else {
+            let Some(keycode) = ui::evdev::from_physical(event.physical_key) else {
                 return true;
             };
             crate::shell::device_fabric::FabricInputEvent::Key {
@@ -7355,9 +7445,7 @@ fn install_session_peer_sync(
         .set_peer_sync_bridge(std::rc::Rc::new(move |req| {
             let active = tree_handle.read().desktop.active;
             match req {
-                PeerSyncRequest::IssueInvite => bridge_net
-                    .issue_invite(active, INVITE_EXPIRY_SECONDS)
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                PeerSyncRequest::PrepareInvitation => Ok(bridge_net.prepare_invitation()),
                 PeerSyncRequest::ExportIdentity => bridge_net
                     .person_identity_card(active)
                     .map(crate::shell::overlay_host::PeerSyncResponse::Message),
@@ -8229,6 +8317,9 @@ pub fn run() {
         eprintln!("tilo compositor: cannot establish session lock recovery: {error}");
         std::process::exit(1);
     });
+    // Startup frees its scratch (renderer warm-up, identity, network, search) over its first
+    // seconds, never all at once, and glibc keeps it: one trim once it is over.
+    crate::shell::heap_trim::request_after(crate::shell::heap_trim::STARTUP_SETTLED);
     // Calloop drives the whole compositor; smithay is callback-oriented and
     // expects every wakeup to fan out from a single `EventLoop::<State>`.
     let mut event_loop: EventLoop<'static, State> = match EventLoop::try_new() {
@@ -8552,9 +8643,11 @@ pub fn run() {
         initial_size,
         crate::shell::session_record_store(),
     );
-    frame_builder
-        .host_mut()
-        .set_pixel_aligned_strip_pan(backend.pixel_aligned_strip_pan());
+    frame_builder.set_strip_pan_presenter(
+        backend.pixel_aligned_strip_pan(),
+        backend.composites_strip_layers(),
+    );
+    frame_builder.set_scroll_copy_presenter(backend.copies_scrolls());
     let clipboard_store = state.selection_store();
     frame_builder
         .host_mut()
@@ -8669,6 +8762,11 @@ pub fn run() {
     });
     let mut spatial_control: Option<SpatialControlSession> = None;
     let mut spatial_pointer_parked = false;
+    // Loop iterations since the last quiet trim was asked for.
+    let mut ticks_since_trim: u32 = 0;
+    // When the presenter's strip layers are drawn again, once the desktop
+    // rests after a frame that changed it ([`LAYER_WARM_SETTLE`]).
+    let mut layer_warm_at: Option<Instant> = None;
     // The session's CRDT fan-out broker, bound before the wayland socket is
     // published (before any app launches) — an app resolves its collab
     // descriptor once at spawn, so a broker arriving later is one it never gets.
@@ -9379,6 +9477,11 @@ pub fn run() {
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
     let mut animation_settle = AnimationSettle::default();
+    // When the frame being made was first wanted, for its trace lateness.
+    let mut demand_onset = metrics::DemandOnset::default();
+    // Each foreign surface's frame counter at the last traced paint, so a
+    // painted tick can name the apps whose commits it carries.
+    let mut trace_surface_frames = std::collections::HashMap::new();
     // `output_presentation_frame_changed` observes live foreign-frame
     // sequences, but removal leaves no live entry to report. Keep a local
     // repaint edge until its full-frame boundary is actually submitted.
@@ -9503,6 +9606,22 @@ pub fn run() {
     // in the model with nothing presented.
     let mut transition_hold_sleep = Duration::ZERO;
     let mut credit_transition_hold;
+    // Every session transition reaches the backend, presenter, logind lifecycle,
+    // dimmer and output management alike.
+    macro_rules! apply_session_transitions {
+        ($transitions:expr) => {
+            for t in $transitions {
+                apply_session_transition(
+                    t,
+                    backend.as_mut(),
+                    present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
+                    &mut screen_dimmer,
+                    Some(&mut state.output_management),
+                );
+            }
+        };
+    }
     while !close_requested {
         dictation_vocabulary.refresh(&mut state);
         if termination.requested() {
@@ -9901,16 +10020,7 @@ pub fn run() {
                     // backend; the first painted frame after closes the input-to-present measurement.
                     metrics.note_input(Instant::now());
                     // Any input is activity — reset the idle timer and wake the display if it was blanked.
-                    for t in session.note_activity(Instant::now()) {
-                        apply_session_transition(
-                            t,
-                            backend.as_mut(),
-                            present_pipe.as_ref(),
-                            local_session_lifecycle.as_ref(),
-                            &mut screen_dimmer,
-                            Some(&mut state.output_management),
-                        );
-                    }
+                    apply_session_transitions!(session.note_activity(Instant::now()));
                     if let Some(steps) = key_steps.as_mut() {
                         steps.steps.mark("activity");
                     }
@@ -10024,16 +10134,7 @@ pub fn run() {
                                 power_bridge.request_suspend();
                             }
                             Some(tilo_power_mgmt::PowerAction::Lock) => {
-                                for t in session.request_lock(Instant::now()) {
-                                    apply_session_transition(
-                                        t,
-                                        backend.as_mut(),
-                                        present_pipe.as_ref(),
-                                        local_session_lifecycle.as_ref(),
-                                        &mut screen_dimmer,
-                                        Some(&mut state.output_management),
-                                    );
-                                }
+                                apply_session_transitions!(session.request_lock(Instant::now()));
                             }
                             Some(tilo_power_mgmt::PowerAction::Ignore) | None => {}
                         }
@@ -10077,16 +10178,7 @@ pub fn run() {
                         session_changed = true;
                     } else if route == PriorityRoute::LockSession {
                         // Super+L locks immediately.
-                        for t in session.request_lock(Instant::now()) {
-                            apply_session_transition(
-                                t,
-                                backend.as_mut(),
-                                present_pipe.as_ref(),
-                                local_session_lifecycle.as_ref(),
-                                &mut screen_dimmer,
-                                Some(&mut state.output_management),
-                            );
-                        }
+                        apply_session_transitions!(session.request_lock(Instant::now()));
                     } else if route == PriorityRoute::ToggleMouseKeys {
                         // The compositor applies the flipped preference on its
                         // next settings poll; the readout confirms it now.
@@ -10146,7 +10238,7 @@ pub fn run() {
                             }
                             Some(crate::shell::media_keys::Response::OpenDisplayModes) => {
                                 frame_builder.with_chrome(|st| {
-                                    st.overlays.projection = true;
+                                    st.open_projection();
                                     st.bump();
                                 });
                                 session_changed = true;
@@ -10357,16 +10449,7 @@ pub fn run() {
                     // A 3/4-finger gesture, already resolved into its navigation meaning —
                     // never also delivered to a client, so no double-handling to guard against.
                     if !session.is_locked() && client_input_allowed(&frame_builder) {
-                        for t in session.note_activity(Instant::now()) {
-                            apply_session_transition(
-                                t,
-                                backend.as_mut(),
-                                present_pipe.as_ref(),
-                                local_session_lifecycle.as_ref(),
-                                &mut screen_dimmer,
-                                Some(&mut state.output_management),
-                            );
-                        }
+                        apply_session_transitions!(session.note_activity(Instant::now()));
                         apply_shell_gesture(&mut frame_builder, action);
                         session_changed = true;
                     }
@@ -10514,16 +10597,7 @@ pub fn run() {
             session.is_locked(),
         ) {
             session_changed = true;
-            for t in session.note_activity(Instant::now()) {
-                apply_session_transition(
-                    t,
-                    backend.as_mut(),
-                    present_pipe.as_ref(),
-                    local_session_lifecycle.as_ref(),
-                    &mut screen_dimmer,
-                    Some(&mut state.output_management),
-                );
-            }
+            apply_session_transitions!(session.note_activity(Instant::now()));
         }
         for wake in controller_nav.take_wakes() {
             use crate::compositor::controller_nav::ControllerWake;
@@ -10841,16 +10915,7 @@ pub fn run() {
             shell_lock_requested = chrome.take_session_lock_request();
         });
         if shell_lock_requested {
-            for t in session.request_lock(Instant::now()) {
-                apply_session_transition(
-                    t,
-                    backend.as_mut(),
-                    present_pipe.as_ref(),
-                    local_session_lifecycle.as_ref(),
-                    &mut screen_dimmer,
-                    Some(&mut state.output_management),
-                );
-            }
+            apply_session_transitions!(session.request_lock(Instant::now()));
             session_changed = true;
         }
 
@@ -10891,32 +10956,14 @@ pub fn run() {
             session_changed = true;
             match sig {
                 tilo_power_mgmt::PowerSignal::Lock => {
-                    for t in session.request_lock(Instant::now()) {
-                        apply_session_transition(
-                            t,
-                            backend.as_mut(),
-                            present_pipe.as_ref(),
-                            local_session_lifecycle.as_ref(),
-                            &mut screen_dimmer,
-                            Some(&mut state.output_management),
-                        );
-                    }
+                    apply_session_transitions!(session.request_lock(Instant::now()));
                 }
                 tilo_power_mgmt::PowerSignal::PreparingForSleep => {
                     // Preserve a lock that was already present at request
                     // time, and also observe a manual/lid lock that arrived
                     // while the async suspend request was in flight.
                     sleep_lock_was_locked |= session.is_locked();
-                    for t in session.prepare_for_sleep(Instant::now()) {
-                        apply_session_transition(
-                            t,
-                            backend.as_mut(),
-                            present_pipe.as_ref(),
-                            local_session_lifecycle.as_ref(),
-                            &mut screen_dimmer,
-                            Some(&mut state.output_management),
-                        );
-                    }
+                    apply_session_transitions!(session.prepare_for_sleep(Instant::now()));
                     sleep_lock_frame_pending = true;
                     sleep_lock_frame_serial = None;
                     sleep_lock_frame_failed = false;
@@ -10935,32 +10982,14 @@ pub fn run() {
                     // sleep actually installed; never unlock an unrelated
                     // user lock when CanSuspend is refused.
                     if should_unlock_after_suspend_failure(was_prepared, sleep_lock_was_locked) {
-                        for t in session.request_unlock(Instant::now()) {
-                            apply_session_transition(
-                                t,
-                                backend.as_mut(),
-                                present_pipe.as_ref(),
-                                local_session_lifecycle.as_ref(),
-                                &mut screen_dimmer,
-                                Some(&mut state.output_management),
-                            );
-                        }
+                        apply_session_transitions!(session.request_unlock(Instant::now()));
                     }
                     sleep_lock_was_locked = false;
                     tracing::warn!(target: "tilo::power", "suspend request failed; session remains awake");
                 }
                 tilo_power_mgmt::PowerSignal::ResumedFromSleep => {
                     // Reset the idle timer so a stale pre-sleep timestamp doesn't immediately re-blank/re-suspend on resume.
-                    for t in session.resume_from_sleep(Instant::now()) {
-                        apply_session_transition(
-                            t,
-                            backend.as_mut(),
-                            present_pipe.as_ref(),
-                            local_session_lifecycle.as_ref(),
-                            &mut screen_dimmer,
-                            Some(&mut state.output_management),
-                        );
-                    }
+                    apply_session_transitions!(session.resume_from_sleep(Instant::now()));
                     // Put the display back — a suspend doesn't pause the seat, so the DRM device
                     // returns with no mode/framebuffer/cursor plane; without this, lid close/open is an unrecoverable black screen.
                     backend.reset_display();
@@ -11024,16 +11053,7 @@ pub fn run() {
         // `SessionLocker` confirms after the overlay paints, below, so `locked` fires only once content is hidden.
         if state.session_lock.take_lock_requested() {
             session_changed = true;
-            for t in session.request_lock(Instant::now()) {
-                apply_session_transition(
-                    t,
-                    backend.as_mut(),
-                    present_pipe.as_ref(),
-                    local_session_lifecycle.as_ref(),
-                    &mut screen_dimmer,
-                    Some(&mut state.output_management),
-                );
-            }
+            apply_session_transitions!(session.request_lock(Instant::now()));
         }
         // Async unlock: pick up an in-flight credential verify's result from the
         // worker thread (started by lock-screen Enter). The loop never blocks —
@@ -11046,16 +11066,7 @@ pub fn run() {
                 // The next lock starts without the keyboard and its layer.
                 lock_keyboard = lock_screen::LockTouchKeyboard::default();
                 frame_builder.set_lock_keyboard_keys(Vec::new());
-                for t in session.request_unlock(Instant::now()) {
-                    apply_session_transition(
-                        t,
-                        backend.as_mut(),
-                        present_pipe.as_ref(),
-                        local_session_lifecycle.as_ref(),
-                        &mut screen_dimmer,
-                        Some(&mut state.output_management),
-                    );
-                }
+                apply_session_transitions!(session.request_unlock(Instant::now()));
             }
         }
 
@@ -11515,26 +11526,7 @@ pub fn run() {
 
         // Per-output HiDPI: tell each client the scale of its current display.
         // Every tick, since a window dragged to another monitor's density is otherwise unobserved.
-        {
-            let mut placements: Vec<(u64, (f64, f64))> = state
-                .client_input
-                .placements()
-                .filter_map(|(surface_id, group)| {
-                    let rect = frame_builder.host().active_tile_rect(group)?;
-                    Some((surface_id, (rect.x0, rect.y0)))
-                })
-                .collect();
-            placements.extend(state.floating_toplevels.iter().map(|surface| {
-                let center = surface.content_rect.center();
-                (surface.surface_id, (center.x, center.y))
-            }));
-            placements.extend(state.output_presentation_placements());
-            placements.extend(transient_surfaces.iter().map(|(surface_id, rect)| {
-                let center = rect.center();
-                (*surface_id, (center.x, center.y))
-            }));
-            state.update_surface_scales(&placements);
-        }
+        push_surface_scales(&mut state, &frame_builder, &transient_surfaces);
         // An output change has already installed the backend's new geometry,
         // but the frame builder still exposes the previous frame's tile rects
         // until `relayout` below. Diffing that mismatched pair would send a
@@ -12201,7 +12193,7 @@ pub fn run() {
         }
         // Is there anything new to show? This redraw gating lets a static desktop
         // idle at near-zero CPU, orthogonal to *when* a frame may show (the clock's job below).
-        let content_changed = NativeRedrawReasons {
+        let redraw_reasons = NativeRedrawReasons {
             force: force_first_paint,
             backend_event: had_backend_events,
             visible_input: visible_input_changed,
@@ -12235,8 +12227,9 @@ pub fn run() {
             )
             .is_some_and(|deadline| iter_t0 >= deadline),
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
-        }
-        .content_changed(session.is_locked());
+        };
+        let content_changed = redraw_reasons.content_changed(session.is_locked());
+        demand_onset.note_tick(content_changed, iter_t0);
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
         let cadence_due = force_first_paint || frame_clock.due(iter_t0);
@@ -12358,6 +12351,21 @@ pub fn run() {
             }
         }
 
+        if should_paint && metrics.is_enabled() {
+            let advanced =
+                crate::shell::foreign::store().surfaces_advanced(&mut trace_surface_frames);
+            let clients = if advanced.is_empty() {
+                ""
+            } else {
+                let chrome = frame_builder.chrome();
+                let tree = chrome.tree();
+                paint_client_label(&tree, &advanced)
+            };
+            metrics.mark_paint_reasons(
+                redraw_reasons.paint_reason_bits(session.is_locked(), transition_run),
+                clients,
+            );
+        }
         if should_paint {
             frame_builder.with_chrome(
                 super::super::shell::chrome_state::ChromeState::consume_transition_paint,
@@ -12369,13 +12377,14 @@ pub fn run() {
             frame_builder.relayout();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
             // `relayout` publishes a new tile rect (for a tab switch, move,
-            // fullscreen or hotplug) immediately before painting it. Reconcile
-            // here as well as above so the client gets the output transition in
-            // the same frame rather than one idle tick later.
-            reconcile_surface_output_memberships(
+            // fullscreen or hotplug) immediately before painting it. Publish it
+            // here as well as above so the client gets the output transition and
+            // its new scale in the same frame, ahead of the configure below.
+            publish_layout_to_clients(
                 &mut surface_output_memberships,
-                &state,
+                &mut state,
                 &frame_builder,
+                &transient_surfaces,
                 backend.outputs(),
                 &output_globals,
             );
@@ -12843,13 +12852,20 @@ pub fn run() {
                 output_presentation_repaint_pending = false;
             }
             let submit_done = Instant::now();
+            // Once the desktop rests after a frame that changed it, the
+            // layers the presenter composites strip pans from catch up.
+            layer_warm_at = frame_builder
+                .layers_stale()
+                .then(|| submit_done.checked_add(LAYER_WARM_SETTLE))
+                .flatten();
             // Capture lateness against the deadline that admitted this frame.
             // `note_presented` advances the clock immediately below, so doing
             // this afterwards would compare against the *next* interval and
             // hide an overrun by roughly one refresh period.
             metrics.mark_deadline_lateness(
-                submit_done.saturating_duration_since(frame_clock.next_deadline()),
+                demand_onset.lateness(submit_done, frame_clock.next_deadline()),
             );
+            demand_onset.painted();
             metrics.mark_submit(
                 submit_done.saturating_duration_since(t_submit_start),
                 async_present,
@@ -12936,10 +12952,12 @@ pub fn run() {
             // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.
             frame_builder.relayout();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
-            reconcile_surface_output_memberships(
+            // The post-dispatch `flush_configures` below sends this layout's sizes.
+            publish_layout_to_clients(
                 &mut surface_output_memberships,
-                &state,
+                &mut state,
                 &frame_builder,
+                &transient_surfaces,
                 backend.outputs(),
                 &output_globals,
             );
@@ -13043,16 +13061,7 @@ pub fn run() {
             // An agent at work is the person's activity on a hosted machine:
             // without this it locks under its agents after the idle timeout.
             if injected && conn.agent {
-                for t in session.note_activity(Instant::now()) {
-                    apply_session_transition(
-                        t,
-                        backend.as_mut(),
-                        present_pipe.as_ref(),
-                        local_session_lifecycle.as_ref(),
-                        &mut screen_dimmer,
-                        Some(&mut state.output_management),
-                    );
-                }
+                apply_session_transitions!(session.note_activity(Instant::now()));
             }
         }
         if let Some(watching) = test_control_ctx.watch_request.take() {
@@ -13213,6 +13222,32 @@ pub fn run() {
         // left to wake the loop; its frame is due on the next cadence.
         let cadence_needed =
             cadence_needed || cadence_wait_needed(pipe_ready, injected_redraw_pending);
+        // Nothing changed on screen and no frame is waiting, here or behind
+        // the presenter: the inputs handled so far are done without a frame.
+        // Their latency ends here rather than at the next painted frame,
+        // which answers a later input.
+        if unpainted_input_settled(
+            should_paint,
+            content_changed,
+            cadence_needed || injected_redraw_pending,
+        ) {
+            metrics.settle_unpainted_input();
+        }
+        // The desktop rested since a frame changed it: draw it as layers for
+        // the presenter to warm while nothing else is drawn, so the next
+        // strip pan starts by copying. Never under a frame on its way, and
+        // only once per change.
+        if layer_warm_at.is_some_and(|at| park_now >= at) {
+            layer_warm_at = None;
+            if !cadence_needed
+                && !session.is_locked()
+                && let Some(pipe) = present_pipe.as_ref()
+                && pipe.inflight() == 0
+                && let Some(layers) = frame_builder.layers_at_rest()
+            {
+                let _ = pipe.warm(FramePaint::layers_at_rest(layers));
+            }
+        }
         let (park, park_deadline) = native_loop_park_named(
             park_now,
             backend_event_wake,
@@ -13222,7 +13257,10 @@ pub fn run() {
             [
                 (
                     "widget",
-                    widget_deadline_for_presenter(pipe_ready, frame_builder.next_wake_deadline()),
+                    widget_deadline_for_presenter(
+                        pipe_ready,
+                        widget_park_deadline(iter_t0, frame_builder.next_wake_deadline()),
+                    ),
                 ),
                 (
                     "lock-animation",
@@ -13261,6 +13299,7 @@ pub fn run() {
                 ),
                 ("touch-hold", test_control_ctx.touch_pointer.deadline()),
                 ("legacy-stream", state.legacy_stream_deadline()),
+                ("layer-warm", layer_warm_at),
                 (
                     "client-followup",
                     client_followup_deadline(client_pump_needed, park_now),
@@ -13279,6 +13318,15 @@ pub fn run() {
                 ("control-followup", control_followup.then_some(park_now)),
             ],
         );
+        // Work (startup, a burst of input, windows closing) leaves freed heap glibc keeps. A
+        // loop going to sleep for a while after it asks for one trim once it stays quiet; a
+        // minute's clock repaint is not work enough to ask.
+        ticks_since_trim = ticks_since_trim.saturating_add(1);
+        if ticks_since_trim >= QUIET_TRIM_AFTER_TICKS && park.is_none_or(|park| park >= QUIET_PARK)
+        {
+            crate::shell::heap_trim::request_when_quiet();
+            ticks_since_trim = 0;
+        }
         let t_sleep_start = Instant::now();
         if let Err(err) = event_loop.dispatch(park, &mut state) {
             eprintln!("tilo compositor: event loop dispatch error: {err}");
@@ -13696,7 +13744,8 @@ mod tests {
 
     #[test]
     fn pointer_hover_preserves_touch_keyboard_until_pointer_activation() {
-        use crate::compositor::input_method::{OskInput, OskPreference, osk_wanted};
+        use crate::compositor::input_method::{OskInput, osk_wanted};
+        use tilo_accessibility_settings::OnScreenKeyboard;
 
         let mut ctx = TestControlCtx::new();
         let mut fb = FrameBuilder::new((800, 600));
@@ -13711,17 +13760,20 @@ mod tests {
             &mut fb,
         );
         assert!(osk_wanted(
-            OskPreference::Auto,
+            OnScreenKeyboard::Auto,
             OskInput::from_environment(&ctx.input)
         ));
         ctx.note_injected_input(&PlannedAction::CursorMoved { x: 110.0, y: 100.0 }, &mut fb);
         assert!(
-            osk_wanted(OskPreference::Auto, OskInput::from_environment(&ctx.input)),
+            osk_wanted(
+                OnScreenKeyboard::Auto,
+                OskInput::from_environment(&ctx.input)
+            ),
             "incidental pointer hover must not dismiss a touch-started keyboard"
         );
         ctx.note_injected_input(&PlannedAction::MouseLeftButton { pressed: true }, &mut fb);
         assert!(!osk_wanted(
-            OskPreference::Auto,
+            OnScreenKeyboard::Auto,
             OskInput::from_environment(&ctx.input)
         ));
     }
@@ -14136,6 +14188,34 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn presenter_backpressure_and_deadlines_schedule_work() {
+        // Phase `an_input_that_changes_nothing_settles_without_a_frame`.
+        assert!(
+            unpainted_input_settled(false, false, false),
+            "a key release that changes nothing is answered when the loop parks"
+        );
+        assert!(
+            !unpainted_input_settled(true, false, false),
+            "a painted tick closes the latency on its own frame"
+        );
+        assert!(
+            !unpainted_input_settled(false, true, cadence_wait_needed(false, true)),
+            "a frame held back by a full presenter still owes the input its latency"
+        );
+        assert!(
+            !unpainted_input_settled(false, false, cadence_wait_needed(true, true)),
+            "a frame waiting for its cadence still owes the input its latency"
+        );
+        // A redraw a control-socket input asked for after the paint decision,
+        // behind a full presenter (so no cadence wait is armed for it).
+        let control_redraw = true;
+        assert!(
+            !unpainted_input_settled(
+                false,
+                false,
+                cadence_wait_needed(false, control_redraw) || control_redraw
+            ),
+            "a redraw asked for after the paint decision is still owed"
+        );
         // Phase `prepaint_stall_threshold_reports_fifty_milliseconds_and_above`.
         assert!(!slow_prepaint_phase(Duration::from_millis(49)));
         assert!(slow_prepaint_phase(Duration::from_millis(50)));
@@ -14304,6 +14384,44 @@ mod tests {
     }
 
     #[test]
+    fn paint_reasons_name_exactly_what_content_changed_counts() {
+        use crate::compositor::metrics::paint_reason as r;
+        let quiet = NativeRedrawReasons::default();
+        assert!(!quiet.content_changed(false));
+        assert_eq!(quiet.paint_reason_bits(false, false), 0);
+        let commit = NativeRedrawReasons {
+            apps: true,
+            ..NativeRedrawReasons::default()
+        };
+        assert_eq!(commit.paint_reason_bits(false, false), r::APPS);
+        assert_eq!(
+            commit.paint_reason_bits(true, false),
+            0,
+            "a hidden desktop's commit is not why a locked tick paints"
+        );
+        let fade = NativeRedrawReasons {
+            hidden_desktop_animation: true,
+            revision: true,
+            ..NativeRedrawReasons::default()
+        };
+        assert_eq!(
+            fade.paint_reason_bits(false, true),
+            r::REVISION | r::ANIMATION | r::TRANSITION
+        );
+        assert_eq!(
+            fade.paint_reason_bits(false, false),
+            r::REVISION | r::ANIMATION,
+            "an animation that is not a compositor transition is not named one"
+        );
+        let lock = NativeRedrawReasons {
+            lock_clock: true,
+            ..NativeRedrawReasons::default()
+        };
+        assert_eq!(lock.paint_reason_bits(true, false), r::LOCK_CLOCK);
+        assert_eq!(lock.paint_reason_bits(false, false), 0);
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -14402,6 +14520,39 @@ mod tests {
                     [lock_animation_park_deadline(now, future)]
                 ),
                 Some(Duration::from_millis(42))
+            );
+        }
+        // Phase `an_answered_widget_deadline_does_not_spin_the_loop`.
+        {
+            let due_at = Instant::now();
+            let tick_started = due_at + Duration::from_millis(1);
+            let now = tick_started + Duration::from_millis(1);
+            let frame = now + Duration::from_millis(8);
+            assert_eq!(
+                native_loop_park(
+                    now,
+                    false,
+                    false,
+                    false,
+                    frame,
+                    [widget_deadline_for_presenter(
+                        true,
+                        widget_park_deadline(tick_started, Some(due_at)),
+                    )],
+                ),
+                Some(IDLE_BACKEND_POLL),
+                "a deadline this tick already woke for parks the loop instead of spinning it"
+            );
+            let became_due = tick_started + Duration::from_micros(500);
+            assert_eq!(
+                widget_park_deadline(tick_started, Some(became_due)),
+                Some(became_due),
+                "a deadline that fell due during this tick still wakes the next one"
+            );
+            let future = now + Duration::from_millis(42);
+            assert_eq!(
+                widget_park_deadline(tick_started, Some(future)),
+                Some(future)
             );
         }
         // Phase `blanked_lock_stops_animating_until_the_panel_wakes`.
@@ -14776,7 +14927,11 @@ mod tests {
             let mut services = std::collections::BTreeMap::new();
             services.insert(
                 launcher::services::COLLAB_SERVICE.to_string(),
-                "required@1".to_string(),
+                tilo_app_package::ServiceReq {
+                    protocol: launcher::services::COLLAB_SERVICE.to_string(),
+                    requirement: tilo_app_package::Requirement::Required,
+                    version: 1,
+                },
             );
             let resolved = launcher::services::resolve_service_binds_for_launch(
                 &services,
@@ -15047,7 +15202,7 @@ mod tests {
         for desk in 0..8_u64 {
             let mut workspace = template.clone();
             workspace.id = WorkspaceId(100 + desk);
-            workspace.room = RoomId::new();
+            workspace.set_room(RoomId::new());
             workspace.strips.truncate(1);
             workspace.strips[0].window_groups = (0..24_u64)
                 .map(|window| {
@@ -15094,7 +15249,7 @@ mod tests {
         }
         let gated = started.elapsed();
         eprintln!(
-            "TIL-136 legacy-share pass per idle wakeup, 8 workspaces x 24 windows: walked {:?}, gated {:?}",
+            "legacy-share pass per idle wakeup, 8 workspaces x 24 windows: walked {:?}, gated {:?}",
             walked / WAKEUPS,
             gated / WAKEUPS,
         );
@@ -15112,7 +15267,7 @@ mod tests {
         // A second workspace this device is not showing.
         let mut background = tree.desktop.workspaces[0].clone();
         background.id = WorkspaceId(90);
-        background.room = RoomId::new();
+        background.set_room(RoomId::new());
         background.strips.truncate(1);
         background.strips[0].window_groups = vec![WindowGroup {
             id: 91,
@@ -15264,7 +15419,7 @@ mod tests {
             assert!(command.agent_permitted(), "{permitted}");
         }
         for refused in [
-            r#"{"op":"grant","subject":"agent:x","scope":"workspace","verb":"admin"}"#,
+            r#"{"op":"grant","subject":"agent:x","scope":"workspace","access":"write"}"#,
             r#"{"op":"revoke","id":"x"}"#,
             r#"{"op":"state_dump"}"#,
             r#"{"op":"actions_invoke","provider":"actions","id":"x"}"#,
@@ -15340,7 +15495,7 @@ mod tests {
             crate::shell::state::WorkspaceId(71),
             "Directory socket room",
         );
-        workspace.owner = Some(crate::shell::state::local_user_id_for_room(&workspace.room));
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
         tree.desktop.workspaces.push(workspace);
         tree.set_active(crate::shell::state::WorkspaceId(71));
         tree.shared()
@@ -15542,6 +15697,25 @@ mod tests {
             );
         }
 
+        fn assert_waiting_after_wake(
+            &mut self,
+            conn: &mut TestControlConn,
+            reader: &mut BufReader<UnixStream>,
+            settle_by: Instant,
+        ) {
+            self.event_loop
+                .dispatch(Some(Duration::ZERO), &mut self.state)
+                .expect("dispatch");
+            self.pump(conn);
+            assert_socket_pending(reader);
+            assert!(!conn.closed, "the original connection must remain open");
+            assert_eq!(
+                control_invocation_deadline(std::slice::from_ref(conn), Instant::now()),
+                Some(settle_by),
+                "an early wake must preserve the original settle deadline"
+            );
+        }
+
         fn wait_for_invoke_response(
             &mut self,
             conn: &mut TestControlConn,
@@ -15678,15 +15852,20 @@ mod tests {
 
     #[test]
     fn wait_ms_answers_the_settled_outcome_in_one_call() {
-        wait_ms_answer_with_loop_wake(false);
+        wait_ms_answer_with_loop_wake(false, false);
     }
 
     #[test]
     fn wait_ms_tolerates_an_unrelated_wake_before_the_completion_watch() {
-        wait_ms_answer_with_loop_wake(true);
+        wait_ms_answer_with_loop_wake(true, false);
     }
 
-    fn wait_ms_answer_with_loop_wake(unrelated_wake: bool) {
+    #[test]
+    fn wait_ms_tolerates_the_status_index_wake_before_job_progress() {
+        wait_ms_answer_with_loop_wake(false, true);
+    }
+
+    fn wait_ms_answer_with_loop_wake(unrelated_wake: bool, early_index_wake: bool) {
         use std::io::Write as _;
 
         let mut fixture = ControlFixture::new();
@@ -15706,7 +15885,7 @@ mod tests {
                 runs: std::rc::Rc::clone(&runs),
                 receipt: crate::shell::search::ActionReceipt {
                     broker_invocation_id: Some(job),
-                    update: accepted,
+                    update: accepted.clone(),
                 },
             }),
         );
@@ -15720,21 +15899,38 @@ mod tests {
         writer
             .write_all(format!("{invoke}\n").as_bytes())
             .expect("invoke");
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .expect("observation deadline");
         fixture.pump(&mut conn);
         assert_socket_pending(&mut reader);
-        fixture
-            .event_loop
-            .dispatch(Some(Duration::ZERO), &mut fixture.state)
-            .expect("dispatch");
-        assert!(!woken.get(), "nothing has moved the job yet");
+        let settle_by = control_invocation_deadline(std::slice::from_ref(&conn), Instant::now())
+            .expect("the original request has a settle deadline");
+        if early_index_wake {
+            // Resolving the status starts the production action index worker.
+            // Observe its ping before recording any job progress, rather than
+            // relying on which thread wins the initial zero-time dispatch.
+            assert!(park_until_woken(
+                &mut fixture.event_loop,
+                &mut fixture.state,
+                &woken,
+                deadline.saturating_duration_since(Instant::now()),
+            ));
+        }
+        // Index readiness shares the invocation loop ping. A wake is a reason
+        // to serve the original request again, not proof that its job moved.
+        fixture.assert_waiting_after_wake(&mut conn, &mut reader, settle_by);
+        assert_eq!(
+            broker.status_for_actor(job, &actor),
+            Some(accepted),
+            "index readiness must not change the job's accepted receipt"
+        );
+        woken.set(false);
 
         let held = unrelated_wake.then(hold_session_workers);
         if held.is_some() {
             wake();
         }
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(10))
-            .expect("observation deadline");
         broker.record_completion_for_test(
             job,
             &actor,
@@ -16741,7 +16937,7 @@ mod tests {
             r#"{"op":"click_at","x":10,"y":10}"#,
             r#"{"op":"type","text":"hello"}"#,
             r#"{"op":"snapshot","path":"admin.png"}"#,
-            r#"{"op":"grant","subject":"agent:x","scope":"workspace","verb":"admin"}"#,
+            r#"{"op":"grant","subject":"agent:x","scope":"workspace","access":"write"}"#,
             r#"{"op":"provision_test_identity"}"#,
             r#"{"op":"actions_enumerate","query":"","agent":"bot"}"#,
             r#"{"op":"state_dump","window":"so.tilo.notes"}"#,
@@ -17709,7 +17905,7 @@ mod tests {
                 .desktop
                 .active_workspace_mut()
                 .unwrap()
-                .owner = Some(actor.clone());
+                .set_owner(actor.clone());
             let broker = crate::shell::broker_services::test_broker_with_membership(
                 fb.chrome().tree_handle(),
             );
@@ -18112,7 +18308,6 @@ mod tests {
         {
             use crate::compositor::tab_binding::{self, Placement};
             use crate::network::streaming::{ShareRegistry, StreamingShare};
-            use crate::shell::state::{CapOverride, Subject, Verb};
 
             const AGENT_PEER: u64 = 0xA9;
             const SURFACE: u64 = 71_900;
@@ -18127,14 +18322,12 @@ mod tests {
                     .desktop
                     .active_workspace_mut()
                     .expect("active workspace");
-                workspace.owner = Some("owner".to_string());
-                let room = workspace.id.raw().to_string();
-                workspace
-                    .grant_as(
-                        &"owner".to_string(),
-                        CapOverride::membership(Subject::agent("release-notes"), room, Verb::Write),
-                    )
-                    .expect("owner admits agent");
+                workspace.set_owner("owner".to_string());
+                workspace.admit_agent_preset(
+                    "release-notes",
+                    tilo_action_policy::roles::AgentPreset::Operator,
+                    &tilo_action_policy::Subject::person("owner".to_string()),
+                );
                 workspace.collaborators.push(
                     crate::shell::state::Collaborator::new("release-notes", "Release Notes Agent")
                         .with_session(AGENT_PEER),
@@ -18476,6 +18669,66 @@ fn send_surface_output_changes(
     changes: Vec<SurfaceOutputChange>,
 ) {
     output_globals.send_surface_changes(&state.surface_handles, changes);
+}
+
+/// Per-output scale: push each placed client surface the preferred
+/// `wp_fractional_scale` of the display it is on — a tiled toplevel by its
+/// group's active tile, floating and transient surfaces by their centre.
+///
+/// Reads the frame builder's current tile rects, so run it again after every
+/// `relayout` that precedes a configure (see [`publish_layout_to_clients`]).
+/// Only changed scales reach the wire.
+pub fn push_surface_scales(
+    state: &mut State,
+    frame_builder: &FrameBuilder,
+    transient_surfaces: &[(u64, Rect)],
+) {
+    let mut placements: Vec<(u64, (f64, f64))> = state
+        .client_input
+        .placements()
+        .filter_map(|(surface_id, group)| {
+            let rect = frame_builder.host().active_tile_rect(group)?;
+            Some((surface_id, (rect.x0, rect.y0)))
+        })
+        .collect();
+    placements.extend(state.floating_toplevels.iter().map(|surface| {
+        let center = surface.content_rect.center();
+        (surface.surface_id, (center.x, center.y))
+    }));
+    placements.extend(state.output_presentation_placements());
+    placements.extend(transient_surfaces.iter().map(|(surface_id, rect)| {
+        let center = rect.center();
+        (*surface_id, (center.x, center.y))
+    }));
+    state.update_surface_scales(&placements);
+}
+
+/// Tell clients what a fresh `relayout` changed about where they are —
+/// the outputs each surface entered or left, and the scale of the one it
+/// now sits on — before `foreign::flush_configures` sends the sizes that
+/// layout produced.
+///
+/// The order is the contract: a client that sizes its buffer from a
+/// configure (xwayland-satellite sizes the X window as the configured size
+/// times the scale it holds at that moment) must already have the new
+/// output's scale, or it renders at the previous output's scale until its
+/// next configure.
+pub fn publish_layout_to_clients(
+    memberships: &mut SurfaceOutputMemberships,
+    state: &mut State,
+    frame_builder: &FrameBuilder,
+    transient_surfaces: &[(u64, Rect)],
+    outputs: &[Output],
+    output_globals: &output_globals::OutputGlobals,
+) {
+    reconcile_surface_output_memberships(
+        memberships,
+        state,
+        frame_builder,
+        outputs,
+        output_globals,
+    );
+    push_surface_scales(state, frame_builder, transient_surfaces);
 }
 
 fn reconcile_surface_output_memberships(

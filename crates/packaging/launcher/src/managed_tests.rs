@@ -296,8 +296,11 @@ fn managed_descriptors_are_bound_and_consumed_once() {
     )
     .unwrap();
     let required = [
-        ("collab".into(), "required@1".into()),
-        ("model-gateway".into(), "required@1".into()),
+        ("collab".into(), crate::manifest::service_req("required@1")),
+        (
+            "model-gateway".into(),
+            crate::manifest::service_req("required@1"),
+        ),
     ]
     .into_iter()
     .collect();

@@ -339,10 +339,7 @@ pub mod host {
             }
             let written = (|| {
                 let params = params.get()?;
-                let section = params
-                    .get_section()?
-                    .to_str()
-                    .map_err(|e| capnp::Error::failed(e.to_string()))?;
+                let section = params.get_section()?.to_str()?;
                 let bytes = params.get_values_json()?;
                 if bytes.len() > MAX_SETTINGS_WIRE_BYTES {
                     return Err(capnp::Error::failed(

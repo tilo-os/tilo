@@ -27,7 +27,7 @@ use super::{
 };
 use crate::bindings;
 use crate::model::{StoreItem, StoreSource, StoreTrust};
-use crate::resource::{ReportProjection, StoreEffect, report_note_dispatcher};
+use crate::resource::{ReportProjection, StoreEffect};
 use crate::widgets::{
     CardAction, CardDetails, app_icon, category_label, provenance, visible_version,
 };
@@ -823,14 +823,10 @@ impl StoreApp {
             .with_id(&format!("store.report.note.{app_id}"))
             .multiline(true)
             .with_placeholder("Describe what happened");
-        let note_of = app_id.to_owned();
-        let locate =
-            move |doc: &ui::tilo_resource::Doc| crate::doc_actions::report_note(doc, &note_of);
+        let path = crate::reports::Reports::note(app_id);
         NoteField(match &self.dispatcher {
-            Some(dispatcher) => {
-                TextControl::new(input, report_note_dispatcher(dispatcher, app_id), locate)
-            }
-            None => TextControl::view_only(input, locate),
+            Some(dispatcher) => TextControl::at(input, dispatcher.clone(), path),
+            None => TextControl::view_only_at(input, path),
         })
     }
 
@@ -930,16 +926,16 @@ impl StoreApp {
 
 /// A report's note in a form field: the document-bound text control, named
 /// by its field's visible label.
-struct NoteField(TextControl<TextInput>);
+struct NoteField(TextControl<TextInput, crate::reports::Reports>);
 
 impl ui::widget::Decorator for NoteField {
-    type Inner = TextControl<TextInput>;
+    type Inner = TextControl<TextInput, crate::reports::Reports>;
 
-    fn inner(&self) -> &TextControl<TextInput> {
+    fn inner(&self) -> &TextControl<TextInput, crate::reports::Reports> {
         &self.0
     }
 
-    fn inner_mut(&mut self) -> &mut TextControl<TextInput> {
+    fn inner_mut(&mut self) -> &mut TextControl<TextInput, crate::reports::Reports> {
         &mut self.0
     }
 }

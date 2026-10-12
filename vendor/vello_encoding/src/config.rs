@@ -650,7 +650,9 @@ const FLOOR_PTCL_MIN: u32 = 5 << 19;
 /// Growth is one-way within a process. A window that once drew a map
 /// keeps room to draw a map, on the grounds that it probably will again,
 /// and that handing the memory back costs a reallocation of every buffer
-/// at the moment the user is busiest.
+/// at the moment the user is busiest. A renderer that opts in
+/// (`Renderer::set_shrink_scratch` in `vello`) hands it back once its
+/// scene has stayed much lighter for a while.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct BumpBudget {
     /// Flattened line segments ([`LineSoup`]).

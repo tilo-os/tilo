@@ -656,6 +656,19 @@ pub trait Backend {
         false
     }
 
+    /// The presenter composites strip pans from retained layers
+    /// (`FramePaint::cache`) instead of rasterising every pixel of the strip.
+    fn composites_strip_layers(&self) -> bool {
+        false
+    }
+
+    /// The presenter keeps its target between frames and copies what a
+    /// scroll in an in-process app moved within it
+    /// (`FramePaint::scroll_copies`) before it repaints the damage.
+    fn copies_scrolls(&self) -> bool {
+        false
+    }
+
     /// Submit a frame with optional retained-damage authority. Backends that cannot retain a
     /// previous native target keep the established dense scene path.
     fn submit_frame_with_damage(&mut self, frame: &FramePaint, output: OutputId) {

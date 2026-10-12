@@ -53,7 +53,6 @@ pub mod identity;
 mod rng;
 pub mod shares;
 pub mod signing;
-pub mod transcript;
 
 // Convenience re-exports.
 pub use dkg::{DkgOutcome, DkgSession, EnrolmentRound1, EnrolmentRound2};

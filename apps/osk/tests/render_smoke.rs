@@ -115,7 +115,7 @@ fn osk_renders_keys_and_toolbar() {
 #[test]
 fn a_live_swipe_trail_paints_and_cancellation_removes_it_in_every_theme() {
     use ui::State;
-    use ui::headless::Driver;
+    use ui::headless::FrameHarness;
     use winit::event::TouchPhase;
 
     let (w, h) = (720, 360);
@@ -125,7 +125,7 @@ fn a_live_swipe_trail_paints_and_cancellation_removes_it_in_every_theme() {
         ("light", Theme::light()),
         ("high-contrast", Theme::high_contrast()),
     ] {
-        let mut driver = Driver::for_root(State::new(), OskWidget::new(), (w, h), theme);
+        let mut driver = FrameHarness::for_root(State::new(), OskWidget::new(), (w, h), theme);
         let keys = driver.root::<OskWidget>().key_geometry();
         let start = keys[0].1.center();
         let end = keys[9].1.center();

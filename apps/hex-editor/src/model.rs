@@ -11,17 +11,56 @@
 
 use std::collections::BTreeSet;
 
+use serde::{Deserialize, Serialize};
+// `#[derive(JsonSchema)]` names the crate as `tilo_resource`.
+use ui::tilo_resource::{self, JsonSchema};
+
+use crate::buffer::Hex;
+
 /// One primitive buffer mutation. Every byte edit reduces to an insert,
 /// delete, or overwrite at a concrete offset; cursor movement, selection,
-/// scroll, and mode/column/endian changes remain presentation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// scroll, and mode/column/endian changes remain presentation. It is also
+/// the edit of the record's bytes at their path
+/// ([`ByteBuffer`](crate::buffer::ByteBuffer)).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum BufferEdit {
     /// Splice `bytes` in *before* `offset`, growing the buffer.
-    Insert { offset: usize, bytes: Vec<u8> },
+    Insert { offset: usize, bytes: Hex },
     /// Remove `len` bytes starting at `offset`.
     Delete { offset: usize, len: usize },
-    /// Replace the bytes already at `offset..offset+bytes.len()` in place.
-    Overwrite { offset: usize, bytes: Vec<u8> },
+    /// Replace the bytes already at `offset..offset+bytes.len()` in place;
+    /// the buffer never grows, so bytes past its end are dropped.
+    Overwrite { offset: usize, bytes: Hex },
+}
+
+impl BufferEdit {
+    /// The edited span `(offset, len)`.
+    fn span(&self) -> (usize, usize) {
+        match self {
+            Self::Insert { offset, bytes } | Self::Overwrite { offset, bytes } => {
+                (*offset, bytes.0.len())
+            }
+            Self::Delete { offset, len } => (*offset, *len),
+        }
+    }
+
+    /// Whether `next`, right after `self`, continues the same run of typing
+    /// or deleting: the next nibble or byte typed, the next byte deleted.
+    #[must_use]
+    pub fn continues(&self, next: &Self) -> bool {
+        let ((at, len), (next_at, next_len)) = (self.span(), next.span());
+        match (self, next) {
+            (
+                Self::Insert { .. } | Self::Overwrite { .. },
+                Self::Insert { .. } | Self::Overwrite { .. },
+            ) => next_at >= at && next_at <= at.saturating_add(len),
+            // Delete steps in place (Delete) or backwards (Backspace).
+            (Self::Delete { .. }, Self::Delete { .. }) => {
+                next_at == at || next_at.saturating_add(next_len) == at
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Which of the two parallel columns the keyboard cursor is editing.
@@ -472,7 +511,7 @@ impl HexModel {
                 self.dirty.insert(offset);
                 self.edits.push(BufferEdit::Overwrite {
                     offset,
-                    bytes: vec![value],
+                    bytes: Hex(vec![value]),
                 });
             }
             true
@@ -497,7 +536,7 @@ impl HexModel {
         self.dirty.insert(at);
         self.edits.push(BufferEdit::Insert {
             offset: at,
-            bytes: vec![value],
+            bytes: Hex(vec![value]),
         });
     }
 
@@ -736,7 +775,7 @@ mod tests {
             [
                 BufferEdit::Overwrite {
                     offset: 1,
-                    bytes: vec![0xAB]
+                    bytes: Hex(vec![0xAB])
                 },
                 BufferEdit::Delete { offset: 0, len: 2 },
             ]

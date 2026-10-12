@@ -639,15 +639,7 @@ impl Widget for NotificationLayer {
         node
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        if let Ok(layout) = tree.layout(node) {
-            self.rect = Rect::from_origin_size(
-                Point::new(
-                    origin.x + f64::from(layout.location.x),
-                    origin.y + f64::from(layout.location.y),
-                ),
-                (f64::from(layout.size.width), f64::from(layout.size.height)),
-            );
-        }
+        self.rect = ui::widget::layout_rect(tree, node, origin);
     }
     fn draw(
         &mut self,

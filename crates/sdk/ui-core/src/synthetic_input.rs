@@ -1,6 +1,9 @@
 //! Deterministic window input shared by native scenarios, headless driving,
 //! test control and tests: what they deliver in place of a device.
 
+pub mod pointer;
+pub use pointer::PointerAction;
+
 use serde::{Deserialize, Serialize};
 use winit::event::{DeviceId, ElementState, KeyEvent, MouseButton, RawKeyEvent, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey, SmolStr};
@@ -119,6 +122,17 @@ pub fn mouse_input(state: ElementState, button: MouseButton) -> WindowEvent {
         device_id: DeviceId::dummy(),
         state,
         button,
+    }
+}
+
+/// A wheel turn of `x` and `y` lines (positive `y` is up, away from the
+/// person).
+#[must_use]
+pub fn mouse_wheel(x: f32, y: f32) -> WindowEvent {
+    WindowEvent::MouseWheel {
+        device_id: DeviceId::dummy(),
+        delta: winit::event::MouseScrollDelta::LineDelta(x, y),
+        phase: winit::event::TouchPhase::Moved,
     }
 }
 

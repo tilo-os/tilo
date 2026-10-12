@@ -1,10 +1,10 @@
-//! The broker's policy turn (TIL-707): membership surfaces and native
+//! The broker's policy turn: membership surfaces and native
 //! context subscribers are re-checked when an input announces a change and
 //! at the first expiry the last check read, not once a second.
 use super::*;
 use crate::policy_schedule::RECHECK_INTERVAL;
 use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
-use collab_types::caps::{CapOverride, Subject, Verb};
+use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
 
 const NS: u64 = 1_000_000_000;
 
@@ -59,6 +59,7 @@ impl crate::services::WorkspaceMemberships for CountedRoom {
         Ok(tilo_peer_state::workspace_task::WorkspaceTaskSnapshot {
             tasks: Vec::new(),
             controls: std::collections::BTreeMap::default(),
+            grants: Vec::new(),
         })
     }
 
@@ -80,17 +81,21 @@ fn owner_key() -> ed25519_dalek::SigningKey {
 fn expiring_room(guest_until: u64, agent_until: u64) -> (WorkspaceTree, String) {
     let mut workspace = Workspace::new(WorkspaceId(71), "Expiring");
     let room = workspace.room.to_string();
-    workspace.owner = Some(principal_id_for_root(
-        owner_key().verifying_key().to_bytes(),
-    ));
-    workspace.grant_capability(
-        CapOverride::membership(Subject::person("guest"), room.clone(), Verb::Read)
-            .with_expiry(guest_until),
-    );
-    workspace.grant_capability(
-        CapOverride::membership(Subject::agent("scribe"), room.clone(), Verb::Read)
-            .with_expiry(agent_until),
-    );
+    let owner = principal_id_for_root(owner_key().verifying_key().to_bytes());
+    workspace.set_owner(owner.clone());
+    let reads = |id: &str, subject: Subject, until: u64| {
+        Grant::new(
+            id,
+            subject,
+            TreePath::room(&room),
+            KindSet::READ,
+            Answer::Allow,
+            Subject::person(owner.clone()),
+        )
+        .with_lifetime(Lifetime::Until(until.saturating_mul(1000)))
+    };
+    workspace.grant(reads("guest-reads", Subject::person("guest"), guest_until));
+    workspace.grant(reads("scribe-reads", Subject::agent("scribe"), agent_until));
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     (tree, room)
@@ -267,7 +272,7 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation_and_sleeps_in_betwee
     // A revocation, announced: re-checked at once, not on a clock.
     let revoked_at = tilo_clock::unix_now_ns();
     let checks = at_expiry.len();
-    authority.write(|tree| tree.workspaces[0].owner = None);
+    authority.write(|tree| tree.workspaces[0].policy.owner = None);
     let started = std::time::Instant::now();
     while owner.checks().len() == checks {
         assert!(

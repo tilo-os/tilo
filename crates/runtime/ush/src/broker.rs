@@ -21,7 +21,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bounded_command::WakeFd;
-use collab_types::caps::Verb;
+use collab_types::caps::Access;
 use tilo_clock::unix_now;
 use tilo_environment::{Environment, ToolBuilder, host_arch};
 
@@ -298,7 +298,7 @@ fn legacy_launch_args(
         "--cwd".to_string(),
         cwd.display().to_string(),
     ];
-    if policy.permits(cwd, Verb::Write, Some(unix_now())) {
+    if policy.permits(cwd, Access::Write, Some(unix_now())) {
         out.push("--share-cwd".to_string());
     }
     out.push("--".to_string());
@@ -440,7 +440,7 @@ impl BrokerState {
             },
             Request::Revoke { id } => self.revoke(&id),
             Request::Check { path, write } => {
-                let verb = if write { Verb::Write } else { Verb::Read };
+                let verb = if write { Access::Write } else { Access::Read };
                 Response::Check {
                     allowed: self
                         .environment
@@ -831,7 +831,7 @@ impl BrokerState {
                         Effect::Grant => "grant",
                         Effect::Restrict => "restrict",
                     },
-                    c.verb
+                    c.access
                 ),
                 expiry: match c.expiry {
                     Expiry::Never => "never".into(),
@@ -984,10 +984,10 @@ impl Broker {
         if let Some(parent) = socket.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let _ = std::fs::remove_file(&socket);
         let address = SocketAddress::new(&socket)?;
-        let listener = UnixListener::bind(&address.path)?;
-        restrict_socket(&address.path)?;
+        // Owner-only: the socket is the route to the policy file. It lives in
+        // the 0700 store already, but a mode on the socket itself costs nothing.
+        let listener = tilo_files::native::private::bind_socket(&address.path)?;
 
         let state = Arc::new(Mutex::new(state));
         let thread_state = Arc::clone(&state);
@@ -1088,13 +1088,6 @@ impl Drop for Broker {
         }
         let _ = std::fs::remove_file(&self.address.path);
     }
-}
-
-fn restrict_socket(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    // Owner-only: the socket is the route to the policy file. It lives in the
-    // 0700 store already, but a mode on the socket itself costs nothing.
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
 }
 
 fn serve_connection(stream: UnixStream, state: &Arc<Mutex<BrokerState>>, shared: &Shared) {
@@ -1909,7 +1902,7 @@ mod tests {
         let policy = Policy::new(vec![CapOverride::grant(
             Subject::Principal(Principal::App(crate::RUNTIME_APP_ID.to_string())),
             Scope::FsPath("/var/home/you/src".into()),
-            Verb::Write,
+            Access::Write,
         )]);
         // phase: a trusted directory is shared for the launch
         {

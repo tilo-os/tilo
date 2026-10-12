@@ -398,16 +398,11 @@ fn focused_seat_configuration_survives_page_recomposition_without_off_page_key_c
 #[test]
 fn narrow_keyboard_inspection_has_touch_sized_selector_and_live_readable_details() {
     fn find(widget: &dyn Widget, id: &str) -> Option<(vello::kurbo::Rect, String)> {
-        if widget.test_id() == Some(id) {
-            return Some((
-                widget.get_rect(),
-                widget.accessibility().unwrap().name.unwrap_or_default(),
-            ));
-        }
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| find(child, id))
+        let widget = ui::widget::find_test_id(widget, id)?;
+        Some((
+            widget.get_rect(),
+            widget.accessibility().unwrap().name.unwrap_or_default(),
+        ))
     }
     let config = crate::prefs::test_env::ScratchConfig::new();
     let mut h = hosted(&config, 600.0, 1800.0);

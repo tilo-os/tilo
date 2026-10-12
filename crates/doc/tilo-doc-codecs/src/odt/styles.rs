@@ -39,22 +39,6 @@ pub(super) fn parse_pt(v: &str) -> Option<i64> {
         .map(|f| f.round() as i64)
 }
 
-pub(super) fn generic_font(name: &str) -> String {
-    let n = name.to_ascii_lowercase();
-    if n.contains("mono") || n.contains("courier") || n.contains("consol") {
-        "mono".into()
-    } else if (n.contains("serif") && !n.contains("sans"))
-        || n.contains("times")
-        || n.contains("georgia")
-        || n.contains("garamond")
-        || n.contains("roman")
-    {
-        "serif".into()
-    } else {
-        "sans".into()
-    }
-}
-
 /// Canonicalise an ODF `fo:color` (`#RRGGBB`) to lowercase so that the round-trip
 /// is stable and two replicas that imported the same colour converge.
 pub(super) fn normalize_color(v: &str) -> String {
@@ -172,7 +156,9 @@ pub(super) fn text_fields(e: &BytesStart) -> TextFields {
             // Parse as f64 (not the rounded `parse_pt`) so fractional sizes like 16.5pt survive the
             // round-trip; percentage sizes (`130%`) fail the parse and stay unset.
             b"fo:font-size" => f.size = val.trim_end_matches("pt").trim().parse::<f64>().ok(),
-            b"style:font-name" | b"fo:font-family" => f.font = Some(generic_font(&val)),
+            b"style:font-name" | b"fo:font-family" => {
+                f.font = Some(crate::generic_font_family(&val).to_owned());
+            }
             b"fo:color" => f.color = Some(normalize_color(&val)),
             _ => {}
         }
@@ -217,7 +203,10 @@ pub(super) fn marks_from_text_props(e: &BytesStart) -> Vec<(String, MarkValue)> 
                 }
             }
             b"style:font-name" | b"fo:font-family" => {
-                m.push(("fontFamily".into(), MarkValue::Str(generic_font(&val))));
+                m.push((
+                    "fontFamily".into(),
+                    MarkValue::Str(crate::generic_font_family(&val).to_owned()),
+                ));
             }
             b"fo:color" => m.push(("color".into(), MarkValue::Str(normalize_color(&val)))),
             // Text background (highlight): fo:background-color, skipping the `transparent` sentinel ("no highlight").

@@ -8,7 +8,7 @@ pub(crate) struct HistoryPanel {
     pub(crate) path: PathBuf,
     /// Newest first. The filesystem projection is bounded, so this remains
     /// cheap to paint and safe to expose to accessibility clients.
-    pub(crate) versions: Vec<crate::model::HistoryVersion>,
+    pub(crate) versions: Vec<fs_protocol::FileVersionV1>,
     pub(crate) heads: Vec<String>,
     pub(crate) selected: usize,
     pub(crate) compare: bool,

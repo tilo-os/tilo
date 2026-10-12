@@ -211,7 +211,7 @@ fn activate_spec() -> tilo_actions::ActionSpec {
             payload: b"{}".to_vec(),
         },
     )
-    .requiring(tilo_actions::PermissionRequirement::Read)
+    .of_kind(tilo_actions::ActionKind::Read)
     .with_description(ui_core::I18nManager::lookup_plain(
         "app-activate-window-description",
     ));
@@ -253,7 +253,7 @@ fn render_spec() -> tilo_actions::ActionSpec {
             })
         },
     )
-    .requiring(tilo_actions::PermissionRequirement::Read)
+    .of_kind(tilo_actions::ActionKind::Read)
     .with_description(
         "See the app's window as a picture: answers with the image and the revision of the document it shows.",
     );

@@ -15,7 +15,7 @@ impl Fixture {
         let (mut app, mut state, tmp, source) = app_seeded_into_doc();
         let pages = [source, PageId::new_v4(), PageId::new_v4()];
         for page in &pages[1..] {
-            let create = actions::append_page_action(*page, None, "Destination");
+            let create = actions::create_page_action(*page, None, "Destination");
             tilo_actions::apply_local(&mut state.doc, &create, actions::encode(&create)).unwrap();
             let body =
                 actions::write_body_action(*page, &MainPanel::seed_blocks("Untouched", |_| None));
@@ -34,7 +34,7 @@ impl Fixture {
         }
     }
 
-    fn peer(&mut self, action: &NotesAction) {
+    fn peer(&mut self, action: &actions::Action) {
         let mut peer = self.state.doc.fork();
         tilo_actions::apply_local_by(&mut peer, action, actions::encode(action), Some(b"peer"))
             .unwrap();
@@ -48,8 +48,8 @@ impl Fixture {
         assert_search_snapshot_matches_canonical(&self.app, &self.state.doc);
     }
 
-    fn splice(&self, page: PageId, text: &str) -> NotesAction {
-        let block = NotesDoc::page_block_snapshots(&self.state.doc, page)[0]
+    fn splice(&self, page: PageId, text: &str) -> actions::Action {
+        let block = crate::read::page_block_snapshots(&self.state.doc, page)[0]
             .0
             .clone();
         actions::edit_body_action(
@@ -65,15 +65,20 @@ impl Fixture {
     }
 }
 
+/// A peer's edit of one note reindexes that note alone: its text and the
+/// links it makes, never another note's rows.
 #[test]
-fn projected_search_updates_peer_text_and_links_without_replacing_other_sources() {
+fn a_peer_edit_reindexes_only_the_note_it_changed() {
     let mut f = Fixture::new();
     let [source, target, untouched] = f.pages;
     let old_untouched = f.app.search_blocks[&untouched].clone();
     f.peer(&f.splice(source, "Peer é😀 "));
-    let receipt = f.reader.state().body_projection_refresh.as_ref().unwrap();
-    assert_eq!(receipt.pages, vec![source]);
-    assert_eq!(f.app.search_heads.as_ref(), Some(&receipt.before));
+    f.app.adopt_resource_state(f.reader.state());
+    assert_eq!(
+        f.app.unindexed.iter().copied().collect::<Vec<_>>(),
+        [source],
+        "only the edited note waits to be indexed"
+    );
     f.present();
     assert!(
         f.app.search_blocks[&source][0]
@@ -104,46 +109,27 @@ fn projected_search_updates_peer_text_and_links_without_replacing_other_sources(
     );
     assert_eq!(f.app.search_blocks[&untouched], old_untouched);
     f.peer(&actions::delete_page_action(untouched));
-    assert!(f.reader.state().body_projection_refresh.is_none());
     f.present();
     assert!(!f.app.search_blocks.contains_key(&untouched));
     assert!(!f.app.backlink_index.contains_key(&untouched));
 }
 
+/// Several changes shown at once are all indexed, whatever came between.
 #[test]
-fn missed_projection_revisions_and_pending_work_rebuild_actual_search_content() {
+fn changes_presented_together_are_all_indexed() {
     let mut f = Fixture::new();
-    let [source, target, untouched] = f.pages;
+    let [source, target, _] = f.pages;
     f.peer(&f.splice(source, "First "));
+    f.app.adopt_resource_state(f.reader.state());
     f.peer(&f.splice(target, "Second "));
-    let receipt = f.reader.state().body_projection_refresh.as_ref().unwrap();
-    assert_ne!(f.app.search_heads.as_ref(), Some(&receipt.before));
     f.present();
     assert!(f.app.search_blocks[&source][0].text.starts_with("First "));
     assert!(f.app.search_blocks[&target][0].text.starts_with("Second "));
-    let body = NotesDoc::page_body(&f.state.doc, untouched).unwrap();
-    let action = f.splice(untouched, "Pending ");
-    // Resource execution writes a real uncommitted CRDT transaction.
-    let NotesAction::EditBody { edit, .. } = action else {
-        panic!("body action")
-    };
-    edit.apply_under(&mut f.state.doc, &body).unwrap();
-    assert!(f.state.doc.pending_ops() > 0);
-    f.app.refresh_search_blocks(&f.state.doc);
-    assert_search_snapshot_matches_canonical(&f.app, &f.state.doc);
-    assert!(f.app.search_heads.is_none());
-    assert!(
-        f.app.search_blocks[&untouched][0]
-            .text
-            .starts_with("Pending ")
-    );
-    f.state.doc.get_heads();
-    assert!(f.reader.sync(&f.state.doc).unwrap());
-    f.present();
 }
 
+/// A notebook whose notes were replaced wholesale indexes from nothing.
 #[test]
-fn replacing_page_map_drops_search_and_backlink_rows() {
+fn replacing_the_notes_drops_their_search_and_backlink_rows() {
     let mut f = Fixture::new();
     let [source, target, _] = f.pages;
     let block = f.app.search_blocks[&source][0].id.clone();
@@ -160,7 +146,6 @@ fn replacing_page_map_drops_search_and_backlink_rows() {
         .unwrap();
     f.state.doc.merge_incoming(&mut peer).unwrap();
     assert!(f.reader.sync(&f.state.doc).unwrap());
-    assert!(f.reader.state().body_projection_refresh.is_none());
     f.present();
     assert!(f.app.search_blocks.is_empty());
     assert!(f.app.backlink_index.is_empty());

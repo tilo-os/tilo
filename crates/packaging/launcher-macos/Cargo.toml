@@ -23,6 +23,7 @@ name = "launcher_macos"
 path = "src/lib.rs"
 
 [dependencies]
+blake3.workspace = true
 launcher = { path = "../launcher" }
 thiserror.workspace = true
 tracing.workspace = true

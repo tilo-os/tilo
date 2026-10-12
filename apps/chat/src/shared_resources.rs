@@ -158,7 +158,7 @@ fn navigation_link(
         .as_ref()
         .ok_or("Resource host supplied no locator")?;
     if locator.provider != provider
-        || !crate::actions::valid_source_provider(provider)
+        || !crate::record::valid_source_provider(provider)
         || locator.host_device.len() != 64
         || !locator
             .host_device
@@ -391,22 +391,22 @@ mod tests {
             .with_clipboard(std::sync::Arc::new(Clipboard::default()));
         let _scope = ui::host::enter(&services);
         let reference = serde_json::json!({"kind":"chat.message", "id":"chat.message:message", "label":"Fixture", "span":{"start":6,"end":7,"unit":"Chars"}});
-        app.call_on("chat.channel:c_general", "share-resource", serde_json::json!({
-            "reference":reference, "sourceProvider":"record:so.tilo.chat:discussion", "text":"Discuss resource"
+        app.call_on(&crate::testing::item("channels", "c_general"), "share-resource", serde_json::json!({
+            "reference":reference, "source_provider":"record:so.tilo.chat:discussion", "text":"Discuss resource"
         })).unwrap();
         app.settle();
         let id = app
             .state()
-            .messages()
+            .message_rows("c_general")
+            .into_iter()
             .find(|row| row.text == "Discuss resource")
             .unwrap()
-            .id
-            .clone();
+            .id;
         assert_native_resource_controls(&mut app);
         let effect = ChatEffect::CopyResourceLink {
             message: id.clone(),
         };
-        let target = format!("chat.message:{id}");
+        let target = crate::testing::item("messages", &id);
         app.start_effect_on(&target, &effect).unwrap();
         let surface = app.surface_mut::<ChatApp>();
         let correlation = surface
@@ -457,7 +457,7 @@ mod tests {
             .unwrap()
             .correlation;
         // Remove the source through the real message action while its lookup waits.
-        app.call_confirmed_on(&target, "delete", serde_json::json!({}))
+        app.call_confirmed_on(&target, "delete-message", serde_json::json!({}))
             .unwrap();
         app.settle();
         app.surface_mut::<ChatApp>().complete_resource_navigation(

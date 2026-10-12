@@ -13,11 +13,17 @@
 //! the next append writes over it, so a crash mid-append loses at most the
 //! changes it was appending.
 //!
+//! Whoever writes the base also keeps its change hashes beside it
+//! (`state.automerge.hashes`, [`hint_path`]), so session start loads it
+//! without rebuilding and hashing every change: one per workspace switch, for
+//! the life of the profile. The log's frames are applied in one batch, not
+//! one apply (one walk of the desktop's history) per frame.
+//!
 //! Cuts are appended in the order they were cut, whichever save drains them:
 //! a save whose state file was superseded, or whose queued write was
 //! replaced by a newer one, still leaves its changes for the next drain.
 
-use automerge::{AutoCommit, ChangeHash};
+use automerge::{AutoCommit, ChangeHash, LoadOptions};
 use parking_lot::Mutex;
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -39,6 +45,16 @@ const MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) fn log_path(base: &Path) -> PathBuf {
     let mut path = base.as_os_str().to_os_string();
     path.push(".log");
+    PathBuf::from(path)
+}
+
+/// The change hashes of the base document at `base`, kept beside it by the
+/// writer that wrote it so a load need not rebuild and hash every change
+/// ([`app_state::load_hint`]). Bound to the base's bytes by digest:
+/// a base written after it, or without one, makes it stale and ignored.
+pub(crate) fn hint_path(base: &Path) -> PathBuf {
+    let mut path = base.as_os_str().to_os_string();
+    path.push(".hashes");
     PathBuf::from(path)
 }
 
@@ -271,8 +287,9 @@ fn other(error: impl std::fmt::Display) -> io::Error {
     io::Error::other(error.to_string())
 }
 
-/// Make `bytes` the base and drop the log it supersedes.
-fn write_base(files: &mut Files, base: &Path, bytes: &[u8], cap: usize) -> io::Result<()> {
+/// Make `doc` the base and drop the log it supersedes.
+fn write_base(files: &mut Files, base: &Path, doc: &mut AutoCommit, cap: usize) -> io::Result<()> {
+    let bytes = doc.save();
     if bytes.len() > cap {
         return Err(io::Error::other(
             "tree document exceeds its size cap; its history is not saved",
@@ -280,10 +297,11 @@ fn write_base(files: &mut Files, base: &Path, bytes: &[u8], cap: usize) -> io::R
     }
     tilo_files::native::atomic::replace(
         base,
-        bytes,
+        &bytes,
         tilo_files::native::atomic::Privacy::OwnerOnly,
     )
     .map_err(tilo_files::native::atomic::PublicationError::into_io_error)?;
+    keep_hint(base, &bytes, doc.committed_document().change_hashes());
     // A crash before this leaves frames the new base already holds; loading
     // them again changes nothing.
     match std::fs::remove_file(log_path(base)) {
@@ -296,10 +314,30 @@ fn write_base(files: &mut Files, base: &Path, bytes: &[u8], cap: usize) -> io::R
     Ok(())
 }
 
+/// Keep `hashes`, the change hashes of `bytes` just written as the base,
+/// beside it ([`hint_path`]), or drop the hint an earlier base left when this
+/// one is too small to need one. Written after the base and unsynced: a hint
+/// lost to a crash, torn, or left from an earlier base names other bytes, and
+/// the next load ignores it and rebuilds every change. Only the next load's
+/// speed depends on it, so a failure is not the save's.
+fn keep_hint(base: &Path, bytes: &[u8], hashes: &[ChangeHash]) {
+    let path = hint_path(base);
+    let kept = match app_state::load_hint::encode(bytes, hashes) {
+        Some(hint) => tilo_files::native::atomic::write_regenerable_with_mode(&path, &hint, 0o600),
+        None => match std::fs::remove_file(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            removed => removed,
+        },
+    };
+    if let Err(error) = kept {
+        tracing::debug!(path = %path.display(), %error, "tree document load hint not kept");
+    }
+}
+
 /// The whole history in place of whatever the files held.
 fn replace(files: &mut Files, base: &Path, changes: &[u8], cap: usize) -> io::Result<()> {
     let mut doc = AutoCommit::load(changes).map_err(other)?;
-    write_base(files, base, &doc.save(), cap)
+    write_base(files, base, &mut doc, cap)
 }
 
 /// Fold the log into the base.
@@ -307,7 +345,7 @@ fn compact(files: &mut Files, base: &Path, cap: usize) -> io::Result<()> {
     let Some(mut loaded) = load(base, cap)? else {
         return Ok(());
     };
-    write_base(files, base, &loaded.doc.save(), cap)
+    write_base(files, base, &mut loaded.doc, cap)
 }
 
 fn append(files: &mut Files, base: &Path, changes: &[u8], cap: usize) -> io::Result<()> {
@@ -369,23 +407,60 @@ pub(crate) fn load(base: &Path, cap: usize) -> io::Result<Option<Loaded>> {
     if base_bytes.is_none() && log.is_none() {
         return Ok(None);
     }
-    let mut doc = match base_bytes {
-        Some(bytes) => AutoCommit::load(&bytes).map_err(other)?,
-        None => AutoCommit::new(),
+    let open_base = || match &base_bytes {
+        Some(bytes) => load_base(base, bytes, cap),
+        None => Ok(AutoCommit::new()),
     };
-    let extent = log.map_or_else(LogExtent::default, |log| apply_log(&mut doc, &log));
+    let mut doc = open_base()?;
+    let Some(log) = log else {
+        return Ok(Some(Loaded {
+            doc,
+            extent: LogExtent::default(),
+        }));
+    };
+    let (frames, extent) = read_frames(&log);
+    // Every frame in one apply: Automerge walks each object a batch touches
+    // once per apply, so frame by frame, one change per workspace switch,
+    // walked the desktop's whole history up to 512 times. Frames
+    // are checksummed cuts of one document, each depending on the ones
+    // before it, so a frame Automerge could not read loses what follows it
+    // either way: those changes wait for dependencies that never arrive.
+    if frames.is_empty() || doc.load_incoming(&frames.concat()).is_ok() {
+        return Ok(Some(Loaded { doc, extent }));
+    }
+    // A frame Automerge refuses: start over from the base and keep every
+    // frame before it, as a frame-by-frame load would.
+    let mut doc = open_base()?;
+    let extent = apply_frames(&mut doc, &frames, extent);
     Ok(Some(Loaded { doc, extent }))
 }
 
-/// Load each valid frame of `log` into `doc`, stopping at the first that is
-/// cut short, fails its checksum or is not changes.
-fn apply_log(doc: &mut AutoCommit, log: &[u8]) -> LogExtent {
+/// Load the base document `bytes` read from `base`, taking its change hashes
+/// from the hint its writer kept beside it when that hint names exactly these
+/// bytes ([`keep_hint`]); otherwise every change is rebuilt and hashed. The
+/// log's frames are never hinted: Automerge applies and verifies them.
+fn load_base(base: &Path, bytes: &[u8], cap: usize) -> io::Result<AutoCommit> {
+    let known = read_capped(&hint_path(base), cap)
+        .ok()
+        .and_then(|hint| app_state::load_hint::hashes_for(&hint, bytes));
+    let options = match known.as_deref() {
+        Some(hashes) => LoadOptions::new().known_change_hashes(hashes),
+        None => LoadOptions::new(),
+    };
+    AutoCommit::load_with_options(bytes, options).map_err(other)
+}
+
+/// The payloads of `log`'s frames up to the first that is cut short or fails
+/// its checksum, and the extent they span.
+fn read_frames(log: &[u8]) -> (Vec<&[u8]>, LogExtent) {
+    let mut frames = Vec::new();
     let Some(mut rest) = log.strip_prefix(MAGIC.as_slice()) else {
-        return LogExtent {
+        let extent = LogExtent {
             len: 0,
             chunks: 0,
             torn: !log.is_empty(),
         };
+        return (frames, extent);
     };
     let mut extent = LogExtent {
         len: MAGIC.len() as u64,
@@ -404,15 +479,35 @@ fn apply_log(doc: &mut AutoCommit, log: &[u8]) -> LogExtent {
             extent.torn = true;
             break;
         };
+        frames.push(payload);
+        extent.len = extent.len.saturating_add(frame_len(payload));
+        extent.chunks = extent.chunks.saturating_add(1);
+        rest = remaining;
+    }
+    (frames, extent)
+}
+
+/// A frame's length in the log: its header and payload.
+fn frame_len(payload: &[u8]) -> u64 {
+    (FRAME_HEADER as u64).saturating_add(payload.len() as u64)
+}
+
+/// Load `frames` (spanning `read`) into `doc` one at a time, stopping at the
+/// first that is not changes: what precedes it loads, and the next append
+/// writes over it.
+fn apply_frames(doc: &mut AutoCommit, frames: &[&[u8]], read: LogExtent) -> LogExtent {
+    let mut extent = LogExtent {
+        len: MAGIC.len() as u64,
+        chunks: 0,
+        torn: read.torn,
+    };
+    for payload in frames {
         if doc.load_incoming(payload).is_err() {
             extent.torn = true;
             break;
         }
-        extent.len = extent
-            .len
-            .saturating_add((FRAME_HEADER as u64).saturating_add(payload.len() as u64));
+        extent.len = extent.len.saturating_add(frame_len(payload));
         extent.chunks = extent.chunks.saturating_add(1);
-        rest = remaining;
     }
     extent
 }
@@ -579,6 +674,180 @@ mod tests {
         let mut loaded = load(&base, CAP).expect("load").expect("saved");
         assert_eq!(loaded.extent.chunks, 1, "appends continue after folding");
         assert_eq!(loaded.doc.get_heads(), doc.get_heads());
+    }
+
+    /// A desktop document's shape: a peer's concurrent change merged in, then
+    /// one small change per workspace switch, enough to be hinted.
+    fn switched_many_times() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        put(&mut doc, "base", 0);
+        let mut peer = doc.fork();
+        put(&mut peer, "peer", 1);
+        put(&mut doc, "local", 1);
+        doc.load_incoming(&peer.save()).expect("merge the peer");
+        for index in 0..app_state::load_hint::MIN_HINTED_CHANGES {
+            put(&mut doc, "active", i64::try_from(index % 6).expect("small"));
+        }
+        doc
+    }
+
+    /// The change hashes a full rebuild of `bytes` lists.
+    fn rebuilt_hashes(bytes: &[u8]) -> Vec<ChangeHash> {
+        AutoCommit::load(bytes)
+            .expect("load")
+            .committed_document()
+            .change_hashes()
+            .to_vec()
+    }
+
+    fn loaded_hashes(base: &Path) -> Vec<ChangeHash> {
+        load(base, CAP)
+            .expect("load")
+            .expect("saved")
+            .doc
+            .committed_document()
+            .change_hashes()
+            .to_vec()
+    }
+
+    #[test]
+    fn a_written_base_keeps_a_hint_the_next_load_takes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path().join("state.automerge");
+        let log = DocLog::default();
+        let mut doc = switched_many_times();
+        save(&log, &doc, &base);
+        let bytes = std::fs::read(&base).expect("base");
+        assert!(bytes.len() < app_state::load_hint::MIN_HINTED_BYTES);
+        let hint = std::fs::read(hint_path(&base)).expect("the base keeps a hint");
+        let rebuilt = rebuilt_hashes(&bytes);
+        assert_eq!(
+            app_state::load_hint::hashes_for(&hint, &bytes),
+            Some(rebuilt.clone()),
+            "the hint lists what a full rebuild of the base would"
+        );
+        let mut hinted = load(&base, CAP).expect("load").expect("saved").doc;
+        assert_eq!(hinted.committed_document().change_hashes(), rebuilt);
+        assert_eq!(hinted.save(), bytes, "a hinted load is the same document");
+        assert_eq!(hinted.get_heads(), doc.get_heads());
+
+        // Phase `the_load_takes_the_hint_as_given`: two local changes listed
+        // in swapped order (heads unchanged) come back swapped, which a
+        // rebuild never produces.
+        let mut swapped = rebuilt.clone();
+        let last = swapped.len().saturating_sub(2);
+        swapped.swap(last.saturating_sub(1), last);
+        std::fs::write(
+            hint_path(&base),
+            app_state::load_hint::encode(&bytes, &swapped).expect("hinted"),
+        )
+        .expect("swapped hint");
+        assert_eq!(loaded_hashes(&base), swapped);
+        std::fs::write(hint_path(&base), &hint).expect("restore the hint");
+
+        // Phase `log_frames_apply_over_a_hinted_base`.
+        put(&mut doc, "after", 1);
+        save(&log, &doc, &base);
+        let loaded = load(&base, CAP).expect("load").expect("saved");
+        assert_eq!(loaded.extent.chunks, 1);
+        assert_eq!(value(&loaded.doc, "after"), Some(1));
+        let mut expected = rebuilt;
+        expected.extend(doc.get_heads());
+        assert_eq!(loaded.doc.committed_document().change_hashes(), expected);
+
+        // Phase `folding_the_log_rewrites_the_hint_for_the_new_base`.
+        // One frame is in the log; past COMPACT_AFTER_CHUNKS the write folds it.
+        for index in 0..i64::try_from(COMPACT_AFTER_CHUNKS).expect("small") {
+            put(&mut doc, "counter", index);
+            save(&log, &doc, &base);
+        }
+        assert!(!log_path(&base).exists(), "the log was folded");
+        let folded = std::fs::read(&base).expect("base");
+        assert_ne!(folded, bytes);
+        let hint = std::fs::read(hint_path(&base)).expect("the folded base keeps a hint");
+        let rebuilt = rebuilt_hashes(&folded);
+        assert_eq!(
+            app_state::load_hint::hashes_for(&hint, &folded),
+            Some(rebuilt.clone())
+        );
+        assert_eq!(loaded_hashes(&base), rebuilt);
+    }
+
+    #[test]
+    fn the_log_loads_in_one_batch_as_frame_by_frame() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path().join("state.automerge");
+        let log = DocLog::default();
+        let mut doc = switched_many_times();
+        save(&log, &doc, &base);
+        for index in 0..200 {
+            put(&mut doc, "active", index % 6);
+            save(&log, &doc, &base);
+        }
+        let mut batched = load(&base, CAP).expect("load").expect("saved");
+        assert_eq!(batched.extent.chunks, 200);
+        assert_eq!(batched.doc.get_heads(), doc.get_heads());
+
+        // The frame-by-frame load a refused batch falls back to.
+        let bytes = std::fs::read(log_path(&base)).expect("log");
+        let (frames, read) = read_frames(&bytes);
+        assert_eq!(read, batched.extent);
+        let mut one_by_one =
+            load_base(&base, &std::fs::read(&base).expect("base"), CAP).expect("base");
+        assert_eq!(apply_frames(&mut one_by_one, &frames, read), read);
+        assert_eq!(one_by_one.get_heads(), doc.get_heads());
+        assert_eq!(one_by_one.save(), batched.doc.save());
+    }
+
+    #[test]
+    fn a_stale_orphaned_or_torn_hint_is_ignored() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path().join("state.automerge");
+        let log = DocLog::default();
+        let doc = switched_many_times();
+        save(&log, &doc, &base);
+        let hint = std::fs::read(hint_path(&base)).expect("hint");
+        let bytes = std::fs::read(&base).expect("base");
+
+        // Phase `a_torn_hint_is_ignored`.
+        let mut torn = hint.clone();
+        torn.truncate(hint.len().saturating_sub(7));
+        std::fs::write(hint_path(&base), &torn).expect("torn hint");
+        assert_eq!(loaded_hashes(&base), rebuilt_hashes(&bytes));
+        let mut wrong = hint.clone();
+        if let Some(byte) = wrong.last_mut() {
+            *byte ^= 1;
+        }
+        std::fs::write(hint_path(&base), &wrong).expect("wrong hint");
+        assert_eq!(
+            loaded_hashes(&base),
+            rebuilt_hashes(&bytes),
+            "a hash Automerge cannot place falls back to the rebuild"
+        );
+
+        // Phase `a_base_too_small_for_a_hint_drops_the_old_one`.
+        std::fs::write(hint_path(&base), &hint).expect("restore the hint");
+        let other_log = DocLog::default();
+        let mut other = AutoCommit::new();
+        put(&mut other, "other", 7);
+        save(&other_log, &other, &base);
+        assert!(
+            !hint_path(&base).exists(),
+            "a base written without a hint drops its predecessor's"
+        );
+
+        // Phase `a_stale_hint_is_ignored`: one left beside a base it was not
+        // made for (a crash between the two writes, a restored file).
+        std::fs::write(hint_path(&base), &hint).expect("stale hint");
+        let loaded = load(&base, CAP).expect("load").expect("saved");
+        assert_eq!(value(&loaded.doc, "other"), Some(7));
+        assert_eq!(value(&loaded.doc, "active"), None);
+        let mut loaded = loaded.doc;
+        assert_eq!(loaded.get_heads(), other.get_heads());
+
+        // Phase `an_orphaned_hint_loads_nothing`.
+        std::fs::remove_file(&base).expect("remove the base");
+        assert!(load(&base, CAP).expect("load").is_none());
     }
 
     #[test]

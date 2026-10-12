@@ -5,15 +5,14 @@
     reason = "float geometry, and point indices bounded by the strokes they index"
 )]
 
-use ui::tilo_actions::ActionError;
-use ui::tilo_resource::{Doc, order};
+use ui::tilo_resource::Refusal;
+use ui::tilo_resource::order;
 use ui::vello::kurbo::{Line, ParamCurveNearest as _, Point};
 
-use crate::doc;
 use crate::model::{Artwork, MAX_POINTS, Mark, Shape, StrokePoint};
 
-fn refuse(message: impl Into<String>) -> ActionError {
-    ActionError::Refused(message.into())
+fn refuse(message: impl Into<String>) -> Refusal {
+    Refusal(message.into())
 }
 
 fn at(point: &[f64]) -> Point {
@@ -43,7 +42,7 @@ pub fn extend(points: &mut Vec<StrokePoint>, more: &[StrokePoint]) {
 }
 
 /// The stroke a mark id names, or why it cannot be cut or joined.
-fn stroke<'a>(art: &'a Artwork, id: &str) -> Result<&'a Mark, ActionError> {
+fn stroke<'a>(art: &'a Artwork, id: &str) -> Result<&'a Mark, Refusal> {
     let mark = art
         .mark(id)
         .ok_or_else(|| refuse(format!("there is no mark {id:?}; inspect lists the marks")))?;
@@ -79,11 +78,11 @@ fn with_points(mark: &Mark, points: Vec<StrokePoint>) -> Mark {
 /// # Errors
 /// Refuses anything but one stroke, and a cut at either end.
 pub fn split(
-    doc: &mut Doc,
+    doc: &mut Artwork,
     art: &Artwork,
     ids: &[String],
     cut: [f64; 2],
-) -> Result<Vec<String>, ActionError> {
+) -> Result<Vec<String>, Refusal> {
     let [id] = ids else {
         return Err(refuse("split cuts one stroke: name exactly one id"));
     };
@@ -147,8 +146,8 @@ pub fn split(
         name: String::new(),
         ..with_points(mark, after)
     };
-    doc::write_mark(doc, &with_points(mark, before))?;
-    doc::write_mark(doc, &far)?;
+    doc.put_mark(with_points(mark, before));
+    doc.put_mark(far);
     Ok(vec![id.clone(), new_id])
 }
 
@@ -160,11 +159,11 @@ pub fn split(
 /// Refuses fewer than two strokes, marks that are not strokes, strokes on
 /// different layers or under different transforms, and a join past the
 /// point limit.
-pub fn merge(doc: &mut Doc, art: &Artwork, ids: &[String]) -> Result<String, ActionError> {
+pub fn merge(doc: &mut Artwork, art: &Artwork, ids: &[String]) -> Result<String, Refusal> {
     let marks = ids
         .iter()
         .map(|id| stroke(art, id))
-        .collect::<Result<Vec<&Mark>, ActionError>>()?;
+        .collect::<Result<Vec<&Mark>, Refusal>>()?;
     let [first, rest @ ..] = marks.as_slice() else {
         return Err(refuse("merge joins two or more strokes: name them in ids"));
     };
@@ -196,9 +195,9 @@ pub fn merge(doc: &mut Doc, art: &Artwork, ids: &[String]) -> Result<String, Act
             "the joined stroke would have over {MAX_POINTS} points; simplify them first"
         )));
     }
-    doc::write_mark(doc, &with_points(first, joined))?;
+    doc.put_mark(with_points(first, joined));
     for mark in rest {
-        doc::remove(doc, doc::MARKS, &mark.id)?;
+        doc.remove_mark(&mark.id);
     }
     Ok(first.id.clone())
 }

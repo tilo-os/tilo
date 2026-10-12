@@ -22,12 +22,13 @@ use iroh::{Endpoint, EndpointAddr, EndpointId};
 use iroh_gossip::api::{Event as GossipEvent, GossipSender};
 use iroh_gossip::net::{GOSSIP_ALPN, Gossip};
 use iroh_gossip::proto::TopicId;
+use tilo_relay_session::pointer_pacing::{Pacing, PointerPacer, slot_pacing};
 use tilo_relay_session::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
 use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg, SurfaceId};
-use crate::network::reachability::Reachability;
+use crate::network::reachability::{Need, Reachability};
 use neighbour_wire::{Retention, retention};
 
 #[cfg(test)]
@@ -767,10 +768,9 @@ impl TopicRuntime {
     /// comes later is never offered an older message: the shell syncs it
     /// when it joins (`NetEvent::PeerJoined`). All a broadcast into an
     /// empty topic would do is start the topic's cache sweep
-    /// ([`GOSSIP_CACHE_SWEEP`]), which iroh-gossip arms on the first message
-    /// and never stops, so a desktop alone with its rooms would wake to
-    /// sweep empty caches for the rest of the session. The first neighbour
-    /// arms it instead.
+    /// ([`GOSSIP_CACHE_SWEEP`]), which then runs until the message expires
+    /// (`gossip_caches_drain_within`), so a desktop alone with its rooms
+    /// would wake for every local change. Only a linked topic broadcasts.
     async fn broadcast(&self, bytes: Bytes) -> Result<(), iroh_gossip::api::ApiError> {
         if !self.linked {
             return Ok(());
@@ -987,7 +987,7 @@ impl ProtocolHandler for PersonalFabricProtocol {
 }
 
 /// Why `command` means a remote party is involved, so this device must be
-/// reachable from now on (`crate::network::reachability`): it dials a peer
+/// reachable for a while (`crate::network::reachability`): it dials a peer
 /// or host, enrols a device, administers a relay room, joins a call or
 /// sends to a named one of the person's devices. `None` for everything a
 /// lone desktop does by itself: joining and publishing to a topic nobody
@@ -1128,6 +1128,9 @@ struct ActorState {
     )>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
     content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
+    /// Approver sessions that put this person's agents' questions on the
+    /// sheet, one per connected host.
+    agent_questions: super::agent_questions::Answering,
     peers_seen: HashMap<(WorkspaceId, EndpointId), PeerMembership>,
     next_membership_epoch: u64,
     /// Inbound ALPN connections are bound once to the membership active on
@@ -1173,6 +1176,15 @@ struct ActorState {
     /// Remote-action requests that found neither a direct nor a relayed
     /// route. Sent when that peer is next seen on the workspace.
     pending_remote_actions: PendingRemoteActions,
+    /// Pointer moves held back from gossip, per slot, to the rate the relay
+    /// path writes them (see [`ActorState::pace_gossip`]).
+    gossip_pointers: PointerPacer<GossipPointer>,
+}
+
+/// An encoded pointer move waiting for its room's gossip topic.
+struct GossipPointer {
+    ws: WorkspaceId,
+    bytes: Bytes,
 }
 
 /// Every application message this device received from its peers, by kind:
@@ -1672,16 +1684,7 @@ impl ActorState {
                     }
                 } else {
                     self.hold_for_host(ws, &msg, false);
-                    publish(
-                        &self.topics,
-                        &self.host_sessions,
-                        ws,
-                        msg,
-                        false,
-                        true,
-                        true,
-                    )
-                    .await;
+                    self.publish_paced(ws, msg).await;
                 }
             }
             Some(NetCmd::SetWake(LoopWake(wake))) => self.wake = Some(wake),
@@ -1794,6 +1797,8 @@ impl ActorState {
                     tracing::warn!(peer = %id, "cannot connect workspace host without a device certificate");
                     return true;
                 };
+                self.agent_questions
+                    .start(&self.endpoint, addr.clone(), identity);
                 let mut routes = HostRouteScheduler {
                     endpoint: &self.endpoint,
                     identity,
@@ -1826,6 +1831,7 @@ impl ActorState {
     /// is reserved for an explicit enrolled-home-peer removal: an address
     /// refresh must never revoke a still-valid Files hydration source.
     fn teardown_host(&mut self, id: EndpointId, remove_content: bool) {
+        self.agent_questions.stop(id);
         let enrolled_home_peer = self
             .hosts
             .remove(&id)
@@ -3149,6 +3155,7 @@ impl ActorState {
             HostEvent::Voice(_) => "HostVoice",
             HostEvent::Closed => "HostClosed",
         });
+        let event = self.admit_native_governance(ws, event).await;
         let mapped = match event {
             HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
             HostEvent::Ready => {
@@ -3249,6 +3256,83 @@ impl ActorState {
         }
     }
 
+    /// Publish `msg` to the room's hosts and its gossip topic, pacing pointer
+    /// moves on the direct path as the session writer paces them to a relay
+    /// (`tilo_relay_session::pointer_pacing`): a pointer slot goes to gossip
+    /// at most every `POINTER_GAP`, the first move after a pause at once and
+    /// the latest when the gap ends, so the resting position always goes.
+    /// The hosts get every message at once; their session writers pace it.
+    ///
+    /// Only the message's own slot decides, never its author: a person's and
+    /// an agent's pointer travel alike. Carets, selections and typing pass a
+    /// held pointer; anything else is broadcast after every held pointer, so
+    /// an app's `Left` never overtakes its last move.
+    async fn publish_paced(&mut self, ws: WorkspaceId, msg: NeighbourMsg) {
+        let pacing = slot_pacing(ws, msg.presence_slot());
+        if let Pacing::Pointer(key) = pacing
+            && self.topics.contains_key(&ws)
+        {
+            let bytes = match postcard::to_allocvec(&msg) {
+                Ok(bytes) => Bytes::from(bytes),
+                Err(error) => {
+                    tracing::warn!(ws, %error, "collaboration message encode failed");
+                    return;
+                }
+            };
+            // Hosts first, as `publish` does: the direct mesh never delays
+            // the hosted path.
+            publish(
+                &self.topics,
+                &self.host_sessions,
+                ws,
+                msg,
+                false,
+                false,
+                true,
+            )
+            .await;
+            let now = tokio::time::Instant::now();
+            self.gossip_pointers
+                .hold(key, GossipPointer { ws, bytes }, now);
+            let due = self.gossip_pointers.take_due(now);
+            self.broadcast_pointers(due).await;
+            return;
+        }
+        if pacing == Pacing::Ordered {
+            let held = self.gossip_pointers.take_all(tokio::time::Instant::now());
+            self.broadcast_pointers(held).await;
+        }
+        publish(
+            &self.topics,
+            &self.host_sessions,
+            ws,
+            msg,
+            false,
+            true,
+            true,
+        )
+        .await;
+    }
+
+    /// Broadcast the held pointer moves whose gap has ended (the run loop
+    /// wakes for [`PointerPacer::next_due`], armed only while one is held).
+    async fn broadcast_due_pointers(&mut self) {
+        let due = self.gossip_pointers.take_due(tokio::time::Instant::now());
+        self.broadcast_pointers(due).await;
+    }
+
+    async fn broadcast_pointers(&self, pointers: Vec<GossipPointer>) {
+        for GossipPointer { ws, bytes } in pointers {
+            // A room left since the move was held has nobody to tell.
+            let Some(topic) = self.topics.get(&ws) else {
+                continue;
+            };
+            if let Err(error) = topic.broadcast(bytes).await {
+                tracing::warn!(ws, %error, "iroh gossip publish failed");
+            }
+        }
+    }
+
     /// Drop the peers whose membership lapsed: their gossip link went down
     /// and stayed down, or they were known only by traffic that stopped.
     /// Runs at [`Self::next_eviction`], never on a fixed tick.
@@ -3297,6 +3381,42 @@ impl ActorState {
                 .subscribers
                 .keys()
                 .any(|ws| !self.topics.contains_key(ws))
+    }
+
+    /// The remote party this actor is connected to or keeps dialling, if
+    /// any, which holds this device's relays up ([`Need::Transport`]): a
+    /// peer it dials, a peer on one of its topics, a workspace host, a
+    /// governed room's relay, one of the person's devices, a window streamed
+    /// with a peer, a remote action waiting for its peer, a device being
+    /// enrolled or a Messages account its contacts text. A peer that left
+    /// stops counting once its membership lapses.
+    fn remote_party(&self) -> Option<&'static str> {
+        Some(if !self.peers.is_empty() {
+            "a peer this device dials"
+        } else if !self.peers_seen.is_empty() {
+            "a peer on one of its topics"
+        } else if !self.hosts.is_empty()
+            || !self.connecting_hosts.is_empty()
+            || !self.host_sessions.is_empty()
+        {
+            "a workspace host"
+        } else if !self.native_routes.is_empty() {
+            "a relay-governed room"
+        } else if !self.personal_fabric_connections.is_empty()
+            || !self.active_personal_transfers.is_empty()
+        {
+            "one of the person's devices"
+        } else if !self.surface_connections.is_empty() || !self.surface_fanout_viewers.is_empty() {
+            "a window streamed with a peer"
+        } else if !self.pending_remote_actions.is_empty() {
+            "a remote action waiting for its peer"
+        } else if self.native_enrollment.is_busy() {
+            "a device being enrolled"
+        } else if self.private_messages.is_bound() {
+            "a Messages account receives texts"
+        } else {
+            return None;
+        })
     }
 
     /// Retry any topic subscription, direct peer or workspace host not yet
@@ -3885,6 +4005,7 @@ async fn run(
         action_broker: None,
         connecting_hosts: HashSet::new(),
         content_discovery_tasks: HashMap::new(),
+        agent_questions: super::agent_questions::Answering::default(),
         peers_seen: HashMap::new(),
         next_membership_epoch: 0,
         personal_fabric_ingress: HashMap::new(),
@@ -3906,11 +4027,20 @@ async fn run(
         caps_sent: None,
         compat_beats: 0,
         pending_remote_actions: PendingRemoteActions::default(),
+        gossip_pointers: PointerPacer::default(),
     };
     let mut upkeep = None;
     let mut host_checkpoint = None;
+    let mut reported_party = None;
 
     loop {
+        // The relays stay up while a remote party lasts, and rest a while
+        // after the last one is gone (`crate::network::reachability`).
+        let party = state.remote_party();
+        if party != reported_party {
+            reported_party = party;
+            state.reachability.need(Need::Transport, party);
+        }
         // Evict when the soonest membership lapses, not on a polling tick:
         // linked peers have no deadline at all.
         let eviction = state.next_eviction();
@@ -3922,6 +4052,8 @@ async fn run(
             !state.host_sessions.is_empty(),
             HOST_CHECKPOINT_INTERVAL,
         );
+        // A held pointer move falls due; nothing is armed while none is held.
+        let pointer_due = state.gossip_pointers.next_due();
         tokio::select! {
             biased;
             input = input_rx.recv() => {
@@ -3929,6 +4061,8 @@ async fn run(
                     break;
                 }
             }
+            // Commands before a held pointer's deadline: a newer move already
+            // queued replaces the held one before the gap's end sends it.
             command = cmd_rx.recv() => {
                 if !state.handle_command(command).await {
                     break;
@@ -3939,6 +4073,7 @@ async fn run(
                     break;
                 }
             }
+            () = sleep_until_due(pointer_due) => state.broadcast_due_pointers().await,
             () = sleep_until_lapse(eviction) => state.run_eviction_tick().await,
             () = sleep_until_lapse(upkeep) => {
                 upkeep = None;
@@ -3962,6 +4097,14 @@ async fn run(
     }
     reporting_addrs.abort();
     let _ = router.shutdown().await;
+}
+
+/// Sleep until `at` on the runtime's clock, or forever when nothing is due.
+async fn sleep_until_due(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
 }
 
 /// When the next upkeep tick is due, given when it was due (`armed`) and
@@ -4015,12 +4158,13 @@ async fn sleep_until_lapse(at: Option<Instant>) {
 }
 
 /// How often gossip sweeps a topic's message caches. iroh-gossip's 1 s
-/// sweep is a timer per topic that never stops, the one thing that woke an
-/// idle, converged session several times a second; swept every
-/// [`GOSSIP_CACHE_SWEEP`] instead, an idle topic wakes its runtime a tenth
-/// as often. iroh-gossip arms it on a topic's first message or neighbour,
-/// so a topic that never had a neighbour is never swept
-/// ([`TopicRuntime::broadcast`]).
+/// sweep was a timer per topic that never stopped, the one thing that woke
+/// an idle, converged session several times a second; swept every
+/// [`GOSSIP_CACHE_SWEEP`] instead, a topic with messages wakes its runtime
+/// a tenth as often. The vendored iroh-gossip (`vendor/iroh-gossip/
+/// TILO-PATCH.md`) arms it on a topic's first cached message and stops it
+/// once the caches are empty (`gossip_caches_drain_within`); a topic that
+/// never had a neighbour caches nothing ([`TopicRuntime::broadcast`]).
 const GOSSIP_CACHE_SWEEP: Duration = Duration::from_secs(10);
 /// How long gossip keeps a message to answer a neighbour's graft for it.
 /// iroh-gossip's 30 s less the longer sweep, so a message is still gone
@@ -4028,6 +4172,18 @@ const GOSSIP_CACHE_SWEEP: Duration = Duration::from_secs(10);
 /// and this cache holds whole messages of up to
 /// [`MAX_GOSSIP_MESSAGE_BYTES`].
 const GOSSIP_MESSAGE_RETENTION: Duration = Duration::from_secs(20);
+
+/// How long after its last message a topic stops sweeping: the message id
+/// outlives the message itself (iroh-gossip's 90 s, to refuse a late
+/// duplicate), and the sweep that finds both gone is the last.
+#[cfg(test)]
+pub(crate) fn gossip_caches_drain_within() -> Duration {
+    let config = broadcast_config();
+    config
+        .message_id_retention
+        .max(config.message_cache_retention)
+        .saturating_add(config.cache_evict_interval)
+}
 
 /// Plumtree broadcast settings: iroh-gossip's, with the cache swept every
 /// [`GOSSIP_CACHE_SWEEP`] instead of every second.
@@ -6883,7 +7039,7 @@ mod tests {
             artifact,
             collab_types::Ed25519PublicKey::from_bytes(b_device),
             collab_types::AttestationId::default(),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
         );
@@ -7109,7 +7265,7 @@ mod tests {
             artifact,
             collab_types::Ed25519PublicKey::from_bytes(a_device),
             collab_types::AttestationId::default(),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
         );
@@ -7229,7 +7385,7 @@ mod tests {
             collab_types::document_artifact_id("so.tilo.tube", &cluster, "history"),
             collab_types::Ed25519PublicKey::from_bytes(a_key.verifying_key().to_bytes()),
             collab_types::document_attestation_id("so.tilo.tube", &cluster, "history"),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
         );
@@ -7839,7 +7995,7 @@ mod tests {
             artifact,
             device(&a_key),
             collab_types::AttestationId::default(),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
             metadata,

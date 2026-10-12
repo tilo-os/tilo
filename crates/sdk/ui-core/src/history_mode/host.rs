@@ -71,6 +71,13 @@ pub(super) struct Composition {
     preview: Option<super::PreviewSide>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Walks of a History's owned layout subtrees on this thread, so tests
+    /// can hold a focus-order recomputation to one walk, not one per node.
+    pub(crate) static OWNERSHIP_WALKS: Cell<usize> = const { Cell::new(0) };
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent presentation, focus and refresh flags are not mutually exclusive modes"
@@ -142,6 +149,12 @@ pub struct HistoryHost {
     body_node: Option<NodeId>,
     timeline_node: Option<NodeId>,
     canvas_node: Option<NodeId>,
+    /// What the frame being drawn painted ([`Self::draw_compared`]), and
+    /// what the last presented frame did ([`Self::paint_presented`]).
+    #[cfg(feature = "native")]
+    painting: Option<Scene>,
+    #[cfg(feature = "native")]
+    painted: Option<Scene>,
 }
 impl HistoryHost {
     /// Request the same read-only presentation as the History button. Restore
@@ -327,9 +340,46 @@ impl HistoryHost {
             control_domain: None,
             control_lease: None,
             invalid_owner: false,
+            #[cfg(feature = "native")]
+            painting: None,
+            #[cfg(feature = "native")]
+            painted: None,
         };
         host.rebuild_toolbar();
         Ok(host)
+    }
+
+    /// Draw into a scene of its own, append that to `scene`, and say whether
+    /// it differs from what the last presented frame painted: a window that
+    /// shows the live app under an unchanged History toolbar repaints only
+    /// what the app's widgets damage.
+    #[cfg(feature = "native")]
+    pub(crate) fn draw_compared(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut crate::text_render::TextRenderer,
+        (theme, presence): (&crate::theme::Theme, &crate::presence::PresenceCtx),
+    ) -> bool {
+        let mut own = self.painting.take().unwrap_or_default();
+        own.reset();
+        Widget::draw(self, &mut own, transform, text, theme, presence);
+        scene.append(&own, None);
+        let changed = self.painted.as_ref().map_or_else(
+            || !own.encoding().draw_tags.is_empty(),
+            |was| !was.encoding_eq(&own),
+        );
+        self.painting = Some(own);
+        changed
+    }
+
+    /// The frame drawn last was presented: what the next frame's paint is
+    /// compared with.
+    #[cfg(feature = "native")]
+    pub(crate) fn paint_presented(&mut self) {
+        if let Some(painting) = self.painting.take() {
+            self.painted = Some(painting);
+        }
     }
     pub(crate) fn set_control_domain(&mut self, domain: &crate::ControlDomain) {
         self.control_domain = Some(domain.clone());
@@ -656,7 +706,7 @@ impl HistoryHost {
                     super::owner::OwnerKind::Component(binding) => {
                         let origin = super::pending_controls::PendingControlOrigin::Component(
                             crate::bound_dispatch::BoundActionTarget {
-                                physical_text: false,
+                                input: crate::bound_dispatch::Input::Discrete,
                                 binding: binding.clone(),
                                 address: crate::bound_dispatch::BoundActionAddress {
                                     instance_id: binding.instance_id,
@@ -871,17 +921,14 @@ impl HistoryHost {
     #[cfg(test)]
     pub(crate) fn activate_retained_control_for_test(&mut self, id: &str) -> bool {
         fn activate(widget: &mut dyn Widget, id: &str) -> bool {
-            if widget.test_id() == Some(id) {
-                return widget.perform_action(
+            crate::widget::find_test_id_mut(widget, id).is_some_and(|widget| {
+                widget.perform_action(
                     &crate::a11y::Action::Activate,
+                    &[],
                     &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                     &automerge::ROOT,
-                );
-            }
-            widget
-                .children_mut()
-                .into_iter()
-                .any(|child| activate(child, id))
+                )
+            })
         }
         // Invokes the retained production button callback. No phase, lease,
         // descriptor, or producer behavior is replaced by this access seam.
@@ -999,13 +1046,7 @@ impl HistoryHost {
         if !self.captures_input() && !self.has_saved_focus() {
             return;
         }
-        let mut owned = HashSet::new();
-        let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
-        while let Some(node) = pending.pop() {
-            if owned.insert(node) {
-                pending.extend(tree.children(node).unwrap_or_default());
-            }
-        }
+        let owned = self.owned_nodes(tree);
         let mut pending: Vec<_> = self.chrome_node.into_iter().collect();
         while let Some(node) = pending.pop() {
             if owned.contains(&node) {
@@ -1018,7 +1059,24 @@ impl HistoryHost {
             pending.extend(tree.children(node).unwrap_or_default());
         }
     }
+    /// Every layout node this History owns, collected in one walk: the set
+    /// [`Self::owns_node`] answers for one node, for callers that ask it of
+    /// every node in a composition.
+    pub(crate) fn owned_nodes(&self, tree: &TaffyTree<()>) -> HashSet<NodeId> {
+        #[cfg(test)]
+        OWNERSHIP_WALKS.with(|walks| walks.set(walks.get() + 1));
+        let mut owned = HashSet::new();
+        let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
+        while let Some(node) = pending.pop() {
+            if owned.insert(node) {
+                pending.extend(tree.children(node).unwrap_or_default());
+            }
+        }
+        owned
+    }
     pub(crate) fn owns_node(&self, node: NodeId, tree: &TaffyTree<()>) -> bool {
+        #[cfg(test)]
+        OWNERSHIP_WALKS.with(|walks| walks.set(walks.get() + 1));
         let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
         while let Some(candidate) = pending.pop() {
             if candidate == node {
@@ -1477,7 +1535,7 @@ impl HistoryHost {
                                 .with_spellcheck(false)
                                 .with_autocorrect(false)
                                 .with_id(&format!("{id}-phrase"))
-                                .with_placeholder(&I18nManager::format(
+                                .with_placeholder(I18nManager::format(
                                     "history-mode-type-to-confirm",
                                     &[("phrase", expected.into())],
                                 ))

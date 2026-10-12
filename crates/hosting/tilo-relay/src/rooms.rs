@@ -18,6 +18,8 @@
 mod admin;
 mod admissions;
 #[cfg(feature = "agents")]
+mod agent_members;
+#[cfg(feature = "agents")]
 mod applications;
 mod collaboration;
 mod pages;
@@ -26,6 +28,7 @@ mod steward_endpoint;
 mod stewardship;
 #[cfg(test)]
 mod tests;
+mod topology_namespace;
 #[cfg(feature = "agents")]
 mod views;
 mod voice;
@@ -558,12 +561,11 @@ impl Rooms {
     ///
     /// Returns why the room could not be created, persisted or bound.
     pub async fn create(&self, name: &str) -> Result<RoomSummary, String> {
-        let host = &self.inner.host;
         let room = GovernedRoom::create(
             &self.inner.dir,
             name,
-            &host.cert,
-            &host.key,
+            &self.inner.host.cert,
+            &self.inner.host.key,
             SystemTime::now(),
         )?;
         self.bind(&room).await?;
@@ -596,6 +598,20 @@ impl Rooms {
         summaries
     }
 
+    /// The delegated agents on `room`'s roster, acting or not now.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the room's roster could not be read.
+    pub async fn agents(
+        &self,
+        room: &str,
+    ) -> Result<Vec<tilo_peer_state::GovernedAgent>, CollaborationError> {
+        let room = self.room(room).await?;
+        let agents = room.lock().await.peer().governed_agents(SystemTime::now());
+        agents.map_err(CollaborationError::new)
+    }
+
     /// The device that governs every room here: this relay's own.
     #[must_use]
     pub fn governor(&self) -> &DeviceCert {
@@ -615,18 +631,18 @@ impl Rooms {
         room: &str,
         device: [u8; 32],
     ) -> Option<collab_types::role::Role> {
-        use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
         let governed = self.room(room).await.ok()?;
         let governed = governed.lock().await;
         let now = SystemTime::now();
-        let (role, caps, person) = governed.peer().permissions(device, now).ok()?;
+        let member = governed.peer().permissions(device, now).ok()?;
         drop(governed);
-        let actor = Actor::person(Some(role), person).in_room(room.to_owned());
-        let resource = ResourceRef::Room(room.to_owned());
-        let seconds = now.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs();
-        (decide_capability(&actor, &resource, Verb::Write, &caps, Some(seconds))
-            == CapDecision::Allow)
-            .then_some(role)
+        member
+            .allows(
+                &member.policy.node(),
+                tilo_action_policy::ActionKind::Undoable,
+                now,
+            )
+            .then_some(member.role)
     }
 
     async fn room(&self, room: &str) -> Result<Arc<AsyncMutex<GovernedRoom>>, CollaborationError> {
@@ -777,8 +793,9 @@ impl Rooms {
             return Ok(());
         }
         let now = SystemTime::now();
-        let (role, ..) = room.peer().permissions(author, now)?;
-        if !crate::room_access::role_grants(role, collab_types::caps::Verb::Write) {
+        let member = room.peer().permissions(author, now)?;
+        let node = collab_types::validator::document_node(&member.policy.room, &app_id, &record_id);
+        if !member.allows(&node, tilo_action_policy::ActionKind::Undoable, now) {
             return Err(format!(
                 "{app_id} record written by a device that may not edit"
             ));
@@ -889,6 +906,14 @@ impl Rooms {
         let readers = readers(&access);
         host.access
             .replace(room.workspace_id(), true, access)
+            .await
+            .map_err(|error| error.to_string())?;
+        host.access
+            .replace_standings(
+                room.workspace_id(),
+                true,
+                room.peer().governed_standings(SystemTime::now())?,
+            )
             .await
             .map_err(|error| error.to_string())?;
         while let Some(entry) = room.record.outgoing.get(room.record.published) {

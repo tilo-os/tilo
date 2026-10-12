@@ -100,7 +100,10 @@ pub fn is_client(package_id: &str) -> bool {
 /// Whether a launch of `package_id` declaring `services` receives the grant:
 /// an image-named client that declares the system interface.
 #[must_use]
-pub fn grants(package_id: &str, services: &std::collections::BTreeMap<String, String>) -> bool {
+pub fn grants(
+    package_id: &str,
+    services: &std::collections::BTreeMap<String, crate::manifest::ServiceReq>,
+) -> bool {
     is_client(package_id) && services.contains_key(crate::services::SYSTEM_SERVICE)
 }
 
@@ -224,7 +227,7 @@ fn system_bus_address() -> String {
 #[must_use]
 pub fn resolve(
     package_id: &str,
-    services: &std::collections::BTreeMap<String, String>,
+    services: &std::collections::BTreeMap<String, crate::manifest::ServiceReq>,
     uid: u32,
 ) -> Option<(SystemAuthorityPlan, Option<DBusProxyGuard>)> {
     if !grants(package_id, services) {
@@ -415,8 +418,11 @@ mod tests {
 
     #[test]
     fn only_the_control_panel_receives_the_grant() {
-        let declared: std::collections::BTreeMap<String, String> =
-            [("system".to_owned(), "required@1".to_owned())].into();
+        let declared: std::collections::BTreeMap<String, crate::manifest::ServiceReq> = [(
+            "system".to_owned(),
+            crate::manifest::service_req("required@1"),
+        )]
+        .into();
         assert!(is_client("so.tilo.settings"));
         assert!(grants("so.tilo.settings", &declared));
         // Settings without the system interface declared is not served it.

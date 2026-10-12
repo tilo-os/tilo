@@ -39,16 +39,6 @@ pub struct CheckedHistoryRequestV1 {
     pub operation: CheckedHistoryOperationV1,
 }
 
-/// Distinguishes an observed atomic pointer from an equivalent legacy undo
-/// content reference. Never display the representative's actor as evidence of
-/// prior namespace authorship.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FileRestorePriorReferenceV1 {
-    ObservedRevision,
-    LegacyContentRepresentative,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileRestoreReceiptV1 {
@@ -59,7 +49,6 @@ pub struct FileRestoreReceiptV1 {
     pub record_id: FileRecordId,
     pub selected_version: FileVersionId,
     pub prior_revision: ContentRevisionV1,
-    pub prior_reference: FileRestorePriorReferenceV1,
     pub restored_revision: ContentRevisionV1,
     pub compensates: Option<Uuid>,
 }

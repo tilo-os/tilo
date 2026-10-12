@@ -204,11 +204,11 @@ pub(super) fn run(root: &Path, photos: PathBuf, writer: PathBuf) -> Result<()> {
         .workspaces
         .first_mut()
         .ok_or("default workspace tree has no workspace")?;
-    workspace.grant_capability(shell::shell::state::CapOverride::membership(
-        shell::shell::state::Subject::agent(READER),
-        workspace.room.to_string(),
-        shell::shell::state::Verb::Read,
-    ));
+    workspace.admit_agent_preset(
+        READER,
+        tilo_action_policy::roles::AgentPreset::Observer,
+        &tilo_action_policy::Subject::Role(tilo_action_policy::Role::Owner),
+    );
     shell::shell::persist::save_tree_to(&tree, &state_path)?;
     let session = Session::start(root)?;
     let captured = Arc::new(Mutex::new(Vec::new()));

@@ -43,15 +43,11 @@ macro_rules! settings_effects {
             const OPERATION: &'static str = OPERATION;
 
             fn declarations() -> Vec<EffectDecl> {
-                let build = || {
+                ui::tilo_resource::profiling::measure("settings.flattened_declarations", || {
                     let mut declarations = Vec::new();
                     $(declarations.extend(<$ty as Effect>::declarations());)*
                     declarations
-                };
-                #[cfg(test)]
-                return ui::framework::profiling::measure("settings.flattened_declarations", build);
-                #[cfg(not(test))]
-                build()
+                })
             }
 
             fn id(&self) -> &'static str {
@@ -115,9 +111,7 @@ settings_effects! {
     Navigation(NavigationEffect) => answer_navigation,
     Appearance(crate::panes::appearance::AppearanceEffect) => crate::panes::appearance::answer,
     Accessibility(crate::panes::accessibility::AccessibilityEffect) => crate::panes::accessibility::answer,
-    Notifications(crate::panes::notifications::NotificationEffect) => crate::panes::notifications::answer,
     DefaultApps(crate::panes::personal_apps::DefaultAppsEffect) => crate::panes::personal_apps::answer,
-    Region(crate::panes::region::RegionEffect) => crate::panes::region::answer,
     TimeDate(crate::panes::time_date::TimeDateEffect) => crate::panes::time_date::answer,
     Shortcuts(crate::panes::keyboard_shortcuts::ShortcutEffect) => crate::panes::keyboard_shortcuts::answer,
     Input(crate::panes::mouse_keyboard::InputEffect) => crate::panes::mouse_keyboard::answer,
@@ -241,14 +235,20 @@ pub(crate) const LIVE_AREAS: &[LiveArea] = &[
         pane: Category::AgentModels,
         is_open: |app| app.agent_models().is_open(),
         rows: |app| app.agent_models().rows(),
-        background: None,
+        background: Some(BackgroundRead {
+            start: |app| app.agent_models().start_read(),
+            finished: |app| app.agent_models().read_finished(),
+        }),
     },
     LiveArea {
         name: "settings.rows.device_mesh",
         pane: Category::DeviceMesh,
         is_open: |app| app.device_mesh().is_open(),
         rows: |app| app.device_mesh().rows(),
-        background: None,
+        background: Some(BackgroundRead {
+            start: |app| app.device_mesh().start_read(),
+            finished: |app| app.device_mesh().read_finished(),
+        }),
     },
     LiveArea {
         name: "settings.rows.audio",
@@ -265,7 +265,10 @@ pub(crate) const LIVE_AREAS: &[LiveArea] = &[
         pane: Category::ExternalAccounts,
         is_open: |app| app.accounts().is_open(),
         rows: |app| app.accounts().rows(),
-        background: None,
+        background: Some(BackgroundRead {
+            start: |app| app.accounts().start_read(),
+            finished: |app| app.accounts().read_finished(),
+        }),
     },
     // Displays probe brightness on threads of their own; the rest is a few
     // small files.
@@ -447,20 +450,11 @@ impl AreaReads {
 /// each offers bound to it: one per pane, then each area's that
 /// [`SettingsApp::publishes_area`].
 pub(crate) fn rows(app: &SettingsApp) -> Vec<ui::framework::LiveRow> {
-    fn observed<T>(name: &'static str, operation: impl FnOnce() -> T) -> T {
-        #[cfg(test)]
-        let result = ui::framework::profiling::measure(name, operation);
-        #[cfg(not(test))]
-        let result = {
-            let _ = name;
-            operation()
-        };
-        result
-    }
-    let mut rows = observed("settings.rows.panes", pane_rows);
+    use ui::tilo_resource::profiling::measure;
+    let mut rows = measure("settings.rows.panes", pane_rows);
     for area in LIVE_AREAS {
         if app.publishes_area(area) {
-            rows.extend(observed(area.name, || (area.rows)(app)));
+            rows.extend(measure(area.name, || (area.rows)(app)));
         }
     }
     rows
@@ -485,7 +479,10 @@ pub(crate) fn row(app: &SettingsApp, id: &str) -> Option<ui::framework::LiveRow>
 /// The effects that differ from their declaration on this device now.
 pub(crate) fn statuses(app: &SettingsApp) -> Vec<ui::framework::EffectStatus> {
     let software = app.software();
-    crate::panes::accessibility::statuses(software.speech.is_some())
+    let mut statuses = crate::panes::accessibility::statuses(software.speech.is_some());
+    statuses.extend(app.bluetooth().statuses());
+    statuses.extend(app.network().statuses());
+    statuses
 }
 
 /// `effect` of one area, named as part of [`SettingsEffect`], for binding a
@@ -503,14 +500,29 @@ pub fn pane_row_id(category: Category) -> String {
     format!("settings.section:{}", category.slug())
 }
 
-/// What opens `category`'s pane, for search, agents and accessibility: its
-/// row's [`NavigationEffect::OpenPane`].
+/// What opens `category`'s pane, offered on its row ([`pane_row_id`]).
 #[must_use]
-pub fn open_pane_address(category: Category) -> tilo_actions::ActionAddress {
-    let open = NavigationEffect::OpenPane {
+pub fn open_pane(category: Category) -> SettingsEffect {
+    NavigationEffect::OpenPane {
         pane: category.slug().to_owned(),
-    };
-    tilo_actions::ActionAddress::new(pane_row_id(category), open.id())
+    }
+    .into()
+}
+
+/// Open `category`'s pane in `app` through its row, as the sidebar does.
+#[cfg(test)]
+pub(crate) fn show_pane(
+    app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
+    category: Category,
+) {
+    app.effect_on(&pane_row_id(category), &open_pane(category))
+        .expect("the pane opens");
+}
+
+/// The pane whose live row is `row` ([`pane_row_id`]).
+#[must_use]
+pub fn pane_of_row(row: &str) -> Option<Category> {
+    Category::from_slug(row.strip_prefix("settings.section:")?)
 }
 
 /// One row per pane, each opening it.
@@ -523,12 +535,7 @@ fn pane_rows() -> Vec<ui::framework::LiveRow> {
                 "settings.section",
                 category.label(),
             )
-            .operation(
-                SettingsEffect::from(NavigationEffect::OpenPane {
-                    pane: category.slug().to_owned(),
-                })
-                .bound(),
-            )
+            .operation(open_pane(*category).bound())
         })
         .collect()
 }
@@ -570,7 +577,9 @@ mod tests {
     fn mounted_live_rows_do_not_rebuild_unrelated_pane_declarations() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let (rows, phases) = app
-            .surface::<SettingsApp, _>(|app| ui::framework::profiling::observe(|| super::rows(app)))
+            .surface::<SettingsApp, _>(|app| {
+                ui::tilo_resource::profiling::observe(|| super::rows(app))
+            })
             .unwrap();
         assert!(
             rows.iter()
@@ -625,8 +634,8 @@ mod tests {
             };
             assert_eq!(survey(direct.clone()), survey(reference.clone()));
             assert_eq!(
-                direct.permission_for_json(&args),
-                reference.permission_for_json(&args)
+                direct.need_for(Some(&args), None),
+                reference.need_for(Some(&args), None)
             );
             assert_eq!(
                 direct.confirmation_for_json(&args),
@@ -710,8 +719,8 @@ mod tests {
                     "all published metadata including role/risk/result and confirmation is preserved"
                 );
                 assert_eq!(
-                    direct.permission_for_json(&serde_json::Map::new()),
-                    flattened.permission_for_json(&serde_json::Map::new()),
+                    direct.need_for(Some(&serde_json::Map::new()), None),
+                    flattened.need_for(Some(&serde_json::Map::new()), None),
                     "invocation permission classification is unchanged",
                 );
                 assert_eq!(

@@ -9,6 +9,7 @@
 
 use serde_json::{Value, json};
 use ui::automerge::{Patch, PatchAction, Prop};
+use ui::num::f64_of_usize;
 use ui::tilo_resource::Doc;
 use ui::vello::kurbo::{BezPath, Point, Rect, Shape as _};
 
@@ -24,7 +25,7 @@ const MOSTLY: f64 = 0.75;
 pub fn answer(doc: &Doc, action: &str, changes: &[Patch]) -> Option<Value> {
     match action {
         "select" => {
-            let mut answer = json!({"selection": selection(&crate::doc::read(doc))});
+            let mut answer = json!({"selection": selection(&Artwork::from_doc(doc).ok()?)});
             if let (Some(found), Some(fields)) =
                 (crate::subject::take_found(), answer.as_object_mut())
             {
@@ -40,12 +41,12 @@ pub fn answer(doc: &Doc, action: &str, changes: &[Patch]) -> Option<Value> {
             }
             Some(answer)
         }
-        "paint" | "draw" | "use-selection" => {
+        "paint" | "draw" | "import-svg" | "use-selection" => {
             let added = added(changes);
             if added.is_empty() {
                 return None;
             }
-            let art = crate::doc::read(doc);
+            let art = Artwork::from_doc(doc).ok()?;
             // Bottom first, the order they were given in.
             let marks: Vec<&Mark> = art
                 .marks
@@ -68,9 +69,7 @@ pub fn answer(doc: &Doc, action: &str, changes: &[Patch]) -> Option<Value> {
 fn added(changes: &[Patch]) -> Vec<String> {
     changes
         .iter()
-        .filter(|patch| {
-            matches!(patch.path.as_slice(), [(_, Prop::Map(map))] if map == crate::doc::MARKS)
-        })
+        .filter(|patch| matches!(patch.path.as_slice(), [(_, Prop::Map(map))] if map == "marks"))
         .filter_map(|patch| match &patch.action {
             PatchAction::PutMap { key, .. } => Some(key.clone()),
             _ => None,
@@ -138,7 +137,7 @@ fn hidden(art: &Artwork, marks: &[&Mark]) -> Option<String> {
                     .iter()
                     .map(|point| 1.0 - greys.at(*point))
                     .sum::<f64>()
-                    / count(points.len())
+                    / f64_of_usize(points.len())
                     >= MOSTLY
         })
         .count();
@@ -151,14 +150,6 @@ fn hidden(art: &Artwork, marks: &[&Mark]) -> Option<String> {
     })
 }
 
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "sample counts are at most MOST_SAMPLES"
-)]
-fn count(n: usize) -> f64 {
-    n as f64
-}
-
 /// About `wanted` points spread over the area `mark` covers.
 fn inside(mark: &Mark, wanted: usize) -> Vec<Point> {
     let outline = crate::selection::mark_outline(mark).ok();
@@ -168,14 +159,14 @@ fn inside(mark: &Mark, wanted: usize) -> Vec<Point> {
     let steps = (2..=wanted.max(2))
         .find(|steps| steps * steps >= wanted)
         .unwrap_or(2);
-    let side = count(steps);
+    let side = f64_of_usize(steps);
     let grid = |at: f64, from: f64, length: f64| from + length * (at + 0.5) / side;
     let mut points = Vec::new();
     for row in 0..steps {
         for column in 0..steps {
             let point = Point::new(
-                grid(count(column), bounds.x0, bounds.width()),
-                grid(count(row), bounds.y0, bounds.height()),
+                grid(f64_of_usize(column), bounds.x0, bounds.width()),
+                grid(f64_of_usize(row), bounds.y0, bounds.height()),
             );
             if outline
                 .as_ref()
@@ -251,7 +242,8 @@ fn grey(mark: &Mark) -> Option<f64> {
             .iter()
             .filter_map(|(_, colour)| light(colour))
             .collect();
-        return (!lights.is_empty()).then(|| lights.iter().sum::<f64>() / count(lights.len()));
+        return (!lights.is_empty())
+            .then(|| lights.iter().sum::<f64>() / f64_of_usize(lights.len()));
     }
     style
         .fill

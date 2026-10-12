@@ -285,7 +285,7 @@ pub struct AccessNode {
     /// chaining these keys from the owning widget downwards, so an AT that
     /// holds a reference to "the clip named `intro`" keeps pointing at that
     /// clip across repaints — and the same key path is what comes back on
-    /// [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at)
+    /// [`Widget::perform_action`](crate::widget::Widget::perform_action)
     /// when the AT operates the node.
     ///
     /// `None` (the default) means "key me by my ordinal position among my
@@ -353,7 +353,7 @@ impl AccessNode {
     }
 
     /// Route every keyed actionable descendant through its existing
-    /// [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at)
+    /// [`Widget::perform_action`](crate::widget::Widget::perform_action)
     /// implementation. This is the high-complexity custom-canvas adapter:
     /// timeline/editor authors keep one stable keyed semantic tree instead of
     /// duplicating an action id and handler for every painted affordance.
@@ -500,7 +500,7 @@ impl AccessNode {
 /// This is the *inverse-less* half of the key contract: a widget hashes its
 /// element ids on the way out, and compares an incoming key path element back
 /// against `hash_key(&id)` on the way in (see
-/// [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at)).
+/// [`Widget::perform_action`](crate::widget::Widget::perform_action)).
 /// The hash is a plain FNV-1a with a fixed basis, so it is deterministic within
 /// and across processes — unlike [`std::collections::hash_map::RandomState`],
 /// which would hand an assistive technology a different id every launch.

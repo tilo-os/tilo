@@ -23,6 +23,7 @@ use winit::event::{Modifiers, WindowEvent};
 use ui::Theme;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
 use crate::collab::colorimetry::Colorimetry;
@@ -518,32 +519,21 @@ impl Widget for PeerView {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = match taffy.new_leaf(taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
+        taffy.widget_leaf(
+            taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
+                },
+                ..Default::default()
             },
-            ..Default::default()
-        }) {
-            Ok(node) => node,
-            Err(err) => {
-                // `TaffyTree::new_leaf` only ever returns `Ok` for a
-                // fresh, unattached leaf; this arm exists so a future
-                // upstream change degrades the peer surface instead of
-                // aborting the whole session.
-                tracing::error!("peer_view: leaf allocation failed: {err}");
-                NodeId::from(0u64)
-            }
-        };
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        let new_rect = ui::widget::placed(l, origin);
+        let new_rect = ui::widget::layout_rect(taffy, node, origin);
         // Rect changed → the placement matrix in `draw` changes too. Exact
         // equality is safe: taffy produces integer-valued logical pixels.
         if new_rect != self.rect {

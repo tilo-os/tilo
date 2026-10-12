@@ -18,6 +18,7 @@ mod direct_retry;
 pub mod gestures;
 pub mod hotplug;
 pub mod input_config;
+mod kms_flip;
 mod output_signal;
 pub mod outputs;
 pub mod paint;
@@ -370,6 +371,9 @@ const DIRECT_RETIREMENT_TIMEOUT: Duration = Duration::from_millis(250);
 /// The GPU budget for one direct frame. Missing it hands the output to the
 /// readback presenter until the retry the failure earns.
 const DIRECT_FRAME_DEADLINE: Duration = Duration::from_secs(1);
+/// The GPU budget for warming the strip layers at rest: several whole
+/// layers, not one frame, and nothing waits on it.
+const WARM_DEADLINE: Duration = Duration::from_secs(10);
 
 /// What the frame that just submitted does about one direct output's pending page flip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1477,6 +1481,12 @@ struct ScanoutFrame<'a> {
     /// The client buffer on top of everything on one output, which that
     /// output may scan out instead of rendering `scene`.
     scanout: Option<&'a crate::shell::scanout_candidate::ScanoutCandidate>,
+    /// The frame as layers, which an output that is the whole scene
+    /// composites a strip pan from.
+    layers: Option<&'a crate::shell::frame::FrameCache>,
+    /// What a scroll in an in-process app moved, which the renderer copies
+    /// within its target instead of rasterising where it lands.
+    copies: Option<&'a crate::shell::frame::ScrollCopies>,
 }
 
 // These two constructors are the only places a frame is translated for the scanouts, so a field
@@ -1490,6 +1500,8 @@ impl<'a> ScanoutFrame<'a> {
             hdr_layers: &[],
             backdrop: None,
             scanout: None,
+            layers: None,
+            copies: None,
         }
     }
 }
@@ -1508,6 +1520,8 @@ impl<'a> From<&'a FramePaint> for ScanoutFrame<'a> {
             hdr_layers: &frame.hdr_layers,
             backdrop: frame.backdrop.as_ref(),
             scanout: frame.scanout_candidate(),
+            layers: frame.cache.as_ref(),
+            copies: frame.scroll_copies.as_ref(),
         }
     }
 }
@@ -1651,9 +1665,13 @@ fn paint_scanouts(
     frame: ScanoutFrame<'_>,
     phase_window: Option<&mut PhaseWindow>,
 ) -> PaintScanoutSample {
-    let had_renderer = paint.is_some();
     let sample = paint_scanouts_with(scanouts, outputs, paint, cpu, pointer, frame, phase_window);
-    if !had_renderer && paint.is_some() {
+    // The presenter usually builds the renderer before its first frame (`prepare`), so this
+    // asks the renderer rather than whether this call built it.
+    if paint
+        .as_mut()
+        .is_some_and(paint::VelloDrmBridge::take_first_frame)
+    {
         // A new renderer has compiled its pipelines and drawn its first frame. The driver's
         // compile scratch is free now, but glibc would keep it (TIL-705).
         crate::shell::heap_trim::request();
@@ -1731,6 +1749,9 @@ fn paint_scanouts_with(
             return PaintScanoutSample::default();
         };
         bridge.set_backdrop(frame.backdrop.cloned());
+        // The render of this frame against the one the target holds moves
+        // what the copies name before it rasterises the rest.
+        bridge.stage_scroll_copies(damage.map(|damage| damage.revision), frame.copies);
         if bridge.size() != target_size {
             bridge_resized = true;
             if let Err(e) = bridge.resize(target_size.0, target_size.1) {
@@ -2261,6 +2282,7 @@ fn present_direct(
             sdr_white_nits,
             hdr_layers: frame.hdr_layers,
             color_lut: entry.color_lut.as_ref(),
+            layers: frame.layers,
         },
     );
     let stats = match painted {
@@ -2364,7 +2386,10 @@ fn present_client(
         opaque,
         sdr: !targets.format().is_hdr() && !entry.hdr_wanted(),
         no_hdr_layers: frame.hdr_layers.is_empty(),
-        same_format: fourcc == Some(targets.format().fourcc()),
+        // A legacy flip keeps the targets' format; an atomic one may change it, and the
+        // plane's `IN_FORMATS` and a `TEST_ONLY` commit decide per buffer.
+        format_reachable: entry.scanout.flips_change_format()
+            || fourcc == Some(targets.format().fourcc()),
     };
     let refused = client_scanout::client_scanout_rejection(eligibility);
     let (Some(client), Some(dmabuf), Some(fourcc), None) = (client, dmabuf, fourcc, refused) else {
@@ -2461,7 +2486,7 @@ fn refresh_client_offer(
                 opaque: true,
                 sdr: !format.is_hdr() && !entry.hdr_wanted(),
                 no_hdr_layers: frame.hdr_layers.is_empty(),
-                same_format: true,
+                format_reachable: true,
             })
             .is_none()
         })
@@ -2677,6 +2702,9 @@ fn render_combined_readback(
         hdr_layers,
         backdrop: _,
         scanout: _,
+        layers: _,
+        // The CPU canvas repaints where copies land.
+        copies: _,
     } = frame;
     let Some(bridge) = paint.as_mut() else {
         return PaintScanoutSample::default();
@@ -3214,6 +3242,49 @@ impl Presenter for DrmPresenter {
             e.direct_targets = None;
         }
     }
+
+    /// While the desktop rests, a lone output on the direct path brings the
+    /// layers its strip pans are composited from up to the desktop
+    /// (`VelloDrmBridge::warm_layers`), so the next pan's first frame does
+    /// not rasterise them. Nothing reaches KMS.
+    fn warm(&mut self, frame: &FramePaint, keep_going: &dyn Fn() -> bool) {
+        let Some(cache) = frame.cache.as_ref() else {
+            return;
+        };
+        if self.blanked || self.paused || cpu_present::cpu_render_reason().is_some() {
+            return;
+        }
+        let [entry] = self.scanouts.as_slice() else {
+            return;
+        };
+        if entry.powered_off || entry.present_by_readback || entry.direct_targets.is_none() {
+            return;
+        }
+        let view = output_view(entry, &self.outputs);
+        let Some(bridge) = self
+            .paint
+            .as_mut()
+            .filter(|bridge| bridge.view_is_whole_scene(&view))
+        else {
+            return;
+        };
+        let started = Instant::now();
+        let deadline = started.checked_add(WARM_DEADLINE).unwrap_or(started);
+        match bridge.warm_layers(cache, deadline, keep_going) {
+            Ok(Some(pixels)) if pixels > 0 => {
+                // A measurement line for the session log, like RENDERER-MEMORY.
+                eprintln!(
+                    "STRIP-LAYERS-WARM raster_px={pixels} us={} finished={}",
+                    started.elapsed().as_micros(),
+                    keep_going()
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, "DRM backend: warming the strip layers at rest failed");
+            }
+        }
+    }
 }
 
 impl Backend for DrmBackend {
@@ -3243,6 +3314,18 @@ impl Backend for DrmBackend {
 
     fn pixel_aligned_strip_pan(&self) -> bool {
         cpu_present::cpu_render_reason().is_some()
+    }
+
+    /// The GPU presenter composites a lone unmagnified output's strip pans
+    /// from retained layers (`RetainedGpuTarget::render_layers_until`).
+    fn composites_strip_layers(&self) -> bool {
+        cpu_present::cpu_render_reason().is_none()
+    }
+
+    /// The GPU presenter moves pixels within its retained target before it
+    /// repaints a frame's damage (`RetainedGpuTarget::stage_scroll_copies`).
+    fn copies_scrolls(&self) -> bool {
+        cpu_present::cpu_render_reason().is_none()
     }
 
     /// Inline presentation, reached only when the presenter hasn't been split off yet — kept so a caller that never splits still paints.
@@ -4189,6 +4272,7 @@ mod lone_output_tests {
                     sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
                     hdr_layers: &[],
                     color_lut: None,
+                    layers: None,
                 },
             )
             .expect("the output's frame renders")
