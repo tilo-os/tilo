@@ -150,7 +150,7 @@ fn locked_restart_restores_before_the_first_control_response() {
         .unwrap();
     let root = directory.path();
     fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
-    private_fs::write_atomic(&root.join("lock-state"), b"unlocked\n").unwrap();
+    tilo_files::native::private::write_atomic(&root.join("lock-state"), b"unlocked\n").unwrap();
     let (mut session, mut stream) = Session::start(root, false);
     rpc(
         &mut stream,
@@ -196,7 +196,7 @@ fn locked_restart_and_crash_refuse_contents_until_verification() {
         .unwrap();
     let root = directory.path();
     fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
-    private_fs::write_atomic(&root.join("lock-state"), b"unlocked\n").unwrap();
+    tilo_files::native::private::write_atomic(&root.join("lock-state"), b"unlocked\n").unwrap();
     let (mut first, mut stream) = Session::start(root, false);
     assert!(
         !locked(&mut stream),

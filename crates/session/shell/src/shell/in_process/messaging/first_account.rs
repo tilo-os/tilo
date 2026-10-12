@@ -625,7 +625,8 @@ impl Actor {
             .to_owned();
         let pending = start_blocking(executor.handle(), self.port.wake.clone(), move || {
             Ok((|| {
-                private_fs::directory(&private).map_err(|_| SendError::Unavailable)?;
+                tilo_files::native::private::directory(&private)
+                    .map_err(|_| SendError::Unavailable)?;
                 permission
                     .completed
                     .profile

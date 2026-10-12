@@ -955,7 +955,7 @@ pub fn load_or_create_iroh_secret(state_root: &Path) -> Result<[u8; 32], StoreEr
     rand::rng().fill_bytes(&mut secret);
     // `false` means another starter published first; its secret is the one
     // every later start will read, so return that rather than ours.
-    private_fs::create_atomic(&path, &secret)?;
+    tilo_files::native::private::create_atomic(&path, &secret)?;
     read_iroh_secret(&path)
 }
 
