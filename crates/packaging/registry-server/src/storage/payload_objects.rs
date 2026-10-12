@@ -24,6 +24,8 @@ use super::{Storage, StorageError, atomic_write, delete_if_exists, sync_dir};
 pub(super) const CHUNKS_SUFFIX: &str = ".chunks";
 /// Suffix of the chunk list of a blob still being fetched.
 pub(super) const PENDING_CHUNKS_SUFFIX: &str = ".chunks-pending";
+/// Suffix of a payload object's compressed twin.
+pub(super) const TWIN_SUFFIX: &str = tilo_app_package::compressed::SUFFIX;
 /// Prefix of a download not yet verified.
 pub(super) const INCOMING_PREFIX: &str = ".incoming-";
 
@@ -51,10 +53,12 @@ impl Write for IncomingObject {
 }
 
 impl IncomingObject {
-    /// Durably publish the verified bytes as the object named `hash`.
+    /// Durably publish the verified bytes as the object named `hash`, and
+    /// write its compressed twin (see `twins`).
     ///
     /// # Errors
-    /// Returns an error if the file cannot be synced or renamed.
+    /// Returns an error if the file cannot be synced or renamed, or its twin
+    /// cannot be written.
     pub fn commit(mut self, hash: &BlobHash) -> Result<(), StorageError> {
         let file = self
             .file
@@ -63,9 +67,17 @@ impl IncomingObject {
         file.sync_all()
             .map_err(|error| StorageError::Io(format!("sync payload object: {error}")))?;
         drop(file);
-        std::fs::rename(&self.path, self.dir.join(hash.to_hex()))
+        let object = self.dir.join(hash.to_hex());
+        std::fs::rename(&self.path, &object)
             .map_err(|error| StorageError::Io(format!("publish payload object: {error}")))?;
         sync_dir(&self.dir);
+        let twin = self.dir.join(format!("{}{TWIN_SUFFIX}", hash.to_hex()));
+        if !twin.exists() {
+            // The caller checked these bytes against `hash` before committing.
+            let bytes = std::fs::read(&object)
+                .map_err(|error| StorageError::Io(format!("read payload object: {error}")))?;
+            super::twins::write_twin(&twin, &bytes)?;
+        }
         Ok(())
     }
 }

@@ -32,23 +32,18 @@ fn folder_icon(folder: Folder) -> &'static str {
     }
 }
 
-fn folder_address(key: &str) -> tilo_actions::ActionAddress {
-    tilo_actions::ActionAddress::new(format!("mail.folder:{key}"), "open")
-}
-
 /// Every system folder, and the custom folders `custom` names (id, name).
 pub fn folder_entries(custom: &[(String, String)]) -> Vec<SearchEntry> {
     let system = Folder::ALL.into_iter().map(|folder| {
         SearchEntry::new(folder.title(), "")
-            .anchored(format!("mail.folder:{}", folder.as_key()))
-            .invoking(folder_address(folder.as_key()))
+            .anchored(crate::resource::folder_resource(folder.as_key()))
             .grouped(FOLDER_KIND)
             .subtitled("Mail folder")
             .with_icon(folder_icon(folder))
     });
     let custom = custom.iter().map(|(id, name)| {
         SearchEntry::new(name.clone(), "")
-            .anchored(format!("mail.folder:{id}"))
+            .anchored(crate::resource::folder_resource(id))
             .grouped(FOLDER_KIND)
             .subtitled("Mail folder")
             .with_icon("folder")
@@ -78,10 +73,6 @@ fn message_entry(message: &Message) -> SearchEntry {
         .field(message.from.email.clone(), SearchWeight::Identity)
         .field(message.labels.join(" "), SearchWeight::Metadata)
         .anchored(format!("mail.message:{}", message.id))
-        .invoking(tilo_actions::ActionAddress::new(
-            format!("mail.message:{}", message.id),
-            "open",
-        ))
         .grouped(MAIL_KIND)
         .subtitled(message.from.display())
         .with_icon("mail")
@@ -182,8 +173,8 @@ mod tests {
         assert_eq!(archive.subtitle.as_deref(), Some("Mail folder"));
         assert_eq!(archive.icon, Some(ui::icons::Icon::Archive));
         assert_eq!(
-            archive.action_address(),
-            Some(folder_address(Folder::Archive.as_key()))
+            archive.anchor(),
+            crate::resource::folder_resource(Folder::Archive.as_key())
         );
     }
 

@@ -1,8 +1,9 @@
-//! Deterministic keyboard inputs shared by native scenarios and headless driving.
+//! Deterministic window input shared by native scenarios, headless driving,
+//! test control and tests: what they deliver in place of a device.
 
 use serde::{Deserialize, Serialize};
-use winit::event::{ElementState, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::event::{DeviceId, ElementState, KeyEvent, MouseButton, RawKeyEvent, WindowEvent};
+use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey, SmolStr};
 
 /// Supported named keys for deterministic native input scenarios.
 ///
@@ -44,31 +45,104 @@ impl From<NativeKey> for Key {
     }
 }
 
-/// Build a deterministic `WindowEvent::KeyboardInput` for both input drivers.
-pub(crate) fn key_event(key: &Key, state: ElementState) -> WindowEvent {
+/// `key` going down or up as keyboard input, carrying its text on press.
+#[must_use]
+pub fn key_input(key: &Key, state: ElementState) -> WindowEvent {
     let text = match (key, state) {
         (Key::Character(value), ElementState::Pressed) => Some(value.clone()),
         _ => None,
     };
-    let event = winit::event::KeyEvent::synthetic(
-        winit::event::RawKeyEvent {
-            physical_key: winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
-            ),
+    keyboard_input(key_event(key.clone(), text, state))
+}
+
+/// A key event for `logical_key` from no particular physical key: standard
+/// location, not a repeat. Adjust the public fields for anything else.
+#[must_use]
+pub fn key_event(logical_key: Key, text: Option<SmolStr>, state: ElementState) -> KeyEvent {
+    KeyEvent::synthetic(
+        RawKeyEvent {
+            physical_key: PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
             state,
         },
-        key.clone(),
+        logical_key.clone(),
         text.clone(),
-        winit::keyboard::KeyLocation::Standard,
+        KeyLocation::Standard,
         false,
         text,
-        key.clone(),
-    );
+        logical_key,
+    )
+}
+
+/// `logical_key` pressed, typing `text`.
+#[must_use]
+pub fn key_press(logical_key: Key, text: Option<&str>) -> WindowEvent {
+    keyboard_input(key_event(
+        logical_key,
+        text.map(SmolStr::new),
+        ElementState::Pressed,
+    ))
+}
+
+/// The named key `key` pressed; it types nothing.
+#[must_use]
+pub fn named_key(key: NamedKey) -> WindowEvent {
+    key_press(Key::Named(key), None)
+}
+
+/// The character key `text` pressed, typing it.
+#[must_use]
+pub fn char_key(text: &str) -> WindowEvent {
+    key_press(Key::Character(SmolStr::new(text)), Some(text))
+}
+
+/// `event` delivered to the window as real keyboard input.
+#[must_use]
+pub fn keyboard_input(event: KeyEvent) -> WindowEvent {
     WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
+        device_id: DeviceId::dummy(),
         event,
         is_synthetic: false,
     }
+}
+
+#[must_use]
+pub fn cursor_moved(x: f64, y: f64) -> WindowEvent {
+    WindowEvent::CursorMoved {
+        device_id: DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(x, y),
+    }
+}
+
+#[must_use]
+pub fn mouse_input(state: ElementState, button: MouseButton) -> WindowEvent {
+    WindowEvent::MouseInput {
+        device_id: DeviceId::dummy(),
+        state,
+        button,
+    }
+}
+
+/// A wheel turn of `x` and `y` lines (positive `y` is up, away from the
+/// person).
+#[must_use]
+pub fn mouse_wheel(x: f32, y: f32) -> WindowEvent {
+    WindowEvent::MouseWheel {
+        device_id: DeviceId::dummy(),
+        delta: winit::event::MouseScrollDelta::LineDelta(x, y),
+        phase: winit::event::TouchPhase::Moved,
+    }
+}
+
+/// The left button going down.
+#[must_use]
+pub fn mouse_press() -> WindowEvent {
+    mouse_input(ElementState::Pressed, MouseButton::Left)
+}
+
+/// The left button coming up.
+#[must_use]
+pub fn mouse_release() -> WindowEvent {
+    mouse_input(ElementState::Released, MouseButton::Left)
 }
 
 #[cfg(test)]
@@ -90,7 +164,7 @@ mod tests {
                     event,
                     is_synthetic,
                     ..
-                } = key_event(&key, state)
+                } = key_input(&key, state)
                 else {
                     panic!("expected keyboard input");
                 };
@@ -123,7 +197,7 @@ mod tests {
                 let key: Key = decoded.into();
                 assert_eq!(key, Key::Named(named));
                 let WindowEvent::KeyboardInput { event, .. } =
-                    key_event(&key, ElementState::Pressed)
+                    key_input(&key, ElementState::Pressed)
                 else {
                     panic!("expected keyboard input");
                 };

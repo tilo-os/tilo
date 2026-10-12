@@ -45,9 +45,7 @@ use crate::color_compat::ColorCompat;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 pub use crate::table_model::*;
-use crate::table_model::{
-    DEFAULT_COL_W, MIN_COL_W, cell_key, cells_map, child_obj, col_width, usize_to_f64,
-};
+use crate::table_model::{DEFAULT_COL_W, MIN_COL_W, cell_key, cells_map, child_obj, col_width};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{TextInput, Widget};
@@ -419,6 +417,20 @@ impl Table {
         Some(changed)
     }
 
+    /// Where [`Self::draw_projected_focus`] paints: the focused cell, its
+    /// stroke and the correction chip its field floats past it. `None`
+    /// while no cell has focus.
+    pub(super) fn projected_focus_paint(&self) -> Option<Rect> {
+        self.cells
+            .iter()
+            .find(|input| input.is_focused())
+            .map(|input| {
+                // The 1 px stroke straddles the cell's edge.
+                let rect = input.get_rect().inflate(1.0, 1.0);
+                input.overhang().map_or(rect, |chip| rect.union(chip))
+            })
+    }
+
     pub(super) fn draw_projected_focus(
         &mut self,
         scene: &mut Scene,
@@ -556,7 +568,7 @@ impl Table {
         self.rect.x0 + LEFT_GUTTER + self.col_widths.iter().sum::<f64>()
     }
     fn grid_bottom(&self) -> f64 {
-        self.rect.y0 + TOP_GUTTER + usize_to_f64(self.n_rows()) * ROW_H
+        self.rect.y0 + TOP_GUTTER + crate::num::f64_of_usize(self.n_rows()) * ROW_H
     }
 
     /// Rect of the delete handle for column `c` (centred in the top gutter).
@@ -651,7 +663,7 @@ impl Table {
         }
         (
             LEFT_GUTTER + self.col_widths.iter().sum::<f64>() + RIGHT_PAD,
-            TOP_GUTTER + usize_to_f64(self.n_rows()) * ROW_H + BOTTOM_PAD,
+            TOP_GUTTER + crate::num::f64_of_usize(self.n_rows()) * ROW_H + BOTTOM_PAD,
         )
     }
 
@@ -1168,13 +1180,7 @@ impl Widget for Table {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         let cell_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(child_nodes) = taffy.children(node) {
             for (cell, &cn) in self.cells.iter_mut().zip(child_nodes.iter()) {
@@ -1417,10 +1423,11 @@ impl Widget for Table {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use automerge::{AutoCommit, ROOT, transaction::Transactable};
     use std::collections::HashMap;
     use taffy::{AvailableSpace, Size as TSize};
-    use winit::dpi::PhysicalPosition;
+
     use winit::event::Modifiers;
 
     /// Fresh document with an empty table map object at `root["t"]`.
@@ -1599,49 +1606,15 @@ mod tests {
         (taffy, node)
     }
 
-    fn cursor(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(x, y),
-        }
-    }
-    fn press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-    fn char_key(s: &str) -> WindowEvent {
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(winit::keyboard::SmolStr::new(s));
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::char_key;
+    use crate::synthetic_input::cursor_moved;
+    use crate::synthetic_input::mouse_press;
     fn enter() -> WindowEvent {
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(NamedKey::Enter);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            Key::Named(NamedKey::Enter),
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     fn dispatch(
@@ -1653,26 +1626,17 @@ mod tests {
         ev: &WindowEvent,
         mods: Modifiers,
     ) -> (bool, Option<NodeId>) {
-        let mut handled = false;
-        let mut focus_target = None;
-        table.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: crate::widget::Edits::lend(doc),
-                path: root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy,
-            },
-        );
+        let sent = Dispatch::new()
+            .modifiers(mods)
+            .doc(doc)
+            .path(root)
+            .layout(taffy, node)
+            .send(table, ev);
         // The owner applies what the table hands it, as an app's action does.
         for edit in table.take_edits() {
             apply(doc, root, &edit);
         }
-        (handled, focus_target)
+        (sent.handled, sent.focus_target)
     }
 
     #[test]
@@ -1699,7 +1663,7 @@ mod tests {
                 node,
                 &mut doc,
                 &t,
-                &cursor(bx, TOP_GUTTER / 2.0),
+                &cursor_moved(bx, TOP_GUTTER / 2.0),
                 mods,
             );
             assert_eq!(
@@ -1707,7 +1671,8 @@ mod tests {
                 Hover::InsertCol(1),
                 "hover resolves to the middle insert pill"
             );
-            let (handled, _) = dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), mods);
+            let (handled, _) =
+                dispatch(&mut table, &taffy, node, &mut doc, &t, &mouse_press(), mods);
 
             assert!(handled, "the insert click is consumed");
             assert_eq!(dims(&doc, &t), (1, 3), "a column was inserted");
@@ -1739,11 +1704,12 @@ mod tests {
                 node,
                 &mut doc,
                 &t,
-                &cursor(LEFT_GUTTER / 2.0, cy),
+                &cursor_moved(LEFT_GUTTER / 2.0, cy),
                 mods,
             );
             assert_eq!(table.hover, Hover::DeleteRow(1));
-            let (handled, _) = dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), mods);
+            let (handled, _) =
+                dispatch(&mut table, &taffy, node, &mut doc, &t, &mouse_press(), mods);
 
             assert!(handled);
             assert_eq!(dims(&doc, &t), (2, 1));
@@ -1773,7 +1739,7 @@ mod tests {
                 node,
                 &mut doc,
                 &t,
-                &cursor(bx, by),
+                &cursor_moved(bx, by),
                 mods,
             );
             assert_eq!(
@@ -1781,7 +1747,7 @@ mod tests {
                 Hover::ResizeCol(1),
                 "interior boundary hover is a resize"
             );
-            dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), mods);
+            dispatch(&mut table, &taffy, node, &mut doc, &t, &mouse_press(), mods);
             assert!(
                 table.resize.is_some(),
                 "press on the boundary starts a resize drag"
@@ -1792,7 +1758,7 @@ mod tests {
                 node,
                 &mut doc,
                 &t,
-                &cursor(bx + 40.0, by),
+                &cursor_moved(bx + 40.0, by),
                 mods,
             );
             assert!(
@@ -1800,7 +1766,7 @@ mod tests {
                 "the column follows the pointer; the owner gets the width when the drag ends"
             );
             let release = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             };
@@ -1829,11 +1795,11 @@ mod tests {
                 node,
                 &mut doc,
                 &t,
-                &cursor(c.x, c.y),
+                &cursor_moved(c.x, c.y),
                 mods,
             );
             assert_eq!(table.hover, Hover::EmptyAdd);
-            dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), mods);
+            dispatch(&mut table, &taffy, node, &mut doc, &t, &mouse_press(), mods);
 
             assert_eq!(dims(&doc, &t), (1, 1), "empty-add seeds a single cell");
         }

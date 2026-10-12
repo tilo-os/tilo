@@ -220,6 +220,19 @@ fi
 # Rotate the record, start a recorder for one compositor run and open its
 # pipe as descriptor 4.
 start_flight_record() {
+  # Opt-in belongs to the installed slot generation. Allocate a fresh private
+  # path on every compositor start; its create_new writer refuses old files.
+  # The pointer names the current record without consulting process internals.
+  unset TILO_FRAME_CPU_TRACE
+  if [ "${TILO_VM_FRAME_CPU_TRACE:-0}" = 1 ]; then
+    local cpu_dir
+    cpu_dir=$("$MKDTEMP" -d "$flight_dir/frame-cpu.XXXXXX")
+    export TILO_FRAME_CPU_TRACE="$cpu_dir/frame-cpu.csv"
+    (umask 077; printf '%s\n' "$TILO_FRAME_CPU_TRACE" >"$flight_dir/frame-cpu-path.tmp")
+    "$MV" -f -- "$flight_dir/frame-cpu-path.tmp" "$flight_dir/frame-cpu-path"
+  else
+    "$RM" -f -- "$flight_dir/frame-cpu-path"
+  fi
   if [ -f "$flight_log" ]; then
     "$TAIL" -c 4194304 -- "$flight_log" >"$flight_dir/previous.log.tmp" || true
     "$CHMOD" 0600 "$flight_dir/previous.log.tmp"

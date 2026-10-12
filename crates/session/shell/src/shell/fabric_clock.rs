@@ -28,6 +28,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
+use ui::num::f64_of_i64;
 
 use serde::{Deserialize, Serialize};
 
@@ -143,7 +144,7 @@ impl Fit {
         let since = local_us.checked_sub(self.reference_local_us)?;
         Some(
             self.skew
-                .mul_add(to_f64(since), self.offset_at_reference_us),
+                .mul_add(f64_of_i64(since), self.offset_at_reference_us),
         )
     }
 }
@@ -184,7 +185,7 @@ impl ClockEstimate {
             .checked_sub(self.reference_local_us)?;
         round_us(
             self.skew
-                .mul_add(to_f64(since), self.offset_at_reference_us),
+                .mul_add(f64_of_i64(since), self.offset_at_reference_us),
         )
     }
 
@@ -195,7 +196,7 @@ impl ClockEstimate {
         let distance = i64::try_from(local_us)
             .ok()
             .and_then(|local| local.checked_sub(self.newest_sample_local_us))
-            .map_or(f64::INFINITY, |distance| to_f64(distance).abs());
+            .map_or(f64::INFINITY, |distance| f64_of_i64(distance).abs());
         let bound = DRIFT_ALLOWANCE.mul_add(distance, self.base_error_us).ceil();
         round_us(bound)
             .and_then(|bound| u64::try_from(bound).ok())
@@ -219,7 +220,7 @@ impl ClockEstimate {
         let peer_since = i64::try_from(peer_us)
             .ok()?
             .checked_sub(self.reference_local_us)?;
-        let since = (to_f64(peer_since) - self.offset_at_reference_us) / (1.0 + self.skew);
+        let since = (f64_of_i64(peer_since) - self.offset_at_reference_us) / (1.0 + self.skew);
         let local = self.reference_local_us.checked_add(round_us(since)?)?;
         let local = u64::try_from(local).ok()?;
         Some(ClockMapping {
@@ -248,7 +249,7 @@ impl PeerPlayoutClock {
     pub fn new(reference_local_ns: i64, offset_ns: i64, skew_ppm: f64) -> Self {
         Self {
             reference_local_ns,
-            offset_at_reference_ns: to_f64(offset_ns),
+            offset_at_reference_ns: f64_of_i64(offset_ns),
             skew: skew_ppm * 1e-6,
         }
     }
@@ -257,7 +258,7 @@ impl PeerPlayoutClock {
 impl media::sync_playout::ClockMapping for PeerPlayoutClock {
     fn leader_to_local_ns(&self, leader_ns: i64) -> i64 {
         // peer = local + offset + skew * (local - reference), solved for local.
-        let peer_since = to_f64(leader_ns.saturating_sub(self.reference_local_ns));
+        let peer_since = f64_of_i64(leader_ns.saturating_sub(self.reference_local_ns));
         let since = (peer_since - self.offset_at_reference_ns) / (1.0 + self.skew);
         self.reference_local_ns
             .saturating_add(round_us(since).unwrap_or(0))
@@ -267,7 +268,7 @@ impl media::sync_playout::ClockMapping for PeerPlayoutClock {
         let since = local_ns.saturating_sub(self.reference_local_ns);
         let offset = self
             .skew
-            .mul_add(to_f64(since), self.offset_at_reference_ns);
+            .mul_add(f64_of_i64(since), self.offset_at_reference_ns);
         local_ns.saturating_add(round_us(offset).unwrap_or(0))
     }
 }
@@ -306,8 +307,9 @@ impl PeerClockEstimator {
             && round_trip.delay_us <= congestion_limit(fit.min_delay_us)
             && let Some(predicted) = fit.offset_at(round_trip.local_us)
         {
-            let deviation = (to_f64(round_trip.offset_us) - predicted).abs();
-            let tolerance = STEP_THRESHOLD_US + to_f64(round_trip.delay_us) / 2.0 + fit.jitter_us;
+            let deviation = (f64_of_i64(round_trip.offset_us) - predicted).abs();
+            let tolerance =
+                STEP_THRESHOLD_US + f64_of_i64(round_trip.delay_us) / 2.0 + fit.jitter_us;
             if deviation > tolerance {
                 self.step_candidates.push(round_trip);
                 if self.step_candidates.len() >= STEP_CONFIRMATIONS {
@@ -343,7 +345,7 @@ impl PeerClockEstimator {
             reference_local_us: fit.reference_local_us,
             offset_at_reference_us: fit.offset_at_reference_us,
             skew: fit.skew,
-            base_error_us: to_f64(fit.min_delay_us) / 2.0 + fit.jitter_us,
+            base_error_us: f64_of_i64(fit.min_delay_us) / 2.0 + fit.jitter_us,
             newest_sample_local_us: fit.newest_local_us,
             synced,
         })
@@ -379,7 +381,7 @@ impl PeerClockEstimator {
                     let run = later.local_us.checked_sub(earlier.local_us)?;
                     if run > 0 {
                         let rise = later.offset_us.checked_sub(earlier.offset_us)?;
-                        slopes.push(to_f64(rise) / to_f64(run));
+                        slopes.push(f64_of_i64(rise) / f64_of_i64(run));
                     }
                 }
             }
@@ -393,7 +395,7 @@ impl PeerClockEstimator {
             .iter()
             .map(|point| {
                 let since = point.local_us.checked_sub(reference_local_us)?;
-                Some(to_f64(point.offset_us) - skew * to_f64(since))
+                Some(f64_of_i64(point.offset_us) - skew * f64_of_i64(since))
             })
             .collect::<Option<Vec<_>>>()?;
         let offset_at_reference_us = median(&mut intercepts)?;
@@ -429,14 +431,6 @@ fn median(values: &mut [f64]) -> Option<f64> {
     }
     let lower = *values.get(middle.checked_sub(1)?)?;
     Some(lower.midpoint(upper))
-}
-
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "microsecond spans stay far below 2^53, where f64 is exact"
-)]
-fn to_f64(value: i64) -> f64 {
-    value as f64
 }
 
 #[expect(

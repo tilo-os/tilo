@@ -8,7 +8,7 @@
 //! bounded by the transport's socket deadlines.
 
 use std::sync::{Arc, Mutex, mpsc};
-use ui::time::{Duration, UNIX_EPOCH};
+use ui::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -22,12 +22,6 @@ use crate::model::TubeModel;
 
 const MAX_PEERS: usize = 64;
 const AUTO_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
-
-fn now() -> i64 {
-    ui::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs() as i64)
-}
 
 /// Durable, non-secret record for one locally approved Grayjay peer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,7 +216,7 @@ impl DeviceSync {
                     approved_at: 1,
                     pending_approval: false,
                     revoked_at: None,
-                    last_sync_at: Some(now() - 180),
+                    last_sync_at: Some(ui::time::unix_now_i64() - 180),
                     last_error: None,
                 },
                 PeerRecord {
@@ -572,7 +566,7 @@ impl SyncWorker {
                 id: id.0.clone(),
                 name: format!("Grayjay {}", id.0.chars().take(8).collect::<String>()),
                 descriptor,
-                approved_at: now(),
+                approved_at: ui::time::unix_now_i64(),
                 pending_approval: true,
                 revoked_at: None,
                 last_sync_at: None,
@@ -592,7 +586,7 @@ impl SyncWorker {
             return;
         };
         peer.pending_approval = false;
-        peer.approved_at = now();
+        peer.approved_at = ui::time::unix_now_i64();
         let descriptor = peer.descriptor.clone();
         match self
             .store
@@ -611,7 +605,7 @@ impl SyncWorker {
         let Some(peer) = candidate.iter_mut().find(|peer| peer.id == id) else {
             return;
         };
-        peer.revoked_at = Some(now());
+        peer.revoked_at = Some(ui::time::unix_now_i64());
         peer.last_error = None;
         match self.store.save(&candidate) {
             Ok(()) => {
@@ -673,7 +667,7 @@ impl SyncWorker {
         merge_sync_states(pulled, self.transport.pull(id)?);
         self.transport.push(id, state)?;
         if let Some(peer) = self.peers.iter_mut().find(|peer| peer.id == id.0) {
-            peer.last_sync_at = Some(now());
+            peer.last_sync_at = Some(ui::time::unix_now_i64());
             peer.last_error = None;
         }
         Ok(())

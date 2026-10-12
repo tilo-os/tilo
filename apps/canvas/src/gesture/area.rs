@@ -10,10 +10,11 @@
     reason = "kurbo's geometry operators (Affine, Point, Vec2) are float geometry, not overflowing integer arithmetic"
 )]
 
+use ui::tilo_resource::Invoke;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, BezPath, Point, Rect};
 
-use crate::actions::{CanvasAction, Draw, NewMark};
+use crate::actions::{Draw, NewMark};
 use crate::model::{Artwork, Shape, path_data};
 use crate::region::{Op, Region};
 use crate::selection::Select;
@@ -86,7 +87,7 @@ impl AreaGesture {
     /// box tool's click selects nothing, a lasso's adds a point to the one
     /// being clicked out, which ends on its first point. Answers the
     /// selection made, if any.
-    pub fn release(&mut self, slop: f64, mode: Option<String>) -> Option<CanvasAction> {
+    pub fn release(&mut self, slop: f64, mode: Option<String>) -> Option<Invoke<Artwork>> {
         match self.drag.take()? {
             AreaDrag::Box { start, now, oval } => {
                 let area = Rect::from_points(start, now);
@@ -133,7 +134,7 @@ impl AreaGesture {
 
     /// End the lasso being clicked out (Enter): its selection, if it has
     /// enough corners.
-    pub fn finish(&mut self, mode: Option<String>) -> Option<CanvasAction> {
+    pub fn finish(&mut self, mode: Option<String>) -> Option<Invoke<Artwork>> {
         let polygon = std::mem::take(&mut self.polygon);
         (polygon.len() >= 3)
             .then(|| lasso(&polygon, mode))
@@ -183,16 +184,16 @@ impl AreaGesture {
     }
 }
 
-fn select(select: Select, mode: Option<String>) -> CanvasAction {
-    CanvasAction::Select(Box::new(Select { mode, ..select }))
+fn select(select: Select, mode: Option<String>) -> Invoke<Artwork> {
+    Artwork::SELECT.with(Select { mode, ..select })
 }
 
 /// Select nothing.
-pub fn none() -> CanvasAction {
+pub fn none() -> Invoke<Artwork> {
     select(Select::default(), Some("none".into()))
 }
 
-fn lasso(points: &[Point], mode: Option<String>) -> Option<CanvasAction> {
+fn lasso(points: &[Point], mode: Option<String>) -> Option<Invoke<Artwork>> {
     (points.len() >= 3).then(|| {
         select(
             Select {
@@ -205,7 +206,7 @@ fn lasso(points: &[Point], mode: Option<String>) -> Option<CanvasAction> {
 }
 
 /// The selection of an area found by colour.
-pub fn found(region: &Region, mode: Option<String>) -> CanvasAction {
+pub fn found(region: &Region, mode: Option<String>) -> Invoke<Artwork> {
     select(
         Select {
             d: Some(path_data(&region.to_path())),
@@ -217,7 +218,7 @@ pub fn found(region: &Region, mode: Option<String>) -> CanvasAction {
 
 /// The bucket's fill of an area found by colour, kept inside the selection
 /// when there is one: a new mark `id` in the ink's colour.
-pub fn bucket(art: &Artwork, region: &Region, ink: Ink, id: String) -> Option<CanvasAction> {
+pub fn bucket(art: &Artwork, region: &Region, ink: Ink, id: String) -> Option<Invoke<Artwork>> {
     let region = match &art.selection {
         Some(selection) => region.combine(&selection.region(), Op::Intersect),
         None => region.clone(),
@@ -225,7 +226,7 @@ pub fn bucket(art: &Artwork, region: &Region, ink: Ink, id: String) -> Option<Ca
     if region.is_empty() {
         return None;
     }
-    Some(CanvasAction::Draw(Draw {
+    Some(Artwork::DRAW.with(Draw {
         layer: ink.layer,
         marks: vec![NewMark {
             id: Some(id),
@@ -266,7 +267,9 @@ mod tests {
         for at in [(50.0, 0.0), (50.0, 50.0), (0.0, 50.0)] {
             gesture.drag_to(Point::new(at.0, at.1), 2.0);
         }
-        let Some(CanvasAction::Select(select)) = gesture.release(4.0, None) else {
+        let Some(select) = (gesture.release(4.0, None)).and_then(|invoke| {
+            crate::actions::read_as::<crate::selection::Select>(&invoke, Artwork::SELECT.id)
+        }) else {
             panic!("a dragged lasso selects");
         };
         assert_eq!(select.points.as_ref().map(Vec::len), Some(4));
@@ -278,7 +281,9 @@ mod tests {
         assert_eq!(gesture.polygon.len(), 3);
         // Clicking its first point closes it, adding to the selection.
         gesture.press(Point::new(1.0, 1.0), None);
-        let Some(CanvasAction::Select(select)) = gesture.release(4.0, mode(true, false)) else {
+        let Some(select) = (gesture.release(4.0, mode(true, false))).and_then(|invoke| {
+            crate::actions::read_as::<crate::selection::Select>(&invoke, Artwork::SELECT.id)
+        }) else {
             panic!("closing the lasso selects");
         };
         assert_eq!(select.mode.as_deref(), Some("add"));
@@ -291,12 +296,16 @@ mod tests {
         let mut gesture = AreaGesture::default();
         gesture.press(Point::new(10.0, 10.0), Some(true));
         gesture.drag_to(Point::new(110.0, 60.0), 1.0);
-        let Some(CanvasAction::Select(select)) = gesture.release(4.0, None) else {
+        let Some(select) = (gesture.release(4.0, None)).and_then(|invoke| {
+            crate::actions::read_as::<crate::selection::Select>(&invoke, Artwork::SELECT.id)
+        }) else {
             panic!("a box selects");
         };
         assert_eq!(select.ellipse, Some([10.0, 10.0, 100.0, 50.0]));
         gesture.press(Point::new(10.0, 10.0), Some(false));
-        let Some(CanvasAction::Select(select)) = gesture.release(4.0, None) else {
+        let Some(select) = (gesture.release(4.0, None)).and_then(|invoke| {
+            crate::actions::read_as::<crate::selection::Select>(&invoke, Artwork::SELECT.id)
+        }) else {
             panic!("a click selects nothing");
         };
         assert_eq!(select.mode.as_deref(), Some("none"));

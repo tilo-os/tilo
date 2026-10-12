@@ -69,7 +69,17 @@ store-app-installed = App installed.
 store-app-updated = App updated.
 store-app-removed = App removed.
 
+store-search-empty = No apps found
+store-search-empty-help = Try a different search or category.
+store-search-clear = Clear filters
 store-operation-failed = Could not complete the operation
 store-error-refresh = Refresh apps
 store-repository-timeout = { $name } did not respond. Other apps remain available. Refresh apps to try again.
 store-build-version = Full build version
+
+## History: what each change to the reports did
+
+store-draft-report = Started a report about { $app_id }
+store-record-moderation-case = The registry opened case { $case_id }: { $status }
+store-report-note = Described the concern of a report
+store-reports-reports = Edited a report

@@ -3,7 +3,8 @@
 //! [`AttributedPresence`] inside an `Envelope::Presence`, and the
 //! [`Inbound`] events a session surfaces. Browser and native peers share
 //! these; the relay session that speaks them over iroh
-//! (`tilo_relay::coedit::RelayCoeditSession`) lives in `tilo-relay`.
+//! (`tilo_relay_session::coedit::RelayCoeditSession`) lives in
+//! `tilo-relay-session`.
 //!
 //! Presence carries its author inside the payload because the host's
 //! presence envelope has no author slot; see [`AttributedPresence`].
@@ -83,17 +84,23 @@ enum RetentionMetadata<'a> {
 /// consumed without allocating or exposing it to diagnostics.
 #[doc(hidden)]
 pub fn retention_metadata(bytes: &[u8]) -> Option<([u8; 32], RetentionKind)> {
+    retention_view(bytes).map(|(channel, kind, _)| (channel, kind))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Channel, kind and borrowed opaque body of a co-edit payload, without
+/// allocating. Accepts exactly the inputs [`CoeditPayload::decode`] accepts,
+/// trailing bytes included, so a caller can switch between them without
+/// changing which frames it classifies as co-edit payloads.
+#[doc(hidden)]
+pub fn retention_view(bytes: &[u8]) -> Option<([u8; 32], RetentionKind, &[u8])> {
     let metadata: RetentionMetadata<'_> = postcard::from_bytes(bytes).ok()?;
-    match metadata {
+    Some(match metadata {
         RetentionMetadata::Checkpoint { channel, body } => {
-            let _ = body;
-            Some((channel, RetentionKind::Checkpoint))
+            (channel, RetentionKind::Checkpoint, body)
         }
-        RetentionMetadata::RetainedDelta { channel, body } => {
-            let _ = body;
-            Some((channel, RetentionKind::Delta))
-        }
-    }
+        RetentionMetadata::RetainedDelta { channel, body } => (channel, RetentionKind::Delta, body),
+    })
 }
 
 /// Presence body wrapper that carries author attribution.
@@ -248,3 +255,55 @@ impl std::fmt::Display for CoeditError {
 }
 
 impl std::error::Error for CoeditError {}
+
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod tests {
+    use super::{CoeditPayload, RetentionKind, retention_view};
+
+    fn owned(bytes: &[u8]) -> Option<([u8; 32], RetentionKind, Vec<u8>)> {
+        CoeditPayload::decode(bytes).map(|payload| match payload {
+            CoeditPayload::Checkpoint { channel, body } => {
+                (channel, RetentionKind::Checkpoint, body)
+            }
+            CoeditPayload::RetainedDelta { channel, body } => (channel, RetentionKind::Delta, body),
+        })
+    }
+
+    #[test]
+    fn retention_view_matches_owned_decode() {
+        let mut inputs = Vec::new();
+        for payload in [
+            CoeditPayload::Checkpoint {
+                channel: [3; 32],
+                body: vec![8; 1024],
+            },
+            CoeditPayload::RetainedDelta {
+                channel: [4; 32],
+                body: vec![7; 300],
+            },
+            CoeditPayload::Checkpoint {
+                channel: [5; 32],
+                body: Vec::new(),
+            },
+        ] {
+            let encoded = payload.encode().unwrap();
+            let mut trailing = encoded.clone();
+            trailing.extend_from_slice(&[0, 1, 2]);
+            // A truncated frame must be rejected by both decoders.
+            let truncated = encoded[..encoded.len() - 1].to_vec();
+            inputs.extend([encoded, trailing, truncated]);
+        }
+        // Empty, an out-of-range variant tag, and arbitrary garbage.
+        inputs.extend([vec![], vec![5, 0, 0], vec![0xff; 40], vec![1]]);
+
+        let mut accepted = 0;
+        for input in &inputs {
+            let view = retention_view(input).map(|(c, k, body)| (c, k, body.to_vec()));
+            assert_eq!(view, owned(input), "input {input:?}");
+            accepted += usize::from(view.is_some());
+        }
+        // Three payloads, each plain and with trailing bytes.
+        assert_eq!(accepted, 6);
+    }
+}

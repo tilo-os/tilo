@@ -22,7 +22,6 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Tilo resource and action model for replayable account mutations.
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
-tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -53,6 +52,7 @@ zeroize.workspace = true
 qrcode.workspace = true
 image = { workspace = true, features = ["png", "jpeg"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 
 [lints]
 workspace = true

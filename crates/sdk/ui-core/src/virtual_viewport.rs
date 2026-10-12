@@ -15,6 +15,7 @@
     reason = "bounded usize index arithmetic and finite pixel sums are the core of this geometry index"
 )]
 
+use crate::num::f64_of_usize;
 use crate::time::{Duration, Instant};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
@@ -42,6 +43,25 @@ pub enum ScrollAlignment {
     /// Move only when the item is clipped; otherwise preserve the offset.
     #[default]
     Nearest,
+}
+
+impl ScrollAlignment {
+    /// The scroll offset that lands an item spanning `top..top + height` this
+    /// way in a `viewport`-tall window currently scrolled to `offset`.
+    fn offset_for(self, top: f64, height: f64, offset: f64, viewport: f64) -> f64 {
+        let bottom = top + height;
+        match self {
+            Self::Start => top,
+            Self::Center => top - (viewport - height) / 2.0,
+            Self::End => bottom - viewport,
+            Self::Nearest if height >= viewport && top <= offset && bottom >= offset + viewport => {
+                offset
+            }
+            Self::Nearest if top < offset => top,
+            Self::Nearest if bottom > offset + viewport => bottom - viewport,
+            Self::Nearest => offset,
+        }
+    }
 }
 
 /// Deterministic single-axis momentum used by virtualized collection widgets.
@@ -655,26 +675,8 @@ where
         let (Some(top), Some(height)) = (self.item_top(index), self.item_height(index)) else {
             return false;
         };
-        let bottom = top + height;
-        let next = match alignment {
-            ScrollAlignment::Start => top,
-            ScrollAlignment::Center => top - (self.viewport - height) / 2.0,
-            ScrollAlignment::End => bottom - self.viewport,
-            ScrollAlignment::Nearest
-                if height >= self.viewport
-                    && top <= self.offset
-                    && bottom >= self.offset + self.viewport =>
-            {
-                self.offset
-            }
-            ScrollAlignment::Nearest if top < self.offset => top,
-            ScrollAlignment::Nearest if bottom > self.offset + self.viewport => {
-                bottom - self.viewport
-            }
-            ScrollAlignment::Nearest => self.offset,
-        };
         let previous = self.offset;
-        self.set_offset(next);
+        self.set_offset(alignment.offset_for(top, height, self.offset, self.viewport));
         self.offset.to_bits() != previous.to_bits()
     }
 
@@ -932,7 +934,7 @@ where
 
     #[must_use]
     pub fn content_extent(&self) -> f64 {
-        index_f64(self.count) * self.effective_estimated_height()
+        f64_of_usize(self.count) * self.effective_estimated_height()
             + self.prefix_deltas.last().copied().unwrap_or(0.0)
     }
 
@@ -1049,7 +1051,7 @@ where
     #[must_use]
     pub fn item_top(&self, index: usize) -> Option<f64> {
         (index < self.count).then(|| {
-            index_f64(index) * self.effective_estimated_height() + self.delta_before(index)
+            f64_of_usize(index) * self.effective_estimated_height() + self.delta_before(index)
         })
     }
 
@@ -1090,26 +1092,8 @@ where
         let (Some(top), Some(height)) = (self.item_top(index), self.item_height(index)) else {
             return false;
         };
-        let bottom = top + height;
-        let next = match alignment {
-            ScrollAlignment::Start => top,
-            ScrollAlignment::Center => top - (self.viewport - height) / 2.0,
-            ScrollAlignment::End => bottom - self.viewport,
-            ScrollAlignment::Nearest
-                if height >= self.viewport
-                    && top <= self.offset
-                    && bottom >= self.offset + self.viewport =>
-            {
-                self.offset
-            }
-            ScrollAlignment::Nearest if top < self.offset => top,
-            ScrollAlignment::Nearest if bottom > self.offset + self.viewport => {
-                bottom - self.viewport
-            }
-            ScrollAlignment::Nearest => self.offset,
-        };
         let previous = self.offset;
-        self.set_offset(next);
+        self.set_offset(alignment.offset_for(top, height, self.offset, self.viewport));
         self.offset.to_bits() != previous.to_bits()
     }
 
@@ -1208,14 +1192,6 @@ where
     fn clamp_offset(&mut self) {
         self.offset = finite_non_negative(self.offset).min(self.max_offset());
     }
-}
-
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "logical collection counts become pixel estimates; f64 retains integer precision far beyond practical UI extents"
-)]
-fn index_f64(index: usize) -> f64 {
-    index as f64
 }
 
 fn valid_height(value: f64) -> f64 {

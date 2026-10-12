@@ -297,10 +297,9 @@ fn restore_review_is_scoped_to_a_preview_and_refuses_effect_receipts() {
             HistoryController::new(resource("profile-a", "workspace-a"), &doc).unwrap();
         assert_eq!(history.review_restore(), Err(HistoryError::NoPreview));
 
-        let context =
-            ActionContext::for_resource("Export", "uuid:document-1", "document", "Document")
-                .with_app("dev.tilo.history-test", "History test")
-                .with_facet(ActionFacet::new("tilo.receipt", "effect"));
+        let context = ActionContext::for_resource("uuid:document-1", "document", "Document")
+            .with_app("dev.tilo.history-test", "History test")
+            .with_facet(ActionFacet::new("tilo.receipt", "effect"));
         doc.put(ROOT, "last_export_receipt", "receipt-1").unwrap();
         let receipt = doc
             .commit_with(
@@ -328,10 +327,9 @@ fn restore_review_is_scoped_to_a_preview_and_refuses_effect_receipts() {
         history.select(&doc, &[one]).unwrap();
         let prior_review = history.review_restore().unwrap();
 
-        let context =
-            ActionContext::for_resource("Export", "uuid:document-1", "document", "Document")
-                .with_app("dev.tilo.history-test", "History test")
-                .with_facet(ActionFacet::new("tilo.receipt", "effect"));
+        let context = ActionContext::for_resource("uuid:document-1", "document", "Document")
+            .with_app("dev.tilo.history-test", "History test")
+            .with_facet(ActionFacet::new("tilo.receipt", "effect"));
         doc.put(ROOT, "last_export_receipt", "receipt-before-refresh")
             .unwrap();
         let receipt = doc

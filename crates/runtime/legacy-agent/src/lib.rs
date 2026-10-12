@@ -11,16 +11,6 @@
     clippy::missing_errors_doc,
     reason = "errors are typed enums whose variants document themselves"
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
 
 pub mod apps;
 pub mod launch;

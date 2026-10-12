@@ -470,14 +470,6 @@ impl GovernanceJournal {
             .find(|frame| frame.digest().ok() == Some(digest))
     }
 
-    /// Locate a previously committed idempotency key during crash recovery.
-    pub fn frame_for_transaction(&self, transaction_id: [u8; 32]) -> Option<&MlsGovernanceFrameV1> {
-        self.state
-            .frames
-            .iter()
-            .find(|frame| frame.transaction_id == transaction_id)
-    }
-
     /// Durably mark an exact endpoint delivery complete.
     ///
     /// # Errors

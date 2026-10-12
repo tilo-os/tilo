@@ -1,0 +1,160 @@
+{
+  "schema": 1,
+  "purpose": "prerecorded physical-laptop development comparison; not live microphone or older-device acceptance",
+  "source_head": "649dcf931e934e256500480e40886dfc1a7d00d5",
+  "hardware": {
+    "product_name": "ASUS TUF Gaming A17 FA707XI_FA707XI",
+    "cpu_model": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics",
+    "mem_total_kib": 32038660,
+    "receipt_collected_after_probe": true,
+    "cpus": [
+      {
+        "cpu": 0,
+        "core_id": "0",
+        "thread_siblings_list": "0,8"
+      },
+      {
+        "cpu": 1,
+        "core_id": "1",
+        "thread_siblings_list": "1,9"
+      }
+    ]
+  },
+  "constraints": {
+    "microphone": false,
+    "installation": false,
+    "network": false,
+    "user_home_exposed": false,
+    "memory_max_bytes": 1342177280,
+    "memory_high_bytes": 1207959552,
+    "swap_max_bytes": 0,
+    "cpu_quota_percent": 200,
+    "cpu_weight": 20,
+    "tasks_max": 64,
+    "runtime_seconds": 240,
+    "worker_address_space_bytes": 1073741824,
+    "worker_guard_mib": 960
+  },
+  "interpretation": [
+    "The raw review tools inherited builder labels; this external receipt establishes physical host identity without relabelling staged binaries.",
+    "The worker is a remotely built Cargo debug executable; its native CMake dependency requests Release. Shipping-profile comparison is pending.",
+    "One exposed French development clip is insufficient for accuracy acceptance.",
+    "No 4\u20138 GiB or ARM device measured."
+  ],
+  "runs": [
+    {
+      "profile": "remote Cargo debug worker on physical laptop",
+      "case": "fr_fr-0",
+      "language": "fr",
+      "backend": "whisper",
+      "public_sources": [
+        {
+          "id": "fr_fr-0",
+          "sha256": "f76c0a92ca39d2533aa105ac5794b08f004e15a3ff5ba32f4ba4995f45cd22fd"
+        }
+      ],
+      "input_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+      "model_sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+      "audio_seconds": 10.2,
+      "cpu_affinity_count": 2,
+      "cold_ms": 1468.2385560008697,
+      "first_partial_from_source_start_ms": 7952.771543990821,
+      "first_partial_has_lexical_text": false,
+      "first_lexical_partial_from_source_start_ms": 15315.895847976208,
+      "lexical_metric_provenance": "Derived from the first draft containing a Unicode letter or number in the unchanged private log; the original probe measured any nonempty reply, including punctuation.",
+      "audio_transport": "source-paced draft batches",
+      "worker_draft_policy": "full_context",
+      "first_draft_seconds": 2,
+      "draft_interval_ms": 1000.0,
+      "wall_seconds": 24.401964623015374,
+      "finalization_ms": 0.6214429740794003,
+      "worker_exit": 0,
+      "memory_limit_bytes": 1073741824,
+      "memory_peak": {
+        "VmPeak": 870556,
+        "VmSize": 870556,
+        "VmHWM": 354148,
+        "VmRSS": 354148,
+        "Threads": 2
+      },
+      "cpu_user_seconds": 32.855204,
+      "cpu_system_seconds": 2.659941,
+      "raw_word_errors": 7,
+      "reference_words": 20,
+      "scope_peak_bytes": 868438016,
+      "scope_peak_process": {
+        "VmPeak": 870556,
+        "VmSize": 870556,
+        "VmHWM": 354148,
+        "VmRSS": 354148,
+        "Threads": 3
+      },
+      "scope_events_before": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "scope_events_after": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "scope_exit": 0,
+      "guard": null,
+      "scope_wall_seconds": 37.5990514929872,
+      "scope_cpu_seconds": 47.730000000000004,
+      "materialization_sha256": {
+        "worker": "8def1add3280a87dbbfdc86492a821fadc950356dc678cf46dbe00509fcccef2",
+        "qualifier": "2805c643329d5ba66c85aef89c32cb7c569217a41ea662cce21365a365bd84c0",
+        "probe.py": "a8853a47f60b5e7086df77f4c57a9c7d79ad6d1d2d73b72ef74351532ea8f868",
+        "probe_speech_memory.py": "f29511fe493ede490c3593089dba2c1b7c140c4e14e1d9497d25d5f48dba499f",
+        "probe_asr_candidate.py": "0d8735e2233b950a99c4b718203c72a9a23cc67d668c6f3581215e35740ebc7c",
+        "summarize_speech_benchmark.py": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7",
+        "tilo-speech-worker": "8def1add3280a87dbbfdc86492a821fadc950356dc678cf46dbe00509fcccef2"
+      },
+      "private_log_sha256": "8cb7952924956d9720bb700cff6ba13ef01435d140b5cc1e573ec0e7a1408862",
+      "raw_probe_profile": "builder CPU-affinity constraint; not physical older hardware",
+      "raw_scope_profile": "pressured-builder development; not physical latency qualification",
+      "unit_state": [
+        "LoadState=not-found",
+        "ActiveState=inactive",
+        "SubState=dead",
+        "MainPID=0"
+      ]
+    }
+  ],
+  "release_comparison": {
+    "build": "passed; remote Cargo drop-in, build --release --locked -p local-model-service --bin tilo-speech-worker -j1; local fallback disabled",
+    "duration": "9m19s",
+    "worker_sha256": "4248d801597bab9b5b7d7ac05df177889a3d6e67a7a188da056e3f0b9874aa05",
+    "worker_size_bytes": 2881528,
+    "source_head": "649dcf931e934e256500480e40886dfc1a7d00d5",
+    "scope_script_sha256": "284446da43359d349a44d83feb00b20e780e3311bbb4f4852bc0229ef4c671ca",
+    "build_log_sha256": "49cc56df3beac37d9c063338bea50f8f1ac45abc2c3275ed023c1245d3600b22",
+    "physical_probe": "not_run; fresh pre-work admission stopped",
+    "same_model_case_and_limits": true,
+    "no_latency_claim": true,
+    "admission_history": [
+      {
+        "mem_available_kib": 7667608,
+        "required_kib": 8388608,
+        "host_memory_pressure": "some avg10=0.05 avg60=0.62 avg300=1.48 total=4008716913\nfull avg10=0.04 avg60=0.40 avg300=0.77 total=3711255765\n",
+        "admitted": false
+      },
+      {
+        "mem_available_kib": 7291344,
+        "required_kib": 8388608,
+        "host_memory_pressure": "some avg10=0.17 avg60=0.18 avg300=0.75 total=4009816323\nfull avg10=0.16 avg60=0.12 avg300=0.38 total=3712058556\n",
+        "admitted": false
+      }
+    ]
+  }
+}

@@ -350,7 +350,7 @@ impl windows_vm::CapabilityBroker for CanonicalRailCapabilityBroker {
                     "Windows network lease state is unavailable".to_string(),
                 )
             })?;
-            let proxy = windows_vm::GuestNetworkProxy::start(request.grants.network_hosts.clone())
+            let proxy = windows_vm::GuestNetworkProxy::start(&request.grants.network_hosts)
                 .map_err(|error| windows_vm::LaunchError::CapabilityBroker(error.to_string()))?;
             let binding = proxy.binding().clone();
             if leases.insert(lease_id.clone(), proxy).is_some() {

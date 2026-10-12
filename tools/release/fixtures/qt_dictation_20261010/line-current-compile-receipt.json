@@ -1,0 +1,29 @@
+{
+  "command": [
+    "g++",
+    "-std=c++17",
+    "-O2",
+    "-fPIC",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-I${BUILD_ROOT}/target/dictation-qt-line-cb51-r4/qt-root/usr/include/qt6",
+    "-I${BUILD_ROOT}/target/dictation-qt-line-cb51-r4/qt-root/usr/include/qt6/QtCore",
+    "-I${BUILD_ROOT}/target/dictation-qt-line-cb51-r4/qt-root/usr/include/qt6/QtGui",
+    "-I${BUILD_ROOT}/target/dictation-qt-line-cb51-r4/qt-root/usr/include/qt6/QtWidgets",
+    "${BUILD_ROOT}/target/dictation-qt-line-cb51-r4/qt-editor.cpp",
+    "-L${BUILD_ROOT}/target/dictation-qt-line-cb51-r4/qt-root/usr/lib64",
+    "-Wl,-rpath,/qt-root/usr/lib64",
+    "-Wl,-rpath-link,${BUILD_ROOT}/target/dictation-qt-line-cb51-r4/qt-root/usr/lib64",
+    "-lQt6Widgets",
+    "-lQt6Gui",
+    "-lQt6Core",
+    "-o",
+    "${BUILD_ROOT}/target/dictation-qt-line-cb51-r4/qt-editor"
+  ],
+  "source_sha256": "3da536fd4aa220caee836fcb796dfad6a00cf5b2564b33fe593a527ad980e0f3",
+  "binary_sha256": "a92131d415a6fcd7afe7ce1a7de40523e2c928e7e8668af7d4bdf1b3fe5cc870",
+  "bytes": 25576,
+  "systemwide": false,
+  "qt_version": "6.11.2-3.fc44"
+}

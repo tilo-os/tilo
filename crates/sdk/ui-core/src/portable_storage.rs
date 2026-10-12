@@ -675,18 +675,6 @@ impl PortableStorage {
             .owners
             .insert((package.into(), workspace.into()), Rc::downgrade(owner));
     }
-    /// Every live record owner of `workspace` in this cache: the stores the
-    /// page's mounts share, for a host replicating the room itself.
-    pub fn record_stores(&self, workspace: &str) -> Vec<crate::record::RecordStore> {
-        self.cache
-            .borrow()
-            .owners
-            .iter()
-            .filter(|((_, home), _)| home == workspace)
-            .filter_map(|(_, owner)| owner.upgrade())
-            .map(crate::record::RecordStore::from_owner)
-            .collect()
-    }
     pub fn namespace(&self) -> &ProfileNamespace {
         &self.cache.namespace
     }
@@ -1178,7 +1166,8 @@ impl PrivateActionsCapture {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod private_capture_tests {
     use super::*;
     use crate::host_worker::private_actions::SenderStorageCode as Code;
@@ -1219,7 +1208,8 @@ mod private_capture_tests {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod private_capture_transfer_tests {
     use super::*;
     #[test]
@@ -1401,7 +1391,8 @@ impl PortableStorage {
     }
 }
 
-#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[cfg(test)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod private_physical_current_tests {
     use super::*;
     use crate::host_worker::private_actions::{SenderStorageCode, committed_test_fixture};

@@ -1,0 +1,14 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "print-centre.defaults"
+label = "Print Centre"
+version = 1
+fields = [
+  { path = "two_sided", type = "bool" },
+  { path = "scan_resolution", type = "u16" },
+  { path = "scan_color", type = "Atom" },
+  { path = "scan_source", type = "Atom" },
+  { path = "ocr_language", type = "Atom" },
+]
+

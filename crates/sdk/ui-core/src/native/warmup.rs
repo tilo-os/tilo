@@ -23,9 +23,9 @@
 //! measurement. Stages mark through [`tilo_startup_metrics::span`]:
 //! `warmup-spawn`, `warmup-fonts`(-end), `warmup-vello`(-end).
 //!
-//! Not persistence — a persistent `wgpu::PipelineCache` would extend the
-//! win across restarts, but needs driver support not ubiquitous on the
-//! Mesa releases Tilo ships against, and wouldn't help first boot at all.
+//! Not persistence: compiled pipelines are kept across launches by
+//! `crate::pipeline_cache` (the app's own) and `crate::pipeline_seed` (the
+//! session's), where the backend has pipeline caches.
 #![allow(
     clippy::disallowed_methods,
     reason = "native host runner: cold-start warmup overlaps font and GPU setup on a thread"

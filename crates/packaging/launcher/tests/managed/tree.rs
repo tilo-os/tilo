@@ -138,7 +138,7 @@ fn fixture_package(root: &Path) -> (InstalledManagedPackage, PackageTrust) {
         .unwrap();
     let key = ed25519_dalek::SigningKey::from_bytes(&seed);
     let public = key.verifying_key().to_bytes();
-    let public_hex: String = public.iter().map(|b| format!("{b:02x}")).collect();
+    let public_hex: String = hex::encode(public);
     let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
         r#"
 [package]

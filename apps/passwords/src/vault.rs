@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use accounts::{CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem, SecretItemKind};
 use ui::widget::NavPane;
-use vello::kurbo::{Point, Rect};
+use vello::kurbo::Rect;
 use zeroize::Zeroizing;
 
 use crate::actions::PasswordsEffect;
@@ -29,9 +29,6 @@ const REVEAL_FOR: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// How long a copied secret stays on the clipboard.
 const CLIPBOARD_FOR: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// How long a toast stays on screen.
-const TOAST_FOR: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// Which items the list shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -346,40 +343,6 @@ pub(crate) fn origins_match(item: &SecretItem, candidate: &str) -> bool {
             .is_some_and(|origin| item.origins.contains(origin))
 }
 
-/// What the painted item list laid out last frame, for hit-testing,
-/// scrolling and accessibility.
-pub(crate) struct ListState {
-    pub(crate) rect: Rect,
-    pub(crate) scroll: f64,
-    /// Scroll the open item into view on the next paint.
-    pub(crate) reveal: bool,
-    pub(crate) content: f64,
-    pub(crate) line: f64,
-    /// Each row's rect and item.
-    pub(crate) rows: Vec<(Rect, SecretId)>,
-    /// The favorite toggle of each row that shows one: the favorites, and
-    /// the row under the pointer.
-    pub(crate) stars: Vec<(Rect, SecretId)>,
-    pub(crate) bar: ui::widget::Scrollbar,
-    pub(crate) empty_action: Option<Rect>,
-}
-
-impl Default for ListState {
-    fn default() -> Self {
-        Self {
-            rect: Rect::ZERO,
-            scroll: 0.0,
-            reveal: true,
-            content: 0.0,
-            line: 0.0,
-            rows: Vec::new(),
-            stars: Vec::new(),
-            bar: ui::widget::Scrollbar::vertical(),
-            empty_action: None,
-        }
-    }
-}
-
 pub(crate) struct Core {
     /// The vault; `None` for the fixture captures show.
     pub(crate) model: Option<crate::PasswordsModel>,
@@ -403,7 +366,8 @@ pub(crate) struct Core {
     /// Explicit, short-lived disclosure. The value zeroizes when it expires,
     /// when focus leaves the window, or when another item is revealed.
     pub(crate) revealed: Option<(SecretId, Zeroizing<String>, ui::time::Instant)>,
-    pub(crate) toast: Option<(String, ui::time::Instant)>,
+    /// A notice for the window to hand its shell, which shows and expires it.
+    pub(crate) toast: Option<String>,
     pub(crate) health: crate::VaultHealth,
     pub(crate) findings: Vec<Finding>,
     pub(crate) app_grants: Vec<CredentialGrant>,
@@ -422,8 +386,8 @@ pub(crate) struct Core {
     pub(crate) dialog: Option<Dialog>,
     /// A narrow window should bring this pane to the front.
     pub(crate) show_pane: Option<NavPane>,
-    pub(crate) list: ListState,
-    pub(crate) pointer: Point,
+    /// Scroll the open item into view when the list next shows.
+    pub(crate) reveal_open: bool,
     pub(crate) window: Rect,
     /// Bumped whenever the content page must be built again.
     pub(crate) page_revision: u64,
@@ -468,8 +432,7 @@ impl Core {
             backup_confirmation: Zeroizing::new(String::new()),
             dialog: None,
             show_pane: None,
-            list: ListState::default(),
-            pointer: Point::ZERO,
+            reveal_open: true,
             window: Rect::ZERO,
             page_revision: 0,
             list_revision: 0,
@@ -513,7 +476,7 @@ impl Core {
     pub(crate) fn extend_demo_for_scrolling(&mut self) {
         self.items.extend(crate::demo::more_items());
         self.items.sort_by_key(|item| item.title.to_lowercase());
-        self.list.reveal = true;
+        self.reveal_open = true;
         self.touch();
     }
 
@@ -528,10 +491,7 @@ impl Core {
     }
 
     pub(crate) fn toast(&mut self, message: impl Into<String>) {
-        let until = ui::time::now()
-            .checked_add(TOAST_FOR)
-            .unwrap_or_else(ui::time::now);
-        self.toast = Some((message.into(), until));
+        self.toast = Some(message.into());
     }
 
     pub(crate) fn refresh(&mut self) {
@@ -613,7 +573,6 @@ impl Core {
     pub(crate) fn select_filter(&mut self, filter: VaultFilter) {
         self.filter = filter;
         self.screen = Screen::Vault;
-        self.list.scroll = 0.0;
         self.select_first_visible();
         self.show_pane = Some(NavPane::Overview);
         self.touch();
@@ -637,7 +596,7 @@ impl Core {
             self.selected = Some(id.clone());
             self.revealed = None;
         }
-        self.list.reveal = true;
+        self.reveal_open = true;
         self.show_pane = Some(NavPane::Content);
         self.touch();
         true
@@ -790,13 +749,6 @@ impl Core {
             .is_some_and(|(_, _, until)| *until <= ui::time::now())
         {
             self.hide_revealed();
-        }
-        if self
-            .toast
-            .as_ref()
-            .is_some_and(|(_, until)| *until <= ui::time::now())
-        {
-            self.toast = None;
         }
     }
 
@@ -1130,7 +1082,7 @@ impl Core {
                 self.refresh();
                 self.close_editor();
                 self.show_pane = Some(NavPane::Content);
-                self.list.reveal = true;
+                self.reveal_open = true;
                 self.touch();
                 self.toast("Saved");
             }
@@ -1628,8 +1580,8 @@ impl Core {
         }
     }
 
-    /// When the window next needs to wake: a pending transfer to poll, a
-    /// disclosure or a toast to hide.
+    /// When the window next needs to wake: a pending transfer to poll or a
+    /// disclosure to hide.
     pub(crate) fn next_wake(&self) -> Option<ui::time::Instant> {
         let transfer = if self.transfers_pending() {
             // Keep the deadline fixed until sync consumes the tick. Returning
@@ -1652,7 +1604,6 @@ impl Core {
                 .and_then(crate::PasswordsModel::proposal_wake_after)
                 .and_then(|after| ui::time::now().checked_add(after)),
             self.revealed.as_ref().map(|(_, _, until)| *until),
-            self.toast.as_ref().map(|(_, until)| *until),
         ]
         .into_iter()
         .flatten()
@@ -1801,7 +1752,7 @@ impl Core {
                         .draft_error
                         .as_ref()
                         .map(|(_, message)| message.clone())
-                        .or_else(|| self.toast.as_ref().map(|(message, _)| message.clone()))
+                        .or_else(|| self.toast.clone())
                         .unwrap_or_else(|| "The item was not saved".to_owned()));
                 }
             }

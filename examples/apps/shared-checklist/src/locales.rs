@@ -2,12 +2,26 @@
 // Edit Fluent catalogs under locales/; tilo-app maintains this registry.
 // tilo-app:locale=en-US
 
-const CATALOG_0: &str = include_str!("../locales/en-US.ftl");
+ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
 
-pub const IDS: &[&str] = &["en-US"];
-
-pub fn install() {
-    if let Err(error) = ui::i18n::I18nManager::install_system("en-US", &[("en-US", CATALOG_0)]) {
-        eprintln!("localization catalog: {error}");
-    }
+/// One constant per message of locales/en-US.ftl, for labels and placeholders.
+pub mod keys {
+    use ui::i18n::LabelKey;
+    pub const CHECKLIST_ADD: LabelKey = LabelKey::new("checklist-add");
+    pub const CHECKLIST_CLEAR_DONE: LabelKey = LabelKey::new("checklist-clear-done");
+    pub const CHECKLIST_DONE_LABEL: LabelKey = LabelKey::new("checklist-done-label");
+    pub const CHECKLIST_DRAFT_LABEL: LabelKey = LabelKey::new("checklist-draft-label");
+    pub const CHECKLIST_DRAFT_PLACEHOLDER: LabelKey = LabelKey::new("checklist-draft-placeholder");
+    pub const CHECKLIST_EMPTY: LabelKey = LabelKey::new("checklist-empty");
+    pub const CHECKLIST_NAME_LABEL: LabelKey = LabelKey::new("checklist-name-label");
+    pub const CHECKLIST_NAME_PLACEHOLDER: LabelKey = LabelKey::new("checklist-name-placeholder");
+    pub const CHECKLIST_PROGRESS: LabelKey = LabelKey::new("checklist-progress");
+    pub const CHECKLIST_TITLE_PLACEHOLDER: LabelKey = LabelKey::new("checklist-title-placeholder");
+    pub const CHECKLIST_UNTITLED: LabelKey = LabelKey::new("checklist-untitled");
+    pub const SHARED_CHECKLIST_ADD: LabelKey = LabelKey::new("shared-checklist-add");
+    pub const SHARED_CHECKLIST_CHECKLIST_NAME: LabelKey =
+        LabelKey::new("shared-checklist-checklist-name");
+    pub const SHARED_CHECKLIST_CLEAR_DONE: LabelKey = LabelKey::new("shared-checklist-clear-done");
+    pub const SHARED_CHECKLIST_ITEM_DONE: LabelKey = LabelKey::new("shared-checklist-item-done");
+    pub const SHARED_CHECKLIST_ITEM_TITLE: LabelKey = LabelKey::new("shared-checklist-item-title");
 }

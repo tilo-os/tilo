@@ -312,21 +312,6 @@ impl Ring {
     }
 }
 
-/// Print a final summary. Call from a process-exit path (the browser
-/// binary installs it) so a run that never hits `SUMMARY_EVERY` still
-/// reports.
-pub fn print_final_summary() {
-    if !enabled() {
-        return;
-    }
-    if let Some(m) = STATE.get() {
-        eprintln!("[webview-profile] --- final ---");
-        m.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .print_summary();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

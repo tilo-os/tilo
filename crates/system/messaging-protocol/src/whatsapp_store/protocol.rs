@@ -11,10 +11,9 @@ struct Payload {
 }
 
 fn now() -> Result<i64> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| unavailable())
-        .and_then(|value| i64::try_from(value.as_secs()).map_err(|_| unavailable()))
+    tilo_clock::try_unix_now()
+        .ok_or_else(unavailable)
+        .and_then(|secs| i64::try_from(secs).map_err(|_| unavailable()))
 }
 
 impl EncryptedBackend {

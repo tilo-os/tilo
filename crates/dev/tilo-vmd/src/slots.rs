@@ -606,6 +606,37 @@ mod tests {
     }
 
     #[test]
+    fn frame_cpu_trace_changes_generation_for_the_same_layer() {
+        let root = tempfile::tempdir().unwrap();
+        let store = SlotStore::new(root.path());
+        let (mut record, _) = store
+            .create("cpu", SlotKind::Headless, Owner::default(), &[])
+            .unwrap();
+        assert_eq!(swap(&store, &mut record, "shell", "h1"), Some(1));
+        let mut info = session();
+        info.frame_cpu_trace = true;
+        let (from, to) = store
+            .prepare_swap(&record, "shell", "h1", info.clone())
+            .unwrap()
+            .unwrap();
+        assert!(!from.components["shell"].info.frame_cpu_trace);
+        assert!(to.components["shell"].info.frame_cpu_trace);
+        assert_eq!(to.number, 2);
+        store.set_current(&mut record, to.number).unwrap();
+        assert!(
+            store
+                .prepare_swap(&record, "shell", "h1", info)
+                .unwrap()
+                .is_none()
+        );
+        let (_, disabled) = store
+            .prepare_swap(&record, "shell", "h1", session())
+            .unwrap()
+            .unwrap();
+        assert!(!disabled.components["shell"].info.frame_cpu_trace);
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"

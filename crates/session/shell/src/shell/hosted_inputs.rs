@@ -566,7 +566,8 @@ mod desktop_catalog_tests {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
+#[cfg(target_os = "macos")]
 mod document_lifecycle_tests {
     use super::*;
     use crate::compositor::macos::{Options, prepare};
@@ -613,8 +614,11 @@ mod document_lifecycle_tests {
                 );
                 tabs.push(tab);
             }
-            let mut driver =
-                ui::headless::Driver::new(ui::State::new(), Box::new(session.host), (1280, 800));
+            let mut driver = ui::headless::FrameHarness::new(
+                ui::State::new(),
+                Box::new(session.host),
+                (1280, 800),
+            );
             driver.set_modifiers(&["meta".into()]);
             driver.key("w");
             driver.set_modifiers(&[]);
@@ -664,7 +668,7 @@ mod document_lifecycle_tests {
             matches!(restored.document(tabs[0]), Some(HostedDocumentState::Ready(document)) if document.provider_id == "org.nirios.Editor" && document.text == "live document\n")
         );
         let mut driver =
-            ui::headless::Driver::new(ui::State::new(), Box::new(reopened.host), (1280, 800));
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(reopened.host), (1280, 800));
         // Tree reconciliation can remove tabs without using the close gesture.
         assert!(crate::shell::tab_binding::remove_tab(
             &mut reopened.tree.write(),

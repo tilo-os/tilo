@@ -722,7 +722,7 @@ pub fn parse_vm_facts(output: &str) -> Result<VmFacts, FactsError> {
 
 /// The host-side OCI layout for one VM.
 pub fn host_layout(vm: &str) -> PathBuf {
-    xdg_paths::cache_dir()
+    tilo_paths::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("tilo-vm")
         .join("images")

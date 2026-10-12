@@ -3,7 +3,7 @@
 //! (a page-number field is `<text:page-number/>`). This maps them onto the canonical
 //! header/footer regions, splicing regenerated regions back into a copy of `styles.xml`.
 
-use crate::xml_escape::push_text;
+use super::plain_paragraphs;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use tilo_doc::model::{DocMut, DocRef, Region, materialize_region};
@@ -26,90 +26,21 @@ pub(super) fn import_master_headers(styles_xml: &[u8], doc: &mut DocMut) {
 /// Walk a `style:header`/`style:footer` element into region blocks; text,
 /// `text:tab`/`text:line-break`/`text:s`, and `text:page-number` fields map onto the model.
 fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
-    let mut reader = Reader::from_str(xml);
-    let mut in_region = false;
-    let mut prev: Option<String> = None;
-    let mut cur: Option<String> = None;
-    let mut cur_len: usize = 0;
     // Pending field marks (block, start) applied after text is in place.
     let mut field_marks: Vec<(String, usize)> = Vec::new();
-
-    let open_block = |doc: &mut DocMut,
-                      prev: &mut Option<String>,
-                      cur: &mut Option<String>,
-                      cur_len: &mut usize| {
-        let id = doc.insert_block_in(region, prev.as_deref(), "paragraph");
-        *prev = Some(id.clone());
-        *cur = Some(id);
-        *cur_len = 0;
-    };
-    let append = |doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str| {
-        if let Some(b) = cur
-            && !txt.is_empty()
-        {
-            doc.splice_text_in(region, b, *cur_len, 0, txt);
-            *cur_len = cur_len.saturating_add(txt.chars().count());
-        }
-    };
-
-    while let Ok(ev) = reader.read_event() {
-        match ev {
-            Event::Start(e) => match e.name().as_ref() {
-                n if n == tag.as_bytes() => in_region = true,
-                b"text:p" | b"text:h" if in_region => {
-                    open_block(doc, &mut prev, &mut cur, &mut cur_len);
-                }
-                _ => {}
-            },
-            Event::Empty(e) if in_region => match e.name().as_ref() {
-                b"text:p" | b"text:h" => {
-                    open_block(doc, &mut prev, &mut cur, &mut cur_len);
-                    cur = None;
-                }
-                b"text:page-number" => {
-                    if let Some(b) = cur.clone() {
-                        let start = cur_len;
-                        append(doc, &cur, &mut cur_len, &FIELD_PLACEHOLDER.to_string());
-                        field_marks.push((b, start));
-                    }
-                }
-                b"text:tab" => append(doc, &cur, &mut cur_len, "\t"),
-                b"text:line-break" => append(doc, &cur, &mut cur_len, "\n"),
-                b"text:s" => {
-                    let n = e
-                        .attributes()
-                        .flatten()
-                        .find(|a| a.key.as_ref() == b"text:c")
-                        .and_then(|a| crate::unescape_attr(&a))
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .unwrap_or(1)
-                        .min(256);
-                    append(doc, &cur, &mut cur_len, &" ".repeat(n));
-                }
-                _ => {}
-            },
-            Event::Text(t) if in_region && cur.is_some() => {
-                if let Ok(txt) = t.xml10_content() {
-                    // Skip pretty-printer indentation between structural elements.
-                    if !txt.is_empty() && !super::content::is_layout_whitespace(&txt) {
-                        append(doc, &cur, &mut cur_len, &txt);
-                    }
-                }
-            }
-            Event::GeneralRef(r) if in_region && cur.is_some() => {
-                if let Some(c) = crate::resolve_general_ref(&r) {
-                    append(doc, &cur, &mut cur_len, c.encode_utf8(&mut [0; 4]));
-                }
-            }
-            Event::End(e) => match e.name().as_ref() {
-                n if n == tag.as_bytes() => in_region = false,
-                b"text:p" | b"text:h" if in_region => cur = None,
-                _ => {}
-            },
-            Event::Eof => break,
-            _ => {}
-        }
-    }
+    plain_paragraphs::import(
+        xml,
+        Some(tag.as_bytes()),
+        doc,
+        |doc, prev| Some(doc.insert_block_in(region, prev, "paragraph")),
+        |doc, block, at, text| doc.splice_text_in(region, block, at, 0, text),
+        |name, block, at| {
+            (name == b"text:page-number").then(|| {
+                field_marks.push((block.to_owned(), at));
+                FIELD_PLACEHOLDER.to_string()
+            })
+        },
+    );
 
     // Apply page-number fields now that all text is present.
     for (b, start) in field_marks {
@@ -134,26 +65,18 @@ fn page_number_field_at(b: &BlockView, i: usize) -> bool {
     })
 }
 
-/// Render a region block's text, emitting `<text:page-number/>` for field placeholders
-/// and `text:tab`/`text:line-break` for tabs/breaks; richer inline styling isn't modeled.
+/// Render a region block, emitting `<text:page-number/>` for page-number fields.
 fn render_region_block(b: &BlockView) -> String {
     let chars: Vec<char> = b.text.chars().collect();
-    let mut out = String::from("<text:p>");
-    for (i, &c) in chars.iter().enumerate() {
-        if c == FIELD_PLACEHOLDER {
+    plain_paragraphs::render_one(b, |i| {
+        (chars.get(i) == Some(&FIELD_PLACEHOLDER)).then(|| {
             if page_number_field_at(b, i) {
-                out.push_str("<text:page-number/>");
+                "<text:page-number/>"
+            } else {
+                ""
             }
-            continue;
-        }
-        match c {
-            '\t' => out.push_str("<text:tab/>"),
-            '\n' => out.push_str("<text:line-break/>"),
-            _ => push_text(&mut out, c),
-        }
-    }
-    out.push_str("</text:p>");
-    out
+        })
+    })
 }
 
 /// The `style:header`/`style:footer` XML for a region's blocks, or `None` when empty.
