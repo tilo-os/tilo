@@ -16,8 +16,8 @@ named against that copy out of band.
 The image has no binutils (os/Containerfile keeps them in the throwaway
 uki-tools stage), so `strip` runs from ROOT, a tree that has them, through
 ROOT's own dynamic loader and libraries. Each copy is checked before it is
-used: every section the program loads is byte-identical at the same address,
-and the symbol tables are gone. A copy that fails either check fails the
+used: every segment maps the same bytes and every section the program loads
+is byte-identical at the same address, and the symbol tables are gone. A copy that fails either check fails the
 build; an initramfs never carries a binary that differs from the rootfs's in
 anything it runs.
 """
@@ -32,6 +32,8 @@ from pathlib import Path
 
 LOADERS = ("usr/lib64/ld-linux-x86-64.so.2", "usr/lib/ld-linux-aarch64.so.1", "usr/lib64/ld-linux-aarch64.so.1")
 SHF_ALLOC = 0x2
+# SHF_WRITE, SHF_ALLOC and SHF_EXECINSTR: how a section is mapped.
+MEMORY_FLAGS = 0x7
 SHT_NOBITS = 8
 SYMBOL_TABLES = (".symtab", ".strtab")
 
@@ -56,26 +58,47 @@ def sections(data: bytes) -> dict[str, tuple[int, int, int, bytes]]:
     return result
 
 
-def segments(data: bytes) -> list[tuple[int, ...]]:
-    """Each program header of an ELF64 little-endian file, without its file offset."""
+def segments(data: bytes) -> list[tuple[tuple[int, ...], bytes]]:
+    """Each program header of an ELF64 little-endian file without its file offset, and the bytes it maps."""
     phoff, = struct.unpack_from("<Q", data, 0x20)
     phentsize, phnum = struct.unpack_from("<HH", data, 0x36)
     result = []
     for index in range(phnum):
-        kind, flags, _offset, vaddr, paddr, filesz, memsz, align = struct.unpack_from(
+        kind, flags, offset, vaddr, paddr, filesz, memsz, align = struct.unpack_from(
             "<IIQQQQQQ", data, phoff + index * phentsize)
-        result.append((kind, flags, vaddr, paddr, filesz, memsz, align))
+        result.append(((kind, flags, vaddr, paddr, filesz, memsz, align), data[offset:offset + filesz]))
     return result
 
 
+def without_section_table(data: bytes) -> bytes:
+    """`data` with the ELF header's section-table fields zeroed (e_shoff, e_shnum, e_shstrndx).
+
+    The first segment maps the ELF header, and stripping moves and shrinks the
+    section table it points to; the loader never reads those fields.
+    """
+    return data[:0x28] + bytes(8) + data[0x30:0x3C] + bytes(4) + data[0x40:]
+
+
 def check(original: bytes, stripped: bytes) -> None:
-    """Refuse a stripped copy that loads anything other than the original does, or kept its symbols."""
+    """Refuse a stripped copy that loads anything other than the original does, or kept its symbols.
+
+    What the loader sees is compared: the ELF header's type, machine and
+    entry, every segment with the bytes it maps, and every allocated
+    section's type, address, contents and memory flags. Section flags the
+    loader never reads may differ (binutils marks a relocation section that
+    names another section SHF_INFO_LINK; lld does not).
+    """
     # e_type, e_machine, e_version and e_entry.
-    if original[0x10:0x20] != stripped[0x10:0x20] or segments(original) != segments(stripped):
-        raise ValueError("the stripped copy has another type, machine, entry point or segments")
+    if original[0x10:0x20] != stripped[0x10:0x20]:
+        raise ValueError("the stripped copy has another type, machine or entry point")
+    if segments(without_section_table(original)) != segments(without_section_table(stripped)):
+        raise ValueError("the stripped copy maps other segments or other bytes")
     full, thin = sections(original), sections(stripped)
     for name, (flags, kind, address, contents) in full.items():
-        if flags & SHF_ALLOC and thin.get(name) != (flags, kind, address, contents):
+        if not flags & SHF_ALLOC:
+            continue
+        other = thin.get(name)
+        if other is None or (other[0] & MEMORY_FLAGS, *other[1:]) != (flags & MEMORY_FLAGS, kind, address, contents):
             raise ValueError(f"the stripped copy's {name} differs from the original's")
     if any(name in thin for name in SYMBOL_TABLES):
         raise ValueError("the stripped copy still carries a symbol table")

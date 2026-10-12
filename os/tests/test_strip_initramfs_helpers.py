@@ -21,26 +21,31 @@ spec.loader.exec_module(helpers)
 
 PROGBITS, SYMTAB, STRTAB = 1, 2, 3
 ALLOC_EXEC = 0x6
+INFO_LINK = 0x40
+PT_LOAD = 1
 
 
-def elf(text=b'\x90' * 64, symbols=True, entry=0x1000):
-    """An ELF64 executable with one loaded .text, and a symbol table when `symbols`."""
-    sections = [('.text', PROGBITS, ALLOC_EXEC, 0x1000, text)]
+def elf(text=b'\x90' * 64, symbols=True, entry=0x1000, text_flags=ALLOC_EXEC):
+    """An ELF64 executable: one segment mapping the headers and .text, then the
+    symbol table (when `symbols`) and the section table, as a linker lays them out."""
+    sections = [('.text', PROGBITS, text_flags, 0x1000, text)]
     if symbols:
         sections += [('.symtab', SYMTAB, 0, 0, b'\0' * 48), ('.strtab', STRTAB, 0, 0, b'\0main\0')]
     names = b'\0' + b''.join(name.encode() + b'\0' for name, *_ in sections) + b'.shstrtab\0'
     sections.append(('.shstrtab', STRTAB, 0, 0, names))
-    body = bytearray(64)
+    body = bytearray(64 + 56)
     placed = []
     for name, kind, flags, address, contents in sections:
         placed.append((names.index(name.encode() + b'\0'), kind, flags, address, len(body), len(contents)))
         body += contents
+    mapped = 64 + 56 + len(text)
+    body[64:120] = struct.pack('<IIQQQQQQ', PT_LOAD, 5, 0, 0, 0, mapped, mapped, 0x1000)
     shoff = len(body)
     body += b'\0' * 64
     for name, kind, flags, address, offset, size in placed:
         body += struct.pack('<IIQQQQIIQQ', name, kind, flags, address, offset, size, 0, 0, 1, 0)
     header = b'\x7fELF\x02\x01\x01' + b'\0' * 9
-    header += struct.pack('<HHIQQQIHHHHHH', 2, 62, 1, entry, 0, shoff, 0, 64, 56, 0, 64,
+    header += struct.pack('<HHIQQQIHHHHHH', 2, 62, 1, entry, 64, shoff, 0, 64, 56, 1, 64,
                           len(placed) + 1, len(placed))
     body[:64] = header
     return bytes(body)
@@ -55,10 +60,17 @@ class StripCheck(unittest.TestCase):
             helpers.check(elf(), elf())
 
     def test_a_copy_with_other_code_or_entry_is_refused(self):
-        with self.assertRaisesRegex(ValueError, r'\.text differs'):
+        with self.assertRaisesRegex(ValueError, 'maps other segments or other bytes'):
             helpers.check(elf(), elf(text=b'\xcc' * 64, symbols=False))
         with self.assertRaisesRegex(ValueError, 'entry point'):
             helpers.check(elf(), elf(symbols=False, entry=0x2000))
+
+    def test_what_the_loader_never_reads_may_differ(self):
+        # The stripped copy's section table moved (e_shoff, e_shnum in the
+        # mapped ELF header), and binutils adds SHF_INFO_LINK where lld did not.
+        helpers.check(elf(), elf(symbols=False, text_flags=ALLOC_EXEC | INFO_LINK))
+        with self.assertRaisesRegex(ValueError, r'\.text differs'):
+            helpers.check(elf(), elf(symbols=False, text_flags=0x3))
 
     def test_an_original_without_symbols_is_refused(self):
         with self.assertRaisesRegex(ValueError, 'nothing to strip'):
@@ -102,7 +114,7 @@ class StripRun(unittest.TestCase):
     def test_a_bad_copy_fails_the_build(self):
         result, _, _ = self.run_script(elf(text=b'\xcc' * 64, symbols=False))
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('differs from the original', result.stderr)
+        self.assertIn('maps other segments or other bytes', result.stderr)
 
     def test_the_module_scripts_and_the_image_build_use_the_copies(self):
         build = (REPO / 'os/scripts/build-initramfs.sh').read_text()
