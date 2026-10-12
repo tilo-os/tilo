@@ -341,6 +341,39 @@ fn a_face_installed_twice_resolves_the_same_whatever_the_discovery_order() {
     }
 }
 
+/// Only the image's root-owned, read-only catalog skips hashing. A checkout,
+/// an executable's own `fonts/` and any directory this user can write are
+/// verified byte for byte, and a modified font there is refused.
+#[test]
+fn catalog_root_trust_is_verify_for_checkout_and_writable_roots() {
+    let roots = catalog_roots();
+    let checkout = crate::font_catalog::checkout_root();
+    assert!(roots.contains(&checkout));
+    assert_eq!(Trust::of_root(&checkout), Trust::Verify);
+    // The test binary's own `fonts/` sits in the writable build tree.
+    let adjacent = roots.first().unwrap();
+    assert!(adjacent.starts_with(std::env::current_exe().unwrap().parent().unwrap()));
+    assert_eq!(Trust::of_root(adjacent), Trust::Verify);
+
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("manifest.toml"), MANIFEST).unwrap();
+    assert_eq!(Trust::of_root(tmp.path()), Trust::Verify);
+    // Verification goes in manifest order, so the first product file decides.
+    let first = tilo_font_catalog::manifest()
+        .unwrap()
+        .font
+        .iter()
+        .find(|asset| asset.scope == Scope::Product)
+        .unwrap();
+    let mut bytes = std::fs::read(first.path_in(&checkout).unwrap()).unwrap();
+    *bytes.last_mut().unwrap() ^= 1;
+    std::fs::write(first.path_in(tmp.path()).unwrap(), bytes).unwrap();
+    let error = verify_bundle(&tmp.path().canonicalize().unwrap(), false)
+        .err()
+        .expect("a modified font in a writable root is refused");
+    assert!(error.problem.contains("SHA-256"), "{error}");
+}
+
 /// What a process run from a checkout or a screenshot gets on a machine
 /// without Tilo Sans installed: the product catalog, found past roots that do
 /// not hold one this build accepts, sets UI text in Tilo Sans. The host's own

@@ -25,7 +25,7 @@ pub fn seed_file(dir: &Path, adapter: &wgpu::AdapterInfo) -> Option<PathBuf> {
     wgpu::util::pipeline_cache_key(adapter).map(|key| dir.join(key))
 }
 
-fn supported(device: &crate::gpu::DeviceHandle) -> bool {
+pub(crate) fn supported(device: &crate::gpu::DeviceHandle) -> bool {
     device
         .device
         .features()
@@ -36,9 +36,14 @@ fn supported(device: &crate::gpu::DeviceHandle) -> bool {
     unsafe_code,
     reason = "wgpu marks pipeline cache creation unsafe; see the SAFETY note"
 )]
-fn create(device: &crate::gpu::DeviceHandle, data: Option<&[u8]>) -> wgpu::PipelineCache {
-    // SAFETY: `data` is either absent or a blob the session published from
-    // `PipelineCache::get_data` for an adapter with this cache key. wgpu
+pub(crate) fn create(
+    device: &crate::gpu::DeviceHandle,
+    data: Option<&[u8]>,
+) -> wgpu::PipelineCache {
+    // SAFETY: `data` is either absent, a blob the session published from
+    // `PipelineCache::get_data` for an adapter with this cache key, or one
+    // this app kept from its own earlier launch (`crate::pipeline_cache`,
+    // checksummed and keyed by adapter, driver and shader set). wgpu
     // checks its own header (adapter key, driver, checksum) before the
     // driver sees it and `fallback` starts empty on any mismatch; the
     // driver validates its header again.
@@ -60,11 +65,16 @@ pub fn seeded(device: &crate::gpu::DeviceHandle) -> Option<wgpu::PipelineCache> 
     if !supported(device) {
         return None;
     }
+    let data = seed_data(device)?;
+    Some(create(device, Some(&data)))
+}
+
+/// The session's seed blob for this device, when the launcher provided one.
+pub(crate) fn seed_data(device: &crate::gpu::DeviceHandle) -> Option<Vec<u8>> {
     let dir = crate::host::environment().paths.pipeline_seed.clone()?;
     let file = seed_file(&dir, &device.adapter.get_info())?;
     let (dir, name) = tilo_files::file_at(&file).ok()?;
-    let data = tilo_files::blocking::read(&dir, &name).ok()?;
-    Some(create(device, Some(&data)))
+    tilo_files::blocking::read(&dir, &name).ok()
 }
 
 /// An empty pipeline cache for the session to fill and then publish: what

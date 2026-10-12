@@ -2,7 +2,7 @@
 //! without the channel key accepts a verified compaction in place of exactly
 //! the writes it covers, and never opens it.
 use super::{
-    DocumentMutation, Ed25519PublicKey, NeighbourMsg, OpClass, Route, SignedOp, SigningKey,
+    DocumentMutation, Ed25519PublicKey, NeighbourMsg, OpKind, Route, SignedOp, SigningKey,
     StatePeer, SystemTime, err, peer_handle,
 };
 use collab_types::{ContentRetention, EncryptionMetadata, SealedCompaction};
@@ -106,7 +106,7 @@ impl StatePeer {
             collab_types::document_artifact_id(app, &self.core.room, record),
             author,
             collab_types::document_attestation_id(app, &self.core.room, record),
-            OpClass::Compaction,
+            OpKind::Compaction,
             now,
             seq,
             metadata,
@@ -191,10 +191,7 @@ pub(super) fn supersede(
     if covers_beyond(&wrapper, floors) {
         return Err("sealed compaction covers writes this replica has not admitted".into());
     }
-    if kept
-        .iter()
-        .any(|write| write.op_class == OpClass::Compaction)
-    {
+    if kept.iter().any(|write| write.kind == OpKind::Compaction) {
         return Err("sealed compaction leaves an earlier compaction in place".into());
     }
     if collab_types::hash_sealed_prefix(superseded.iter().copied()).map_err(err)?
@@ -219,7 +216,7 @@ pub(super) fn supersede(
 /// covering nothing beyond the record's floors and none of the later writes.
 pub(super) fn check_stored(history: &[SignedOp], floors: &Floors) -> Result<(), String> {
     for (index, op) in history.iter().enumerate() {
-        if op.op_class != OpClass::Compaction {
+        if op.kind != OpKind::Compaction {
             continue;
         }
         if index != 0 {

@@ -11,7 +11,7 @@
 //! stays theme-agnostic and the OS keeps control of the palette.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub type VideoId = String;
 pub type ChannelId = String;
@@ -385,11 +385,6 @@ impl Video {
         }
         &self.title
     }
-
-    /// Whether a `DeArrow` alternative exists *and* is active.
-    pub fn dearrow_active(&self, dearrow: bool) -> bool {
-        dearrow && self.dearrow_title.is_some()
-    }
 }
 
 /// How this person likes Tube to play: `SponsorBlock`, `DeArrow`, dislike
@@ -610,7 +605,7 @@ pub struct TubeModel {
     /// identity used by the action layer. Unlike fetched comments themselves,
     /// these are user mutations mirrored from the collaborative document.
     #[serde(default)]
-    pub comment_likes: BTreeMap<String, bool>,
+    pub comment_likes: BTreeSet<String>,
     /// Transient user-facing notices — auto-skip confirmations, worker status,
     /// "link copied" acknowledgements — rendered as a toast stack on the watch
     /// page. Newest first, capped.
@@ -691,7 +686,7 @@ impl Default for TubeModel {
             playhead: 0.0,
             playing: false,
             liked: Vec::new(),
-            comment_likes: BTreeMap::new(),
+            comment_likes: BTreeSet::new(),
             notices: Vec::new(),
             data_source: DataSource::default(),
             search_hits_query: String::new(),
@@ -1014,15 +1009,10 @@ impl TubeModel {
     /// when we have them for this query, otherwise the local substring filter
     /// (offline / before a live response lands).
     pub fn search_display(&self, query: &str) -> Vec<&Video> {
-        if self.search_hits_query == query && !self.search_hits.is_empty() {
-            let hits: Vec<&Video> = self
-                .search_hits
-                .iter()
-                .filter_map(|id| self.video(id))
-                .collect();
-            if !hits.is_empty() {
-                return hits;
-            }
+        if self.search_hits_query == query
+            && let Some(hits) = self.known_videos(&self.search_hits)
+        {
+            return hits;
         }
         self.search(query)
     }
@@ -1031,17 +1021,19 @@ impl TubeModel {
     /// recommendations when we have them for this video, otherwise the local
     /// same-category heuristic.
     pub fn related_display(&self, id: &str) -> Vec<&Video> {
-        if self.related_of == id && !self.related_hits.is_empty() {
-            let hits: Vec<&Video> = self
-                .related_hits
-                .iter()
-                .filter_map(|rid| self.video(rid))
-                .collect();
-            if !hits.is_empty() {
-                return hits;
-            }
+        if self.related_of == id
+            && let Some(hits) = self.known_videos(&self.related_hits)
+        {
+            return hits;
         }
         self.related(id)
+    }
+
+    /// The videos of `ids` this model knows, in order; `None` when it knows
+    /// none of them.
+    fn known_videos(&self, ids: &[VideoId]) -> Option<Vec<&Video>> {
+        let hits: Vec<&Video> = ids.iter().filter_map(|id| self.video(id)).collect();
+        (!hits.is_empty()).then_some(hits)
     }
 
     /// "Up next" suggestions for a watch page: same category first, then

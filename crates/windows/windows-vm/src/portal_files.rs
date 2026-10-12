@@ -11,7 +11,6 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Seek as _};
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::os::unix::io::AsRawFd as _;
-use std::os::unix::io::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -77,7 +76,7 @@ impl Default for PortalDocumentStore {
 /// appliance-control namespace below `/run/tilo/windows-vm`.
 #[must_use]
 pub fn portal_lease_root() -> PathBuf {
-    xdg_paths::xdg::runtime_dir()
+    tilo_paths::xdg::runtime_dir()
         .unwrap_or_else(|| {
             // SAFETY: `geteuid` only reads the process credentials and has no
             // preconditions.
@@ -147,20 +146,6 @@ impl PortalDocumentStore {
             .map_err(|_| portal_error("portal document store is unavailable"))?
             .insert(handle.clone(), document);
         Ok(PortalDocumentGrant { handle, access })
-    }
-
-    /// Registers the descriptor received over the compatibility service's
-    /// `SCM_RIGHTS` portal handoff.  This makes the descriptor boundary
-    /// explicit at the service/compositor seam and avoids ever reopening a
-    /// client-supplied pathname.
-    pub fn register_owned_fd(
-        &self,
-        workspace_id: &str,
-        application_id: &str,
-        source: OwnedFd,
-        access: PortalDocumentAccess,
-    ) -> Result<PortalDocumentGrant, LaunchError> {
-        self.register(workspace_id, application_id, File::from(source), access)
     }
 
     fn materialize(

@@ -498,32 +498,68 @@ impl PlanStream {
     }
 }
 
-/// Contract tag prefix by which an app declares that a Text parameter may be
-/// delivered in parts: `tilo.incremental-text:<param>:<next>` means the first
-/// part goes through the declaring action and each later part through action
-/// `<next>` on the same resource with `<param>` set to that part (Writer's
-/// `INCREMENTAL_TEXT_TAG`). The agent keys chunking on this and nothing else.
-pub const INCREMENTAL_TEXT_TAG: &str = "tilo.incremental-text:";
-
-/// The `(param, next action)` a contract's tags declare, if any.
-pub fn incremental_text(tags: &[String]) -> Option<(&str, &str)> {
-    tags.iter().find_map(|tag| {
-        let (param, next) = tag.strip_prefix(INCREMENTAL_TEXT_TAG)?.split_once(':')?;
-        (!param.is_empty() && !next.is_empty() && !next.contains(':')).then_some((param, next))
-    })
+/// Text the agent may write in parts: the parameter that carries it and the
+/// action each later part goes through, on the same resource.
+///
+/// TODO: not implemented yet: the agent will act through apps' published
+/// surfaces via the broker, where an app declares which of its writing
+/// operations continue by typing at the caret.
+#[must_use]
+pub fn continuation(_descriptor: &tilo_actions::ActionDescriptor) -> Option<(String, String)> {
+    None
 }
 
-/// A declared incremental text longer than this is written in chunks.
+/// Text in parts ([`continuation`]) longer than this is written with a live
+/// preview of the text still to land.
 pub const CHUNK_MIN_TEXT: usize = 60;
-/// The first chunk size in bytes: chunks land between 2/3 and 4/3 of it
-/// (40–80 bytes), at word boundaries.
-pub const CHUNK_TARGET: usize = 60;
-/// The largest chunk target the adaptive doubling reaches.
+/// The largest chunk target the adaptive doubling of streamed chunks reaches.
 pub const MAX_CHUNK_TARGET: usize = 4096;
 /// At most this many chunks per paragraph.
 pub const MAX_CHUNKS: usize = 12;
-/// A chunk step slower than this doubles the next chunk's target.
+/// A streamed chunk step slower than this doubles the next chunk's target.
 pub const SLOW_CHUNK_STEP: Duration = Duration::from_millis(600);
+/// The most text one step carries, measured as its JSON string encoding.
+/// A step's arguments cross the broker as one JSON object of at most 32 KiB
+/// (`tilo-action-broker` `DIRECTORY_MAX_PARAMS_BYTES`); this leaves room for
+/// the other arguments around the text.
+pub const MAX_STEP_TEXT_JSON: usize = 24 * 1024;
+
+/// The bytes `c` takes inside a JSON string: quote, backslash and the named
+/// control escapes take two, other control characters six (`\u00XX`), and
+/// everything else its UTF-8 length.
+fn json_string_len(c: char) -> usize {
+    match c {
+        '"' | '\\' | '\n' | '\r' | '\t' | '\u{08}' | '\u{0c}' => 2,
+        c if u32::from(c) < 0x20 => 6,
+        c => c.len_utf8(),
+    }
+}
+
+/// The byte length of the next step's part of `rest`, a text that is
+/// already complete: all of it in one step, unless its JSON encoding would
+/// exceed [`MAX_STEP_TEXT_JSON`] and more than one step is left — then the
+/// longest prefix within that bound, ending just after whitespace when there
+/// is any. The parts concatenate back to exactly the input.
+///
+/// Complete text is never split to look like typing: each step is a
+/// durable round trip, so a paragraph in parts only lands later.
+pub fn step_text_len(rest: &str, steps_left: usize) -> usize {
+    if steps_left <= 1 {
+        return rest.len();
+    }
+    let mut encoded = 0_usize;
+    let mut boundary = None;
+    for (at, c) in rest.char_indices() {
+        encoded += json_string_len(c);
+        if encoded > MAX_STEP_TEXT_JSON {
+            return boundary.unwrap_or(at);
+        }
+        if c.is_whitespace() {
+            boundary = Some(at + c.len_utf8());
+        }
+    }
+    rest.len()
+}
 
 /// The byte length of the next chunk of `rest`: the whole rest when it is
 /// short or `chunks_left` is 1; otherwise the last word boundary (just after
@@ -589,6 +625,46 @@ mod tests {
     const OCEAN: &str = "The ocean covers more than seventy percent of our planet, holding \
         ninety-seven percent of its water and most of its life, from sunlit reefs \
         to the dark trenches where strange creatures glow in the deep.";
+    /// A streamed chunk target: chunks land between 2/3 and 4/3 of it.
+    const CHUNK_TARGET: usize = 60;
+
+    /// Complete text is one step, however long, until one step's JSON bound;
+    /// past it, parts end at a word boundary within the bound and rejoin
+    /// exactly.
+    #[test]
+    fn complete_text_is_one_step_up_to_the_step_bound() {
+        let paragraph = "word ".repeat(140);
+        assert_eq!(paragraph.len(), 700);
+        assert_eq!(step_text_len(&paragraph, MAX_CHUNKS), paragraph.len());
+        assert_eq!(step_text_len("", MAX_CHUNKS), 0);
+
+        let long = "word ".repeat(6000);
+        let first = step_text_len(&long, MAX_CHUNKS);
+        assert!(first <= MAX_STEP_TEXT_JSON && first > MAX_STEP_TEXT_JSON - 5);
+        assert!(long[..first].ends_with(' '));
+        assert_eq!(
+            step_text_len(&long[first..], MAX_CHUNKS),
+            long.len() - first,
+            "the rest fits one step"
+        );
+        assert_eq!(
+            step_text_len(&long, 1),
+            long.len(),
+            "the last step takes all"
+        );
+
+        // The bound is on the encoding: escapes count, multibyte characters
+        // are never cut.
+        let quoted = "\"".repeat(MAX_STEP_TEXT_JSON);
+        let cut = step_text_len(&quoted, MAX_CHUNKS);
+        assert_eq!(cut, MAX_STEP_TEXT_JSON / 2);
+        assert!(serde_json::to_string(&quoted[..cut]).unwrap().len() <= MAX_STEP_TEXT_JSON + 2);
+        let control = "\u{1}".repeat(MAX_STEP_TEXT_JSON);
+        assert_eq!(step_text_len(&control, MAX_CHUNKS), MAX_STEP_TEXT_JSON / 6);
+        let accents = "é".repeat(MAX_STEP_TEXT_JSON);
+        let cut = step_text_len(&accents, MAX_CHUNKS);
+        assert!(accents.is_char_boundary(cut) && cut <= MAX_STEP_TEXT_JSON);
+    }
 
     #[test]
     fn chunks_split_at_word_boundaries_within_the_window_and_rejoin_exactly() {
@@ -632,33 +708,6 @@ mod tests {
         assert!(
             chunks.last().unwrap().len() >= CHUNK_TARGET / 3,
             "{chunks:?}"
-        );
-    }
-
-    #[test]
-    fn incremental_text_is_read_only_from_the_declared_tag() {
-        let tags = |list: &[&str]| list.iter().map(|tag| (*tag).to_owned()).collect::<Vec<_>>();
-        assert_eq!(
-            incremental_text(&tags(&[
-                "other",
-                "tilo.incremental-text:text:continue-paragraph"
-            ])),
-            Some(("text", "continue-paragraph"))
-        );
-        for bad in [
-            "tilo.incremental-text:",
-            "tilo.incremental-text:text",
-            "tilo.incremental-text::next",
-            "tilo.incremental-text:text:",
-            "tilo.incremental-text:a:b:c",
-            "incremental-text:text:next",
-        ] {
-            assert_eq!(incremental_text(&tags(&[bad])), None, "{bad}");
-        }
-        assert_eq!(
-            INCREMENTAL_TEXT_TAG,
-            word_processor::actions::INCREMENTAL_TEXT_TAG,
-            "the agent reads the tag Writer declares"
         );
     }
 

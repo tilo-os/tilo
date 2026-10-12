@@ -125,35 +125,30 @@ impl Capabilities {
     }
 }
 
-/// `[target]` — a WebAssembly, Linux, Windows, macOS or Android build of the
-/// package.
+/// `[target]` — a Linux, Windows, macOS or Android build of the package.
 ///
-/// For `linux`, `windows`, `macos` and `android`, `architecture` is `x86_64`
-/// or `aarch64`, `module` is the executable the GUI entrypoint names (for
-/// `android`, an `.apk` or `.aab`), and `runtime` is the toolkit release
-/// linked into it (`[package].runtime`).
+/// `architecture` is `x86_64` or `aarch64`, `module` is the executable the
+/// GUI entrypoint names (for `android`, an `.apk` or `.aab`), and `runtime`
+/// is the toolkit release linked into it (`[package].runtime`).
 ///
 /// The first four fields are exactly the registry's signed `RegistryTarget`
 /// (see `registry_types::target` for the canonical spellings):
 ///
 /// ```toml
 /// [target]
-/// platform = "web"
-/// architecture = "wasm32"
-/// isa = "wasm32-mvp+bulk-memory+mutable-globals+sign-ext"
-/// runtime = "tilo-runtime/2026.07+wasm.fe8836616de68a65d59c02eb73caa005"
-/// module = "books.wasm"
+/// platform = "linux"
+/// architecture = "x86_64"
+/// isa = "x86_64"
+/// runtime = "tilo-runtime/2026.07"
+/// module = "bin/books"
 /// ```
-///
-/// For an app, `runtime` is the toolkit core it links against; for
-/// `kind = "runtime"` it is the core the package provides.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Target {
     pub platform: String,
     pub architecture: String,
     pub isa: String,
     pub runtime: String,
-    /// Payload path of the WebAssembly module the loader instantiates.
+    /// Payload path of the executable the GUI entrypoint names.
     pub module: String,
 }
 
@@ -650,7 +645,8 @@ pub enum ContinuityFacet {
 /// These schemas describe meaning, not a particular application. A browser,
 /// documentation viewer, or third-party knowledge app may therefore share a
 /// standard location schema without gaining permission to serialize arbitrary
-/// process state.
+/// process state. Each schema's payload shape, safety invariants and wire tag
+/// live in [`crate::continuity_schema`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ContinuitySemanticSchema {
@@ -817,6 +813,19 @@ pub enum NetMode {
     DnsOnly,
     /// Allowlist of hostnames the app may connect to; concrete names live in [`SandboxNet::hosts`].
     Allowlist,
+}
+
+impl NetMode {
+    /// The manifest spelling.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Host => "host",
+            Self::DnsOnly => "dns-only",
+            Self::Allowlist => "allowlist",
+        }
+    }
 }
 
 /// `required@N`/`optional@N` — a declared dependency on a service protocol with a version pin.
@@ -1140,20 +1149,26 @@ impl Manifest {
     /// Returns [`ManifestParseError::Toml`] if `s` is not valid TOML for
     /// this schema.
     pub fn from_toml_str(s: &str) -> Result<Self, ManifestParseError> {
+        let m: Manifest = toml::from_str(s).map_err(ManifestParseError::Toml)?;
+        Ok(m.normalized())
+    }
+
+    /// What every decode applies after serde: idempotent, so a manifest
+    /// that already went through [`Manifest::from_toml_str`] is unchanged.
+    pub(crate) fn normalized(mut self) -> Self {
         // TOML encodes [sandbox.services] as service-name → "required@1"
-        // string; the generic decode loses the key, so post-process it below.
-        let mut m: Manifest = toml::from_str(s).map_err(ManifestParseError::Toml)?;
-        // Patch each ServiceReq's `protocol` field with the map key that named it.
-        let services = std::mem::take(&mut m.sandbox.services);
-        m.sandbox.services = services
+        // string; the generic decode loses the key, so patch each
+        // ServiceReq's `protocol` field with the map key that named it.
+        let services = std::mem::take(&mut self.sandbox.services);
+        self.sandbox.services = services
             .into_iter()
             .map(|(name, mut req)| {
                 req.protocol.clone_from(&name);
                 (name, req)
             })
             .collect();
-        m.providers.normalize();
-        Ok(m)
+        self.providers.normalize();
+        self
     }
 
     /// The system interfaces this package cannot work without: each

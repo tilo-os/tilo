@@ -11,7 +11,8 @@ use iroh_base::EndpointAddr;
 use tilo_relay_protocol::auth::{self, Hello, HelloAck};
 use tilo_relay_protocol::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, CERTIFY_ALPN, CertifyOpen, CertifyReply,
-    MAX_CERTIFY_FRAME_BYTES, PendingAgent, PendingCertification,
+    ConfirmationAnswer, MAX_CERTIFY_FRAME_BYTES, PendingAgent, PendingCertification,
+    PendingConfirmation,
 };
 use tilo_user_identity::{
     CertificationPolicy, CertificationRequest, DeviceCert, RevocationList, verify_device_cert_at,
@@ -120,7 +121,7 @@ pub async fn request_certification(
     connection.close(0u32.into(), b"");
     match reply {
         CertifyReply::Issued { cert, host_cert } => {
-            let now = crate::clock::now_ns();
+            let now = tilo_clock::unix_now_ns();
             verify_issued_cert(
                 &request,
                 &cert,
@@ -187,7 +188,7 @@ impl Approver {
             &ack,
             &user,
             revocations,
-            crate::clock::now_ns(),
+            tilo_clock::unix_now_ns(),
             &client_nonce,
         )?;
         write(
@@ -218,9 +219,9 @@ impl Approver {
         match self.call(&ApproverRequest::ListPending).await? {
             ApproverReply::Pending(pending) => Ok(pending),
             ApproverReply::Refused { reason } => Err(codec(&reason)),
-            ApproverReply::Decided | ApproverReply::AgentProposals(_) => {
-                Err(codec(&"unexpected approver reply"))
-            }
+            ApproverReply::Decided
+            | ApproverReply::AgentProposals(_)
+            | ApproverReply::Confirmations(_) => Err(codec(&"unexpected approver reply")),
         }
     }
 
@@ -234,10 +235,40 @@ impl Approver {
         match self.call(&ApproverRequest::AgentProposals).await? {
             ApproverReply::AgentProposals(pending) => Ok(pending),
             ApproverReply::Refused { reason } => Err(codec(&reason)),
-            ApproverReply::Decided | ApproverReply::Pending(_) => {
-                Err(codec(&"unexpected approver reply"))
-            }
+            ApproverReply::Decided
+            | ApproverReply::Pending(_)
+            | ApproverReply::Confirmations(_) => Err(codec(&"unexpected approver reply")),
         }
+    }
+
+    /// Every question an agent of the host is waiting on: shown as the
+    /// host's confirmation sheet and answered with [`Self::answer`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CertifyError`] when the session fails.
+    pub async fn list_confirmations(&mut self) -> Result<Vec<PendingConfirmation>, CertifyError> {
+        match self.call(&ApproverRequest::Confirmations).await? {
+            ApproverReply::Confirmations(asked) => Ok(asked),
+            ApproverReply::Refused { reason } => Err(codec(&reason)),
+            ApproverReply::Decided
+            | ApproverReply::Pending(_)
+            | ApproverReply::AgentProposals(_) => Err(codec(&"unexpected approver reply")),
+        }
+    }
+
+    /// Answer question `id` for its one invocation. `Ok(Refused)` means
+    /// the question is gone (answered, expired or withdrawn).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CertifyError`] when the session fails.
+    pub async fn answer(
+        &mut self,
+        id: [u8; 32],
+        answer: ConfirmationAnswer,
+    ) -> Result<ApproverReply, CertifyError> {
+        self.call(&ApproverRequest::Answer { id, answer }).await
     }
 
     /// Answer one request. `Ok(Refused)` means the host did not accept the

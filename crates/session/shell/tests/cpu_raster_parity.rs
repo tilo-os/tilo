@@ -84,10 +84,7 @@ fn parity(gpu: &mut OffscreenRenderer, name: &str, scene: &Scene) -> Diff {
 
 #[test]
 fn shell_scenes_match_vello_gpu() {
-    let Ok(mut gpu) = std::panic::catch_unwind(|| OffscreenRenderer::new(W, H)) else {
-        eprintln!("no wgpu adapter: skipping the GPU comparison");
-        return;
-    };
+    let mut gpu = OffscreenRenderer::new(W, H);
     let mut scenes: Vec<(String, Scene)> = Vec::new();
 
     let mut fb = FrameBuilder::new((W, H));

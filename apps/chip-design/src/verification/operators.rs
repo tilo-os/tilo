@@ -7,7 +7,6 @@ use super::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -309,13 +308,7 @@ pub(super) fn import(json: &str) -> Result<VerificationReceipt, String> {
         }
     }
     let summary = OperatorSummary {
-        original_receipt_sha256: Sha256::digest(json.as_bytes()).iter().try_fold(
-            String::with_capacity(64),
-            |mut output, byte| {
-                write!(&mut output, "{byte:02x}").map_err(|error| error.to_string())?;
-                Ok::<_, String>(output)
-            },
-        )?,
+        original_receipt_sha256: hex::encode(Sha256::digest(json.as_bytes())),
         primary_revision: raw.primary_revision,
         primary_source_sha256: raw.primary_source_sha256,
         local_source_sha256: raw

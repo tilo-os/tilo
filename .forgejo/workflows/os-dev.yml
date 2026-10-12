@@ -1,7 +1,7 @@
 name: Build / OS dev
 
-# The loop for iterating on the OS image with tilo-vm: every pull request that
-# touches the image builds it fully cached and publishes, per architecture,
+# Explicit OS-image iteration with tilo-vm: dispatch this workflow or label an
+# image-changing pull request `os-image` (or `os-arm64`) to build and publish:
 #
 #   registry.tilo.so/tilo/tilo-ci:<ref>-<sha7>-<arch>   the unsigned OS image
 #   registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-ci       its dev image
@@ -10,11 +10,12 @@ name: Build / OS dev
 # moves a VM onto any commit that built. No reproduction lane, no signing, no
 # release channel: those are Release / OS (build-image.yml), which this calls.
 #
-# A pull request builds only when its own diff touches the image, builds
+# A requested pull request builds only when its own diff touches the image, builds
 # x86_64, and adds aarch64 when it changes an architecture-specific input or
 # carries the `os-arm64` label
-# (tools/ci/os_dev_arches.py). Main pushes build in Build / OS dev (x86_64)
-# and (aarch64) (os-dev-x86.yml, os-dev-arm.yml), newest commit only.
+# (tools/ci/os_dev_arches.py). Main images also have architecture-specific
+# dispatches (os-dev-x86.yml, os-dev-arm.yml), newest commit only. Ordinary
+# pushes and unlabelled PRs leave native package capacity for required checks.
 on:
   workflow_dispatch:
     inputs:
@@ -31,6 +32,7 @@ on:
         required: false
         default: ''
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     branches: [main]
     paths:
       - "os/**"
@@ -48,14 +50,16 @@ on:
       - ".forgejo/actions/setup-buildx/**"
       - "tools/ci/os_dev_arches.py"
 
-# One run per pull request: its newest commit cancels the build of the one
-# before.
+# Share the x86 dev-image queue with the main wrapper. A PR image and a main
+# image must not occupy two of the four available native package slots.
+# Queue requests without cancelling a build that already has useful progress.
 concurrency:
-  group: os-dev-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: os-dev-x86-native
+  cancel-in-progress: false
 
 jobs:
   arches:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'os-image') || contains(github.event.pull_request.labels.*.name, 'os-arm64')
     runs-on: runner-quality
     timeout-minutes: 5
     container:

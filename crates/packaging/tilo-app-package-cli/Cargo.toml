@@ -45,7 +45,7 @@ serde_json.workspace = true
 # The other subcommands stay synchronous; publish drives a runtime inline.
 tokio = { workspace = true, features = ["macros", "signal"] }
 tilo-rt.workspace = true
-# `pack-web` stages the module and assets as a payload directory.
+# `pack-desktop` stages the executable as a payload directory.
 tempfile.workspace = true
 workspace-hack = { version = "0.1" }
 

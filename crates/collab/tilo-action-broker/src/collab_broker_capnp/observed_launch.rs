@@ -1,5 +1,5 @@
 //! Completion of a launch admitted on an application's original channel.
-use super::{BrokerActor, CapDecision, CapnpChannelHandle, InvocationOwner, ResourceRef, Verb};
+use super::{BrokerActor, CapnpChannelHandle, InvocationOwner, app_node};
 use crate::services::LaunchReadiness;
 use tilo_actions::InvocationId;
 
@@ -178,20 +178,21 @@ impl CapnpChannelHandle {
             .membership
             .as_ref()
             .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
-        let tree = membership.snapshot()?;
-        let workspace = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == self.route().cluster_id)
-            .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
         let now = self.state.policy_now_ns()? / 1_000_000_000;
-        let caller = actor.policy_in(workspace, now);
-        if workspace.decide_at(&caller, &ResourceRef::App(app.to_owned()), Verb::Write, now)
-            != CapDecision::Allow
-        {
-            return Err("the caller is no longer allowed to launch that application".into());
-        }
-        Ok(())
+        membership
+            .decide_in_room(&self.route().cluster_id, |workspace| {
+                let workspace = workspace.ok_or("the application workspace is no longer hosted")?;
+                if !actor.may_in(
+                    workspace,
+                    &app_node(workspace, app),
+                    tilo_action_policy::ActionKind::Undoable,
+                    now,
+                ) {
+                    return Err("the caller is no longer allowed to launch that application");
+                }
+                Ok(())
+            })?
+            .map_err(str::to_owned)
     }
 
     pub(super) fn finish_observed_launch(
@@ -270,13 +271,12 @@ pub(super) fn launch_author(
     workspace: &tilo_desktop_model::Workspace,
     now: u64,
 ) -> Option<String> {
-    (!actor.is_agent()
-        && !actor.id().starts_with("app:")
-        && workspace.decide_at(
-            &actor.policy_in(workspace, now),
-            &ResourceRef::Workspace,
-            Verb::Write,
+    (actor.direct()
+        && actor.may_in(
+            workspace,
+            &workspace.node(),
+            tilo_action_policy::ActionKind::Undoable,
             now,
-        ) == CapDecision::Allow)
-        .then(|| actor.id().to_owned())
+        ))
+    .then(|| actor.id().to_owned())
 }

@@ -25,6 +25,8 @@ const MAX_TASK_RECEIPTS: usize = 4096;
 pub struct WorkspaceTaskSnapshot {
     pub tasks: Vec<WorkspaceTask>,
     pub controls: std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    /// The open tasks' grant sets: grants whose subject is a task.
+    pub grants: Vec<tilo_action_policy::Grant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +43,7 @@ pub fn snapshot(doc: &AutoCommit) -> Result<WorkspaceTaskSnapshot, String> {
     Ok(WorkspaceTaskSnapshot {
         tasks: tilo_desktop_model::projection::workspace_tasks_of(doc),
         controls: controls_of(doc)?,
+        grants: tilo_desktop_model::projection::task_grants_of(doc),
     })
 }
 
@@ -175,6 +178,14 @@ pub enum WorkspaceTaskCommand {
         expected_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
         budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     },
+    /// Person approval of one exact queued task frontier; grants no app/resource authority.
+    /// Appended after the parent coordination commands to preserve postcard indices.
+    ApproveRun {
+        task_id: String,
+        agent_id: String,
+        expected_run_epoch: u64,
+        after_revision: u64,
+    },
 }
 
 impl WorkspaceTaskCommand {
@@ -183,6 +194,10 @@ impl WorkspaceTaskCommand {
         match self {
             Self::Queue { assigned_agent, .. }
             | Self::StartRun {
+                agent_id: assigned_agent,
+                ..
+            }
+            | Self::ApproveRun {
                 agent_id: assigned_agent,
                 ..
             } => Some(assigned_agent),
@@ -261,6 +276,9 @@ pub(crate) fn apply(
     });
     tilo_desktop_model::projection::project_workspace_tasks(doc, &tasks)
         .map_err(|error| error.to_string())?;
+    // A task that closed takes the grants given for it with it, in the same
+    // change, so every reader of the room's grants stops honouring them.
+    tilo_desktop_model::projection::lapse_task_grants(doc).map_err(|error| error.to_string())?;
     project_controls(doc, &controls)?;
     doc.commit();
     Ok(AppliedTaskCommand {
@@ -303,14 +321,8 @@ fn dispatch(
             *route,
             resource.as_deref().cloned(),
         ),
-        WorkspaceTaskCommand::StartRun { task_id, agent_id } => start_run(
-            tasks,
-            controls,
-            context.actor,
-            task_id,
-            agent_id,
-            context.now,
-        ),
+        command @ (WorkspaceTaskCommand::ApproveRun { .. }
+        | WorkspaceTaskCommand::StartRun { .. }) => dispatch_run(tasks, controls, context, command),
         WorkspaceTaskCommand::Direction { task_id, text } => direct(
             tasks,
             controls,
@@ -378,6 +390,38 @@ fn dispatch(
             task_id,
             (*run_epoch, *after_revision),
         ),
+    }
+}
+
+fn dispatch_run(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    command: &WorkspaceTaskCommand,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    match command {
+        WorkspaceTaskCommand::ApproveRun {
+            task_id,
+            agent_id,
+            expected_run_epoch,
+            after_revision,
+        } => approve_run(
+            tasks,
+            controls,
+            context,
+            task_id,
+            agent_id,
+            (*expected_run_epoch, *after_revision),
+        ),
+        WorkspaceTaskCommand::StartRun { task_id, agent_id } => start_run(
+            tasks,
+            controls,
+            context.actor,
+            task_id,
+            agent_id,
+            context.now,
+        ),
+        _ => Err("not a run admission command".into()),
     }
 }
 
@@ -537,11 +581,15 @@ fn manual_command(
                 resource: resource.as_deref().cloned(),
                 created_at: context.now,
                 updated_at: context.now,
-                audit: vec![WorkspaceTaskAuditEvent {
-                    at: context.now,
-                    actor: author.clone(),
-                    summary: format!("Created manual task · {title}"),
-                }],
+                audit: vec![WorkspaceTaskAuditEvent::new(
+                    context.now,
+                    author.clone(),
+                    "create-task",
+                    [
+                        ("title", tilo_actions::Scalar::text(title)),
+                        ("manual", tilo_actions::Scalar::from(true)),
+                    ],
+                )],
             });
             controls.insert(task_id.clone(), WorkspaceTaskControl::default());
             Ok((
@@ -585,11 +633,12 @@ fn manual_command(
             }
             task.resource = Some(resource.as_ref().clone());
             task.updated_at = context.now;
-            task.audit.push(WorkspaceTaskAuditEvent {
-                at: context.now,
-                actor: author.clone(),
-                summary: format!("Attached resource · {}", resource.label),
-            });
+            task.audit.push(WorkspaceTaskAuditEvent::new(
+                context.now,
+                author.clone(),
+                "attach-resource",
+                [("resource", tilo_actions::Scalar::text(&resource.label))],
+            ));
             Ok((
                 task_id.clone(),
                 WorkspaceTaskMutationResult::ResourceAttached {
@@ -633,11 +682,12 @@ fn set_execution_budget(
     }
     control.execution_budget = observed.2;
     task.updated_at = context.now;
-    task.audit.push(WorkspaceTaskAuditEvent {
-        at: context.now,
-        actor: actor.clone(),
-        summary: "Configured bounded task execution policy".into(),
-    });
+    task.audit.push(WorkspaceTaskAuditEvent::new(
+        context.now,
+        actor.clone(),
+        "set-execution-budget",
+        [],
+    ));
     Ok((
         task_id.into(),
         WorkspaceTaskMutationResult::ExecutionBudgetSet {
@@ -705,11 +755,12 @@ fn queue(
         resource,
         created_at: context.now,
         updated_at: context.now,
-        audit: vec![WorkspaceTaskAuditEvent {
-            at: context.now,
-            actor: author.clone(),
-            summary: format!("Created task · {title}"),
-        }],
+        audit: vec![WorkspaceTaskAuditEvent::new(
+            context.now,
+            author.clone(),
+            "create-task",
+            [("title", tilo_actions::Scalar::text(title))],
+        )],
     });
     controls.insert(task_id.clone(), WorkspaceTaskControl::default());
     Ok((
@@ -763,6 +814,58 @@ fn start_run(
     if !matches!(actor, AdmittedTaskActor::Host { .. }) {
         return Err("only the workspace host may start a task run".into());
     }
+    begin_run(tasks, controls, task_id, agent_id, now, None)
+}
+
+fn approve_run(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    task_id: &str,
+    agent_id: &str,
+    frontier: (u64, u64),
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    let AdmittedTaskActor::Person { id: person, device } = context.actor else {
+        return Err("only an admitted person may approve a task run".into());
+    };
+    let task = task_mut(tasks, task_id)?;
+    let control = controls
+        .get(task_id)
+        .ok_or("task has no execution control")?;
+    if task.status != WorkspaceTaskStatus::Queued
+        || task
+            .resource
+            .as_ref()
+            .is_some_and(|resource| resource.agent_request.is_some())
+        || control.active_run.is_some()
+        || control.run_epoch != frontier.0
+        || control.directions.last().map_or(0, |value| value.revision) != frontier.1
+    {
+        return Err("queued task frontier changed; review before approving".into());
+    }
+    begin_run(
+        tasks,
+        controls,
+        task_id,
+        agent_id,
+        context.now,
+        Some(tilo_desktop_model::WorkspaceTaskApproval {
+            person: person.clone(),
+            device: *device,
+            approved_at: context.now,
+            instruction_revision: frontier.1,
+        }),
+    )
+}
+
+fn begin_run(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    task_id: &str,
+    agent_id: &str,
+    now: i64,
+    approval: Option<tilo_desktop_model::WorkspaceTaskApproval>,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
     let task = task_mut(tasks, task_id)?;
     if task.status.is_finished()
         || task.route == WorkspaceTaskRoute::Manual
@@ -779,20 +882,29 @@ fn start_run(
         .checked_add(1)
         .ok_or("task run epoch exhausted")?;
     let epoch = control.run_epoch;
+    let (actor, verb) = approval.as_ref().map_or_else(
+        || (format!("agent:{agent_id}"), "start-run"),
+        |value| (value.person.clone(), "approve-run"),
+    );
     control.active_run = Some(WorkspaceTaskActiveRun {
         epoch,
         agent_id: agent_id.to_owned(),
         started_at: now,
         applied_direction_revision: 0,
+        approval,
     });
     control.execution = None;
     task.status = WorkspaceTaskStatus::InProgress;
     task.updated_at = now;
-    task.audit.push(WorkspaceTaskAuditEvent {
-        at: now,
-        actor: format!("agent:{agent_id}"),
-        summary: format!("Started run {epoch}"),
-    });
+    task.audit.push(WorkspaceTaskAuditEvent::new(
+        now,
+        actor,
+        verb,
+        [(
+            "run",
+            tilo_actions::Scalar::of(&epoch).unwrap_or_else(|| tilo_actions::Scalar::from(0)),
+        )],
+    ));
     Ok((
         task_id.to_owned(),
         WorkspaceTaskMutationResult::RunStarted {
@@ -929,11 +1041,15 @@ fn direct(
             now,
         ));
     task.updated_at = now;
-    task.audit.push(WorkspaceTaskAuditEvent {
-        at: now,
-        actor: author.clone(),
-        summary: format!("Added direction {revision}"),
-    });
+    task.audit.push(WorkspaceTaskAuditEvent::new(
+        now,
+        author.clone(),
+        "add-direction",
+        [(
+            "revision",
+            tilo_actions::Scalar::of(&revision).unwrap_or_else(|| tilo_actions::Scalar::from(0)),
+        )],
+    ));
     Ok((
         task_id.to_owned(),
         WorkspaceTaskMutationResult::DirectionAdded {
@@ -989,11 +1105,15 @@ fn applied(
     }
     run.applied_direction_revision = revision;
     task.updated_at = now;
-    task.audit.push(WorkspaceTaskAuditEvent {
-        at: now,
-        actor: format!("agent:{agent_id}"),
-        summary: format!("Applied direction {revision}"),
-    });
+    task.audit.push(WorkspaceTaskAuditEvent::new(
+        now,
+        format!("agent:{agent_id}"),
+        "apply-direction",
+        [(
+            "revision",
+            tilo_actions::Scalar::of(&revision).unwrap_or_else(|| tilo_actions::Scalar::from(0)),
+        )],
+    ));
     Ok((
         task_id.to_owned(),
         WorkspaceTaskMutationResult::DirectionApplied {
@@ -1042,11 +1162,15 @@ fn finish(
     control.active_run = None;
     control.execution = None;
     task.updated_at = now;
-    task.audit.push(WorkspaceTaskAuditEvent {
-        at: now,
-        actor: format!("agent:{agent_id}"),
-        summary: summary.to_owned(),
-    });
+    task.audit.push(
+        WorkspaceTaskAuditEvent::new(
+            now,
+            format!("agent:{agent_id}"),
+            "finish",
+            [("outcome", tilo_actions::Scalar::from(task.status.key()))],
+        )
+        .noting(summary),
+    );
     Ok((
         task_id.to_owned(),
         WorkspaceTaskMutationResult::Finished {
@@ -1081,11 +1205,8 @@ fn abandon(
     control.execution = None;
     task.status = WorkspaceTaskStatus::Waiting;
     task.updated_at = now;
-    task.audit.push(WorkspaceTaskAuditEvent {
-        at: now,
-        actor: "host".into(),
-        summary: reason.to_owned(),
-    });
+    task.audit
+        .push(WorkspaceTaskAuditEvent::new(now, "host", "abandon", []).noting(reason));
     Ok((
         task_id.to_owned(),
         WorkspaceTaskMutationResult::Abandoned {
@@ -1115,11 +1236,12 @@ fn retry(
     }
     task.status = WorkspaceTaskStatus::Queued;
     task.updated_at = now;
-    task.audit.push(WorkspaceTaskAuditEvent {
-        at: now,
-        actor: author.clone(),
-        summary: "Queued retry".into(),
-    });
+    task.audit.push(WorkspaceTaskAuditEvent::new(
+        now,
+        author.clone(),
+        "retry",
+        [],
+    ));
     Ok((
         task_id.to_owned(),
         WorkspaceTaskMutationResult::Queued {
@@ -1156,11 +1278,12 @@ fn cancel_for_run(
     control.execution = None;
     task.status = WorkspaceTaskStatus::Cancelled;
     task.updated_at = context.now;
-    task.audit.push(WorkspaceTaskAuditEvent {
-        at: context.now,
-        actor: author.clone(),
-        summary: "Cancelled task".into(),
-    });
+    task.audit.push(WorkspaceTaskAuditEvent::new(
+        context.now,
+        author.clone(),
+        "cancel",
+        [],
+    ));
     Ok((
         task_id.to_owned(),
         WorkspaceTaskMutationResult::Finished {

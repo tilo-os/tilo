@@ -95,24 +95,17 @@ impl Widget for PagePreview {
             width: length(crate::num::f32_of_f64(g.sheet_w)),
             height: length(crate::num::f32_of_f64(g.height())),
         };
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size,
             min_size: size,
             flex_shrink: 0.0,
             ..Style::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(

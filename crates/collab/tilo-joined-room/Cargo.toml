@@ -11,10 +11,13 @@ description = "A device's enrolled replicas of rooms governed by a remote durabl
 test-support = ["dep:iroh-base"]
 
 [dependencies]
+tilo-action-policy = { path = "../action-policy" }
 # Writes the file-backed store: owner-only, crash-safe replacement.
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-content = { path = "../../system/content" }
 automerge.workspace = true
+# Byte fields of the owner record are base64 text in its JSON file.
+base64.workspace = true
 # Scoped owner admission decodes untrusted app mutations only in workers.
 tilo-automerge-isolate.workspace = true
 blake3.workspace = true
@@ -58,6 +61,8 @@ channel-crypto = { path = "../channel-crypto" }
 iroh-base = { workspace = true, features = ["key"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
+# Readers in the tests take committed changes in as the SDK's do.
+tilo-automerge.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 uuid.workspace = true
 

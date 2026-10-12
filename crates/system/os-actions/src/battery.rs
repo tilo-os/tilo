@@ -185,20 +185,6 @@ impl BatteryInfo {
             .map(|pct| u32::try_from(pct.min(100)).unwrap_or(100))
     }
 
-    pub fn health_explanation(&self) -> &'static str {
-        match self.health_percent() {
-            None => "This battery does not report comparable full and design capacity.",
-            Some(90..=100) => {
-                "Capacity is close to the factory design value; normal variation is expected."
-            }
-            Some(80..=89) => "Some capacity has been lost through normal chemical ageing.",
-            Some(60..=79) => "Capacity is noticeably reduced; shorter runtime is expected.",
-            Some(_) => {
-                "Capacity is severely reduced. Consider service or replacement if runtime is disruptive."
-            }
-        }
-    }
-
     pub fn summary(&self) -> String {
         if !self.present {
             return "Running on AC power".into();

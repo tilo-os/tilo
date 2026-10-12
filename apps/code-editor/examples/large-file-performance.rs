@@ -66,15 +66,15 @@ fn assert_snapshot(snapshot: &serde_json::Value, text: &str) {
     );
     assert!(
         snapshot
-            .get("cached_materializations")
+            .get("read_texts")
             .and_then(serde_json::Value::as_u64)
-            .is_some_and(|count| count <= 2)
+            .is_some_and(|count| count <= 1)
     );
     assert!(
         snapshot
-            .get("inactive_materialized_bytes")
+            .get("read_text_bytes")
             .and_then(serde_json::Value::as_u64)
-            .is_some_and(|bytes| bytes <= 48 * 1024 * 1024)
+            .is_some_and(|bytes| bytes <= 24 * 1024 * 1024)
     );
     assert!(
         snapshot

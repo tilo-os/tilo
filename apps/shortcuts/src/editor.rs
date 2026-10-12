@@ -14,7 +14,7 @@ use tilo_automation::{
     ResourceTarget, Selector, Shortcut, Step, StepKind, StepPath, binding_options, check,
 };
 use ui::tilo_actions::remote::CatalogueRow;
-use ui::tilo_actions::{ActionParam, ParamType};
+use ui::tilo_actions::{ActionKey, ActionParam, ParamType};
 
 use crate::grant;
 use crate::model::{Draft, step_at};
@@ -134,9 +134,6 @@ pub fn explain(error: &CheckError, steps: &[Step], catalog: &ActionCatalog) -> S
         }
         CheckErrorKind::Recursion { .. } => {
             String::from("This shortcut would end up running itself")
-        }
-        CheckErrorKind::UnusedConsent { .. } => {
-            String::from("A saved permission matches none of the steps")
         }
     }
 }
@@ -336,10 +333,7 @@ pub fn literal_text(value: &Value) -> String {
 #[must_use]
 pub fn row_for<'c>(step: &Step, catalog: &'c ActionCatalog) -> Option<&'c CatalogueRow> {
     let StepKind::Invoke {
-        app_id,
-        resource,
-        action,
-        ..
+        action, resource, ..
     } = &step.kind
     else {
         return None;
@@ -349,7 +343,7 @@ pub fn row_for<'c>(step: &Step, catalog: &'c ActionCatalog) -> Option<&'c Catalo
         Selector::FirstOfKind(kind) => ResourceTarget::Kind(kind),
         Selector::FromBinding(_) => ResourceTarget::Any,
     };
-    catalog.find(app_id, target, action)
+    catalog.find(action, target)
 }
 
 /// The parameters of the action a step invokes; empty for other steps or
@@ -370,7 +364,7 @@ pub fn title(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> String {
         StepKind::Invoke { action, .. } => row_for(step, catalog)
             .and_then(|row| row.action.as_ref())
             .map_or_else(
-                || action.clone(),
+                || action.action.clone(),
                 |descriptor| descriptor.action_label.clone(),
             ),
         StepKind::If { cond, .. } => format!("If {}", describe_condition(cond, steps)),
@@ -395,9 +389,10 @@ pub fn title(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> String {
 /// Where an action step acts: "Inbox in Notes". `None` for other steps.
 #[must_use]
 pub fn context(step: &Step, catalog: &ActionCatalog) -> Option<String> {
-    let StepKind::Invoke { app_id, .. } = &step.kind else {
+    let StepKind::Invoke { action, .. } = &step.kind else {
         return None;
     };
+    let app_id = &action.app;
     Some(
         row_for(step, catalog)
             .and_then(|row| row.action.as_ref())
@@ -461,6 +456,7 @@ pub fn picker(catalog: &ActionCatalog) -> Vec<AppGroup> {
             .push(Offer {
                 app_id: row.app_id.clone(),
                 resource: row.resource.id.clone(),
+                kind: row.resource.kind.clone(),
                 resource_label: row.resource.label.clone(),
                 action: descriptor.address.action.clone(),
                 label: descriptor.action_label.clone(),
@@ -515,6 +511,8 @@ pub struct KindGroup {
 pub struct Offer {
     pub app_id: String,
     pub resource: String,
+    /// The kind of the resource that offers it.
+    pub kind: String,
     pub resource_label: String,
     pub action: String,
     pub label: String,
@@ -529,9 +527,8 @@ impl Offer {
     #[must_use]
     pub fn step(&self) -> StepKind {
         StepKind::Invoke {
-            app_id: self.app_id.clone(),
+            action: ActionKey::new(&self.app_id, &self.kind, &self.action),
             resource: Selector::Fixed(self.resource.clone()),
-            action: self.action.clone(),
             args: BTreeMap::new(),
         }
     }

@@ -35,9 +35,10 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::TryRecvError;
 use ui::time::Instant;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -64,9 +65,9 @@ use ui::framework::{
 };
 use ui::tilo_resource::ActionDecl;
 
-use crate::actions::{HexEditorAction, HexEffect, HexPanel};
-use crate::model::{Column, EditMode, Endian, HexModel};
-use crate::resource::{HexEditor, HexState};
+use crate::actions::{HexEffect, HexPanel};
+use crate::model::{BufferEdit, Column, EditMode, Endian, HexModel};
+use crate::resource::HexEditor;
 use layout::{CellMetrics, ENDIAN_LABELS, Geo, MODE_LABELS};
 use ui::widget::toggle_group::Segment;
 
@@ -338,13 +339,13 @@ impl HexView {
             return;
         }
         for edit in edits {
-            if dispatch
-                .apply_now(doc, &HexEditorAction::from_edit(edit))
-                .is_err()
-            {
+            let submitted = byte_edit(&edit)
+                .ok_or(())
+                .and_then(|edit| dispatch.submit_now(doc, edit).map_err(drop));
+            if submitted.is_err() {
                 if let Some(live) = &self.live {
                     let state = live.get();
-                    self.model.show_bytes(&state.bytes, &self.saved);
+                    self.model.show_bytes(&state.bytes.to_vec(), &self.saved);
                 }
                 return;
             }
@@ -468,7 +469,7 @@ impl HexView {
     fn open_bytes(&mut self, name: String, bytes: Vec<u8>) {
         let n = bytes.len();
         if let Some(dispatch) = &self.dispatch {
-            dispatch.apply(&HexEditorAction::Open { name, bytes });
+            dispatch.submit(HexEditor::loading(name, bytes));
             self.expect_open = true;
         }
         self.path = None;
@@ -809,7 +810,7 @@ impl HexView {
         self.empty.handle_event(event, ctx);
         self.dirty = true;
         if self.empty.take_action() {
-            self.invoke(&HexEffect::Open { path: None });
+            self.invoke(&HexEffect::OpenFile { path: None });
             *ctx.handled = true;
         }
         if let WindowEvent::KeyboardInput { event: key, .. } = event
@@ -866,31 +867,11 @@ impl Widget for HexView {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = theme.clone();
-        // `new_leaf` on a freshly created tree never fails.
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         self.relayout_now();
     }
 
@@ -1125,7 +1106,7 @@ impl Widget for HexView {
         }
         if matches!(action, ui::a11y::Action::Activate) {
             match target {
-                "hex.open" => self.invoke(&HexEffect::Open { path: None }),
+                "hex.open" => self.invoke(&HexEffect::OpenFile { path: None }),
                 "hex.inspector" if self.has_file => self.toggle_inspector(),
                 _ => return false,
             }
@@ -1150,9 +1131,9 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
     /// Show the buffer the resource holds now. A newly opened file loads
     /// fresh; any other change (an undo, a collaborator, the palette) is
     /// shown in place, keeping the cursor and the view settings.
-    fn present(&mut self, state: &Rc<HexState>) {
+    fn present(&mut self, state: &Rc<HexEditor>) {
         let fresh = state.opened != self.opened || (!self.has_file && state.has_file());
-        let name = state.name.clone().unwrap_or_else(|| "No file".to_owned());
+        let name = state.name().unwrap_or("No file").to_owned();
         if fresh {
             // A file a collaborator opened is not the one at our path.
             if self.has_file && name != self.file_name && !self.expect_open {
@@ -1160,14 +1141,14 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
             }
             self.expect_open = false;
             self.opened = state.opened;
-            self.saved.clone_from(&state.bytes);
-            self.model.load(state.bytes.clone());
+            self.saved = state.bytes.to_vec();
+            self.model.load(self.saved.clone());
             self.find_open = false;
             self.matches.clear();
             self.match_idx = None;
             self.inspector_scroll = 0.0;
         } else {
-            self.model.show_bytes(&state.bytes, &self.saved);
+            self.model.show_bytes(&state.bytes.to_vec(), &self.saved);
             self.refind();
         }
         self.has_file = state.has_file();
@@ -1204,11 +1185,11 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
         }
         match effect {
             HexEffect::Search | HexEffect::GotoOffset => Ok(Effected::done()),
-            HexEffect::Open { path: Some(path) } => {
+            HexEffect::OpenFile { path: Some(path) } => {
                 self.open_path(PathBuf::from(path))?;
                 Ok(Effected::done())
             }
-            HexEffect::Open { path: None } => {
+            HexEffect::OpenFile { path: None } => {
                 self.begin_open(cx.reply());
                 Ok(Effected::Pending)
             }
@@ -1248,7 +1229,7 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
         if !self.has_file {
             return Vec::new();
         }
-        crate::actions::cursor_declarations(
+        HexEditor::at_cursor(
             self.model.cursor(),
             self.model.len(),
             self.model.selection(),
@@ -1313,7 +1294,7 @@ impl HexView {
             && let Key::Character(c) = key
             && c.eq_ignore_ascii_case("o")
         {
-            self.invoke(&HexEffect::Open { path: None });
+            self.invoke(&HexEffect::OpenFile { path: None });
             *handled = true;
         }
     }
@@ -1337,7 +1318,7 @@ impl HexView {
             return false;
         }
         match c.as_str() {
-            "o" | "O" => self.invoke(&HexEffect::Open { path: None }),
+            "o" | "O" => self.invoke(&HexEffect::OpenFile { path: None }),
             "s" | "S" => self.invoke(&HexEffect::Save),
             "f" | "F" => self.open_panel(HexPanel::Search),
             "g" | "G" => self.open_panel(HexPanel::GotoOffset),
@@ -1460,8 +1441,8 @@ impl HexView {
                 }
                 // The edits are the resource's, as typing them would be.
                 for edit in self.model.take_edits() {
-                    if let Some(dispatch) = &self.dispatch {
-                        dispatch.apply(&HexEditorAction::from_edit(edit));
+                    if let (Some(dispatch), Some(edit)) = (&self.dispatch, byte_edit(&edit)) {
+                        dispatch.submit(edit);
                     }
                 }
                 self.model.move_to(0x10, false);
@@ -1478,6 +1459,11 @@ impl HexView {
         }
         self.dirty = true;
     }
+}
+
+/// `edit` as the field edit of the record's bytes it is.
+fn byte_edit(edit: &BufferEdit) -> Option<ui::tilo_resource::Edit<HexEditor>> {
+    HexEditor::paths().bytes.perform(edit).ok()
 }
 
 /// The view's header row is the window's: it holds the History control the
@@ -1511,9 +1497,9 @@ mod tests {
     fn staged(scenario: Option<&str>) -> HexView {
         let mut view = HexView::empty();
         if scenario != Some("empty") {
-            view.present(&Rc::new(HexState {
-                name: Some("sample.png".into()),
-                bytes: crate::sample::png_image(),
+            view.present(&Rc::new(HexEditor {
+                name: Some(ui::tilo_resource::Atom("sample.png".into())),
+                bytes: crate::buffer::ByteBuffer::of(&crate::sample::png_image()),
                 opened: 1,
             }));
         }
@@ -1529,9 +1515,9 @@ mod tests {
         let mut view = HexView::empty();
         assert!(!view.has_file());
         let state = |bytes: &[u8], opened| {
-            Rc::new(HexState {
-                name: Some("bytes.bin".into()),
-                bytes: bytes.to_vec(),
+            Rc::new(HexEditor {
+                name: Some(ui::tilo_resource::Atom("bytes.bin".into())),
+                bytes: crate::buffer::ByteBuffer::of(bytes),
                 opened,
             })
         };
@@ -1754,26 +1740,7 @@ mod tests {
 
     /// Send `event` to `view` the way the host does.
     fn send(view: &mut HexView, event: &WindowEvent) -> bool {
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mods = winit::event::Modifiers::default();
-        let (mut handled, mut focus) = (false, None);
-        view.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::dispatch(view, event)
     }
 
     /// Move the pointer to the middle of `rect` and click.

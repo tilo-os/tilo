@@ -6,9 +6,9 @@
 use std::path::PathBuf;
 
 use shell::shell::state::{
-    AppKind, CapOverride, NativeDocumentReference, PeerOrigin, RoomAuthority, RoomId, Scope, Strip,
-    StripId, Subject, Tab, TileContent, Verb, WindowGroup, WindowWidth, Workspace, WorkspaceId,
-    WorkspaceTask, WorkspaceTaskRoute, WorkspaceTaskStatus, WorkspaceTree,
+    Access, AppKind, CapOverride, NativeDocumentReference, PeerOrigin, RoomAuthority, RoomId,
+    Scope, Strip, StripId, Subject, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+    WorkspaceId, WorkspaceTask, WorkspaceTaskRoute, WorkspaceTaskStatus, WorkspaceTree,
 };
 
 const FIXTURE: &str = "tests/fixtures/state_v1.json";
@@ -50,13 +50,13 @@ fn saved_shortcuts() -> (
 fn populated_tree() -> WorkspaceTree {
     let mut tree = WorkspaceTree::default();
     let mut ws = Workspace::new(WorkspaceId(1), "Studio");
-    ws.room = room(1);
+    ws.set_room(room(1));
     ws.set_owner("owner-key");
-    ws.grant_capability(
+    ws.grant_sandbox(
         CapOverride::grant(
             Subject::app("org.example.Editor"),
             Scope::FsPath("/srv/doc".into()),
-            Verb::Write,
+            Access::Write,
         )
         .with_id("cap-fixed"),
     );
@@ -117,7 +117,7 @@ fn populated_tree() -> WorkspaceTree {
     ws.strips.push(strip);
     tree.desktop.workspaces.push(ws);
     let mut joined = Workspace::new(WorkspaceId(9), "Joined");
-    joined.room = room(2);
+    joined.set_room(room(2));
     joined.strips.push(Strip::new(StripId(10), "Shared"));
     tree.desktop.workspaces.push(joined);
 

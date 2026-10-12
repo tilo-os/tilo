@@ -37,7 +37,7 @@ EOF
 cat > "$release/bin/tilo-runtime-bundle" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $1 == verify && -f $2/bundle.toml ]]
+[[ $1 == verify && -f $2/bundle.toml && ${3:-} == --require-signature ]]
 EOF
 cat > "$release/bin/tilo-install" <<'EOF'
 #!/usr/bin/env bash
@@ -59,6 +59,9 @@ mkdir -p "$tree/bin" "$tree.pkg" "$root/bin" "$root/content/data" "$root/tmp"
 printf '#!/bin/true\n' > "$tree/bin/settings"
 printf 'blob\n' > "$root/content/data/blob.data"
 touch "$root/.lock"
+# Like the real installer, hold the runtime collector off in the runtime root.
+touch "$TILO_RUNTIME_BUNDLE_DIR/.gc.lock"
+[[ -z ${FIXTURE_RUNTIME_STATE:-} ]] || mkdir -p "$TILO_RUNTIME_BUNDLE_DIR/$FIXTURE_RUNTIME_STATE"
 cp "$TILO_CLI_SHIM_PATH" "$root/bin/settings-cli"
 printf 'so.tilo.settings\n' > "$root/bin/settings-cli.tilo-shim"
 cat > "$root/registry.toml" <<TOML
@@ -111,6 +114,17 @@ test ! -e "$stage/usr/share/tilo-apps/pkgs"
 test ! -e "$stage/usr/lib/tilo-apps/content"
 test ! -e "$stage/usr/lib/tilo-apps/tmp"
 test ! -e "$stage/usr/lib/tilo-apps/.lock"
+# Nor the per-user runtime collector's lock; nothing locks the system root.
+test ! -e "$stage/usr/lib/tilo-runtime/.gc.lock"
+test -z "$(find "$stage/usr/lib/tilo-runtime" -mindepth 1 -maxdepth 1 -name '.*')"
+# Any other hidden state in the runtime root is unexplained and fails staging.
+if FIXTURE_RUNTIME_STATE=.leases TILO_ENV_RUNTIME_DIR=$env_runtime \
+    "$repo_root/dist/rpm/stage-app-store.sh" "$release" "$release/bin" "$work/runtime-state" \
+    >"$work/runtime-state.log" 2>&1; then
+    echo "app-store staging shipped unexplained runtime collector state" >&2
+    exit 1
+fi
+grep -Fq 'collector state left in the packaged runtime root' "$work/runtime-state.log"
 test "$(stat -c %a "$stage/usr/share/tilo-apps/registry.toml")" = 644
 test "$(stat -c %a "$stage/usr/lib/tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef/bundle.toml")" = 644
 test "$(stat -c %a "$stage/usr/lib/tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef/libfixture.so")" = 755

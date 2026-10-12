@@ -26,6 +26,7 @@ not listed here.
 |---|---|---|---|
 | `runner` | x86_64 | General jobs and native Rust builds: 4-5 CPUs, 10 GiB memory, 50 GiB disk, Docker | ubuntu-24.04 |
 | `runner-arm64` | aarch64 | `runner` on native ARM64 | ubuntu-24.04-arm |
+| `runner-native-portable` | x86_64/aarch64 | Host-independent native SDK and WASM qualification: at least 22 GiB memory, Docker | self-hosted on either native architecture |
 | `runner-quality` | x86_64 | Lint, change selection and result aggregation: 2 CPUs, 4 GiB memory | ubuntu-24.04 |
 | `runner-large` | x86_64 | Whole-collection compiles: 12 CPUs, 32 GiB memory, 100 GiB disk | a 16-core larger runner |
 | `runner-large-arm64` | aarch64 | `runner-large` on native ARM64 | a 16-core ARM64 larger runner |
@@ -51,7 +52,7 @@ the smaller `os/Containerfile.ci-fast`.
 
 | Workflow / job | Local command |
 |---|---|
-| `check.yml` select | `python3 tools/ci/affected_packages.py --base origin/main` prints the plan: packages per shard, suites, examples |
+| `check.yml` select | `python3 tools/ci/affected_packages.py --metadata "$TILO_CURRENT_WORKTREE_METADATA" --base origin/main` previews the plan: packages per shard, suites, examples |
 | `check.yml` security | `bash tools/run-security-boundary-invariants.sh` |
 | `check.yml` suites | `python3 tools/ci/suites.py run <suite>...` (`suites.py list` names them) |
 | `check.yml` test | `scripts/test-local.sh -p <package>...` (see [Running tests like CI](../../DEVELOPMENT.md#running-tests-like-ci)) |
@@ -67,6 +68,8 @@ the smaller `os/Containerfile.ci-fast`.
 | `app-sdk.yml` macos | the linux lane's commands with `--target macos`, on macOS with Xcode |
 | `ci-filesystem.yml` real-fuse | `bash scripts/ci-fuse-preflight.sh`, then `cargo test --locked -p tilo-fs --test integration_test -- --test-threads=1` and the job's other named tests |
 | `ci-filesystem.yml` native-tier1 | `tools/native-tier1.sh` on a host that meets `runner-native-storage` |
+| `ci-render-counters.yml` counters | `cargo build --release -p ui-examples --example ui-perf`, then `python3 scripts/perf/render_bench.py counters target/release/examples/ui-perf` (pixel parity, then allocation and raster-pixel budgets at 4K; see [docs/ui-performance-benchmark.md](../../docs/ui-performance-benchmark.md#where-this-runs)) |
+| `perf-scheduled.yml` (nightly, not per PR) | `python3 tools/perf/compare.py --results <records.jsonl> --store https://code.tilo.so --groups <group>` compares records with the published store without writing to it; see [Performance results](../../DEVELOPMENT.md#performance-results) |
 
 `scripts/ci-run.sh` and `tools/ci/measure.sh`, which wrap most job commands,
 only label and time a command; leave them out locally.
@@ -115,3 +118,79 @@ Jobs that need more than an unprivileged container:
 | `dev-disk.yml`, `build-legacy-guest.yml` | `/dev/fuse`, loop devices and, for speed, `/dev/kvm` |
 | `release-imager.yml` | `/dev/kvm` |
 | Image, kernel and buildroot builds | Docker with Buildx |
+
+## Planning without local Cargo
+
+`affected_packages.py` invokes local `cargo metadata` by default. On a machine
+where local Cargo is prohibited, pass an existing metadata export explicitly:
+
+```sh
+python3 tools/ci/affected_packages.py \
+  --metadata "${TILO_CURRENT_WORKTREE_METADATA:?validated current-worktree export required}" \
+  --base origin/main --shards 2
+```
+
+Use a complete `cargo metadata --locked --no-deps --format-version 1` export
+from the existing remote builder or CI, verified against this checkout's
+workspace manifest, lockfile and every member manifest. Package manifest,
+dependency and target paths in the export must refer to this checkout; a
+remote absolute path cannot be consumed unchanged. A stale or incomplete
+export is not selection evidence. Do not substitute a hand-written partial
+graph. Bind the export to the exact source revision and compare every root/member
+manifest and the lockfile with the producing worktree before setting
+`TILO_CURRENT_WORKTREE_METADATA`. Keep that validation evidence beside the export;
+refresh it after any source, manifest, lockfile or target-inventory change. The
+prescribed `AGENTS.md` invocation fails before starting Python when the validated
+export variable is unset or empty. Missing JSON fails rather than invoking Cargo.
+
+Use the stable runtime guard when invoking a selector from an older worktree.
+It validates the bundle before running that worktree's historical selector and
+allows only Git subprocesses during selection; Cargo, alternate executable
+launchers and shell fallbacks are rejected even if old selector code ignores
+the metadata argument. No source files in the caller worktree are changed.
+Set `TILO_CI_TOOLS` to `tools/ci` in a current trusted checkout, then run:
+
+```sh
+python3 "$TILO_CI_TOOLS/offline_affected_plan.py" --root "$PWD" \
+  --bundle "${TILO_CURRENT_WORKTREE_METADATA_BUNDLE:?source-bound CI export required}" \
+  --base origin/main --shards 2
+```
+
+This is the canonical agent caller in `AGENTS.md`. The direct selector's current
+version rejects its local default before Cargo starts. Old relative entrypoints
+do not inherit that change automatically: migrate their callers to this stable
+launcher, rather than relying on prose in an old branch. The normal CI selector
+retains its Cargo-backed default in the Forgejo job environment.
+
+For a clean committed worktree, the explicit CI export workflow provides this
+supported path without local Cargo:
+
+```sh
+source_sha=$(git rev-parse HEAD)
+fgj actions workflow run dev-source-metadata.yml -R tilo/tilo \
+  --ref main -f source_sha="$source_sha"
+# After the export run succeeds, replace RUN_NUMBER with that exact run:
+fgj actions run artifacts RUN_NUMBER -R tilo/tilo \
+  --download "current-source-metadata-$source_sha" --output /tmp/source-metadata.zip
+python3 -m zipfile -e /tmp/source-metadata.zip /tmp/source-metadata-export
+python3 tools/ci/current_source_metadata.py validate --root . \
+  --input /tmp/source-metadata-export/current-source-metadata.json \
+  --output target/ci/current-source-metadata.json
+export TILO_CURRENT_WORKTREE_METADATA="$PWD/target/ci/current-source-metadata.json"
+export TILO_CURRENT_WORKTREE_METADATA_BUNDLE=/tmp/source-metadata-export/current-source-metadata.json
+```
+
+The bundle records the producing commit, tree and hashes of all tracked Cargo
+manifests, the lockfile and Cargo configuration. Validation rejects dirty or
+uncommitted source, mismatched source or manifests, incomplete workspace package
+inventories, external paths and absent targets. It preserves every dependency
+record, including optional, build and target-specific dependencies, and remaps
+package IDs and paths to the validated caller worktree. Keep the bundle beside
+its validated export. Refresh after a source change.
+
+A Cargo drop-in may execute `metadata` locally because it is a noncompiling
+subcommand. Verify where it runs instead of assuming a remote export. Until a
+verified export is available, leave the affected plan to the normal CI selector. The regression
+`tools/tests/test_ci_plan_without_cargo.py` exercises the real metadata-file
+CLI with a Cargo blocker and retains target, optional and build dependency
+selection plus the security gate.

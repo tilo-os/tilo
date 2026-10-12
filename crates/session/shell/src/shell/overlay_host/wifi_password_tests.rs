@@ -86,12 +86,14 @@ fn host_on_wifi_pane(
                 ssid: "Cafe WiFi".into(),
                 signal: 3,
                 secure: true,
+                security: os_actions::WifiSecurity::Wpa2,
                 connected: false,
             },
             WifiNetwork {
                 ssid: "Airport Free".into(),
                 signal: 2,
                 secure: false,
+                security: os_actions::WifiSecurity::Open,
                 connected: false,
             },
         ];
@@ -103,7 +105,7 @@ fn host_on_wifi_pane(
 }
 
 fn press(h: &mut ShellOverlayHost, key: &Key) -> bool {
-    let event = crate::shell::test_support::typed_key_event(key.clone());
+    let event = ui::synthetic_input::key_input(key, winit::event::ElementState::Pressed);
     crate::shell::test_support::with_scratch_event_ctx(|ctx| {
         h.route_wifi_password_event(&event, ctx)
     })
@@ -244,7 +246,7 @@ fn wifi_password_join_is_nonblocking_and_shares_the_secret_through_the_bridge() 
         let shared = std::rc::Rc::new(RefCell::new(Vec::new()));
         let observed = shared.clone();
         host.set_wifi_secret_bridge(std::rc::Rc::new(move |action| match action {
-            WifiSecretAction::Share { ssid, password } => {
+            WifiSecretAction::Share { ssid, password, .. } => {
                 observed.borrow_mut().push((ssid, password));
                 Ok(None)
             }
@@ -265,7 +267,7 @@ fn wifi_password_join_is_nonblocking_and_shares_the_secret_through_the_bridge() 
     fn shared_password_connects_without_entering_the_visible_editor() {
         let (mut host, chrome, recorder) = host_on_wifi_pane(false);
         host.set_wifi_secret_bridge(std::rc::Rc::new(|action| match action {
-            WifiSecretAction::Lookup { ssid } if ssid == "Cafe WiFi" => {
+            WifiSecretAction::Lookup { ssid, .. } if ssid == "Cafe WiFi" => {
                 Ok(Some("from-another-device".into()))
             }
             WifiSecretAction::Lookup { .. } | WifiSecretAction::Share { .. } => Ok(None),
@@ -536,4 +538,65 @@ fn wifi_password_prompt_is_published_and_operable_through_accessibility() {
     set_value_and_connect_reach_the_join();
     a_target_for_another_network_changes_nothing();
     the_network_list_is_published_while_no_prompt_is_up();
+}
+
+#[test]
+fn wifi_secret_lookup_uses_cached_security() {
+    let (mut host, chrome, _) = host_on_wifi_pane(false);
+    for network in &mut chrome.borrow_mut().quick_settings.wifi_networks {
+        if network.ssid == "Cafe WiFi" {
+            network.security = os_actions::WifiSecurity::Wpa3;
+        }
+    }
+    let seen = std::rc::Rc::new(RefCell::new(Vec::new()));
+    let observed = seen.clone();
+    host.set_wifi_secret_bridge(std::rc::Rc::new(move |action| {
+        if let WifiSecretAction::Lookup { ssid, security } = action {
+            observed.borrow_mut().push((ssid, security));
+        }
+        Ok(None)
+    }));
+
+    host.begin_wifi_password("Cafe WiFi");
+    assert!(
+        !host.try_connect_with_shared_wifi_password(),
+        "no device shared this network"
+    );
+    assert_eq!(
+        seen.borrow().as_slice(),
+        [("Cafe WiFi".to_string(), os_actions::WifiSecurity::Wpa3)],
+        "the bridge is told the mode the scan listed, and scans nothing itself"
+    );
+
+    host.begin_wifi_password("Hidden Network");
+    assert!(!host.try_connect_with_shared_wifi_password());
+    assert_eq!(
+        seen.borrow().len(),
+        1,
+        "a network the scan did not list is not looked up"
+    );
+}
+
+#[test]
+fn wifi_secret_share_uses_cached_security() {
+    let (mut host, chrome, _) = host_on_wifi_pane(false);
+    let shared = std::rc::Rc::new(RefCell::new(Vec::new()));
+    let observed = shared.clone();
+    host.set_wifi_secret_bridge(std::rc::Rc::new(move |action| {
+        if let WifiSecretAction::Share { ssid, security, .. } = action {
+            observed.borrow_mut().push((ssid, security));
+        }
+        Ok(None)
+    }));
+    host.begin_wifi_password("Cafe WiFi");
+    for character in ["p", "w", "1"] {
+        press(&mut host, &ch(character));
+    }
+    press(&mut host, &Key::Named(NamedKey::Enter));
+    finish_join(&mut host, &chrome, Some("pw1"), false, Ok(()));
+    assert_eq!(
+        shared.borrow().as_slice(),
+        [("Cafe WiFi".to_string(), os_actions::WifiSecurity::Wpa2)],
+        "the joined network's mode comes from the scan it was picked from"
+    );
 }

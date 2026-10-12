@@ -405,7 +405,7 @@ def checked_slsa_attestation(output, pinned, children, kind):
                         and re.fullmatch(r"code\.tilo\.so/tilo/tilo-lenovo-83ed-firmware@sha256:[0-9a-f]{64}",
                                          item["uri"])]
             candidate = firmware[0] if len(firmware) == 1 else None
-            if (external.get("generation") != 1
+            if (type(external.get("generation")) is not int or external["generation"] < 1
                     or external.get("hardwareProfile") != "lenovo-83ed"
                     or external.get("architecture") != "aarch64"
                     or type(external.get("firmwareManifestSha256")) is not str

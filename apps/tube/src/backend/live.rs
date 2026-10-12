@@ -18,18 +18,10 @@
 //! * `query.player(id).await` → `VideoPlayer` (stream URLs) — gated behind a
 //!   `PoToken`
 //!
-//! ## `PoToken`
-//! rustypipe has **no `PoTokenProvider` trait**; it drives `PoTokens` through an
-//! external `rustypipe-botguard` *binary* (`RustyPipeBuilder::botguard_bin` /
-//! `no_botguard` / `botguard_snapshot_file` / `po_token_cache`) or you mint
-//! in-process with the `rustypipe-botguard` library's `Botguard::mint_token`.
-//! Tube's own [`crate::backend::potoken::PoTokenProvider`] is the *Tube-side*
-//! swappable seam; [`bind_potoken`] documents how a provider choice maps onto
-//! rustypipe's knobs. The default ([`NullPoToken`]) selects `.no_botguard()`,
-//! giving metadata-only browsing with zero extra runtime deps.
-//!
-//! Pure Rust: rustypipe embeds `rquickjs`; no ffmpeg / yt-dlp. The botguard
-//! binary (Deno+JSDOM) is a *runtime* dep only when real streams are needed.
+//! The client is built with `no_botguard`: metadata needs no `PoToken`, and
+//! playback resolves through an Invidious proxy ([`crate::backend::proxy`]),
+//! so no external `BotGuard` binary is ever needed. rustypipe embeds
+//! `rquickjs`; no ffmpeg / yt-dlp.
 
 #![cfg(feature = "live")]
 
@@ -40,7 +32,6 @@ use rustypipe::model::{
 };
 use rustypipe::param::search_filter::{ItemType, Order, SearchFilter, UploadDate};
 
-use crate::backend::potoken::{NullPoToken, PoTokenProvider};
 use crate::backend::{BackendError, BackendOutcome, BackendResult, YtBackend};
 use crate::model::{Channel, Comment, Playlist, Video};
 
@@ -60,56 +51,24 @@ fn is_verified(v: Verification) -> bool {
     !matches!(v, Verification::None)
 }
 
-/// How a Tube [`PoTokenProvider`] choice maps onto rustypipe's builder. Returns
-/// a human description for logging; the actual builder wiring is applied in
-/// [`RustyPipeBackend::new`].
-///
-/// * [`NullPoToken`] → `.no_botguard()` (metadata only).
-/// * a streaming-capable provider → leave rustypipe's botguard path enabled (or
-///   point `.botguard_bin(..)` at the provider's executable). In-process minting
-///   via `rustypipe-botguard`'s `Botguard::mint_token` is the alternative when a
-///   provider wants full control.
-pub fn bind_potoken(provider: &dyn PoTokenProvider) -> &'static str {
-    if provider.can_stream() {
-        "botguard enabled (streams available)"
-    } else {
-        "no_botguard (metadata only)"
-    }
-}
-
 /// The live rustypipe-backed data source.
 pub struct RustyPipeBackend {
     rp: RustyPipe,
     rt: &'static ui::rt::AppRuntime,
-    potoken_desc: &'static str,
 }
 
 impl RustyPipeBackend {
-    /// Construct with the default (null) `PoToken` provider — metadata only.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` under the same conditions as [`Self::with_potoken`].
-    pub fn new() -> Result<Self, BackendError> {
-        Self::with_potoken(&NullPoToken)
-    }
-
-    /// Construct with an explicit `PoToken` provider. The provider's capability
-    /// selects whether rustypipe's botguard path is enabled.
-    ///
     /// # Errors
     ///
     /// Returns `Err` if the app runtime is unusable from the calling thread or
     /// the rustypipe client fails to build.
-    pub fn with_potoken(provider: &dyn PoTokenProvider) -> Result<Self, BackendError> {
+    pub fn new() -> Result<Self, BackendError> {
         // rustypipe `tokio::spawn`s background work (the visitor-data
         // prefetch and the connection tasks behind its HTTP client) that must
         // keep running after the query that started it returns. On the app
         // runtime those tasks live on the runtime thread and progress
         // independently of this worker, which only polls its own query.
         let rt = ui::rt::try_app().map_err(|e| BackendError(format!("tokio runtime: {e}")))?;
-        let potoken_desc = bind_potoken(provider);
-        let can_stream = provider.can_stream();
         // rustypipe's reqwest client takes the process-default TLS provider.
         tilo_net::install_crypto_provider();
         // Build the client *inside* the runtime so anything rustypipe wires up
@@ -121,19 +80,11 @@ impl RustyPipeBackend {
                 // parser warning. A shipped app must not litter the working
                 // directory, so disable it (warnings still degrade gracefully —
                 // core fields are extracted regardless).
-                let mut builder = RustyPipe::builder().no_reporter();
-                if !can_stream {
-                    builder = builder.no_botguard();
-                }
-                builder.build()
+                RustyPipe::builder().no_reporter().no_botguard().build()
             })
             .map_err(|e| BackendError(format!("tokio runtime: {e}")))?
             .map_err(|e| BackendError(format!("rustypipe build: {e}")))?;
-        Ok(Self {
-            rp,
-            rt,
-            potoken_desc,
-        })
+        Ok(Self { rp, rt })
     }
 
     /// Wait on one rustypipe query from the calling worker thread. A query
@@ -350,8 +301,8 @@ fn videos_from_items(items: impl IntoIterator<Item = YouTubeItem>) -> Vec<Video>
 }
 
 impl YtBackend for RustyPipeBackend {
-    fn name(&self) -> &str {
-        self.potoken_desc
+    fn name(&self) -> &'static str {
+        "youtube (live)"
     }
 
     fn search(&self, query: &str) -> BackendOutcome {

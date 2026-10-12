@@ -13,6 +13,7 @@ name = "tilo_location"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 tilo-rt = { version = "0.1.0", path = "../tilo-rt" }
 # The macOS request's deadline.
 tilo-clock = { version = "0.1.0", path = "../tilo-clock" }

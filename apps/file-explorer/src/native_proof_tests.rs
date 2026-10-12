@@ -82,7 +82,7 @@ fn native_observer_follows_actual_wheel_and_selection() {
     let y = vp[1].as_f64().unwrap() + 60.0;
     h.cursor(x, y);
     h.dispatch(&winit::event::WindowEvent::MouseWheel {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
         phase: winit::event::TouchPhase::Moved,
     });
@@ -108,7 +108,7 @@ fn native_observer_follows_actual_wheel_and_selection() {
     assert_eq!(selected["order_hash"], initial["order_hash"]);
     assert_eq!(selected["offset_y"], moved["offset_y"]);
     h.dispatch(&winit::event::WindowEvent::MouseWheel {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         delta: winit::event::MouseScrollDelta::LineDelta(0.0, 3.0),
         phase: winit::event::TouchPhase::Moved,
     });
@@ -140,24 +140,15 @@ fn native_pointer_observer_tracks_logical_cursor_and_survives_rebuild() {
     }
     let mut h = H::new(Some(temp.path()), 1200.0, 720.0);
     let event = winit::event::WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(1000.0, 400.0),
     };
-    let mut handled = false;
-    let mut focus = None;
-    h.w.handle_event(
-        &event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 2.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: ui::widget::Edits::lend(&mut h.state.doc),
-            path: &h.state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: h.node,
-            taffy: &h.taffy,
-        },
-    );
+    ui::testing::Dispatch::new()
+        .scale_factor(2.0)
+        .doc(&mut h.state.doc)
+        .path(&h.state.root)
+        .layout(&h.taffy, h.node)
+        .send(&mut h.w, &event);
     let snapshot =
         h.w.native_input_snapshot(&h.state.doc, &h.state.root)
             .unwrap();
@@ -166,7 +157,7 @@ fn native_pointer_observer_tracks_logical_cursor_and_survives_rebuild() {
     h.w.set_view_mode(crate::model::ViewMode::Grid);
     h.lay_out(1200.0, 720.0);
     let wheel = winit::event::WindowEvent::MouseWheel {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
         phase: winit::event::TouchPhase::Moved,
     };
@@ -244,7 +235,7 @@ fn control_presence_real_files_scroll_skips_file_accessibility_but_inventory_kee
             "also exercise the file body without a toolbar emitter short-circuit"
         );
         h.dispatch(&winit::event::WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
             phase: winit::event::TouchPhase::Moved,
         });

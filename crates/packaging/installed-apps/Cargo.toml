@@ -7,13 +7,12 @@ license.workspace = true
 description = "The applications a session can launch: installed packages read through their manifests, and what each declared it may do on the action door."
 
 # Shared by every host that launches installed apps: the desktop session and
-# the per-user runtime without it. It reads the registry and the launcher's
-# manifest view and never starts anything, so it builds wherever the
-# launcher's library does.
+# the per-user runtime without it. It reads the registry and each package's
+# manifest view (tilo-app-package) and never starts anything, so it does not
+# link the sandbox launcher.
 
 [dependencies]
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }
-launcher = { path = "../launcher" }
 package-store = { path = "../package-store" }
 tilo-app-package = { path = "../tilo-app-package" }
 workspace-hack = { version = "0.1" }

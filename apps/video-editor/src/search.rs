@@ -65,10 +65,17 @@ pub fn project_entries(project: &Project) -> Vec<SearchEntry> {
     entries
 }
 
+/// The item resource a hit opens: `open` reveals it.
+pub fn anchor(field: &str, id: uuid::Uuid) -> String {
+    ui::tilo_resource::items::item_resource_id::<Project>(
+        field,
+        &ui::tilo_resource::Id::from_raw(id.to_string()),
+    )
+}
+
 fn project_marker(marker: &Marker) -> SearchEntry {
     SearchEntry::new(marker_label(marker), marker.note.clone())
-        .anchored(crate::actions::marker_resource_id(marker.id))
-        .invoking(crate::actions::reveal_marker_address(marker.id))
+        .anchored(anchor("markers", marker.id))
         .grouped(MARKER_KIND)
         .subtitled(marker_subtitle(marker.t, marker))
         .with_icon("star")
@@ -77,8 +84,11 @@ fn project_marker(marker: &Marker) -> SearchEntry {
 fn clip_marker(clip: &Clip, marker: &Marker, media: &MediaItem) -> SearchEntry {
     let at = clip.start + marker.t;
     SearchEntry::new(marker_label(marker), marker.note.clone())
-        .anchored(crate::actions::marker_resource_id(marker.id))
-        .invoking(crate::actions::reveal_marker_address(marker.id))
+        .anchored(format!(
+            "{}/markers/{}",
+            anchor("clips", clip.id),
+            marker.id
+        ))
         .grouped(MARKER_KIND)
         .subtitled(format!("At {} in {}", timecode::clock(at), media.name))
         .with_icon("star")
@@ -86,7 +96,7 @@ fn clip_marker(clip: &Clip, marker: &Marker, media: &MediaItem) -> SearchEntry {
 
 fn track_entry(track: &Track) -> SearchEntry {
     SearchEntry::new(track.name.clone(), track.kind.as_str())
-        .invoking(crate::actions::reveal_track_address(track.id))
+        .anchored(anchor("tracks", track.id))
         .grouped(TRACK_KIND)
         .subtitled(format!("{} track", track.kind.as_str()))
         .with_icon("layers")
@@ -94,8 +104,7 @@ fn track_entry(track: &Track) -> SearchEntry {
 
 fn clip_entry(clip: &Clip, media: &MediaItem, track: &Track) -> SearchEntry {
     SearchEntry::new(media.name.clone(), media_text(media))
-        .anchored(crate::actions::clip_resource_id(clip.id))
-        .invoking(crate::actions::reveal_clip_address(clip.id))
+        .anchored(anchor("clips", clip.id))
         .grouped(CLIP_KIND)
         .subtitled(format!(
             "In {} at {}",
@@ -107,7 +116,11 @@ fn clip_entry(clip: &Clip, media: &MediaItem, track: &Track) -> SearchEntry {
 
 fn effect_entry(clip: &Clip, effect: &ClipEffect, media: &MediaItem, track: &Track) -> SearchEntry {
     SearchEntry::new(format!("{} effect", effect.kind.label()), String::new())
-        .invoking(crate::actions::reveal_effect_address(clip.id, effect.id))
+        .anchored(format!(
+            "{}/effects/{}",
+            anchor("clips", clip.id),
+            effect.id
+        ))
         .grouped(EFFECT_KIND)
         .subtitled(format!(
             "In {} on {} at {:.0}% strength",
@@ -129,7 +142,7 @@ fn media_entry(item: &MediaItem, uses: usize) -> SearchEntry {
         )
     };
     SearchEntry::new(item.name.clone(), media_text(item))
-        .invoking(crate::actions::reveal_media_address(item.id))
+        .anchored(anchor("media", item.id))
         .grouped(MEDIA_KIND)
         .subtitled(subtitle)
         .with_icon(if item.text.is_some() {
@@ -173,18 +186,17 @@ mod tests {
 
     /// The editor's search source for `project`, as the framework builds it.
     fn source(project: &Project) -> impl SearchProvider + use<> {
-        ui::framework::testing::search_source::<crate::resource::VideoProject>(project_entries(
-            project,
-        ))
+        ui::framework::testing::search_source::<Project>(project_entries(project))
     }
 
     fn add_track(project: &mut Project, kind: TrackKind, name: impl Into<String>) -> uuid::Uuid {
         let id = uuid::Uuid::new_v4();
+        let index = project.tracks.len() as u32 + 1;
         project.tracks.push(Track {
             id,
             name: name.into(),
             kind,
-            index: project.tracks.len() as u32 + 1,
+            index,
             ..Default::default()
         });
         id
@@ -213,14 +225,11 @@ mod tests {
             let p = project_with_things();
             let hits = source(&p).search("coastline");
             assert!(hits.iter().any(|hit| {
-                hit.kind == MEDIA_KIND
-                    && hit.action_address()
-                        == Some(crate::actions::reveal_media_address(p.media[0].id))
+                hit.kind == MEDIA_KIND && hit.action_id == anchor("media", p.media[0].id)
             }));
             assert!(hits.iter().any(|hit| {
                 hit.kind == CLIP_KIND
-                    && hit.action_address()
-                        == Some(crate::actions::reveal_clip_address(p.clips[0].id))
+                    && hit.action_id == anchor("clips", p.clips[0].id)
                     && hit
                         .subtitle
                         .as_deref()
@@ -255,19 +264,14 @@ mod tests {
                     .search_page(&ui::search::SearchQuery::parse("DEN FL", &[]), None, 8, 8)
                     .results
                     .iter()
-                    .any(|hit| {
-                        hit.action_address()
-                            == Some(crate::actions::reveal_marker_address(project.markers[0].id))
-                    })
+                    .any(|hit| hit.action_id == anchor("markers", project.markers[0].id))
             );
             assert!(
                 provider
                     .search_page(&ui::search::SearchQuery::parse("東京の夜", &[]), None, 8, 8)
                     .results
                     .iter()
-                    .any(|hit| {
-                        hit.action_address() == Some(crate::actions::reveal_media_address(title_id))
-                    })
+                    .any(|hit| hit.action_id == anchor("media", title_id))
             );
         }
         // Case `late_track_remains_findable_in_a_large_project`.
@@ -325,9 +329,19 @@ mod tests {
         }
     }
 
+    /// What picking the hit anchored at `anchor` reveals in `project`.
+    fn reveal(
+        project: &Project,
+        anchor: &str,
+    ) -> Result<crate::actions::VideoEditorEffect, ui::tilo_resource::Refusal> {
+        let (_, item) = ui::tilo_resource::items::item_of_resource::<Project>(anchor)
+            .expect("every hit names an item of the project");
+        crate::resource::reveal_effect(project, &item)
+    }
+
     #[test]
-    fn editor_search_hits_are_current_canonical_view_actions() {
-        // Case `every_hit_is_a_current_canonical_view_action_and_stale_hit_is_refused`.
+    fn editor_search_hits_open_current_items_and_stale_ones_are_refused() {
+        // Case `every_hit_opens_a_current_item_and_a_stale_hit_is_refused`.
         {
             let mut project = project_with_things();
             let clip = project.clips[0].id;
@@ -335,46 +349,23 @@ mod tests {
             let hit = provider
                 .search("")
                 .into_iter()
-                .find(|hit| hit.action_address() == Some(crate::actions::reveal_clip_address(clip)))
+                .find(|hit| hit.action_id == anchor("clips", clip))
                 .expect("clip is searchable before deletion");
-            let resources = crate::actions::provide_resources(&crate::actions::VideoResourceCtx {
-                project: project.clone(),
-                ..Default::default()
-            });
             for hit in provider.search("") {
-                let address = hit.action_address().expect("search is canonical");
                 assert!(
-                    tilo_actions::door::resolve(&resources, &address)
-                        .is_some_and(|spec| spec.kind == tilo_actions::OperationKind::View),
-                    "{} resolves through the current resource tree",
+                    reveal(&project, &hit.action_id).is_ok(),
+                    "{} opens an item of the current project",
                     hit.title
                 );
             }
 
-            // The provider may outlive the edit while a palette is open. The fresh
-            // canonical resource tree is the authority and must reject its stale
-            // address rather than letting the old row navigate by callback.
+            // The provider may outlive the edit while a palette is open. The
+            // current project is the authority and refuses the stale anchor
+            // rather than revealing something else.
             project.clips.clear();
             project.media.clear();
-            let mut palette = ui::ActionPalette::new();
-            palette.load_open_resources(&crate::actions::provide_resources(
-                &crate::actions::VideoResourceCtx {
-                    project,
-                    ..Default::default()
-                },
-            ));
-            palette.set_providers(vec![Box::new(provider)]);
-            palette.open();
-            palette.set_query(&hit.title);
-            let row = palette
-                .result_labels()
-                .iter()
-                .position(|label| label == &hit.title)
-                .expect("stale row remains displayable");
-            palette.set_cursor(row);
-            palette.activate_selected();
             assert!(
-                palette.take_operation().is_none(),
+                reveal(&project, &hit.action_id).is_err(),
                 "deleted target is refused"
             );
         }
@@ -390,33 +381,28 @@ mod tests {
             assert_ne!(first, second, "two Sepias are distinct durable instances");
 
             let provider = source(&project);
-            let address = crate::actions::reveal_effect_address(clip_id, second);
+            let address = format!("{}/effects/{second}", anchor("clips", clip_id));
             let _hit = provider
                 .search("sepia effect")
                 .into_iter()
-                .find(|hit| hit.action_address() == Some(address.clone()))
+                .find(|hit| hit.action_id == address)
                 .expect("the exact second Sepia is searchable");
-            let resources = crate::actions::provide_resources(&crate::actions::VideoResourceCtx {
-                project: project.clone(),
-                ..Default::default()
-            });
-            assert!(
-                tilo_actions::door::resolve(&resources, &address).is_some(),
-                "search address resolves through the canonical resource tree",
+            assert_eq!(
+                reveal(&project, &address),
+                Ok(crate::actions::VideoEditorEffect::RevealEffect {
+                    clip: clip_id.to_string(),
+                    effect: second.to_string(),
+                }),
+                "the hit reveals that very instance",
             );
 
             project
                 .clip_mut(clip_id)
                 .expect("fixture clip")
                 .remove_effect_id(second);
-            let current_resources =
-                crate::actions::provide_resources(&crate::actions::VideoResourceCtx {
-                    project,
-                    ..Default::default()
-                });
             assert!(
-                tilo_actions::door::resolve(&current_resources, &address).is_none(),
-                "the stale duplicate's canonical address cannot resolve to its neighbour",
+                reveal(&project, &address).is_err(),
+                "the stale duplicate's anchor cannot reveal its neighbour",
             );
         }
     }

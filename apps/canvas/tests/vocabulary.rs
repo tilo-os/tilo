@@ -9,12 +9,13 @@
     reason = "test assertions over exact, hand-written fixtures"
 )]
 
+use canvas::Artwork;
 use canvas::actions::{AddLayer, Arrange, Draw, EditMarks, NewMark, NewStroke, SaveMedium};
 use canvas::media::MediumSpec;
 use canvas::model::Shape;
-use canvas::{ArtworkResource, CanvasAction};
 use serde_json::json;
-use ui::prelude::{Invoke, Replica};
+use ui::prelude::Replica;
+use ui::tilo_resource::Invoke;
 
 fn stroke(points: &[[f64; 2]], colour: &str) -> NewStroke {
     NewStroke {
@@ -45,8 +46,8 @@ fn rect(id: &str, x: f64, fill: &str) -> NewMark {
     }
 }
 
-fn apply(art: &mut Replica<ArtworkResource>, action: CanvasAction) -> Result<(), String> {
-    art.apply(Invoke::apply(&action).unwrap())
+fn apply(art: &mut Replica<Artwork>, action: Invoke<Artwork>) -> Result<(), String> {
+    art.apply(action)
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
@@ -55,17 +56,18 @@ fn apply(art: &mut Replica<ArtworkResource>, action: CanvasAction) -> Result<(),
 /// needs no setup; a passage is one action with stable, content-derived ids.
 #[test]
 fn a_passage_of_painting_is_one_action_on_the_starting_layer() {
-    let mut art = Replica::<ArtworkResource>::new();
+    let mut art = Replica::<Artwork>::new();
     let state = art.state().unwrap();
     assert_eq!(state.layers.len(), 1);
     assert!(state.marks.is_empty(), "apps start empty");
-    art.apply(ArtworkResource::PAINT.with((
-        None,
-        vec![
+    art.apply(Artwork::PAINT.with(canvas::actions::Paint {
+        layer: None,
+        strokes: vec![
             stroke(&[[10.0, 10.0], [100.0, 40.0]], "#204080"),
             stroke(&[[10.0, 60.0], [100.0, 90.0]], "#802040"),
         ],
-    )))
+        group: None,
+    }))
     .unwrap();
     let state = art.state().unwrap();
     assert_eq!(state.marks.len(), 2);
@@ -73,15 +75,16 @@ fn a_passage_of_painting_is_one_action_on_the_starting_layer() {
     assert_eq!(art.log().len(), 1, "one passage, one undo step");
 
     // The same passage on another replica names its strokes alike.
-    let mut other = Replica::<ArtworkResource>::new();
+    let mut other = Replica::<Artwork>::new();
     other
-        .apply(ArtworkResource::PAINT.with((
-            None,
-            vec![
+        .apply(Artwork::PAINT.with(canvas::actions::Paint {
+            layer: None,
+            strokes: vec![
                 stroke(&[[10.0, 10.0], [100.0, 40.0]], "#204080"),
                 stroke(&[[10.0, 60.0], [100.0, 90.0]], "#802040"),
             ],
-        )))
+            group: None,
+        }))
         .unwrap();
     let ids = |state: &canvas::Artwork| {
         state
@@ -97,15 +100,15 @@ fn a_passage_of_painting_is_one_action_on_the_starting_layer() {
 /// restacked and removed, each touching only what it names.
 #[test]
 fn named_marks_are_edited_arranged_and_removed_by_id() {
-    let mut art = Replica::<ArtworkResource>::new();
-    art.apply(ArtworkResource::DRAW.with((
-        None,
-        vec![rect("sky", 0.0, "#88aadd"), rect("sun", 20.0, "#ffcc33")],
-    )))
+    let mut art = Replica::<Artwork>::new();
+    art.apply(Artwork::DRAW.with(canvas::actions::Draw {
+        layer: None,
+        marks: vec![rect("sky", 0.0, "#88aadd"), rect("sun", 20.0, "#ffcc33")],
+    }))
     .unwrap();
     apply(
         &mut art,
-        CanvasAction::edit(EditMarks {
+        Artwork::EDIT_MARKS.with(EditMarks {
             ids: vec!["sun".into()],
             fill: Some("#ff8800".into()),
             move_by: Some([5.0, -2.0]),
@@ -121,20 +124,19 @@ fn named_marks_are_edited_arranged_and_removed_by_id() {
         state.mark("sky").unwrap().style.fill.as_deref(),
         Some("#88aadd")
     );
-    let top =
-        |art: &Replica<ArtworkResource>| art.state().unwrap().marks.last().unwrap().id.clone();
+    let top = |art: &Replica<Artwork>| art.state().unwrap().marks.last().unwrap().id.clone();
     assert_eq!(top(&art), "sun");
-    art.apply(ArtworkResource::ARRANGE.with((vec!["sky".into()], "front".into())))
+    art.apply(Artwork::ARRANGE_TO.with((vec!["sky".into()], "front".into())))
         .unwrap();
     assert_eq!(top(&art), "sky");
-    art.apply(ArtworkResource::REMOVE_MARKS.with(vec!["sky".into()]))
+    art.apply(Artwork::REMOVE_MARKS_BY_ID.with(vec!["sky".into()]))
         .unwrap();
     assert_eq!(art.state().unwrap().marks.len(), 1);
 
-    let clear = |art: &mut Replica<ArtworkResource>| {
+    let clear = |art: &mut Replica<Artwork>| {
         apply(
             art,
-            CanvasAction::RemoveMarks(canvas::actions::RemoveMarks {
+            Artwork::REMOVE_MARKS.with(canvas::actions::RemoveMarks {
                 ids: Vec::new(),
                 layer: Some("layer-1".into()),
                 along: None,
@@ -150,12 +152,13 @@ fn named_marks_are_edited_arranged_and_removed_by_id() {
 /// correct itself from the message alone.
 #[test]
 fn refusals_name_the_mistake_and_the_valid_choices() {
-    let mut art = Replica::<ArtworkResource>::new();
+    let mut art = Replica::<Artwork>::new();
     let error = art
-        .apply(ArtworkResource::PAINT.with((
-            Some("sky".into()),
-            vec![stroke(&[[0.0, 0.0], [5.0, 5.0]], "#000000")],
-        )))
+        .apply(Artwork::PAINT.with(canvas::actions::Paint {
+            layer: Some("sky".into()),
+            strokes: vec![stroke(&[[0.0, 0.0], [5.0, 5.0]], "#000000")],
+            group: None,
+        }))
         .unwrap_err()
         .to_string();
     assert!(
@@ -164,7 +167,11 @@ fn refusals_name_the_mistake_and_the_valid_choices() {
     );
 
     let error = art
-        .apply(ArtworkResource::PAINT.with((None, vec![stroke(&[[0.0, 0.0]], "pigment:mauve")])))
+        .apply(Artwork::PAINT.with(canvas::actions::Paint {
+            layer: None,
+            strokes: vec![stroke(&[[0.0, 0.0]], "pigment:mauve")],
+            group: None,
+        }))
         .unwrap_err()
         .to_string();
     assert!(
@@ -172,10 +179,16 @@ fn refusals_name_the_mistake_and_the_valid_choices() {
         "{error}"
     );
 
-    art.apply(ArtworkResource::DRAW.with((None, vec![rect("sun", 0.0, "#ffcc33")])))
-        .unwrap();
+    art.apply(Artwork::DRAW.with(canvas::actions::Draw {
+        layer: None,
+        marks: vec![rect("sun", 0.0, "#ffcc33")],
+    }))
+    .unwrap();
     let error = art
-        .apply(ArtworkResource::DRAW.with((None, vec![rect("sun", 0.0, "#ffcc33")])))
+        .apply(Artwork::DRAW.with(canvas::actions::Draw {
+            layer: None,
+            marks: vec![rect("sun", 0.0, "#ffcc33")],
+        }))
         .unwrap_err()
         .to_string();
     assert!(
@@ -185,7 +198,7 @@ fn refusals_name_the_mistake_and_the_valid_choices() {
 
     let error = apply(
         &mut art,
-        CanvasAction::AddLayer(AddLayer {
+        Artwork::ADD_LAYER.with(AddLayer {
             name: "Paint".into(),
             medium: Some("gouache".into()),
             ..AddLayer::default()
@@ -202,14 +215,15 @@ fn refusals_name_the_mistake_and_the_valid_choices() {
 /// agent saves travels with the artwork and can be painted with.
 #[test]
 fn media_are_named_pigments_resolve_and_saved_media_can_be_used() {
-    let mut art = Replica::<ArtworkResource>::new();
-    art.apply(ArtworkResource::ADD_LAYER.with(("Sky".into(), "watercolour".into())))
+    let mut art = Replica::<Artwork>::new();
+    art.apply(Artwork::ADD_LAYER_OF.with(("Sky".into(), "watercolour".into())))
         .unwrap();
     let layer = art.state().unwrap().layers.last().unwrap().id.clone();
-    art.apply(ArtworkResource::PAINT.with((
-        Some(layer),
-        vec![stroke(&[[0.0, 0.0], [50.0, 0.0]], "pigment:ultramarine")],
-    )))
+    art.apply(Artwork::PAINT.with(canvas::actions::Paint {
+        layer: Some(layer),
+        strokes: vec![stroke(&[[0.0, 0.0], [50.0, 0.0]], "pigment:ultramarine")],
+        group: None,
+    }))
     .unwrap();
 
     let mut medium = canvas::media::builtin()
@@ -221,20 +235,20 @@ fn media_are_named_pigments_resolve_and_saved_media_can_be_used() {
     medium.params.insert("load".into(), 0.3);
     apply(
         &mut art,
-        CanvasAction::SaveMedium(SaveMedium {
+        Artwork::SAVE_MEDIUM.with(SaveMedium {
             medium: medium.clone(),
         }),
     )
     .unwrap();
     assert_eq!(art.state().unwrap().media.get("nocturne"), Some(&medium));
-    art.apply(ArtworkResource::ADD_LAYER.with(("Night".into(), "nocturne".into())))
+    art.apply(Artwork::ADD_LAYER_OF.with(("Night".into(), "nocturne".into())))
         .unwrap();
 
     let mut broken: MediumSpec = medium;
     broken.params.insert("viscosity".into(), 1.0);
     let error = apply(
         &mut art,
-        CanvasAction::SaveMedium(SaveMedium { medium: broken }),
+        Artwork::SAVE_MEDIUM.with(SaveMedium { medium: broken }),
     )
     .unwrap_err();
     assert!(
@@ -247,8 +261,8 @@ fn media_are_named_pigments_resolve_and_saved_media_can_be_used() {
 /// parameters to two decimals: the agent reads it whole before painting.
 #[test]
 fn media_list_each_palette_once() {
-    let mut art = Replica::<ArtworkResource>::new();
-    art.apply(ArtworkResource::ADD_LAYER.with(("Sky".into(), "oil".into())))
+    let mut art = Replica::<Artwork>::new();
+    art.apply(Artwork::ADD_LAYER_OF.with(("Sky".into(), "oil".into())))
         .unwrap();
     let listed = canvas::view_ops::media(&art.state().unwrap());
     let media = listed["media"].as_array().unwrap();
@@ -279,22 +293,21 @@ fn media_list_each_palette_once() {
 #[test]
 fn the_vocabulary_is_published_as_a_schema_and_typos_are_refused() {
     use ui::tilo_resource::Resource as _;
-    let schema = ArtworkResource::action_schema().unwrap().to_string();
+    let schema = Artwork::action_schema().unwrap().to_string();
     for action in ["paint", "draw", "edit-marks", "save-medium", "add-layer"] {
         assert!(
             schema.contains(&format!("\"{action}\"")),
             "{action} in {schema}"
         );
     }
-    let mut art = Replica::<ArtworkResource>::new();
-    let mut invoke = Invoke::<ArtworkResource>::apply(&CanvasAction::Draw(Draw {
+    let mut art = Replica::<Artwork>::new();
+    let mut invoke = Artwork::DRAW.with(Draw {
         layer: None,
         marks: vec![rect("box", 0.0, "#000000")],
-    }))
-    .unwrap();
+    });
     invoke.arguments.insert(
-        "action".into(),
-        json!({"action":"draw","marks":[{"shape":{"kind":"rect","x":0,"y":0,"width":5,"height":5},"colour":"#000000"}]}),
+        "marks".into(),
+        json!([{"shape":{"kind":"rect","x":0,"y":0,"width":5,"height":5},"colour":"#000000"}]),
     );
     assert!(
         art.apply(invoke).is_err(),
@@ -307,14 +320,14 @@ fn the_vocabulary_is_published_as_a_schema_and_typos_are_refused() {
 /// all. A clip names the mark whose shape cuts another.
 #[test]
 fn groups_transform_as_one_and_clips_name_a_mark() {
-    let mut art = Replica::<ArtworkResource>::new();
+    let mut art = Replica::<Artwork>::new();
     let member = |id: &str, x: f64| NewMark {
         group: Some("logo".into()),
         ..rect(id, x, "#224466")
     };
-    art.apply(ArtworkResource::DRAW.with((
-        None,
-        vec![
+    art.apply(Artwork::DRAW.with(canvas::actions::Draw {
+        layer: None,
+        marks: vec![
             member("left", 0.0),
             member("right", 150.0),
             NewMark {
@@ -322,7 +335,7 @@ fn groups_transform_as_one_and_clips_name_a_mark() {
                 ..rect("inside", 10.0, "#ff0000")
             },
         ],
-    )))
+    }))
     .unwrap();
     let state = art.state().unwrap();
     assert_eq!(state.groups(), vec!["logo"]);
@@ -332,7 +345,7 @@ fn groups_transform_as_one_and_clips_name_a_mark() {
     // scale about the group's centre (100, 30), not each their own.
     apply(
         &mut art,
-        CanvasAction::edit(EditMarks {
+        Artwork::EDIT_MARKS.with(EditMarks {
             ids: vec!["logo".into()],
             scale: Some(2.0),
             ..EditMarks::default()
@@ -349,7 +362,7 @@ fn groups_transform_as_one_and_clips_name_a_mark() {
     // Moving a transformed mark moves it in artwork units.
     apply(
         &mut art,
-        CanvasAction::edit(EditMarks {
+        Artwork::EDIT_MARKS.with(EditMarks {
             ids: vec!["logo".into()],
             move_by: Some([10.0, 0.0]),
             ..EditMarks::default()
@@ -361,7 +374,7 @@ fn groups_transform_as_one_and_clips_name_a_mark() {
 
     let error = apply(
         &mut art,
-        CanvasAction::edit(EditMarks {
+        Artwork::EDIT_MARKS.with(EditMarks {
             ids: vec!["logos".into()],
             ..EditMarks::default()
         }),
@@ -373,7 +386,7 @@ fn groups_transform_as_one_and_clips_name_a_mark() {
     );
     let error = apply(
         &mut art,
-        CanvasAction::edit(EditMarks {
+        Artwork::EDIT_MARKS.with(EditMarks {
             ids: vec!["inside".into()],
             clip: Some("nothing".into()),
             ..EditMarks::default()
@@ -382,7 +395,7 @@ fn groups_transform_as_one_and_clips_name_a_mark() {
     .unwrap_err();
     assert!(error.contains("not a mark"), "{error}");
 
-    art.apply(ArtworkResource::REMOVE_MARKS.with(vec!["logo".into()]))
+    art.apply(Artwork::REMOVE_MARKS_BY_ID.with(vec!["logo".into()]))
         .unwrap();
     let left: Vec<String> = art
         .state()
@@ -398,10 +411,10 @@ fn groups_transform_as_one_and_clips_name_a_mark() {
 /// refused with the valid ones listed.
 #[test]
 fn stroke_styling_blend_and_shadow_are_validated_by_name() {
-    let mut art = Replica::<ArtworkResource>::new();
-    art.apply(ArtworkResource::DRAW.with((
-        None,
-        vec![NewMark {
+    let mut art = Replica::<Artwork>::new();
+    art.apply(Artwork::DRAW.with(canvas::actions::Draw {
+        layer: None,
+        marks: vec![NewMark {
             stroke: Some("#000000".into()),
             stroke_width: Some(4.0),
             dash: Some(vec![8.0, 4.0]),
@@ -415,7 +428,7 @@ fn stroke_styling_blend_and_shadow_are_validated_by_name() {
             }),
             ..rect("frame", 0.0, "#ffeeaa")
         }],
-    )))
+    }))
     .unwrap();
     let state = art.state().unwrap();
     let style = &state.mark("frame").unwrap().style;
@@ -425,7 +438,7 @@ fn stroke_styling_blend_and_shadow_are_validated_by_name() {
 
     let error = apply(
         &mut art,
-        CanvasAction::edit(EditMarks {
+        Artwork::EDIT_MARKS.with(EditMarks {
             ids: vec!["frame".into()],
             blend: Some("burn".into()),
             ..EditMarks::default()
@@ -438,7 +451,7 @@ fn stroke_styling_blend_and_shadow_are_validated_by_name() {
     );
     apply(
         &mut art,
-        CanvasAction::edit(EditMarks {
+        Artwork::EDIT_MARKS.with(EditMarks {
             ids: vec!["frame".into()],
             blend: Some("normal".into()),
             dash: Some(Vec::new()),
@@ -460,7 +473,7 @@ fn stroke_styling_blend_and_shadow_are_validated_by_name() {
 /// width; `\n` breaks lines, and the box an agent reads grows with them.
 #[test]
 fn text_takes_typography_and_lines() {
-    let mut art = Replica::<ArtworkResource>::new();
+    let mut art = Replica::<Artwork>::new();
     let text = |align: &str, weight: u16| Shape::Text {
         x: 600.0,
         y: 100.0,
@@ -475,13 +488,13 @@ fn text_takes_typography_and_lines() {
         tracking: None,
         path: None,
     };
-    art.apply(ArtworkResource::DRAW.with((
-        None,
-        vec![NewMark {
+    art.apply(Artwork::DRAW.with(canvas::actions::Draw {
+        layer: None,
+        marks: vec![NewMark {
             id: Some("title".into()),
             ..NewMark::new(text("center", 700))
         }],
-    )))
+    }))
     .unwrap();
     let bounds = art.state().unwrap().mark("title").unwrap().bounds();
     assert!(
@@ -490,7 +503,10 @@ fn text_takes_typography_and_lines() {
     );
     assert!(bounds.height() > 90.0, "two lines: {bounds:?}");
     let error = art
-        .apply(ArtworkResource::DRAW.with((None, vec![NewMark::new(text("middle", 400))])))
+        .apply(Artwork::DRAW.with(canvas::actions::Draw {
+            layer: None,
+            marks: vec![NewMark::new(text("middle", 400))],
+        }))
         .unwrap_err()
         .to_string();
     assert!(error.contains("start, center or end"), "{error}");
@@ -500,10 +516,10 @@ fn text_takes_typography_and_lines() {
 /// with equal gaps between the outermost.
 #[test]
 fn align_and_distribute_move_marks_and_groups() {
-    let mut art = Replica::<ArtworkResource>::new();
-    art.apply(ArtworkResource::DRAW.with((
-        None,
-        vec![
+    let mut art = Replica::<Artwork>::new();
+    art.apply(Artwork::DRAW.with(canvas::actions::Draw {
+        layer: None,
+        marks: vec![
             rect("a", 0.0, "#111111"),
             NewMark {
                 shape: Shape::Rect {
@@ -517,11 +533,11 @@ fn align_and_distribute_move_marks_and_groups() {
             },
             rect("c", 300.0, "#333333"),
         ],
-    )))
+    }))
     .unwrap();
     apply(
         &mut art,
-        CanvasAction::Align(canvas::actions::Align {
+        Artwork::ALIGN.with(canvas::actions::Align {
             ids: vec!["a".into(), "b".into(), "c".into()],
             edge: Some("top".into()),
             distribute: Some("horizontal".into()),
@@ -546,7 +562,7 @@ fn align_and_distribute_move_marks_and_groups() {
 
     apply(
         &mut art,
-        CanvasAction::Align(canvas::actions::Align {
+        Artwork::ALIGN.with(canvas::actions::Align {
             ids: vec!["b".into()],
             edge: Some("center".into()),
             to: Some("artwork".into()),
@@ -558,7 +574,7 @@ fn align_and_distribute_move_marks_and_groups() {
     assert!((centre.x - 600.0).abs() < 1e-6, "{centre:?}");
     let error = apply(
         &mut art,
-        CanvasAction::Align(canvas::actions::Align {
+        Artwork::ALIGN.with(canvas::actions::Align {
             ids: vec!["a".into()],
             edge: Some("centre".into()),
             ..canvas::actions::Align::default()
@@ -573,7 +589,7 @@ fn align_and_distribute_move_marks_and_groups() {
 /// outside the clip does not find the mark.
 #[test]
 fn clipped_marks_measure_what_shows() {
-    let mut art = Replica::<ArtworkResource>::new();
+    let mut art = Replica::<Artwork>::new();
     let tile = NewMark {
         group: Some("icon".into()),
         ..rect("tile", 100.0, "#3050a0")
@@ -593,7 +609,7 @@ fn clipped_marks_measure_what_shows() {
     let label = rect("label", 0.0, "#000000");
     apply(
         &mut art,
-        CanvasAction::Draw(Draw {
+        Artwork::DRAW.with(Draw {
             layer: None,
             marks: vec![tile, sheen, label],
         }),
@@ -601,7 +617,7 @@ fn clipped_marks_measure_what_shows() {
     .unwrap();
     apply(
         &mut art,
-        CanvasAction::Align(canvas::actions::Align {
+        Artwork::ALIGN.with(canvas::actions::Align {
             ids: vec!["label".into()],
             edge: Some("center".into()),
             distribute: None,
@@ -631,18 +647,18 @@ fn clipped_marks_measure_what_shows() {
 /// a shape but under what stands in front of it.
 #[test]
 fn marks_go_directly_above_or_below_another() {
-    let mut art = Replica::<ArtworkResource>::new();
-    art.apply(ArtworkResource::DRAW.with((
-        None,
-        vec![
+    let mut art = Replica::<Artwork>::new();
+    art.apply(Artwork::DRAW.with(canvas::actions::Draw {
+        layer: None,
+        marks: vec![
             rect("hill", 0.0, "#557755"),
             rect("tree", 10.0, "#224422"),
             rect("title", 20.0, "#ffffff"),
             rect("shade", 30.0, "#000000"),
         ],
-    )))
+    }))
     .unwrap();
-    let order = |art: &Replica<ArtworkResource>| {
+    let order = |art: &Replica<Artwork>| {
         art.state()
             .unwrap()
             .marks
@@ -651,7 +667,7 @@ fn marks_go_directly_above_or_below_another() {
             .collect::<Vec<_>>()
     };
     let arrange = |to: &str, of: &str| {
-        CanvasAction::Arrange(Arrange {
+        Artwork::ARRANGE.with(Arrange {
             ids: vec!["shade".into()],
             to: to.into(),
             of: Some(of.into()),
@@ -668,22 +684,22 @@ fn marks_go_directly_above_or_below_another() {
 /// A gradient travels with its mark, and a flat fill replaces it.
 #[test]
 fn a_gradient_moves_with_its_mark_and_a_fill_replaces_it() {
-    let mut art = Replica::<ArtworkResource>::new();
+    let mut art = Replica::<Artwork>::new();
     let gradient: canvas::model::Gradient = serde_json::from_value(json!({
         "kind": "linear", "from": [0, 10], "to": [50, 50],
         "stops": [[0, "#ff0000"], [1, "#0000ff"]]
     }))
     .unwrap();
-    art.apply(ArtworkResource::DRAW.with((
-        None,
-        vec![NewMark {
+    art.apply(Artwork::DRAW.with(canvas::actions::Draw {
+        layer: None,
+        marks: vec![NewMark {
             gradient: Some(gradient),
             ..rect("card", 0.0, "#ffffff")
         }],
-    )))
+    }))
     .unwrap();
     let edit = |edit: EditMarks| {
-        CanvasAction::edit(EditMarks {
+        Artwork::EDIT_MARKS.with(EditMarks {
             ids: vec!["card".into()],
             ..edit
         })
@@ -718,9 +734,12 @@ fn a_gradient_moves_with_its_mark_and_a_fill_replaces_it() {
 /// counts in its bounds. Nonsense is refused with the valid range.
 #[test]
 fn a_stroke_grows_twigs_or_dabs_and_cuts_in_to_a_shape() {
-    let mut art = Replica::<ArtworkResource>::new();
-    art.apply(ArtworkResource::DRAW.with((None, vec![rect("rock", 0.0, "#5a5650")])))
-        .unwrap();
+    let mut art = Replica::<Artwork>::new();
+    art.apply(Artwork::DRAW.with(canvas::actions::Draw {
+        layer: None,
+        marks: vec![rect("rock", 0.0, "#5a5650")],
+    }))
+    .unwrap();
     let tree = NewStroke {
         id: Some("oak".into()),
         forks: Some(4),
@@ -741,8 +760,12 @@ fn a_stroke_grows_twigs_or_dabs_and_cuts_in_to_a_shape() {
         angle: Some(-90.0),
         ..stroke(&[[0.0, 400.0], [300.0, 400.0]], "#4a5a2c")
     };
-    art.apply(ArtworkResource::PAINT.with((None, vec![tree, moss, grass])))
-        .unwrap();
+    art.apply(Artwork::PAINT.with(canvas::actions::Paint {
+        layer: None,
+        strokes: vec![tree, moss, grass],
+        group: None,
+    }))
+    .unwrap();
     // Shading in one stroke: lines across the area its points enclose.
     let shade = NewStroke {
         id: Some("shade".into()),
@@ -759,8 +782,12 @@ fn a_stroke_grows_twigs_or_dabs_and_cuts_in_to_a_shape() {
             "#333333",
         )
     };
-    art.apply(ArtworkResource::PAINT.with((None, vec![shade])))
-        .unwrap();
+    art.apply(Artwork::PAINT.with(canvas::actions::Paint {
+        layer: None,
+        strokes: vec![shade],
+        group: None,
+    }))
+    .unwrap();
     let state = art.state().unwrap();
     let shade = state.mark("shade").unwrap();
     let lines = canvas::brushes::pieces(shade);
@@ -806,7 +833,11 @@ fn a_stroke_grows_twigs_or_dabs_and_cuts_in_to_a_shape() {
         ),
     ] {
         let error = art
-            .apply(ArtworkResource::PAINT.with((None, vec![bad])))
+            .apply(Artwork::PAINT.with(canvas::actions::Paint {
+                layer: None,
+                strokes: vec![bad],
+                group: None,
+            }))
             .unwrap_err()
             .to_string();
         assert!(error.contains(says), "{error}");

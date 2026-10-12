@@ -551,7 +551,8 @@ impl PcmSource for DecodedPcm {
 /// [`decode_pcm`] for tests that need to read audio back out of a file the
 /// export wrote. Same decode the mixer uses, so a stream it cannot read is a
 /// stream the editor cannot read either.
-#[cfg(all(test, any(feature = "gst", feature = "decode")))]
+#[cfg(test)]
+#[cfg(any(feature = "gst", feature = "decode"))]
 pub fn decode_pcm_for_test(uri: &str) -> Option<Vec<f32>> {
     decode_pcm(uri)
 }
@@ -1267,11 +1268,10 @@ impl Drop for SystemSink {
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "decode")]
-    #[allow(dead_code, reason = "only the media-stack check is used here")]
-    mod generated_clip {
+    mod media_stack {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/support/generated_clip.rs"
+            "/tests/support/media_stack.rs"
         ));
     }
 
@@ -1369,7 +1369,7 @@ mod tests {
         // has to come back with it. A decoder that returned `None` here would
         // make every "the export is silent" assertion in this crate vacuous.
         'case: {
-            if !generated_clip::media_stack() {
+            if !media_stack::media_stack() {
                 break 'case;
             }
             let uri = crate::media::engine_source(&sample("Ambient_Pad.wav"))
@@ -1762,7 +1762,6 @@ mod tests {
                 fps: 0.0,
                 palette: 0,
                 path: crate::media::workspace_path("a.wav"),
-                hydration: crate::media::Hydration::Projected,
                 ..Default::default()
             });
             id
