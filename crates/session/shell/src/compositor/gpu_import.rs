@@ -158,6 +158,12 @@ impl GpuImporter {
         &self.device
     }
 
+    /// The GL renderer, for a test that needs a GPU client writing a buffer.
+    #[cfg(test)]
+    pub fn renderer_mut(&mut self) -> &mut GlesRenderer {
+        &mut self.renderer
+    }
+
     /// Import `dmabuf` and read it back into `out` as row-major RGBA8.
     ///
     /// Returns the buffer's `(width, height)`. `out` is cleared and refilled; the caller's `Vec` is

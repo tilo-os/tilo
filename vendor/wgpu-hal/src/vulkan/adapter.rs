@@ -1143,6 +1143,9 @@ pub struct PhysicalDeviceProperties {
     cooperative_matrix_properties: Vec<wgt::CooperativeMatrixProperties>,
 }
 
+/// `VK_EXT_queue_family_foreign`.
+pub(super) const FOREIGN_QUEUE_FAMILY: &CStr = c"VK_EXT_queue_family_foreign";
+
 impl PhysicalDeviceProperties {
     pub fn properties(&self) -> vk::PhysicalDeviceProperties {
         self.properties
@@ -1303,6 +1306,14 @@ impl PhysicalDeviceProperties {
                 && self.supports_extension(ext::image_drm_format_modifier::NAME)
             {
                 extensions.push(ext::image_drm_format_modifier::NAME);
+            }
+
+            // Optional `VK_EXT_queue_family_foreign` (Tilo patch): a dma-buf a
+            // non-Vulkan client wrote is acquired from `VK_QUEUE_FAMILY_FOREIGN_EXT`
+            // before it is first sampled, which the spec requires for a
+            // compressed layout the producer's metadata describes.
+            if self.supports_extension(FOREIGN_QUEUE_FAMILY) {
+                extensions.push(FOREIGN_QUEUE_FAMILY);
             }
         }
 

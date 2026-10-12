@@ -132,6 +132,9 @@ extensions it already enables) when the device has it. `ui::dmabuf_import`
 reads `Device::enabled_device_extensions` and, with the extension, imports a
 client dma-buf with the producer's exact plane offset and row pitch; on the
 crates.io release, which lacks it, the import keeps its linear-only path.
+It also enables `VK_EXT_queue_family_foreign`, and a texture made with
+`TextureMemory::ForeignExternal` (a client dma-buf import) makes its first
+barrier an acquire from `VK_QUEUE_FAMILY_FOREIGN_EXT`.
 
 The `wgpu` patch is a `[patch]` too: `Device::poll` reports a lost device
 instead of panicking (vendor/wgpu/TILO-PATCH.md). The compositor needs it to
