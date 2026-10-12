@@ -19,6 +19,20 @@ fn sidebar_toggle(app: &mut TestApp<SettingsShell>) -> ui::vello::kurbo::Rect {
         .expect("the mounted shared sidebar toggle is accessible")
 }
 
+/// Run frames until the window's layout stops moving: a sidebar opening
+/// slides its rows in, so a row's bounds are only where a click lands once
+/// the slide is done.
+fn settle(app: &mut TestApp<SettingsShell>) {
+    let deadline = tilo_test_env::hang_deadline();
+    while app.harness().frame_schedule().needs_animation_frame {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the window kept animating"
+        );
+        app.harness().poll_frame().unwrap();
+    }
+}
+
 fn dirty_leaves(widget: &dyn ui::Widget, out: &mut Vec<serde_json::Value>) {
     let children = widget.children();
     if children.is_empty() && widget.layout_needs_measure() {
@@ -171,6 +185,8 @@ fn mounted_settings_cpu_interactions_observe_canonical_panes_and_shared_controls
                 app.harness().native_input_snapshot().unwrap()["sidebar_open"],
                 true
             );
+            // The next pane's row is clicked where the opened sidebar shows it.
+            settle(&mut app);
         }
     }
 }
