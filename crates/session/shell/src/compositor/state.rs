@@ -935,6 +935,9 @@ pub struct State {
     /// `zwp_linux_dmabuf_feedback_v1.main_device`, or the reason none was —
     /// kept so the boot log, state dump and integration tests read the *decision* rather than re-deriving it.
     pub dmabuf_device: Result<RenderNode, ProbeError>,
+    /// The [`crate::shell::gpu_frames::sampleable_formats`] version the
+    /// advertised dmabuf feedback was built from.
+    dmabuf_probe_version: u64,
     /// `wl_seat` collection.
     pub seat_state: SeatState<Self>,
     /// Public `text-input-v3`: ordinary clients may describe only their own
@@ -1770,6 +1773,7 @@ impl State {
             dmabuf_global,
             scanout_feedback,
             dmabuf_device,
+            dmabuf_probe_version: 0,
             seat_state,
             text_input_manager_state,
             input_method_manager_state,
@@ -4644,11 +4648,62 @@ impl State {
         }
     }
 
+    /// Tell clients the tiled and compressed layouts the presenting GPU was
+    /// confirmed to sample, once its device exists. The first feedback is
+    /// built before any renderer has opened a device, so it lists only the
+    /// linear layouts; when the probe's answer changes, the default feedback
+    /// is rebuilt and sent to every client that asked for it, so ordinary
+    /// clients allocate layouts the GPU draws without a copy.
+    #[cfg(target_os = "linux")]
+    fn refresh_dmabuf_feedback(&mut self) {
+        let (version, probed) = crate::shell::gpu_frames::sampleable_formats();
+        if version == self.dmabuf_probe_version {
+            return;
+        }
+        let (Ok(node), Some(global), Some(scanout)) = (
+            &self.dmabuf_device,
+            &self.dmabuf_global,
+            self.scanout_feedback.as_mut(),
+        ) else {
+            self.dmabuf_probe_version = version;
+            return;
+        };
+        let importable = crate::shell::foreign::importable_formats();
+        match crate::compositor::scanout_feedback::default_feedback(node.dev, &importable, &probed)
+        {
+            Ok((feedback, formats)) => {
+                tracing::info!(
+                    target: "shell::compositor::dmabuf",
+                    formats = formats.len(),
+                    probed = probed.len(),
+                    "updating zwp_linux_dmabuf_v1 feedback with the layouts the GPU samples"
+                );
+                self.dmabuf_state.set_default_feedback(global, &feedback);
+                scanout.replace_default(formats, feedback);
+                self.dmabuf_probe_version = version;
+            }
+            Err(error) => {
+                // Keep the feedback clients already have; try again on the
+                // next probe change.
+                tracing::warn!(
+                    target: "shell::compositor::dmabuf",
+                    %error,
+                    "could not rebuild dmabuf feedback; keeping the linear layouts"
+                );
+                self.dmabuf_probe_version = version;
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn refresh_dmabuf_feedback(&mut self) {}
+
     /// Re-evaluate transactions whose off-thread buffer capture completed.
     /// Called by the compositor loop on its owning thread; worker threads only
     /// flip barriers and enqueue owning client handles.
     pub fn pump_foreign_capture_barriers(&mut self, display: &DisplayHandle) -> bool {
         crate::compositor::foreign::give_back_released_buffers();
+        self.refresh_dmabuf_feedback();
         let completed = crate::compositor::foreign::drain_completed_dmabuf_captures();
         let changed =
             crate::compositor::foreign::take_published_shm_frames() | !completed.is_empty();
@@ -5175,7 +5230,7 @@ impl DmabufHandler for State {
         // tile showing an error string with no protocol-level signal. So
         // the gate is exactly the importer's own precondition —
         // single-plane, linear (or implicit), RGBA-family — shared with `foreign::import_dmabuf_rgba` so the two can't drift.
-        if let Err(err) = crate::compositor::foreign::validate_importable(&dmabuf) {
+        if let Err(err) = crate::compositor::foreign::validate_composable(&dmabuf) {
             tracing::warn!(
                 target: "shell::compositor::dmabuf",
                 width = dmabuf.width(),

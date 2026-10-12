@@ -211,6 +211,31 @@ enum CpuLayout {
     P010,
 }
 
+/// Whether `dmabuf` can be drawn by this compositor: the CPU reads it
+/// ([`validate_importable`]), or it is a single plane of an 8-bit RGB format
+/// whose tiled or compressed layout the presenting GPU was confirmed to sample
+/// ([`crate::shell::gpu_frames::sampleable`]), which is imported without a
+/// copy. A layout the probe did not list is refused here, where the client
+/// can still be told no.
+///
+/// # Errors
+///
+/// The reason it can be drawn neither way: [`validate_importable`]'s.
+#[cfg(target_os = "linux")]
+pub fn validate_composable(dmabuf: &Dmabuf) -> Result<(), DmabufImportError> {
+    let refused = match validate_importable(dmabuf) {
+        Ok(()) => return Ok(()),
+        Err(refused) => refused,
+    };
+    let format = dmabuf.format();
+    if dmabuf.num_planes() == 1
+        && crate::shell::gpu_frames::sampleable(format.code, format.modifier)
+    {
+        return Ok(());
+    }
+    Err(refused)
+}
+
 /// Whether the importer composites a client buffer of `code` under `modifier`:
 /// the same two checks [`validate_importable`] applies to it.
 #[cfg(target_os = "linux")]

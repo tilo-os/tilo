@@ -59,6 +59,8 @@ static PRESENT_DEVICE: Mutex<Option<PresentDevice>> = Mutex::new(None);
 pub fn publish_present_device(device: &wgpu::Device, queue: &wgpu::Queue) -> u64 {
     vello::set_external_image_source(external_pixels);
     let generation = NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(target_os = "linux")]
+    probe_sampleable(device);
     *PRESENT_DEVICE
         .lock()
         .unwrap_or_else(PoisonError::into_inner) = Some(PresentDevice {
@@ -67,6 +69,89 @@ pub fn publish_present_device(device: &wgpu::Device, queue: &wgpu::Queue) -> u64
         generation,
     });
     generation
+}
+
+/// The client buffer layouts the presenting device was confirmed to sample,
+/// and a version that changes whenever the confirmation does.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct Sampleable {
+    version: u64,
+    formats: Vec<smithay::backend::allocator::Format>,
+}
+
+#[cfg(target_os = "linux")]
+static SAMPLEABLE: Mutex<Sampleable> = Mutex::new(Sampleable {
+    version: 0,
+    formats: Vec::new(),
+});
+
+/// The 8-bit RGB formats a client frame is imported in on the GPU
+/// ([`import_dmabuf_on`]).
+#[cfg(target_os = "linux")]
+const GPU_IMPORT_FOURCCS: [smithay::backend::allocator::Fourcc; 4] = {
+    use smithay::backend::allocator::Fourcc;
+    [
+        Fourcc::Argb8888,
+        Fourcc::Xrgb8888,
+        Fourcc::Abgr8888,
+        Fourcc::Xbgr8888,
+    ]
+};
+
+/// Ask `device` which modifiers it can sample for each GPU-imported format,
+/// and keep the answer for [`sampleable`] and the dmabuf feedback.
+#[cfg(target_os = "linux")]
+fn probe_sampleable(device: &wgpu::Device) {
+    use smithay::backend::allocator::{Format, Modifier};
+    let formats: Vec<Format> = GPU_IMPORT_FOURCCS
+        .into_iter()
+        .flat_map(|code| {
+            ui::dmabuf_import::sampleable_modifiers(device, code as u32)
+                .into_iter()
+                .map(move |modifier| Format {
+                    code,
+                    modifier: Modifier::from(modifier),
+                })
+        })
+        .collect();
+    let mut known = SAMPLEABLE.lock().unwrap_or_else(PoisonError::into_inner);
+    if known.formats != formats {
+        known.version = known.version.wrapping_add(1);
+        eprintln!(
+            "tilo compositor: the GPU samples {} client dma-buf layouts: {}",
+            formats.len(),
+            formats
+                .iter()
+                .map(|format| format!("{:?}:{:#x}", format.code, u64::from(format.modifier)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        known.formats = formats;
+    }
+}
+
+/// The layouts the presenting device was confirmed to sample, with a version
+/// that changes when they do (`0` until a device is published).
+#[cfg(target_os = "linux")]
+pub fn sampleable_formats() -> (u64, Vec<smithay::backend::allocator::Format>) {
+    let known = SAMPLEABLE.lock().unwrap_or_else(PoisonError::into_inner);
+    (known.version, known.formats.clone())
+}
+
+/// Whether the presenting device was confirmed to sample a client buffer of
+/// `code` laid out with `modifier`.
+#[cfg(target_os = "linux")]
+pub fn sampleable(
+    code: smithay::backend::allocator::Fourcc,
+    modifier: smithay::backend::allocator::Modifier,
+) -> bool {
+    SAMPLEABLE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .formats
+        .iter()
+        .any(|format| format.code == code && format.modifier == modifier)
 }
 
 #[cfg(target_os = "linux")]
@@ -1466,6 +1551,64 @@ mod tests {
         );
         assert_eq!(&read[..4], &[0x80, 0, 0, 0xFF]);
         forget_surface(surface);
+    }
+
+    /// Every layout the device is probed to sample is one a buffer allocated
+    /// with it imports as, and the probe lists layouts at all. Nothing is
+    /// sampled: a tiled buffer is never written here, so only the import (an
+    /// image and its memory) reaches the driver.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_buffer_allocated_with_a_probed_layout_imports_on_the_device() {
+        use smithay::backend::allocator::dmabuf::AsDmabuf as _;
+        use smithay::backend::allocator::gbm::{GbmBuffer, GbmBufferFlags, GbmDevice};
+        use smithay::backend::allocator::{Fourcc, Modifier};
+
+        const WIDTH: u32 = 256;
+        const HEIGHT: u32 = 64;
+        let present = present().expect("this test needs a wgpu adapter");
+        let node = crate::compositor::render_node::probe()
+            .expect("this test needs an advertisable render node");
+        let probed =
+            ui::dmabuf_import::sampleable_modifiers(&present.device, Fourcc::Xrgb8888 as u32);
+        assert!(
+            !probed.is_empty(),
+            "the device lists no sampleable layout for XRGB8888; nothing can be advertised"
+        );
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&node.path)
+            .expect("open the render node");
+        let device = GbmDevice::new(file).expect("gbm device");
+        let mut imported = Vec::new();
+        for modifier in probed {
+            // A layout the allocator cannot make is not one a client can send.
+            let Ok(bo) = device.create_buffer_object_with_modifiers2::<()>(
+                WIDTH,
+                HEIGHT,
+                Fourcc::Xrgb8888,
+                std::iter::once(Modifier::from(modifier)),
+                GbmBufferFlags::RENDERING,
+            ) else {
+                continue;
+            };
+            let dmabuf = GbmBuffer::from_bo(bo, false)
+                .export()
+                .expect("export as a dmabuf");
+            let surface = 9_100 + imported.len() as u64;
+            let frame = import_dmabuf_on(&present, &dmabuf, surface, false).unwrap_or_else(|why| {
+                panic!("a buffer allocated with the probed layout {modifier:#x} must import: {why}")
+            });
+            drop(frame);
+            forget_surface(surface);
+            imported.push(modifier);
+        }
+        eprintln!("imported probed layouts: {imported:#x?}");
+        assert!(
+            !imported.is_empty(),
+            "the allocator made none of the probed layouts, so none could be imported"
+        );
     }
 
     #[test]
