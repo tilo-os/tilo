@@ -22,6 +22,7 @@ ROOTS = {'apps', 'crates', 'examples', 'vendor', '.cargo'}
 SOURCE_HELPERS = {
     'tools/cargo-runner.sh', 'tools/with-test-environment.sh',
     'tools/test-assets-build.rs', 'tools/test-assets.py',
+    'tools/font-catalog.py',
     'tools/protocols/airdrop_sender.py',
     'os/legacy-guest-snapshot.env', 'dist/VERSION',
     'docs/shell-navigation-keyboard-map.md',
