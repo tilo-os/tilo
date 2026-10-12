@@ -6506,7 +6506,7 @@ impl ShellOverlayHost {
     /// This is read-only presentation state. The developer control transport
     /// serialises it when that transport is enabled, while normal production
     /// sessions never bind the transport at all.
-    pub fn active_window_control_rects(&self) -> Option<(Rect, Rect)> {
+    pub fn active_window_bounds(&self) -> Option<ui::widget::WindowGroupBounds> {
         let chrome = self.chrome.clone()?;
         let (strip_id, group_id) = {
             let st = chrome.borrow();
@@ -6522,8 +6522,17 @@ impl ShellOverlayHost {
         // SAFETY: same ownership contract as `group_at_for_tests` above.
         let row: &GroupRow = unsafe { &*ptr };
         let group = row.groups.iter().find(|group| group.id == group_id)?;
-        let maximize = group.active_maximize_rect().unwrap_or(Rect::ZERO);
-        Some((maximize, group.restore_rect()))
+        Some(group.presentation_bounds())
+    }
+
+    /// Compatibility view for the existing developer transport.
+    pub fn active_window_control_rects(&self) -> Option<(Rect, Rect)> {
+        self.active_window_bounds().map(|bounds| {
+            (
+                bounds.maximize.unwrap_or(Rect::ZERO),
+                bounds.restore.unwrap_or(Rect::ZERO),
+            )
+        })
     }
 
     /// Test-only: runs the per-frame active-group reconcile outside `update`.
@@ -11637,12 +11646,51 @@ impl ShellOverlayHost {
             chrome.borrow_mut().projection_follow =
                 crate::shell::chrome_state::ProjectionFollow::Person;
         }
+        if let Some(request) = self.projection_overlay.take_request() {
+            self.invoke_display_request(request, ctx);
+        }
         if outcome.invalidate
             && let Some(chrome) = self.chrome.as_ref()
         {
             chrome.borrow_mut().bump();
         }
         outcome.consumed
+    }
+
+    /// Make a display choice from the sheet through its published action,
+    /// resolved and invoked exactly as the control socket does, so the
+    /// person at the sheet and an agent pass one authority check and stage
+    /// through one door. The sheet follows the job to its receipt.
+    fn invoke_display_request(
+        &mut self,
+        request: crate::shell::projection_overlay::DisplayRequest,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        use crate::shell::search::action_api::{ActionError, AllVisible, ResourceRef};
+        let outcome = self
+            .chrome
+            .clone()
+            .ok_or_else(|| ActionError::Refused("this shell has no desktop to act on".into()))
+            .and_then(|chrome| {
+                let resource = ResourceRef::new(
+                    crate::shell::search::providers::actions::PROVIDER_ID,
+                    request.action_id(),
+                );
+                // Visibility is not authority: the action itself checks the
+                // workspace's grant when it is invoked, as for every caller.
+                let catalog = self.action_catalog_for_resource(
+                    &resource,
+                    &chrome.borrow(),
+                    ctx.state.doc(),
+                    ctx.path,
+                    &AllVisible,
+                );
+                let selected = catalog.select(&resource).ok_or_else(|| {
+                    ActionError::Refused(format!("{} is not published", request.action_id()))
+                })?;
+                selected.invoke_nullary(&mut ctx.state, ctx.path, &chrome)
+            });
+        self.projection_overlay.follow_request(request, outcome);
     }
 
     /// Close the display sheet a `display.layout.*` action opened once the
@@ -17732,8 +17780,9 @@ impl Widget for ShellOverlayHost {
         let pairing_dirty = self.pairing.pump(doc, path);
         let radio_dirty = self.poll_quick_settings_radio();
         let quick_settings_dirty = self.apply_quick_settings_readings();
+        let projection_open = self.overlay_flags().projection;
         let display_storage_dirty =
-            self.projection_overlay.poll_storage() | self.close_settled_projection();
+            self.projection_overlay.poll_storage(projection_open) | self.close_settled_projection();
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
         self.tick_shortcut_triggers();
@@ -21302,9 +21351,9 @@ impl ShellOverlayHost {
     }
 
     /// Wireless projection is an OS-owned edge sheet. Discovery and
-    /// protocol handshakes complete off-thread; polling only moves
-    /// already-completed state into this frame. Split out of
-    /// `draw_dropdowns_and_sheets`.
+    /// protocol handshakes complete off-thread, and the host update moves
+    /// their results and the display state into the sheet; painting only
+    /// draws it. Split out of `draw_dropdowns_and_sheets`.
     fn draw_projection_sheet(
         &mut self,
         scene: &mut Scene,
@@ -21314,7 +21363,7 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
-        let changed = self.projection_overlay.draw(
+        self.projection_overlay.draw(
             scene,
             transform,
             text_renderer,
@@ -21323,9 +21372,6 @@ impl ShellOverlayHost {
             self.rect,
             flags.projection,
         );
-        if changed && let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
     }
 
     fn shortcut_help_panel_rect(&self) -> Rect {

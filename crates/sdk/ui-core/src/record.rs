@@ -315,7 +315,7 @@ mod file_identity {
 
     /// The attribute the collaborative filesystem serves its `FileRecordId`
     /// in, and the one written for files elsewhere.
-    pub(super) const ATTRIBUTE: &str = "user.tilo.record-id";
+    pub(super) use fs_protocol::RECORD_ID_XATTR as ATTRIBUTE;
 
     fn c_path(path: &Path) -> Option<CString> {
         CString::new(path.as_os_str().as_bytes()).ok()

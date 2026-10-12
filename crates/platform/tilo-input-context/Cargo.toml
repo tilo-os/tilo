@@ -9,7 +9,6 @@ homepage.workspace = true
 description = "Bounded focused-field action metadata over Tilo's authenticated Wayland input-method service."
 
 [features]
-native-client = ["client", "wayland-client/system"]
 client = ["dep:wayland-client", "dep:wayland-scanner", "dep:wayland-backend"]
 server = ["dep:wayland-server", "dep:wayland-scanner", "dep:wayland-backend"]
 
