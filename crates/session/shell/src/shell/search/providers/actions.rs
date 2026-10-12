@@ -181,6 +181,8 @@ const VIEW_ACTION_IDS: &[&str] = &[
     "quick-settings.open",
     "quick-settings.clipboard",
     "quick-settings.devices",
+    "quick-settings.network",
+    "quick-settings.bluetooth",
     "projection.open",
     "projection.close",
     "capture.open",
@@ -1500,6 +1502,24 @@ impl Action {
             "search-action-quick-settings-clipboard-subtitle",
             |st, _| {
                 st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
+                Ok(())
+            },
+        ),
+        chrome(
+            "quick-settings.network",
+            "qs-network-details",
+            "search-action-quick-settings-network-subtitle",
+            |st, _| {
+                st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Wifi);
+                Ok(())
+            },
+        ),
+        chrome(
+            "quick-settings.bluetooth",
+            "qs-bluetooth-details",
+            "search-action-quick-settings-bluetooth-subtitle",
+            |st, _| {
+                st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Bluetooth);
                 Ok(())
             },
         ),
@@ -7784,5 +7804,44 @@ mod tests {
             bind(INVITATION_LIST_ID, serde_json::json!({"confirm": true})).unwrap(),
             PeerSyncRequest::ListPendingInvitations
         );
+    }
+    #[test]
+    fn radio_details_navigation_actions_are_views_and_do_not_toggle_radios() {
+        for (id, level) in [
+            (
+                "quick-settings.network",
+                crate::shell::quick_settings::QsLevel::Wifi,
+            ),
+            (
+                "quick-settings.bluetooth",
+                crate::shell::quick_settings::QsLevel::Bluetooth,
+            ),
+        ] {
+            let provider = ActionsProvider::new();
+            let chrome = chrome_with_room();
+            let before = (
+                chrome.borrow().quick_settings.wifi,
+                chrome.borrow().quick_settings.bluetooth,
+            );
+            let results = action_results(&provider, &chrome);
+            let result = results
+                .iter()
+                .find(|result| result.id == id)
+                .expect("published view action");
+            assert_eq!(result.operation_kind, tilo_actions::OperationKind::View);
+            for _ in 0..2 {
+                invoke_action(&results, id, &chrome);
+                let state = chrome.borrow();
+                assert!(state.overlays.quick_settings);
+                assert_eq!(
+                    state.quick_settings.nav_stack,
+                    [crate::shell::quick_settings::QsLevel::Root, level.clone()]
+                );
+                assert_eq!(
+                    (state.quick_settings.wifi, state.quick_settings.bluetooth),
+                    before
+                );
+            }
+        }
     }
 }
