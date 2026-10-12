@@ -41,6 +41,7 @@
 //! [`ImportError::StrideMismatch`]: crate::dmabuf_import::ImportError::StrideMismatch
 
 use std::os::fd::{AsRawFd, BorrowedFd, IntoRawFd};
+use std::sync::Arc;
 
 use ash::vk;
 use vello::wgpu;
@@ -651,6 +652,266 @@ pub fn import(device: &wgpu::Device, image: &DmabufRef<'_>) -> Result<ImportedPl
     })
 }
 
+/// Per-commit images created and not yet destroyed, and what making them has
+/// cost, since the process started.
+static LIVE_IMAGES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static WRAPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static WRAP_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `(images alive, images made, nanoseconds spent making them)` for the
+/// per-commit images of [`DmabufImage::texture`]. An image is alive from its
+/// creation until wgpu destroys its texture, which it does only after every
+/// submission that used it retired, so `alive` is the GPU's backlog.
+pub fn image_stats() -> (usize, u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (
+        LIVE_IMAGES.load(Relaxed),
+        WRAPS.load(Relaxed),
+        WRAP_NANOS.load(Relaxed),
+    )
+}
+
+/// A client's single-plane dma-buf, imported once, that yields a texture to
+/// draw each commit from ([`Self::texture`]).
+///
+/// A foreign producer writes the buffer again between commits, and the spec
+/// has an image acquire it from `VK_QUEUE_FAMILY_FOREIGN_EXT` after each
+/// write, which a texture wgpu keeps in one layout cannot. So with explicit
+/// layouts the device memory is imported once and every commit binds it to a
+/// fresh `VkImage`, whose first use is that acquire (a patched
+/// `wgpu-hal` makes the first barrier of a [`ForeignExternal`] texture one).
+/// An image over memory costs a `vkCreateImage` and a bind, no import.
+///
+/// [`ForeignExternal`]: vulkan::TextureMemory::ForeignExternal
+#[derive(Clone)]
+pub struct DmabufImage(ImageKind);
+
+#[derive(Clone)]
+enum ImageKind {
+    /// A device without explicit layouts imports linear buffers as one
+    /// texture, reused by every commit.
+    Fixed(wgpu::Texture),
+    /// The memory imported once; an image over it per commit.
+    Aliased(Arc<AliasedImage>),
+}
+
+/// An imported dma-buf's memory, freed after the last image over it.
+struct AliasedMemory {
+    dev: ash::Device,
+    memory: vk::DeviceMemory,
+}
+
+impl Drop for AliasedMemory {
+    fn drop(&mut self) {
+        // Safety: every image over it is destroyed first (each holds an
+        // `Arc` to this), and wgpu runs that only after the last submission
+        // using the image retired.
+        unsafe { self.dev.free_memory(self.memory, None) };
+    }
+}
+
+/// What it takes to make another image over an imported dma-buf's memory.
+struct AliasedImage {
+    memory: Arc<AliasedMemory>,
+    format: vk::Format,
+    wgpu_format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+    modifier: u64,
+    offset: u32,
+    stride: u32,
+}
+
+/// The usage every imported client image is created and used with.
+const SAMPLED_USAGE: vk::ImageUsageFlags = vk::ImageUsageFlags::from_raw(
+    vk::ImageUsageFlags::SAMPLED.as_raw() | vk::ImageUsageFlags::TRANSFER_SRC.as_raw(),
+);
+
+/// Import `image`, a single plane, so that each commit can draw from it
+/// ([`DmabufImage::texture`]).
+///
+/// # Errors
+///
+/// As [`import`], and [`ImportError::UnsupportedModifier`] when the driver
+/// does not list the layout as sampleable.
+pub fn import_image(
+    device: &wgpu::Device,
+    image: &DmabufRef<'_>,
+) -> Result<DmabufImage, ImportError> {
+    let single = |image: &DmabufRef<'_>| -> Result<DmabufImage, ImportError> {
+        let planes = import(device, image)?.planes;
+        let got = planes.len();
+        planes
+            .into_iter()
+            .next()
+            .map(|texture| DmabufImage(ImageKind::Fixed(texture)))
+            .ok_or(ImportError::PlaneCount {
+                fourcc: image.fourcc,
+                got,
+                expected: 1,
+            })
+    };
+    if !explicit_layout_available(device) || image.planes.len() != 1 {
+        return single(image);
+    }
+    let (_, specs) = plane_specs(image.fourcc, image.width, image.height).ok_or(
+        ImportError::UnsupportedFormat {
+            fourcc: image.fourcc,
+        },
+    )?;
+    let ([spec], [plane]) = (specs.as_slice(), image.planes) else {
+        return single(image);
+    };
+    // Safety: the guard only lends this device's Vulkan handles for the call.
+    let guard = unsafe { device.as_hal::<vulkan::Api>() }.ok_or(ImportError::NotVulkan)?;
+    let hal_device: &vulkan::Device = &guard;
+    let aliased =
+        unsafe { VulkanImporter::new(hal_device).import_aliased(plane, spec, image.modifier) }?;
+    Ok(DmabufImage(ImageKind::Aliased(Arc::new(aliased))))
+}
+
+impl DmabufImage {
+    /// A texture of the buffer as it is now, to draw one commit from. Its
+    /// first use acquires the image from the foreign queue family, so the
+    /// producer's latest writes and compression metadata are what is read.
+    ///
+    /// # Errors
+    ///
+    /// [`ImportError::Vulkan`] when the image cannot be created or bound.
+    pub fn texture(&self, device: &wgpu::Device) -> Result<wgpu::Texture, ImportError> {
+        let aliased = match &self.0 {
+            ImageKind::Fixed(texture) => return Ok(texture.clone()),
+            ImageKind::Aliased(aliased) => aliased,
+        };
+        let started = std::time::Instant::now();
+        let hal = {
+            // Safety: the guard only lends this device's Vulkan handles; it is
+            // dropped before the wgpu texture is made.
+            let guard = unsafe { device.as_hal::<vulkan::Api>() }.ok_or(ImportError::NotVulkan)?;
+            let hal_device: &vulkan::Device = &guard;
+            let dev = hal_device.raw_device();
+            let vk_image = unsafe {
+                create_explicit_image(
+                    dev,
+                    aliased.format,
+                    (aliased.width, aliased.height),
+                    aliased.modifier,
+                    (aliased.offset, aliased.stride),
+                )
+            }?;
+            if let Err(e) = unsafe { dev.bind_image_memory(vk_image, aliased.memory.memory, 0) } {
+                unsafe { dev.destroy_image(vk_image, None) };
+                return Err(ImportError::Vulkan(format!("vkBindImageMemory: {e:?}")));
+            }
+            let dev_owned = dev.clone();
+            let memory = Arc::clone(&aliased.memory);
+            LIVE_IMAGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let drop_cb: vello::wgpu::hal::DropCallback = Box::new(move || {
+                unsafe { dev_owned.destroy_image(vk_image, None) };
+                LIVE_IMAGES.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                drop(memory);
+            });
+            let desc = vello::wgpu::hal::TextureDescriptor {
+                label: Some("dmabuf-client-frame"),
+                size: wgpu::Extent3d {
+                    width: aliased.width,
+                    height: aliased.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: aliased.wgpu_format,
+                usage: vello::wgpu::wgt::TextureUses::RESOURCE
+                    | vello::wgpu::wgt::TextureUses::COPY_SRC,
+                memory_flags: vello::wgpu::hal::MemoryFlags::empty(),
+                view_formats: vec![],
+            };
+            unsafe {
+                hal_device.texture_from_raw(
+                    vk_image,
+                    &desc,
+                    Some(drop_cb),
+                    vulkan::TextureMemory::ForeignExternal,
+                )
+            }
+        };
+        let desc = wgpu::TextureDescriptor {
+            label: Some("dmabuf-client-frame"),
+            size: wgpu::Extent3d {
+                width: aliased.width,
+                height: aliased.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: aliased.wgpu_format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        };
+        // Safety: `hal` was made from this device a moment ago and not used.
+        let texture = unsafe { device.create_texture_from_hal::<vulkan::Api>(hal, &desc) };
+        WRAPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        WRAP_NANOS.fetch_add(
+            u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        Ok(texture)
+    }
+}
+
+/// A `VkImage` of `format` whose layout in memory is the producer's: its
+/// `modifier`, plane offset and row pitch, created for sampling.
+///
+/// # Safety
+///
+/// `dev` is a live device that enabled `VK_EXT_image_drm_format_modifier`.
+unsafe fn create_explicit_image(
+    dev: &ash::Device,
+    format: vk::Format,
+    (width, height): (u32, u32),
+    modifier: u64,
+    (offset, stride): (u32, u32),
+) -> Result<vk::Image, ImportError> {
+    let modifier = if modifier == DRM_FORMAT_MOD_INVALID {
+        DRM_FORMAT_MOD_LINEAR
+    } else {
+        modifier
+    };
+    let plane_layouts = [vk::SubresourceLayout {
+        offset: u64::from(offset),
+        size: 0,
+        row_pitch: u64::from(stride),
+        array_pitch: 0,
+        depth_pitch: 0,
+    }];
+    let mut explicit = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
+        .drm_format_modifier(modifier)
+        .plane_layouts(&plane_layouts);
+    let mut external = vk::ExternalMemoryImageCreateInfo::default()
+        .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    let info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(format)
+        .extent(vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
+        .usage(SAMPLED_USAGE)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .push_next(&mut external)
+        .push_next(&mut explicit);
+    unsafe { dev.create_image(&info, None) }
+        .map_err(|e| ImportError::Vulkan(format!("vkCreateImage: {e:?}")))
+}
+
 /// The Vulkan device a dma-buf is imported into, with the external-memory
 /// extension loaded for it. Every handle derives from one live device.
 struct VulkanImporter<'a> {
@@ -756,6 +1017,114 @@ impl<'a> VulkanImporter<'a> {
             return Err(unsupported);
         }
         Ok(())
+    }
+
+    /// Import `plane`'s memory once, as the memory every image over the
+    /// dma-buf is bound to ([`DmabufImage::texture`]).
+    ///
+    /// # Safety
+    ///
+    /// The device has `VK_EXT_image_drm_format_modifier` enabled.
+    unsafe fn import_aliased(
+        &self,
+        plane: &PlaneRef<'_>,
+        spec: &PlaneSpec,
+        modifier: u64,
+    ) -> Result<AliasedImage, ImportError> {
+        let dev = self.hal_device.raw_device();
+        let modifier = if modifier == DRM_FORMAT_MOD_INVALID {
+            DRM_FORMAT_MOD_LINEAR
+        } else {
+            modifier
+        };
+        // The producer's pitch must at least hold a row.
+        let row = u64::from(spec.width).saturating_mul(u64::from(spec.texel_bytes));
+        if u64::from(plane.stride) < row {
+            return Err(ImportError::UnsupportedModifier { modifier });
+        }
+        self.check_modifier(spec, modifier, SAMPLED_USAGE)?;
+
+        // The memory requirements of the image, then no more use of it.
+        let probe = unsafe {
+            create_explicit_image(
+                dev,
+                spec.format,
+                (spec.width, spec.height),
+                modifier,
+                (plane.offset, plane.stride),
+            )
+        }?;
+        let reqs = unsafe { dev.get_image_memory_requirements(probe) };
+        unsafe { dev.destroy_image(probe, None) };
+
+        let dup = plane
+            .fd
+            .try_clone_to_owned()
+            .map_err(|e| ImportError::Vulkan(format!("dup dmabuf fd: {e}")))?;
+        // The GPU reads `reqs.size` bytes of this buffer: refuse one shorter.
+        let have = {
+            use std::io::{Seek as _, SeekFrom};
+            let mut file = std::fs::File::from(
+                dup.try_clone()
+                    .map_err(|e| ImportError::Vulkan(format!("dup dmabuf fd: {e}")))?,
+            );
+            file.seek(SeekFrom::End(0))
+                .map_err(|e| ImportError::Vulkan(format!("dmabuf size: {e}")))?
+        };
+        if have < reqs.size {
+            return Err(ImportError::Vulkan(format!(
+                "dmabuf is {have} bytes but its image needs {} (offset {}, pitch {})",
+                reqs.size, plane.offset, plane.stride
+            )));
+        }
+        let fd_types = {
+            let mut props = vk::MemoryFdPropertiesKHR::default();
+            match unsafe {
+                self.ext_fd.get_memory_fd_properties(
+                    vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT,
+                    dup.as_raw_fd(),
+                    &mut props,
+                )
+            } {
+                Ok(()) => props.memory_type_bits,
+                Err(_) => u32::MAX,
+            }
+        };
+        let phys = self.hal_device.raw_physical_device();
+        let instance = self.hal_device.shared_instance().raw_instance();
+        let allowed = reqs.memory_type_bits & fd_types;
+        let Some(mem_type) = find_memory_type(instance, phys, allowed) else {
+            return Err(ImportError::Vulkan(format!(
+                "no memory type accepts the imported dmabuf (image mask {:#x}, fd mask {fd_types:#x})",
+                reqs.memory_type_bits
+            )));
+        };
+        // Not a dedicated allocation: several images are bound to it over
+        // time. With an explicit layout its size already covers the offset.
+        let mut import_info = vk::ImportMemoryFdInfoKHR::default()
+            .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
+            .fd(dup.as_raw_fd());
+        let alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(reqs.size)
+            .memory_type_index(mem_type)
+            .push_next(&mut import_info);
+        let memory = unsafe { dev.allocate_memory(&alloc_info, None) }
+            .map_err(|e| ImportError::Vulkan(format!("vkAllocateMemory: {e:?}")))?;
+        // vkAllocateMemory consumed the fd; don't let `dup` close it.
+        let _ = dup.into_raw_fd();
+        Ok(AliasedImage {
+            memory: Arc::new(AliasedMemory {
+                dev: dev.clone(),
+                memory,
+            }),
+            format: spec.format,
+            wgpu_format: spec.wgpu_format,
+            width: spec.width,
+            height: spec.height,
+            modifier,
+            offset: plane.offset,
+            stride: plane.stride,
+        })
     }
 
     /// Import one plane as a `wgpu::Texture`.
@@ -1046,7 +1415,13 @@ impl<'a> VulkanImporter<'a> {
                 vk_image,
                 &hal_desc,
                 Some(drop_cb),
-                vulkan::TextureMemory::External,
+                // A producer outside this device wrote the image: its first
+                // use acquires it from the foreign queue family.
+                if explicit.is_some() {
+                    vulkan::TextureMemory::ForeignExternal
+                } else {
+                    vulkan::TextureMemory::External
+                },
             )
         })
     }

@@ -752,6 +752,11 @@ pub enum TextureMemory {
 
     // memory not owned by wgpu
     External,
+
+    // memory not owned by wgpu, holding an image a foreign (non-Vulkan)
+    // producer wrote: its first use acquires it from
+    // `VK_QUEUE_FAMILY_FOREIGN_EXT` when the device enabled that extension.
+    ForeignExternal,
 }
 
 #[derive(Debug)]

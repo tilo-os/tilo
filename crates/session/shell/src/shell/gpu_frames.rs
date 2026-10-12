@@ -995,8 +995,9 @@ impl<K: BufferIdentity, V: Clone> ImportCache<K, V> {
 
 /// The imports of every client buffer, as the texture of their one plane.
 #[cfg(target_os = "linux")]
-static IMPORTS: Mutex<ImportCache<smithay::backend::allocator::dmabuf::WeakDmabuf, wgpu::Texture>> =
-    Mutex::new(ImportCache::new());
+static IMPORTS: Mutex<
+    ImportCache<smithay::backend::allocator::dmabuf::WeakDmabuf, ui::dmabuf_import::DmabufImage>,
+> = Mutex::new(ImportCache::new());
 
 /// Why a client's dma-buf was not kept on the GPU, so it is read back on the
 /// CPU instead. Typed so the compositor can log each reason once and a test
@@ -1098,7 +1099,7 @@ fn import_dmabuf_on(
                 offset,
                 stride,
             }];
-            let imported = ui::dmabuf_import::import(
+            ui::dmabuf_import::import_image(
                 &present.device,
                 &ui::dmabuf_import::DmabufRef {
                     planes: &planes,
@@ -1109,15 +1110,14 @@ fn import_dmabuf_on(
                     colorimetry: media::dmabuf::Colorimetry::RGB,
                 },
             )
-            .map_err(ImportFallback::Vulkan)?;
-            // The texture owns its `VkImage` and imported memory; wgpu frees
-            // them only after the last submission that used them retired.
-            imported
-                .planes
-                .into_iter()
-                .next()
-                .ok_or(ImportFallback::PlaneCount { planes: 0 })
+            .map_err(ImportFallback::Vulkan)
         })?;
+    // A texture of the buffer for this commit: the producer wrote it again
+    // since the last, so its first use acquires the image from the foreign
+    // queue family.
+    let source = source
+        .texture(&present.device)
+        .map_err(ImportFallback::Vulkan)?;
     let mut frame = GpuFrame::borrowing(present, source, opaque, surface);
     frame.dmabuf = Some(dmabuf.clone());
     Ok(Arc::new(frame))
@@ -1609,6 +1609,221 @@ mod tests {
             !imported.is_empty(),
             "the allocator made none of the probed layouts, so none could be imported"
         );
+    }
+
+    /// A GPU client (EGL/GLES through GBM) writes a known pattern into a
+    /// buffer allocated with the Qualcomm compressed layout and hands it over
+    /// with no CPU wait, as a real client does: the kernel's implicit fence on
+    /// the buffer is all that orders its writes before the compositor's
+    /// reads. The compositor's Vulkan import (which acquires the image from
+    /// the foreign queue family on first use) samples it into a frame, and the
+    /// pixels read back must be the pattern. Fifty frames over two buffers,
+    /// the pattern different each time, so a stale or half-written read shows.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_gpu_client_writing_a_compressed_buffer_is_sampled_exactly_for_fifty_frames() {
+        use smithay::backend::allocator::dmabuf::AsDmabuf as _;
+        use smithay::backend::allocator::gbm::{GbmBuffer, GbmBufferFlags, GbmDevice};
+        use smithay::backend::allocator::{Fourcc, Modifier};
+        use smithay::backend::renderer::{Bind as _, Color32F, Frame as _, Renderer as _};
+        use smithay::utils::{Rectangle, Transform};
+
+        const COMPRESSED: u64 = 0x0500_0000_0000_0001;
+        const WIDTH: u32 = 256;
+        const HEIGHT: u32 = 128;
+        const CELL: u32 = 16;
+        const FRAMES: usize = 50;
+        /// The colour of cell `(cx, cy)` in frame `frame`.
+        fn cell(frame: usize, cx: u32, cy: u32) -> [u8; 3] {
+            let byte = |value: usize| u8::try_from(value % 251).unwrap_or(0);
+            [
+                byte((cx as usize) * 15 + frame * 3),
+                byte((cy as usize) * 31 + frame * 7),
+                byte(frame * 5 + (cx * cy) as usize),
+            ]
+        }
+        let present = present().expect("this test needs a wgpu adapter");
+        let node = crate::compositor::render_node::probe()
+            .expect("this test needs an advertisable render node");
+        // The acquire this test covers needs the extension; without it the
+        // barrier is not emitted and a pass would prove nothing about it.
+        assert!(
+            unsafe { present.device.as_hal::<wgpu::hal::api::Vulkan>() }.is_some_and(|hal| {
+                hal.enabled_device_extensions()
+                    .iter()
+                    .any(|name| name.to_bytes() == b"VK_EXT_queue_family_foreign")
+            }),
+            "the device did not enable VK_EXT_queue_family_foreign"
+        );
+        assert!(
+            ui::dmabuf_import::sampleable_modifiers(&present.device, Fourcc::Argb8888 as u32)
+                .contains(&COMPRESSED),
+            "the device does not list the compressed layout as sampleable"
+        );
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&node.path)
+            .expect("open the render node");
+        let device = GbmDevice::new(file).expect("gbm device");
+        let mut buffers: Vec<_> = (0..2)
+            .map(|_| {
+                let bo = device
+                    .create_buffer_object_with_modifiers2::<()>(
+                        WIDTH,
+                        HEIGHT,
+                        Fourcc::Argb8888,
+                        std::iter::once(Modifier::from(COMPRESSED)),
+                        GbmBufferFlags::RENDERING,
+                    )
+                    .expect("a compressed ARGB8888 buffer");
+                GbmBuffer::from_bo(bo, false)
+                    .export()
+                    .expect("export as a dmabuf")
+            })
+            .collect();
+        let mut producer = crate::compositor::gpu_import::GpuImporter::new(&node.path)
+            .expect("a GL context for the client on the render node");
+
+        let mut renderer = vello::Renderer::new(
+            &present.device,
+            vello::RendererOptions {
+                use_cpu: false,
+                antialiasing_support: vello::AaSupport::area_only(),
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .expect("renderer");
+        let mut applied = AppliedFrames::default();
+        let surface = 9_200;
+        // The memory order of the rows the producer wrote: GL may store the
+        // image upside down; decided on the first frame, then it must hold.
+        let mut flipped: Option<bool> = None;
+        let mut most_alive = 0;
+        let (_, wraps_before, nanos_before) = ui::dmabuf_import::image_stats();
+        for frame_number in 0..FRAMES {
+            let slot = frame_number % 2;
+            let buffer = &mut buffers[slot];
+            {
+                let gl = producer.renderer_mut();
+                let mut target = gl
+                    .bind(buffer)
+                    .expect("the client's GL cannot render into the compressed layout");
+                let mut frame = gl
+                    .render(
+                        &mut target,
+                        (WIDTH as i32, HEIGHT as i32).into(),
+                        Transform::Normal,
+                    )
+                    .expect("begin the client's frame");
+                for cy in 0..HEIGHT / CELL {
+                    for cx in 0..WIDTH / CELL {
+                        let [r, g, b] = cell(frame_number, cx, cy);
+                        frame
+                            .clear(
+                                Color32F::new(
+                                    f32::from(r) / 255.0,
+                                    f32::from(g) / 255.0,
+                                    f32::from(b) / 255.0,
+                                    1.0,
+                                ),
+                                &[Rectangle::new(
+                                    ((cx * CELL) as i32, (cy * CELL) as i32).into(),
+                                    (CELL as i32, CELL as i32).into(),
+                                )],
+                            )
+                            .expect("clear a cell");
+                    }
+                }
+                // Deliberately not waited on: the client hands the buffer over
+                // as soon as its commands are submitted.
+                let _fence = frame.finish().expect("submit the client's frame");
+            }
+            let imported = import_dmabuf_on(&present, buffer, surface + slot as u64, false)
+                .unwrap_or_else(|why| panic!("the compressed buffer must import: {why}"));
+            let mut scene = vello::Scene::new();
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                vello::kurbo::Affine::IDENTITY,
+                &vello::peniko::ImageBrush::new(imported.image((0, 0, WIDTH, HEIGHT))),
+                None,
+                &vello::kurbo::Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT)),
+            );
+            apply(&mut renderer, Some(present.generation), &mut applied);
+            let pixels = render_and_read(&present, &mut renderer, &scene, (WIDTH, HEIGHT));
+            most_alive = most_alive.max(ui::dmabuf_import::image_stats().0);
+            let expect = |x: u32, y: u32, upside_down: bool| {
+                let row = if upside_down { HEIGHT - 1 - y } else { y };
+                let [r, g, b] = cell(frame_number, x / CELL, row / CELL);
+                [r, g, b, 0xFF]
+            };
+            let matches = |upside_down: bool| {
+                (0..HEIGHT).all(|y| {
+                    (0..WIDTH).all(|x| {
+                        let at = (y as usize * WIDTH as usize + x as usize) * 4;
+                        let got = &pixels[at..at + 4];
+                        let want = expect(x, y, upside_down);
+                        got.iter()
+                            .zip(want)
+                            .all(|(got, want)| got.abs_diff(want) <= 1)
+                    })
+                })
+            };
+            let upside_down = *flipped.get_or_insert_with(|| !matches(false) && matches(true));
+            if !matches(upside_down) {
+                let bad = (0..HEIGHT)
+                    .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
+                    .find(|&(x, y)| {
+                        let at = (y as usize * WIDTH as usize + x as usize) * 4;
+                        pixels[at..at + 4]
+                            .iter()
+                            .zip(expect(x, y, upside_down))
+                            .any(|(got, want)| got.abs_diff(want) > 1)
+                    })
+                    .unwrap_or((0, 0));
+                let at = (bad.1 as usize * WIDTH as usize + bad.0 as usize) * 4;
+                panic!(
+                    "frame {frame_number}: pixel {bad:?} is {:?}, the client wrote {:?}",
+                    &pixels[at..at + 4],
+                    expect(bad.0, bad.1, upside_down)
+                );
+            }
+        }
+        // Each commit's image lives until the GPU work that sampled it
+        // retired (wgpu runs the destroy then), so the live count is the GPU's
+        // backlog: it must not grow with the frames, and once everything has
+        // retired and the frames are dropped, nothing is left.
+        let (_, wraps, nanos) = ui::dmabuf_import::image_stats();
+        let wrapped = wraps - wraps_before;
+        assert_eq!(wrapped, FRAMES as u64, "one image per commit");
+        eprintln!(
+            "per-commit image: {} us each over {wrapped} commits; at most {most_alive} alive at once",
+            (nanos - nanos_before) / wrapped / 1000
+        );
+        assert!(
+            most_alive <= 4,
+            "{most_alive} per-commit images alive at once over {FRAMES} frames: they are leaking"
+        );
+        drop(applied);
+        let _ = present.device.poll(wgpu::PollType::wait_indefinitely());
+        let alive = ui::dmabuf_import::image_stats().0;
+        assert!(
+            alive <= 2,
+            "{alive} per-commit images still alive after the GPU work retired"
+        );
+        // Two buffers were imported once each; every commit after made only a
+        // new image over its memory, which acquired from the foreign queue.
+        let imports = IMPORTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entries
+            .iter()
+            .filter(|entry| entry.surface == surface || entry.surface == surface + 1)
+            .count();
+        assert_eq!(imports, 2, "one import per buffer, not one per commit");
+        forget_surface(surface);
+        forget_surface(surface + 1);
     }
 
     #[test]
