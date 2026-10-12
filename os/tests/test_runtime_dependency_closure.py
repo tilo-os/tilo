@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -173,6 +174,25 @@ elif args[0]=='build':
         result = self.verify_closure(bundle)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(f'signed runtime is missing {loaders[0].name}', result.stderr)
+
+    def test_an_app_runs_on_the_signed_layout_with_one_copy_of_each_library(self):
+        # The launcher maps the bundle's loader as the app's interpreter and
+        # hands it LD_LIBRARY_PATH=<bundle>/lib alone; running that loader with
+        # --library-path is the same resolution, observable with LD_DEBUG.
+        bundle = self.signed_layout()
+        (loader,) = (bundle / 'lib').glob('*/**/ld-linux*')
+        result = subprocess.run([str(loader), '--library-path', str(bundle / 'lib'),
+                                 str(self.directory / 'app')],
+                                env=dict(os.environ, LD_DEBUG='libs'), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, '7')
+        initialised = re.findall(r'calling init: (\S+)', result.stderr)
+        self.assertIn(str(bundle / 'lib/libc.so.6'), initialised, result.stderr)
+        self.assertIn(str(bundle / 'lib/libbridge.so'), initialised, result.stderr)
+        # libc's NEEDED on the loader is the mapped interpreter: never searched.
+        self.assertNotRegex(result.stderr, r'trying file=\S*ld-linux', result.stderr)
+        self.assertTrue(all(path.startswith(str(bundle / 'lib') + '/') for path in initialised),
+                        initialised)
 
     def test_only_the_loader_may_live_below_the_top_of_lib(self):
         bundle = self.signed_layout()

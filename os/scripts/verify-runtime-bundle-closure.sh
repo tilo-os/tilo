@@ -73,4 +73,28 @@ for object in "${objects[@]}"; do
   done < <(sed -n 's/^ *\[ *[0-9a-f]*\] *\([^ ]*\) *$/\1/p' <<<"$lazy")
 done
 [ "$broken" -eq 0 ] || fail "the runtime bundle does not satisfy what it or its thin apps link against"
+
+# Then resolve each thin app the way a launch does: the bundle's own loader at
+# the app's interpreter path, the bundle's lib/ as its only library path.
+# Every library must come from that lib/, and none twice from elsewhere.
+for app in "$@"; do
+  interpreter=$(readelf -lW "$app" | sed -n 's/.*\[Requesting program interpreter: \(.*\)\]/\1/p')
+  [ -n "$interpreter" ] || fail "$app names no ELF interpreter"
+  loader=$lib/${interpreter#/}
+  [ -f "$loader" ] || fail "$app: the signed runtime lacks its interpreter $interpreter"
+  if ! listing=$("$loader" --inhibit-cache --library-path "$lib" --list "$app" 2>&1); then
+    printf '%s\n%s\n' "$app: the bundle's loader cannot resolve it" "$listing" >&2
+    broken=1
+    continue
+  fi
+  while read -r name arrow path _; do
+    [ "$arrow" = '=>' ] || continue
+    case $path in
+      "$lib"/*) ;;
+      *) printf '%s: %s resolves to %s, outside the signed runtime\n' "$app" "$name" "$path" >&2
+         broken=1 ;;
+    esac
+  done <<<"$listing"
+done
+[ "$broken" -eq 0 ] || fail "a thin app does not load from the runtime bundle alone"
 printf 'verify-runtime-bundle-closure: %d objects resolve against %s\n' "${#objects[@]}" "$lib"
