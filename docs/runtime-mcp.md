@@ -96,7 +96,17 @@ the session's **agent door** at `$XDG_RUNTIME_DIR/tilo-session/agent.sock`.
 It never starts a standalone daemon there — a second, empty authority beside
 the desktop would answer every question about it wrongly. When the door is
 missing (first login not complete, or a compositor too old to serve it) the
-client fails and says so; `--standalone` runs a separate runtime anyway.
+client fails with `the desktop's agent door isn't available: <reason>` and how
+to go on; `--standalone` runs a separate runtime anyway.
+
+Whether a process is inside a Tilo login does not rest on
+`XDG_CURRENT_DESKTOP`, which a terminal multiplexer, `ssh` or a service
+manager can each drop. The environment names the desktop (`tilo` among its
+colon-separated entries) **or** the account's runtime directory holds the
+compositor's own sockets (`agent.sock` or `admin-control.sock` in
+`$XDG_RUNTIME_DIR/tilo-session/`; `/run/user/<uid>` when the variable is gone
+too). The environment can only add to that evidence, never subtract. The same
+test decides which host an app launched from such a terminal attaches to.
 
 ```sh
 claude mcp add tilo -- tilo-runtime-mcp --connect
@@ -135,6 +145,64 @@ a convenience against repeated prompts, not a credential: what it can do is
 still exactly the agent's grants.
 
 
+
+### The agent tools
+
+An agent on the door is offered five tools, addressed by **path** and answered
+as text. A path is `app/resource/resource#action`: the app (`notes`, the last
+part of its id), resources by their title, kind or the app's own key
+(`Todo`, `body`, `notes.page:3fa2…`), any case, and the action after `#`. A
+name containing `/`, `#` or `\` writes it with a leading backslash. Paths are
+resolved against the live directory on every call, so they mean the same thing
+after the compositor restarts; the opaque ids the broker mints per publication
+(`tilo-ui-bound:v1:<uuid>:<uuid>:<hex>`) are never shown and need never be
+sent. A resource published beside its owner rather than inside it (a note's
+body) is found under the owner when its key names the owner's id; where a title
+fits two resources the owner gets it.
+
+| Tool | Answers | Example |
+| --- | --- | --- |
+| `tilo_ls` | apps; an app's resources and actions; one action's parameters | `{}` · `{path: "notes"}` · `{path: "notes/Todo#rename"}` |
+| `tilo_read` | a resource as compact text: markdown with `{#block id}`, a list of what an app holds | `{path: "notes/Todo"}` |
+| `tilo_do` | the action's result, waited for (default 5 s) | `{path: "notes/Todo/body#append-paragraph", args: {text: "Buy milk"}}` |
+| `tilo_find` | ranked one-line hits, ready to pass to `tilo_do` | `{query: "checklist add", app: "notes"}` |
+| `tilo_status` | how a pending invocation went; `cancel: true` stops it | `{invocation_id}` |
+
+```text
+> tilo_ls {path: "notes"}
+notes  (so.tilo.notes)
+Notebook/  notes.notebook
+Todo/  notes.page
+Groceries/  notes.page
+#new-page(title?)  New note
+#read(item?)
+
+> tilo_read {path: "notes/Todo"}
+# Todo
+- [ ] milk {#b1}
+- [x] bread {#b2}
+## Later {#b3}
+
+> tilo_do {path: "notes/Todo/body#append-paragraph", args: {text: "call mom"}}
+ok
+{"block":"b9"}
+```
+
+`tilo_do` answers `ok` with the action's result, `failed: <code>: <message>`
+(with the action's parameters after an `invalid_arguments`), or `pending <id>`
+when it ran past `wait_ms`; there is no receipt to poll for an action that
+finishes. `calls: [{path, args}, …]` runs several in order and stops at the
+first failure. `notes#open` starts an installed app and lists it. `tilo_find`
+searches apps by name, then resources, then actions named as searched, then
+actions described so; it does not search files. Listings
+carry names and one-line labels only; `tilo_ls path#action` gives an action's
+parameters when it is wanted. Results are text, with no structured copy beside them. Measured (the
+`mcp_agent` tests keep these in bounds): the agent tool list is 2,900 bytes of
+JSON against 4,546 for the classic one, and a four-block Notes page reads as 71
+bytes of markdown against 370 for the structured `read` answer of the same page.
+
+A client that parses directory rows (peer ids, `tilo_query`'s grouped pages)
+is served the **classic** tools, below, anywhere but the door.
 
 ## Agent host (MCP beside local relay)
 

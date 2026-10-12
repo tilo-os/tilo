@@ -215,6 +215,12 @@ cargo run -q --bin tilo-control -- snapshot PATH     # PNG of the live scene
 Prefer the semantic half: it is the surface real users and agents depend on, so exercising it
 is worth more than a synthetic click that proves only geometry.
 
+An agent in a terminal inside a Tilo login (Claude Code, Codex) reaches the same actions through
+`tilo-runtime-mcp --connect` (`claude mcp add tilo -- tilo-runtime-mcp --connect`): the session's
+agent door, with path-addressed tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`), e.g.
+`notes/Todo/body#append-paragraph`. It never starts a standalone runtime inside the login, whatever
+environment a multiplexer or ssh left it (docs/runtime-mcp.md).
+
 The installer and the greeter run before any compositor exists; they answer the same semantic
 ops on their own console socket, so it is still `tilo-control --socket <path> actions list`
 (docs/agent-action-api.md). In a VM that socket is `os/dev/vm.sh console`. Add `fn test_id(&self) ->

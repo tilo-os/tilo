@@ -1,4 +1,6 @@
 //! Transport-independent MCP projection of the production action broker.
+#[path = "mcp_agent.rs"]
+mod agent;
 #[path = "mcp_content.rs"]
 mod content;
 #[path = "mcp_page.rs"]
@@ -61,6 +63,21 @@ pub struct McpServer<H> {
     working: tokio::sync::Semaphore,
     /// Places for the session's requests that work or wait for a turn.
     admitted: tokio::sync::Semaphore,
+    /// Which tools the session offers.
+    surface: Surface,
+}
+
+/// The tools a session offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Surface {
+    /// `tilo_list_apps`, `tilo_query`, `tilo_resolve`, `tilo_invoke`,
+    /// `tilo_status`, `tilo_cancel`: a directory browsed by peer and
+    /// resource id, for clients that parse it.
+    Classic,
+    /// `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_status`: apps and
+    /// resources addressed by name, answered as text. What an AI agent in a
+    /// terminal is served.
+    Agent,
 }
 
 /// A session's requests that work at once; more wait for a turn. One agent
@@ -418,6 +435,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .in_room(room.clone())
             .in_new_execution();
         Self::from_caller(host, room, format!("agent:{agent_id}"), caller)
+            .with_surface(Surface::Agent)
     }
 
     /// The host has already bound this exact authenticated run to its action
@@ -465,8 +483,16 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             seen: std::sync::Mutex::default(),
             working: tokio::sync::Semaphore::new(MAX_WORKING),
             admitted: tokio::sync::Semaphore::new(MAX_ADMITTED),
+            surface: Surface::Classic,
         }
     }
+    /// Offer the tools `surface` names.
+    #[must_use]
+    pub fn with_surface(mut self, surface: Surface) -> Self {
+        self.surface = surface;
+        self
+    }
+
     /// The caller this connection's actions run as: the agent it is, acting
     /// for the person.
     #[must_use]
@@ -844,7 +870,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         self
     }
     fn tools(&self) -> Vec<Value> {
-        let mut tools = tool_definitions().to_vec();
+        let mut tools = match self.surface {
+            Surface::Classic => tool_definitions().to_vec(),
+            Surface::Agent => agent::tool_definitions().to_vec(),
+        };
         if self.computer.is_some() {
             tools.extend(crate::computer::tool_definitions());
         }
@@ -1030,9 +1059,18 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                         Ok(self.computer(&call.name, call.arguments).await)
                     }
                     Ok(call)
-                        if tool_definitions().iter().any(|definition| {
-                            definition["name"].as_str() == Some(call.name.as_str())
-                        }) =>
+                        if self.surface == Surface::Agent
+                            && agent::tool_definitions().iter().any(|definition| {
+                                definition["name"].as_str() == Some(call.name.as_str())
+                            }) =>
+                    {
+                        Ok(self.agent_call(&call.name, call.arguments).await)
+                    }
+                    Ok(call)
+                        if self.surface == Surface::Classic
+                            && tool_definitions().iter().any(|definition| {
+                                definition["name"].as_str() == Some(call.name.as_str())
+                            }) =>
                     {
                         Ok(tool_result(self.call(&call.name, call.arguments).await))
                     }

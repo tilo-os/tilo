@@ -2660,6 +2660,12 @@ impl FrameBuilderControlState<'_> {
             (catalog, self.fb.host().action_listing_complete(&args))
         })
         .map_err(test_control::ActionRefusal::listing_failed)?;
+        // A paged listing is an agent's: apps' own resources and actions
+        // first, files only when asked.
+        let mut catalog = catalog;
+        if let Some(page) = page {
+            catalog.arrange(&page.kinds, page.files);
+        }
         let fingerprint = test_control::listing_fingerprint(catalog.addresses());
         let window = page
             .map(|page| page.window(catalog.len(), fingerprint))
@@ -9259,6 +9265,7 @@ pub fn run() {
     }
     state.output_management.set_wake(Arc::clone(&session_wake));
     crate::shell::display_persistence::set_wake(Arc::clone(&session_wake));
+    crate::shell::install_component_wake(Arc::clone(&session_wake));
     // An invocation a control client waits on wakes the loop when it is
     // admitted or its job changes, not on the next unrelated wake.
     let _invocation_wake =
@@ -18332,6 +18339,7 @@ mod tests {
                         limit: Some(3),
                         cursor: cursor.take(),
                         detail: test_control::ListingDetail::Compact,
+                        ..test_control::ListingRequest::default()
                     },
                 )
                 .expect("a page");
