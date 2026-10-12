@@ -594,4 +594,48 @@ mod tests {
         let unranged = list(&model, &EventFilter::default());
         assert_eq!(unranged["count"], 1, "with no range the series is one row");
     }
+
+    /// `new-event` invites people as it makes the event: each awaiting an
+    /// answer, listed and exported as attendees; one without an email is
+    /// refused.
+    #[test]
+    fn a_new_event_invites_its_attendees() {
+        let mut app = TestApp::<CalendarShell>::new().expect("calendar");
+        new_event(
+            &mut app,
+            json!({
+                "value": "Postmortem review",
+                "start": "2026-10-15T10:00",
+                "end": "2026-10-15T10:45",
+                "attendees": [
+                    {"name": "Nia", "email": "nia@northwind.example"},
+                    "Omar <omar@northwind.example>",
+                    "pax@northwind.example",
+                ],
+            }),
+        );
+        let answer = listed(&mut app, &all());
+        // Invitees are kept by id, in no particular order.
+        let mut invited: Vec<Value> = answer["events"][0]["attendees"]
+            .as_array()
+            .expect("attendees")
+            .clone();
+        invited.sort_by_key(|who| who["email"].as_str().unwrap_or_default().to_owned());
+        assert_eq!(
+            invited,
+            [
+                json!({"name": "Nia", "email": "nia@northwind.example", "status": "needs-action", "organizer": false}),
+                json!({"name": "Omar", "email": "omar@northwind.example", "status": "needs-action", "organizer": false}),
+                json!({"name": "", "email": "pax@northwind.example", "status": "needs-action", "organizer": false}),
+            ]
+        );
+        let error = app
+            .call(
+                "new-event",
+                json!({"value": "Sync", "attendees": ["Quinn"]}),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("needs an email address"), "{error}");
+    }
 }

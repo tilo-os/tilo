@@ -336,10 +336,11 @@ fn capture(
             NOTES => {
                 // Every note's own Markdown, in the order the notebook lists them.
                 let mut text = Vec::new();
-                for descriptor in offered
-                    .iter()
-                    .filter(|descriptor| descriptor.address.action == "export-markdown-content")
-                {
+                // Each page's own export; the notebook's names a page by argument.
+                for descriptor in offered.iter().filter(|descriptor| {
+                    descriptor.address.action == "export-markdown-content"
+                        && descriptor.address.resource.starts_with("notes.page:")
+                }) {
                     if !text.is_empty() {
                         text.extend_from_slice(b"\n\n---\n\n");
                     }

@@ -18,7 +18,7 @@ use std::path::Path;
 
 use tilo_doc::sheet::a1::{make_ref, parse_ref};
 use tilo_doc::{CellInput, CellType, CellView, SheetView, WorkbookSnapshot};
-use tilo_doc_codecs::xlsx::{CellStyle, cell_styles, date_style_refs};
+use tilo_doc_codecs::xlsx::{CellStyle, cell_styles, date_style_refs, number_format_codes};
 use tilo_doc_codecs::{ParsedSheet, XlsxCodec};
 
 use crate::model::{CellFormat, CellValue, format_number_general, format_value};
@@ -141,21 +141,72 @@ pub fn parse_xlsx(bytes: &[u8]) -> anyhow::Result<Vec<SheetTable>> {
     let parsed = XlsxCodec::parse(bytes)?;
     // Excel stores dates as serial numbers; the cell's number format is the
     // only sign one is a date.
-    let dates = parsed
+    // Excel stores money and percentages as plain numbers too: a cell's
+    // style is what shows them as such.
+    let formats = parsed
         .preserved
         .get("xl/styles.xml")
-        .map(|styles| date_style_refs(styles))
+        .map(|styles| style_formats(styles))
         .unwrap_or_default();
-    tables_from_parsed(parsed.sheets, &dates)
+    tables_from_parsed(parsed.sheets, &formats)
+}
+
+/// What each cell style of a `styles.xml` shows a number as, by style index:
+/// a date, a percentage, an amount of money or a grouped number.
+fn style_formats(styles: &[u8]) -> BTreeMap<String, CellFormat> {
+    let dates = date_style_refs(styles);
+    number_format_codes(styles)
+        .into_iter()
+        .filter_map(|(style, code)| {
+            let format = if dates.contains(&style) {
+                CellFormat::Date(DateStyle::Iso)
+            } else {
+                format_of_code(&code)?
+            };
+            Some((style, format))
+        })
+        .chain(
+            dates
+                .iter()
+                .map(|style| (style.clone(), CellFormat::Date(DateStyle::Iso))),
+        )
+        .collect()
+}
+
+/// The Sheets format an Excel number-format code shows: a percentage, money
+/// by its symbol, a number with digit grouping or decimals; `None` for the
+/// general format and codes Sheets has no form for.
+fn format_of_code(code: &str) -> Option<CellFormat> {
+    use tilo_locale::Currency;
+    // Only the first (positive) section, without quoted text or colours.
+    let first = code.split(';').next().unwrap_or(code);
+    let symbols = [
+        ("$", Currency::USD),
+        ("\u{20AC}", Currency::EUR),
+        ("\u{00A3}", Currency::GBP),
+        ("\u{00A5}", Currency::JPY),
+        ("\u{20B9}", Currency::INR),
+        ("CHF", Currency::CHF),
+        ("EUR", Currency::EUR),
+        ("GBP", Currency::GBP),
+    ];
+    if first.contains('%') {
+        return Some(CellFormat::Percent);
+    }
+    if let Some((_, currency)) = symbols.iter().find(|(symbol, _)| first.contains(symbol)) {
+        return Some(CellFormat::Currency(*currency));
+    }
+    (first.contains('#') || first.contains("0.0") || first.contains(",0"))
+        .then_some(CellFormat::Number)
 }
 
 /// Materialise parsed tabs as tables, turning each cell into what Sheets
-/// stores: numbers in canonical form (`Date` when their style is in
-/// `date_styles`), text, `TRUE`/`FALSE` booleans, and formulas normalised to
+/// stores: numbers in canonical form, in the format their cell style shows
+/// (`style_formats`), text, `TRUE`/`FALSE` booleans, and formulas normalised to
 /// `=`-prefixed A1 form.
 pub(crate) fn tables_from_parsed(
     sheets: Vec<ParsedSheet>,
-    date_styles: &BTreeSet<String>,
+    style_formats: &BTreeMap<String, CellFormat>,
 ) -> anyhow::Result<Vec<SheetTable>> {
     sheets
         .into_iter()
@@ -165,7 +216,7 @@ pub(crate) fn tables_from_parsed(
                 let Some((col, row)) = parse_ref(&reference) else {
                     continue;
                 };
-                match imported_cell(input, date_styles) {
+                match imported_cell(input, style_formats) {
                     Some(cell) => placed.insert((row, col), cell),
                     None => placed.remove(&(row, col)),
                 };
@@ -208,7 +259,15 @@ pub(crate) fn tables_from_parsed(
 
 /// One parsed cell as Sheets stores it, or `None` for a blank (a style-only
 /// cell carries nothing Sheets keeps).
-fn imported_cell(input: CellInput, date_styles: &BTreeSet<String>) -> Option<ImportedCell> {
+fn imported_cell(
+    input: CellInput,
+    style_formats: &BTreeMap<String, CellFormat>,
+) -> Option<ImportedCell> {
+    let styled = input
+        .style
+        .as_ref()
+        .and_then(|style| style_formats.get(style))
+        .copied();
     let formula = input
         .formula
         .as_deref()
@@ -216,18 +275,10 @@ fn imported_cell(input: CellInput, date_styles: &BTreeSet<String>) -> Option<Imp
         .map(normalize_read_formula);
     let value = match input.cell_type {
         CellType::Number => match input.value.trim().parse::<f64>() {
-            Ok(n) => {
-                let is_date = input
-                    .style
-                    .as_ref()
-                    .is_some_and(|style| date_styles.contains(style));
-                let format = if is_date {
-                    CellFormat::Date(DateStyle::Iso)
-                } else {
-                    CellFormat::General
-                };
-                Some(ImportedCell::value(format_number_general(n), format))
-            }
+            Ok(n) => Some(ImportedCell::value(
+                format_number_general(n),
+                styled.unwrap_or(CellFormat::General),
+            )),
             Err(_) => (!input.value.is_empty())
                 .then(|| ImportedCell::value(input.value, CellFormat::Text)),
         },
@@ -250,7 +301,7 @@ fn imported_cell(input: CellInput, date_styles: &BTreeSet<String>) -> Option<Imp
         }
         (None, Some(formula)) => Some(ImportedCell {
             raw: String::new(),
-            format: CellFormat::General,
+            format: styled.unwrap_or(CellFormat::General),
             formula: Some(formula),
             bold: false,
         }),
@@ -672,5 +723,42 @@ mod tests {
             // A cross-table qualifier is dropped down to the bare cell.
             assert_eq!(normalize_read_formula("of:=[.$A$1]"), "=$A$1");
         }
+    }
+
+    /// A workbook's money and percentages, values and formulas alike, keep
+    /// their formats through import: Excel stores them as plain numbers
+    /// whose cell style shows them.
+    #[test]
+    fn money_and_percent_formats_survive_import() {
+        let cell = |raw: &str, format: CellFormat, formula: Option<&str>| {
+            Some(ImportedCell {
+                raw: raw.into(),
+                format,
+                formula: formula.map(str::to_owned),
+                bold: false,
+            })
+        };
+        let usd = CellFormat::Currency(tilo_locale::Currency::USD);
+        let table = SheetTable {
+            name: "Summary".into(),
+            hidden: false,
+            rows: vec![vec![
+                cell("49", usd, None),
+                cell("0.25", CellFormat::Percent, None),
+                cell("98", usd, Some("=A1*2")),
+                cell("1234.5", CellFormat::Number, None),
+            ]],
+        };
+        let back = parse_xlsx(&xlsx_bytes(std::slice::from_ref(&table)).unwrap()).unwrap();
+        let formats: Vec<CellFormat> = back[0].rows[0]
+            .iter()
+            .map(|cell| cell.as_ref().unwrap().format)
+            .collect();
+        assert_eq!(formats, [usd, CellFormat::Percent, usd, CellFormat::Number]);
+        assert_eq!(format_of_code("General"), None);
+        assert_eq!(
+            format_of_code("#,##0.00 \"CHF\""),
+            Some(CellFormat::Currency(tilo_locale::Currency::CHF))
+        );
     }
 }

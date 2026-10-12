@@ -144,12 +144,15 @@ fn foreign_workbooks_import_and_exports_round_trip() {
         assert_eq!(raw(budget, "C1"), "Total");
         assert_eq!(raw(budget, "A2"), "Rent");
 
-        // Numbers import as numbers; only date/time number formats survive as a
-        // format (currency and percent re-infer from the value on import).
+        // Numbers import as numbers, shown as their cell style shows them:
+        // money, percentages and dates keep their formats.
         assert_eq!(raw(budget, "B2"), "1200");
-        assert_eq!(format(budget, "B2"), CellFormat::General);
+        assert_eq!(
+            format(budget, "B2"),
+            CellFormat::Currency(tilo_locale::Currency::USD)
+        );
         assert_eq!(raw(budget, "B4"), "0.25");
-        assert_eq!(format(budget, "B4"), CellFormat::General);
+        assert_eq!(format(budget, "B4"), CellFormat::Percent);
         assert_eq!(raw(budget, "A3"), "45000");
         assert_eq!(format(budget, "A3"), CellFormat::Date(DateStyle::Iso));
         assert_eq!(raw(budget, "B3"), "45001.5");

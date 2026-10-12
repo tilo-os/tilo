@@ -636,6 +636,64 @@ pub fn date_style_refs(styles_xml: &[u8]) -> BTreeSet<String> {
     refs
 }
 
+/// Each cell style's number-format code, by style index as cells name it:
+/// a custom code as written, a built-in one as Excel defines it. Styles
+/// with the General format are left out.
+pub fn number_format_codes(styles_xml: &[u8]) -> BTreeMap<String, String> {
+    let mut codes = BTreeMap::new();
+    let Ok(s) = std::str::from_utf8(styles_xml) else {
+        return codes;
+    };
+    let builtin = |id: u32| -> Option<&'static str> {
+        Some(match id {
+            1 => "0",
+            2 => "0.00",
+            3 => "#,##0",
+            4 | 37..=40 => "#,##0.00",
+            5 | 7 => "$#,##0.00",
+            6 | 8 => "$#,##0.00;[Red]-$#,##0.00",
+            9 => "0%",
+            10 => "0.00%",
+            11 => "0.00E+00",
+            14..=17 | 22 => "yyyy-mm-dd",
+            18..=21 | 45..=47 => "hh:mm",
+            _ => return None,
+        })
+    };
+    let mut reader = Reader::from_str(s);
+    let mut custom: HashMap<String, String> = HashMap::new();
+    let mut in_cell_xfs = false;
+    let mut index = 0usize;
+    while let Ok(ev) = reader.read_event() {
+        match ev {
+            Event::Start(e) | Event::Empty(e) if local_name(&e) == b"numFmt" => {
+                if let (Some(id), Some(code)) =
+                    (attr_local(&e, b"numFmtId"), attr_local(&e, b"formatCode"))
+                {
+                    custom.insert(id, code);
+                }
+            }
+            Event::Start(e) if local_name(&e) == b"cellXfs" => in_cell_xfs = true,
+            Event::End(e) if end_local_name(&e) == b"cellXfs" => in_cell_xfs = false,
+            Event::Start(e) | Event::Empty(e) if in_cell_xfs && local_name(&e) == b"xf" => {
+                let code = attr_local(&e, b"numFmtId").and_then(|id| {
+                    custom
+                        .get(&id)
+                        .cloned()
+                        .or_else(|| id.parse().ok().and_then(builtin).map(str::to_owned))
+                });
+                if let Some(code) = code.filter(|code| !code.eq_ignore_ascii_case("general")) {
+                    codes.insert(index.to_string(), code);
+                }
+                index = index.saturating_add(1);
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    codes
+}
+
 /// Whether a custom number-format code displays a date, time or duration:
 /// a `d`/`m`/`y`/`h`/`s` token (or an `AM/PM` marker) in its first section,
 /// ignoring quoted text, `[...]` colour/locale brackets and escaped

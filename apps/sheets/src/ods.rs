@@ -37,7 +37,7 @@ pub fn parse_ods(bytes: &[u8]) -> anyhow::Result<Vec<SheetTable>> {
     let parsed = OdsCodec::parse(bytes)?;
     // ODF types dates explicitly (they arrive as ISO text), so no style marks
     // a number as a date.
-    crate::xlsx::tables_from_parsed(parsed.sheets, &BTreeSet::new())
+    crate::xlsx::tables_from_parsed(parsed.sheets, &BTreeMap::new())
 }
 
 /// Write tables to an `.ods` document.

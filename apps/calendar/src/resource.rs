@@ -259,6 +259,80 @@ pub struct CalendarShell;
     clippy::expect_used,
     reason = "compile-time CalendarAction/Operation payloads always serialize"
 )]
+
+/// `new-event`: the event on the local calendar, with the people it invites.
+fn new_event(args: &tilo_actions::ActionArgs) -> Result<CalendarAction, String> {
+    let title = args
+        .text(tilo_actions::PROMPTED_PARAM)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let parse = |field: &str| {
+        args.text(field)
+            .map(|value| {
+                chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M")
+                    .map_err(|_| format!("{field} must be YYYY-MM-DDTHH:MM"))
+            })
+            .transpose()
+    };
+    let start = parse("start")?.unwrap_or_else(next_hour);
+    let end = parse("end")?.unwrap_or(start + chrono::Duration::hours(1));
+    if end < start {
+        return Err("end must not be before start".into());
+    }
+    let mut data = default_local_event();
+    data.id = Uuid::new_v4().to_string();
+    data.title = title;
+    data.start = start.format("%Y-%m-%dT%H:%M").to_string();
+    data.end = end.format("%Y-%m-%dT%H:%M").to_string();
+    let text = |name| args.text(name).unwrap_or_default().trim();
+    text("location").clone_into(&mut data.location);
+    text("description").clone_into(&mut data.notes);
+    if let Some(attendees) = args.array("attendees") {
+        data.attendees = attendees.iter().map(invited).collect::<Result<_, _>>()?;
+    }
+    Ok(CalendarAction::UpsertEvent(data))
+}
+
+/// One person `new-event` invites: `{"name", "email"}`, `"Name <email>"` or an
+/// email alone, awaiting their answer.
+fn invited(value: &serde_json::Value) -> Result<crate::actions::AttendeeData, String> {
+    let (name, email) = match value {
+        serde_json::Value::Object(fields) => {
+            let field = |key: &str| {
+                fields
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned()
+            };
+            (field("name"), field("email"))
+        }
+        serde_json::Value::String(text) => match text.split_once('<') {
+            Some((name, rest)) => (
+                name.trim().to_owned(),
+                rest.trim_end().trim_end_matches('>').trim().to_owned(),
+            ),
+            None => (String::new(), text.trim().to_owned()),
+        },
+        _ => {
+            return Err(
+                "an attendee is {\"name\", \"email\"}, \"Name <email>\" or an email".into(),
+            );
+        }
+    };
+    if !email.contains('@') || email.contains(char::is_whitespace) {
+        return Err(format!("attendee `{value}` needs an email address"));
+    }
+    Ok(crate::actions::AttendeeData {
+        id: Uuid::new_v4().to_string(),
+        name,
+        email,
+        status: crate::model::InviteStatus::NeedsAction.as_ical().into(),
+    })
+}
+
 impl Resource for Calendar {
     const KIND: &'static str = "calendar.calendar";
     const LABEL: &'static str = "Calendar";
@@ -368,36 +442,13 @@ impl Resource for Calendar {
                     ),
                     ActionParam::optional("location", ParamType::Text, "Place, room or meeting link"),
                     ActionParam::optional("description", ParamType::Text, "Notes, as Markdown"),
+                    ActionParam::optional(
+                        "attendees",
+                        ParamType::Array,
+                        "People invited, each {\"name\", \"email\"} or \"Name <email>\" or an email",
+                    ),
                 ],
-                |args, _| {
-                    let title = args
-                        .text(tilo_actions::PROMPTED_PARAM)
-                        .unwrap_or_default()
-                        .trim()
-                        .to_owned();
-                    let parse = |field: &str| {
-                        args.text(field)
-                            .map(|value| {
-                                chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M")
-                                    .map_err(|_| format!("{field} must be YYYY-MM-DDTHH:MM"))
-                            })
-                            .transpose()
-                    };
-                    let start = parse("start")?.unwrap_or_else(next_hour);
-                    let end = parse("end")?.unwrap_or(start + chrono::Duration::hours(1));
-                    if end < start {
-                        return Err("end must not be before start".into());
-                    }
-                    let mut data = default_local_event();
-                    data.id = Uuid::new_v4().to_string();
-                    data.title = title;
-                    data.start = start.format("%Y-%m-%dT%H:%M").to_string();
-                    data.end = end.format("%Y-%m-%dT%H:%M").to_string();
-                    let text = |name| args.text(name).unwrap_or_default().trim();
-                    text("location").clone_into(&mut data.location);
-                    text("description").clone_into(&mut data.notes);
-                    Ok(CalendarAction::UpsertEvent(data))
-                },
+                |args, _| new_event(args),
             )
             .describe(
                 "Create an event on the local calendar. Answers its `uid` and `event` resource \

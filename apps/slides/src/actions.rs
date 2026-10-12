@@ -796,7 +796,7 @@ fn live_slide(deck: &crate::model::Deck, index: usize, id: &str) -> Result<usize
         .get(index)
         .filter(|slide| slide.id == id)
         .map(|_| index)
-        .or_else(|| deck.slides.iter().position(|slide| slide.id == id))
+        .or_else(|| slide_index(deck, id))
         .ok_or_else(|| refused("the target slide no longer exists"))
 }
 
@@ -2598,6 +2598,11 @@ mod tests {
                 "element": deck(doc).slides[1].elements[0].id,
             })),
             door_move_slide => |doc| through_door(doc, MOVE_SLIDE, move_slide_args(doc)),
+            door_move_slide_by_number => |doc| through_door(
+                doc,
+                MOVE_SLIDE,
+                serde_json::json!({ "slide": "5", "position": 1 }),
+            ),
             door_set_slide_text => |doc| through_door(doc, SET_SLIDE_TEXT, set_text_args()),
             door_group => |doc| through_door(doc, ui::tilo_resource::GROUP, group_args(doc)),
             door_apply => |doc| through_door(doc, ui::tilo_resource::APPLY, serde_json::json!({
