@@ -38,6 +38,10 @@ const ANNOUNCED_CHILD: &str = "TILO_TEST_IDLE_READS_ANNOUNCED";
 /// depends on is announced: at most one in the window, none on a clock
 /// (the unannounced re-check makes five a second).
 const ANNOUNCED_CHECKS_PER_S_BUDGET: f64 = 0.2;
+/// Blocking wakeups per second of the broker's thread while its readers
+/// idle with every change announced. It wakes 22-24 times a second on the
+/// unannounced re-check; 0.2 measured announced (focused run 101274).
+const ANNOUNCED_BROKER_WAKEUPS_PER_S_BUDGET: f64 = 1.0;
 
 /// The same idle journey with identity directories to watch, in a child
 /// process so its environment is its own: the broker holds each reader's
@@ -225,10 +229,11 @@ pub(super) async fn run(mounted: &Mounted, announced: bool) {
                 .sum(),
         )
     };
+    let broker_wakeups = thread("tilo-collab-bro");
     eprintln!(
         "IDLE-SHARED-WORKSPACE-THREADS shovel_blocking_per_s={:.2} broker_blocking_per_s={:.2}\n{wakeups}",
         thread("ui-collab-shove"),
-        thread("tilo-collab-bro"),
+        broker_wakeups,
     );
     assert_eq!(
         idle_captures, 0,
@@ -246,6 +251,10 @@ pub(super) async fn run(mounted: &Mounted, announced: bool) {
         assert!(
             per_second(idle_checks) <= ANNOUNCED_CHECKS_PER_S_BUDGET,
             "with every change announced the broker checked an idle read {idle_checks} times in {WINDOW:?} (budget {ANNOUNCED_CHECKS_PER_S_BUDGET}/s): is it re-checking on a clock?"
+        );
+        assert!(
+            broker_wakeups <= ANNOUNCED_BROKER_WAKEUPS_PER_S_BUDGET,
+            "the broker thread woke {broker_wakeups:.2} times a second while its readers idled with every change announced (budget {ANNOUNCED_BROKER_WAKEUPS_PER_S_BUDGET}/s)"
         );
     }
 }
