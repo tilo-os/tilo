@@ -1739,7 +1739,9 @@ impl ActionSpec {
 }
 
 fn enforce_operation_type(encoded: EncodedAction, expected: &str) -> EncodedAction {
-    if encoded.type_id == expected {
+    // A refusal carries the builder's reason to the caller (a sheet that
+    // does not exist, and which do), as a typed action's does.
+    if encoded.type_id == expected || encoded.type_id == INVALID_ARGUMENTS_TYPE {
         encoded
     } else {
         EncodedAction {

@@ -981,4 +981,16 @@ mod tests {
         assert_eq!(summary.formula.as_deref(), Some("=Rates!B1*10"));
         assert_eq!(summary.raw, "15", "the cached value reads the other sheet");
     }
+
+    /// Reading a sheet the workbook does not have is refused naming the
+    /// sheets it has, as an edit's refusal does.
+    #[test]
+    fn reading_an_unknown_sheet_names_the_sheets() {
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        let error = app
+            .call("read-cells", serde_json::json!({"sheet": "Q3 actuals"}))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("the sheets are `Sheet1`"), "{error}");
+    }
 }

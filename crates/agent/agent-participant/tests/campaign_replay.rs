@@ -613,11 +613,14 @@ fn survey_match(
     {
         return None;
     }
+    // A resource's kind: what it names with its ids left out, so a path
+    // such as `notes.notebook/page/<id>/body` matches its replayed twin.
     let kind = |resource: &str| {
-        resource
-            .split_once(':')
-            .map_or(resource, |(kind, _)| kind)
-            .to_owned()
+        let kind = resource.split_once(':').map_or(resource, |(kind, _)| kind);
+        kind.split('/')
+            .map(|part| if is_id(part) { "{id}" } else { part })
+            .collect::<Vec<_>>()
+            .join("/")
     };
     let wanted = kind(original);
     let claimed = ids.targets();
@@ -633,6 +636,61 @@ fn survey_match(
         .find(|descriptor| !claimed.contains(descriptor.address.resource.as_str()))
         .or_else(|| candidates.first())
         .map(|descriptor| descriptor.address.resource.clone())
+}
+
+/// The `<kind>:<uuid>` resources an action's arguments name.
+fn named_resources(arguments: &Map<String, Value>) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut stack: Vec<&Value> = arguments.values().collect();
+    while let Some(value) = stack.pop() {
+        match value {
+            Value::String(text) => {
+                if let Some((kind, id)) = text.trim().split_once(':')
+                    && kind.contains('.')
+                    && is_id(id)
+                {
+                    found.push(text.trim().to_owned());
+                }
+            }
+            Value::Array(items) => stack.extend(items),
+            Value::Object(fields) => stack.extend(fields.values()),
+            _ => {}
+        }
+    }
+    found
+}
+
+/// The resource of `rewritten`'s kind the replay's record publishes and no
+/// mapping claims yet, when `rewritten` itself is not published and there is
+/// exactly one such.
+fn argument_match(replica: &ConfinedReplica, rewritten: &str, ids: &IdMap) -> Option<String> {
+    let (kind, _) = rewritten.split_once(':')?;
+    let offered = replica.survey_with_effects();
+    let resources: BTreeSet<&str> = offered
+        .iter()
+        .map(|descriptor| descriptor.address.resource.as_str())
+        .collect();
+    if resources.contains(rewritten) {
+        return None;
+    }
+    let claimed = ids.targets();
+    let mut twins = resources.into_iter().filter(|resource| {
+        resource.split_once(':').is_some_and(|(k, _)| k == kind) && !claimed.contains(resource)
+    });
+    let twin = twins.next()?;
+    twins.next().is_none().then(|| twin.to_owned())
+}
+
+/// Whether `part` is a minted id (a UUID).
+fn is_id(part: &str) -> bool {
+    part.len() == 36
+        && part.chars().enumerate().all(|(at, c)| {
+            if matches!(at, 8 | 13 | 18 | 23) {
+                c == '-'
+            } else {
+                c.is_ascii_hexdigit()
+            }
+        })
 }
 
 #[test]
@@ -784,6 +842,14 @@ fn campaign_replay() {
         ) {
             ids.pair(&action.resource, &found, "survey", &mut notes);
             resource = found;
+        }
+        // A resource the arguments name (`"note": "notes.page:<id>"`) that the
+        // replay's record does not publish: its one unclaimed twin of that kind.
+        for named in named_resources(&action.arguments) {
+            let rewritten = ids.rewrite(&named);
+            if let Some(found) = argument_match(&record.replica, &rewritten, &ids) {
+                ids.pair(&named, &found, "argument", &mut notes);
+            }
         }
         let arguments = ids.rewrite_arguments(&action.arguments);
         // Content the action names that the replay never made: the run's
