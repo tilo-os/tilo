@@ -1,14 +1,13 @@
-//! Headless redraw-cycle benchmark for the widget showcase.
+//! Headless redraw-cycle benchmark over a representative widget tree.
 //!
-//! Builds the same widget tree as `widget_showcase` (minus overlays /
-//! percent-height widgets that don't compose into a bare Column),
-//! then runs N synthetic click → redraw cycles on the
+//! Builds a Column of common widgets (no overlays or percent-height
+//! widgets, which don't compose into a bare Column), then runs N synthetic click → redraw cycles on the
 //! Day/Week/Month `ToggleGroup`. Each cycle measures the cost of:
 //!
 //!   - `handle_event` (click + hover)
 //!   - `compute_layout_with_measure` (taffy re-flow + measure callbacks)
 //!   - `apply_layout` (writes rects into widgets)
-//!   - `draw_with_presence` (widget → vello scene)
+//!   - `draw` (widget → vello scene)
 //!   - `OffscreenRenderer::render`     (vello → wgpu, includes GPU submit)
 //!
 //! Output is a per-phase mean / min / max across iterations, plus a
@@ -29,7 +28,6 @@ use chrono::NaiveDate;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use tilo_ui::i18n::I18nManager;
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::permissions::PermissionContext;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -59,6 +57,21 @@ fn placeholder_image() -> PenikoImage {
 
 fn caption(key: &'static str) -> Box<dyn Widget> {
     Box::new(Text::new(key))
+}
+
+/// Three avatars (two initials, one picture) and three badges.
+fn avatar_badge_row() -> Box<dyn Widget> {
+    Box::new(
+        Row::new()
+            .push(Box::new(Avatar::person("Quinn Daley", "quinn.daley")))
+            .push(Box::new(Avatar::person("Ada Lovelace", "ada.lovelace")))
+            .push(Box::new(
+                Avatar::person("Sam Okafor", "sam.okafor").with_image(placeholder_image()),
+            ))
+            .push(Box::new(Badge::dot()))
+            .push(Box::new(Badge::count(7)))
+            .push(Box::new(Badge::count(120))),
+    )
 }
 
 fn build_tree() -> Box<dyn Widget> {
@@ -91,16 +104,14 @@ fn build_tree() -> Box<dyn Widget> {
                 .push(caption("row_basics"))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(tilo_ui::widget::Button::new(
-                            "btn", "btn_save", None,
-                        )))
+                        .push(Box::new(tilo_ui::widget::Button::new("btn", "btn_save")))
                         .push(Box::new(tilo_ui::widget::Toggle::new("tog", "toggle_1")))
                         .push(Box::new(tilo_ui::widget::Checkbox::new("chk", "check_1")))
                         .push(Box::new(tilo_ui::widget::Slider::new("sld", "slider_1")))
                         .push(Box::new(
-                            tilo_ui::widget::TextInput::new(vec![])
-                                .with_id("txt")
-                                .with_on_change_path("text_1"),
+                            tilo_ui::widget::TextInput::local()
+                                .with_initial_value("Edit me")
+                                .with_id("txt"),
                         )),
                 ))
                 .push(caption("row_indicators"))
@@ -111,15 +122,7 @@ fn build_tree() -> Box<dyn Widget> {
                         .push(Box::new(Spinner::with_size(32.0))),
                 ))
                 .push(caption("row_avatar_badge"))
-                .push(Box::new(
-                    Row::new()
-                        .push(Box::new(Avatar::from_initials("QD", 48.0)))
-                        .push(Box::new(Avatar::from_initials("AL", 48.0)))
-                        .push(Box::new(Avatar::new(placeholder_image(), 48.0)))
-                        .push(Box::new(Badge::dot()))
-                        .push(Box::new(Badge::count(7)))
-                        .push(Box::new(Badge::count(120))),
-                ))
+                .push(avatar_badge_row())
                 .push(caption("row_nav"))
                 .push(Box::new(Breadcrumb::new(vec![
                     "home".into(),
@@ -174,7 +177,6 @@ struct Bench {
     doc: AutoCommit,
     text_renderer: TextRenderer,
     presence: PresenceCtx,
-    perms: PermissionContext,
     theme: Theme,
     scene: Scene,
     renderer: OffscreenRenderer,
@@ -193,7 +195,6 @@ impl Bench {
             root_node,
             text_renderer,
             presence,
-            perms,
             theme,
             scene,
             renderer,
@@ -238,14 +239,7 @@ impl Bench {
 
         let t_draw = tilo_ui::time::now();
         scene.reset();
-        root.draw_with_presence(
-            scene,
-            Affine::IDENTITY,
-            text_renderer,
-            theme,
-            presence,
-            perms,
-        );
+        root.draw(scene, Affine::IDENTITY, text_renderer, theme, presence);
         times.draw_us = t_draw.elapsed().as_micros();
 
         let t_render = tilo_ui::time::now();
@@ -296,7 +290,6 @@ pub fn run(_args: &[String]) {
     let theme = Theme::dark();
     let text_renderer = TextRenderer::new();
     let presence = PresenceCtx::default();
-    let perms = PermissionContext::permissive();
     let doc = AutoCommit::new();
 
     let mut root = build_tree();
@@ -312,7 +305,6 @@ pub fn run(_args: &[String]) {
         doc,
         text_renderer,
         presence,
-        perms,
         theme,
         scene,
         renderer,
@@ -324,7 +316,7 @@ pub fn run(_args: &[String]) {
     // outliers we don't want polluting the steady-state numbers.
     let mut warm = Phases::default();
     bench.full_redraw(&mut warm);
-    bench.root.sync(&mut bench.doc, &automerge::ObjId::Root);
+    bench.root.sync(&bench.doc, &automerge::ObjId::Root);
     eprintln!(
         "warm-up: compute={}us apply={}us draw={}us render={}us",
         warm.compute_us, warm.apply_us, warm.draw_us, warm.render_us
@@ -340,7 +332,7 @@ pub fn run(_args: &[String]) {
     let click_x = 240.0;
     let click_y = 280.0;
     let modifiers = Modifiers::default();
-    let device_id: DeviceId = unsafe { std::mem::zeroed() };
+    let device_id = winit::event::DeviceId::dummy();
 
     let mut hist: Vec<Phases> = Vec::with_capacity(iters);
     for _ in 0..iters {
@@ -386,7 +378,7 @@ impl Bench {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: doc,
+                state: tilo_ui::widget::Edits::lend(doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -405,7 +397,7 @@ impl Bench {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: doc,
+                state: tilo_ui::widget::Edits::lend(doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -424,7 +416,7 @@ impl Bench {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: doc,
+                state: tilo_ui::widget::Edits::lend(doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

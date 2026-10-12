@@ -1,4 +1,13 @@
 //! Host-local invocation custody. No wire caller can manufacture these checks.
+
+/// A typed host check response, suitable for an existing effect worker.
+pub type ApprovedCheckFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<runtime_collab::approved_checks::Receipt, String>>
+            + Send,
+    >,
+>;
+
 /// Inert delivered inputs. Only the registered host can associate these with
 /// an original admitted caller, contract and exact worker connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,20 +27,11 @@ impl PublishedInvocationRequest {
     /// The invoker this request resolves for: the admitted actor plus the
     /// host-set participant.
     pub fn invoker(&self) -> tilo_actions::ActionInvoker {
-        tilo_actions::ActionInvoker {
-            actor: self.actor.clone(),
-            participant: self.participant.clone(),
+        let invoker = tilo_actions::ActionInvoker::actor(self.actor.clone());
+        match &self.participant {
+            Some(participant) => invoker.with_participant(participant.clone()),
+            None => invoker,
         }
-    }
-
-    /// The participant of a delivered invocation: the host-built delivery
-    /// context names it for this exact `actor`, or there is none
-    /// ([`tilo_actions::ActionInvoker::delivered`]).
-    pub fn delivered_participant(
-        actor: &str,
-        context: Option<&tilo_actions::ActionContext>,
-    ) -> Option<tilo_actions::ParticipantId> {
-        tilo_actions::ActionInvoker::delivered(actor, context).participant
     }
 }
 
@@ -61,6 +61,144 @@ impl Drop for InvokerScope {
         CURRENT_INVOKERS.with_borrow_mut(|invokers| {
             invokers.pop();
         });
+    }
+}
+
+thread_local! {
+    static VIEWERS: std::cell::RefCell<Vec<tilo_actions::ParticipantId>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The participant a published tree is being built for while it lives:
+/// what a surface offers bound to where someone is (their caret, their
+/// Find hits) is that participant's, not the window's. It grants nothing:
+/// an invocation still runs for its own invoker.
+pub struct ViewerScope(());
+impl ViewerScope {
+    pub fn enter(participant: tilo_actions::ParticipantId) -> Self {
+        VIEWERS.with_borrow_mut(|viewers| viewers.push(participant));
+        Self(())
+    }
+}
+impl Drop for ViewerScope {
+    fn drop(&mut self) {
+        VIEWERS.with_borrow_mut(|viewers| {
+            viewers.pop();
+        });
+    }
+}
+
+/// Whose view what is being built or resolved now is: the participant of
+/// the delivered invocation, else the participant a tree is published for.
+/// `None` for the window's own person.
+pub fn current_viewer() -> Option<tilo_actions::ParticipantId> {
+    current_participant().or_else(|| VIEWERS.with_borrow(|viewers| viewers.last().cloned()))
+}
+
+/// Who an effect invocation runs for, kept while it runs: what its handler
+/// and completion submit is applied for the same invoker, in the same
+/// context, and only as far as the invoker was admitted.
+#[derive(Clone, Debug)]
+pub(crate) struct Continuation {
+    pub(crate) invoker: tilo_actions::ActionInvoker,
+    pub(crate) context: Option<tilo_actions::ActionContext>,
+    /// What the invoker was admitted for: the effect's own kind, which the
+    /// admitting host checked the invoker may perform.
+    pub(crate) admitted: tilo_actions::ActionKind,
+    /// Why an edit the effect submitted was refused: the effect then fails.
+    pub(crate) refused: Option<tilo_actions::ActionFailure>,
+    /// The edits it submitted that the host is still admitting, by request.
+    pub(crate) outstanding: std::collections::HashSet<u64>,
+    /// The effect's answer, held until those edits are admitted or refused:
+    /// the wire id to send it under, and the answer.
+    pub(crate) deferred: Option<(u64, tilo_actions::InvocationUpdate)>,
+}
+
+impl Continuation {
+    /// Enter the invoker's scope for one edit the effect submitted.
+    pub(crate) fn enter(&self) -> (InvokerScope, ContinuationScope) {
+        (
+            InvokerScope::enter(self.invoker.clone()),
+            ContinuationScope::enter(self.admitted),
+        )
+    }
+
+    /// Why the effect fails when the edit it submitted was refused with
+    /// `error`: a refusal keeps its own code.
+    pub(crate) fn failure(error: &tilo_actions::DoorError) -> tilo_actions::ActionFailure {
+        let (code, message) = match error {
+            tilo_actions::DoorError::Unavailable { code, reason } => (code.clone(), reason.clone()),
+            error => (
+                crate::bound_dispatch::door_error_code(error).to_owned(),
+                error.to_string(),
+            ),
+        };
+        tilo_actions::ActionFailure {
+            code,
+            message,
+            details: None,
+            retryable: false,
+        }
+    }
+
+    /// The effect's terminal `update`, failed when an edit it submitted was
+    /// refused.
+    pub(crate) fn settle(
+        &self,
+        update: tilo_actions::InvocationUpdate,
+    ) -> tilo_actions::InvocationUpdate {
+        match (update, &self.refused) {
+            (tilo_actions::InvocationUpdate::Succeeded { invocation, .. }, Some(error)) => {
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: error.clone(),
+                }
+            }
+            (update, _) => update,
+        }
+    }
+}
+
+thread_local! {
+    static CONTINUATION_BOUNDS: std::cell::RefCell<Vec<tilo_actions::ActionKind>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// An edit an effect submitted on its invoker's behalf is being applied on
+/// this thread: it may need no more than the invoker was admitted for.
+#[must_use = "the bound applies only while the guard is alive"]
+pub(crate) struct ContinuationScope(());
+impl ContinuationScope {
+    pub(crate) fn enter(admitted: tilo_actions::ActionKind) -> Self {
+        CONTINUATION_BOUNDS.with_borrow_mut(|bounds| bounds.push(admitted));
+        Self(())
+    }
+}
+impl Drop for ContinuationScope {
+    fn drop(&mut self) {
+        CONTINUATION_BOUNDS.with_borrow_mut(|bounds| {
+            bounds.pop();
+        });
+    }
+}
+
+/// Refuse an edit of kind `needed` while applying an effect's edit for an
+/// invoker admitted for less (a read never lends a change, a change never an
+/// outside effect): an effect never lends its invoker more than they hold.
+///
+/// # Errors
+/// [`tilo_actions::DoorError::Unavailable`] with code `permission_denied`.
+pub(crate) fn check_continuation(
+    spec: &tilo_actions::ActionSpec,
+    needed: tilo_actions::ActionKind,
+) -> Result<(), tilo_actions::DoorError> {
+    let admitted = CONTINUATION_BOUNDS.with_borrow(|bounds| bounds.last().copied());
+    match admitted {
+        Some(admitted) if admitted < needed => Err(tilo_actions::DoorError::Unavailable {
+            code: "permission_denied".into(),
+            reason: format!("the invoker may not {} here", spec.label.to_lowercase()),
+        }),
+        _ => Ok(()),
     }
 }
 
@@ -210,6 +348,74 @@ use std::{
     },
 };
 
+/// Local evidence of the target resolved at dispatch, before encoding/execution.
+///
+/// The SDK captures this from the original caller's scope and actual record
+/// loan. It contains no action arguments, result, anchor or pixels. It is not
+/// a receipt of completion, portable authentication, or permission to execute.
+/// A consumer must separately qualify any anchor and successful presentation
+/// against these committed heads and the current owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvocationLocusBasis {
+    invocation: tilo_actions::InvocationId,
+    actor: String,
+    participant: Option<tilo_actions::ParticipantId>,
+    publication: tilo_actions::ActionAddress,
+    target: crate::bound_dispatch::BoundActionAddress,
+    owner_lifetime: uuid::Uuid,
+    checkout: RecordId,
+    route: RouteSpec,
+    heads: Vec<ChangeHash>,
+}
+
+impl InvocationLocusBasis {
+    pub fn invocation(&self) -> tilo_actions::InvocationId {
+        self.invocation
+    }
+    pub fn actor(&self) -> &str {
+        &self.actor
+    }
+    pub fn participant(&self) -> Option<&tilo_actions::ParticipantId> {
+        self.participant.as_ref()
+    }
+    /// Original host-admitted address; it may be a publication alias.
+    pub fn publication(&self) -> &tilo_actions::ActionAddress {
+        &self.publication
+    }
+    /// Exact component-local address resolved by the SDK's publication registry.
+    pub fn target(&self) -> &tilo_actions::ActionAddress {
+        &self.target.address
+    }
+    pub fn instance(&self) -> crate::application::InstanceId {
+        self.target.instance_id
+    }
+    pub fn owner_lifetime(&self) -> uuid::Uuid {
+        self.owner_lifetime
+    }
+    /// Actual local checkout identity, not an inferred wire record ID.
+    pub fn checkout(&self) -> &RecordId {
+        &self.checkout
+    }
+    pub fn route(&self) -> &RouteSpec {
+        &self.route
+    }
+    pub fn heads(&self) -> &[ChangeHash] {
+        &self.heads
+    }
+}
+
+#[derive(Default)]
+enum InvocationLocusState {
+    #[default]
+    Unobserved,
+    Unavailable,
+    Captured(Box<InvocationLocusBasis>),
+}
+
+const MAX_LOCUS_HEADS: usize = 128;
+const MAX_LOCUS_FIELD_BYTES: usize = 4096;
+const MAX_LOCUS_BASIS_BYTES: usize = 16 * 1024;
+
 /// Immutable job custody, constructed only from an actual admitted invocation
 /// and the exact mounted record owner. InvocationId alone cannot construct it.
 #[derive(Clone)]
@@ -219,6 +425,8 @@ pub struct ResourceInvocationScope {
     lease: PublishedInvocationLease,
     provenance: Rc<RefCell<InvocationProvenance>>,
     retired: Arc<AtomicBool>,
+    locus_target: Option<crate::bound_dispatch::BoundActionAddress>,
+    locus_basis: Rc<RefCell<InvocationLocusState>>,
 }
 
 impl ResourceInvocationScope {
@@ -252,7 +460,112 @@ impl ResourceInvocationScope {
             lease,
             provenance,
             retired: Arc::new(AtomicBool::new(false)),
+            locus_target: None,
+            locus_basis: Rc::new(RefCell::new(InvocationLocusState::Unobserved)),
         })
+    }
+
+    /// Retain the exact target while the SDK still holds its original alias
+    /// resolution. Later dispatch cannot qualify a different same-owner action.
+    pub(crate) fn for_bound_target(
+        target: crate::bound_dispatch::BoundActionTarget,
+        lease: PublishedInvocationLease,
+    ) -> Result<Self, String> {
+        if target.address.instance_id != target.binding.instance_id {
+            return Err("invocation target instance disagrees with owner".into());
+        }
+        let mut scope = Self::for_owner(HistoryOwner::component(target.binding), lease)?;
+        if target.address.address.resource.len() <= MAX_LOCUS_FIELD_BYTES
+            && target.address.address.action.len() <= MAX_LOCUS_FIELD_BYTES
+        {
+            scope.locus_target = Some(target.address);
+        } else {
+            *scope.locus_basis.borrow_mut() = InvocationLocusState::Unavailable;
+        }
+        Ok(scope)
+    }
+
+    /// Read the immutable pre-execution observation while original custody is
+    /// live. No basis means this invocation could not be observed truthfully.
+    /// This never commits, borrows a document, refreshes timestamps or executes.
+    pub fn locus_basis(&self) -> Result<Option<InvocationLocusBasis>, String> {
+        self.check()?;
+        Ok(match &*self.locus_basis.borrow() {
+            InvocationLocusState::Captured(basis) => Some(basis.as_ref().clone()),
+            _ => None,
+        })
+    }
+
+    /// Best-effort metadata at actual bound dispatch; failure never changes the
+    /// action result. Once unavailable it cannot be repaired by a later event.
+    pub(crate) fn capture_locus_basis(
+        &self,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        invocation: tilo_actions::InvocationId,
+        actor: &str,
+        document: &AutoCommit,
+    ) {
+        let request = &self.lease.request;
+        let valid = self.locus_target.as_ref() == Some(&target.address)
+            && self
+                .owner
+                .same_owner(&HistoryOwner::component(target.binding.clone()))
+            && self.owner.lifetime_id() == Some(target.binding.lifetime_id)
+            && invocation == request.invocation
+            && actor == request.actor
+            && current_invoker().as_ref() == Some(&request.invoker())
+            && self.check_read_loan(document).is_ok();
+        if !valid {
+            *self.locus_basis.borrow_mut() = InvocationLocusState::Unavailable;
+            return;
+        }
+        if !matches!(*self.locus_basis.borrow(), InvocationLocusState::Unobserved) {
+            return;
+        }
+        // Never call get_heads here: observation must not close an open edit.
+        let mut heads = document.base_heads();
+        if document.pending_ops() != 0 || heads.len() > MAX_LOCUS_HEADS {
+            *self.locus_basis.borrow_mut() = InvocationLocusState::Unavailable;
+            return;
+        }
+        let fields = [
+            request.actor.as_str(),
+            request
+                .participant
+                .as_ref()
+                .map_or("", tilo_actions::ParticipantId::as_str),
+            request.address.resource.as_str(),
+            request.address.action.as_str(),
+            target.address.address.resource.as_str(),
+            target.address.address.action.as_str(),
+            target.binding.checkout.id.as_str(),
+            self.lease.route.app_id.as_str(),
+            self.lease.route.record.as_deref().unwrap_or(""),
+        ];
+        let bytes = fields
+            .iter()
+            .try_fold(128usize + heads.len() * 32, |sum, field| {
+                (field.len() <= MAX_LOCUS_FIELD_BYTES)
+                    .then(|| sum.checked_add(field.len()))
+                    .flatten()
+            });
+        if bytes.is_none_or(|bytes| bytes > MAX_LOCUS_BASIS_BYTES) || self.check().is_err() {
+            *self.locus_basis.borrow_mut() = InvocationLocusState::Unavailable;
+            return;
+        }
+        heads.sort_unstable();
+        *self.locus_basis.borrow_mut() =
+            InvocationLocusState::Captured(Box::new(InvocationLocusBasis {
+                invocation,
+                actor: request.actor.clone(),
+                participant: request.participant.clone(),
+                publication: request.address.clone(),
+                target: target.address.clone(),
+                owner_lifetime: target.binding.lifetime_id,
+                checkout: target.binding.checkout.id.clone(),
+                route: self.lease.route.clone(),
+                heads,
+            }));
     }
 
     /// Compare inert original admission facts with this exact current handler.
@@ -305,6 +618,39 @@ impl ResourceInvocationScope {
 
     pub fn invocation(&self) -> tilo_actions::InvocationId {
         self.lease.request.invocation
+    }
+
+    /// Queue only a check ID under this exact admitted effect's record route.
+    /// The host resolves commands and execution bounds and rechecks custody.
+    ///
+    /// # Errors
+    /// Refuses absent transport, changed custody, malformed IDs or a full lane.
+    pub fn approved_check(&self, check_id: &str) -> Result<ApprovedCheckFuture, String> {
+        self.check()?;
+        #[cfg(feature = "broker-transport")]
+        {
+            let scope = self.effect_scope()?;
+            let request = runtime_collab::approved_checks::Request {
+                version: 1,
+                invocation: self.invocation().0.to_string(),
+                check_id: check_id.into(),
+            };
+            let receive = crate::collaboration::approved_checks::enqueue(
+                &self.route().channel_id(),
+                request,
+            )?;
+            Ok(Box::pin(async move {
+                let receipt = receive
+                    .await
+                    .map_err(|_| "approved-check transport retired")??;
+                scope.with_effect(|| Ok(receipt))
+            }))
+        }
+        #[cfg(not(feature = "broker-transport"))]
+        {
+            let _ = check_id;
+            Err("approved project checks require the admitted native broker transport".into())
+        }
     }
 
     /// The canonical record route construction verified against the owner.
@@ -605,12 +951,14 @@ impl InvocationProvenance {
             .map(|change| change.hash())
             .collect::<BTreeSet<_>>();
         let mut contributions: Vec<Contribution> = vec![];
+        #[cfg(feature = "broker-transport")]
         let mut acknowledgements = vec![];
         for hash in &exported {
             if let Some(retained) = self.contributions.get(hash) {
                 if retained.committed.load(Ordering::Acquire) {
                     continue;
                 }
+                #[cfg(feature = "broker-transport")]
                 acknowledgements.push(retained.committed.clone());
                 let lease = &retained.lease;
                 if let Some(group) = contributions
@@ -635,6 +983,7 @@ impl InvocationProvenance {
                 to: document.base_heads(),
                 exported,
                 contributions,
+                #[cfg(feature = "broker-transport")]
                 acknowledgements,
             },
         ))))
@@ -652,10 +1001,7 @@ struct DocumentAuthorizationInner {
     to: Vec<ChangeHash>,
     exported: BTreeSet<ChangeHash>,
     contributions: Vec<Contribution>,
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport acknowledges commits")
-    )]
+    #[cfg(feature = "broker-transport")]
     acknowledgements: Vec<Arc<AtomicBool>>,
 }
 
@@ -674,46 +1020,6 @@ impl DocumentAuthorization {
     pub fn frontiers(&self) -> (&[ChangeHash], &[ChangeHash]) {
         (&self.0.from, &self.0.to)
     }
-    /// Check the concrete committer's returned operation against the exact
-    /// captured body (including its encoded causal dependencies) and route.
-    /// Actual bounded graph/basis admission is still the final owner's job.
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport commits documents")
-    )]
-    pub(crate) fn check_committed_operation(
-        &self,
-        route: &RouteSpec,
-        operation: &collab_types::SignedOp,
-    ) -> Result<(), String> {
-        let room = route.cluster_id.to_string();
-        let record = route.record.as_deref().unwrap_or("");
-        if route != &self.0.route
-            || operation.encryption.is_some()
-            || operation.op_class != collab_types::OpClass::Splice
-            || operation.artifact
-                != collab_types::document_artifact_id(&route.app_id, &room, record)
-            || operation.attestation_id
-                != collab_types::document_attestation_id(&route.app_id, &room, record)
-            || blake3::hash(&operation.payload).as_bytes() != &self.0.body
-        {
-            return Err("scoped owner returned a different document operation".into());
-        }
-        Ok(())
-    }
-
-    // Private SDK-only confirmation, after exact scoped durable success and
-    // matching receipt handoff. A handler or terminal receipt cannot set it.
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport commits documents")
-    )]
-    pub(crate) fn acknowledge_committed(&self) {
-        for acknowledgement in &self.0.acknowledgements {
-            acknowledgement.store(true, Ordering::Release);
-        }
-    }
-
     /// This verifies body binding and current contributors, not graph coverage.
     /// The concrete owner must ALSO call validate_owner_base with the actual
     /// bounded admission/parser's complete mutation range under its owner turn.
@@ -801,10 +1107,7 @@ impl DocumentAuthorization {
         Ok(())
     }
 
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport commits documents")
-    )]
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn retained_bytes(&self) -> Option<usize> {
         let mut bytes = std::mem::size_of::<DocumentAuthorizationInner>();
         bytes = bytes

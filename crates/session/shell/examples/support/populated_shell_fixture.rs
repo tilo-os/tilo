@@ -2,11 +2,9 @@ use shell::compositor::frame::FrameBuilder;
 
 pub(crate) struct PopulatedShellFixture {
     frame: FrameBuilder,
-    #[allow(
-        dead_code,
-        reason = "the owned parent must outlive and drop after the explicit fixture frame"
-    )]
-    parent: tempfile::TempDir,
+    /// Never read: the owned parent must outlive and drop after the fixture
+    /// frame, so it stays declared after `frame`.
+    _parent: tempfile::TempDir,
 }
 
 impl PopulatedShellFixture {
@@ -14,7 +12,7 @@ impl PopulatedShellFixture {
         let parent = tempfile::tempdir()
             .map_err(|error| format!("private populated shell fixture parent: {error}"))?;
         let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts"),
+            ui::font_catalog::checkout_root(),
             "en-US",
         );
         let renderer = ui::text_render::TextRenderer::with_font_catalog(&catalog)
@@ -28,7 +26,10 @@ impl PopulatedShellFixture {
             inputs,
         )
         .map_err(|error| format!("explicit populated shell fixture: {error}"))?;
-        Ok(Self { frame, parent })
+        Ok(Self {
+            frame,
+            _parent: parent,
+        })
     }
 }
 

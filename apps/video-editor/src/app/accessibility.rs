@@ -25,12 +25,7 @@ impl VideoEditorApp {
     /// Execute a top-bar command through the same helpers the pointer uses.
     /// Visibility is checked again at activation time so a delayed assistive
     /// technology event cannot fire Split after a resize hid that button.
-    pub(super) fn a11y_topbar_action(
-        &mut self,
-        action: &ui::a11y::Action,
-        rest: &[u64],
-        state: &mut AutoCommit,
-    ) -> bool {
+    pub(super) fn a11y_topbar_action(&mut self, action: &ui::a11y::Action, rest: &[u64]) -> bool {
         use ui::a11y::{Action, hash_key};
         let Some(&key) = rest.first() else {
             return false;
@@ -63,7 +58,7 @@ impl VideoEditorApp {
                     return true;
                 }
                 if key == hash_key(&TOPBAR_SPLIT_KEY) && r.split_btn.width() > 0.0 {
-                    self.split_selected(state);
+                    self.split_selected();
                     return true;
                 }
                 if key == hash_key(&TOPBAR_EXPORT_KEY) && r.export_btn.width() > 0.0 {
@@ -877,27 +872,27 @@ impl VideoEditorApp {
 
     /// Run whatever a pick row does — the same call the pointer runs on that
     /// control, so a reader and a mouse cannot do two different things.
-    pub(super) fn a11y_activate_pick(&mut self, pk: PickField, doc: &mut AutoCommit) -> bool {
+    pub(super) fn a11y_activate_pick(&mut self, pk: PickField) -> bool {
         match pk {
             PickField::Frame(i) => {
                 let Some((_, w, h)) = FRAME_PRESETS.get(i).copied() else {
                     return false;
                 };
-                self.set_project_frame_size(doc, w, h);
+                self.set_project_frame_size(w, h);
                 true
             }
             PickField::Rate(i) => {
                 let Some(rate) = RATE_PRESETS.get(i).copied() else {
                     return false;
                 };
-                self.set_project_fps(doc, rate);
+                self.set_project_fps(rate);
                 true
             }
             PickField::MatchFormat => {
                 if self.format_source().is_none() {
                     return false;
                 }
-                self.match_project_format(doc);
+                self.match_project_format();
                 true
             }
             // Each runs the very call the pointer runs on that control.
@@ -905,35 +900,35 @@ impl VideoEditorApp {
                 if self.selected().is_none() {
                     return false;
                 }
-                self.toggle_key_enabled(doc);
+                self.toggle_key_enabled();
                 true
             }
             PickField::MaskShape(shape) => {
                 if self.selected().is_none() {
                     return false;
                 }
-                self.set_mask_shape(doc, shape);
+                self.set_mask_shape(shape);
                 true
             }
             PickField::Transition(t) => {
                 if self.selected().is_none() {
                     return false;
                 }
-                self.set_transition(doc, t);
+                self.set_transition(t);
                 true
             }
             PickField::Label(slot) => {
                 if self.selected().is_none() {
                     return false;
                 }
-                self.set_palette(doc, slot);
+                self.set_palette(slot);
                 true
             }
             PickField::LinkToggle => {
                 if self.link_affordance().is_none() {
                     return false;
                 }
-                self.toggle_link_selected(doc);
+                self.toggle_link_selected();
                 true
             }
             // Refused when the lane is already at unity and centre, which is
@@ -946,7 +941,7 @@ impl VideoEditorApp {
                 {
                     return false;
                 }
-                self.reset_selected_track_mix(doc);
+                self.reset_selected_track_mix();
                 true
             }
         }
@@ -1213,6 +1208,7 @@ impl VideoEditorApp {
                     ..Default::default()
                 }),
         );
+        kids.extend(self.history.accessibility(r.history_btn));
         AccessNode::new(Role::Toolbar)
             .with_name("Editor commands")
             .with_hashed_key(TOPBAR_A11Y_KEY)
@@ -1478,7 +1474,7 @@ impl VideoEditorApp {
         if let Some((mid, _)) = self
             .bin_item_rects(r)
             .into_iter()
-            .find(|(_, rect)| rect.contains(p))
+            .find(|(_, rect)| rect.contains(p) && VideoEditorApp::bin_viewport(r).contains(p))
             && let Some(i) = self.a11y_bin_items().iter().position(|m| *m == mid)
         {
             self.focus.pane = Pane::Bin;
@@ -1522,7 +1518,7 @@ impl VideoEditorApp {
         if matches!(row, InspectorRow::Field(_)) {
             return Some(Rect::new(
                 rect.x0 - 3.0,
-                rect.y0 - 21.0,
+                rect.y0 - 27.0,
                 rect.x1 + 3.0,
                 rect.y1 + 2.0,
             ));
@@ -1713,9 +1709,9 @@ impl VideoEditorApp {
     }
 
     /// Activate whatever the pane cursor is on — the keyboard's Enter, routed
-    /// through the same `perform_action_at` an assistive technology uses, so
+    /// through the same `perform_action` an assistive technology uses, so
     /// the two can never do different things.
-    pub(super) fn activate_focused(&mut self, state: &mut AutoCommit) -> bool {
+    pub(super) fn activate_focused(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
         use ui::a11y::{Action, hash_key};
         let pane = self.focus.pane;
         let rest: Vec<u64> = match pane {
@@ -1761,7 +1757,7 @@ impl VideoEditorApp {
         let mut path = vec![pane.key()];
         path.extend(rest);
         let root = automerge::ROOT;
-        self.perform_action_at(&Action::Activate, &path, state, &root)
+        self.perform_action(&Action::Activate, &path, state, &root)
     }
 
     /// The hover label for whatever icon-only control sits under `p`, or
@@ -1825,12 +1821,7 @@ impl VideoEditorApp {
         clippy::indexing_slicing,
         reason = "bin commands decode only the fixed key layout emitted by a11y_bin"
     )]
-    pub(super) fn a11y_bin_action(
-        &mut self,
-        action: &ui::a11y::Action,
-        rest: &[u64],
-        state: &mut AutoCommit,
-    ) -> bool {
+    pub(super) fn a11y_bin_action(&mut self, action: &ui::a11y::Action, rest: &[u64]) -> bool {
         use ui::a11y::{Action, hash_key};
         let Some(&key) = rest.first() else {
             return false;
@@ -1850,7 +1841,7 @@ impl VideoEditorApp {
             }
             Action::Activate => {
                 self.selected_media = Some(items[i]);
-                self.add_media_to_timeline(state, items[i]);
+                self.add_media_to_timeline(items[i]);
                 true
             }
             _ => false,
@@ -1900,12 +1891,7 @@ impl VideoEditorApp {
         }
     }
 
-    pub(super) fn a11y_timeline_action(
-        &mut self,
-        action: &ui::a11y::Action,
-        rest: &[u64],
-        state: &mut AutoCommit,
-    ) -> bool {
+    pub(super) fn a11y_timeline_action(&mut self, action: &ui::a11y::Action, rest: &[u64]) -> bool {
         use ui::a11y::{Action, hash_key};
         let Some(&track_key) = rest.first() else {
             return false;
@@ -1941,9 +1927,9 @@ impl VideoEditorApp {
                     Action::Focus => true,
                     Action::Activate | Action::ToggleCheck => {
                         match name {
-                            "Mute" => self.toggle_track_mute(state, tid),
-                            "Solo" => self.toggle_track_solo(state, tid),
-                            _ => self.toggle_track_lock(state, tid),
+                            "Mute" => self.toggle_track_mute(tid),
+                            "Solo" => self.toggle_track_solo(tid),
+                            _ => self.toggle_track_lock(tid),
                         }
                         true
                     }
@@ -1983,7 +1969,6 @@ impl VideoEditorApp {
         &mut self,
         action: &ui::a11y::Action,
         rest: &[u64],
-        doc: &mut AutoCommit,
     ) -> bool {
         use ui::a11y::{Action, hash_key};
         let Some(&section_key) = rest.first() else {
@@ -2018,8 +2003,8 @@ impl VideoEditorApp {
                     self.reveal_inspector_focus();
                     return match action {
                         Action::Focus => true,
-                        Action::Increment => self.a11y_nudge_field(*f, 1.0, doc),
-                        Action::Decrement => self.a11y_nudge_field(*f, -1.0, doc),
+                        Action::Increment => self.a11y_nudge_field(*f, 1.0),
+                        Action::Decrement => self.a11y_nudge_field(*f, -1.0),
                         _ => false,
                     };
                 }
@@ -2031,7 +2016,7 @@ impl VideoEditorApp {
                     // row's three buttons; one level shorter is the row
                     // itself, whose body seeks when it is clicked.
                     if let Some(&verb) = rest.get(2) {
-                        return self.a11y_marker_verb(m, verb, action, doc);
+                        return self.a11y_marker_verb(m, verb, action);
                     }
                     return match action {
                         Action::Focus => true,
@@ -2048,7 +2033,7 @@ impl VideoEditorApp {
                     return match action {
                         Action::Focus => true,
                         Action::Activate => {
-                            self.add_marker_here(doc);
+                            self.add_marker_here();
                             true
                         }
                         _ => false,
@@ -2060,7 +2045,7 @@ impl VideoEditorApp {
                     let pk = *pk;
                     return match action {
                         Action::Focus => true,
-                        Action::Activate => self.a11y_activate_pick(pk, doc),
+                        Action::Activate => self.a11y_activate_pick(pk),
                         _ => false,
                     };
                 }
@@ -2086,7 +2071,6 @@ impl VideoEditorApp {
         m: MarkerRef,
         verb: u64,
         action: &ui::a11y::Action,
-        doc: &mut AutoCommit,
     ) -> bool {
         use ui::a11y::{Action, hash_key};
         let field = if hash_key(&(m.id, MARKER_VERBS[0])) == verb {
@@ -2097,7 +2081,7 @@ impl VideoEditorApp {
             return match action {
                 Action::Focus => true,
                 Action::Activate => {
-                    self.delete_marker(doc, m);
+                    self.delete_marker(m);
                     true
                 }
                 _ => false,
@@ -2113,7 +2097,7 @@ impl VideoEditorApp {
             }
             Action::SetValue(text) => {
                 let text = text.clone();
-                self.commit_marker_text(doc, m, field, &text)
+                self.commit_marker_text(m, field, &text)
             }
             _ => false,
         }
@@ -2125,7 +2109,7 @@ impl VideoEditorApp {
     /// drag does. An adjustment an assistive technology makes must land in the
     /// document exactly like a dragged one, or the two disagree about what the
     /// clip is.
-    pub(super) fn a11y_nudge_field(&mut self, f: NumField, dir: f64, doc: &mut AutoCommit) -> bool {
+    pub(super) fn a11y_nudge_field(&mut self, f: NumField, dir: f64) -> bool {
         let Some(v) = self.num_value(f) else {
             return false;
         };
@@ -2139,15 +2123,15 @@ impl VideoEditorApp {
         };
         self.set_num(f, next);
         if f.is_media() {
-            self.dispatch_selected_media(doc);
+            self.dispatch_selected_media();
         } else if f.is_track() {
             // The lane fader writes the lane, exactly as the drag commits it.
             // Dispatching a clip write here would report success and change
             // nothing — a keyboard and a pointer must not disagree about what
             // they did.
-            self.dispatch_selected_track(doc);
+            self.dispatch_selected_track();
         } else if let Some(id) = self.selected() {
-            self.dispatch_clip(doc, id);
+            self.dispatch_clip(id);
         }
         true
     }

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
 from ..vm import wait_until
-from .apps import AREA, _app_procs, _close, _notifications, _procs
+from .apps import AREA, _app_procs, _close, _notifications, _procs, close_group
 
 FIRST_FRAME_S = 45
 NON_FLAT_S = 25
@@ -169,7 +169,17 @@ def _open(ctx, res, app: DailyApp):
     surfaces0 = {f["surface_id"] for f in ctx.vm.foreign_frames()}
     before = _procs(ctx)
     ctx.facts[f"groups_before:{app.label}"] = {g["id"] for g in core.all_groups(st0)}
-    group, t_group = ctx.open_app(app.desktop_id, "host-applications")
+    try:
+        group, t_group = ctx.open_app(app.desktop_id, "host-applications")
+    except CheckFailed:
+        # Whether it started at all, and what it and the compositor said.
+        ctx.shot(f"{app.label}-no-window")
+        res.metrics["running"] = [c.cmd[:200] for c in _procs(ctx).values() if app.program in c.cmd][:4]
+        ctx.write(f"{app.label}-no-window.log", ctx.vm.exec(
+            "sed 's/\\x1b\\[[0-9;]*m//g' \"$HOME/.local/state/tilo/session-logs/latest.log\" 2>/dev/null "
+            f"| grep -aiE '{app.desktop_id}|{app.program}|xwayland|x11' | tail -n 80 | cut -c1-400; true",
+            check=False))
+        raise
     gid = group["id"]
     res.metrics["seconds_to_window"] = t_group
     started = time.monotonic()
@@ -207,7 +217,16 @@ def _open(ctx, res, app: DailyApp):
            f"(stddev {stats['stddev']})")
 
     st = ctx.state()
-    expect(core.group_by_id(st, gid) is not None, f"{app.name}'s window group vanished after opening")
+    if core.group_by_id(st, gid) is None:
+        # The surface that drew is the window: say where it went rather than only
+        # that its first group is gone (a group replaced by the compositor vs. a
+        # window that really closed).
+        moved = group_of_surface(st, sid)
+        res.metrics["replaced_group"] = {"opened_as": gid, "now": moved and moved["id"]}
+        expect(moved is None, f"{app.name}'s window group {gid} was replaced by group {moved and moved['id']} "
+                              "holding the same window: the compositor re-created the group after opening")
+        ctx.shot(f"{app.label}-vanished")
+        expect(False, f"{app.name}'s window group vanished after opening (and no group holds its surface {sid})")
     expect(any(g["id"] == gid for g in core.groups(st)), f"{app.name} opened in the current strip")
     expect(core.active_group_id(st) == gid,
            f"{app.name} took focus (focused group is {core.active_group_id(st)})")
@@ -223,6 +242,16 @@ def _open(ctx, res, app: DailyApp):
         res.metrics["xwayland"] = xw[:2]
         expect(xw, f"no Xwayland server is running while {app.name} is open")
     return gid, sid, procs, toasts0
+
+
+def group_of_surface(st, sid):
+    """The window group whose tab shows foreign surface `sid`."""
+    for g in core.all_groups(st):
+        for tab in g["tabs"]:
+            tile = tab.get("tile")
+            if isinstance(tile, dict) and (tile.get("Foreign") or {}).get("surface_id") == sid:
+                return g
+    return None
 
 
 def _alive(ctx, owned: dict) -> dict:
@@ -311,7 +340,7 @@ def _text_field(ctx, res, app: DailyApp, sid, undo: bool) -> None:
 
 
 def _home_file(ctx, name):
-    return _lines(ctx.vm.exec(f'find "$HOME" -maxdepth 1 -name {name} 2>/dev/null; true'))
+    return core.terminal_probe(ctx, name)
 
 
 def _terminal(ctx, res, app: DailyApp) -> None:
@@ -354,18 +383,35 @@ def _ozone_flag(ctx, res, flag: str) -> None:
     expect(hits, f"no Chromium process runs with --ozone-platform={flag}")
 
 
-def _no_running(ctx, app: DailyApp) -> None:
-    """A browser left from an earlier check would take this launch over as a new window."""
-    left = [c.cmd for c in _procs(ctx).values() if app.program in c.cmd]
-    expect(not left, f"a {app.program} from before is still running ({left[:2]}): this launch "
-                     "would open in it instead of starting the platform it asks for")
+def _no_running(ctx, res, app: DailyApp) -> None:
+    """A browser left from an earlier check would take this launch over as a new window.
+
+    That earlier check already failed for it; this one starts from a clean slate by
+    closing its windows and stopping what is left, and fails only if it cannot."""
+    def running():
+        return [c.cmd for c in _procs(ctx).values() if app.program in c.cmd]
+
+    left = running()
+    if not left:
+        return
+    res.metrics["stopped_leftovers"] = left[:4]
+    ctx.reset()
+    # `[c]hromium-browser` matches the browser but not the shell running pkill.
+    pattern = f"[{app.program[0]}]{app.program[1:]}"
+    for signal in ("TERM", "KILL"):
+        ctx.vm.exec(f"pkill -{signal} -u \"$(id -u)\" -f -- '{pattern}'; true")
+        if wait_until(lambda: not running() or None, 10, 0.5):
+            return
+    left = running()
+    expect(not left, f"a {app.program} from before is still running after SIGKILL ({left[:2]}): "
+                     "this launch would open in it instead of starting the platform it asks for")
 
 
 def _daily(app: DailyApp, interact, after_open=None):
     def body(ctx, res):
         _require_installed(ctx, res, app)
         if app.program == "chromium-browser":
-            _no_running(ctx, app)
+            _no_running(ctx, res, app)
         gid, sid, procs, toasts0 = _open(ctx, res, app)
         if after_open:
             after_open(ctx, res)
@@ -464,7 +510,7 @@ def gl_x11(ctx, res):
     res.metrics["escape_closed_window"] = bool(gone)
     if not gone:
         ctx.shot(f"{app.label}-after-escape")
-        ctx.vm.invoke("desktop-windows", f"group.close:{gid}")
+        close_group(ctx, gid)
     owned = {p: c for p, c in procs.items() if app.program in c.cmd}
     left = wait_until(lambda: not _alive(ctx, owned) or None, 10, 1.0)
     expect(gone, f"Escape pressed on the real keyboard did not reach {app.name} (its window stayed)")

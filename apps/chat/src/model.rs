@@ -1,13 +1,14 @@
 //! Pure data model for the chat workspace.
 //!
 //! These types are the in-memory projection of the Automerge document
-//! (see [`crate::doc`]). The convergent state — channels, messages,
+//! (see [`crate::record`]). The convergent state — channels, messages,
 //! reactions, edit history, threads, attachments — lives in the CRDT;
 //! this module is just the strongly-typed view the renderer consumes,
 //! plus the pure helper logic (message grouping, reply counts, reaction
 //! toggling) that has no business reaching into Automerge.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource;
 
 /// String identifier (UUID or stable seed key). Used as Automerge map
 /// keys so it must round-trip as a plain string.
@@ -21,8 +22,22 @@ pub const ME: &str = "u_me";
 /// within this many seconds of each other (Slack/Discord convention).
 pub const GROUP_WINDOW_SECS: i64 = 5 * 60;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A text channel holds a conversation; a voice channel holds a call.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    ui::tilo_resource::Model,
+    ui::tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum ChannelKind {
+    #[default]
     Text,
     Voice,
 }
@@ -46,17 +61,32 @@ impl ChannelKind {
             ChannelKind::Text => "text",
         }
     }
-    /// Channel-list glyph: `#` for text, a speaker for voice.
-    pub fn glyph(self) -> &'static str {
+    /// How a channel of this kind is named in a label: `#name` for a text
+    /// channel, "name, voice channel" for a voice channel.
+    pub fn label(self, name: &str) -> String {
         match self {
-            ChannelKind::Text => "#",
-            ChannelKind::Voice => "\u{1F50A}",
+            ChannelKind::Text => format!("#{name}"),
+            ChannelKind::Voice => format!("{name}, voice channel"),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Whether someone is around.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    ui::tilo_resource::Model,
+    ui::tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum Presence {
+    #[default]
     Online,
     Idle,
     Dnd,
@@ -110,7 +140,9 @@ pub struct Category {
     pub name: String,
     pub order: u32,
     /// Collapsed categories hide their channels in the sidebar (the
-    /// active channel still shows so you never lose your place).
+    /// active channel still shows so you never lose your place). Each
+    /// person's own ([`crate::preferences::ChatPreferences`]), not the
+    /// document's.
     pub collapsed: bool,
 }
 
@@ -239,9 +271,8 @@ pub enum Attachment {
     },
     /// A video addressed by its content hash. Rendered inline as a
     /// poster/preview card with a play affordance and the real resolution; the
-    /// bytes are read from the content store on demand (a full
-    /// frame decode needs the media engine's decoder — see [`crate::media`] —
-    /// available only in the `live-media` build), never copied into the CRDT.
+    /// bytes are read from the content store on demand, never copied into
+    /// the CRDT.
     /// `w`/`h` are the pixel dimensions when known (0 when the container header
     /// wasn't probed).
     Video {
@@ -295,7 +326,7 @@ impl Reaction {
 }
 
 /// One prior version of a message body, captured when the author edits.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EditRecord {
     pub ts: i64,
     pub text: String,
@@ -329,6 +360,8 @@ pub struct Message {
     /// the file the author had selected without reading `text` and without
     /// ever needing a screen position. `None` for an ordinary message.
     pub reference: Option<tilo_reference::ResourceRef>,
+    /// Host-resolved existing record provider for this reference.
+    pub source_provider: Option<String>,
     pub attachment: Option<Attachment>,
     /// Pinned messages are flagged in the shared document so every peer sees the
     /// same pins. A plain scalar flag toggled by an action.
@@ -355,19 +388,6 @@ impl Message {
 
     pub fn is_top_level(&self) -> bool {
         self.parent.is_none()
-    }
-
-    /// Whether this message refers to `user`. The question a notification, a
-    /// badge or an agent watching the room actually asks — answered from
-    /// structure, so it never depends on how the body happens to be spelled.
-    pub fn mentions_user(&self, user: &str) -> bool {
-        self.mentions.iter().any(|m| m.user == user)
-    }
-
-    /// Every participant this message refers to, in the order they appear.
-    /// Duplicates are kept: two mentions of one person are two references.
-    pub fn mentioned_ids(&self) -> impl Iterator<Item = &str> {
-        self.mentions.iter().map(|m| m.user.as_str())
     }
 }
 
@@ -529,6 +549,127 @@ impl AgentStepOutcome {
 }
 
 impl AgentWork {
+    /// What an agent reports of its work, refusing a state, route or outcome
+    /// it does not name.
+    ///
+    /// # Errors
+    /// Returns why the report is not a record of work.
+    pub fn from_update(update: &crate::record::WorkUpdate) -> Result<Self, String> {
+        let text = |value: &Option<String>| value.clone().unwrap_or_default();
+        let state = match update.state.as_str() {
+            "taken" => AgentWorkState::Taken,
+            "waiting" => AgentWorkState::Waiting {
+                app: text(&update.app),
+            },
+            "doing" => AgentWorkState::Doing {
+                did: text(&update.did),
+                about: text(&update.about),
+            },
+            "done" => AgentWorkState::Done {
+                did: text(&update.did),
+            },
+            "refused" => AgentWorkState::Refused,
+            other => return Err(format!("`{other}` is not a state of an agent's work")),
+        };
+        let reasoning = match update.route.as_deref() {
+            None => None,
+            Some("model") => Some(AgentReasoning {
+                route: AgentRoute::Model,
+                why: text(&update.why),
+            }),
+            Some("floor") => Some(AgentReasoning {
+                route: AgentRoute::Floor,
+                why: text(&update.why),
+            }),
+            Some(other) => return Err(format!("`{other}` is not a route")),
+        };
+        let mut trace = Vec::with_capacity(update.trace.len());
+        for step in &update.trace {
+            if step.id.is_empty() || step.id.len() > 128 {
+                return Err("a dispatched step carries the id minted when it was".into());
+            }
+            let outcome = match step.outcome.as_str() {
+                "asked" => AgentStepOutcome::Asked,
+                "applied" => AgentStepOutcome::Applied,
+                "no_change" => AgentStepOutcome::NoChange,
+                "refused" => AgentStepOutcome::Refused {
+                    why: text(&step.why),
+                },
+                other => return Err(format!("`{other}` is not an outcome")),
+            };
+            trace.push(AgentStep {
+                id: step.id.clone(),
+                sequence: step.sequence,
+                resource: step.resource.clone(),
+                label: step.label.clone(),
+                outcome,
+            });
+        }
+        Ok(Self {
+            state,
+            since: 0,
+            reasoning,
+            trace,
+        })
+    }
+
+    /// This record as an agent reports it.
+    #[must_use]
+    pub fn to_update(&self) -> crate::record::WorkUpdate {
+        let (state, app, did, about) = match &self.state {
+            AgentWorkState::Taken => ("taken", None, None, None),
+            AgentWorkState::Waiting { app } => ("waiting", Some(app.clone()), None, None),
+            AgentWorkState::Doing { did, about } => {
+                ("doing", None, Some(did.clone()), Some(about.clone()))
+            }
+            AgentWorkState::Done { did } => ("done", None, Some(did.clone()), None),
+            AgentWorkState::Refused => ("refused", None, None, None),
+        };
+        crate::record::WorkUpdate {
+            state: state.into(),
+            app,
+            did,
+            about,
+            route: self.reasoning.as_ref().map(|reasoning| {
+                match reasoning.route {
+                    AgentRoute::Model => "model",
+                    AgentRoute::Floor => "floor",
+                }
+                .to_owned()
+            }),
+            why: self
+                .reasoning
+                .as_ref()
+                .map(|reasoning| reasoning.why.clone()),
+            trace: self
+                .trace
+                .iter()
+                .map(|step| {
+                    let (outcome, why) = match &step.outcome {
+                        AgentStepOutcome::Asked => ("asked", None),
+                        AgentStepOutcome::Applied => ("applied", None),
+                        AgentStepOutcome::NoChange => ("no_change", None),
+                        AgentStepOutcome::Refused { why } => ("refused", Some(why.clone())),
+                    };
+                    crate::record::StepUpdate {
+                        id: step.id.clone(),
+                        sequence: step.sequence,
+                        resource: step.resource.clone(),
+                        label: step.label.clone(),
+                        outcome: outcome.into(),
+                        why,
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// Its state, reasoning and trace.
+    #[must_use]
+    pub fn into_parts(self) -> (AgentWorkState, Option<AgentReasoning>, Vec<AgentStep>) {
+        (self.state, self.reasoning, self.trace)
+    }
+
     pub fn new(state: AgentWorkState, since: i64) -> Self {
         Self {
             state,
@@ -697,12 +838,13 @@ pub fn toggle_reaction(reactions: &mut Vec<Reaction>, emoji: &str, user: &str) -
     }
 }
 
-/// Format an epoch-seconds timestamp as a 24-hour `HH:MM` clock.
+/// An epoch-seconds timestamp's time of day, as the person reads clocks.
 pub fn clock(ts: i64) -> String {
     let secs_in_day = ts.rem_euclid(86_400);
-    let h = secs_in_day / 3600;
-    let m = (secs_in_day % 3600) / 60;
-    format!("{h:02}:{m:02}")
+    ui::clock::hour_minute(
+        ui::num::u32_of_i64(secs_in_day / 3600),
+        ui::num::u32_of_i64(secs_in_day % 3600 / 60),
+    )
 }
 
 /// Human relative label for a message timestamp relative to `now` —
@@ -735,6 +877,7 @@ mod tests {
             reactions: vec![],
             mentions: vec![],
             reference: None,
+            source_provider: None,
             attachment: None,
             pinned: false,
             work: None,

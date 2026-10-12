@@ -1,53 +1,35 @@
 //! Passwords as a framework app. The vault is this device's encrypted
 //! credential store, not a document: its items are published as live rows,
 //! and everything Passwords does with them is a [`PasswordsEffect`]. The
-//! resource's document holds nothing; filter, search and selection are this
-//! window's own view state.
+//! resource's model holds nothing, so no secret can sync; the place shown
+//! and the open item are this window's own view state.
 
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface,
-    ViewCx,
+    RunMode, ViewCx,
 };
-use ui::tilo_resource::{Doc, ModelError, NoAction, Resource};
+use ui::tilo_resource::{self, Model, resource};
 use ui::widget::Element;
 
 use crate::actions::PasswordsEffect;
-use crate::showcase::{PasswordsSurface, demo_vault};
+use crate::window::PasswordsSurface;
+
+#[cfg(test)]
+#[path = "credential_owner_tests.rs"]
+mod credential_owner_tests;
 
 /// The password vault resource: the door the vault's rows and effects are
-/// published on.
-pub struct Passwords;
+/// published on. It stores nothing; the vault is the device's.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Passwords {}
 
-impl Resource for Passwords {
-    const KIND: &'static str = "passwords.vault";
-    const LABEL: &'static str = "Password vault";
-    const ACTION_TYPE: &'static str = "passwords.action";
+#[resource(kind = "passwords.vault", label = "Password vault")]
+impl Passwords {}
 
-    type State = ();
-    type Action = NoAction;
-
-    fn read(_doc: &Doc) -> Result<(), ModelError> {
-        Ok(())
-    }
-}
-
-/// Where a screenshot's demo vault lives, in place of the person's.
-pub struct DemoVault(pub PathBuf);
-
-/// The screenshot scenarios.
-pub const SCENARIOS: &[&str] = &[
-    "vault",
-    "editor",
-    "health",
-    "app-access",
-    "import",
-    "export",
-    "delete-confirm",
-    "long-list",
-];
+/// A capture shows the fixture vault in place of the person's.
+pub struct DemoVault;
 
 /// Framework app: the passwords surface over [`Passwords`].
 pub struct PasswordsShell;
@@ -57,6 +39,9 @@ impl ResourceApp for PasswordsShell {
     const ID: &'static str = "so.tilo.passwords";
     const TITLE: &'static str = "Passwords";
     const ICON: Option<&'static str> = Some("passwords");
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::CATALOG)
+    }
     // The window shows secrets: captures, recordings and remote viewers get
     // a placeholder in every launch.
     const BEHAVIOUR: ui::application::ComponentBehaviour = ui::application::ComponentBehaviour {
@@ -65,39 +50,38 @@ impl ResourceApp for PasswordsShell {
     };
 
     fn view(cx: &mut ViewCx<Passwords>) -> Element {
-        let model = match cx.fixture::<DemoVault>() {
-            Some(demo) => crate::PasswordsModel::open_in(&demo.0),
-            None => crate::PasswordsModel::open(),
+        let surface = if cx.mode() == RunMode::Past {
+            PasswordsSurface::new(crate::PasswordsModel::closed())
+        } else if cx.fixture::<DemoVault>().is_some() {
+            PasswordsSurface::demo()
+        } else if let Some(owner) = cx.take_lent::<accounts::CredentialOwner>() {
+            let model = if cx.me() == Some(owner.principal()) && cx.device() == Some(owner.device())
+            {
+                crate::PasswordsModel::shared(owner)
+            } else {
+                crate::PasswordsModel::closed()
+            };
+            PasswordsSurface::new(model)
+        } else {
+            PasswordsSurface::new(crate::PasswordsModel::open())
         };
-        cx.surface(PasswordsSurface::new(model))
+        cx.on_open(surface.opener());
+        cx.surface(surface)
     }
 
     fn scenarios() -> &'static [&'static str] {
-        SCENARIOS
+        crate::window::SCENARIOS
     }
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1100, 720)
-    }
-
-    /// A vault of synthetic items in the capture's scratch directory: a
-    /// screenshot never opens the person's vault.
+    /// A screenshot never opens the person's vault: it shows synthetic items
+    /// with no store behind them.
     fn fixture(fixture: &mut Fixture<Passwords>) {
-        let copies = if fixture.scenario() == Some("long-list") {
-            3
-        } else {
-            0
-        };
-        let Ok(root) = fixture.directory().map(std::path::Path::to_path_buf) else {
-            return;
-        };
-        demo_vault(&root, copies);
-        fixture.provide(DemoVault(root));
+        fixture.provide(DemoVault);
     }
 }
 
 impl ResourceSurface<Passwords, PasswordsEffect> for PasswordsSurface {
-    fn present(&mut self, _state: &Rc<()>) {}
+    fn present(&mut self, _state: &Rc<Passwords>) {}
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
@@ -123,6 +107,10 @@ impl ResourceSurface<Passwords, PasswordsEffect> for PasswordsSurface {
         ]
     }
 
+    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        PasswordsSurface::search_entries(self)
+    }
+
     fn live_rows(&self) -> Vec<LiveRow> {
         self.item_rows()
     }
@@ -140,6 +128,7 @@ mod tests {
 
     use super::*;
     use crate::actions::item_resource_id;
+    use ui::tilo_resource::Resource;
 
     #[test]
     fn every_launch_withholds_the_vault_window_from_captures() {
@@ -230,7 +219,15 @@ mod tests {
         for private in ["Private bank", "ada@private.example", "not-public-7A"] {
             assert!(!published_text.contains(private), "published {private:?}");
         }
-        for id in ["add", "import", "export", "search", "filter", "select"] {
+        assert!(
+            vault
+                .actions
+                .iter()
+                .find(|action| action.id == "open")
+                .is_some_and(|open| open.params().iter().any(|p| p.name == "anchor")),
+            "the vault opens an item by its anchor; the row opens itself"
+        );
+        for id in ["add", "import", "export", "filter"] {
             assert!(
                 vault.actions.iter().any(|action| action.id == id),
                 "the vault offers {id}"
@@ -263,13 +260,11 @@ mod tests {
             Some("not-public-7A")
         );
 
-        // Searching and filtering are this window's own view: nothing in the
+        // Filtering and opening are this window's own view: nothing in the
         // document changes and no history is written.
         let versions = app.versions().len();
-        app.effect(&PasswordsEffect::Search {
-            query: Some("bank".into()),
-        })
-        .unwrap();
+        app.effect_on(&row_id, &PasswordsEffect::Open { item: id.0.clone() })
+            .unwrap();
         app.effect(&PasswordsEffect::Filter {
             filter: "favorites".into(),
         })
@@ -295,11 +290,52 @@ mod tests {
         assert!(published(&mut app, &row_id).is_none(), "its row is gone");
     }
 
+    /// Opening an item's anchor, as a search hit or an agent does, shows
+    /// it even where a filter hid it; an item the vault lacks is refused.
+    #[test]
+    fn opening_an_anchor_shows_its_item_and_refuses_one_the_vault_lacks() {
+        let _profile = profile();
+        let mut model = crate::PasswordsModel::open();
+        let mut item = SecretItem::login("Private bank", "ada@private.example", "not-public-7A");
+        let id = model.save_item(&mut item).unwrap();
+        drop(model);
+        let mut app = TestApp::<PasswordsShell>::new().unwrap();
+        app.effect(&PasswordsEffect::Filter {
+            filter: "favorites".into(),
+        })
+        .unwrap();
+        app.call(
+            "open",
+            serde_json::json!({ "anchor": item_resource_id(&id.0) }),
+        )
+        .unwrap();
+        assert!(
+            app.call(
+                "open",
+                serde_json::json!({ "anchor": item_resource_id("not-in-the-vault") })
+            )
+            .is_err(),
+            "an item the vault does not hold is not opened"
+        );
+        app.settle();
+        assert_eq!(
+            app.surface_mut::<PasswordsSurface>()
+                .core()
+                .selected
+                .as_ref(),
+            Some(&id),
+            "opening its anchor shows the item, as a search hit does"
+        );
+    }
+
     #[test]
     fn an_item_saved_from_the_editor_lands_in_the_vault() {
         let _profile = profile();
         let mut app = TestApp::<PasswordsShell>::new().unwrap();
         app.effect(&PasswordsEffect::Add).unwrap();
+        app.harness()
+            .click_named("passwords.field.name")
+            .expect("the editor shows the name field");
         app.harness().type_text("Mail");
         app.effect(&PasswordsEffect::Generate).unwrap();
         app.effect(&PasswordsEffect::Save).unwrap();
@@ -316,19 +352,27 @@ mod tests {
     #[test]
     fn captures_show_a_demo_vault_of_their_own() {
         let _profile = profile();
-        for scenario in SCENARIOS {
+        for scenario in crate::window::SCENARIOS {
             let mut app = TestApp::<PasswordsShell>::capture(Some(scenario)).unwrap();
             let root = app.harness().inspection().root;
             let frame = app.harness().inspection_json().unwrap();
-            assert!(!frame.contains("never-rendered"), "{scenario}: {frame}");
+            for secret in ["Harbor-Lights-2019", "harbourlights"] {
+                assert!(!frame.contains(secret), "{scenario}: {frame}");
+            }
             let shows = |text: &str| frame.contains(text);
             match *scenario {
                 "editor" => assert!(shows("Northstar Bank") && shows("Save"), "{frame}"),
-                "delete-confirm" => assert!(shows("Delete item?"), "{frame}"),
-                "import" => assert!(shows("Review import"), "{frame}"),
-                "export" => assert!(shows("Export as plaintext CSV"), "{frame}"),
-                "app-access" => assert!(shows("Apps with ongoing access"), "{frame}"),
-                "health" => assert!(selected(&root, "Password review"), "{frame}"),
+                "delete" => assert!(shows("Delete item"), "{frame}"),
+                "review" => assert!(selected(&root, "Password review"), "{frame}"),
+                "app-access" => assert!(selected(&root, "App access"), "{frame}"),
+                "transfer" | "import" | "export" | "backup" => {
+                    assert!(selected(&root, "Import and export"), "{scenario}: {frame}");
+                }
+                "api-key" => assert!(
+                    shows("Cloud console") && shows("lovelace-prod-0Il1O"),
+                    "{frame}"
+                ),
+                "empty" | "new-item" => {}
                 _ => assert!(shows("Northstar Bank"), "{scenario}: {frame}"),
             }
         }

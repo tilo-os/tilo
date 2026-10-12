@@ -235,14 +235,17 @@ pub fn at(doc: &mut automerge::AutoCommit, version: usize) -> Result<DocSnapshot
     Ok(crate::model::materialize(&rebuilt, &c))
 }
 
+/// The snapshot of `doc`, when it carries the qdoc schema.
+pub fn of(doc: &automerge::AutoCommit) -> Option<DocSnapshot> {
+    let c = crate::model::open(doc, &automerge::ROOT).ok()?;
+    Some(crate::model::materialize(doc, &c))
+}
+
 /// The document as of each of `versions` (ascending positions), from one
 /// replay of the change log. A version Automerge rejects, and every later
 /// one, is `None`.
 pub fn series(doc: &mut automerge::AutoCommit, versions: &[usize]) -> Vec<Option<DocSnapshot>> {
-    tilo_resource::history::replay_series(doc, versions, |rebuilt| {
-        let c = crate::model::open(rebuilt, &automerge::ROOT).ok()?;
-        Some(crate::model::materialize(rebuilt, &c))
-    })
+    tilo_resource::history::replay_series(doc, versions, of)
 }
 
 #[cfg(test)]

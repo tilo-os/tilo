@@ -266,8 +266,43 @@ Status JSON: `schema`, `id`, `state` (`not-installed`, `waiting-for-network`,
 Units: `tilo-extension@<verb>:<id>.service` (polkit lets a local, active
 administrator start only `install`, `remove` and `refresh` instances; it
 downloads into the state above and then starts the activation),
-`tilo-extension-activate.service` (every boot, offline, before the greeter,
-and after every change; it has no mount namespace of its own, so the
-merge is the host's), `tilo-extension-refresh.timer` (after boot, daily, and
+`tilo-extension-activate.service` (every boot on which an extension is on or
+still has parts to unmerge, offline, before the greeter, and after every
+change; it has no mount namespace of its own, so the merge is the host's), `tilo-extension-refresh.timer` (after boot, daily, and
 on every update check), and NetworkManager's `90-tilo-extension` (an opt-in
 made offline installs once the device is online).
+
+## Qualify a signed candidate before publication
+
+A signed CI artifact can be tested without updating any client's feed. Resolve
+`media-codecs` inside one reviewed immutable native image, inspect every package,
+URL, upstream signature, license and base constraint, then compute:
+
+```sh
+python3 tools/extensions/resolve.py content-sha256 media-codecs.json
+```
+
+Dispatch the existing main-only `extension-manifests.yml` workflow with that
+exact digest-qualified `images` input, `publish=false` and
+`expected_content_sha256` set to the reviewed hash. It re-resolves using the
+same production recipe and rejects any material change before signing. Only
+`created` and `revision` timestamps are excluded from this hash; the image,
+RPM base, complete artifact metadata, URLs, hashes, licenses and requirements
+are included. One explicit image and one native lane are required.
+
+The existing extension-manifest KMS role signs through temporary OIDC/STS
+credentials. The same image trust key verifies the resulting detached
+signature. No trust key, persistent grant, RPM payload, package-registry upload,
+latest-feed update or client activation is created. The signed manifest and
+signature are retained only as CI artifacts. Qualification must use the real
+consumer's signature, upstream-package and compatibility checks before a
+synthetic encode/decode or encrypted-session test; a test key is not evidence
+of image admission. A passing HEVC or VP8 test does not qualify H.264 or AirPlay.
+
+Later promotion is a separate explicit dispatch with `publish=true`, the same
+immutable image and reviewed content hash. Re-resolution or copy drift must
+fail rather than silently publishing an untested package set. Revision and
+creation time may advance; archive the exact signed bytes used by each test.
+The publisher rechecks the copied manifest immediately before signing. Any
+latest-feed publication can affect existing opted-in devices on the matching
+architecture and RPM base, including other channels sharing that base.

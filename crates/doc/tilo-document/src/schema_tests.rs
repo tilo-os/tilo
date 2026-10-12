@@ -100,7 +100,7 @@ fn the_apply_descriptor_names_every_edit_with_its_fields() {
         panic!("apply takes one parameter");
     };
     assert_eq!(param.name, APPLY_PARAM);
-    assert_eq!(param.schema.as_ref(), Some(&schema()));
+    assert_eq!(param.schema.as_deref(), Some(&schema()));
 
     let described: std::collections::BTreeMap<String, Value> =
         variants(&schema()).into_iter().collect();
@@ -129,6 +129,7 @@ fn the_apply_descriptor_names_every_edit_with_its_fields() {
         "RemoveBlocks",
         "MoveBlocks",
         "ReplaceBody",
+        "ReplaceClips",
         "AcceptChanges",
         "RejectChanges",
         "ResolveComment",
@@ -310,8 +311,7 @@ fn the_described_operations_can_be_published() {
             descriptor.address.action
         );
     }
-    let mut registry = tilo_actions::ActionRegistry::new();
-    tilo_resource::group::register::<RichText>(&mut registry);
+    let registry = tilo_actions::ActionRegistry::with(tilo_resource::group::register::<RichText>);
     assert_eq!(
         tilo_actions::validate_surface_contracts(&[published()], &registry),
         Vec::new()

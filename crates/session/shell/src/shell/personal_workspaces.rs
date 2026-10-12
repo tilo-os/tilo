@@ -62,6 +62,41 @@ pub struct PersonalWorkspaces {
     /// Where the directory and `agreed` survive a restart; `None` keeps
     /// them in memory only.
     store: Option<PathBuf>,
+    /// What the tree offered the last time [`Self::publish_local`] ran to
+    /// the end with everything written. While the tree offers the same and
+    /// neither the directory nor `agreed` moved since, running it again
+    /// would write nothing, so it is skipped.
+    published: Option<PublishInputs>,
+    /// How often [`Self::publish_local`] compared the tree against the
+    /// directory instead of answering from `published`.
+    #[cfg(test)]
+    publish_passes: usize,
+}
+
+/// The parts of a tree [`PersonalWorkspaces::publish_local`] reads.
+#[derive(PartialEq, Eq)]
+struct PublishInputs {
+    listed: BTreeMap<RoomId, Listed>,
+    /// Every workspace room of the tree, in its order.
+    order: Vec<RoomId>,
+    /// The listed rooms still waiting for their governor to be pinned.
+    unpinned: Vec<RoomId>,
+}
+
+impl PublishInputs {
+    fn of(tree: &WorkspaceTree, person: &str) -> Self {
+        let listed = member_workspaces(tree, person);
+        let unpinned = listed
+            .keys()
+            .copied()
+            .filter(|room| tree.room_authority(*room) == RoomAuthority::Unpinned)
+            .collect();
+        Self {
+            listed,
+            order: tree.desktop.workspaces.iter().map(|w| w.room).collect(),
+            unpinned,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -90,7 +125,6 @@ pub struct DeviceChoice {
 /// device's continuation is not a workspace yet, so neither is listed; nor
 /// is someone else's room whose governor this device does not know.
 pub fn member_workspaces(tree: &WorkspaceTree, person: &str) -> BTreeMap<RoomId, Listed> {
-    let now = tilo_clock::unix_now();
     let person = person.to_string();
     tree.desktop
         .workspaces
@@ -101,12 +135,10 @@ pub fn member_workspaces(tree: &WorkspaceTree, person: &str) -> BTreeMap<RoomId,
                 && !tree.continuation_rooms.contains(&workspace.room)
         })
         .filter_map(|workspace| {
-            let governor = if workspace.owner.as_deref() == Some(person.as_str()) {
+            let governor = if workspace.owner().map(String::as_str) == Some(person.as_str()) {
                 None
             } else {
-                let member = workspace
-                    .role_of_at(&person, now)
-                    .is_some_and(|role| role != crate::shell::state::CapRole::Denied);
+                let member = workspace.role_of(&person).is_some();
                 match tree.room_authority(workspace.room) {
                     RoomAuthority::Peer(governor) if member => Some(governor.as_str().to_string()),
                     _ => return None,
@@ -170,6 +202,9 @@ impl PersonalWorkspaces {
             agreed: BTreeMap::new(),
             agreed_order: Vec::new(),
             store: None,
+            published: None,
+            #[cfg(test)]
+            publish_passes: 0,
         }
     }
 
@@ -204,6 +239,7 @@ impl PersonalWorkspaces {
     #[must_use]
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
+        self.published = None;
         self
     }
 
@@ -211,8 +247,21 @@ impl PersonalWorkspaces {
     /// directory: new and renamed workspaces, ones deleted here, and a new
     /// order. Returns whether the directory changed, which is when the
     /// other devices need a new snapshot.
+    ///
+    /// Called every frame tick, so when neither the tree's workspaces nor the
+    /// directory changed since the last call it only compares the tree with
+    /// what it offered then.
     pub fn publish_local(&mut self, tree: &WorkspaceTree, person: &str) -> bool {
-        let listed = member_workspaces(tree, person);
+        let inputs = PublishInputs::of(tree, person);
+        if self.published.as_ref() == Some(&inputs) {
+            return false;
+        }
+        #[cfg(test)]
+        {
+            self.publish_passes = self.publish_passes.saturating_add(1);
+        }
+        let listed = &inputs.listed;
+        let mut complete = true;
         let mut changed = false;
         if let Some(label) = self.label.clone() {
             let registered = self
@@ -220,8 +269,12 @@ impl PersonalWorkspaces {
                 .devices()
                 .iter()
                 .any(|(device, known)| *device == self.device && *known == label);
-            if !registered && self.directory.register_device(self.device, &label).is_ok() {
-                changed = true;
+            if !registered {
+                if self.directory.register_device(self.device, &label).is_ok() {
+                    changed = true;
+                } else {
+                    complete = false;
+                }
             }
         }
         let next_order = entries_of(&self.directory)
@@ -229,7 +282,7 @@ impl PersonalWorkspaces {
             .filter_map(|(_, entry)| entry.order)
             .fold(0.0_f64, f64::max);
         let mut appended = 0.0;
-        for (room, entry) in &listed {
+        for (room, entry) in listed {
             let fresh = !self.agreed.contains_key(room);
             // Enrollment gives us a room ID before its real name arrives.
             // Do not publish that provisional name as a rename on the owner's
@@ -260,6 +313,7 @@ impl PersonalWorkspaces {
                     changed = true;
                 }
                 Err(error) => {
+                    complete = false;
                     tracing::warn!(%error, %room, "personal workspace could not be listed");
                 }
             }
@@ -283,6 +337,8 @@ impl PersonalWorkspaces {
         if changed {
             self.persist();
         }
+        // A write that failed is tried again on the next call.
+        self.published = complete.then_some(inputs);
         changed
     }
 
@@ -347,6 +403,7 @@ impl PersonalWorkspaces {
     /// and the person's order, and drop workspaces deleted on another device
     /// or no longer shown on this one. Returns whether `tree` changed.
     pub fn adopt_into(&mut self, tree: &mut WorkspaceTree, person: &UserId) -> bool {
+        self.published = None;
         let entries = entries_of(&self.directory);
         let mut changed = false;
         let mut shown_here: Vec<RoomId> = Vec::new();
@@ -362,7 +419,11 @@ impl PersonalWorkspaces {
                 name: meta.name.clone(),
                 governor: meta.governor.clone(),
             };
-            if self.agreed.get(room) == Some(&entry) {
+            // An agreed room still unpinned — adopted before rooms pinned their
+            // governor from this list — is adopted again so the list pins it.
+            if self.agreed.get(room) == Some(&entry)
+                && tree.room_authority(*room) != RoomAuthority::Unpinned
+            {
                 continue;
             }
             let governor = match entry.governor.as_deref() {
@@ -442,6 +503,7 @@ impl PersonalWorkspaces {
         {
             return false;
         }
+        self.published = None;
         self.persist();
         true
     }
@@ -459,6 +521,7 @@ impl PersonalWorkspaces {
         author: &DeviceCert,
         now_ns: u64,
     ) -> Result<(), DirectoryError> {
+        self.published = None;
         self.directory
             .apply_incremental(update, author, &RevocationList::new(), now_ns)?;
         self.persist();

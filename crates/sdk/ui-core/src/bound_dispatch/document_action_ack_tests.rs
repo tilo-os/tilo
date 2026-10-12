@@ -35,15 +35,21 @@ impl Action for Write {
 #[derive(Default)]
 struct Owner {
     receipts: Vec<(tilo_actions::EncodedAction, Vec<ChangeHash>, String)>,
+    effect_receipts: Vec<(tilo_actions::InvocationId, Vec<ChangeHash>, String)>,
+    effect_replies: Vec<tilo_actions::InvocationId>,
+    retained_source: Option<tilo_actions::InvocationId>,
     sibling: Option<Box<Owner>>,
 }
 impl Widget for Owner {
-    crate::provides!(dyn crate::history_mode::capability::DocumentHistory);
+    crate::provides!(
+        dyn crate::history_mode::capability::DocumentHistory,
+        dyn crate::widget::document_effects::DocumentEffects
+    );
 
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
@@ -53,7 +59,7 @@ impl Widget for Owner {
             crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
         }))
     }
-    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {}
+    fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
     fn build_layout(
         &mut self,
         t: &mut taffy::TaffyTree<()>,
@@ -62,27 +68,39 @@ impl Widget for Owner {
     ) -> taffy::NodeId {
         t.new_leaf(taffy::Style::default()).unwrap()
     }
-    fn apply_layout(&mut self, _: &taffy::TaffyTree<()>, _: taffy::NodeId, _: vello::kurbo::Point) {
-    }
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut crate::TextRenderer,
-        _: &crate::Theme,
-        _: &crate::presence::PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &str {
         "Acknowledgment owner"
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
     }
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
         self.sibling
             .as_mut()
             .map_or_else(Vec::new, |s| vec![s.as_mut() as &mut dyn Widget])
+    }
+}
+
+impl crate::widget::document_effects::DocumentEffects for Owner {
+    fn start_document_effects(
+        &mut self,
+        operation: &crate::widget::ResourceOperation<'_>,
+        applied: &crate::widget::document_effects::AppliedDocument<'_>,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        operation.check()?;
+        assert_eq!(operation.kind(), tilo_actions::OperationKind::Document);
+        self.effect_replies.push(applied.invocation());
+        self.effect_receipts.push((
+            operation.invocation(),
+            applied.before().to_vec(),
+            applied
+                .document()
+                .get(ROOT, "body")
+                .unwrap()
+                .unwrap()
+                .0
+                .as_str()
+                .unwrap()
+                .into(),
+        ));
+        Ok(Some(crate::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -120,10 +138,29 @@ fn execute(
     action: &Write,
     broker: bool,
 ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    execute_mode(owner, doc, action, broker, false)
+}
+
+fn execute_mode(
+    owner: &mut Owner,
+    doc: &mut AutoCommit,
+    action: &Write,
+    broker: bool,
+    background: bool,
+) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
     let mut registry = tilo_actions::ActionRegistry::new();
     registry.register::<Write>("ack.write");
     let resource = tilo_actions::Resource::new("ack.owner", "ack.owner", "Owner");
-    let spec = tilo_actions::ActionSpec::immediate("write", "Write", "ack.write", action).unwrap();
+    let mut spec =
+        tilo_actions::ActionSpec::immediate("write", "Write", "ack.write", action).unwrap();
+    if background {
+        spec.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
+        spec.contract.result = tilo_actions::ResultSpec::Job;
+    }
+    let invocation = tilo_actions::InvocationId::new();
+    let source_invocation = owner
+        .retained_source
+        .or_else(|| broker.then_some(invocation));
     execute_resource_operation(
         owner,
         doc,
@@ -131,6 +168,7 @@ fn execute(
         &registry,
         &mut Host,
         ResourceOperation {
+            target_route: None,
             address: &tilo_actions::ActionAddress::new("ack.owner", "write"),
             resource: &resource,
             spec: &spec,
@@ -138,11 +176,80 @@ fn execute(
             actor: "local",
             local_author: "local",
             broker_admitted: broker,
-            invocation: tilo_actions::InvocationId::new(),
+            invocation,
+            source_invocation,
             ambient: None,
             scope: None,
         },
     )
+}
+
+#[test]
+fn document_effects_distinguish_retained_source_custody_from_local_reply_identity() {
+    let source = tilo_actions::InvocationId::new();
+    let mut owner = Owner {
+        retained_source: Some(source),
+        ..Owner::default()
+    };
+    let mut doc = AutoCommit::new();
+    let action = Write {
+        value: "source-owned".into(),
+        server: false,
+        refuse: false,
+    };
+    assert_eq!(
+        execute_mode(&mut owner, &mut doc, &action, true, true).unwrap(),
+        crate::widget::ResourceOperationStart::Accepted
+    );
+    assert_eq!(owner.effect_receipts[0].0, source);
+    assert_ne!(owner.effect_replies[0], source);
+    assert_eq!(owner.effect_receipts[0].2, "source-owned");
+}
+
+#[test]
+fn document_effects_defer_only_the_actual_locally_applied_background_action() {
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "body", "before").unwrap();
+    let before = doc.get_heads();
+    let mut owner = Owner {
+        sibling: Some(Box::default()),
+        ..Owner::default()
+    };
+    let local = Write {
+        value: "after".into(),
+        server: false,
+        refuse: false,
+    };
+    assert_eq!(
+        execute_mode(&mut owner, &mut doc, &local, false, true).unwrap(),
+        crate::widget::ResourceOperationStart::Accepted
+    );
+    assert_eq!(owner.effect_receipts.len(), 1);
+    assert_eq!(owner.effect_receipts[0].1, before);
+    assert_eq!(owner.effect_receipts[0].2, "after");
+    assert!(owner.sibling.as_ref().unwrap().effect_receipts.is_empty());
+    assert!(matches!(
+        execute(&mut owner, &mut doc, &local, false).unwrap(),
+        crate::widget::ResourceOperationStart::Completed(_)
+    ));
+    assert_eq!(owner.effect_receipts.len(), 1);
+    let submitted = Write {
+        value: "host".into(),
+        server: true,
+        refuse: false,
+    };
+    assert!(matches!(
+        execute_mode(&mut owner, &mut doc, &submitted, false, true).unwrap(),
+        crate::widget::ResourceOperationStart::Completed(_)
+    ));
+    assert_eq!(owner.effect_receipts.len(), 1);
+    let refused = Write {
+        value: "refused".into(),
+        server: false,
+        refuse: true,
+    };
+    assert!(execute_mode(&mut owner, &mut doc, &refused, false, true).is_err());
+    assert_eq!(owner.effect_receipts.len(), 1);
 }
 #[test]
 fn document_actions_acknowledge_only_locally_applied_exact_owner_frontiers() {
@@ -218,6 +325,7 @@ fn document_actions_acknowledge_only_locally_applied_exact_owner_frontiers() {
                 &registry,
                 &mut Host,
                 ResourceOperation {
+                    target_route: None,
                     address: &tilo_actions::ActionAddress::new("owner", "run"),
                     resource: &resource,
                     spec: &spec,
@@ -227,6 +335,7 @@ fn document_actions_acknowledge_only_locally_applied_exact_owner_frontiers() {
                     local_author: "local",
                     broker_admitted: false,
                     invocation: tilo_actions::InvocationId::new(),
+                    source_invocation: None,
                     ambient: None,
                     scope: None,
                 },

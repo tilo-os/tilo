@@ -112,6 +112,7 @@ pub struct ActivityGlance {
 /// chrome, search and agents all resolve through the same shape.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActivityFocus {
+    pub task_id: Option<String>,
     pub author: Option<String>,
     pub group_id: Option<String>,
     pub entry_id: Option<[u8; 16]>,
@@ -273,6 +274,10 @@ pub trait DesktopChromeSource {
     fn tree(&self) -> DesktopTree;
     /// Returns whether the host accepted the request, never proof of a shared mutation.
     fn intent(&self, intent: ChromeIntent) -> bool;
+    /// Consume an automation request to open the primary bar's editor.
+    fn take_topbar_editor_request(&self) -> bool {
+        false
+    }
     fn settings_anchor(&self, _rect: Rect) {}
     /// The live offer to continue a tab from another of this person's
     /// devices, as the label the bar shows ("Continue Notes from Laptop").

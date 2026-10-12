@@ -31,28 +31,9 @@ impl ResourceApp for Document {
     }
 }
 
-/// The same document, edited by a participant whose writing is attributed.
-struct Attributed;
-
-impl ResourceApp for Attributed {
-    type Resource = RichText;
-    const ID: &'static str = "so.tilo.rich-text-attributed-example";
-    const TITLE: &'static str = "Rich text";
-
-    fn view(cx: &mut ViewCx<RichText>) -> Element {
-        let mut surface = tilo_rich_text::RichTextSurface::new();
-        surface.editor_mut().set_local_author(Some("ada".into()));
-        cx.rich_text_in(surface)
-    }
-}
-
 fn open() -> TestApp<Document> {
-    open_as()
-}
-
-fn open_as<A: ResourceApp<Resource = RichText>>() -> TestApp<A> {
     ui::i18n::I18nManager::init("en-US");
-    let mut app = TestApp::<A>::new().unwrap();
+    let mut app = TestApp::<Document>::new().unwrap();
     // Focus the editor the way a person does: click into it.
     let target = app
         .harness()
@@ -101,6 +82,14 @@ fn bold_ranges(app: &TestApp<Document>) -> Vec<(usize, usize)> {
     })
 }
 
+/// The verb a change's entry records.
+fn verb(context: &ui::tilo_actions::ActionContext) -> &str {
+    match &context.what {
+        Some(ui::tilo_actions::Did::Verb(verb)) => &verb.action.action,
+        other => panic!("a verb: {other:?}"),
+    }
+}
+
 #[test]
 fn a_keystroke_is_an_action_and_undo_takes_back_a_word_at_a_time() {
     let mut app = open();
@@ -108,7 +97,7 @@ fn a_keystroke_is_an_action_and_undo_takes_back_a_word_at_a_time() {
     assert_eq!(paragraphs(&app), ["hello world"]);
     let last = app.versions().pop().unwrap();
     let context = last.context.as_ref().unwrap();
-    assert_eq!(context.action_label, "Splice text");
+    assert_eq!(verb(context), "splice-text");
     assert_eq!(
         context
             .resource
@@ -175,34 +164,30 @@ fn moving_a_paragraph_up_is_one_move_the_document_keeps() {
     app.harness().set_modifiers(&[]);
     assert_eq!(paragraphs(&app), ["second", "first"]);
     let last = app.versions().pop().unwrap();
-    assert_eq!(last.context.as_ref().unwrap().action_label, "Move blocks");
+    assert_eq!(verb(last.context.as_ref().unwrap()), "move-blocks");
     assert!(app.undo());
     assert_eq!(paragraphs(&app), ["first", "second"]);
 }
 
 #[test]
-fn typed_text_is_attributed_to_its_writer_in_the_same_step() {
-    let mut app = open_as::<Attributed>();
+fn typed_text_is_attributed_to_its_writer_by_the_splice_itself() {
+    let mut app = open();
     app.harness().type_text("hello");
     app.harness().key("Enter");
     app.harness().type_text("world");
     assert_eq!(paragraphs(&app), ["hello", "world"]);
-    assert_eq!(
-        authors(&app),
-        [(0, 5, "ada".to_owned()), (0, 5, "ada".to_owned())]
-    );
+    // The last keystroke is one splice, and that splice named its writer.
+    let last = app.versions().pop().unwrap();
+    let context = last.context.as_ref().unwrap();
+    assert_eq!(verb(context), "splice-text");
+    let writer = context.invoker.as_ref().unwrap().actor.clone();
+    assert!(!writer.is_empty());
+    assert_eq!(authors(&app), [(0, 5, writer.clone()), (0, 5, writer)]);
     assert!(app.undo());
     assert_eq!(paragraphs(&app), ["hello", ""]);
     assert!(app.undo());
     assert!(app.undo());
     assert_eq!(paragraphs(&app), [""]);
-    assert!(authors(&app).is_empty());
-}
-
-#[test]
-fn text_nobody_is_named_for_stays_unattributed() {
-    let mut app = open();
-    app.harness().type_text("hello");
     assert!(authors(&app).is_empty());
 }
 
@@ -329,4 +314,18 @@ fn an_agent_edit_through_the_action_door_is_shown_and_undoable() {
     app.harness().key("End");
     app.harness().type_text(".");
     assert_eq!(paragraphs(&app), ["typed by hand."]);
+}
+
+#[test]
+fn a_typed_word_stays_one_undo_step_after_a_restart() {
+    let mut app = open();
+    app.harness().type_text("hello world");
+    assert_eq!(paragraphs(&app), ["hello world"]);
+    let mut app = app.reopen().unwrap();
+    assert!(app.undo());
+    assert_eq!(paragraphs(&app), ["hello "], "one word is one step");
+    assert!(app.undo());
+    assert_eq!(paragraphs(&app), [""]);
+    assert!(app.redo());
+    assert_eq!(paragraphs(&app), ["hello "]);
 }

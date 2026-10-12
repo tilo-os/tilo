@@ -1,5 +1,6 @@
 //! What only the window that authors an action can find: colour as the
-//! artwork shows it, for the magic wand and selecting by colour.
+//! artwork shows it, for the magic wand and selecting by colour, and the
+//! picture's subject and edges (`crate::subject`).
 //!
 //! Like `set-reference` reading a file where the action is authored, such an
 //! action is resolved to plain geometry before it is applied, so every
@@ -12,6 +13,7 @@
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
+use ui::num::usize_of_f64;
 
 use ui::TextRenderer;
 use ui::vello::kurbo::{Affine, Point, Rect};
@@ -53,6 +55,17 @@ pub fn see(renderer: &Rc<RefCell<Renderer>>, art: &Rc<Artwork>) {
     });
 }
 
+thread_local! {
+    static LATEST: RefCell<Option<Rc<Artwork>>> = const { RefCell::new(None) };
+}
+
+/// The artwork as last read from its document. An action authored right
+/// after another (an agent opening a photo, then selecting its subject)
+/// must find what it names in that, not in what the window showed before.
+pub fn read(art: &Artwork) {
+    LATEST.with_borrow_mut(|latest| *latest = Some(Rc::new(art.clone())));
+}
+
 /// What to find by colour.
 #[derive(Clone, Debug, Default)]
 pub struct ColourQuery {
@@ -78,7 +91,13 @@ pub struct ColourQuery {
 /// the query is malformed.
 pub fn resolve(select: &mut Select) -> Result<(), String> {
     if !select.looks() {
+        if select.layer.is_some() {
+            return Err("layer names where at, colour or subject is found; give one".into());
+        }
         return Ok(());
+    }
+    if select.subject == Some(true) || select.refine.is_some() {
+        return Err("subject selection and edge refinement run as the find-area job; invoke find-area with these arguments".into());
     }
     let colour = match &select.colour {
         Some(text) => Some(
@@ -97,7 +116,7 @@ pub fn resolve(select: &mut Select) -> Result<(), String> {
         colour,
         tolerance,
         everywhere: select.at.is_none(),
-        layers: None,
+        layers: select.layer.clone().map(|layer| vec![layer]),
         within: None,
     };
     // Taking from the selection, or keeping only part of it, the wand looks
@@ -105,6 +124,14 @@ pub fn resolve(select: &mut Select) -> Result<(), String> {
     // colour outside.
     let within_selection = matches!(select.mode.as_deref(), Some("subtract" | "intersect"));
     let found = with_sight(|renderer, text, art| {
+        if let Some(layer) = &select.layer
+            && art.layer(layer).is_none_or(crate::model::Layer::is_mask)
+        {
+            return Err(format!(
+                "there is no layer {layer:?} to find colour on; the layers are {}",
+                crate::actions::layer_list(art)
+            ));
+        }
         let query = ColourQuery {
             within: art
                 .selection
@@ -127,6 +154,7 @@ pub fn resolve(select: &mut Select) -> Result<(), String> {
     select.at = None;
     select.colour = None;
     select.tolerance = None;
+    select.layer = None;
     Ok(())
 }
 
@@ -145,7 +173,9 @@ pub fn with_sight<T>(
             .renderer
             .upgrade()
             .ok_or("colour is found in the artwork as a window shows it; none is open")?;
-        let art = Rc::clone(&sight.art);
+        let art = LATEST
+            .with_borrow(Clone::clone)
+            .unwrap_or_else(|| Rc::clone(&sight.art));
         let text = sight.text.get_or_insert_with(TextRenderer::new);
         let mut renderer = renderer
             .try_borrow_mut()
@@ -162,6 +192,21 @@ pub fn with_sight<T>(
 /// # Errors
 /// Returns a point outside the artwork, or a render failure.
 pub fn colour_region(
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    art: &Artwork,
+    query: &ColourQuery,
+) -> Result<Region, String> {
+    // Colour is found in the pictures themselves, never in the placeholder
+    // the canvas shows while a just-opened photo is still being decoded.
+    let patient = std::mem::replace(&mut renderer.pictures.patient, true);
+    let found = look_for_colour(renderer, text, art, query);
+    renderer.pictures.patient = patient;
+    found
+}
+
+/// [`colour_region`], its pictures waited for.
+fn look_for_colour(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
     art: &Artwork,
@@ -261,7 +306,7 @@ impl Eye<'_> {
                         at.x, at.y, art.width, art.height
                     ));
                 }
-                Some((index(cell.x), index(cell.y)))
+                Some((usize_of_f64(cell.x), usize_of_f64(cell.y)))
             }
             None => None,
         };
@@ -298,11 +343,19 @@ impl Eye<'_> {
     }
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "checked to lie inside the picture before the cast"
-)]
-fn index(value: f64) -> usize {
-    value.floor().max(0.0) as usize
+/// The slow query's resolved geometry, retaining its selection options.
+pub fn found(mut select: Select, found: Region, matte: Option<crate::model::Matte>) -> Select {
+    let found = match &select.d {
+        Some(d) => Region::of_path(&ui::vello::kurbo::BezPath::from_svg(d).unwrap_or_default())
+            .combine(&found, Op::Union),
+        None => found,
+    };
+    select.d = Some(path_data(&found.to_path()));
+    select.at = None;
+    select.subject = None;
+    select.refine = None;
+    select.layer = None;
+    select.tolerance = None;
+    select.matte = matte;
+    select
 }

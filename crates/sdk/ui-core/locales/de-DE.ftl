@@ -2,6 +2,7 @@ counter = Wert: { $count }
 btn_1 = Klick Mich
 tab-modified = Nicht gespeicherte Änderungen
 
+standalone-history-title = Verlauf
 standalone-history-restore = Diese Version wiederherstellen…
 standalone-history-restore-title = Diese Version wiederherstellen?
 standalone-history-restore-body = Das Dokument kehrt zum Stand nach „{ $version }“ zurück. Dabei entsteht eine neue Änderung: Spätere Versionen bleiben im Verlauf, und Rückgängig macht die Wiederherstellung rückgängig.
@@ -16,6 +17,8 @@ standalone-history-restore-unavailable = Diese Version kann hier nicht wiederher
 standalone-history-preview-resource = Dokument
 host-search = Suchen…
 host-search-placeholder = Suchen
+dropdown-search-placeholder = Auswahl durchsuchen
+dropdown-search-description = Zum Filtern tippen. Mit den Pfeiltasten auswählen und mit Eingabe bestätigen.
 host-undo = Widerrufen
 host-undo-named = { $change } widerrufen
 host-redo = Wiederholen
@@ -81,6 +84,7 @@ history-mode-unavailable = Verlauf nicht verfügbar
 history-mode-content-unavailable = Früherer Inhalt nicht verfügbar
 history-mode-back-to-activity = Zurück zur Aktivität
 history-mode-back-to-live = Zurück zur aktuellen Version
+history-mode-earlier = Frühere Änderungen anzeigen
 history-mode-before = Vorher
 history-mode-after = Nachher
 history-mode-showing-before = Frühere Version: Vorher
@@ -225,7 +229,6 @@ history-files-error-unavailable = Der Dateiverlauf ist vorübergehend nicht verf
 history-files-error-too-large = Die frühere Vorschau überschreitet die unterstützte Größe
 history-files-error-no-content = Diese Version hat keinen gespeicherten Inhaltsverweis
 history-files-outcome-applied = Version { $revision } wiederhergestellt (Vorgang { $intent }). Der aktuelle zusammengeführte Dateiinhalt wird getrennt angezeigt. Vorheriger Verweis: beobachtete Version.
-history-files-outcome-applied-legacy = Version { $revision } wiederhergestellt (Vorgang { $intent }). Der aktuelle zusammengeführte Dateiinhalt wird getrennt angezeigt. Vorheriger Verweis: älterer Inhaltsvertreter; frühere Urheberschaft unbekannt.
 history-files-outcome-unchanged = Der ausgewählte Inhalt stimmt bereits überein; keine neue Version und kein Rückgängig-Eintrag
 history-files-outcome-pending = Die Wiederherstellung steht aus. Prüfe das Ergebnis oder versuche denselben Vorgang erneut
 history-files-outcome-review = Die aktuelle Datei hat sich geändert. Aktualisiere die Prüfung; die ausgewählte alte Version bleibt angeheftet
@@ -245,27 +248,6 @@ close-discard = Änderungen verwerfen
 close-retry = Erneut versuchen
 close-keep-editing = Weiter bearbeiten
 close-broker-disconnected = Die Verbindung zum Speicherdienst wurde getrennt. Das Dokument ist weiterhin geöffnet.
-terminal-find-scrollback = Im Terminalverlauf suchen
-terminal-target-host = Dieses Gerät (ohne Sandbox)
-terminal-target-default = Standardumgebung
-terminal-target-legacy = Legacy-VM
-terminal-target-manage = Umgebungen verwalten…
-terminal-host-awaiting-allow = Warte darauf, dass du die eigene Shell dieses Geräts erlaubst
-terminal-host-denied = Die eigene Shell dieses Geräts wurde nicht erlaubt
-terminal-env-title = Umgebungen
-terminal-env-tools = Werkzeuge
-terminal-env-no-tools = Noch keine Werkzeuge — pkg install in der Umgebung ausführen
-terminal-env-grants = Ordner
-terminal-env-no-grants = Noch keine Ordner freigegeben — „Ordner freigeben…“ verwenden oder perm trust-dir in der Umgebung ausführen
-terminal-env-grant = Ordner freigeben…
-terminal-env-grant-title = Ordner für diese Umgebung wählen
-terminal-env-grant-accept = Freigeben
-terminal-env-read-only = nur lesen
-terminal-env-rename = Umbenennen
-terminal-env-open = Hier öffnen
-terminal-env-create = Erstellen
-terminal-env-name-placeholder = Name einer neuen Umgebung
-terminal-env-unavailable = Umgebungen werden über Tilos Shell-Laufzeit verwaltet, die hier nicht läuft.
 
 notes-image-edit = Bild bearbeiten
 notes-image-done = Fertig
@@ -288,6 +270,7 @@ block-editor-code-exit-hint = Ctrl+Enter: Code verlassen
 block-editor-code-exit-compact = Ctrl+Enter ↵
 block-editor-code-copied = Kopiert
 block-editor-code-keyboard-hint = Ctrl+Enter: darunter schreiben · Ctrl+Shift+Enter: darüber schreiben · Tab / Shift+Tab: einrücken / ausrücken · Ctrl+Shift+C: Code kopieren
+widget-breadcrumb = Pfad
 widget-block-indent = Block mit Unterelementen einrücken
 widget-block-text = Blocktext
 widget-block-outdent = Block mit Unterelementen ausrücken
@@ -303,9 +286,6 @@ text-input-show-password = Passwort anzeigen
 text-input-hide-password = Passwort verbergen
 
 # Authentication surfaces share the system theme and catalog.
-greeter-welcome-back = Willkommen zurück bei Tilo
-greeter-sign-in = Zum Fortfahren anmelden
-greeter-passcode-intro = Gib deinen Code ein, um deinen Desktop zu öffnen.
 lock-welcome-back = Willkommen zurück
 
 # Now playing: Quick Settings and the lock screen.
@@ -368,7 +348,22 @@ relative-ago-years = { $count ->
     }
 
 # Ein Software-Teilnehmer in Verlauf, Präsenz und Aktivität.
+history-run-step-separator = {", "}
 participant-agent = { $name } · Agent
+participant-shortcut = { $name } · Kurzbefehl
+participant-app = { $name } · App
+# Ein Agent, ein Kurzbefehl oder eine App, die für eine Person handelt.
+participant-acting-for = { $name }, für { $person }
+interaction-agent = Agent
+interaction-collaborator = Mitwirkende Person
+interaction-action-status = { $action } ({ $phase }) - { $name }
+interaction-inspecting = Prüft
+interaction-applying = Wendet an
+interaction-waiting = Wartet
+interaction-committed = Übernommen
+interaction-failed = Fehlgeschlagen
+interaction-cancelled = Abgebrochen
+interaction-progress = { $label } - { $done }/{ $total }
 participant-unknown-agent = Unbekannter Agent
 
 # Der Verlauf als veröffentlichte Aktionen, für Palette, Skripte, Agenten und Hilfstechnologien.
@@ -414,3 +409,85 @@ history-day-today = Heute
 history-day-yesterday = Gestern
 history-day-this-week = Diese Woche
 history-day-earlier = Früher
+
+save-status-saving = Wird gespeichert…
+save-status-saved = Gespeichert
+save-status-failed = Speichern fehlgeschlagen
+save-status-retry = Erneut versuchen
+save-status-dismiss = Schließen
+
+# Suchleiste: das Band oben in einem Dokument, das darin sucht.
+find-bar-name = Suchen
+find-bar-placeholder = Suchen
+find-bar-replace-placeholder = Ersetzen durch
+find-bar-match-case = Groß-/Kleinschreibung
+find-bar-whole-word = Ganzes Wort
+find-bar-regex = Regulärer Ausdruck
+find-bar-text = Text
+find-bar-hex = Hex
+find-bar-previous = Vorheriger Treffer
+find-bar-next = Nächster Treffer
+find-bar-close = Suche schließen
+find-bar-replace = Ersetzen
+find-bar-replace-all = Alle ersetzen
+find-bar-position = { $current } von { $total }
+find-bar-no-matches = Keine Treffer
+widget-block-duplicate = Block mit Unterelementen duplizieren
+
+widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizieren
+
+widget-block-move-selection-up = Ausgewählte Blöcke nach oben verschieben
+widget-block-move-selection-down = Ausgewählte Blöcke nach unten verschieben
+
+block-editor-replace-placeholder = Ersetzen durch
+block-editor-replace = Ersetzen
+
+block-editor-replace-all = Alle ersetzen
+block-editor-replace-all-help = Alle ersetzen — Umschalt+Enter im Ersetzungsfeld
+
+widget-sidebar-resize = Breite der Seitenleiste ändern
+widget-inspector-resize = Breite des Inspektors ändern
+
+dictation-record-once = Einmal aufnehmen
+dictation-finish = Fertig
+dictation-cancel = Abbrechen
+
+dictation-copy-transcript = Transkript kopieren
+dictation-discard-transcript = Transkript verwerfen
+
+dropdown-no-matches = Keine passende Auswahl
+host-native-history-unobserved = Der Bearbeitungsverlauf des ursprünglichen Felds wurde noch nicht bestätigt.
+host-native-history-unconfirmed = Die Verlaufsänderung dieser Seite wurde nicht bestätigt. Prüfe die Seite, bevor du es erneut versuchst.
+host-native-page-history-scope = Rückgängig und Wiederholen gelten für den Bearbeitungsverlauf dieser Seite. Die letzte Änderung kann in einem anderen Feld liegen.
+
+# Shared native screen topology canvas
+display-arrangement-name = Bildschirmanordnung
+display-arrangement-description = Zieh einen Bildschirm neben einen anderen, um ihn dort zu platzieren. Das Positionsmenü jedes Bildschirms erledigt dasselbe per Tastatur.
+display-arrangement-empty = Keine Bildschirme zum Anordnen
+display-arrangement-item = Bildschirm { $number }: { $name }
+display-arrangement-item-primary = Bildschirm { $number }: { $name }, primär
+display-arrangement-item-position = { $width } × { $height } bei { $x }, { $y }
+
+device-display-session-unavailable = Die Tilo-Sitzung ist nicht verfügbar.
+device-display-request-pending = Eine Anfrage zur Bildschirmposition steht bereits aus.
+device-display-session-disconnected = Die Verbindung zur Tilo-Sitzung wurde getrennt.
+
+app-activate-window = Dieses Fenster anzeigen
+app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.
+
+# Shown instead of an app's view while its record does not read as the app expects.
+framework-unreadable = Dies kann nicht geöffnet werden
+display-arrangement-offline = Offline
+display-arrangement-excluded = Nicht im Layout
+display-arrangement-offline-excluded = Offline · Nicht im Layout
+display-arrangement-item-status = { $position }; { $status }
+display-arrangement-caption-status = { $status } · { $name }
+
+# Suche: Einstiegsgruppen in der leeren Anwendungsliste
+search-apps-group-start-here = Zum Einstieg
+search-apps-group-everyday = Alltag
+search-apps-group-work = Arbeit
+search-apps-group-media = Medien
+search-apps-group-system-tools = Systemwerkzeuge
+search-apps-group-more-apps = Weitere Apps
+search-apps-group-developer-tools = Entwicklerwerkzeuge

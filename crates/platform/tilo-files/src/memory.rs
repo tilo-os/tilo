@@ -129,10 +129,7 @@ impl Scope {
     }
 
     /// The same tree, rooted at `prefix` below this scope's root.
-    #[cfg_attr(
-        not(all(target_arch = "wasm32", target_os = "unknown")),
-        allow(dead_code, reason = "only the web mirror views subtrees")
-    )]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     pub(crate) fn below(&self, prefix: &VPath) -> Self {
         Self {
             tree: Arc::clone(&self.tree),
@@ -310,10 +307,7 @@ impl Scope {
 
     /// Put a file loaded from elsewhere into the tree, with its own
     /// modification time, telling no watcher.
-    #[cfg_attr(
-        not(all(target_arch = "wasm32", target_os = "unknown")),
-        allow(dead_code, reason = "only the web mirror loads trees")
-    )]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     pub(crate) fn load_file(&self, path: &VPath, bytes: Vec<u8>, modified: SystemTime) {
         let key = self.key(path);
         let mut state = self.tree.state();
@@ -328,10 +322,7 @@ impl Scope {
         Ok(admit(&mut state, &key, mode)?.then(|| self.held(key, mode)))
     }
 
-    #[cfg_attr(
-        all(target_arch = "wasm32", target_os = "unknown"),
-        allow(dead_code, reason = "the page's thread never waits for a lock")
-    )]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub(crate) fn lock_blocking(&self, path: &VPath, mode: LockMode) -> Result<Held, FsError> {
         let key = self.key(path);
         let mut state = self.tree.state();

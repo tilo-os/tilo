@@ -202,7 +202,9 @@ interface ChannelHandle {
   cancelPublishedInvocation @23 (id :UInt64) -> (updateJson :Text);
   # Optional content-addressed object to stage read-only for the launched app.
   # Empty keeps the ordinary app-launch behavior.
-  launchPublishedApplication @24 (appId :Text, contentHash :Text)
+  # Optional exact signed installed package root. Empty selects the normal
+  # application; a supplied root must match both its catalogue row and app id.
+  launchPublishedApplication @24 (appId :Text, contentHash :Text, packageRoot :Text, onBehalfOf :Data)
       -> (id :UInt64, updateJson :Text);
 
   # Ask this session to open the "say something about this" surface.
@@ -268,7 +270,7 @@ interface ChannelHandle {
       -> (id :UInt64, updateJson :Text, continuation :Data);
   # Cooperative cancellation for a leased task. The broker reflects a Task
   # Center cancellation; it never lets an agent cancel a task by itself.
-  taskRunCancelled @31 (runId :UInt64, lease :Text) -> (cancelled :Bool);
+  taskRunCancelled @31 (runId :UInt64, lease :Text) -> (cancelled :Bool, controlJson :Text);
 
   # Record a terminal effect started by this application's own local UI.
   # The broker re-resolves resource/action against the connection's current
@@ -386,6 +388,35 @@ interface ChannelHandle {
   # name another.
   settings @54 () -> (settings :AppSettings);
 
+  # This application's live activity: what it keeps showing outside its
+  # windows (a running timer), which the shell presents and whose controls
+  # it hands back. The app is the certified route's.
+  liveActivity @55 () -> (activity :LiveActivity);
+
+  # Local Files only. Original invocation custody is revalidated when present;
+  # offers never delegate it and cannot be redeemed outside this workspace.
+  localFileClipboard @56 (commandJson :Data, onBehalfOf :Data) -> (replyJson :Data);
+
+  # Device-local output-only PCM and controls. Caller/app/workspace/record are
+  # derived from the launcher-attested channel. No host socket or capture API
+  # is returned. The closed command is bounded to 32 KiB and 20 ms stereo PCM.
+  audioOutputCommand @57 (command :Data) -> (reply :Data);
+
+  # Execute a host-approved check only for this actual target worker's retained
+  # accepted invocation. Request has correlation + check ID, never argv/path/env.
+  # Unsupported brokers refuse; clients must not fall back to raw execution.
+  approvedCheck @58 (request :Data) -> (receipt :Data);
+
+  # Resolves once this route's channel keys, or this device's access to
+  # them, may have changed since `after`: 0 at first, then the `change` the
+  # previous call returned. It says only that this route's own channel
+  # changed; the endpoint then asks the workspace identity service for the
+  # keys, which checks the device and the person's role on every answer. An
+  # endpoint holding current keys keeps one call pending instead of asking on
+  # a timer. A host without a channel service answers unimplemented, and the
+  # endpoint asks on a timer as before.
+  channelKeysChanged @59 (after :UInt64) -> (change :UInt64);
+
 }
 
 # Optional result on @35, minted from the same captured directory and worker.
@@ -416,6 +447,8 @@ struct PublishedInvocationObservation {
 # connection/capability goes away.
 interface ActionDirectory {
   query @0 (query :ActionDirectoryQuery) -> (page :ActionDirectoryPage);
+  # An empty `revision` resolves against the directory as it is now; a found
+  # resolution then names that revision in `resolvedRevision`.
   resolve @1 (revision :Text, resource :Text, action :Text)
       -> (resolution :ActionDirectoryResolution);
 }
@@ -478,6 +511,12 @@ struct ActionDirectoryResolution {
     staleRevision @2 :Void;
     unavailable @3 :Void;
   }
+  # For `found`: the revision the owner resolved the row against, which is
+  # the named one or, for an empty revision, the directory as it is now. The
+  # broker binds the admission to it, so a host worker refuses to run the
+  # action once its directory moved on. Empty from an owner built before
+  # this field existed.
+  resolvedRevision @4 :Text;
 }
 
 interface WorkspaceControlHandle {
@@ -539,6 +578,13 @@ struct ExportedAction {
   # Optional explicit resource-view metadata. Absence means this action is
   # invokable but is not advertised as a view for its resource.
   view @10 :ResourceViewDescriptor;
+  # Descriptive source identity, never permission or an invocation alias.
+  semanticIdentity @11 :ResourceSemanticIdentity;
+}
+
+struct ResourceSemanticIdentity {
+  kind @0 :Text;
+  key @1 :Text;
 }
 
 struct ResourceViewDescriptor {
@@ -549,6 +595,7 @@ struct ResourceViewDescriptor {
   openAction  @3 :Text;
   primary     @4 :Bool;
   mount       @5 :ResourceViewMountSpec;
+  range       @6 :ResourceViewRangeSpec;
 }
 
 struct ResourceViewMountSpec {
@@ -862,6 +909,21 @@ interface EnrolledTaskStream {
 
 # One application's view of the session's settings, from `settings`.
 # Documents are JSON objects of sections, at most 1 MiB.
+interface LiveActivity {
+  # Show `activityJson`, a JSON object, as the app's live activity in place
+  # of the one shown; empty bytes end it.
+  show @0 (activityJson :Data) -> ();
+  # The controls pressed on the app's live activity after `after`, once
+  # there is one: a JSON array of the controls, and the serial of the last.
+  controls @1 (after :UInt64) -> (serial :UInt64, controlsJson :Data);
+}
+
+enum DisplayRequestOrigin {
+  unavailable @0;
+  localHost @1;
+  published @2;
+}
+
 interface AppSettings {
   # The view once its revision differs from `after`; at once for 0. A
   # caller follows changes by passing back the revision it was given.
@@ -870,4 +932,14 @@ interface AppSettings {
   # `section` (`app_personal` or `app_device_local`), answering the view
   # after the write. Any other section or entry is refused.
   update @1 (section :Text, valuesJson :Data) -> (revision :UInt64, documentJson :Data);
+  # Narrow display intent over an independently admitted private Settings
+  # worker. The host owns validation, prior state and transaction persistence.
+  displayControl @2 (commandJson :Data, publishedInvocation :Data, origin :DisplayRequestOrigin) -> (replyJson :Data);
+}
+
+struct ResourceViewRangeSpec {
+  action @0 :Text;
+  startParam @1 :Text;
+  endParam @2 :Text;
+  unitParam @3 :Text;
 }

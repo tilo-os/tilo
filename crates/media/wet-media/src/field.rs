@@ -64,6 +64,16 @@ impl ColourField {
         }
     }
 
+    /// This field moved by `(dx, dy)` cells.
+    #[must_use]
+    pub fn translated(&self, dx: f32, dy: f32) -> Self {
+        Self {
+            from: (self.from.0 + dx, self.from.1 + dy),
+            to: (self.to.0 + dx, self.to.1 + dy),
+            ..self.clone()
+        }
+    }
+
     /// The colour at a position. Stops mix in sRGB, as a painter judges a
     /// gradation by eye, so a dark-to-light run has no muddy middle.
     pub fn at(&self, x: f32, y: f32) -> Rgb {

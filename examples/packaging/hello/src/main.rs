@@ -1,11 +1,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -65,7 +61,7 @@ fn main() {
     println!();
 
     println!("== fds ==");
-    for name in ["collab", "fs", "spellcheck"] {
+    for name in ["collab", "fs"] {
         match portal::service_fd(name) {
             Some(fd) => println!("  {name:9}: fd={fd} (present)"),
             None => println!("  {name:9}: absent"),

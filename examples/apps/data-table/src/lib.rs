@@ -18,10 +18,6 @@ pub const APP_TITLE: &str = "Data Table";
 
 pub mod locales;
 
-fn install_catalog() {
-    locales::install();
-}
-
 use std::collections::HashMap;
 use std::ops::Range;
 use ui::i18n::I18nManager;
@@ -69,7 +65,7 @@ pub struct Review {
 impl Review {
     /// Open a row.
     #[action]
-    pub fn open(&mut self, #[param("Stable row id")] id: u64) -> Result<(), &'static str> {
+    pub fn open_row(&mut self, #[param("Stable row id")] id: u64) -> Result<(), &'static str> {
         if !usize::try_from(id).is_ok_and(|index| index < ROW_COUNT) {
             return Err("no such row");
         }
@@ -203,8 +199,11 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn view(cx: &mut ViewCx<Review>) -> Element {
-        install_catalog();
         // Rows are built on demand as the table scrolls, long after this view
         // was; they bind their buttons through the resource's actions.
         let actions = cx.actions();
@@ -217,9 +216,9 @@ impl ResourceApp for App {
                 .with_widget(move |row, _| {
                     Box::new(
                         actions.bind_invocation(
-                            Button::new(&format!("open-{}", row.id), "data-open", None)
-                                .fit_content(28.0),
-                            Review::OPEN.with(row.id),
+                            Button::new(&format!("open-{}", row.id), "data-open")
+                                .control_size(ui::widget::ControlSize::Small),
+                            Review::OPEN_ROW.with(row.id),
                         ),
                     )
                 }),

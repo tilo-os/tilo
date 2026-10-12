@@ -8,10 +8,13 @@ publish.workspace = true
 license.workspace = true
 
 [features]
+# Explicit native RAM custody qualification: requires a qualified tmpfs backing
+# or permission to create a noswap fixture in a private mount namespace.
+signal-profile-native-test = []
 netns-e2e = []
 # Integration-only native broker fixtures. This forwards the shared broker's
 # equally gated fixture entry point; ordinary shell spawning never selects it.
-test-support = ["tilo-action-broker/test-support"]
+test-support = ["tilo-action-broker/test-support", "dep:tilo-net", "ui/test-support", "tilo-identity-ceremony/test-support"]
 # When set, the hosted-mode compositor (`shell --backend winit`) binds
 # the TILO_TEST_CONTROL Unix socket the same way the headless backend
 # does. A background thread reads JSON commands and injects equivalent
@@ -44,7 +47,18 @@ dev-overrides = ["tilo-identity-host/throwaway-test-identity"]
 # independent of `dev-overrides`; desktop and OS images never enable it.
 agent-control = []
 
+[[bin]]
+name = "network-boundary-fixture"
+path = "tests/fixtures/network-boundary.rs"
+test = false
+bench = false
+required-features = ["test-support"]
+
 [dependencies]
+# Read the app SDK snapshot only in the owned native boundary fixture.
+tilo-net = { path = "../../platform/tilo-net", optional = true }
+
+agent-provider-config = { path = "../../agent/provider-config" }
 fnv.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
@@ -59,13 +73,14 @@ tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
 bounded-command = { path = "../../system/bounded-command" }
 # The MLS vault's master and signer keys: Secret Service or Keychain.
 tilo-secrets.workspace = true
-# Owner- and link-checked private files (sandboxed app logs, crash reports).
-private-fs = { path = "../../system/private-fs" }
 tempfile.workspace = true
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
+tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settings" }
 notify.workspace = true
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
+# Where the control sockets live, shared with the `tilo-control` client.
+tilo-control = { path = "../control-cli" }
 # The emoji picker's catalogue, search, skin tones and recents.
 emoji = { path = "../../text/emoji" }
 # Remembered network secrets (802.1X, VPN, SIM PIN) are sealed here, never
@@ -84,10 +99,12 @@ tokio = { workspace = true, features = ["full"] }
 tilo-rt.workspace = true
 
 serde.workspace = true
-serde_json.workspace = true
+# `raw_value`: the control socket splices a tree serialised once into its reply.
+serde_json = { workspace = true, features = ["raw_value"] }
 toml.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+# `env-filter`: RUST_LOG plus the always-on launch-latency target (linux_main).
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 zeroize.workspace = true
 # Every sealing construction (per-device envelopes, the portal store) goes
 # through the reviewed tilo-seal crate.
@@ -118,20 +135,37 @@ percent-encoding.workspace = true
 # XML escaping for the recent-files bookmarks.
 quick-xml.workspace = true
 
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"] }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import", "ux-bench"] }
+tilo-identity-ceremony = { version = "0.1.0", path = "../../collab/tilo-identity-ceremony" }
 
 tilo-actions = { path = "../../collab/actions" }
+tilo-action-policy = { path = "../../collab/action-policy" }
+tilo-app = { path = "../../sdk/tilo-app" }
+chat = { path = "../../../apps/chat", default-features = false }
+console-control = { path = "../console-control" }
 tilo-automation = { path = "../../collab/automation" }
 # The record/room-index store. The compositor keeps one document per room
 # listing which records that room holds, in the same store shape (atomic
 # writes, single-writer lock, debounced writer) an app's own state uses.
 tilo-app-state = { path = "../../system/app-state" }
+# The store the apps the shell mounts in-process keep their records in.
+durable-store = { path = "../../system/durable-store" }
+# Errors a host-made collaboration connection reports.
+runtime-portal = { path = "../../runtime/runtime-portal" }
 # `data_home()` — where per-user state lives, which is also where the
 # records apps wrote are found.
 tilo-cli-kit = { path = "../../runtime/cli" }
 terminal = { path = "../../../apps/terminal" }
+messages = { path = "../../../apps/messages" }
+passwords = { path = "../../../apps/passwords" }
+tilo-messaging = { path = "../../platform/tilo-messaging" }
+accounts = { path = "../../system/accounts" }
+tilo-contact-directory = { path = "../../platform/tilo-contact-directory" }
+tilo-messaging-protocol = { path = "../../system/messaging-protocol", default-features = false, features = ["signal-broker", "whatsapp-sdk", "sms-dbus"] }
 file-explorer = { path = "../../../apps/file-explorer" }
 browser = { path = "../../../apps/browser" }
+notes = { path = "../../../apps/notes" }
+code-editor = { path = "../../../apps/code-editor" }
 word-processor = { path = "../../../apps/word-processor" }
 # The document-format registry. The shell asks it whether a path is an
 # editable document; which installed app opens it comes from the app
@@ -174,6 +208,8 @@ automerge.workspace = true
 tilo-automerge.workspace = true
 taffy.workspace = true
 vello.workspace = true
+# Compare replacement image patches while retaining every other scene command.
+vello_encoding.workspace = true
 parking_lot.workspace = true
 
 libc.workspace = true
@@ -185,7 +221,9 @@ tilo-projector = { path = "../../system/projector" }
 zbus = { workspace = true, features = ["tokio", "p2p", "blocking-api"] }
 
 tilo-bluez = { path = "../../system/tilo-bluez" }
-image = { workspace = true, features = ["jpeg", "png", "webp"] }
+# The status bar follows NetworkManager's signals instead of `nmcli monitor`.
+tilo-nm = { path = "../../system/tilo-nm" }
+image ={ workspace = true, features = ["jpeg", "png", "webp"] }
 # The shared preview decoder behind drag previews.
 tilo-thumbnail = { path = "../../media/thumbnail" }
 # Host applications ship SVG icons; rasterised at the size chrome paints them.
@@ -252,13 +290,18 @@ desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-e
 # the cert against the workspace owner's root key and cross-check
 # the revocation list before accepting any of the peer's CRDT ops.
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+# Answers boot-time disk-unlock requests from the person's other devices.
+tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 # Mesh placement, home-peer registrations and relay shard ids.
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # The authenticated relay client and co-edit session (`RelayClient`,
 # `RelayCoeditSession`) that carry workspace deltas through a home or
-# provider host, plus the Cloud native-owner path (workspace join, delivery
-# v3, peer actions, sync refresh).
-tilo-relay = { path = "../../hosting/tilo-relay" }
+# provider host, plus room administration and the workspace join client.
+# The relay daemon itself (`tilo-relay`) is a dev-dependency only.
+tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+# The approver session that answers the questions this person's agents on
+# their hosts put to them.
+tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 # The native durable owner of enrolled rooms, kept inside the state file.
 tilo-joined-room = { path = "../../collab/tilo-joined-room" }
@@ -289,29 +332,42 @@ tilo-search = { path = "../../sdk/search", features = ["disk"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# Signs the installed-package fixtures the launch path reads surfaces from.
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
+# Native Store publication through the same certified session fixture as Browser.
+store = { path = "../../../apps/store" }
+# Private feedback acceptance invokes the actual Chat action and receipt adapter.
+chat = { path = "../../../apps/chat", default-features = false }
+# Real native editor instances in certified multi-device continuity fixtures.
+tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
+
+greeter = { path = "../greeter" }
+# Private native-pair acceptance uses the governed host's real voice relay.
+tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }
+# An iroh relay of a test's own, so a desktop's relays can be started and a
+# home relay appear without the public ones.
+iroh-relay = { version = "1.0.3", features = ["server"] }
+# Signs the TPM quotes the disk-unlock auto-approval tests verify.
+p256 = { version = "0.14", features = ["ecdsa"] }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 # Pairing-broker tests talk to a local broker on a loaded runner; the
 # toolkit's test support bounds that exchange only against a hang.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["test-support"] }
-# Parses the locale catalogues the way the runtime does, so a German entry
-# that would silently fall back to English fails a test.
-fluent.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal" }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
+tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony", features = ["test-support"] }
 tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
 # A browser in the room a node governs, for the node's own session to share
 # sealed records with.
 tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
-# The CPU replay of shell scenes, checked against vello on the same scenes.
-tilo-cpu-raster = { path = "../../sdk/tilo-cpu-raster" }
+tilo-agent-participant = { path = "../../agent/agent-participant" }
 rand_chacha.workspace = true
 pollster.workspace = true
 wgpu.workspace = true
-vello_encoding.workspace = true
 # Serializes tests that share process-wide state (environment variables,
 # static registries).
 serial_test.workspace = true
@@ -332,11 +388,6 @@ wayland-protocols-wlr = { version = "0.3.10", features = ["client"] }
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
 wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }
 
-# Keep the public CLI name stable if `src/bin/` is reorganized.
-[[bin]]
-name = "tilo-control"
-path = "src/bin/tilo-control.rs"
-
 [[test]]
 name = "it"
 path = "tests/it.rs"
@@ -355,13 +406,21 @@ test = true
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+signal-hook-registry = "1.4.8"
+# Raw Vulkan for returning the device memory lavapipe freed
+# (`shell::render::software_gpu_memory`); the version wgpu-hal and ui's
+# dmabuf import use, so Vulkan handles pass between them.
+ash = "0.38"
 # Tilo owns the producer side of portal ScreenCast streams.  `pipewire-rs`
 # talks to the session daemon directly; sandboxed apps only receive a remote
 # after the portal has granted a session.
 pipewire = "0.10.1"
 smithay-client-toolkit = "0.20.0"
 wayland-client.workspace = true
-wayland-protocols = "0.32.12"
+wayland-scanner = "0.31.11"
+# The stand-in text input that lets the input method reach the shell's own
+# fields (`compositor::shell_text_input`).
+wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }
 # The compositor's own input method connection, which commits text the
 # shell inserts (a picked emoji) while no trusted input method owns the seat.
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
@@ -398,3 +457,6 @@ windows-vm = { path = "../../windows/windows-vm" }
 # The shell runtime's policy, where the person's allow for Terminal's Host
 # target (the device's own shell) is recorded.
 ush = { path = "../../runtime/ush" }
+# The DRM backend rasterizes on the CPU where the GPU cannot run vello's
+# compute pipeline (Mali Bifrost under panvk).
+tilo-cpu-raster = { path = "../../sdk/tilo-cpu-raster" }

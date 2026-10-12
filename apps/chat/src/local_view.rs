@@ -27,8 +27,8 @@ struct LocalView {
     call_offset: [f64; 2],
     participants: bool,
 }
-impl crate::ChatApp {
-    pub(crate) fn capture_local(&self) -> Result<Option<ApplicationLocalView>, ThawError> {
+impl ui::application_view::ApplicationViewState for crate::ChatApp {
+    fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError> {
         let call_offset = match self.call.placement.attachment() {
             ui::floating_surface::Attachment::App { offset } => [offset.x, offset.y],
             ui::floating_surface::Attachment::Desktop { .. } => [0., 0.],
@@ -51,17 +51,17 @@ impl crate::ChatApp {
             participants: self.call.participants_expanded,
         };
         Ok(Some(ApplicationLocalView {
-            app_id: crate::definition().app_id.into(),
+            app_id: <crate::resource::ChatShell as ui::framework::ResourceApp>::ID.into(),
             version: 1,
             payload: serde_json::to_vec(&view).map_err(|e| ThawError::State(e.to_string()))?,
         }))
     }
-    pub(crate) fn restore_local(
+    fn restore_application_view(
         &mut self,
         local: &ApplicationLocalView,
         doc: &automerge::AutoCommit,
     ) -> Result<ApplicationFocusRestore, ThawError> {
-        if local.app_id != crate::definition().app_id {
+        if local.app_id != <crate::resource::ChatShell as ui::framework::ResourceApp>::ID {
             return Err(ThawError::BindingMismatch);
         }
         if local.version != 1 {

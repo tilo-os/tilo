@@ -20,9 +20,10 @@
 //! [`PickerOutcome::PickedMerged`], [`PickerOutcome::KeepCurrent`],
 //! [`PickerOutcome::Cancel`] (Esc / scrim click).
 
+use crate::num::f64_of_usize;
 use std::collections::HashMap;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
@@ -30,12 +31,13 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
-use crate::tokens::colors::{ACCENT_PRIMARY_IDX, ON_FILL_MIN_CONTRAST};
+use crate::tokens::TextRole;
+use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::data_table::{renderer_type_size, text_band, type_line_height};
+use crate::widget::data_table::{text_band, type_line_height};
 use crate::widget::merge_strategy::{Alternative, ConflictKind};
 
 const PADDING: f64 = 16.0;
@@ -57,17 +59,6 @@ const MIN_CARD_W: f64 = 260.0;
 const CARD_H: f64 = 160.0;
 /// Scrim alpha — matches the command-palette dim treatment.
 const SCRIM_ALPHA: u8 = 153; // ~ 60%
-
-/// A card count is a handful of alternatives plus maybe a merged preview —
-/// always tiny, so the `usize -> f64` conversion used for layout division
-/// cannot lose precision.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "card count is a small UI count, well within f64 precision"
-)]
-fn card_count_f64(n: usize) -> f64 {
-    n as f64
-}
 
 /// Composes `transform` with a translation by `(dx, dy)`. `kurbo::Affine`'s
 /// `Mul` impl trips `arithmetic_side_effects` like any operator overload,
@@ -119,9 +110,9 @@ pub struct ConflictPicker {
     on_pick: Option<PickCallback>,
     dirty: bool,
     bands: PickerBands,
-    /// The theme's `sm` label size and the keep button's side padding,
-    /// recorded at `build_layout` for the renderer-aware layout hook.
-    label_size: f32,
+    /// The button label role resolved at `build_layout` and the keep
+    /// button's side padding, for the renderer-aware layout hook.
+    label_style: TextStyle,
     keep_pad: f64,
     /// Measured `(width, height)` of [`KEEP_LABEL`], resolved in layout so
     /// the button hit-testing reads is the button paint draws; `(0, 0)` until
@@ -171,9 +162,9 @@ impl PickerBands {
 
     fn resolve(theme: &Theme, keep_w: f64) -> Self {
         let tokens = &theme.tokens;
-        let md = type_line_height(tokens.typography.scale.base);
-        let sm = type_line_height(tokens.typography.scale.sm);
-        let lg = type_line_height(tokens.typography.scale.lg);
+        let md = type_line_height(&tokens.typography, TextRole::Body);
+        let sm = type_line_height(&tokens.typography, TextRole::Caption);
+        let lg = type_line_height(&tokens.typography, TextRole::Heading);
         let tight = f64::from(tokens.spacing.s1);
         let group = f64::from(tokens.spacing.s2);
         let pill_h = text_band(PILL_H, sm, tight);
@@ -206,7 +197,7 @@ impl ConflictPicker {
             on_pick: None,
             dirty: true,
             bands: PickerBands::DEFAULT,
-            label_size: crate::tokens::TypeScale::default().sm,
+            label_style: crate::tokens::typography::stock().style(TextRole::Label),
             keep_pad: 2.0 * DEFAULT_KEEP_SIDE_PAD,
             keep_label: (0.0, 0.0),
         }
@@ -286,7 +277,7 @@ impl ConflictPicker {
 
         let gap = ROW_GAP;
         let available_w = inner.width();
-        let total_f = card_count_f64(total_cards);
+        let total_f = f64_of_usize(total_cards);
         let side_by_side_card_w = (available_w - gap * (total_f - 1.0).max(0.0)) / total_f;
 
         if available_w >= NARROW_THRESHOLD && side_by_side_card_w >= MIN_CARD_W {
@@ -397,7 +388,7 @@ fn draw_card(
 
     // Hovered cards lift via accent border; at rest the edge derives from
     // the card fill (HIG §9.5) as a crisp 1 px inset stroke.
-    let radius = f64::from(theme.tokens.radii.md);
+    let radius = f64::from(theme.tokens.radii.control);
     let fill = theme.tokens.colors.surfaces.base;
     if chrome.hovered {
         let body = RoundedRect::from_rect(card, radius);
@@ -419,61 +410,61 @@ fn draw_card(
         card.x1 - CARD_PAD_X,
         card.y1 - CARD_PAD_Y,
     );
-    let text_size_sm = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-    let text_size_md = renderer_type_size(text_renderer, theme.tokens.typography.scale.base);
+    let text_size_sm = theme.text(TextRole::Caption);
+    let text_size_md = theme.text(TextRole::Body);
     // Author/timestamp and label/summary are two tight pairs separated by one
     // group gap; each line advances by its measured line box.
     let tight = f64::from(theme.tokens.spacing.s1);
     let group = f64::from(theme.tokens.spacing.s2);
 
-    let (_, author_h) = text_renderer.measure(content.author, text_size_md, None);
-    text_renderer.draw_text(
+    let (_, author_h) = text_renderer.measure_style(content.author, None, &text_size_md);
+    text_renderer.draw_style(
         scene,
         content.author,
-        text_size_md,
         theme.tokens.colors.text_primary,
         translated(transform, inner.x0, inner.y0),
         None,
+        &text_size_md,
     );
     let ts_y = inner.y0 + f64::from(author_h) + tight;
-    let (_, ts_h) = text_renderer.measure(content.timestamp_label, text_size_sm, None);
-    text_renderer.draw_text(
+    let timestamp_style = text_size_sm.clone().numeric();
+    let (_, ts_h) = text_renderer.measure_style(content.timestamp_label, None, &timestamp_style);
+    text_renderer.draw_style(
         scene,
         content.timestamp_label,
-        text_size_sm,
         theme.tokens.colors.text_dim,
         translated(transform, inner.x0, ts_y),
         None,
+        &timestamp_style,
     );
 
     let label_y = ts_y + f64::from(ts_h) + group;
-    let (_, label_h) = text_renderer.measure(content.label, text_size_md, None);
-    text_renderer.draw_text(
+    let (_, label_h) = text_renderer.measure_style(content.label, None, &text_size_md);
+    text_renderer.draw_style(
         scene,
         content.label,
-        text_size_md,
         theme.tokens.colors.text_primary,
         translated(transform, inner.x0, label_y),
         None,
+        &text_size_md,
     );
 
     // Single-line, not wrapped — matches the picker's compact shape.
     let summary_y = label_y + f64::from(label_h) + tight;
-    text_renderer.draw_text(
+    text_renderer.draw_style(
         scene,
         content.summary,
-        text_size_sm,
         theme.tokens.colors.text_dim,
         translated(transform, inner.x0, summary_y),
         None,
+        &text_size_sm,
     );
 
     let pick_button = chrome.pick_button;
-    let btn_shape = RoundedRect::from_rect(pick_button, f64::from(theme.tokens.radii.sm));
-    // Fill and ink share one ground — the primary accent stop — so the label
-    // is resolved against the colour it is painted on (the `Button` primary
-    // convention: white ink stepped until it clears the fill).
-    let fill = theme.tokens.colors.accent[ACCENT_PRIMARY_IDX];
+    let btn_shape = RoundedRect::from_rect(pick_button, f64::from(theme.tokens.radii.detail));
+    // A primary action: the emphasis fill under its own label
+    // (`intent.on_inverted`), resolved against the fill it is painted on.
+    let fill = theme.tokens.colors.intent.inverted;
     scene.fill(
         vello::peniko::Fill::NonZero,
         transform,
@@ -481,25 +472,23 @@ fn draw_card(
         None,
         &btn_shape,
     );
-    let btn_text_size = text_size_sm;
-    let (bw, bh) = text_renderer.measure(content.button_label, btn_text_size, None);
-    text_renderer.draw_text(
+    let btn_text_style = theme.text(TextRole::Label);
+    let (bw, bh) = text_renderer.measure_style(content.button_label, None, &btn_text_style);
+    text_renderer.draw_style(
         scene,
         content.button_label,
-        btn_text_size,
-        // `Button`'s tone convention: white is the *candidate* ink, which the
-        // theme resolves against the fill (it walks to dark ink on a bright
-        // fill), so the literal is the request, not the colour painted.
-        theme
-            .tokens
-            .colors
-            .ink_on(fill, vello::peniko::Color::WHITE, ON_FILL_MIN_CONTRAST),
+        theme.tokens.colors.ink_on(
+            fill,
+            theme.tokens.colors.intent.on_inverted,
+            ON_FILL_MIN_CONTRAST,
+        ),
         translated(
             transform,
             pick_button.x0 + (pick_button.width() - f64::from(bw)) / 2.0,
             pick_button.y0 + (pick_button.height() - f64::from(bh)) / 2.0,
         ),
         None,
+        &btn_text_style,
     );
 }
 
@@ -511,46 +500,31 @@ impl Widget for ConflictPicker {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.bands = PickerBands::resolve(theme, self.bands.keep_w);
-        self.label_size = theme.tokens.typography.scale.sm;
+        self.label_style = theme.text(TextRole::Label);
         self.keep_pad = 2.0 * f64::from(theme.tokens.spacing.s3);
         // Sized by the host: expands to fill whatever rect the parent
         // assigns — typical use is a centered modal, e.g. 720×360.
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.fill_leaf(node_map, self)
     }
 
     /// The keep button's label is measured here, during layout, so the
     /// width `keep_current_rect` hit-tests is the width paint draws. The
     /// button holds its label plus a sibling step each side, floored at the
     /// pinned width so the 1× label keeps 240 px.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
+        _taffy: &mut TaffyTree<()>,
+        _node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
-        let size = renderer_type_size(text, self.label_size);
-        self.keep_label = text.measure(KEEP_LABEL, size, None);
+        self.keep_label = text.measure_style(KEEP_LABEL, None, &self.label_style);
         self.bands.keep_w = text_band(KEEP_W, f64::from(self.keep_label.0), self.keep_pad);
-        self.adjust_layout_style(taffy, node)
+        false
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
         let prev = self.rect;
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if prev != self.rect {
             self.dirty = true;
         }
@@ -583,30 +557,29 @@ impl Widget for ConflictPicker {
             &scrim_rect,
         );
 
-        let body = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.lg));
+        let body = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.control));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.material_glass(),
+            theme.tokens.colors.surfaces.overlay,
             None,
             &body,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.accent[5],
+            theme.tokens.colors.intent.inverted,
             None,
             &body,
         );
 
         let title = self.title_rect();
         let title_text = format!("{} conflict", self.family);
-        let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.lg);
-        let (_tw, th) = text_renderer.measure(&title_text, title_size, None);
-        text_renderer.draw_text(
+        let title_style = theme.text(TextRole::Heading);
+        let (_tw, th) = text_renderer.measure_style(&title_text, None, &title_style);
+        text_renderer.draw_style(
             scene,
             &title_text,
-            title_size,
             theme.tokens.colors.text_primary,
             translated(
                 transform,
@@ -614,6 +587,7 @@ impl Widget for ConflictPicker {
                 title.y0 + (title.height() - f64::from(th)) / 2.0,
             ),
             None,
+            &title_style,
         );
 
         self.draw_cards(scene, transform, text_renderer, theme);
@@ -799,29 +773,31 @@ impl ConflictPicker {
         theme: &Theme,
     ) {
         let keep = self.keep_current_rect();
-        let keep_radius = f64::from(theme.tokens.radii.sm);
-        // A Neutral button face (HIG §9.5): the raised tier at rest, the
-        // theme's hover fill when hovered, edge derived from the face — not
+        let keep_radius = f64::from(theme.tokens.radii.detail);
+        // A Neutral button face (HIG §9.5): the raised tier at rest, its
+        // half lift when hovered, edge derived from the face — not
         // a white veneer that is invisible on a light palette.
         let keep_body = if self.hover_keep {
-            theme.bg_hover
+            theme
+                .tokens
+                .colors
+                .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
         } else {
             theme.tokens.colors.surfaces.raised
         };
         crate::surface::card(scene, transform, keep, keep_radius, keep_body);
-        let keep_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+        let keep_style = theme.text(TextRole::Caption);
         // Centre on the measurement the button was sized from (see
-        // `adjust_layout_with_measure`); a host that laid out without the
+        // `adjust_layout_style`); a host that laid out without the
         // renderer-aware hook measures here instead.
         let (kw, kh) = if self.keep_label.0 > 0.0 {
             self.keep_label
         } else {
-            text_renderer.measure(KEEP_LABEL, keep_size, None)
+            text_renderer.measure_style(KEEP_LABEL, None, &keep_style)
         };
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             KEEP_LABEL,
-            keep_size,
             theme.tokens.colors.text_primary,
             translated(
                 transform,
@@ -829,6 +805,7 @@ impl ConflictPicker {
                 keep.y0 + (keep.height() - f64::from(kh)) / 2.0,
             ),
             None,
+            &keep_style,
         );
     }
 }
@@ -843,7 +820,7 @@ fn draw_merged_overlay(
     theme: &Theme,
     pick_btn: Rect,
 ) {
-    let btn_shape = RoundedRect::from_rect(pick_btn, f64::from(theme.tokens.radii.sm));
+    let btn_shape = RoundedRect::from_rect(pick_btn, f64::from(theme.tokens.radii.detail));
     scene.fill(
         vello::peniko::Fill::NonZero,
         transform,
@@ -852,13 +829,12 @@ fn draw_merged_overlay(
         &btn_shape,
     );
     let bl = "Use merged";
-    let bsize = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-    let (bw, bh) = text_renderer.measure(bl, bsize, None);
+    let bsize = theme.text(TextRole::Caption);
+    let (bw, bh) = text_renderer.measure_style(bl, None, &bsize);
     let colors = &theme.tokens.colors;
-    text_renderer.draw_text(
+    text_renderer.draw_style(
         scene,
         bl,
-        bsize,
         // Same tone convention as the pick buttons and `Button`: white is the
         // candidate ink, resolved by the theme against the fill it sits on.
         colors.ink_on(
@@ -872,19 +848,18 @@ fn draw_merged_overlay(
             pick_btn.y0 + (pick_btn.height() - f64::from(bh)) / 2.0,
         ),
         None,
+        &bsize,
     );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use crate::time::{Duration, SystemTime};
-    use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Arc;
-    use winit::event::Modifiers;
-    use winit::keyboard::PhysicalKey;
 
     fn alt(label: &str, author: &str) -> Alternative {
         Alternative {
@@ -1007,65 +982,11 @@ mod tests {
         picker_fits_in_narrow_viewport_via_stack();
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
-    /// Synthesise a `WindowEvent::KeyboardInput` carrying `key`
-    /// in the `Pressed` state. Mirrors the zero-init workaround
-    /// used in `command_palette::tests` — winit 0.30 keeps
-    /// `KeyEventExtra` `pub(crate)` so we cannot construct a
-    /// `KeyEvent` through a struct literal.
-    fn key_press(key: NamedKey) -> WindowEvent {
-        // SAFETY: all pub fields of `KeyEvent` tolerate the
-        // all-zero bit pattern; `handle_event` only inspects
-        // `logical_key` + `state`.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(key);
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn dispatch(p: &mut ConflictPicker, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        p.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: &mut doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
+    use crate::synthetic_input::named_key;
 
     #[test]
     fn picker_buttons_and_dismissal_fire_the_matching_outcome() {
@@ -1121,7 +1042,7 @@ mod tests {
                 .on_pick(move |o| outcomes_clone.borrow_mut().push(o));
             p.rect = Rect::new(0.0, 0.0, 1280.0, 360.0);
 
-            dispatch(&mut p, &key_press(NamedKey::Escape));
+            dispatch(&mut p, &named_key(NamedKey::Escape));
             assert_eq!(outcomes.borrow().len(), 1);
             assert_eq!(outcomes.borrow()[0], PickerOutcome::Cancel);
         }
@@ -1180,38 +1101,11 @@ mod tests {
 
             let banner_chip = banner.review_chip_rect().unwrap();
 
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus = None;
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            banner.handle_event(
+            dispatch(
+                &mut banner,
                 &cursor_moved(banner_chip.center().x, banner_chip.center().y),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: &mut doc,
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
             );
-            banner.handle_event(
-                &mouse_press(),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: &mut doc,
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut banner, &mouse_press());
             assert!(*review_fired.borrow(), "banner [Review] must fire");
 
             // 2. Host opens the picker and the user picks alternative 0.

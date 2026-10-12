@@ -6,9 +6,35 @@
 )]
 use super::*;
 use crate::{bound_dispatch::BoundNodeMap, widget::Widget};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use taffy::{NodeId, TaffyTree};
 use winit::event::{ElementState, WindowEvent};
+
+/// Focus eligibility for one recomputation of the current layout. This owns
+/// only node ids and never survives a layout or input-capture change.
+pub(crate) struct FocusRestrictions {
+    has_surfaces: bool,
+    denied: HashSet<NodeId>,
+}
+impl FocusRestrictions {
+    pub(crate) fn collect(root: &dyn Widget, tree: &TaffyTree<()>) -> Self {
+        let mut restrictions = Self {
+            has_surfaces: false,
+            denied: HashSet::new(),
+        };
+        crate::history_mode::capability::visit_framework_history(root, &mut |history, _| {
+            restrictions.has_surfaces = true;
+            history.extend_focus_denials(tree, &mut restrictions.denied);
+        });
+        restrictions
+    }
+    pub(crate) fn has_surfaces(&self) -> bool {
+        self.has_surfaces
+    }
+    pub(crate) fn allows(&self, node: NodeId) -> bool {
+        !self.denied.contains(&node)
+    }
+}
 
 pub(crate) fn has_surfaces(root: &dyn Widget) -> bool {
     let mut found = false;
@@ -22,6 +48,10 @@ pub(crate) fn owns_node(root: &dyn Widget, node: NodeId, tree: &TaffyTree<()>) -
     });
     owned
 }
+/// One node's focus admission, walking every surface: the reference
+/// [`FocusRestrictions`] must agree with. Production asks it of whole
+/// compositions through [`FocusRestrictions`] instead.
+#[cfg(test)]
 pub(crate) fn allows_focus(root: &dyn Widget, node: NodeId, tree: &TaffyTree<()>) -> bool {
     let mut allowed = true;
     crate::history_mode::capability::visit_framework_history(root, &mut |history, _| {
@@ -215,6 +245,42 @@ pub(crate) fn refresh(
             history.flush_pending_toolbar();
         }
     });
+}
+/// Run a History door control (the History control in an app's header row)
+/// on the History of the tile that hosts the app `owner` names, as the
+/// window's own History runs it for a window's app. `None` when no tile in
+/// `root` hosts that app with History.
+pub(crate) fn invoke_door(
+    root: &mut dyn Widget,
+    owner: &HistoryOwner,
+    intent: &tilo_actions::ControlInvocation,
+) -> Option<Result<(), tilo_actions::DoorError>> {
+    let mut result = None;
+    crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, _| {
+        if result.is_some() || !history.encloses(owner) {
+            return;
+        }
+        let resources = [history.door_resource()];
+        result = Some((|| {
+            let (arguments, _, _) = crate::bound_dispatch::resolve_resource_invocation(
+                &resources,
+                &intent.address,
+                None,
+                Some(&intent.arguments),
+                false,
+            )?;
+            let encoded = crate::bound_dispatch::encode_resource_action(
+                &resources,
+                &intent.address,
+                arguments.as_ref(),
+                None,
+            )?;
+            history
+                .invoke_door(&encoded)
+                .map_err(tilo_actions::DoorError::Failed)
+        })());
+    });
+    result
 }
 pub(crate) fn has_review(root: &dyn Widget) -> bool {
     let mut pending = false;

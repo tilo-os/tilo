@@ -18,26 +18,17 @@ impl VideoEditorApp {
         r: &Regions,
     ) {
         let c = &theme.tokens.colors;
-        fill_rect(scene, tf, r.preview, c.surfaces.base);
         let canvas = r.canvas;
         // A short window crushes the letterboxed canvas to a few pixels. There
         // is nothing to show at that size, and the HUD and safe-area guide
         // drawn at fixed offsets would land outside it; say so instead.
         if canvas.width() < MIN_CANVAS || canvas.height() < MIN_CANVAS {
             let msg = "Not enough room for the preview";
-            let (w, _) = tr.measure(msg, 11.5, None);
+            let style = theme.text(TextRole::Caption);
             let area = Rect::new(r.preview.x0, r.preview.y0, r.preview.x1, r.transport.y0);
-            if area.height() > 16.0 {
-                text(
-                    scene,
-                    tr,
-                    tf,
-                    msg,
-                    11.5,
-                    c.text_dim,
-                    area.center().x - f64::from(w) / 2.0,
-                    area.center().y - 7.0,
-                );
+            if area.height() > line_height(tr, &style) {
+                let at = text_centre(area, msg, &style, tr);
+                text(scene, tr, tf, msg, &style, c.text_dim, at.x, at.y);
             }
             return;
         }
@@ -51,14 +42,12 @@ impl VideoEditorApp {
             tf,
             &Rect::new(r.preview.x0, r.preview.y0, r.preview.x1, r.transport.y0),
         );
-        // Canvas backdrop (letterbox black).
-        fill_rect(scene, tf, canvas, Color::BLACK);
+        // The frame's own ground: the media letterbox, the same in every theme.
+        fill_rect(scene, tf, canvas, c.media.letterbox);
         // One picture, produced by the GPU compositor in `crate::gpu` — the
         // *same* renderer the export runs, so the preview is byte-for-byte
         // what the export writes. It resolves every layer, grade, fade,
         // transition and effect itself; nothing here re-implements any of it.
-        // The HUD below still draws on top, which is why this reads the frame
-        // back and blits it rather than hooking the render target.
         let showed_real = match &self.composited {
             Some((w, h, rgba)) if *w > 0 && *h > 0 => {
                 let frame = ::media::VideoFrame {
@@ -73,85 +62,85 @@ impl VideoEditorApp {
             _ => false,
         };
         if !showed_real {
-            // Nothing was composited, so there is no picture — and with no
-            // picture the letterbox black is not standing for anything. Repaint
-            // the canvas in the theme's own surface so the words below are
-            // legible: theme text on a hard-coded black is dark-on-dark in
-            // every light theme, which is how "No clip at playhead" came to be
-            // near-invisible on a white desktop.
-            fill_rect(scene, tf, canvas, c.surfaces.base);
-            stroke_round(
-                scene,
-                tf,
-                canvas.inset(-0.5),
-                1.5,
-                ui::surface::edge_on(c.surfaces.base),
-                1.0,
-            );
-            // Nothing to composite, or nothing to composite *with*. Both are
-            // said in words rather than papered over with an invented picture,
-            // and both go through the shared empty state so the preview reads
-            // like every other empty surface in the fleet instead of like a
-            // stray caption on a black rectangle.
-            let (icon, title, hint) = if self.project.top_video_clip_at(self.playhead).is_none() {
-                (
-                    ui::icons::Icon::Film,
-                    PREVIEW_EMPTY_TITLE,
-                    PREVIEW_EMPTY_HINT,
-                )
+            // Nothing was composited, so there is no picture. Say why in
+            // words on the letterbox, in the media inks — text only, never an
+            // invented picture or a glyph that looks like a control.
+            let (title, hint) = if self.project.clips.is_empty() {
+                // An empty project: the timeline below already says what to
+                // do, so the picture only says why it is blank.
+                ("Nothing to preview yet", "")
+            } else if self.project.top_video_clip_at(self.playhead).is_none() {
+                (PREVIEW_EMPTY_TITLE, PREVIEW_EMPTY_HINT)
             } else {
                 // Not an empty state — a capability the box does not have.
                 // Same treatment, different words, and it must not suggest
                 // there is anything to do about it here.
                 (
-                    ui::icons::Icon::Monitor,
                     "Preview needs a GPU adapter",
                     "The timeline and export still work",
                 )
             };
-            ui::widget::EmptyState::paint(
-                &mut ui::paint::PaintCtx::new(scene, tf, tr, theme),
-                canvas,
-                &ui::widget::EmptyStateContent {
-                    icon: Some(icon),
-                    title,
-                    message: Some(hint),
-                    action_label: None,
-                },
-                Point::new(f64::MIN, f64::MIN),
+            let title_style = theme.text(TextRole::Body).strong();
+            let hint_style = theme.text(TextRole::Caption);
+            let th = line_height(tr, &title_style);
+            let hh = if hint.is_empty() {
+                -S1
+            } else {
+                line_height(tr, &hint_style)
+            };
+            let top = canvas.center().y - (th + S1 + hh) / 2.0;
+            let room = (canvas.width() - S6) as f32;
+            let title = elide_at(title, room, &title_style, tr);
+            let hint = elide_at(hint, room, &hint_style, tr);
+            let tw = text_width(tr, &title, &title_style);
+            let hw = text_width(tr, &hint, &hint_style);
+            text(
+                scene,
+                tr,
+                tf,
+                &title,
+                &title_style,
+                c.media.ink,
+                canvas.center().x - tw / 2.0,
+                top,
+            );
+            text(
+                scene,
+                tr,
+                tf,
+                &hint,
+                &hint_style,
+                c.media.ink_dim,
+                canvas.center().x - hw / 2.0,
+                top + th + S1,
             );
         }
-        // HUD overlays: the playhead's time, and nothing else.
-        //
-        // The frame size used to be painted in the canvas's top-right, which
-        // is exactly where a corner picture-in-picture sits — and now that
-        // `Transform` is real and `Transform::pip()` puts a layer there by
-        // design, that collision is systematic rather than unlucky. Frame size
-        // is static project metadata, so it belongs beside the timecode in the
-        // transport (which states it) and in the export dialog, not painted
-        // over the user's composition for the life of the project.
-        //
-        // What stays is per-frame information, and it takes a chip so it reads
-        // over a bright picture as well as a dark one.
+        // HUD overlays: the playhead's time, and nothing else, on the floating
+        // material over the picture so it reads over a bright frame as well
+        // as a dark one.
+        let hud = theme.on_ground(ui::chrome::panel_ground(theme));
         let tc = timecode(self.playhead, self.project.fps);
-        let (tcw, _) = tr.measure_weighted(&tc, 13.0, None, TextWeight::Bold);
+        let tc_style = theme.text(TextRole::Label).numeric();
+        let tcw = text_width(tr, &tc, &tc_style);
+        let tch = line_height(tr, &tc_style);
         let tc_chip = Rect::new(
-            canvas.x0 + 8.0,
-            canvas.y0 + 6.0,
-            canvas.x0 + 8.0 + f64::from(tcw) + 14.0,
-            canvas.y0 + 28.0,
+            canvas.x0 + S2,
+            canvas.y0 + S2,
+            canvas.x0 + S2 + tcw + S4,
+            canvas.y0 + S2 + tch + S2,
         );
-        if tc_chip.x1 < canvas.x1 {
-            fill_round(scene, tf, tc_chip, 5.0, with_alpha(Color::BLACK, 0.55));
-            let baseline = text_baseline(tc_chip, 13.0, tr);
-            text_w(
+        if tc_chip.x1 < canvas.x1 && tc_chip.y1 < canvas.y1 {
+            ui::widget::floating_surface::paint(scene, tf, tc_chip, theme);
+            let top = text_baseline(tc_chip, &tc_style, tr);
+            text(
                 scene,
                 tr,
                 tf,
                 &tc,
-                &TextStyle::new(13.0).with_weight(TextWeight::Bold),
-                Color::WHITE,
-                Point::new(tc_chip.x0 + 7.0, baseline),
+                &tc_style,
+                hud.text_primary,
+                tc_chip.x0 + S2,
+                top,
             );
         }
         // The clip under the playhead has no bytes on this device: say so on the
@@ -166,44 +155,55 @@ impl VideoEditorApp {
                 None
             };
             if let Some(msg) = unusable {
-                let (mw, _) = tr.measure_weighted(msg, 12.0, None, TextWeight::Semibold);
-                let pad = 8.0;
+                let style = theme.text(TextRole::Label);
+                let mw = text_width(tr, msg, &style);
+                let mh = line_height(tr, &style);
                 let chip = Rect::new(
-                    canvas.x0 + 10.0,
-                    canvas.y1 - 32.0,
-                    canvas.x0 + 10.0 + f64::from(mw) + pad * 2.0,
-                    canvas.y1 - 10.0,
+                    canvas.x0 + S2,
+                    canvas.y1 - S2 - mh - S2,
+                    canvas.x0 + S2 + mw + S4,
+                    canvas.y1 - S2,
                 );
-                fill_round(scene, tf, chip, 5.0, with_alpha(Color::BLACK, 0.62));
-                stroke_round(scene, tf, chip, 5.0, with_alpha(Color::WHITE, 0.35), 1.0);
-                let baseline = text_baseline(chip, 12.0, tr);
-                text_w(
+                ui::widget::floating_surface::paint(scene, tf, chip, theme);
+                let top = text_baseline(chip, &style, tr);
+                text(
                     scene,
                     tr,
                     tf,
                     msg,
-                    &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
-                    Color::WHITE,
-                    Point::new(chip.x0 + pad, baseline),
+                    &style,
+                    hud.text_primary,
+                    chip.x0 + S2,
+                    top,
                 );
             }
         }
-        // Safe-area guide: a faint white over footage, as every monitor draws
-        // it; over the empty canvas — the theme's own surface — a derived
-        // hairline, because white on a paper-white canvas is no guide at all.
-        let guide = if showed_real {
-            with_alpha(Color::WHITE, 0.12)
-        } else {
-            ui::surface::edge_on(c.surfaces.base)
-        };
-        stroke_round(
-            scene,
-            tf,
-            canvas.inset(-canvas.width() * 0.05),
-            0.0,
-            guide,
-            1.0,
-        );
+        // Safe-area guide: a faint line in the media ink, as every monitor
+        // draws it, over the footage and the letterbox alike. Shown while
+        // something is being placed in the frame — a title, or a clip moved
+        // off full frame — which is what the guide is for; over a plain
+        // full-frame shot it would only be a line across the picture.
+        let placing = self
+            .selection
+            .primary()
+            .and_then(|id| self.project.clip(id))
+            .is_some_and(|clip| {
+                !clip.transform.is_identity()
+                    || self
+                        .project
+                        .media(clip.media)
+                        .is_some_and(|m| m.kind == MediaKind::Text)
+            });
+        if placing {
+            stroke_round(
+                scene,
+                tf,
+                canvas.inset(-canvas.width() * 0.05),
+                0.0,
+                with_alpha(c.media.ink, 0.14),
+                1.0,
+            );
+        }
         scene.pop_layer();
     }
 
@@ -221,17 +221,6 @@ impl VideoEditorApp {
     ) {
         let c = &theme.tokens.colors;
         let chrome_scale = self.chrome_scale();
-        fill_rect(scene, tf, r.transport, c.surfaces.raised);
-        stroke_line(
-            scene,
-            tf,
-            pane_hairline(theme),
-            r.transport.x0,
-            r.transport.y0 + 0.5,
-            r.transport.x1,
-            r.transport.y0 + 0.5,
-            1.0,
-        );
         // Everything below is clipped to the transport, so no control drawn
         // at a fixed offset can reach into the pane beside it.
         scene.push_layer(
@@ -243,52 +232,40 @@ impl VideoEditorApp {
         );
         let cursor = self.shows_focus_cursor(Pane::Transport);
         for (i, (action, rect)) in self.transport_buttons(r).into_iter().enumerate() {
-            let is_play = action == TransportAction::PlayPause;
             let hovered = rect.contains(self.last_mouse);
-            // The shared button face at a radius of half its width, so each
-            // control is the fleet's button as a disc — Primary for play, the
-            // neutral rest face with its edge for the rest — instead of a bare
-            // ramp fill that had no edge and no press state.
-            let mut face = ui::widget::ButtonFace::new(rect, "")
-                .radius(rect.width() / 2.0)
-                .hovered(hovered);
-            if is_play {
-                face = face.primary();
-            }
-            ui::widget::Button::paint(scene, tf, tr, theme, &face);
-            let col = if is_play {
-                on_fill(theme, theme.accent_primary).1
+            let (icon, name) = self.transport_icon(action);
+            // Play is the one main action of the strip; the rest are plain
+            // glyph buttons beside it.
+            let role = if action == TransportAction::PlayPause {
+                ButtonRole::Primary
             } else {
-                c.text_primary
+                ButtonRole::Plain
             };
-            self.draw_transport_icon(scene, tf, action, rect.center(), col);
-            // The keyboard cursor. `focus.transport` indexes `TRANSPORT_NAMES`,
-            // which is this array's order, so the ring lands on the button a
-            // reader is told it is on.
-            if cursor && self.focus.transport == i {
-                draw_focus_ring_circle(scene, tf, theme, rect.center(), rect.width() / 2.0);
-            }
+            // The keyboard cursor is the face's own focus ring.
+            // `focus.transport` indexes `TRANSPORT_NAMES`, which is this
+            // array's order, so the ring lands on the button a reader is told
+            // it is on.
+            let face = ButtonFace::icon_only(rect, icon, name)
+                .role(role)
+                .hovered(hovered)
+                .focused(cursor && self.focus.transport == i);
+            Button::paint(scene, tf, tr, theme, &face);
         }
-        // Undo / redo. Ghost squares rather than the transport's filled
-        // circles: nothing here moves the playhead, and the difference in
-        // shape is what says so before the icon is read.
+        // Undo / redo: the same plain glyph buttons as the transport's, set
+        // apart by the gap before them rather than by a different shape.
         for (which, rect) in self.history_buttons(r) {
             let can = self.undo.status().can(which);
             let icon = match which {
-                ui::UndoRequest::Undo => ui::icons::Icon::Undo2,
-                ui::UndoRequest::Redo => ui::icons::Icon::Redo2,
+                ui::UndoRequest::Undo => Icon::Undo2,
+                ui::UndoRequest::Redo => Icon::Redo2,
             };
-            let face = ui::widget::ButtonFace::new(rect, "")
-                .ghost()
-                .icon(icon)
-                .radius(6.0)
-                .accessible_name(which.title())
+            let face = ButtonFace::icon_only(rect, icon, which.title())
                 // A control that cannot act must not light up under the
                 // pointer — a hover state on a dead button reads as one
                 // that is about to work.
                 .hovered(rect.contains(self.last_mouse) && can)
                 .disabled(!can);
-            ui::widget::Button::paint(scene, tf, tr, theme, &face);
+            Button::paint(scene, tf, tr, theme, &face);
         }
         // Timecode readout. Each part is drawn only when it fits *whole*
         // inside the transport: a number the pane edge cuts mid-digit does not
@@ -297,71 +274,82 @@ impl VideoEditorApp {
         // Dropping the part is the honest narrow-window answer, and the parts
         // go in order of what the user cannot get elsewhere.
         let big = timecode(self.playhead, self.project.fps);
-        let total = format!("/  {}", timecode(self.project.duration(), self.project.fps));
+        // An empty timeline is no time long, whatever floor the scrubber's
+        // arithmetic keeps under its length.
+        let length = if self.project.clips.is_empty() {
+            0.0
+        } else {
+            self.project.duration()
+        };
+        let total = format!("/ {}", timecode(length, self.project.fps));
         // Project format — the app's own content area, rather than the OS's
-        // title slot. This is the only place the frame size is stated now that
-        // the canvas HUD no longer paints it over the picture.
+        // title slot.
         let meta = format!(
-            "{}×{} · {:.0} fps",
+            "{}×{}, {:.0} fps",
             self.project.width, self.project.height, self.project.fps
         );
         // What the playhead is *doing* — playing, or shuttling in some
-        // direction at some rate. It shares the readout's line rather than the
-        // 16px band above the scrubber the old "PLAYING" used, which on a 58px
-        // strip sits inside the 18px timecode's own line box.
+        // direction at some rate. It shares the readout's line.
         let motion = self.motion_words();
-        let (bw, bh) = tr.measure_weighted(&big, 18.0, None, TextWeight::Bold);
-        let (tw, th) = tr.measure(&total, 13.0, None);
-        let (mw, mh) = tr.measure(&meta, 11.5, None);
+        let big_style = theme.text(TextRole::Title).numeric();
+        let total_style = theme.text(TextRole::Body).numeric();
+        let meta_style = theme.text(TextRole::Caption).numeric();
+        let motion_style = theme.text(TextRole::Caption).numeric();
+        let (bw, bh) = (
+            text_width(tr, &big, &big_style),
+            line_height(tr, &big_style),
+        );
+        let (tw, th) = (
+            text_width(tr, &total, &total_style),
+            line_height(tr, &total_style),
+        );
+        let (mw, mh) = (
+            text_width(tr, &meta, &meta_style),
+            line_height(tr, &meta_style),
+        );
         let (motion_w, motion_h) = motion.as_deref().map_or((0.0, 0.0), |s| {
-            let (w, h) = tr.measure(s, 10.0, None);
-            (f64::from(w), f64::from(h))
+            (
+                text_width(tr, s, &motion_style),
+                line_height(tr, &motion_style),
+            )
         });
-        // Every part's top from one rule — see `readout_tops` — rather than
-        // four hand-tuned offsets that were each right for one size at one
-        // text scale.
+        // Every part's top from one rule — see `readout_tops`.
         let [big_y, total_y, motion_y, meta_y] = readout_tops(
             r.transport,
             r.transport.y0 + TRANSPORT_CONTROL_CY * chrome_scale,
-            [f64::from(bh), f64::from(th), motion_h, f64::from(mh)],
+            [bh, th, motion_h, mh],
         );
         let fit = readout_fit(
             r.transport,
             self.transport_content_x(r),
-            f64::from(bw),
-            f64::from(tw),
+            bw,
+            tw,
             motion_w,
-            f64::from(mw),
+            mw,
         );
         if let Some(x) = fit.big_x {
-            text_w(
+            text(scene, tr, tf, &big, &big_style, c.text_primary, x, big_y);
+        }
+        if let Some(x) = fit.total_x {
+            text(scene, tr, tf, &total, &total_style, c.text_dim, x, total_y);
+        }
+        // Something is happening: the playhead running, forwards or at a
+        // shuttle rate. A shuttle running at 16× used to report itself
+        // nowhere at all.
+        if let (Some(x), Some(words)) = (fit.motion_x, motion.as_deref()) {
+            text(
                 scene,
                 tr,
                 tf,
-                &big,
-                &TextStyle::new(18.0).with_weight(TextWeight::Bold),
-                c.text_primary,
-                Point::new(x, big_y),
+                words,
+                &motion_style,
+                c.semantic.info,
+                x,
+                motion_y,
             );
         }
-        if let Some(x) = fit.total_x {
-            text(scene, tr, tf, &total, 13.0, c.text_dim, x, total_y);
-        }
-        // Playing is reported in the success tint it always was; a shuttle
-        // takes the accent, so the two states are not one word apart. This used
-        // to be gated on `playing` alone, which meant a shuttle running at 16×
-        // reported itself nowhere at all: the playhead moved under its own
-        // steam with nothing on screen naming why, or how fast, or which way.
-        if let (Some(x), Some(words)) = (fit.motion_x, motion.as_deref()) {
-            let tint = if self.playback.playing {
-                c.semantic.success
-            } else {
-                c.accent[5]
-            };
-            text(scene, tr, tf, words, 10.0, tint, x, motion_y);
-        }
         if let Some(x) = fit.meta_x {
-            text(scene, tr, tf, &meta, 11.5, c.text_dim, x, meta_y);
+            text(scene, tr, tf, &meta, &meta_style, c.text_dim, x, meta_y);
         }
         // Scrubber.
         let scrub = self.scrubber_rect(r);
@@ -369,9 +357,7 @@ impl VideoEditorApp {
             scene.pop_layer();
             return;
         }
-        // The shared slider face, as the inspector's rows use: the fleet's
-        // track, fill, knob and hover rather than a bare ramp bar under a
-        // local knob.
+        // The shared slider face, as the inspector's rows use.
         let frac = (self.playhead / self.project.duration()).clamp(0.0, 1.0);
         draw_track(
             scene,
@@ -385,93 +371,20 @@ impl VideoEditorApp {
         scene.pop_layer();
     }
 
-    pub(super) fn draw_transport_icon(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        action: TransportAction,
-        ctr: Point,
-        col: Color,
-    ) {
-        let s = 6.0;
+    /// The icon a transport button wears and the name a reader hears for it.
+    /// Step-by-frame is a chevron with no bar; jump-to-end is the skip glyph
+    /// against a bar, so the two never read as the same button twice.
+    pub(super) fn transport_icon(&self, action: TransportAction) -> (Icon, &'static str) {
         match action {
-            TransportAction::PlayPause => {
-                // Pause bars whenever the playhead is running, shuttle
-                // included: a play triangle over a moving playhead offers to
-                // start something that is already going.
-                if self.is_moving() {
-                    fill_rect(
-                        scene,
-                        tf,
-                        Rect::new(ctr.x - 5.0, ctr.y - 6.0, ctr.x - 1.0, ctr.y + 6.0),
-                        col,
-                    );
-                    fill_rect(
-                        scene,
-                        tf,
-                        Rect::new(ctr.x + 1.0, ctr.y - 6.0, ctr.x + 5.0, ctr.y + 6.0),
-                        col,
-                    );
-                } else {
-                    let mut p = BezPath::new();
-                    p.move_to((ctr.x - 5.0, ctr.y - 7.0));
-                    p.line_to((ctr.x + 7.0, ctr.y));
-                    p.line_to((ctr.x - 5.0, ctr.y + 7.0));
-                    p.close_path();
-                    scene.fill(Fill::NonZero, tf, col, None, &p);
-                }
-            }
-            // Step-by-frame is a *double* chevron with no bar. Jump-to-end is
-            // a single chevron against a bar. They used to differ by one pixel
-            // of bar position and read as the same button twice.
-            TransportAction::StepBack => {
-                for dx in [1.0, 7.0] {
-                    let mut p = BezPath::new();
-                    p.move_to((ctr.x - dx + s, ctr.y - s));
-                    p.line_to((ctr.x - dx, ctr.y));
-                    p.line_to((ctr.x - dx + s, ctr.y + s));
-                    p.close_path();
-                    scene.fill(Fill::NonZero, tf, col, None, &p);
-                }
-            }
-            TransportAction::StepFwd => {
-                for dx in [1.0, 7.0] {
-                    let mut p = BezPath::new();
-                    p.move_to((ctr.x + dx - s, ctr.y - s));
-                    p.line_to((ctr.x + dx, ctr.y));
-                    p.line_to((ctr.x + dx - s, ctr.y + s));
-                    p.close_path();
-                    scene.fill(Fill::NonZero, tf, col, None, &p);
-                }
-            }
-            TransportAction::ToStart => {
-                fill_rect(
-                    scene,
-                    tf,
-                    Rect::new(ctr.x - 7.0, ctr.y - s, ctr.x - 4.5, ctr.y + s),
-                    col,
-                );
-                let mut p = BezPath::new();
-                p.move_to((ctr.x + 7.0, ctr.y - s));
-                p.line_to((ctr.x - 3.0, ctr.y));
-                p.line_to((ctr.x + 7.0, ctr.y + s));
-                p.close_path();
-                scene.fill(Fill::NonZero, tf, col, None, &p);
-            }
-            TransportAction::ToEnd => {
-                fill_rect(
-                    scene,
-                    tf,
-                    Rect::new(ctr.x + 4.5, ctr.y - s, ctr.x + 7.0, ctr.y + s),
-                    col,
-                );
-                let mut p = BezPath::new();
-                p.move_to((ctr.x - 7.0, ctr.y - s));
-                p.line_to((ctr.x + 3.0, ctr.y));
-                p.line_to((ctr.x - 7.0, ctr.y + s));
-                p.close_path();
-                scene.fill(Fill::NonZero, tf, col, None, &p);
-            }
+            // Pause whenever the playhead is running, shuttle included: a play
+            // triangle over a moving playhead offers to start something that
+            // is already going.
+            TransportAction::PlayPause if self.is_moving() => (Icon::Pause, "Pause"),
+            TransportAction::PlayPause => (Icon::Play, "Play"),
+            TransportAction::StepBack => (Icon::ChevronLeft, "Step back one frame"),
+            TransportAction::StepFwd => (Icon::ChevronRight, "Step forward one frame"),
+            TransportAction::ToStart => (Icon::SkipBack, "Jump to start"),
+            TransportAction::ToEnd => (Icon::SkipForward, "Jump to end"),
         }
     }
 }

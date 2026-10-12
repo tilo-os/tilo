@@ -10,9 +10,9 @@ vello_branch=vendor-upstream/vello-0.9
 vello_base=8a3898449ae9608feeafdfa5469fff2a180f08d4
 vello_tip=851c465d7a9a005c0d3bf1c8fca696369be79776
 
-winit_branch=vendor-upstream/winit-0.30.13
+winit_branch=codex/winit-dictation-ack-history
 winit_base=9b9d3bf5398c77c3ec8575c4279f01d2ddcc1d59
-winit_tip=b7e4ec10aaece4ce2a6c06264507e6fa722b0240
+winit_tip=217d0e69b3f4824391bdab8c5f73ce178cf4946c
 
 resolve_ref() {
     local branch=$1

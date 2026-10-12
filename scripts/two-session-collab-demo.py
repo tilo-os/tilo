@@ -42,6 +42,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # them comes from the replicated capability list.
 DEMO_APP = "org.tilo.Notes"
 DEMO_ACTION = "edit"
+DEMO_RESOURCE = "notes.notebook"
 # A path the filesystem capability covers. Two capabilities are granted
 # rather than one because they answer different questions and only one of
 # them is expressible in the Permissions tab: `Capability::from_capability`
@@ -227,15 +228,15 @@ class Session:
     def open_palette(self, machine_wide: bool = True) -> None:
         """Open the command palette.
 
-        Super+K searches the whole machine; Ctrl+K narrows to the
+        Super+Space searches the whole machine; Ctrl+K narrows to the
         focused app. Which one to use depends on the row wanted: the
-        shell's own actions only appear under Super+K, while the
+        shell's own actions only appear under Super+Space, while the
         peer-sync rows are offered under both and win the ranking under
         Ctrl+K, where filenames merely containing "invite" are not
         competing for the top row.
         """
         self.modifiers(logo=machine_wide, ctrl=not machine_wide)
-        self.key("k")
+        self.key("Space" if machine_wide else "k")
         self.modifiers()
         self.settle(0.4)
 
@@ -299,9 +300,9 @@ class Session:
         ok(call(self.sock, {"op": "click_named", "name": name}))
         self.settle(0.4)
 
-    def grant(self, subject: str, scope: str, verb: str,
+    def grant(self, subject: str, scope: str, access: str,
               cap_id: str | None = None) -> dict:
-        payload = {"op": "grant", "subject": subject, "scope": scope, "verb": verb}
+        payload = {"op": "grant", "subject": subject, "scope": scope, "access": access}
         if cap_id:
             payload["id"] = cap_id
         return call(self.sock, payload)
@@ -310,9 +311,11 @@ class Session:
         return call(self.sock, {"op": "revoke", "id": cap_id})
 
     def check_action(self, actor: str, app: str = DEMO_APP,
-                     action: str = DEMO_ACTION, verb: str = "write") -> dict:
+                     action: str = DEMO_ACTION, kind: str = "undoable",
+                     resource: str = DEMO_RESOURCE) -> dict:
         return call(self.sock, {"op": "check_action", "actor": actor, "app": app,
-                                "action": action, "verb": verb})
+                                "resource": resource, "action": action,
+                                "kind": kind})
 
 
 # --------------------------------------------------------------------
@@ -515,7 +518,7 @@ def run(host: Session, peer: Session, shots: str) -> None:
           granted_fs.get("answer", {}).get("granted"), fs_cap_id)
 
     has_cap = wait_for(
-        lambda: {c["id"] for c in peer.active_workspace().get("capabilities") or []}
+        lambda: {c["id"] for c in peer.active_workspace().get("sandbox") or []}
         >= {cap_id, fs_cap_id})
     claim("both capabilities are in the peer's own list", bool(has_cap), True)
     after_grant = peer.check_action(f"app:{DEMO_APP}")
@@ -540,7 +543,7 @@ def run(host: Session, peer: Session, shots: str) -> None:
     host.snapshot(os.path.join(shots, "06-host-permissions-after-grant.png"))
 
     step("8.", "the peer tries to administer the room, and is refused")
-    peer_grant = peer.grant("app:org.tilo.Rogue", "workspace", "admin")
+    peer_grant = peer.grant("app:org.tilo.Rogue", "workspace", "write")
     note(f"peer grant -> {json.dumps(peer_grant)}")
     claim("the peer's grant was refused", "err" in peer_grant, True)
     claim("refused for the right reason",
@@ -549,12 +552,12 @@ def run(host: Session, peer: Session, shots: str) -> None:
     note(f"peer revoke -> {json.dumps(peer_revoke)}")
     claim("the peer's revoke was refused", "err" in peer_revoke, True)
     still_there = any(c["id"] == cap_id
-                      for c in peer.active_workspace().get("capabilities") or [])
+                      for c in peer.active_workspace().get("sandbox") or [])
     claim("and the capability the peer tried to revoke is still there",
           still_there, True)
-    rogue_on_host = any(c.get("verb") == "Admin"
+    rogue_on_host = any(c.get("access") == "Write"
                         and "Rogue" in json.dumps(c.get("subject"))
-                        for c in host.active_workspace().get("capabilities") or [])
+                        for c in host.active_workspace().get("sandbox") or [])
     claim("nothing the peer asked for reached the host", rogue_on_host, False)
     peer.snapshot(os.path.join(shots, "07b-peer-revoke-disabled.png"))
 
@@ -573,10 +576,10 @@ def run(host: Session, peer: Session, shots: str) -> None:
         host.settle()
     claim("the path capability is gone from the host's list",
           all(c["id"] != fs_cap_id
-              for c in host.active_workspace().get("capabilities") or []), True)
+              for c in host.active_workspace().get("sandbox") or []), True)
     fs_gone = wait_for(
         lambda: all(c["id"] != fs_cap_id
-                    for c in peer.active_workspace().get("capabilities") or []))
+                    for c in peer.active_workspace().get("sandbox") or []))
     claim("and gone from the peer's own list too", bool(fs_gone), True)
     host.snapshot(os.path.join(shots, "08b-host-permissions-after-revoke.png"))
     host.close_ws_settings()
@@ -590,7 +593,7 @@ def run(host: Session, peer: Session, shots: str) -> None:
           revoked.get("answer", {}).get("revoked"), True)
     gone = wait_for(
         lambda: all(c["id"] != cap_id
-                    for c in peer.active_workspace().get("capabilities") or []))
+                    for c in peer.active_workspace().get("sandbox") or []))
     claim("the capability is gone from the peer's own list", bool(gone), True)
     after_revoke = peer.check_action(f"app:{DEMO_APP}")
     note(f"peer check_action -> {json.dumps(after_revoke)}")

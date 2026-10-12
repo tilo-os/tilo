@@ -723,7 +723,8 @@ impl BodyState {
         let used_style = self.p_numid.is_none()
             && self.p_style.as_deref().is_some_and(|s| {
                 reg.heading_level(s).is_some()
-                    || (reg.is_named_para(s) && reg.style_props(s).is_some())
+                    || (reg.table.is_named_para(s)
+                        && reg.table.style_props(s, str::to_string).is_some())
             });
         if let Some(style) = style.filter(|_| !used_style) {
             kept.insert_str(0, &style);
@@ -735,7 +736,7 @@ impl BodyState {
         let line_spacing = self.p_line_spacing.or_else(|| {
             self.p_style
                 .as_deref()
-                .and_then(|s| reg.para_line_spacing(s))
+                .and_then(|s| reg.table.para_line_height(s))
         });
         if let Some(ls) = line_spacing {
             doc.set_attr(&id, "line_spacing", ls);
@@ -766,20 +767,22 @@ impl BodyState {
                 }
             }
             // Direct `w:jc` wins; otherwise inherit alignment from the style.
-            let align = self
-                .p_align
-                .clone()
-                .or_else(|| self.p_style.as_deref().and_then(|s| reg.para_align(s)));
+            let align = self.p_align.clone().or_else(|| {
+                self.p_style
+                    .as_deref()
+                    .and_then(|s| reg.table.para_align(s))
+            });
             if let Some(a) = align {
                 doc.set_attr(&id, "align", a.as_str());
             }
         } else if let Some(l) = level {
             doc.set_kind(&id, "heading");
             doc.set_attr(&id, "level", l);
-            let align = self
-                .p_align
-                .clone()
-                .or_else(|| self.p_style.as_deref().and_then(|s| reg.para_align(s)));
+            let align = self.p_align.clone().or_else(|| {
+                self.p_style
+                    .as_deref()
+                    .and_then(|s| reg.table.para_align(s))
+            });
             if let Some(a) = align {
                 doc.set_attr(&id, "align", a.as_str());
             }
@@ -789,8 +792,12 @@ impl BodyState {
             let lifted = self
                 .p_style
                 .as_deref()
-                .filter(|s| reg.is_named_para(s))
-                .and_then(|s| reg.style_props(s).map(|props| (s.to_string(), props)));
+                .filter(|s| reg.table.is_named_para(s))
+                .and_then(|s| {
+                    reg.table
+                        .style_props(s, str::to_string)
+                        .map(|props| (s.to_string(), props))
+                });
             if let Some((sid, props)) = lifted {
                 doc.set_style(&sid, &props);
                 doc.set_attr(&id, "style", sid.as_str());
@@ -798,15 +805,16 @@ impl BodyState {
                     doc.set_attr(&id, "align", a.as_str());
                 }
             } else {
-                let align = self
-                    .p_align
-                    .clone()
-                    .or_else(|| self.p_style.as_deref().and_then(|s| reg.para_align(s)));
+                let align = self.p_align.clone().or_else(|| {
+                    self.p_style
+                        .as_deref()
+                        .and_then(|s| reg.table.para_align(s))
+                });
                 if let Some(a) = align {
                     doc.set_attr(&id, "align", a.as_str());
                 }
                 if let Some(st) = self.p_style.clone() {
-                    self.cur_para_marks = reg.para_text_marks(&st);
+                    self.cur_para_marks = reg.table.para_text_marks(&st);
                 }
             }
         }
@@ -1163,7 +1171,7 @@ impl BodyState {
                 } else if e.name().as_ref() == b"w:rStyle"
                     && let Some(name) = attr_val(e, b"w:val")
                 {
-                    for (k, v) in reg.text_marks(&name) {
+                    for (k, v) in reg.table.text_marks(&name) {
                         self.run_marks.retain(|(k2, _)| k2 != &k);
                         self.run_marks.push((k, v));
                     }

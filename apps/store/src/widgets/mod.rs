@@ -1,15 +1,11 @@
 //! Small ui-toolkit compositions shared across the store surface.
 //!
-//! Kept minimal — the app's own root widget composes the top-level
-//! layout out of `ui::widget::{Column, Row, Container, Text, Button,
-//! Scrollable, TextInput, ToggleGroup}`. This module only holds the
-//! reusable pieces that show up on more than one screen so the
-//! layout code isn't repeated.
+//! The app's own root widget composes the pages out of `ui::widget`
+//! compositions; this module only holds the reusable piece that shows up on
+//! more than one screen: the catalogue card and the app icon.
 
-pub mod artwork;
 pub mod card;
-pub mod chips;
 
-pub use artwork::Artwork;
-pub use card::{CARD_HEIGHT, CardAction, CardDetails, CardLayout, store_card};
-pub use chips::{FilterChipSelection, filter_chip_row};
+pub use card::{
+    CardAction, CardDetails, app_icon, category_label, provenance, store_card, visible_version,
+};

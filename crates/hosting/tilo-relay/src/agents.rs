@@ -10,7 +10,15 @@
 //!   step and the host never holds the root.
 //! - **Admission.** Approved delegations are registered in the relay's agent
 //!   register, which confines the device to its rooms; withdrawn ones are
-//!   refused from the next access audit on.
+//!   refused from the next access audit on. Each room this relay governs
+//!   that the delegation names puts the agent on its governed roster
+//!   (`RoomOperation::AgentMembership`), and every change to its grant is
+//!   carried onto those rosters: a withdrawn or narrowed grant takes it off
+//!   the room and its channels.
+//! - **Asking first.** An action the person's grants leave to them is put
+//!   to their approving device as a question for that one invocation
+//!   ([`CertificationProtocol::confirm`]); the agent runs it only on the
+//!   witnessed answer, and a question nobody answers in time is refused.
 //!
 //! [`start`] wires both into a relay: the supervisor answers the agent
 //! vocabulary as the host's app-serving plane, and the host's own agents
@@ -20,14 +28,21 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
+use tilo_actions::remote::{
+    ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
+    Confirmation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
+};
 use tilo_agent_participant::room_actions::RoomMember;
 use tilo_agent_participant::{
     AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory, HostActions,
-    HostEndpoint, ModelChoice, RoomActions, RoomRecordsLink, SupervisorHost,
+    HostEndpoint, ModelChoice, RoomActions, RoomRecordsLink, SupervisorHost, Witness,
 };
+use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 
 use tilo_relay_protocol::agents::{AgentDelegation, AgentProposal};
-use tilo_user_identity::{CERTIFICATION_SCHEMA_VERSION, CertificationRequest, DeviceCapabilities};
+use tilo_user_identity::{
+    CERTIFICATION_SCHEMA_VERSION, CertificationRequest, DeviceCapabilities, DeviceCert,
+};
 
 use crate::certification::CertificationProtocol;
 use crate::daemon::{Relay, RelayError, RelayIdentity};
@@ -36,12 +51,17 @@ use crate::peer::AgentRegistry;
 /// How long an agent's approval request waits for an approver.
 const APPROVAL_WAIT_NS: u64 = 10 * 60 * 1_000_000_000;
 
+/// How long an agent's question about one invocation waits for its person.
+const CONFIRMATION_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
+
 /// The relay as an agent supervisor sees it.
 #[derive(Clone)]
 pub struct RelayAgentLink {
     user_public_key: [u8; 32],
     certification: CertificationProtocol,
     agents: AgentRegistry,
+    /// The rooms this relay governs, whose rosters follow each agent's grant.
+    rooms: Option<crate::rooms::Rooms>,
     runtime: tokio::runtime::Handle,
 }
 
@@ -52,10 +72,24 @@ impl Relay {
     pub fn agent_link(&self) -> RelayAgentLink {
         let web = self.web_context();
         RelayAgentLink {
-            user_public_key: web.relay.own_user_pk,
+            user_public_key: web.relay.identity.user_public_key,
             certification: web.certification.clone(),
             agents: web.relay.agents.clone(),
+            rooms: self.rooms().cloned(),
             runtime: tokio::runtime::Handle::current(),
+        }
+    }
+}
+
+impl RelayAgentLink {
+    /// Bring agent `device`'s place on the rosters of the governed rooms in
+    /// line with the register, off the caller's thread. `cert` is the
+    /// agent's certificate when it was just approved or restored.
+    fn reconcile_rooms(&self, device: [u8; 32], cert: Option<DeviceCert>) {
+        if let Some(rooms) = self.rooms.clone() {
+            self.runtime.spawn(async move {
+                rooms.reconcile_agent(device, cert.as_ref()).await;
+            });
         }
     }
 }
@@ -81,6 +115,7 @@ impl AgentHostLink for RelayAgentLink {
                 can_act_as_host: false,
                 can_read_all_workspaces: false,
                 foreign: false,
+                can_administer_devices: false,
             },
             nonce,
             issued_at_ns: now,
@@ -99,7 +134,7 @@ impl AgentHostLink for RelayAgentLink {
         Ok(pairing_code)
     }
 
-    fn register(&self, delegation: &AgentDelegation) -> Result<(), String> {
+    fn register(&self, cert: &DeviceCert, delegation: &AgentDelegation) -> Result<(), String> {
         delegation
             .verify(&self.user_public_key, tilo_clock::unix_now_ns())
             .map_err(|error| error.to_string())?;
@@ -107,6 +142,13 @@ impl AgentHostLink for RelayAgentLink {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(delegation.agent_device_public_key, Some(delegation.clone()));
+        // A replacement may narrow an earlier delegation's rooms.
+        crate::authority_epoch::bump();
+        if cert.device_public_key != delegation.agent_device_public_key {
+            return Err("the delegation names another device".into());
+        }
+        // The governed rooms it names put it on their rosters.
+        self.reconcile_rooms(delegation.agent_device_public_key, Some(cert.clone()));
         Ok(())
     }
 
@@ -115,6 +157,126 @@ impl AgentHostLink for RelayAgentLink {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(agent_device_public_key, None);
+        crate::authority_epoch::bump();
+        // Governed rooms take it off their channels and refuse its writes.
+        self.reconcile_rooms(agent_device_public_key, None);
+    }
+
+    fn witness(&self, delegation: &AgentDelegation) -> Option<Witness> {
+        Some(Arc::new(RelayWitness {
+            certification: self.certification.clone(),
+            delegation: delegation.clone(),
+            runtime: self.runtime.clone(),
+        }))
+    }
+}
+
+/// The person's side of one agent's actions that ask first: each is a
+/// question on the person's approving devices, through the channel their
+/// grants are approved on. It runs nothing itself.
+struct RelayWitness {
+    certification: CertificationProtocol,
+    delegation: AgentDelegation,
+    runtime: tokio::runtime::Handle,
+}
+
+impl RelayWitness {
+    /// The question `request` puts to the person, when `caller` is this
+    /// witness's agent.
+    fn question(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<PendingConfirmation, ActionHostError> {
+        let agent = &self.delegation;
+        let its_own = caller.principal() == &CallerPrincipal::Agent(agent.agent_id.clone())
+            && caller.user_public_key() == Some(&agent.user_public_key)
+            && caller.device_public_key() == Some(&agent.agent_device_public_key);
+        if !its_own {
+            return Err(ActionHostError::NotPermitted);
+        }
+        let room = caller
+            .room()
+            .filter(|room| agent.scope.rooms.iter().any(|granted| granted == room))
+            .ok_or(ActionHostError::NotPermitted)?;
+        let mut id = [0_u8; 32];
+        getrandom::fill(&mut id).map_err(|error| ActionHostError::Unavailable {
+            reason: error.to_string(),
+        })?;
+        let address = &request.target.address;
+        let context = request.context.as_ref();
+        Ok(PendingConfirmation {
+            id,
+            agent_id: agent.agent_id.clone(),
+            agent_label: agent.label.clone(),
+            action_label: context
+                .and_then(|context| context.purpose.clone())
+                .unwrap_or_else(|| address.action.clone()),
+            resource_label: context
+                .and_then(|context| context.resource.as_ref())
+                .map_or_else(
+                    || address.resource.clone(),
+                    |resource| resource.label.clone(),
+                ),
+            risk: context
+                .and_then(|context| {
+                    context
+                        .facets
+                        .iter()
+                        .find(|facet| facet.key == tilo_actions::RISK_FACET)
+                })
+                .map_or_else(|| "destructive".to_owned(), |facet| facet.value.clone()),
+            room: room.to_owned(),
+            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(CONFIRMATION_WAIT_NS),
+        })
+    }
+}
+
+impl ActionHost for RelayWitness {
+    fn query(
+        &self,
+        _: &Caller,
+        _: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        Pending::ready(Err(ActionHostError::UnknownAction))
+    }
+
+    fn invoke(
+        &self,
+        _: &Caller,
+        _: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        Pending::ready(Err(ActionHostError::UnknownAction))
+    }
+
+    fn observe(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Result<(), ActionHostError> {
+        Err(ActionHostError::UnknownInvocation)
+    }
+
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<Confirmation, ActionHostError>> {
+        let question = match self.question(caller, request) {
+            Ok(question) => question,
+            Err(error) => return Pending::ready(Err(error)),
+        };
+        let (completer, answer) = tilo_actions::remote::pending();
+        let certification = self.certification.clone();
+        self.runtime.spawn(async move {
+            let token = hex::encode(question.id);
+            completer.complete(match certification.confirm(question).await {
+                Ok(ConfirmationAnswer::AllowOnce) => Ok(Confirmation::Witnessed(token)),
+                Ok(ConfirmationAnswer::Deny) => Err(ActionHostError::NotPermitted),
+                Err(_) => Err(ActionHostError::ConfirmationRequired),
+            });
+        });
+        answer
     }
 }
 
@@ -124,11 +286,8 @@ pub struct AgentOptions {
     pub state_dir: PathBuf,
     /// The model natural-language tasks are planned with.
     pub model: ModelChoice,
-    /// Agents' apps use the host user's files and secret store instead of
-    /// a profile of their own (`--agent-host-profile`).
-    pub host_profile: bool,
     /// The apps agents may open, and whose records pages may act on through
-    /// the host; this machine's registry, theme and fonts when `None`.
+    /// the host; this machine's registry when `None`.
     pub catalogue: Option<CatalogueFactory>,
 }
 
@@ -150,6 +309,9 @@ impl crate::AppServingPlane for HostActionsPlane {
 struct RelayRecordsLink {
     user_public_key: [u8; 32],
     member: RoomMember,
+    rooms: Option<crate::rooms::Rooms>,
+    browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
+    browser_page: Option<String>,
 }
 
 impl RoomRecordsLink for RelayRecordsLink {
@@ -159,6 +321,59 @@ impl RoomRecordsLink for RelayRecordsLink {
 
     fn member(&self) -> RoomMember {
         self.member.clone()
+    }
+
+    fn view_read_policy(
+        &self,
+        workspace: u64,
+        caller: &tilo_actions::remote::Caller,
+        app: &str,
+        record: &str,
+    ) -> Option<tilo_agent_participant::room_actions::ViewReadPolicy> {
+        self.member.runtime.block_on(
+            self.rooms
+                .as_ref()?
+                .resource_view_policy(workspace, caller, app, record),
+        )
+    }
+
+    fn view_document(
+        &self,
+        workspace: u64,
+        caller: &tilo_actions::remote::Caller,
+        source: &tilo_browser_peer::DocumentRoute,
+    ) -> Result<tilo_agent_participant::room_actions::ViewDocument, String> {
+        self.member.runtime.block_on(
+            self.rooms
+                .as_ref()
+                .ok_or("governed rooms unavailable")?
+                .resource_view_document(workspace, caller, source),
+        )
+    }
+
+    fn steward_keys(
+        &self,
+        route: &tilo_browser_peer::DocumentRoute,
+        create: bool,
+    ) -> Option<Result<tilo_browser_peer::ChannelContentKeys, String>> {
+        self.member
+            .runtime
+            .block_on(self.rooms.as_ref()?.steward_endpoint_keys(route, create))
+    }
+
+    fn view_locator(
+        &self,
+        room: &str,
+        provider: &str,
+    ) -> Option<tilo_actions::remote::ResourceViewLocator> {
+        let origin = self.browser_origin.read().ok()?.clone()?;
+        Some(tilo_actions::remote::ResourceViewLocator {
+            origin: (*origin).clone(),
+            room: room.to_owned(),
+            host_device: hex::encode(self.member.endpoint.host_cert.device_public_key),
+            provider: provider.to_owned(),
+            browser_page: self.browser_page.clone(),
+        })
     }
 }
 
@@ -170,9 +385,31 @@ impl RoomRecordsLink for RelayRecordsLink {
 ///
 /// Returns why the relay did not start or the agent state could not be read.
 pub async fn start(
+    cfg: crate::RelayConfig,
+    identity: RelayIdentity,
+    options: AgentOptions,
+) -> Result<(Relay, AgentHost), RelayError> {
+    start_inner(cfg, identity, options, None).await
+}
+
+/// Start the app-serving host with an explicit transport relay policy.
+///
+/// # Errors
+/// The same as [`start`].
+pub async fn start_with_relay_mode(
+    cfg: crate::RelayConfig,
+    identity: RelayIdentity,
+    options: AgentOptions,
+    relay_mode: iroh::RelayMode,
+) -> Result<(Relay, AgentHost), RelayError> {
+    start_inner(cfg, identity, options, Some(relay_mode)).await
+}
+
+async fn start_inner(
     mut cfg: crate::RelayConfig,
     identity: RelayIdentity,
     options: AgentOptions,
+    relay_mode: Option<iroh::RelayMode>,
 ) -> Result<(Relay, AgentHost), RelayError> {
     let host_cert = identity.device_cert.clone();
     let catalogue = options
@@ -184,20 +421,27 @@ pub async fn start(
         options.model,
         Arc::clone(&catalogue),
     );
-    if options.host_profile {
-        agents.share_host_profile();
-    }
     cfg.services.app_serving = true;
     let plane = Arc::new(HostActionsPlane(HostActions {
         supervisor: SupervisorHost(agents.supervisor().clone()),
         rooms: RoomActions::new(catalogue),
     }));
-    let relay = Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?;
+    let browser_page = cfg.resource_browser_page.clone();
+    let relay = match relay_mode {
+        Some(mode) => {
+            Relay::start_with_app_serving_and_relay_mode(cfg, identity, Some(plane.clone()), mode)
+                .await?
+        }
+        None => Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?,
+    };
     plane
         .0
         .rooms
         .attach(Arc::new(RelayRecordsLink {
             user_public_key: relay.room_records().user_public_key(),
+            rooms: relay.rooms().cloned(),
+            browser_origin: Arc::clone(&relay.browser_origin),
+            browser_page,
             member: RoomMember {
                 endpoint: HostEndpoint::iroh(relay.node_addr(), host_cert.clone()),
                 key: relay.room_records().signing_key().clone(),
@@ -205,9 +449,11 @@ pub async fn start(
             },
         }))
         .map_err(RelayError::Identity)?;
-    let link = Arc::new(relay.agent_link());
     agents
-        .start(HostEndpoint::iroh(relay.node_addr(), host_cert), link)
+        .start(
+            HostEndpoint::iroh(relay.node_addr(), host_cert),
+            Arc::new(relay.agent_link()),
+        )
         .map_err(RelayError::Identity)?;
     Ok((relay, agents))
 }

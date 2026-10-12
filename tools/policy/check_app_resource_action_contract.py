@@ -15,11 +15,17 @@ import re
 import sys
 import tomllib
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BASELINE = Path("tools/policy/app_resource_action_baseline.toml")
+# Audited ceilings, one file per app (`<app>.toml`, `[ratchets.<rule>]` tables
+# of `"apps/<app>/<path>" = <count>`), so changes to different apps never edit
+# the same file. Rules absent from every file allow nothing; adding an entry is
+# a certification exception requiring architectural review. A file whose debt
+# is gone is deleted.
+BASELINE = Path("tools/policy/app_resource_action_baseline")
 
 RESOURCE_PROVIDER = re.compile(r"\bfn\s+resources\s*\(")
 RESOURCE_VALUE = re.compile(r"\bResource\s*::\s*new\s*\(")
@@ -27,6 +33,9 @@ ACTION_SPEC = re.compile(r"\bActionSpec\s*::\s*(?:immediate|prompted|typed|opera
 RESOURCE_CONSUMER = re.compile(r"\bActionDescriptor\b")
 # The agent reaches published actions through the remote-action vocabulary,
 # the same messages peers and local SDK callers use.
+# What the agent's placeholder session answers in place of its removed
+# direct-session path.
+AGENT_STUB = "not implemented yet: the agent will act through"
 BROKER_CATALOGUE_CONSUMER = re.compile(r"\bRemoteActionMessage\s*::\s*CatalogueRequest\b")
 BROKER_ACTION_INVOKER = re.compile(r"\bRemoteActionMessage\s*::\s*Invoke\b")
 BROKER_ACTION_STATUS = re.compile(r"\bRemoteActionMessage\s*::\s*(?:Observe|Update)\b")
@@ -39,9 +48,7 @@ ACTION_REGISTRY_DEFINITION = re.compile(
     r"\bfn\s+register\s*\([^)]*\bActionRegistry\b", re.DOTALL
 )
 LIVE_ACTION_REGISTRY_WIRING = re.compile(r"\bactions\s*::\s*register\s*\(")
-TOOLKIT_ACTION_HOST = re.compile(
-    r"\bresource_actions\s*::\s*(?:immediate|background)\s*\("
-)
+TOOLKIT_ACTION_HOST = re.compile(r"\bresource_actions\s*::\s*immediate\s*\(")
 TOOLKIT_RESOURCE_VALUE = re.compile(
     r"\bresource_actions\s*::\s*(?:resource|typed_resource)\s*\("
 )
@@ -60,7 +67,7 @@ FRAMEWORK_LAUNCH = re.compile(
 # vocabulary: a surface's `ResourceSurface::effect`, a view's `cx.effects(..)`.
 TYPED_EFFECT_HANDLER = re.compile(r"\bfn\s+effect\s*\(|\.\s*effects\s*\(\s*(?:move\s*)?\|")
 FRAMEWORK_RESOURCE = re.compile(
-    r"#\[\s*resource\s*\(|\bimpl\s+(?:[\w:]+::)?Resource\s+for\b"
+    r"#\[\s*(?:[\w:]+::)?resource\s*\(|\bimpl\s+(?:[\w:]+::)?Resource\s+for\b"
 )
 LEGACY_ENTRY_POINTS = {
     "legacy room-action override": re.compile(r"\bfn\s+apply_room_action\s*\("),
@@ -72,6 +79,16 @@ LEGACY_ENTRY_POINTS = {
         r"\bstruct\s+(?:Automation|Agent|Mcp|Control)(?:Server|Socket)\b"
     ),
 }
+
+# The raw operation protocol between the host and the toolkit's own widgets.
+# An app answers operations as a typed effect vocabulary and, in a test that
+# drives a widget without a host, delivers one through
+# `ui::framework::HostDelivery`; it never
+# builds, routes or answers a raw operation, in its sources or its tests.
+RAW_OPERATION_PROTOCOL = re.compile(
+    r"\b(?:ResourceOperation|ResourceOperationStart|OperationRequest|start_in_children|host_operation)\b"
+    r"|(?:\.|::)\s*(?:start_operation|poll_resource_operation)\s*\("
+)
 
 SEARCH_PROVIDER_IMPL = re.compile(
     r"\bimpl(?:\s*<[^>{}]*>)?\s+SearchProvider\s+for\s+([A-Za-z_][A-Za-z0-9_]*)"
@@ -129,10 +146,10 @@ RATCHETS = {
         re.compile(r"\bfn\s+activate_search_result\s*\("),
         "opaque search activation bypass; return SearchResult::for_action with a published resource action",
     ),
-    "surface_document_actions": (
-        re.compile(r"\bfn\s+publishes_document_actions\s*\("),
-        "a surface publishing document actions of its own; bind edits to its view state with "
-        "ResourceSurface::bound_declarations and publish live rows with ResourceSurface::live_rows",
+    "widget_search_source": (
+        re.compile(r"\bSearchSource\s+for\b"),
+        "a content widget's own search provider beside the app's one search source; publish "
+        "SearchEntry values from Resource::search or ResourceSurface::search_entries",
     ),
 }
 
@@ -166,9 +183,164 @@ MODEL_RATCHETS = {
         "app-owned document; the framework owns the resource document",
     ),
 }
+# Counted over every line of a workspace app's sources but its test files: a
+# hook a widget implements anywhere in a file is the widget's.
+WORKSPACE_RATCHETS = {
+    "raw_operation_handler": (
+        re.compile(
+            r"\bfn\s+(?:start_operation|poll_resource_operation|local_resource_operation_handlers)\s*\("
+        ),
+        "raw resource-operation hook; answer a typed #[derive(Effect)] vocabulary in "
+        "ResourceSurface::effect (or ViewCx::effects) and offer item effects bound on their rows",
+    ),
+}
+# The app-facing APIs the model replaced (docs/architecture/resources.md): an
+# app declares its record with `#[derive(Model)]` and `#[resource]`, its
+# operations as `#[action]` verbs with typed params, and changes its document
+# only through field edits and verbs. Counted over every line of the sources of
+# workspace apps and examples, tests included, so a test reaches an app the
+# way an agent does. Each count may only go down; lowering one is described in
+# docs/architecture/resources.md ("Leaving the old APIs").
+LEGACY_API_RATCHETS = {
+    "hand_resource_impl": (
+        re.compile(r"\bimpl\b(?:\s*<[^>{}]*>)?\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*Resource\s+for\b"),
+        "hand-written `impl Resource for`; derive the record with #[derive(Model)] and #[resource]",
+    ),
+    "action_decl_new": (
+        re.compile(r"\bActionDecl\s*::\s*new\s*\("),
+        "hand-built ActionDecl; declare the operation as an #[action] verb",
+    ),
+    "action_address_new": (
+        re.compile(r"\bActionAddress\s*::\s*new\s*\("),
+        "hand-built ActionAddress; invoke a verb or field edit through the dispatcher "
+        "(`R::VERB.with(..)`, `Invoke::edit`) or a test app's typed calls",
+    ),
+    "untyped_action_args": (
+        re.compile(r"\bargs\s*\.\s*(?:text|get|boolean|integer|number|array)\s*\("),
+        "untyped argument parsing; give the verb typed params",
+    ),
+    "action_spec": (
+        re.compile(r"\bActionSpec\s*::"),
+        "hand-built ActionSpec; publish the operation as an #[action] verb or #[effect]",
+    ),
+    "direct_automerge_write": (
+        re.compile(
+            r"\.\s*(?:put|put_object|insert_object|splice_text|update_text|increment)\s*\(",
+        ),
+        "direct Automerge write; change the document with a field edit or a verb",
+    ),
+}
+# Which matches of a legacy rule are the old API, given the file's code and
+# its raw text (same offsets): a `put` on a content store, a secret store or a
+# cache is no document write, and `args.get(1)` on a binary's own command line
+# is no action argument.
+DOCUMENT_TYPE = (
+    r"(?:[A-Za-z_]\w*\s*::\s*)*(?:AutoCommit|Automerge|Doc|Transaction)\b"
+    r"|(?:impl|dyn)\s+(?:[A-Za-z_]\w*\s*::\s*)*Transactable\b"
+)
+TRANSACTABLE_GENERIC = re.compile(
+    r"\b([A-Z]\w*)\s*:\s*(?:\?Sized\s*\+\s*)?(?:[A-Za-z_]\w*\s*::\s*)*Transactable\b"
+)
+DOCUMENT_LET = re.compile(
+    r"\blet\s+(?:mut\s+)?([a-z_]\w*)\s*(?::[^=;]*)?=\s*(?:"
+    r"(?:[A-Za-z_]\w*\s*::\s*)*(?:AutoCommit|Automerge)\s*::"
+    r"|[\w.]*\s*\.\s*(?:transaction|transaction_at|fork|fork_at)\s*\()"
+)
+# A receiver with one of these names is the document even where its type is
+# inferred (a closure's parameter).
+DOCUMENT_NAMES = {"doc", "tx", "txn", "transaction"}
+AUTOMERGE_FILE = re.compile(r"\bautomerge\b|\bAutoCommit\b|\bObjId\b|\bTransactable\b|\bROOT\b")
+# A `put` into the document's root is a document write whatever its receiver.
+AUTOMERGE_OBJECT_ARG = re.compile(r"\s*&?\s*(?:automerge\s*::\s*)?ROOT\b")
+ACTION_ARGS_DECL = re.compile(
+    r"\bargs\s*:\s*&?\s*(?:mut\s+)?(?:[A-Za-z_]\w*\s*::\s*)*(?:ActionArgs|Value|Map)\b"
+)
+
+
+def document_receivers(code: str) -> set[str]:
+    """The names this file gives a document or a transaction on one."""
+    types = DOCUMENT_TYPE + "".join(
+        rf"|{re.escape(name)}\b" for name in sorted(set(TRANSACTABLE_GENERIC.findall(code)))
+    )
+    declared = re.compile(
+        rf"\b([a-z_]\w*)\s*:\s*&?\s*(?:'\w+\s+)?(?:mut\s+)?(?:{types})"
+    )
+    names = set(declared.findall(code)) | set(DOCUMENT_LET.findall(code))
+    if AUTOMERGE_FILE.search(code):
+        names |= DOCUMENT_NAMES
+    return names
+
+
+def receiver(code: str, dot: int) -> str:
+    """The name a method call at `dot` is made on: the variable or field,
+    or the function whose result it is."""
+    i = dot - 1
+    while i >= 0 and code[i].isspace():
+        i -= 1
+    if i >= 0 and code[i] == ")":
+        depth = 0
+        while i >= 0:
+            if code[i] == ")":
+                depth += 1
+            elif code[i] == "(":
+                depth -= 1
+                if depth == 0:
+                    break
+            i -= 1
+        i -= 1
+        while i >= 0 and code[i].isspace():
+            i -= 1
+    end = i + 1
+    while i >= 0 and (code[i].isalnum() or code[i] == "_"):
+        i -= 1
+    return code[i + 1 : end]
+
+
+def document_writes(code: str, raw: str, matches: list[re.Match]) -> list[re.Match]:
+    """Automerge's own writers (`put_object`, `splice_text`, ...) in a file
+    that reaches Automerge; `put`, which stores and caches share, only into
+    `ROOT` or on a receiver this file types or names as a document."""
+    if not matches or not AUTOMERGE_FILE.search(code):
+        return []
+    names = document_receivers(code)
+    return [
+        match
+        for match in matches
+        if not re.fullmatch(r"\.\s*put\s*\(", match.group())
+        or AUTOMERGE_OBJECT_ARG.match(code, match.end()) is not None
+        or (name := receiver(code, match.start())) in names
+        or re.fullmatch(r"(?:doc|document|transaction)\w*", name) is not None
+    ]
+
+
+def action_arguments(code: str, raw: str, matches: list[re.Match]) -> list[re.Match]:
+    """Every ActionArgs accessor; `get` only by name (`args.get("title")`) or
+    on arguments declared as ActionArgs or JSON, not a command line's index."""
+    if not matches:
+        return matches
+    typed = ACTION_ARGS_DECL.search(code) is not None
+    kept = []
+    for match in matches:
+        if not match.group().rstrip("( \t\n").endswith("get"):
+            kept.append(match)
+            continue
+        after = raw[match.end() :].lstrip()
+        if typed or after.startswith('"'):
+            kept.append(match)
+    return kept
+
+
+LEGACY_API_FILTERS = {
+    "direct_automerge_write": document_writes,
+    "untyped_action_args": action_arguments,
+}
+# Ratchets that reached zero and stay there: a ceiling for one is refused.
+CLOSED_RATCHETS = {"raw_operation_handler"}
 RATCHET_REASONS = {
     **{rule: reason for rule, (_, reason) in RATCHETS.items()},
     **{rule: reason for rule, (_, reason) in MODEL_RATCHETS.items()},
+    **{rule: reason for rule, (_, reason) in WORKSPACE_RATCHETS.items()},
+    **{rule: reason for rule, (_, reason) in LEGACY_API_RATCHETS.items()},
 }
 TEST_MODULE_START = re.compile(r"^\s*#\[cfg\((?:test|all\(test)", re.MULTILINE)
 
@@ -251,23 +423,43 @@ def is_ui_core_dependency(alias: str, specification: object) -> bool:
     return False
 
 
-def load_ratchet_baseline(root: Path) -> dict[str, dict[str, int]]:
-    path = root / BASELINE
-    if not path.is_file():
-        return {}
-    with path.open("rb") as handle:
-        document = tomllib.load(handle)
-    raw = document.get("ratchets", {})
-    if not isinstance(raw, dict):
-        return {}
+def baseline_file(relative: str) -> Path:
+    """The per-app baseline file that holds `relative`'s ceilings."""
+    parts = relative.split("/")
+    if len(parts) > 2 and parts[0] == "apps":
+        owner = parts[1]
+    elif len(parts) > 3 and parts[:2] == ["examples", "apps"]:
+        owner = f"example-{parts[2]}"
+    else:
+        owner = "workspace"
+    return BASELINE / f"{owner}.toml"
+
+
+def load_ratchet_baseline(
+    root: Path, violations: list[Violation] | None = None
+) -> dict[str, dict[str, int]]:
     baseline: dict[str, dict[str, int]] = {}
-    for rule, entries in raw.items():
-        if isinstance(entries, dict):
-            baseline[rule] = {
-                path: limit
-                for path, limit in entries.items()
-                if isinstance(path, str) and isinstance(limit, int) and limit >= 0
-            }
+    for path in sorted((root / BASELINE).glob("*.toml")):
+        with path.open("rb") as handle:
+            raw = tomllib.load(handle).get("ratchets", {})
+        if not isinstance(raw, dict):
+            continue
+        for rule, entries in raw.items():
+            if not isinstance(entries, dict):
+                continue
+            for relative, limit in entries.items():
+                if not (isinstance(relative, str) and isinstance(limit, int) and limit >= 0):
+                    continue
+                if violations is not None and rule in CLOSED_RATCHETS:
+                    violations.append(
+                        Violation(path, 1, f"{rule} is closed: no ceiling for `{relative}`")
+                    )
+                    continue
+                if violations is not None and root / baseline_file(relative) != path:
+                    violations.append(
+                        Violation(path, 1, f"{rule} ceiling for `{relative}` belongs in {baseline_file(relative)}")
+                    )
+                baseline.setdefault(rule, {})[relative] = limit
     return baseline
 
 
@@ -276,27 +468,48 @@ def audit_ratchets(
     sources: list[tuple[Path, str]],
     baseline: dict[str, dict[str, int]],
     violations: list[Violation],
+    *,
+    workspace: bool | None = None,
+    legacy_only: bool = False,
 ) -> None:
+    if workspace is None:
+        workspace = root.resolve() == ROOT.resolve()
     for source, source_text in sources:
         relative = source.relative_to(root).as_posix()
         code = rust_code_only(source_text)
-        rules = [(rule, pattern, reason, code) for rule, (pattern, reason) in RATCHETS.items()]
+        rules = (
+            []
+            if legacy_only
+            else [(rule, pattern, reason, code) for rule, (pattern, reason) in RATCHETS.items()]
+        )
+        if workspace:
+            rules += [
+                (rule, pattern, reason, code)
+                for rule, (pattern, reason) in LEGACY_API_RATCHETS.items()
+            ]
         # A Tilo workspace invariant, like the app host check in `audit`; the
         # miniature SDK apps the policy tests build are not held to it.
-        if root.resolve() == ROOT.resolve():
+        if workspace and not legacy_only:
             production = "" if is_test_source(relative) else production_code(source_text)
             rules += [
                 (rule, pattern, reason, production)
                 for rule, (pattern, reason) in MODEL_RATCHETS.items()
             ]
+            shipped = "" if is_test_source(relative) else code
+            rules += [
+                (rule, pattern, reason, shipped)
+                for rule, (pattern, reason) in WORKSPACE_RATCHETS.items()
+            ]
         for rule, pattern, reason, code in rules:
             matches = list(pattern.finditer(code))
+            if rule in LEGACY_API_FILTERS:
+                matches = LEGACY_API_FILTERS[rule](code, source_text, matches)
             limit = baseline.get(rule, {}).get(relative, 0)
             if len(matches) <= limit:
                 if len(matches) < limit:
                     violations.append(
                         Violation(
-                            root / BASELINE,
+                            root / baseline_file(relative),
                             1,
                             f"stale {rule} ceiling for {relative}: lower {limit} to {len(matches)}",
                         )
@@ -307,7 +520,7 @@ def audit_ratchets(
                 Violation(
                     source,
                     line_number(source_text, first_excess.start()),
-                    f"{reason} ({len(matches)} found, audited ceiling {limit} in {BASELINE})",
+                    f"{reason} ({len(matches)} found, audited ceiling {limit} in {baseline_file(relative)})",
                 )
             )
 
@@ -316,12 +529,25 @@ def line_number(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
+CHAR_LITERAL = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^\\'\n])'")
+RUST_CODE_RUN = re.compile(r"[^/'\"]+")
+
+
+# Rules inspect the same immutable text repeatedly. Bound retained strings,
+# and key by content so an edit at the same path is always rescanned.
+@lru_cache(maxsize=128)
 def rust_code_only(text: str) -> str:
     """Remove comments and literals so prose cannot satisfy the protocol gate."""
     out: list[str] = []
     i = 0
     block_depth = 0
     while i < len(text):
+        # Ordinary code cannot start a comment or literal. Copy its entire run;
+        # keep the existing lexical handling at each delimiter below.
+        if not block_depth and (code := RUST_CODE_RUN.match(text, i)):
+            out.append(code.group())
+            i = code.end()
+            continue
         if block_depth:
             if text.startswith("/*", i):
                 block_depth += 1
@@ -343,6 +569,10 @@ def rust_code_only(text: str) -> str:
             block_depth = 1
             out.extend("  ")
             i += 2
+        elif text[i] == "'" and (char_literal := CHAR_LITERAL.match(text, i)):
+            # A char literal ('"', '\\'); a lifetime has no closing quote.
+            out.extend(" " * (char_literal.end() - i))
+            i = char_literal.end()
         elif text[i] == '"':
             quote = text[i]
             out.append(" ")
@@ -684,12 +914,12 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                     "app host must install bounded canonical search for every live resource tree",
                 )
             )
-    ratchet_baseline = load_ratchet_baseline(root)
-    baseline_path = root / BASELINE
+    ratchet_baseline = load_ratchet_baseline(root, violations)
     for rule, entries in ratchet_baseline.items():
-        if rule not in RATCHET_REASONS:
-            violations.append(Violation(baseline_path, 1, f"unknown ratchet rule `{rule}`"))
         for relative in entries:
+            baseline_path = root / baseline_file(relative)
+            if rule not in RATCHET_REASONS:
+                violations.append(Violation(baseline_path, 1, f"unknown ratchet rule `{rule}`"))
             if not (root / relative).is_file():
                 violations.append(
                     Violation(
@@ -763,31 +993,36 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                     )
                 )
         app_name = manifest_path.parent.name
+        # The agent's direct-session path is removed until it acts through the
+        # apps' published surfaces via the broker; while its stub stands, the
+        # three checks of that path wait. They run again once it is gone.
+        agent_stub = AGENT_STUB in combined_raw
         if app_name == "agent":
-            if not RESOURCE_PROVIDER.search(combined) or not RESOURCE_CONSUMER.search(combined):
-                violations.append(
-                    Violation(
-                        manifest_path,
-                        1,
-                        "headless agent must survey resources and invoke ActionDescriptor entries",
+            if not agent_stub:
+                if not RESOURCE_PROVIDER.search(combined) or not RESOURCE_CONSUMER.search(combined):
+                    violations.append(
+                        Violation(
+                            manifest_path,
+                            1,
+                            "headless agent must survey resources and invoke ActionDescriptor entries",
+                        )
                     )
-                )
-            if not BROKER_CATALOGUE_CONSUMER.search(combined):
-                violations.append(
-                    Violation(
-                        manifest_path,
-                        1,
-                        "headless agent must consume the generic action catalogue through remote-action messages",
+                if not BROKER_CATALOGUE_CONSUMER.search(combined):
+                    violations.append(
+                        Violation(
+                            manifest_path,
+                            1,
+                            "headless agent must consume the generic action catalogue through remote-action messages",
+                        )
                     )
-                )
-            if not BROKER_ACTION_INVOKER.search(combined) or not BROKER_ACTION_STATUS.search(combined):
-                violations.append(
-                    Violation(
-                        manifest_path,
-                        1,
-                        "headless agent must invoke and observe actions through remote-action messages",
+                if not BROKER_ACTION_INVOKER.search(combined) or not BROKER_ACTION_STATUS.search(combined):
+                    violations.append(
+                        Violation(
+                            manifest_path,
+                            1,
+                            "headless agent must invoke and observe actions through remote-action messages",
+                        )
                     )
-                )
         else:
             framework_host = (
                 FRAMEWORK_APP.search(combined) is not None
@@ -888,12 +1123,37 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                     )
                 )
 
+        app_dir = manifest_path.parent
+        for source in sorted(
+            [*(app_dir / "src").rglob("*.rs"), *(app_dir / "tests").rglob("*.rs")]
+        ):
+            raw = source.read_text(encoding="utf-8")
+            for match in RAW_OPERATION_PROTOCOL.finditer(rust_code_only(raw)):
+                violations.append(
+                    Violation(
+                        source,
+                        line_number(raw, match.start()),
+                        "the host's raw operation protocol is the toolkit's, not an app's: "
+                        "answer a typed effect vocabulary, and in a test deliver an "
+                        "operation through ui::framework::HostDelivery",
+                    )
+                )
+
         for source, text in sources:
             for reason, pattern in LEGACY_ENTRY_POINTS.items():
                 for match in pattern.finditer(text):
                     violations.append(
                         Violation(source, line_number(text, match.start()), reason)
                     )
+
+    # The examples teach the app model: they are held to the same ratchets on
+    # the APIs it replaced.
+    for manifest_path in sorted((root / "examples" / "apps").glob("*/Cargo.toml")):
+        sources = [
+            (source, source.read_text(encoding="utf-8"))
+            for source in sorted((manifest_path.parent / "src").rglob("*.rs"))
+        ]
+        audit_ratchets(root, sources, ratchet_baseline, violations, legacy_only=True)
 
     return violations, len(manifests)
 

@@ -54,6 +54,14 @@ script's own conventions. It is the headless adapter for CI and scenario
 tests: its VMs do not appear in virt-manager or Boxes, so it is never the
 default, and it runs only from a Tilo worktree.
 
+Its registered CPU count, memory, architecture and resolution are passed to
+the same harness. It uses the software 2D display unless `--gl` requests virgl;
+`--emulated` explicitly selects TCG. Without `--emulated`, the harness probes
+KVM and warns if it must fall back to TCG. Record the actual accelerator and
+renderer with performance results: TCG timings cannot establish KVM or physical
+machine budgets. `--resolution` and `--gl` work with this adapter; multiple
+display heads require libvirt.
+
 ## Windows ARM64 Home: QEMU with WHPX
 
 Install the MSYS2 CLANGARM64 QEMU package and enable **Windows Hypervisor

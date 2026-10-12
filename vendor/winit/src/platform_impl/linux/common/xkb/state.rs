@@ -48,6 +48,20 @@ impl XkbState {
         unsafe { (XKBH.xkb_state_key_get_one_sym)(self.state.as_ptr(), keycode) }
     }
 
+    #[cfg(wayland_platform)]
+    pub fn effective_symbols(&self, keycode: xkb_keycode_t) -> Option<Vec<u32>> {
+        let mut syms = std::ptr::null_mut();
+        let count =
+            unsafe { (XKBH.xkb_state_key_get_syms)(self.state.as_ptr(), keycode, &mut syms) };
+        if !(0..=8).contains(&count) || (count != 0 && syms.is_null()) {
+            return None;
+        }
+        if count == 0 {
+            return Some(Vec::new());
+        }
+        Some(unsafe { std::slice::from_raw_parts(syms, count as usize) }.to_vec())
+    }
+
     pub fn layout(&mut self, key: xkb_keycode_t) -> xkb_layout_index_t {
         unsafe { (XKBH.xkb_state_key_get_layout)(self.state.as_ptr(), key) }
     }

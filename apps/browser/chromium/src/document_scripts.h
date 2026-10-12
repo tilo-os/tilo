@@ -34,8 +34,8 @@ inline std::string BlockingScriptSource(const std::vector<CefString>& scripts,bo
 }
 class DocumentScripts final : public CefDevToolsMessageObserver {
  public:
-  DocumentScripts(CefRefPtr<CefBrowser> browser,std::function<void()> ready,std::function<void()> failure)
-    :browser_(browser),ready_(std::move(ready)),failure_(std::move(failure)) {}
+  DocumentScripts(CefRefPtr<CefBrowser> browser,std::function<void()> ready,std::function<void()> failure,std::string world={})
+    :browser_(browser),ready_(std::move(ready)),failure_(std::move(failure)),world_(std::move(world)) {}
   void Attach() {
     registration_=browser_->GetHost()->AddDevToolsMessageObserver(this);
     enabling_=true;Trace("enable-submit",0);pending_=browser_->GetHost()->ExecuteDevToolsMethod(0,"Page.enable",nullptr);Trace("enable-return",pending_);
@@ -68,12 +68,12 @@ class DocumentScripts final : public CefDevToolsMessageObserver {
     auto params=CefDictionaryValue::Create();
     removing_=!identifier_.empty();
     if(removing_) params->SetString("identifier",identifier_);
-    else { submitted_=desired_;params->SetString("source",submitted_); }
+    else { submitted_=desired_;params->SetString("source",submitted_);if(!world_.empty())params->SetString("worldName",world_); }
     pending_=browser_->GetHost()->ExecuteDevToolsMethod(0,removing_?"Page.removeScriptToEvaluateOnNewDocument":"Page.addScriptToEvaluateOnNewDocument",params);
     if(!pending_) failure_();
   }
   CefRefPtr<CefBrowser> browser_;CefRefPtr<CefRegistration> registration_;
-  std::function<void()> ready_,failure_;std::string desired_,installed_,submitted_,identifier_;
+  std::function<void()> ready_,failure_;std::string desired_,installed_,submitted_,identifier_,world_;
   int pending_=0;bool removing_=false,enabling_=false;
   IMPLEMENT_REFCOUNTING(DocumentScripts);
 };

@@ -1,0 +1,18 @@
+[package]
+name = "tilo-contact-directory"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Shared person-owned contact identities and explicitly confirmed messaging endpoints"
+
+[dependencies]
+serde.workspace = true
+tilo-resource = { path = "../../sdk/tilo-resource" }
+uuid.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

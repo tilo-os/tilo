@@ -26,7 +26,7 @@ Schema1 has exactly these fields:
   persistent public trust and intended boot origin. No private key fields.
 - `architecture`, `generation`, `source_date_epoch`, `systemd_version`:
   native architecture and independently pinned build/measurement identities.
-- `base_ref`, `rpms_ref`, `kernel_ref`, `wpe_ref`: immutable original build
+- `base_ref`, `rpms_ref`, `kernel_ref`: immutable original build
   references. Only the base/RPM images needed for final UKI construction are
   pulled; the skipped stages still require their original parser arguments.
 - `signer`: root-owned external adapter outside the checkout, installed before

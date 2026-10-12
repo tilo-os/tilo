@@ -48,7 +48,9 @@ POLICY = {
         "mkdir": [r"EFI/tilo", r"EFI/Linux"],
         # Boot counters: a bootc entry gains, or keeps counting down, its +N tries.
         "rename": [(r"loader/entries/bootc[A-Za-z0-9._-]*(\+[0-9]+(-[0-9]+)?)?\.conf",
-                    r"loader/entries/bootc[A-Za-z0-9._-]*\+[0-9]+(-[0-9]+)?\.conf")],
+                    r"loader/entries/bootc[A-Za-z0-9._-]*\+[0-9]+(-[0-9]+)?\.conf"),
+                   (r"loader/entries\.staged/bootc[A-Za-z0-9._-]*(\+[0-9]+(-[0-9]+)?)?\.conf",
+                    r"loader/entries\.staged/bootc[A-Za-z0-9._-]*\+[0-9]+(-[0-9]+)?\.conf")],
         "install": [r"EFI/Linux/tilo-repair\.efi", r"EFI/tilo/repair\.source"],
         "remove": [r"EFI/Linux/tilo-repair\.efi", r"loader/entries/tilo-repair\.conf",
                    r"EFI/tilo/repair\.efi"],

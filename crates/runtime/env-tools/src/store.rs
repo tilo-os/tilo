@@ -82,6 +82,7 @@ impl ToolStore for PackageStoreTools {
                             pinned: false,
                             attested_by: String::new(),
                             source: "built on this device".into(),
+                            held: false,
                         })
                     },
                     None,
@@ -143,18 +144,6 @@ pub fn device_builder() -> anyhow::Result<Builder<PackageStoreTools, Option<Cata
         default_catalog(),
         state,
     ))
-}
-
-/// `store`, also trusting the tools this device builds, when its device key
-/// is readable here; else `store` unchanged.
-pub fn trusting_device_tools(store: Store) -> Store {
-    match crate::signing::device_identity() {
-        Ok(identity) => trust_builder(store, &identity),
-        Err(error) => {
-            tracing::debug!(%error, "no device key: tools built here are not trusted");
-            store
-        }
-    }
 }
 
 /// [`device_builder`] as the environment record's seam, or a builder that

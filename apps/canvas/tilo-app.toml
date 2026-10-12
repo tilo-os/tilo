@@ -37,13 +37,17 @@ mode = "off"
 [sandbox.services]
 collab = "optional@1"
 tilo-fs = "optional@1"
+# Select subject asks the gateway's on-device segmentation model; the app
+# still has no network and never sees the model.
+model-gateway = "optional@1"
 
 [entrypoint]
 bin = "bin/canvas"
 type = "gui"
 splash-budget = 250
 
-# Files opens a saved artwork in Canvas.
+# Files opens a saved artwork in Canvas; a picture opens as an artwork the
+# size of the picture, one per file.
 [providers]
-mime = ["application/vnd.tilo.artwork+json"]
-ext = ["artwork"]
+mime = ["application/vnd.tilo.artwork+zip", "image/png", "image/jpeg", "image/webp"]
+ext = ["artwork", "png", "jpg", "jpeg", "webp"]

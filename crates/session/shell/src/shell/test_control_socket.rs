@@ -7,33 +7,15 @@
 //! no shared-directory fallback: a well-known name under `/tmp` could be
 //! bound first by anyone, capturing every command a client sends.
 
-use std::ffi::OsString;
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// Environment variable naming the socket; the compositor listens only
-/// when it is set (and development overrides are compiled in).
-pub const TEST_CONTROL_ENV: &str = "TILO_TEST_CONTROL";
-
-/// Directory under `$XDG_RUNTIME_DIR` shared with the other per-session
-/// endpoints the compositor publishes.
-pub const TEST_CONTROL_RUNTIME_SUBDIR: &str = "tilo-session";
-
-/// File name of the default socket inside [`TEST_CONTROL_RUNTIME_SUBDIR`].
-pub const TEST_CONTROL_SOCKET_FILE: &str = "test-control.sock";
-
-/// `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`, or `None` when the
-/// runtime directory is unset or not absolute.
-#[must_use]
-pub fn default_socket_path(runtime_dir: Option<OsString>) -> Option<PathBuf> {
-    let dir = PathBuf::from(runtime_dir?);
-    dir.is_absolute().then(|| {
-        dir.join(TEST_CONTROL_RUNTIME_SUBDIR)
-            .join(TEST_CONTROL_SOCKET_FILE)
-    })
-}
+pub use tilo_control::{
+    ADMIN_CONTROL_SOCKET_FILE, TEST_CONTROL_ENV, TEST_CONTROL_RUNTIME_SUBDIR,
+    TEST_CONTROL_SOCKET_FILE, admin_socket_path, default_socket_path,
+};
 
 /// Bind a listener at `path` that only this user can connect to.
 ///
@@ -94,6 +76,7 @@ mod tests {
     use super::*;
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::net::UnixStream;
+    use std::path::PathBuf;
 
     #[test]
     fn control_socket_is_private_replaces_only_stale_sockets() {
@@ -107,6 +90,13 @@ mod tests {
             );
             assert_eq!(default_socket_path(Some("run/user".into())), None);
             assert_eq!(default_socket_path(None), None);
+            assert_eq!(
+                admin_socket_path(Some("/run/user/1000".into())),
+                Some(PathBuf::from(
+                    "/run/user/1000/tilo-session/admin-control.sock"
+                ))
+            );
+            assert_eq!(admin_socket_path(Some("run/user".into())), None);
         }
 
         // Phase `bound_socket_is_private_and_reachable`.

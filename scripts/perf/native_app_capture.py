@@ -136,7 +136,7 @@ def main(app_kind='scratchpad'):
         from code_editor_effects import (validate_code_editor_typing,
             validate_code_editor_scroll, validate_code_editor_frame_states)
         app_id = 'dev.tilo.code-editor'
-        fixture_name, open_flag, minimum_lines = 'fixture.rs', '--path', 2000
+        fixture_name, open_flag, minimum_lines = 'fixture.rs', None, 2000
         validate_typing, validate_scroll = validate_code_editor_typing, validate_code_editor_scroll
         validate_frames = validate_code_editor_frame_states
     elif app_kind == 'file-explorer':

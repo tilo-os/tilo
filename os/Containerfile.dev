@@ -15,7 +15,7 @@
 #
 #   * The components that declare `dev_features` in os/components.toml (the
 #     compositor today) are rebuilt as release builds with those features. The
-#     dev-only components (`dev-*` layers), tilo-control and tilo-vmd, are
+#     dev-only components (`dev-*` layers), such as tilo-vmd, are
 #     built alongside them. The cargo arguments and the install both come from
 #     os/scripts/install-components.py --dev, so this file names no binary.
 #   * A build toolchain, installed into the image. The binaries above are
@@ -31,6 +31,9 @@
 #   * sshd (enabled), rsync, systemd-sysext, and tilo-vmd's session unit
 #     template, udev seat rules and vkms modprobe option, shipped from
 #     crates/dev/tilo-vmd/data. vkms and uinput load at boot.
+#   * tilo-device-admin.service (enabled): tilo-vmd's requests over the peer
+#     network for the owner's administrators, so `tilo-vm` reaches the machine
+#     beyond the LAN, at the greeter too.
 #   * The image is UNSEALED. A layer on the sealed image breaks the composefs
 #     digest its UKI pins, and dev layers have to merge into /usr. So the UKI
 #     is removed and the kernel is restored to /usr/lib/modules/<kver>/. Then
@@ -86,6 +89,8 @@ RUN cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC -shared /tmp/build-clock.c -o /b
 # (which SELinux hosts would refuse without relabelling the checkout).
 FROM scratch AS dev-inputs
 COPY os/components.toml /tilo/os/
+COPY os/usr/libexec/tilo-session /tilo/os/usr/libexec/
+COPY os/usr/lib/systemd/user/tilo-ush.service /tilo/os/usr/lib/systemd/user/
 COPY os/scripts/unseal-rootfs.py os/scripts/check-dev-kernel.sh os/scripts/builder-packages.txt \
      os/scripts/install-components.py os/scripts/finalize-dev-image.py \
      os/scripts/verify-boot-ordering.sh os/scripts/install-dev-toolchain.sh /tilo/os/scripts/
@@ -174,12 +179,16 @@ COPY apps /build/apps
 COPY examples /build/examples
 COPY vendor /build/vendor
 COPY dist /build/dist
+COPY docs/developers/tasks /build/docs/developers/tasks
 COPY os/components.toml /build/os/components.toml
 COPY os/scripts/install-components.py os/scripts/verify-elf-hardening.sh os/scripts/cargo-freshness.sh /build/os/scripts/
-COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
 COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env
 COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
 COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
+COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py
+COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs
+COPY tools/test-assets.py /build/tools/test-assets.py
+COPY tools/ci/measure.sh /build/tools/ci/measure.sh
 
 # ---- Dev binaries -----------------------------------------------------------
 # Compiled in the dev image's own toolchain, the same one in-VM builds use.
@@ -263,7 +272,7 @@ RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/bin/sccache,target=/
     && printf 'dev image build: cargo build --release %s\n' "$DEV_CARGO_ARGS" \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_DEV_RUST_LTO" \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
-       cargo build --release ${DEV_CARGO_ARGS} \
+       bash tools/ci/measure.sh "dev cargo" -- cargo build --release ${DEV_CARGO_ARGS} \
     && printf 'TILO_BUILD_TIMING phase=dev-cargo elapsed_seconds=%s freshness=%s\n' "$(( $(date +%s) - started ))" "$TILO_CARGO_FRESHNESS" \
     && if [ "$TILO_CARGO_FRESHNESS" = content ]; then \
          sh os/scripts/cargo-freshness.sh --built /build/target/.tilo-built-sources; \
@@ -329,8 +338,9 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
       --cargo-lock /run/tilo-dev/Cargo.lock \
     && systemctl unmask systemd-sysext.service \
     && systemctl enable sshd.service systemd-sysext.service tilo-vm-restore.service \
+       tilo-device-admin.service \
     && test -x /usr/bin/tilo-control && test -x /usr/libexec/tilo-vmd \
-    && /usr/bin/tilo-vmd --version \
+    && /usr/bin/tilo-vmd --version && /usr/bin/tilo-device-admin --version \
     && grep -aq 'dev-overrides build: developer environment overrides' /usr/bin/shell \
     && systemd-sysext --version >/dev/null \
     && ssh-keygen -q -t ed25519 -N '' -f /run/tilo-dev-hostkey \

@@ -60,6 +60,7 @@ pub const DEV_OVERRIDE_VARS: &[&str] = &[
     "TILO_LOCK_TEST_PASSWORD",
     "TILO_UNLOCK_HELPER",
     "TILO_LAUNCHER_BIN",
+    "TILO_TEST_FRAME_STALL_MS",
 ];
 
 /// The developer variables that are set (non-empty) but will be ignored

@@ -1,0 +1,83 @@
+# Budgets for the shared app runtime, libruntime_dylib.so, per architecture.
+# tools/perf/runtime_size_ratchet.py reads this file (TIL-604).
+#
+# - Release / apps fails when the dylib it has just built is over a budget
+#   below plus every raise under raises/.
+# - Perf / scheduled (footprint group) fails when the newest published
+#   so.tilo.runtime is over one, and records the four numbers as
+#   footprint.runtime.<metric>.<arch>.
+# - CI / fast quality fails when a budget grows without a raise file new in
+#   the same change.
+#
+# The metrics, all read from the ELF file:
+#   bytes               the file a device downloads when an app's runtime is missing
+#   relocation_bytes    dynamic relocation tables the loader reads at every app start
+#   relocated_bytes     distinct 4 KiB pages those relocations write: private,
+#                       dirty memory in every app process before main
+#   symbol_relocations  relocations that need a symbol lookup at every app start
+#
+# A budget is a measurement plus `headroom`, rounded up to 64 KiB (a count to
+# 64). Budgets only decrease. Intended growth adds raises/<change>.toml, one
+# file per change; when the runtime shrinks, both gates print the lower budget
+# to commit here. DEVELOPMENT.md ("Runtime size") has the steps.
+headroom = 0.01
+architectures = ["x86_64", "aarch64"]
+
+# Apps that play no media. Release / apps fails when a built one, or the
+# runtime itself, loads a library of needed_absent at exec (TIL-713). Only
+# grows.
+apps_without_media = ["calculator", "clocks", "notes", "totp", "weather"]
+
+# What the runtime should cost (TIL-604): at most 150 MB, relocation tables
+# under 1 MB, at most 4 MB of relocation-dirtied memory per app process, and
+# few enough symbol lookups for relocation to take under 3 ms. Every app loads
+# a DT_NEEDED library, so none of needed_absent belongs there: media libraries
+# are for the apps that play media, and the runtime loads them on first use
+# (tools/ci/runtime-dylib-lazy-link.py, TIL-713); the gates fail on one. The
+# other targets are reported when not met; the budgets below are what fails.
+# Targets only tighten.
+[targets]
+bytes = 150000000
+relocation_bytes = 1000000
+relocated_bytes = 4000000
+symbol_relocations = 5000
+needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
+
+# Measured by Release / apps 90216 (x86_64) and 90299 (aarch64) with packed
+# relocations and -Bsymbolic-functions (TIL-604). The published runtime before
+# them (so.tilo.runtime 0.1.90033) was 241944696 / 223411008 bytes, with
+# 10.1 MB of relocation tables and 62k symbol relocations on each. Symbol
+# relocations then fell with GLib and GStreamer loaded on first use (TIL-713,
+# Release / apps 90457 against 90458): 13558 -> 11970 (x86_64) and
+# 13571 -> 11983 (aarch64). TIL-353 then took the OS internals out
+# (filesystem, launcher, app host, install CLI, peer transport), measured
+# before TIL-713 landed: x86_64 232303952 -> 204813024 bytes and 7663616 ->
+# 6873088 bytes of relocation-dirtied memory per app process (Release / apps
+# 90662 against 90776); aarch64 213053464 -> 188160992 bytes and 7380992 ->
+# 6615040 (90371 against 90511). Both together, Release / apps 90940:
+# 204606408 / 188035240 bytes, 6868992 / 6598656 bytes dirtied per process,
+# 10049 / 10076 symbol relocations. Typst (62 crates and typst-assets' font
+# table) then moved into its own engine library beside the runtime,
+# libtilo_typst_engine.so, which only Typst Editor loads: aarch64
+# 188908456 -> 155133008 bytes, 6639616 -> 5722112 bytes dirtied per process
+# (Release / apps 94959 against 94951); x86_64 205836952 -> 170549744 bytes,
+# 6897664 -> 5955584 (same runs). Spotify playback (librespot, its
+# decoders and protobuf stack: 43 crates) then moved into
+# libtilo_spotify_engine.so, which only Music loads (Release / apps 98251
+# against 98250): x86_64 170118536 -> 158774624 bytes, 5931008 -> 5533696
+# bytes dirtied per process, 9196 -> 8773 symbol relocations; aarch64
+# 154733808 -> 143671024, 5709824 -> 5308416, 9219 -> 8793. Linking the
+# runtime with section garbage collection and without the proc-macro crates'
+# exports takes it lower again (Release / apps 97422, before the Spotify
+# engine: aarch64 152438520 bytes, x86_64 167700968).
+[runtime.x86_64]
+bytes = 160366592
+relocation_bytes = 327680
+relocated_bytes = 5636096
+symbol_relocations = 8896
+
+[runtime.aarch64]
+bytes = 145162240
+relocation_bytes = 327680
+relocated_bytes = 5373952
+symbol_relocations = 8896

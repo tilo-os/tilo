@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<title>Open a Tilo resource</title>
+<link rel="stylesheet" href="./resource.css">
+<body>
+  <main id="entry">
+    <h1>Open a shared resource</h1>
+    <p id="destination"></p>
+    <p>Choose an existing account from Settings. This link does not grant access; workspace admission and a certified browser device are required.</p>
+    <form id="open">
+      <label>Account <select name="account" required></select></label>
+      <button>Open resource</button>
+    </form>
+  </main>
+  <p id="status" role="status"></p>
+  <button id="leave" hidden>Leave</button>
+  <button id="accounts">Choose account / refresh accounts</button>
+  <div id="surface"></div>
+  <script type="module" src="./resource-page.mjs"></script>
+</body>
+</html>

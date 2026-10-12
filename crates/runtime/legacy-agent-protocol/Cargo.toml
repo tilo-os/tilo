@@ -17,5 +17,8 @@ thiserror.workspace = true
 wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
 workspace-hack = { version = "0.1" }
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

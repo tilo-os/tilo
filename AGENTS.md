@@ -27,8 +27,13 @@ Most user-facing design questions reduce to that one decision:
 - **Accessibility and automation are the same door.** A screen-reader user, a script and an
   agent browse resources and invoke actions; none touch the UI. A capability reachable only
   by clicking is not finished.
-- **Search is a system service.** Apps register a search provider *and* a renderer per
-  resource type, so a hit opens the app at that position.
+- **Search is a system service.** Apps register a search provider per resource type and
+  say what each hit is (a message, a video, a file match — `ui::search::SearchRow`); they
+  never draw a search field. A hit opens the app at that position through the resource's
+  `open` view action with the hit's anchor (`ViewCx::on_open` in a framework app), so a
+  person's click and an agent's call land in the same place. Apps open the platform search
+  narrowed to themselves or one of their parts (`ui::search::SearchRequest`), and narrow
+  lists or find in documents only through the framework's filter field and find bar.
 - **Undo, history, device sync and theming are system services**, not forty implementations.
 - **Collaboration reduces to transport.** Invite someone to a workspace, give them a role per
   app; each machine draws natively and state syncs as a CRDT. Agents are ordinary
@@ -85,6 +90,7 @@ cargo test --locked -p shell --test it interaction_test::   # headless Wayland s
 Shell integration files are modules of the single `it` target, not individual
 Cargo targets. Use `--test it MODULE::` to select a module, or its full
 `MODULE::TEST` path with `-- --exact` for one case. For remote native execution,
+and CI's exact Clippy gate on crates your host cannot build (operation `clippy`),
 see [focused native tests](DEVELOPMENT.md#fast-checks-before-assembly).
 
 Run `cargo check -p shell --tests` before finishing. A `--lib` run never compiles integration
@@ -97,8 +103,17 @@ Before pushing:
 2. Run the narrow tests that prove the change, plus the relevant all-target compile check
    (for shell work, `cargo check -p shell --tests`).
 3. Commit the candidate, then inspect the affected plan with
-   `python3 tools/ci/affected_packages.py --base origin/main --shards 2`; unexpected full-workspace
-   selection is a bug to understand before pushing.
+   `python3 "${TILO_CI_TOOLS:?stable CI tools required}/offline_affected_plan.py" --root "$PWD" --bundle "${TILO_CURRENT_WORKTREE_METADATA_BUNDLE:?source-bound CI export required}" --base origin/main --shards 2`.
+   Point `TILO_CI_TOOLS` at `tools/ci` in a current trusted checkout, even when this worktree
+   is older. Set `TILO_CURRENT_WORKTREE_METADATA_BUNDLE` to the exact-source CI bundle from
+   `dev-source-metadata.yml` (tools/ci/README.md). The launcher validates the committed clean
+   source, complete workspace/member manifests, lockfile and targets, remaps all metadata paths,
+   and runs this worktree's selector while forbidding every non-Git subprocess. A stale
+   selector cannot invoke local Cargo through a default, an absolute path or a shell fallback.
+   Do not reuse an unverified export or manufacture a partial graph. Without a verified bundle,
+   leave selection to normal CI. The current direct selector also rejects a local default;
+   older worktrees require the stable launcher rather than their historical relative command.
+   Unexpected full-workspace selection is a bug to understand before pushing.
 4. Push a task branch and use a PR. Do not probe `main` with a direct push. `.githooks/pre-push`
    refuses a branch that conflicts with the current main or leaves `crates/workspace-hack` stale,
    the two rejections CI otherwise reports a minute after the push. After pushing, let
@@ -167,21 +182,29 @@ click handler is invisible to every one of them.
 
 **There is one story. Do not build a second one.**
 
-`tilo-control` is the CLI over the compositor's control socket — path from `$TILO_TEST_CONTROL`,
-default `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` (never `/tmp`: anyone could bind a
-shared name first). It is a `shell` binary and is **not on PATH**; run it with
-`cargo run -q --bin tilo-control --` , or `cargo install --locked --path crates/session/shell --bin tilo-control` once
-if you use it often. It has two halves; reach for the first.
+`tilo-control` is the CLI over the compositor's control sockets (never in `/tmp`: anyone could
+bind a shared name first). Every image ships it at `/usr/bin/tilo-control`; from a checkout run
+`cargo run -q --bin tilo-control --`. It has two halves; reach for the first.
+
+The semantic half needs no development build and no environment variable: every compositor
+serves `$XDG_RUNTIME_DIR/tilo-session/admin-control.sock` in the **device admin's** session (the
+`wheel` account whose identity owns the device) once first login is complete, to that account's
+own unconfined processes — its login or ssh — and never to an app. On a real device, ssh in as
+the admin and run `tilo-control actions list`. A development session started with
+`$TILO_TEST_CONTROL` serves both halves there, and a set `$TILO_TEST_CONTROL` routes every
+subcommand to it.
 
 Semantic — how a collaborator, an agent or a script drives an app:
 
 ```bash
 cargo run -q --bin tilo-control -- actions list                 # what this desktop can do
 cargo run -q --bin tilo-control -- actions invoke PROVIDER ID   # do it: no coordinates
+cargo run -q --bin tilo-control -- windows                      # which windows are open, in View terms
 cargo run -q --bin tilo-control -- state-dump --pretty          # what it believes is on screen
 ```
 
-Input — for when the thing under test *is* the pointer, hit-testing or painting:
+Input — for when the thing under test *is* the pointer, hit-testing or painting (development
+sessions only):
 
 ```bash
 cargo run -q --bin tilo-control -- list-targets      # named rects, via Widget::test_id

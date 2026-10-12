@@ -1,7 +1,7 @@
 # One dev slot's graphical session: a PAM login for tds-<slot> through the
 # production greetd stack, then the production session entry point. Dev
 # image only; tilo-vmd starts, stops and configures it through drop-ins:
-#   50-tilo-vm-layers.conf  ExtensionDirectories= (the slot's layers)
+#   50-tilo-vm-layers.conf  readonly combined /usr and /opt view (global + slot)
 #   50-tilo-vm-seat.conf    XDG_SEAT=seat-<slot> and the drm backend (headful),
 #                            or seat0/VT 1 while the slot holds the seat0 lease
 # Without a seat drop-in the session is headless. Provisional: seat sessions

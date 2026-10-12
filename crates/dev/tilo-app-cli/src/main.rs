@@ -9,6 +9,7 @@ use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
+mod guide;
 mod json_stdout;
 mod publishing;
 
@@ -18,6 +19,7 @@ mod publishing;
     version,
     about = "Create and work on Tilo apps",
     long_about = "The short path from an app idea to a running Tilo window.\n\n\
+                  Start with `tilo-app guide` for short offline workflows.\n\n\
                   Run `tilo-app new` for an interactive setup, or provide a name \
                   and flags for a reproducible, non-interactive scaffold. Then \
                   use `add`, `locale`, `check`, `scenario`, `dev`, `test`, `run`, `build`, `shot`, `inspect`, and `package` from anywhere inside the app; `--target linux|macos|web` picks the platform. Use `ui` to construct validated serialized screens."
@@ -34,10 +36,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Read one short offline workflow, or list the available topics.
+    Guide {
+        #[arg(value_enum)]
+        topic: Option<guide::Topic>,
+    },
     /// Create a buildable app with packaging and headless-test defaults.
     New(NewArgs),
-    /// List the example apps `tilo-app new --from-example` starts from.
-    Examples,
+    /// List examples, inspect one, or read its embedded source without a checkout.
+    Examples {
+        /// One example from `tilo-app examples`.
+        name: Option<String>,
+        /// Read an embedded file, such as README.md, src/lib.rs or tests/app.rs.
+        #[arg(long, requires = "name")]
+        file: Option<String>,
+    },
     /// Add a screen, reusable component, headless scenario, or translation catalog.
     Add(AddArgs),
     /// Keep translation catalogs structurally aligned with the source locale.
@@ -54,6 +67,9 @@ enum Command {
     Check(CheckArgs),
     /// Prove the production root satisfies the live Tilo-native contract.
     Certify(CertifyArgs),
+    /// Write the app's public surface (its verbs and stored fields) to
+    /// `surface.toml`, which `check` and CI compare with the code.
+    Surface(SurfaceArgs),
     /// Run an app from any path inside it: natively after a structural
     /// preflight, or with `--target` for Linux, macOS or the web.
     #[command(after_long_help = TARGET_EXAMPLES)]
@@ -61,6 +77,8 @@ enum Command {
     /// Build the runnable artifact for a target: a binary, a dev `.app`, or a web bundle.
     #[command(after_long_help = TARGET_EXAMPLES)]
     Build(BuildArgs),
+    /// Assemble an unsigned macOS bundle from existing binaries, without building or signing.
+    BundleMacos(BundleMacosArgs),
     /// Test an app from any path inside it, after a structural preflight.
     Test(AppTaskArgs),
     /// Run an app and rebuild/restart it after source or asset changes.
@@ -73,12 +91,50 @@ enum Command {
     Ui(UiArgs),
     /// Build, assemble, sign, and verify an installable Tilo package.
     Package(PackageArgs),
+    /// Capture and seal a reusable compiler interface for an exact native SDK.
+    Sdk(SdkArgs),
     /// Create or show the publisher key that signs packages and entries.
     Keys(publishing::KeysArgs),
     /// Ask a registry to let your key publish under namespaces you prove.
     Apply(publishing::ApplyArgs),
     /// Upload packages and ask the registry to list them.
     Publish(publishing::PublishArgs),
+}
+
+#[derive(clap::Args)]
+struct SdkArgs {
+    #[command(subcommand)]
+    command: SdkCommand,
+}
+
+#[derive(Subcommand)]
+enum SdkCommand {
+    /// Read the canonical source SDK resource declarations without running app code.
+    Declarations,
+    /// Capture metadata from the actual canonical Cargo artifact stream (on its builder).
+    Capture {
+        #[arg(long)]
+        units: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Sign a captured compiler interface bound to an independently verified runtime.
+    Export {
+        #[arg(long)]
+        capture: PathBuf,
+        #[arg(long)]
+        sdk_bundle: PathBuf,
+        #[arg(long)]
+        sdk_publisher: String,
+        #[arg(long)]
+        sdk_root: String,
+        #[arg(long)]
+        identity: PathBuf,
+        #[arg(long)]
+        bundle_tool: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 #[derive(clap::Args)]
@@ -416,7 +472,8 @@ Examples:
 
 #[derive(clap::Args)]
 struct LintScope {
-    /// Run only the lints (currently `portability`); nothing is built or run.
+    /// Run only the lints (`portability` and the app contract); nothing is
+    /// built or run.
     #[arg(long)]
     lint: bool,
 
@@ -474,6 +531,17 @@ struct CheckArgs {
 }
 
 #[derive(clap::Args)]
+struct SurfaceArgs {
+    /// App directory or a file/directory inside it. Defaults to the current directory.
+    path: Option<PathBuf>,
+
+    /// Write the surface from a report the app's binary printed for
+    /// `--surface` (on another machine, a CI artifact) instead of building it.
+    #[arg(long)]
+    report: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
 struct CertifyArgs {
     /// App directory or a file/directory inside it. Defaults to the current directory.
     path: Option<PathBuf>,
@@ -487,6 +555,16 @@ struct CertifyArgs {
     /// expanded-copy, 200%-text, and high-contrast modes.
     #[arg(long, requires = "workspace", value_name = "DIR")]
     responsive_artifacts: Option<PathBuf>,
+
+    /// With `--workspace`, certify only the applications of these Cargo
+    /// packages; packages that are no workspace application are ignored.
+    #[arg(
+        long = "package",
+        short = 'p',
+        requires = "workspace",
+        value_name = "SPEC"
+    )]
+    packages: Vec<String>,
 }
 
 #[derive(clap::Args)]
@@ -706,6 +784,21 @@ struct BuildArgs {
 }
 
 #[derive(clap::Args)]
+struct BundleMacosArgs {
+    /// App project whose manifest supplies identity, capabilities, icon and version.
+    path: PathBuf,
+    /// Previously compiled app executable. Architecture/signature validation is separate.
+    #[arg(long)]
+    binary: PathBuf,
+    /// Previously compiled tilo-runtime-mcp helper.
+    #[arg(long)]
+    runtime_host: PathBuf,
+    /// New output directory; an existing destination is never overwritten.
+    #[arg(long)]
+    output: PathBuf,
+}
+
+#[derive(clap::Args)]
 struct DevArgs {
     /// App directory or a file/directory inside it. Defaults to the current directory.
     path: Option<PathBuf>,
@@ -722,6 +815,20 @@ struct DevArgs {
     /// first presented frame. With `--json`, the result lists every reload.
     #[arg(long)]
     timings: bool,
+
+    /// Build the app optimised, with `--profile thin-app`: release
+    /// optimisation without LTO, as thin Tilo builds ship. Use it when the
+    /// debug build is too slow to judge (painting, video, large documents);
+    /// each rebuild takes longer. The app still reloads in place.
+    #[arg(long, conflicts_with = "profile")]
+    release: bool,
+
+    /// Cargo profile for every build of the app [default: Cargo's `dev`].
+    /// Only `dev` and `thin-app` reload in place; any other profile (such
+    /// as the fat-LTO `release`) restarts the app on each change instead.
+    /// The runtime host stays a debug build.
+    #[arg(long)]
+    profile: Option<String>,
 
     /// `web` serves the app's web build and reloads the page into the same
     /// document after each rebuild; a native platform runs on this machine
@@ -816,6 +923,26 @@ struct PackageArgs {
     /// Persistent tilo-app-package signing identity, relative to the app root unless absolute.
     #[arg(long)]
     identity: Option<PathBuf>,
+
+    /// Signed native SDK directory. Its publisher and root must be selected independently.
+    #[arg(long, requires_all = ["sdk_publisher", "sdk_root"])]
+    sdk_bundle: Option<PathBuf>,
+
+    /// Expected SDK publisher public key, from the authenticated SDK receipt.
+    #[arg(long, requires = "sdk_bundle")]
+    sdk_publisher: Option<String>,
+
+    /// Expected signed SDK payload root, from the authenticated SDK receipt.
+    #[arg(long, requires = "sdk_bundle")]
+    sdk_root: Option<String>,
+
+    /// Separately signed compiler interface bound to the selected SDK.
+    #[arg(long, requires_all = ["sdk_bundle", "sdk_compiler_root"])]
+    sdk_compiler_bundle: Option<PathBuf>,
+
+    /// Independently selected compiler-interface content root.
+    #[arg(long, requires = "sdk_compiler_bundle")]
+    sdk_compiler_root: Option<String>,
 
     /// Cargo profile used to build the declared entrypoints. Defaults to
     /// `thin-app`, or `release` with `--static`.
@@ -1049,8 +1176,11 @@ fn main() -> ExitCode {
     let interactive = json.is_none();
     let name = cli.command.name();
     let result = match cli.command {
+        Command::Guide { topic } => Ok(guide::run(topic, interactive)),
         Command::New(args) => run_new(args, interactive),
-        Command::Examples => Ok(list_examples()),
+        Command::Examples { name, file } => {
+            run_examples(name.as_deref(), file.as_deref(), interactive)
+        }
         Command::Add(args) => run_add(args, interactive),
         Command::Locale(args) => run_locale(args),
         Command::Scenario(args) => run_scenario(args),
@@ -1058,14 +1188,17 @@ fn main() -> ExitCode {
         Command::Setup(args) => run_setup(&args),
         Command::Check(args) => run_check(args),
         Command::Certify(args) => run_certify(args),
+        Command::Surface(args) => run_surface(args),
         Command::Run(args) => run_run(args),
         Command::Build(args) => run_build(args),
+        Command::BundleMacos(args) => run_bundle_macos(&args),
         Command::Test(args) => run_app_task(args, tilo_app_cli::AppTask::Test),
         Command::Dev(args) => run_dev(args),
         Command::Shot(args) => run_shot(args),
         Command::Inspect(args) => run_inspect(args),
         Command::Ui(args) => run_ui(args),
         Command::Package(args) => run_package(args),
+        Command::Sdk(args) => run_sdk(args, interactive),
         Command::Keys(args) => publishing::run_keys(args),
         Command::Apply(args) => publishing::run_apply(args),
         Command::Publish(args) => publishing::run_publish(args),
@@ -1152,8 +1285,9 @@ fn failed(message: impl Into<String>, report: Value) -> anyhow::Error {
 impl Command {
     fn name(&self) -> &'static str {
         match self {
+            Self::Guide { .. } => "guide",
             Self::New(_) => "new",
-            Self::Examples => "examples",
+            Self::Examples { .. } => "examples",
             Self::Add(_) => "add",
             Self::Locale(_) => "locale",
             Self::Scenario(_) => "scenario",
@@ -1161,14 +1295,17 @@ impl Command {
             Self::Setup(_) => "setup",
             Self::Check(_) => "check",
             Self::Certify(_) => "certify",
+            Self::Surface(_) => "surface",
             Self::Run(_) => "run",
             Self::Build(_) => "build",
+            Self::BundleMacos(_) => "bundle-macos",
             Self::Test(_) => "test",
             Self::Dev(_) => "dev",
             Self::Shot(_) => "shot",
             Self::Inspect(_) => "inspect",
             Self::Ui(_) => "ui",
             Self::Package(_) => "package",
+            Self::Sdk(_) => "sdk",
             Self::Keys(_) => "keys",
             Self::Apply(_) => "apply",
             Self::Publish(_) => "publish",
@@ -1413,8 +1550,11 @@ fn run_add_ci(forge: ForgeArg, runs_on: Option<&str>, options: &AddOptions) -> R
         "Would create"
     };
     println!("{verb} {}", outcome.path.display());
+    if let Some(path) = &outcome.reusable_path {
+        println!("{verb} {} (reusable GitHub workflow)", path.display());
+    }
     println!(
-        "Next: add the TILO_PUBLISHER_KEY secret (the file `tilo-app keys new` wrote), then push a v* tag to publish"
+        "Next: add the TILO_PUBLISHER_KEY secret (what `tilo-app keys export` prints), then push a v* tag to publish"
     );
     Ok(outcome.to_json())
 }
@@ -1644,6 +1784,79 @@ fn platform_and_arch(
     ))
 }
 
+fn run_sdk(args: SdkArgs, interactive: bool) -> Result<Value> {
+    let cwd = std::env::current_dir()?;
+    let repo = cwd
+        .ancestors()
+        .find(|path| path.join("os/dev/export-sdk-compiler.py").is_file())
+        .context("SDK export requires its canonical checkout")?;
+    let mut command = std::process::Command::new("python3");
+    command
+        .arg(repo.join("os/dev/export-sdk-compiler.py"))
+        .current_dir(repo);
+    let mut resource_file = None;
+    match args.command {
+        SdkCommand::Declarations => {
+            let report =
+                json!({"resources": tilo_app_cli::native_sdk::compiler::capture_resources(repo)?});
+            if interactive {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            }
+            return Ok(report);
+        }
+        SdkCommand::Capture { units, output } => {
+            let resources = tilo_app_cli::native_sdk::compiler::capture_resources(repo)?;
+            let temporary = tempfile::NamedTempFile::new()?;
+            std::fs::write(temporary.path(), serde_json::to_vec(&resources)?)?;
+            command.arg("--resources").arg(temporary.path());
+            resource_file = Some(temporary);
+            command
+                .args(["--capture-only", "--repo"])
+                .arg(repo)
+                .arg("--units")
+                .arg(units)
+                .arg("--capture")
+                .arg(output);
+        }
+        SdkCommand::Export {
+            capture,
+            sdk_bundle,
+            sdk_publisher,
+            sdk_root,
+            identity,
+            bundle_tool,
+            output,
+        } => {
+            command
+                .arg("--capture")
+                .arg(capture)
+                .arg("--sdk")
+                .arg(sdk_bundle)
+                .arg("--sdk-publisher")
+                .arg(sdk_publisher)
+                .arg("--sdk-root")
+                .arg(sdk_root)
+                .arg("--identity")
+                .arg(identity)
+                .arg("--bundle-tool")
+                .arg(bundle_tool)
+                .arg("--out-root")
+                .arg(output);
+        }
+    }
+    let output = command.output()?;
+    drop(resource_file);
+    std::io::Write::write_all(&mut std::io::stderr(), &output.stderr)?;
+    if !output.status.success() {
+        anyhow::bail!("SDK compiler capture/export failed");
+    }
+    let report: Value = serde_json::from_slice(&output.stdout)?;
+    if interactive {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    }
+    Ok(report)
+}
+
 fn run_package(args: PackageArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
     let sdk_target = match args.target.as_deref() {
@@ -1653,6 +1866,11 @@ fn run_package(args: PackageArgs) -> Result<Value> {
         _ => None,
     };
     if let Some(target) = sdk_target {
+        if args.sdk_bundle.is_some() {
+            anyhow::bail!(
+                "--sdk-bundle requires --platform tilo and a Rust target triple, not an SDK target alias"
+            );
+        }
         let mut build = tilo_app_cli::targets::TargetRequest::new(target);
         build.allow_planned = args.allow_planned;
         build.features = args.features;
@@ -1683,7 +1901,26 @@ fn run_package(args: PackageArgs) -> Result<Value> {
     {
         anyhow::bail!("--keystore and --no-bundle are for --platform android");
     }
+    let sdk = match (args.sdk_bundle, args.sdk_publisher, args.sdk_root) {
+        (Some(bundle), Some(publisher), Some(root)) => {
+            Some(tilo_app_cli::native_sdk::SdkSelection {
+                compiler: match (args.sdk_compiler_bundle, args.sdk_compiler_root) {
+                    (Some(bundle), Some(root)) => {
+                        Some(tilo_app_cli::native_sdk::compiler::CompilerSelection { bundle, root })
+                    }
+                    (None, None) => None,
+                    _ => anyhow::bail!("compiler bundle and root must be selected together"),
+                },
+                bundle,
+                publisher,
+                root,
+            })
+        }
+        (None, None, None) => None,
+        _ => anyhow::bail!("native SDK selection requires bundle, publisher and root"),
+    };
     let request = tilo_app_cli::PackageRequest {
+        sdk,
         output: args.output,
         identity: args.identity,
         profile: args.profile,
@@ -1760,6 +1997,17 @@ fn run_run(args: RunArgs) -> Result<Value> {
     Ok(json!({"app_dir": path}))
 }
 
+fn run_bundle_macos(args: &BundleMacosArgs) -> Result<Value> {
+    let artifact = tilo_app_cli::targets::assemble_macos(
+        &args.path,
+        &args.binary,
+        &args.runtime_host,
+        &args.output,
+    )?;
+    println!("{}", artifact.display());
+    Ok(json!({"artifact": artifact, "signed": false, "notarized": false}))
+}
+
 fn run_build(args: BuildArgs) -> Result<Value> {
     let path = args.path.clone().map_or_else(std::env::current_dir, Ok)?;
     let Some(target) = args.target.and_then(TargetArg::sdk) else {
@@ -1810,8 +2058,12 @@ fn run_dev(args: DevArgs) -> Result<Value> {
         watch_ui: !args.app_only,
         debounce: Duration::from_millis(args.debounce_ms.get()),
         timings: args.timings,
+        profile: dev_profile(args.release, args.profile),
     };
     let (platform, arch) = args.platform.resolve()?;
+    if platform == tilo_app_cli::PackagePlatform::Web && request.profile.is_some() {
+        anyhow::bail!("--release and --profile are for a native or Android dev loop");
+    }
     if platform == tilo_app_cli::PackagePlatform::Web {
         tilo_app_cli::web::dev_web(
             &path,
@@ -1837,6 +2089,25 @@ fn run_dev(args: DevArgs) -> Result<Value> {
     Ok(json!({"stopped": true}))
 }
 
+/// The Cargo profile `dev` builds the app with; `None` is Cargo's `dev`.
+fn dev_profile(release: bool, profile: Option<String>) -> Option<String> {
+    if release {
+        Some(tilo_app_cli::DEV_RELEASE_PROFILE.to_owned())
+    } else {
+        profile
+    }
+}
+
+/// What `build --platform web` asks of the web build; `--release` is the
+/// optimized module a page streams, not the debug one.
+fn web_build_request(args: BuildArgs) -> tilo_app_cli::web::WebBuildRequest {
+    tilo_app_cli::web::WebBuildRequest {
+        output: args.output,
+        app_only: args.app_only,
+        release: args.options.release,
+    }
+}
+
 fn run_platform_build(path: &Path, args: BuildArgs) -> Result<Value> {
     let (platform, arch) = args.platform.or_target(args.target).resolve()?;
     if platform == tilo_app_cli::PackagePlatform::Android {
@@ -1848,13 +2119,7 @@ fn run_platform_build(path: &Path, args: BuildArgs) -> Result<Value> {
     if args.profile.is_some() || args.static_link {
         anyhow::bail!("--profile and --static are for a native build");
     }
-    let build = tilo_app_cli::web::build_web(
-        path,
-        &tilo_app_cli::web::WebBuildRequest {
-            output: args.output,
-            app_only: args.app_only,
-        },
-    )?;
+    let build = tilo_app_cli::web::build_web(path, &web_build_request(args))?;
     eprintln!(
         "[tilo-app] built {} for the web in {:.1} s: {} ({}, module {} bytes)",
         build.app_id,
@@ -1933,6 +2198,7 @@ fn build_native(
     let build = tilo_app_cli::build_native(
         path,
         &tilo_app_cli::PackageRequest {
+            sdk: None,
             output: None,
             identity: None,
             profile: args.profile.clone(),
@@ -2105,6 +2371,7 @@ fn run_check(args: CheckArgs) -> Result<Value> {
             json!({"stages": stages}),
         ));
     }
+    check_contract(&path, &mut stages)?;
     if args.lints.lint {
         return Ok(json!({"stages": stages}));
     }
@@ -2118,6 +2385,8 @@ fn run_check(args: CheckArgs) -> Result<Value> {
         return Err(failed("app checks failed", json!({"stages": stages})));
     }
 
+    check_runtime_fonts(&mut stages)?;
+
     let format_mode = if args.fix {
         tilo_app_cli::AppFormatMode::Apply
     } else {
@@ -2129,17 +2398,15 @@ fn run_check(args: CheckArgs) -> Result<Value> {
     } else {
         println!("[check] Rust formatting");
     }
-    let tool_stages: [CheckStage<'_>; 4] = [
+    let tool_stages: [CheckStage<'_>; 5] = [
         ("format", "Rust formatting", &|| quality.format.execute()),
         ("clippy", "app-local Clippy", &|| quality.clippy.execute()),
         (
             "test",
             "Rust tests and generated accessibility contract",
-            &|| {
-                tilo_app_cli::native_libs::require_fonts()?;
-                quality.test.execute()
-            },
+            &|| quality.test.execute(),
         ),
+        ("surface", "public surface", &|| check_surface(&path)),
         ("certify", "Tilo-native runtime certification", &|| {
             certify_one(&path)
         }),
@@ -2181,6 +2448,64 @@ fn run_check(args: CheckArgs) -> Result<Value> {
     }
     println!("All app checks passed");
     Ok(json!({"stages": stages}))
+}
+
+/// The surface stage of `check`: the app's binary reports its surface and
+/// the controls its view binds, compared with the committed `surface.toml`.
+fn check_surface(path: &Path) -> Result<()> {
+    match tilo_app_cli::surface::check_app(path, None, tilo_app_cli::contract::Level::Error)? {
+        None => {
+            println!("the app runs no framework resource, so it reports no surface");
+            Ok(())
+        }
+        Some(report) => {
+            print!("{}", report.render());
+            anyhow::ensure!(report.passed(), "the public surface check failed");
+            Ok(())
+        }
+    }
+}
+
+/// `tilo-app surface`: commit the app's public surface.
+fn run_surface(args: SurfaceArgs) -> Result<Value> {
+    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+    let (file, report) = tilo_app_cli::surface::write_app(&path, args.report.as_deref())?;
+    println!("Wrote {}", file.display());
+    for unbound in &report.unbound {
+        println!("warning: {unbound}");
+    }
+    Ok(json!({"file": file, "resources": report.resources.len(), "unbound": report.unbound}))
+}
+
+/// The app contract stage of `check`: verb determinism, label keys and
+/// complete translations.
+fn check_contract(path: &Path, stages: &mut Vec<Value>) -> Result<()> {
+    println!("[check] {}", tilo_app_cli::contract::CHECK);
+    let contract = tilo_app_cli::contract::check_app(path)?;
+    print!("{}", contract.render());
+    stages.push(
+        json!({"stage": "contract", "passed": contract.passed(), "report": contract.to_json()}),
+    );
+    if !contract.passed() {
+        return Err(failed(
+            format!("{} failed", tilo_app_cli::contract::CHECK),
+            json!({"stages": stages}),
+        ));
+    }
+    Ok(())
+}
+
+fn check_runtime_fonts(stages: &mut Vec<Value>) -> Result<()> {
+    println!("[check] runtime fonts");
+    if let Err(error) = tilo_app_cli::native_libs::require_fonts() {
+        stages.push(json!({"stage": "fonts", "passed": false}));
+        return Err(error.context(failed(
+            "runtime fonts preflight failed",
+            json!({"stages": stages}),
+        )));
+    }
+    stages.push(json!({"stage": "fonts", "passed": true}));
+    Ok(())
 }
 
 /// `check --target`: the SDK targets' declared platforms, capabilities and
@@ -2291,12 +2616,28 @@ fn lint_workspace(start: &Path) -> Result<Value> {
         println!("{}", report.render());
         failures.push(app.display().to_string());
     }
-    let summary = json!({"apps": reports});
+    let mut contracts = Vec::new();
+    for app in &apps {
+        let report = tilo_app_cli::contract::check_app(app)?;
+        contracts.push(json!({"app": app, "findings": report.to_json()}));
+        if report.passed() {
+            continue;
+        }
+        println!(
+            "[check] {} in {}",
+            tilo_app_cli::contract::CHECK,
+            app.display()
+        );
+        print!("{}", report.render());
+        failures.push(app.display().to_string());
+    }
+    let summary = json!({"apps": reports, "contracts": contracts});
     if !failures.is_empty() {
         return Err(failed(
             format!(
-                "lint `{}` failed for {} of {} app(s): {}",
+                "lint `{}` or the {} failed for {} of {} app(s): {}",
                 tilo_app_cli::portability::LINT,
+                tilo_app_cli::contract::CHECK,
                 failures.len(),
                 apps.len(),
                 failures.join(", ")
@@ -2305,11 +2646,33 @@ fn lint_workspace(start: &Path) -> Result<Value> {
         ));
     }
     println!(
-        "lint `{}` passed for {} app(s)",
+        "lint `{}` and the {} passed for {} app(s)",
         tilo_app_cli::portability::LINT,
+        tilo_app_cli::contract::CHECK,
         apps.len()
     );
     Ok(summary)
+}
+
+/// The surface contract of an app certified with the workspace: what its
+/// built binary reports against its committed `surface.toml`. An app that
+/// has not committed one yet is told so without failing.
+fn certify_surface(app: &Path, executable: &Path) -> Result<()> {
+    let Some(findings) = tilo_app_cli::surface::check_app(
+        app,
+        Some(executable),
+        tilo_app_cli::contract::Level::Warning,
+    )?
+    else {
+        return Ok(());
+    };
+    print!("{}", findings.render());
+    anyhow::ensure!(
+        findings.passed(),
+        "{} failed its public surface check",
+        app.display()
+    );
+    Ok(())
 }
 
 fn certify_one(path: &Path) -> Result<()> {
@@ -2380,6 +2743,14 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
             })
             .unwrap_or(package_name);
         packages.push((app.clone(), package_name.to_owned(), binary_name.to_owned()));
+    }
+    if !args.packages.is_empty() {
+        packages.retain(|(_, package, _)| args.packages.contains(package));
+        app_dirs = packages.iter().map(|(app, _, _)| app.clone()).collect();
+        if packages.is_empty() {
+            println!("Certified 0 graphical Tilo applications");
+            return Ok(json!({"certified": app_dirs}));
+        }
     }
 
     // Build the complete application set in one Cargo graph. Apart from being
@@ -2466,6 +2837,7 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
             "{} production root failed Tilo-native certification",
             app.display()
         );
+        certify_surface(app, executable)?;
         if let Some(root) = responsive_root.as_deref() {
             let app_name = app.file_name().unwrap_or_default();
             for run in responsive_acceptance_runs(&root.join(app_name)) {
@@ -2684,6 +3056,7 @@ fn run_new(args: NewArgs, interactive: bool) -> Result<Value> {
                 watch_ui: true,
                 debounce: Duration::from_millis(tilo_app_cli::DEV_DEBOUNCE_MS),
                 timings: false,
+                profile: None,
             },
         )?;
         Ok(report)
@@ -2711,21 +3084,70 @@ fn list_templates() -> Value {
     json!({ "templates": templates })
 }
 
-fn list_examples() -> Value {
-    for example in tilo_app_cli::examples::ALL {
-        let web = if example.web { "" } else { " (native only)" };
-        println!("{:<17} {}{web}", example.name, example.concept);
-        println!("{:<17} {}", "", example.summary);
+fn run_examples(name: Option<&str>, file: Option<&str>, human: bool) -> Result<Value> {
+    let Some(name) = name else {
+        return Ok(list_examples(human));
+    };
+    let details = tilo_app_cli::examples::details(name, file)?;
+    if human {
+        if let Some(content) = details.get("content").and_then(Value::as_str) {
+            print!("{content}");
+        } else {
+            let example = tilo_app_cli::examples::find(name)?;
+            println!(
+                "{} — {}\n{}",
+                example.name, example.concept, example.summary
+            );
+            println!("\nStart with `tilo-app new NAME --from-example {name}`.");
+            println!("Read a file with `tilo-app examples {name} --file PATH`:\n");
+            for (path, _) in example.files {
+                println!("  {path}");
+            }
+        }
     }
-    println!(
-        "\nStart an app from one with `tilo-app new NAME --from-example EXAMPLE`; read one in examples/apps/."
-    );
+    Ok(details)
+}
+
+fn list_examples(human: bool) -> Value {
+    if human {
+        for example in tilo_app_cli::examples::ALL {
+            let web = if example.web { "" } else { " (native only)" };
+            println!("{:<17} {}{web}", example.name, example.concept);
+            println!("{:<17} {}", "", example.summary);
+        }
+        println!(
+            "\nStart an app from one with `tilo-app new NAME --from-example EXAMPLE`; read one in examples/apps/."
+        );
+    }
     json!({ "examples": tilo_app_cli::examples::examples_json() })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundle_macos_requires_explicit_existing_inputs_and_output() {
+        let cli = Cli::try_parse_from([
+            "tilo-app",
+            "bundle-macos",
+            "app with spaces",
+            "--binary",
+            "app binary",
+            "--runtime-host",
+            "helper binary",
+            "--output",
+            "new output",
+        ])
+        .unwrap();
+        assert_eq!(cli.command.name(), "bundle-macos");
+        let Command::BundleMacos(args) = cli.command else {
+            panic!("expected bundle command")
+        };
+        assert_eq!(args.binary, PathBuf::from("app binary"));
+        assert_eq!(args.runtime_host, PathBuf::from("helper binary"));
+        assert!(Cli::try_parse_from(["tilo-app", "bundle-macos", "."]).is_err());
+    }
 
     /// new starts from an example instead of a template, never both, and examples are listed.
     #[test]
@@ -2758,7 +3180,7 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(conflicting).is_err(), "{conflicting:?}");
         }
-        let listed = list_examples();
+        let listed = list_examples(false);
         assert_eq!(
             listed["examples"].as_array().map(Vec::len),
             Some(tilo_app_cli::examples::ALL.len())
@@ -3420,6 +3842,43 @@ mod tests {
                 [OsString::from("--document"), OsString::from("sample.qdoc")]
             );
             assert!(Cli::try_parse_from(["tilo-app", "dev", "--debounce-ms", "0"]).is_err());
+            assert_eq!(dev.profile, None);
+            assert_eq!(dev_profile(dev.release, dev.profile), None);
+        }
+
+        // Phase: dev_builds_the_app_in_a_chosen_profile.
+        {
+            let dev = |args: &[&str]| {
+                let cli = Cli::try_parse_from(["tilo-app", "dev"].iter().chain(args))?;
+                let Command::Dev(dev) = cli.command else {
+                    panic!("expected dev command");
+                };
+                Ok::<_, clap::Error>(dev_profile(dev.release, dev.profile))
+            };
+            assert_eq!(dev(&["--release"]).unwrap().as_deref(), Some("thin-app"));
+            assert_eq!(
+                dev(&["--profile", "release"]).unwrap().as_deref(),
+                Some("release")
+            );
+            assert!(dev(&["--release", "--profile", "dev"]).is_err());
+        }
+
+        // Phase: a_web_build_honours_release.
+        {
+            let web = |args: &[&str]| {
+                let cli = Cli::try_parse_from(
+                    ["tilo-app", "build", "--platform", "web"]
+                        .iter()
+                        .chain(args),
+                )
+                .expect("web build CLI");
+                let Command::Build(build) = cli.command else {
+                    panic!("expected build command");
+                };
+                web_build_request(build).release
+            };
+            assert!(web(&["--release"]));
+            assert!(!web(&[]));
         }
 
         // Phase: every_build_command_takes_platform_and_arch.
@@ -3887,5 +4346,91 @@ mod tests {
             [PackagePlatform::Android]
         );
         assert!(check_platforms(&[CheckPlatformArg::All]).contains(&PackagePlatform::Android));
+    }
+    #[test]
+    fn compiler_interface_selection_requires_runtime_and_independent_root() {
+        for flags in [
+            vec!["--sdk-compiler-bundle", "compiler"],
+            vec!["--sdk-compiler-root", "root"],
+            vec![
+                "--sdk-compiler-bundle",
+                "compiler",
+                "--sdk-compiler-root",
+                "root",
+            ],
+        ] {
+            let mut args = vec!["tilo-app", "package"];
+            args.extend(flags);
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+        let parsed = Cli::try_parse_from([
+            "tilo-app",
+            "package",
+            "--sdk-bundle",
+            "runtime",
+            "--sdk-root",
+            "runtime-root",
+            "--sdk-publisher",
+            "publisher",
+            "--sdk-compiler-bundle",
+            "compiler",
+            "--sdk-compiler-root",
+            "compiler-root",
+        ])
+        .expect("complete independent selections");
+        let Command::Package(args) = parsed.command else {
+            panic!("package command")
+        };
+        assert_eq!(args.sdk_compiler_bundle, Some(PathBuf::from("compiler")));
+        assert_eq!(args.sdk_compiler_root.as_deref(), Some("compiler-root"));
+    }
+
+    #[test]
+    fn native_sdk_selection_requires_independent_publisher_and_root() {
+        assert!(Cli::try_parse_from(["tilo-app", "package", "--sdk-bundle", "sdk"]).is_err());
+        assert!(
+            Cli::try_parse_from(["tilo-app", "package", "--sdk-publisher", "publisher"]).is_err()
+        );
+        let parsed = Cli::try_parse_from([
+            "tilo-app",
+            "package",
+            "--sdk-bundle",
+            "sdk",
+            "--sdk-publisher",
+            "publisher",
+            "--sdk-root",
+            "root",
+        ])
+        .expect("complete SDK selection");
+        let Command::Package(args) = parsed.command else {
+            panic!("package command");
+        };
+        assert_eq!(args.sdk_bundle, Some(PathBuf::from("sdk")));
+        assert_eq!(args.sdk_publisher.as_deref(), Some("publisher"));
+        assert_eq!(args.sdk_root.as_deref(), Some("root"));
+        for alias in ["linux", "macos", "web"] {
+            let parsed = Cli::try_parse_from([
+                "tilo-app",
+                "package",
+                "--sdk-bundle",
+                "sdk",
+                "--sdk-publisher",
+                "publisher",
+                "--sdk-root",
+                "root",
+                "--target",
+                alias,
+            ])
+            .expect("SDK target alias is parsed before production admission");
+            let Command::Package(args) = parsed.command else {
+                panic!("package command");
+            };
+            assert!(
+                run_package(args)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("not an SDK target alias")
+            );
+        }
     }
 }

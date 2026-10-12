@@ -44,16 +44,20 @@ a window and closes its desktop window asks the session to close it, as a
 person's close of its tab does. A watcher closing it closes only its view,
 and the desktop does not reopen a window the person closed while it streams.
 
-## Legacy applications on a node
+## Applications on a node
 
 A node runs a session beside the relay (`run --session-device`); `POST
 /peer/v1/node` names its device to members ([`NodeInfo`]). The page asks that
 session for the room's `workspace:<room>` catalogue and lists its unconfined
-applications (`applications.host-app`: Chromium, LibreOffice, …) in desktop
-search and the navigation catalogue. Opening one invokes its `app.<id>`/`open`
-action on the session, which launches it in the room. A headless session whose
-active room has a host paints and encodes while that room shows a legacy
-window, so the window arrives here as above, beside the focused one.
+applications (`applications.host-app`: Chromium, LibreOffice, …) and the Tilo
+applications the page cannot run itself (`applications.app`: Terminal, …) in
+desktop search and the navigation catalogue; search no longer calls those
+"Linux and macOS only". Opening one invokes its `app.<id>`/`open` action on
+the session, which launches it in the room: the relay governs the room but
+runs no apps, so the session opens even a Tilo app itself rather than through
+the governor. A headless session whose active room has a host paints and
+encodes while that room shows such a window, so it arrives here as above,
+beside the focused one.
 
 ## Explicit remaining gaps
 
@@ -85,4 +89,4 @@ node --test crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs crat
 The viewer/reassembly/input mapping reuses pre-deletion PR #541 implementation
 from commits `7578bc4de6` and `47a326a69d`; framing is now in
 `tilo-relay-protocol`, and delivery uses `tilo-moq`/the current relay rather than
-`delivery_v3` or a second transport control plane.
+a second transport control plane.

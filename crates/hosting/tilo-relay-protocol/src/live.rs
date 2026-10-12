@@ -130,8 +130,8 @@ pub struct LiveRecord {
     /// Application identifier.
     #[serde(deserialize_with = "text128")]
     pub app: String,
-    /// Record identifier within the application.
-    #[serde(deserialize_with = "text128")]
+    /// Record identifier within the application; empty names its package-primary record.
+    #[serde(deserialize_with = "record128")]
     pub record: String,
 }
 
@@ -147,11 +147,7 @@ impl LiveRecord {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.app.is_empty()
-            || self.app.len() > 128
-            || self.record.is_empty()
-            || self.record.len() > 128
-        {
+        if self.app.is_empty() || self.app.len() > 128 || self.record.len() > 128 {
             Err(LiveWireError::Invalid)
         } else {
             Ok(())
@@ -677,6 +673,15 @@ fn text128<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String, D::Er
     bounded_text::<D, 128>(d)
 }
 
+fn record128<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
+    let value = String::deserialize(d)?;
+    if value.len() > 128 {
+        Err(de::Error::custom("record exceeds bounds"))
+    } else {
+        Ok(value)
+    }
+}
+
 fn preview_text<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
     bounded_text::<D, MAX_PREVIEW_TEXT_BYTES>(d)
 }
@@ -848,6 +853,63 @@ mod tests {
             drag: None,
             participant: None,
         })
+    }
+
+    #[test]
+    fn package_primary_presence_is_sealed_and_bound_to_its_exact_record() {
+        let primary = LiveRecord {
+            app: "so.tilo.chat".into(),
+            record: String::new(),
+        };
+        let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let channel = collab_types::document_channel_id(&primary.app, room, &primary.record);
+        let frame = LiveFrame::Presence(PresenceFrame {
+            seq: 1,
+            sent_at_ms: 1,
+            focus: Some(primary.clone()),
+            pointer: Some([1.0, 2.0]),
+            selection: None,
+            drag: None,
+            participant: None,
+        });
+        let bytes = SealedLiveFrame::seal(&frame, |_, retention, cleartext: &[u8]| {
+            Ok::<_, String>((
+                EncryptionMetadata::content_key(3, channel, retention),
+                cleartext.to_vec(),
+            ))
+        })
+        .unwrap();
+        let sealed = SealedLiveFrame::decode(&bytes).unwrap();
+        assert_eq!(
+            sealed
+                .open_in_record(room, &primary, |_, _, bytes| {
+                    Ok::<_, String>(bytes.to_vec())
+                })
+                .unwrap(),
+            frame
+        );
+        let named = LiveRecord {
+            record: "other".into(),
+            ..primary
+        };
+        assert!(matches!(
+            sealed.open_in_record(
+                room,
+                &named,
+                |_, _, _| -> std::result::Result<Vec<u8>, String> {
+                    panic!("a different record must be refused before opening")
+                }
+            ),
+            Err(LiveSealError::Mismatch)
+        ));
+        assert!(
+            LiveRecord {
+                app: String::new(),
+                record: String::new()
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]

@@ -79,6 +79,28 @@ the transaction. Cancellation stops at a safe boundary; retry reuses verified
 objects. Removal is confirmed, stops the model first, and deletes only objects
 whose content identity belongs exclusively to that model.
 
+## In-process models
+
+Some signed models are small enough to run on the CPU inside the per-user
+service that uses them, such as the U²-Net subject selection model the model
+gateway loads with `rten` for "Select subject". These are catalogued with
+`"artifact_format": "onnx_file"`, an in-process capability (`segmentation`),
+no `allowed_runtimes` and no context window, and can never claim chat, vision
+or face capabilities. Settings shows each one as its own card with the same
+download, storage, source, revision and licence confirmation, and
+`settings://models/<model-id>` opens Agent Models at that card.
+
+Setup is the same verified, resumable download and licence record, then
+nothing else: no runtime image, container, service or hardware gate. The
+installed model is the content-addressed object
+`$XDG_DATA_HOME/tilo/models/sha256/<sha256>`, and `state.json` beside it
+records its revision, licence and capabilities. A consumer finds it with
+`local_model_service::installed_in_process_model` over the store
+`user_model_root()` names (none without a data home, never a shared
+directory), a filesystem-only lookup that needs neither the catalogue nor
+the model manager. Removal deletes the object; the
+lookup then reports no model.
+
 ## Hardware policy
 
 - NVIDIA is selected only when a supported driver is loaded. On Podman, the

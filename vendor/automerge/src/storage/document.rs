@@ -325,9 +325,16 @@ impl<'a> Document<'a> {
         &self,
         mode: VerificationMode,
         text_encoding: TextEncoding,
+        known_hashes: Option<&[ChangeHash]>,
     ) -> Result<Automerge, ReconstructError> {
         let mut op_set = OpSet::load(self, text_encoding)?;
         let change_cols = ChangeGraphCols::load(self)?;
+
+        if let Some(hashes) =
+            known_hashes.filter(|hashes| change_cols.takes_known_hashes(hashes, self.heads()))
+        {
+            return Self::reconstruct_known(op_set, change_cols, hashes);
+        }
 
         let mut index = op_set.index_builder();
 
@@ -347,6 +354,58 @@ impl<'a> Document<'a> {
         let change_graph = change_cols.finalize(&changes.changes, &mut authors);
 
         debug_assert_eq!(changes.changes.len(), change_graph.len());
+
+        debug_assert!(op_set.validate_top_index());
+
+        let doc = Automerge::from_parts(op_set, change_graph, authors);
+
+        if let Some(err) = mark_order_validator.take_error() {
+            Err(ReconstructError::InvalidMarkOrderDoc {
+                doc: Box::new(doc),
+                error_message: err,
+            })
+        } else {
+            Ok(doc)
+        }
+    }
+
+    /// Tilo patch (TILO-PATCH.md): [`Self::reconstruct`] taking each
+    /// change's hash from `hashes` instead of rebuilding and hashing every
+    /// change. Only the op set's indexes are built from the ops.
+    fn reconstruct_known(
+        mut op_set: OpSet,
+        change_cols: ChangeGraphCols,
+        hashes: &[ChangeHash],
+    ) -> Result<Automerge, ReconstructError> {
+        let mut index = op_set.index_builder();
+        let mut first_counter = vec![u64::MAX; op_set.actors.len()];
+        let mut note = |id: crate::types::OpId| {
+            if let Some(first) = first_counter.get_mut(id.actor()) {
+                *first = (*first).min(id.counter());
+            }
+        };
+        let mut last = None;
+        let mut ops = op_set.iter();
+        while let Some(op) = ops.try_next()? {
+            let next = Some((op.obj, op.elemid_or_key()));
+            if last != next {
+                index.flush();
+                last = next;
+            }
+            index.process_op(&op);
+            note(op.id);
+            let op_is_counter = op.is_counter();
+            for id in op.succ() {
+                index.process_succ(op_is_counter, id);
+                note(id);
+            }
+        }
+
+        let (indexes, mut mark_order_validator) = index.finish();
+        op_set.set_indexes(indexes);
+
+        let mut authors = Authors::with_actors(change_cols.len());
+        let change_graph = change_cols.finalize_known(hashes, &first_counter, &mut authors);
 
         debug_assert!(op_set.validate_top_index());
 

@@ -30,20 +30,22 @@ recorded() {
 }
 vello_base=$(recorded vello_base)
 vello_tip=$(recorded vello_tip)
+vello_branch=$(recorded vello_branch)
 winit_base=$(recorded winit_base)
 winit_tip=$(recorded winit_tip)
+winit_branch=$(recorded winit_branch)
 git -C "$isolated_repo" update-ref \
-    refs/remotes/origin/vendor-upstream/vello-0.9 "$vello_tip"
+    "refs/remotes/origin/$vello_branch" "$vello_tip"
 git -C "$isolated_repo" update-ref \
-    refs/remotes/origin/vendor-upstream/winit-0.30.13 "$winit_tip"
+    "refs/remotes/origin/$winit_branch" "$winit_tip"
 
 (
     cd "$isolated_repo"
     "$repo_root/tools/vendor-history.sh" verify
 
     # A stale local topic branch must not mask the immutable origin ref.
-    git update-ref refs/heads/vendor-upstream/vello-0.9 "$vello_base"
-    git update-ref refs/heads/vendor-upstream/winit-0.30.13 "$winit_base"
+    git update-ref "refs/heads/$vello_branch" "$vello_base"
+    git update-ref "refs/heads/$winit_branch" "$winit_base"
     "$repo_root/tools/vendor-history.sh" verify
     "$repo_root/tools/vendor-history.sh" export "$export_dir"
 )

@@ -14,6 +14,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use ui::tilo_resource::Invoke;
 
 use canvas::actions::{
     AddLayer, Draw, EditLayer, EditMarks, NewMark, NewStroke, Paint, RemoveLayer,
@@ -23,19 +24,19 @@ use canvas::region::Region;
 use canvas::render::{Options, Renderer};
 use canvas::resource::Inspect;
 use canvas::selection::{Combine, Select, UseSelection};
-use canvas::{ArtworkResource, CanvasAction, view_ops};
-use ui::prelude::{Invoke, Replica};
+use canvas::view_ops;
+use ui::prelude::Replica;
 use ui::tilo_resource::ActionRef;
 use ui::vello::kurbo::{BezPath, Point, Rect};
 
-fn apply(art: &mut Replica<ArtworkResource>, action: CanvasAction) -> Result<(), String> {
-    art.apply(Invoke::apply(&action).unwrap())
+fn apply(art: &mut Replica<Artwork>, action: Invoke<Artwork>) -> Result<(), String> {
+    art.apply(action)
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
 
-fn select(art: &mut Replica<ArtworkResource>, select: Select) {
-    apply(art, CanvasAction::Select(Box::new(select))).unwrap();
+fn select(art: &mut Replica<Artwork>, select: Select) {
+    apply(art, Artwork::SELECT.with(select)).unwrap();
 }
 
 fn rect(id: &str, [x, y, width, height]: [f64; 4], fill: &str) -> NewMark {
@@ -52,10 +53,10 @@ fn rect(id: &str, [x, y, width, height]: [f64; 4], fill: &str) -> NewMark {
     }
 }
 
-fn draw(art: &mut Replica<ArtworkResource>, layer: Option<&str>, marks: Vec<NewMark>) {
+fn draw(art: &mut Replica<Artwork>, layer: Option<&str>, marks: Vec<NewMark>) {
     apply(
         art,
-        CanvasAction::Draw(Draw {
+        Artwork::DRAW.with(Draw {
             layer: layer.map(Into::into),
             marks,
         }),
@@ -94,12 +95,12 @@ fn red((rgba, width): &(Vec<u8>, usize), x: usize, y: usize) -> u8 {
     rgba[(y * width + x) * 4]
 }
 
-/// Shapes, lassos and marks select; add, subtract and intersect change the
-/// selection; grow, feather and invert refine it; none clears it. Each is
-/// one step, undone like any other.
+/// Inverting and growing in one step grows what ends up selected: the
+/// subject a wand's background leaves, shrunk clear of that background's
+/// edge, rather than the background grown before it is turned inside out.
 #[test]
-fn a_selection_is_made_of_shapes_and_refined() {
-    let mut art = Replica::<ArtworkResource>::new();
+fn invert_comes_before_grow() {
+    let mut art = Replica::<Artwork>::new();
     select(
         &mut art,
         Select {
@@ -107,7 +108,37 @@ fn a_selection_is_made_of_shapes_and_refined() {
             ..Select::default()
         },
     );
-    let area = |art: &Replica<ArtworkResource>| selected(&art.state().unwrap()).area();
+    select(
+        &mut art,
+        Select {
+            invert: Some(true),
+            grow: Some(-10.0),
+            ..Select::default()
+        },
+    );
+    let area = selected(&art.state().unwrap());
+    assert!(
+        !area.contains(Point::new(95.0, 150.0)),
+        "within 10 of the old edge"
+    );
+    assert!(area.contains(Point::new(80.0, 150.0)));
+    assert!(!area.contains(Point::new(150.0, 150.0)));
+}
+
+/// Shapes, lassos and marks select; add, subtract and intersect change the
+/// selection; grow, feather and invert refine it; none clears it. Each is
+/// one step, undone like any other.
+#[test]
+fn a_selection_is_made_of_shapes_and_refined() {
+    let mut art = Replica::<Artwork>::new();
+    select(
+        &mut art,
+        Select {
+            rect: Some([100.0, 100.0, 200.0, 100.0]),
+            ..Select::default()
+        },
+    );
+    let area = |art: &Replica<Artwork>| selected(&art.state().unwrap()).area();
     assert!((area(&art) - 20_000.0).abs() < 1.0, "{}", area(&art));
     select(
         &mut art,
@@ -190,7 +221,7 @@ fn a_selection_is_made_of_shapes_and_refined() {
         },
     );
     assert!(art.state().unwrap().selection.is_none());
-    let error = apply(&mut art, CanvasAction::Select(Box::default())).unwrap_err();
+    let error = apply(&mut art, Artwork::SELECT.with(Select::default())).unwrap_err();
     assert!(error.contains("give rect"), "{error}");
 }
 
@@ -198,7 +229,7 @@ fn a_selection_is_made_of_shapes_and_refined() {
 /// its ink; a group all of its members.
 #[test]
 fn marks_select_by_their_shape() {
-    let mut art = Replica::<ArtworkResource>::new();
+    let mut art = Replica::<Artwork>::new();
     draw(
         &mut art,
         None,
@@ -223,10 +254,10 @@ fn marks_select_by_their_shape() {
     assert!((selected(&art.state().unwrap()).area() - 20_000.0).abs() < 1.0);
     let error = apply(
         &mut art,
-        CanvasAction::Select(Box::new(Select {
+        Artwork::SELECT.with(Select {
             marks: Some(vec!["nothing".into()]),
             ..Select::default()
-        })),
+        }),
     )
     .unwrap_err();
     assert!(error.contains("no mark or group"), "{error}");
@@ -236,10 +267,10 @@ fn marks_select_by_their_shape() {
 /// selection is, or an outline.
 #[test]
 fn a_selection_fills_and_outlines_as_marks() {
-    let mut art = Replica::<ArtworkResource>::new();
+    let mut art = Replica::<Artwork>::new();
     let error = apply(
         &mut art,
-        CanvasAction::UseSelection(UseSelection {
+        Artwork::USE_SELECTION.with(UseSelection {
             what: "fill".into(),
             ..UseSelection::default()
         }),
@@ -257,7 +288,7 @@ fn a_selection_fills_and_outlines_as_marks() {
     for (what, id) in [("fill", "glow"), ("stroke", "ring")] {
         apply(
             &mut art,
-            CanvasAction::UseSelection(UseSelection {
+            Artwork::USE_SELECTION.with(UseSelection {
                 what: what.into(),
                 colour: Some("#ffcc00".into()),
                 id: Some(id.into()),
@@ -276,7 +307,7 @@ fn a_selection_fills_and_outlines_as_marks() {
     assert_eq!(ring.style.stroke_width, 2.0);
     let error = apply(
         &mut art,
-        CanvasAction::UseSelection(UseSelection {
+        Artwork::USE_SELECTION.with(UseSelection {
             what: "smudge".into(),
             ..UseSelection::default()
         }),
@@ -291,7 +322,7 @@ fn a_selection_fills_and_outlines_as_marks() {
 /// touched.
 #[test]
 fn a_mask_shows_and_hides_its_layer() {
-    let mut art = Replica::<ArtworkResource>::new();
+    let mut art = Replica::<Artwork>::new();
     draw(
         &mut art,
         None,
@@ -306,7 +337,7 @@ fn a_mask_shows_and_hides_its_layer() {
     );
     apply(
         &mut art,
-        CanvasAction::UseSelection(UseSelection {
+        Artwork::USE_SELECTION.with(UseSelection {
             what: "mask".into(),
             ..UseSelection::default()
         }),
@@ -330,7 +361,7 @@ fn a_mask_shows_and_hides_its_layer() {
 
     apply(
         &mut art,
-        CanvasAction::EditLayer(EditLayer {
+        Artwork::EDIT_LAYER.with(EditLayer {
             id: "layer-1".into(),
             invert: Some(true),
             ..EditLayer::default()
@@ -347,7 +378,7 @@ fn a_mask_shows_and_hides_its_layer() {
     // Off, the whole layer shows.
     apply(
         &mut art,
-        CanvasAction::EditLayer(EditLayer {
+        Artwork::EDIT_LAYER.with(EditLayer {
             id: "layer-1-mask".into(),
             visible: Some(false),
             ..EditLayer::default()
@@ -361,7 +392,7 @@ fn a_mask_shows_and_hides_its_layer() {
     // selection.
     apply(
         &mut art,
-        CanvasAction::EditLayer(EditLayer {
+        Artwork::EDIT_LAYER.with(EditLayer {
             id: "layer-1".into(),
             mask: Some("remove".into()),
             ..EditLayer::default()
@@ -373,7 +404,7 @@ fn a_mask_shows_and_hides_its_layer() {
     assert!(state.marks.iter().all(|mark| mark.layer == "layer-1"));
     apply(
         &mut art,
-        CanvasAction::UseSelection(UseSelection {
+        Artwork::USE_SELECTION.with(UseSelection {
             what: "clear".into(),
             ..UseSelection::default()
         }),
@@ -399,7 +430,7 @@ fn a_mask_shows_and_hides_its_layer() {
     // Painting on the mask in grey hides more of the layer.
     apply(
         &mut art,
-        CanvasAction::Paint(Paint {
+        Artwork::PAINT.with(Paint {
             layer: Some("layer-1-mask".into()),
             strokes: vec![NewStroke {
                 points: vec![vec![300.0, 20.0], vec![300.0, 280.0]],
@@ -407,6 +438,7 @@ fn a_mask_shows_and_hides_its_layer() {
                 colour: "#000000".into(),
                 ..NewStroke::default()
             }],
+            group: None,
         }),
     )
     .unwrap();
@@ -417,7 +449,7 @@ fn a_mask_shows_and_hides_its_layer() {
     // works on the layer it is part of.
     let error = apply(
         &mut art,
-        CanvasAction::EditLayer(EditLayer {
+        Artwork::EDIT_LAYER.with(EditLayer {
             id: "layer-1-mask".into(),
             medium: Some("oil".into()),
             ..EditLayer::default()
@@ -427,7 +459,7 @@ fn a_mask_shows_and_hides_its_layer() {
     assert!(error.contains("greys"), "{error}");
     apply(
         &mut art,
-        CanvasAction::UseSelection(UseSelection {
+        Artwork::USE_SELECTION.with(UseSelection {
             what: "clear".into(),
             layer: Some("layer-1-mask".into()),
             ..UseSelection::default()
@@ -443,7 +475,7 @@ fn a_mask_shows_and_hides_its_layer() {
     // The layer goes with its mask.
     apply(
         &mut art,
-        CanvasAction::RemoveLayer(RemoveLayer {
+        Artwork::REMOVE_LAYER.with(RemoveLayer {
             id: "layer-1".into(),
         }),
     )
@@ -458,7 +490,7 @@ fn a_mask_shows_and_hides_its_layer() {
 /// clip.
 #[test]
 fn paint_kept_inside_the_selection_carries_its_area() {
-    let mut art = Replica::<ArtworkResource>::new();
+    let mut art = Replica::<Artwork>::new();
     select(
         &mut art,
         Select {
@@ -468,7 +500,7 @@ fn paint_kept_inside_the_selection_carries_its_area() {
     );
     apply(
         &mut art,
-        CanvasAction::Paint(Paint {
+        Artwork::PAINT.with(Paint {
             layer: None,
             strokes: vec![NewStroke {
                 id: Some("swash".into()),
@@ -478,6 +510,7 @@ fn paint_kept_inside_the_selection_carries_its_area() {
                 clip: Some("selection".into()),
                 ..NewStroke::default()
             }],
+            group: None,
         }),
     )
     .unwrap();
@@ -516,11 +549,11 @@ fn paint_kept_inside_the_selection_carries_its_area() {
     // Moved, the cut stroke takes its area along.
     apply(
         &mut art,
-        CanvasAction::EditMarks(Box::new(EditMarks {
+        Artwork::EDIT_MARKS.with(EditMarks {
             ids: vec!["swash".into()],
             move_by: Some([50.0, 0.0]),
             ..EditMarks::default()
-        })),
+        }),
     )
     .unwrap();
     let shown = pixels(&art.state().unwrap());
@@ -530,11 +563,11 @@ fn paint_kept_inside_the_selection_carries_its_area() {
     // An empty clip lets it out.
     apply(
         &mut art,
-        CanvasAction::EditMarks(Box::new(EditMarks {
+        Artwork::EDIT_MARKS.with(EditMarks {
             ids: vec!["swash".into()],
             clip: Some(String::new()),
             ..EditMarks::default()
-        })),
+        }),
     )
     .unwrap();
     let state = art.state().unwrap();
@@ -545,7 +578,7 @@ fn paint_kept_inside_the_selection_carries_its_area() {
 /// With nothing selected, `clip: "selection"` is refused and says why.
 #[test]
 fn keeping_inside_no_selection_is_refused() {
-    let mut art = Replica::<ArtworkResource>::new();
+    let mut art = Replica::<Artwork>::new();
     draw(
         &mut art,
         None,
@@ -553,7 +586,7 @@ fn keeping_inside_no_selection_is_refused() {
     );
     let refused = apply(
         &mut art,
-        CanvasAction::Paint(Paint {
+        Artwork::PAINT.with(Paint {
             layer: None,
             strokes: vec![NewStroke {
                 points: vec![vec![20.0, 150.0], vec![380.0, 150.0]],
@@ -562,6 +595,7 @@ fn keeping_inside_no_selection_is_refused() {
                 clip: Some("selection".into()),
                 ..NewStroke::default()
             }],
+            group: None,
         }),
     )
     .unwrap_err();
@@ -571,7 +605,7 @@ fn keeping_inside_no_selection_is_refused() {
 /// A layer clipped to the one below shows only where that one has paint.
 #[test]
 fn a_clipped_layer_shows_only_over_the_layer_below() {
-    let mut art = Replica::<ArtworkResource>::new();
+    let mut art = Replica::<Artwork>::new();
     draw(
         &mut art,
         None,
@@ -579,7 +613,7 @@ fn a_clipped_layer_shows_only_over_the_layer_below() {
     );
     apply(
         &mut art,
-        CanvasAction::AddLayer(AddLayer {
+        Artwork::ADD_LAYER.with(AddLayer {
             id: Some("shade".into()),
             name: "Shade".into(),
             ..AddLayer::default()
@@ -598,7 +632,7 @@ fn a_clipped_layer_shows_only_over_the_layer_below() {
     );
     apply(
         &mut art,
-        CanvasAction::EditLayer(EditLayer {
+        Artwork::EDIT_LAYER.with(EditLayer {
             id: "shade".into(),
             clip: Some(true),
             ..EditLayer::default()
@@ -632,7 +666,7 @@ fn shapes_combine_into_one_path() {
         ("exclude", 100.0 * 100.0),
     ];
     for (op, area) in cases {
-        let mut art = Replica::<ArtworkResource>::new();
+        let mut art = Replica::<Artwork>::new();
         draw(
             &mut art,
             None,
@@ -645,7 +679,7 @@ fn shapes_combine_into_one_path() {
         let steps = art.log().len();
         apply(
             &mut art,
-            CanvasAction::Combine(Combine {
+            Artwork::COMBINE.with(Combine {
                 ids: vec!["right".into(), "left".into()],
                 op: op.into(),
             }),
@@ -668,7 +702,7 @@ fn shapes_combine_into_one_path() {
         assert_eq!(state.marks.first().unwrap().id, "left", "in its place");
     }
     // Curves are fitted again: a disc stays a few curves, not a polygon.
-    let mut art = Replica::<ArtworkResource>::new();
+    let mut art = Replica::<Artwork>::new();
     draw(
         &mut art,
         None,
@@ -688,7 +722,7 @@ fn shapes_combine_into_one_path() {
     );
     apply(
         &mut art,
-        CanvasAction::Combine(Combine {
+        Artwork::COMBINE.with(Combine {
             ids: vec!["o".into(), "cut".into()],
             op: "subtract".into(),
         }),
@@ -705,7 +739,7 @@ fn shapes_combine_into_one_path() {
 
     let error = apply(
         &mut art,
-        CanvasAction::Combine(Combine {
+        Artwork::COMBINE.with(Combine {
             ids: vec!["o".into()],
             op: "union".into(),
         }),
@@ -719,7 +753,7 @@ fn shapes_combine_into_one_path() {
 /// plain area it found, so every replica applies the same selection.
 #[test]
 fn the_wand_finds_colour_where_the_artwork_is_shown() {
-    let mut art = Replica::<ArtworkResource>::new();
+    let mut art = Replica::<Artwork>::new();
     draw(
         &mut art,
         None,
@@ -729,8 +763,7 @@ fn the_wand_finds_colour_where_the_artwork_is_shown() {
             rect("c", [100.0, 400.0, 300.0, 100.0], "#2040c0"),
         ],
     );
-    let wand: ActionRef<ArtworkResource, ([f64; 2], f64)> =
-        ActionRef::new("select", &["at", "tolerance"]);
+    let wand: ActionRef<Artwork, ([f64; 2], f64)> = ActionRef::new("select", &["at", "tolerance"]);
     let error = art
         .apply(wand.with(([150.0, 150.0], 0.1)))
         .unwrap_err()
@@ -751,8 +784,8 @@ fn the_wand_finds_colour_where_the_artwork_is_shown() {
     let d = &state.selection.as_ref().unwrap().d;
     assert!(d.len() < 400, "a rectangle traces to a few corners: {d}");
 
-    let by_colour: ActionRef<ArtworkResource, String> = ActionRef::new("select", &["colour"]);
-    art.apply(by_colour.with("#d03020".into())).unwrap();
+    let by_colour: ActionRef<Artwork, String> = ActionRef::new("select", &["colour"]);
+    art.apply(by_colour.with("#d03020")).unwrap();
     let found = selected(&art.state().unwrap());
     assert!(found.contains(Point::new(650.0, 150.0)));
     assert!(!found.contains(Point::new(200.0, 450.0)));
@@ -772,16 +805,21 @@ fn the_wand_finds_colour_where_the_artwork_is_shown() {
         assert!((edge - at).abs() < 0.2, "{bounds:?}");
     }
 
-    // Applied as a plain value, a colour cannot be found.
-    let error = apply(
-        &mut art,
-        CanvasAction::Select(Box::new(Select {
-            at: Some([10.0, 10.0]),
-            ..Select::default()
-        })),
-    )
-    .unwrap_err();
-    assert!(error.contains("select action itself"), "{error}");
+    // Applied as a recorded value, without being resolved where it is
+    // invoked, a colour cannot be found.
+    let recorded = ui::tilo_resource::Stamped {
+        operation: canvas::resource::ArtworkAction::Select(canvas::resource::artwork::Select {
+            select: Select {
+                at: Some([10.0, 10.0]),
+                ..Select::default()
+            },
+        }),
+        now_ms: 0,
+    };
+    let error = ui::tilo_actions::Action::apply(&recorded, art.doc_mut())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("where select is invoked"), "{error}");
 }
 
 /// Taking from the selection with the wand takes only what is like the
@@ -789,7 +827,7 @@ fn the_wand_finds_colour_where_the_artwork_is_shown() {
 /// around another selected part is left selected.
 #[test]
 fn the_wand_takes_from_the_selection_only_what_it_touches_inside() {
-    let mut art = Replica::<ArtworkResource>::new();
+    let mut art = Replica::<Artwork>::new();
     draw(
         &mut art,
         None,
@@ -812,8 +850,7 @@ fn the_wand_takes_from_the_selection_only_what_it_touches_inside() {
     );
     let renderer = Rc::new(RefCell::new(Renderer::default()));
     canvas::author::see(&renderer, &Rc::new(art.state().unwrap()));
-    let wand: ActionRef<ArtworkResource, ([f64; 2], String)> =
-        ActionRef::new("select", &["at", "mode"]);
+    let wand: ActionRef<Artwork, ([f64; 2], String)> = ActionRef::new("select", &["at", "mode"]);
     // Alt-click the ground in the left part.
     art.apply(wand.with(([70.0, 70.0], "subtract".into())))
         .unwrap();

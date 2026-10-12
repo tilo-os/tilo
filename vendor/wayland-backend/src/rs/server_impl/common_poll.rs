@@ -169,8 +169,15 @@ impl<D> InnerBackend<D> {
                 }
             }
         }
+        // Disconnected clients' resources are destroyed here, outside every
+        // per-client timing above; a slow teardown is reported on its own.
+        let started = Instant::now();
         let cleanup = self.state.lock().unwrap().cleanup();
         cleanup(&self.handle(), data);
+        let elapsed = started.elapsed();
+        if std::env::var_os("TILO_LOOP_TIMING").is_some() && elapsed >= Duration::from_millis(4) {
+            eprintln!("SLOW-WAYLAND-CLEANUP elapsed_us={}", elapsed.as_micros());
+        }
         Ok(dispatched)
     }
 

@@ -1,0 +1,29 @@
+# The device-admin route (docs/device-reach.md, "Reaching it by name"):
+# tilo-vmd's request protocol over the peer network, for the owner's devices
+# whose certificate grants administration. Dev images only.
+#
+# A system service rather than the session's endpoint, so a device sitting at
+# the greeter, or one nobody has logged in to since boot, stays reachable. It
+# binds an endpoint of its own with a transport key derived from the device
+# key; the device key proves who answers inside the handshake.
+[Unit]
+Description=Tilo device-admin route (tilo-vmd over the peer network)
+After=network-online.target tilo-device-key-init.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+# TILO_DEVICE_ADMIN_RELAY=<url> uses a relay of your own instead of the
+# public ones.
+EnvironmentFile=-/etc/tilo/device-admin.env
+# tilo-vmd runs as root, as it does over SSH.
+Environment=HOME=/root
+ExecStart=/usr/libexec/tilo-device-admin serve
+Restart=always
+RestartSec=5
+RuntimeDirectory=tilo-device-admin
+RuntimeDirectoryMode=0755
+SyslogIdentifier=tilo-device-admin
+
+[Install]
+WantedBy=multi-user.target

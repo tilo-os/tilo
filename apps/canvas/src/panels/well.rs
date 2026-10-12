@@ -8,7 +8,6 @@ use ui::a11y::{AccessNode, Role};
 use ui::taffy::{self, NodeId, Style, TaffyTree};
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Circle, Point, Rect, Stroke};
-use ui::vello::peniko::Fill;
 use ui::widget::{AppModel, EventCtx, ModelPath, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::{PresenceCtx, TextRenderer, Theme};
@@ -58,95 +57,60 @@ impl Widget for Well {
         use ui::widget::TaffyTreeExt as _;
         // As tall as a panel row: the rail's tools are that size too.
         let side = theme.tokens.metrics.panel_row_height;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: taffy::Size {
                 width: taffy::Dimension::length(side),
                 height: taffy::Dimension::length(side),
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        _text_renderer: &mut TextRenderer,
+        text_renderer: &mut TextRenderer,
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
         self.name = self.describe();
-        let centre = self.rect.center();
-        let radius = self.rect.width().min(self.rect.height()) / 2.0 - 3.0;
-        if radius <= 2.0 {
+        let side =
+            self.rect.width().min(self.rect.height()) - 2.0 * f64::from(theme.tokens.spacing.s1);
+        if side <= 4.0 {
             return;
         }
+        // The paint as a swatch of it: its edge reads on the rail whatever
+        // the colour, and it rings under the pointer like any swatch.
         let colour = self.tools.colour();
-        let drop = Circle::new(centre, radius);
-        scene.fill(Fill::NonZero, transform, colour, None, &drop);
-        // An edge that reads on the rail whatever the paint: the rail's own
-        // edge, a ring of the surface inside it so a dark paint on a dark
-        // rail still has a rim.
-        scene.stroke(
-            &Stroke::new(2.0),
-            transform,
-            theme.bg_primary,
-            None,
-            &Circle::new(centre, radius - 1.0),
-        );
-        let rim = if self.hovered {
-            theme.text_dim
-        } else {
-            ui::surface::edge_on(theme.bg_primary)
-        };
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            rim,
-            None,
-            &Circle::new(centre, radius + 0.5),
-        );
-        // The brush's width as a ring inside the drop, in the ink that
-        // reads on the paint, so a wide brush still shows its colour.
+        let swatch = Rect::from_center_size(self.rect.center(), (side, side));
+        ui::widget::ColorSwatchFace::new(swatch, colour, self.name.clone())
+            .hovered(self.hovered)
+            .paint(scene, transform, text_renderer, theme);
+        // The brush's width as a ring inside it, in the ink that reads on
+        // the paint, so a wide brush still shows its colour; the narrowest
+        // brush is a dot.
         let travel = self.tools.size.with(|size| size.clamp(0.0, 1.0));
-        let ring = 2.0 + travel.sqrt() * (radius - 6.0).max(2.0);
+        let stroke = 2.0 * f64::from(theme.tokens.metrics.chrome_rule_px);
+        let ring = stroke + travel.sqrt() * (side / 2.0 - 2.0 * stroke - stroke).max(stroke);
         let ink = theme.tokens.colors.ink_on_any(
             &[colour],
-            theme.text_primary,
+            theme.tokens.colors.text_primary,
             ui::tokens::colors::ON_FILL_MIN_CONTRAST,
         );
-        if travel < 0.05 {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                ink,
-                None,
-                &Circle::new(centre, 2.0),
-            );
-        } else {
-            scene.stroke(
-                &Stroke::new(1.5),
-                transform,
-                ink.multiply_alpha(0.8),
-                None,
-                &Circle::new(centre, ring),
-            );
-        }
+        scene.stroke(
+            &Stroke::new(stroke),
+            transform,
+            ink,
+            None,
+            &Circle::new(swatch.center(), ring),
+        );
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -176,7 +140,7 @@ impl Widget for Well {
         Some(AccessNode::new(Role::Image).with_name(self.describe()))
     }
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
 
     fn name(&self) -> &'static str {
         "Well"

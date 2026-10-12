@@ -19,7 +19,7 @@ use crate::model::{Artwork, Ground, Layer, Mark, Shape, Style};
 use crate::render::{Options, Renderer};
 
 /// The presets a brush lays paint with, in the picker's order.
-pub const PAINTING: [Preset; 7] = [
+pub const PAINTING: [Preset; 8] = [
     Preset::Round,
     Preset::Pen,
     Preset::Pencil,
@@ -27,6 +27,7 @@ pub const PAINTING: [Preset; 7] = [
     Preset::Airbrush,
     Preset::Charcoal,
     Preset::Calligraphy,
+    Preset::Pixel,
 ];
 
 /// A swatch's sample, in its own units.
@@ -42,6 +43,7 @@ fn sample(preset: Preset, colour: &str) -> Artwork {
         Preset::Airbrush => 16.0,
         Preset::Marker => 11.0,
         Preset::Charcoal => 12.0,
+        Preset::Pixel => 3.0,
         _ => 9.0,
     };
     let points = (0..=12)
@@ -58,6 +60,7 @@ fn sample(preset: Preset, colour: &str) -> Artwork {
         height: SAMPLE.1,
         ground: Ground::default(),
         layers: vec![Layer {
+            group: String::new(),
             id: "sample".into(),
             name: String::new(),
             order: "a".into(),
@@ -70,8 +73,10 @@ fn sample(preset: Preset, colour: &str) -> Artwork {
             base: 0.0,
             invert: false,
             clip: false,
+            unlinked: false,
             adjust: None,
-        }],
+        }]
+        .into(),
         marks: vec![Mark {
             id: format!("sample-{}", preset.name()),
             layer: "sample".into(),
@@ -88,7 +93,8 @@ fn sample(preset: Preset, colour: &str) -> Artwork {
             group: String::new(),
             clip: String::new(),
             area: String::new(),
-        }],
+        }]
+        .into(),
         ..Artwork::default()
     }
 }
@@ -110,13 +116,11 @@ pub fn picker(
     // The sheet's colour names each swatch's ring; the painter draws it.
     let paper = 0x00f4_efe3; // document colour: the sample sheet's paper
     let mut samples: Vec<(String, Artwork)> = Vec::new();
-    ColorSwatchPicker::with_palette(vec![paper; presets.len()], 4)
-        .with_accessible_labels(labels)
+    super::inspector::swatches(&vec![paper; presets.len()], labels, 4)
         .with_cell(CELL.0)
         .with_cell_height(CELL.1)
-        .bare()
         .selecting(presets.iter().position(|preset| *preset == chosen))
-        .with_painter(move |scene, transform, rect: Rect, index, _theme, text| {
+        .with_painter(move |scene, transform, rect: Rect, index, theme, text| {
             let ink = colour();
             if samples.len() != presets.len()
                 || samples
@@ -131,7 +135,7 @@ pub fn picker(
             let Some((_, art)) = samples.get(index) else {
                 return;
             };
-            let frame = RoundedRect::from_rect(rect, 6.0);
+            let frame = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.item));
             scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &frame);
             let scale = (rect.width() / SAMPLE.0).min(rect.height() / SAMPLE.1);
             let offset = rect.center()

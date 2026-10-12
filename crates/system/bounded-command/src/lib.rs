@@ -18,6 +18,11 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+#[cfg(unix)]
+mod child_wait;
+#[cfg(unix)]
+pub use child_wait::{WakeFd, Wakeup, wait_child_or};
+
 /// Start `command`'s child as the leader of its own process tree, so
 /// [`kill_tree`] also reaches every descendant it starts. On Unix this is a
 /// new process group named after the child's pid.
@@ -81,6 +86,85 @@ pub fn terminate_tree(child: &mut Child, grace: Duration) {
     let _ = child.wait();
 }
 
+/// Signal an owned process tree and reap its leader with a bounded grace period.
+///
+/// On Linux the leader remains unreaped until its descendants are signalled, so
+/// its process-group number cannot be reused by another session during cleanup.
+/// Returns the leader's status only when it exited within `grace`; forced or
+/// unobservable exits return `None`. This reports only the leader's status;
+/// it is not evidence that all descendant writers completed their work.
+///
+/// # Errors
+/// Refuses a child without its own process group, or an invalid child identity.
+/// This refusal does not signal the caller's or another session's process group.
+pub fn terminate_tree_checked(
+    child: &mut Child,
+    grace: Duration,
+) -> std::io::Result<Option<ExitStatus>> {
+    #[cfg(target_os = "linux")]
+    {
+        if child.try_wait()?.is_some() {
+            // A reaped child's former group number is no longer ours to signal.
+            return Ok(None);
+        }
+        let pid = i32::try_from(child.id()).map_err(std::io::Error::other)?;
+        // SAFETY: getpgid only inspects this unreaped child's process group.
+        if unsafe { libc::getpgid(pid) } != pid {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "child has no privately owned process group",
+            ));
+        }
+        let group = pid.checked_neg().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid child group")
+        })?;
+        // SAFETY: the group was checked above and its unreaped leader retains
+        // the pid, preventing a newly allocated unrelated group from matching.
+        unsafe { libc::kill(group, libc::SIGTERM) };
+        let deadline = Instant::now()
+            .checked_add(grace)
+            .unwrap_or_else(Instant::now);
+        while Instant::now() < deadline {
+            if exited_unreaped(pid) {
+                // SAFETY: the leader is still unreaped, so this is still our
+                // exact group. Signal descendants before releasing its pid.
+                unsafe { libc::kill(group, libc::SIGKILL) };
+                return child.wait().map(Some);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        kill_tree(child);
+        child.wait()?;
+        Ok(None)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        terminate_tree(child, grace);
+        Ok(None)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn exited_unreaped(pid: i32) -> bool {
+    let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+    // SAFETY: waitid receives writable siginfo storage and observes only our
+    // child. WNOWAIT deliberately retains the leader until group cleanup.
+    let observed = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid.cast_unsigned(),
+            info.as_mut_ptr(),
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if observed != 0 {
+        return false;
+    }
+    // SAFETY: waitid succeeded, and the zeroed storage also covers the
+    // WNOHANG case in which no child's status was available.
+    unsafe { info.assume_init().si_pid() == pid }
+}
+
 /// Mark a script or program file executable for everyone and writable only
 /// by its owner (mode `0755` on Unix). A no-op where executability is not a
 /// file permission.
@@ -114,6 +198,22 @@ pub struct Output {
     pub stdout: Vec<u8>,
     /// Captured standard error.
     pub stderr: Vec<u8>,
+}
+
+impl Output {
+    /// Standard error as a short diagnostic safe to log or show a person: lossy
+    /// UTF-8 without control characters other than space, newline and tab, at
+    /// most 512 characters, trimmed.
+    #[must_use]
+    pub fn stderr_diagnostic(&self) -> String {
+        String::from_utf8_lossy(&self.stderr)
+            .chars()
+            .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
+            .take(512)
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
 }
 
 /// Failures before a bounded child completes successfully or unsuccessfully.
@@ -442,7 +542,8 @@ fn run_prepared_inner(
     })
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use std::fs;
@@ -477,7 +578,8 @@ mod tests {
                 let error =
                     run(helper.to_str().unwrap(), &[], None, 4096, UNTESTED_TIMEOUT).unwrap_err();
                 assert!(
-                    matches!(error, Error::OutputTooLarge { stream: got, .. } if got == stream)
+                    matches!(error, Error::OutputTooLarge { stream: got, .. } if got == stream),
+                    "expected {stream} overflow, got {error:?}"
                 );
             }
         }
@@ -583,6 +685,74 @@ mod tests {
             assert!(started.elapsed() < Duration::from_secs(1));
             assert!(child.try_wait().unwrap().is_some());
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn checked_tree_stop_distinguishes_graceful_forced_and_unowned_children() {
+        struct Owned(Child);
+        impl Drop for Owned {
+            fn drop(&mut self) {
+                if matches!(self.0.try_wait(), Ok(None)) {
+                    terminate_tree(&mut self.0, Duration::ZERO);
+                }
+            }
+        }
+        // Start the descendant before announcing readiness and wait in the
+        // shell builtin. A foreground sleep started after `ready` can miss
+        // the group signal and defer the shell's TERM trap past the grace.
+        for (script, expected_clean) in [
+            ("trap 'exit 0' TERM; sleep 30 & printf ready; wait", true),
+            ("trap '' TERM; sleep 30 & printf ready; wait", false),
+        ] {
+            let mut command = Command::new("sh");
+            command.args(["-c", script]).stdout(Stdio::piped());
+            let mut child = Owned(own_process_tree(&mut command).spawn().unwrap());
+            let mut output = child.0.stdout.take().unwrap();
+            let (ready, received) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                let mut bytes = [0; 5];
+                ready
+                    .send(output.read_exact(&mut bytes).map(|()| bytes))
+                    .unwrap();
+                let mut remaining = Vec::new();
+                output.read_to_end(&mut remaining).unwrap();
+            });
+            assert_eq!(
+                received
+                    .recv_timeout(Duration::from_secs(2))
+                    .unwrap()
+                    .unwrap(),
+                *b"ready",
+                "the signal handler is installed before shutdown is requested"
+            );
+            let started = Instant::now();
+            let status = terminate_tree_checked(&mut child.0, Duration::from_millis(100)).unwrap();
+            assert_eq!(status.is_some_and(|exit| exit.success()), expected_clean);
+            assert!(started.elapsed() < Duration::from_secs(2));
+            assert!(child.0.try_wait().unwrap().is_some());
+            reader.join().unwrap();
+            assert!(
+                terminate_tree_checked(&mut child.0, Duration::from_millis(100))
+                    .unwrap()
+                    .is_none(),
+                "a reaped handle never authorizes another group signal"
+            );
+        }
+        let mut unowned = Command::new("sleep").arg("30").spawn().unwrap();
+        let refusal = terminate_tree_checked(&mut unowned, Duration::from_millis(100));
+        // Cleanup targets the child handle only, because it has no private group.
+        let still_running = unowned.try_wait().unwrap().is_none();
+        unowned.kill().unwrap();
+        unowned.wait().unwrap();
+        assert_eq!(
+            refusal.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert!(
+            still_running,
+            "refused group ownership must not signal the child"
+        );
     }
 
     #[test]

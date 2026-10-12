@@ -96,8 +96,6 @@ shortcut-new-window = Neues Fenster
 shortcut-add-tab = Tab hier hinzufügen
 shortcut-duplicate-tab = Tab duplizieren
 shortcut-open-terminal = Terminal öffnen
-shortcut-global-search = Globale Suche
-shortcut-lock = Sperren
 shortcut-workspace-wheel = Arbeitsbereichsrad
 shortcut-display-layout = Anzeigeanordnung
 shortcut-capture-screenshot = Bildschirmfoto aufnehmen
@@ -112,9 +110,9 @@ shortcut-vim-navigation = Vim-Navigation
 shortcut-dismiss = Schließen
 
 # Wie jedes änderbare Tastenkürzel des Desktops heißt
-shortcut-name-search = Globale Suche
+shortcut-name-search = Überall suchen
 shortcut-name-workspace-overview = Übersicht
-shortcut-name-lock = Sperren
+shortcut-name-lock = Bildschirm sperren
 shortcut-name-quick-settings = Schnelleinstellungen
 shortcut-name-shortcut-help = Desktop-Hilfe
 shortcut-name-focus-previous-window = Vorheriges Fenster fokussieren
@@ -386,6 +384,8 @@ portal-grant-once = Einmal erlauben
 portal-grant-session = Für diese Sitzung erlauben
 portal-grant-always = In diesem Arbeitsbereich immer erlauben
 portal-grant-deny = Ablehnen
+portal-confirm-title = { $who } möchte für dich handeln
+portal-confirm-detail = { $risk } · nur dieses eine Mal; nichts wird gespeichert
 portal-risk-none = Zeigt nur Informationen an
 portal-risk-low = Geringes Risiko: eine gewöhnliche, umkehrbare Änderung
 portal-risk-destructive = Destruktiv: kann löschen oder überschreiben
@@ -435,6 +435,8 @@ portal-email-attachments = { $count ->
    *[other] { $count } Anhänge werden über das Dokumentportal verfügbar sein.
 }
 portal-remember-device = Auf diesem Gerät merken
+portal-a11y-name = Name
+portal-a11y-answer = Antwort
 portal-secret-required = Fülle alle Pflichtfelder aus.
 portal-secret-wifi-length = Ein WLAN-Passwort hat 8 bis 63 Zeichen oder 64 Hexadezimalziffern.
 portal-network-heading = Netzwerk
@@ -515,6 +517,8 @@ host-session-action-blocked = Sitzungsaktion blockiert
 host-action-started = „{ $title }“ gestartet
 host-action-admitted = Aktionsauftrag { $job } wurde angenommen
 host-action-cannot-run = „{ $title }“ kann nicht ausgeführt werden
+host-action-failed-status = Nicht ausgeführt
+launchpad-action-unanswered = Die App hat nicht geantwortet
 host-search-placeholder = Suchen …
 host-search-in = In { $scope } suchen …
 host-search-in-resource-fallback = Ressource
@@ -674,95 +678,41 @@ a11y-bluetooth-destinations = Bluetooth-Ziele
 
 # Barrierefreiheitsbaum: Zeilen für Geräte und Medien
 a11y-certified-display = Zertifizierter Bildschirm
-a11y-placement-suggested = Vorgeschlagene Anordnung für { $display }
-a11y-placement-suggested-description = Aktuelle lokale Sensordaten schlagen eine umkehrbare Anordnung vor; die Nähe hat keine Identität festgestellt
 a11y-placement-apply = Diese umkehrbare Bildschirmanordnung übernehmen
 a11y-placement-dismiss = Diesen Anordnungsvorschlag verwerfen
 a11y-placement-undo = Anordnung für { $display } rückgängig machen
 a11y-display-fallback = Bildschirm
-a11y-placement-undo-description = Stellt die genaue Anordnung von vor der Kalibrierung wieder her
 a11y-speaker-join = { $group } als { $role } beitreten
 a11y-speaker-join-description = { $leader } hat gefragt; du wirst einmal gefragt und kannst jederzeit austreten
 a11y-speaker-join-allow = Dieser Lautsprechergruppe beitreten
 a11y-speaker-join-decline = Diese Lautsprechergruppe ablehnen
 a11y-speaker-playing-on = Wiedergabe auf { $group }
-a11y-speaker-session-description = Wiedergabe in der Lautsprechergruppe; aktivieren zum Beenden
-a11y-speaker-group-description = Lautsprechergruppe, { $summary }; wähle zuerst eine Quelle und aktiviere dann, um darauf abzuspielen
 a11y-speaker-setup = Lautsprecher einrichten
-a11y-speaker-setup-description = Öffnet die Einstellungen, um mehrere Geräte als Stereopaar oder Raumlautsprecher zu nutzen
 a11y-speaker-membership = { $role } in { $group }
 a11y-speaker-membership-description = Dieses Gerät spielt in dieser Lautsprechergruppe; aktivieren zum Austreten
 a11y-remote-audio-play-here = { $media } hier abspielen
-a11y-remote-audio-consent-description = Ein zertifiziertes Gerät hat eine Audioausgabe für eine Sitzung angefragt
 a11y-remote-audio-allow = Dieses entfernte Audio einmal erlauben
 a11y-remote-audio-decline = Dieses entfernte Audio ablehnen
-a11y-remote-audio-source-app = Audio der fokussierten App wählen; die Weiterleitung endet, wenn der Fokus wechselt
-a11y-remote-audio-source-system = Gesamtes Systemaudio wählen, dann ein zertifiziertes Ziel wählen
-a11y-remote-audio-route-interrupted = Entfernte Audioweiterleitung unterbrochen; aktivieren zum Verwerfen
-a11y-remote-audio-route-active = Entfernte Audioweiterleitung aktiv oder wartet auf Freigabe; aktivieren zum Beenden
-a11y-remote-capture-share = { $input } dieses Geräts mit { $app } teilen
-a11y-remote-capture-consent-description = Ein zertifiziertes Gerät hat eine private Aufnahmesitzung angefragt
 a11y-remote-capture-allow = Diese entfernte Eingabe einmal erlauben
 a11y-remote-capture-decline = Diese entfernte Eingabe ablehnen
-a11y-remote-capture-source = { $input } von einem anderen Gerät verwenden
-a11y-remote-capture-source-description = Wähle ein zertifiziertes Quellgerät; es muss die Anfrage freigeben
 a11y-remote-capture-session = Entfernte Eingabe: { $input }
-a11y-remote-capture-requesting = Warte auf die Freigabe durch das Quellgerät
 a11y-remote-capture-provisioning = Privater lokaler Endpunkt wird vorbereitet
-a11y-remote-capture-app-approval = Die lokale App muss freigegeben werden
-a11y-remote-capture-waiting-receiver = Warte auf das empfangende Gerät
-a11y-remote-capture-streaming = Private Sitzung aktiv; aktivieren zum Beenden
 a11y-remote-capture-unavailable = Entfernte Eingabe nicht verfügbar: { $input }
-a11y-remote-capture-source-unavailable = Das Quellgerät kann diese Eingabe nicht bereitstellen
-a11y-remote-capture-receiver-unavailable = Dieses Gerät kann den privaten Empfänger nicht erstellen
-a11y-remote-capture-interrupted = Die zertifizierte Verbindung wurde unterbrochen und geschlossen
 a11y-call-continue = Anruf in { $room } fortsetzen
-a11y-call-consent-description = Diese eine Übergabe und die angefragten lokalen Aufnahmequellen freigeben
 a11y-call-allow = Diese Anrufübergabe einmal erlauben
 a11y-call-decline = Diese Anrufübergabe ablehnen
 a11y-call-in = Anruf in { $room }
-a11y-call-source-description = Wähle diesen laufenden Anruf und dann ein zertifiziertes Ziel
 a11y-bluetooth-pair = { $accessory } koppeln
-a11y-bluetooth-pair-description = Eine von { $source } angefragte Übergabe freigeben
 a11y-bluetooth-pair-allow = Kopplung für diese Übergabe einmal erlauben
 a11y-bluetooth-pair-decline = Diese Bluetooth-Übergabe ablehnen
-a11y-bluetooth-handoff = { $accessory } mit { $peer }
-a11y-handoff-preparing = Ziel wird authentifiziert und geprüft; aktivieren zum Abbrechen
-a11y-handoff-awaiting-approval = Warte auf Freigabe am Ziel; aktivieren zum Abbrechen
-a11y-handoff-releasing = Zubehör wird auf diesem Gerät freigegeben; aktivieren zum Abbrechen
-a11y-handoff-pairing = Kopplung am Ziel; aktivieren zum Abbrechen
-a11y-handoff-connecting = Verbindung am Ziel; aktivieren zum Abbrechen
-a11y-handoff-confirming = Verbunden; warte auf authentifizierte Bestätigung; aktivieren zum Abbrechen
-a11y-handoff-completed = Übergabe abgeschlossen
-a11y-handoff-failed-retry = Übergabe fehlgeschlagen: { $reason }; aktivieren zum Wiederholen
-a11y-handoff-failed = Übergabe fehlgeschlagen: { $reason }
-a11y-handoff-cancelled-retry = Übergabe abgebrochen; aktivieren zum Wiederholen
-a11y-handoff-cancelled = Übergabe abgebrochen
 a11y-controller-use = { $controller } verwenden
-a11y-controller-consent-description = Eine typisierte Controller-Sitzung von { $source } für { $app } freigeben
 a11y-controller-allow = Diesen Controller einmal erlauben
 a11y-controller-decline = Diesen Controller ablehnen
-a11y-controller-forwarding = Controller-Weiterleitung aktiv oder wartet auf Freigabe; aktivieren zum Beenden
-a11y-controller-local = Wähle diesen lokalen Controller und dann ein zertifiziertes Ziel
 a11y-media-handoff = { $media } auf { $target }
-a11y-media-handoff-pending = Warte, bis das Ziel öffnet; aktivieren zum Abbrechen
-a11y-media-handoff-completed = Auf dem Ziel geöffnet
-a11y-media-playing = Läuft gerade; dieses Medium zum Weiterleiten wählen
-a11y-media-paused = Pausiert; dieses Medium zum Weiterleiten wählen
-a11y-output-current = Aktueller lokaler Audioausgang
-a11y-output-route = Aktuelles und künftiges lokales Audio hierher leiten
 a11y-input-lower = Eingangspegel senken
 a11y-input-raise = Eingangspegel erhöhen
-a11y-tethering-with = Tethering mit { $peer }
-a11y-tethering-consent = Ein zertifiziertes Gerät hat eine kurzlebige Tethering-Freigabe angefragt
-a11y-tethering-active = Tethering ist aktiv; aktivieren zum Trennen
-a11y-tethering-status = Tethering-Status
 a11y-tethering-allow = Tethering einmal erlauben
 a11y-tethering-decline = Tethering ablehnen
-a11y-place-left = Bildschirm links anordnen
-a11y-place-right = Bildschirm rechts anordnen
-a11y-place-above = Bildschirm oberhalb anordnen
-a11y-place-below = Bildschirm unterhalb anordnen
 a11y-control-revoke = Steuerung dieses Geräts entziehen
 a11y-control-allow = Diesem Gerät 15 Minuten lang die Steuerung dieses Geräts erlauben
 
@@ -929,6 +879,8 @@ qs-devices-output-route = Lokaler Ausgang · aktuelles Audio hierher leiten
 qs-devices-output-bluetooth = Bluetooth { $codec } · aktuelles Audio hierher leiten
 qs-devices-tether-requesting = Warte auf Freigabe am Telefon
 qs-devices-tether-consent = Einmal erlauben oder ablehnen
+qs-devices-tether-preparing = Hotspot dieses Telefons wird gestartet
+qs-devices-tether-connecting = Verbinde mit dem Hotspot des Telefons
 qs-devices-tether-requester = Über dieses Telefon verbunden · auswählen zum Trennen
 qs-devices-tether-provider = Verbindung dieses Telefons wird geteilt · auswählen zum Trennen
 qs-devices-tether-denied = Am Telefon abgelehnt
@@ -1023,14 +975,14 @@ notification-remote-input-stopped-shares = { $count ->
    *[other] Die Fernsteuerung wurde { $count } Freigaben entzogen; die Freigabe wurde beendet.
 }
 
-# Media codec pack notices
+# Hinweise zu Medienformaten
 codec-hardware-ready = Hardware-H.264/HEVC ist bereit
-codec-installed = Mediencodecs installiert
-codec-installed-mesa-waiting = { $applies } Hardware-H.264/HEVC folgt, sobald RPM Fusion einen zu diesem System passenden Mesa-Build veröffentlicht.
-codec-failed = Mediencodecs konnten nicht installiert werden
+codec-installed = Mehr Video- und Audioformate sind eingeschaltet
+codec-installed-mesa-waiting = { $applies } Hardware-H.264/HEVC folgt, sobald ein passender Treiber veröffentlicht ist.
+codec-failed = Mehr Video- und Audioformate konnten nicht eingeschaltet werden
 codec-failed-retry = Öffne Einstellungen, Updates, um es erneut zu versuchen.
 codec-failed-with-error = { $error } Öffne Einstellungen, Updates, um es erneut zu versuchen.
-codec-app-name = Mediencodecs
+codec-app-name = Video- und Audioformate
 
 # Screen capture surfaces
 capture-live-alt = Live-Aufnahme: { $title }
@@ -1068,11 +1020,16 @@ launch-error-no-workspace = Wähle einen Arbeitsbereich und versuche es dann ern
 launch-error-shell-owned-intent = Öffne dieses Ziel über die Desktop-Steuerelemente.
 launch-error-identity-unavailable = Die Identität des Arbeitsbereichs konnte nicht geladen werden. Versuche es erneut.
 launch-error-registry-unreadable = Die App-Liste konnte nicht gelesen werden. Versuche es erneut.
+launch-error-sandbox-supervision = Die Dateiberechtigungen der App konnten nicht überwacht werden. Versuche es erneut.
 launch-error-host-app-refused = Der Desktop-Eintrag dieser App kann nicht gestartet werden.
 launch-failed-launcher-unavailable = Der App-Starter ist nicht verfügbar. Öffne „Anwendungen“ und versuche es erneut.
 launch-failed-stopped = Die App wurde beendet, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
 launch-failed-missing-library = Der App fehlt eine Bibliothek auf diesem System, daher wurde sie beendet, bevor sie sich öffnete.
+launch-failed-runtime-mismatch = Diese App wurde für eine andere Tilo-Laufzeitumgebung gebaut. Aktualisiere sie oder installiere sie neu, um die passende Laufzeitumgebung zu erhalten.
 launch-failed-sandbox = Die Sandbox der App konnte nicht eingerichtet werden, daher wurde sie beendet, bevor sie sich öffnete.
+launch-failed-collaboration = Die App konnte dem Zusammenarbeitsdienst dieses Arbeitsbereichs nicht beitreten und wurde daher beendet, bevor sie sich öffnete. Das Desktop-Protokoll nennt den Grund.
+launch-failed-window-lost = Ihr Fenster wurde beendet, ohne geschlossen zu werden. Öffne sie erneut über Anwendungen; das Desktop-Protokoll nennt den Grund.
+launch-window-lost-title = { $app } wurde unerwartet geschlossen
 launch-failed-crashed = Die App ist abgestürzt, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
 launch-unnamed-app = Anwendung
 launch-failure-title = { $app } konnte nicht geöffnet werden
@@ -1229,8 +1186,6 @@ search-opens-here = Öffnet sich hier als Tab
 # Suchquellen, wie die Aktionen der Sucheinstellungen sie nennen
 search-provider-now-playing = Aktuelle Wiedergabe
 search-provider-records = Einträge
-search-provider-notes = Notizen
-search-provider-editor = Editor
 search-provider-session = Sitzung
 search-provider-shortcuts = Kurzbefehle
 search-provider-tray = Statusbereich
@@ -1271,6 +1226,10 @@ search-app-job-cancel = Aktionsauftrag { $id } abbrechen
 search-app-job-cancel-detail = Bittet die App, den Auftrag abzubrechen
 search-app-job-accepted = angenommen
 search-app-job-running = läuft
+search-app-job-reported-phase = Gemeldet: { $phase }
+search-app-job-reported-counts = Gemeldet: { $phase } ({ $completed } / { $total })
+search-app-job-reported-completed = Gemeldet: { $phase } ({ $completed } erledigt)
+search-app-job-reported-total = Gemeldet: { $phase } (insgesamt { $total })
 search-app-job-streaming = liefert Ergebnisse
 search-app-job-succeeded = abgeschlossen
 search-app-job-failed = fehlgeschlagen
@@ -1302,6 +1261,8 @@ search-action-shortcut-help-toggle = Desktop-Hilfe anzeigen
 search-action-shortcut-help-toggle-subtitle = F1 öffnet sie überall; Super+/ ist das anpassbare Tastenkürzel für dieselbe Anleitung
 search-action-desktop-tour-open = Desktop-Tour starten
 search-action-desktop-tour-open-subtitle = Die dreiminütige Einführung in Navigation, Organisation und Zusammenarbeit noch einmal ansehen
+search-action-topbar-editor = Obere Leiste bearbeiten
+search-action-topbar-editor-subtitle = Widgets der oberen Leiste neu anordnen, hinzufügen oder entfernen
 search-action-overview-toggle = Arbeitsbereichsübersicht ein- oder ausblenden
 search-action-overview-toggle-subtitle = Alle Arbeitsbereiche in der Radansicht zeigen
 search-action-settings-open = Arbeitsbereichseinstellungen öffnen
@@ -1326,6 +1287,8 @@ search-action-quick-settings-devices = Geräte und Medien öffnen
 search-action-quick-settings-devices-subtitle = Zertifizierte Geräte, Medienwege, entfernte Eingabe und Übergaben
 search-action-projection-open = Wählen, wo der Desktop erscheint
 search-action-projection-open-subtitle = Erweitern, spiegeln, ein Bildschirm oder ein Miracast-, Google-Cast-, AirPlay- oder FCast-Empfänger
+search-action-projection-close = Bildschirmauswahl schließen
+search-action-projection-close-subtitle = Layout- und Empfängerauswahl ausblenden; die Bildschirme bleiben, wie sie sind
 search-action-display-layout-extend = Bildschirme erweitern
 search-action-display-layout-extend-subtitle = Alle verbundenen Bildschirme als einen größeren Desktop nutzen
 search-action-display-layout-mirror = Bildschirme spiegeln
@@ -1362,6 +1325,8 @@ search-action-tab-close = Diesen Tab schließen
 search-action-tab-close-subtitle = Den fokussierten Tab schließen; war er der letzte, schließt sich auch sein Fenster
 search-action-tab-reopen = Geschlossenen Tab wieder öffnen
 search-action-tab-reopen-subtitle = Den zuletzt in diesem Arbeitsbereich geschlossenen Tab an seinem alten Platz zurückholen
+search-action-tab-open-beside = App in neuem Tab öffnen
+search-action-tab-open-beside-subtitle = Eine weitere Instanz einer App, auf Wunsch an einer Adresse, als Tab direkt nach dem fokussierten öffnen
 search-action-tab-split-right = Diesen Tab nach rechts teilen
 search-action-tab-split-right-subtitle = Den fokussierten Tab in eine neue Fenstergruppe neben der aktuellen verschieben
 search-action-tab-move-to-new-group = Diesen Tab in eine neue Gruppe verschieben
@@ -1434,10 +1399,20 @@ search-action-presence-status-sharing-set = Status-Privatsphäre festlegen
 search-action-presence-status-sharing-set-subtitle = Wählen, ob der Status aus, nur ausdrücklich oder automatisch abgeleitet ist
 search-action-peer-invite-named = Mitwirkende benennen und Einladung öffnen
 search-action-peer-invite-named-subtitle = Den Anzeigenamen festhalten und dann die Einladung prüfen, bevor sie erstellt wird
+search-action-member-role-set = Rolle eines Mitglieds ändern
+search-action-member-role-set-subtitle = Ein Mitglied des Arbeitsbereichs zum Betrachter, Kommentator oder Bearbeiter machen
+search-action-member-remove = Mitglied entfernen
+search-action-member-remove-subtitle = Ein Mitglied aus diesem Arbeitsbereich nehmen und alles widerrufen, was es hier tun durfte
+search-action-invitation-issue = Einladung erstellen
+search-action-invitation-issue-subtitle = Eine Einladung in diesen Arbeitsbereich mit Rolle und Gültigkeitsdauer erzeugen
+search-action-invitation-list = Offene Einladungen anzeigen
+search-action-invitation-list-subtitle = Die Einladungen in diesen Arbeitsbereich zeigen, die noch niemand eingelöst hat
+search-action-invitation-resend = Einladung erneut senden
+search-action-invitation-resend-subtitle = Das Token einer offenen Einladung erneut abrufen, ohne sie zu verlängern
+search-action-invitation-cancel = Einladung zurückziehen
+search-action-invitation-cancel-subtitle = Eine offene Einladung widerrufen, damit sie nicht mehr eingelöst werden kann
 search-action-agent-invite = Agenten in den Arbeitsbereich einladen
 search-action-agent-invite-subtitle = Eine eingegrenzte Agenten-Einrichtung starten; jeden Bereich wählen, den er nutzen darf
-search-action-text-insert = Text in die fokussierte Notiz einfügen
-search-action-text-insert-subtitle = An einer Zeichenposition in den fokussierten Notizen- oder Editor-Tab schreiben
 search-action-record-bring = Element zu diesem Arbeitsbereich hinzufügen
 search-action-record-bring-subtitle = Hier verfügbar machen, ohne das Original zu verschieben
 search-action-quick-settings-brightness-set = Bildschirmhelligkeit festlegen
@@ -1504,13 +1479,6 @@ search-action-device-revoked = Gerät widerrufen
 search-action-device-revoked-body = Der Widerruf wurde mit dem Stammschlüssel signiert und in der Geräteliste dieser Identität vermerkt.
 
 # Suche: Anwendungen
-search-apps-group-start-here = Zum Einstieg
-search-apps-group-everyday = Alltag
-search-apps-group-work = Arbeit
-search-apps-group-media = Medien
-search-apps-group-system-tools = Systemwerkzeuge
-search-apps-group-more-apps = Weitere Apps
-search-apps-group-developer-tools = Entwicklerwerkzeuge
 search-apps-detail-grouped = { $group } · { $detail }
 search-apps-open = { $app } öffnen
 search-apps-open-subtitle = { $target } · { $detail }
@@ -1526,6 +1494,14 @@ search-apps-opening-body = Wird geladen …
 # Suche: Kontinuitätsaktionen zwischen deinen zertifizierten Geräten
 search-continuity-certified-device = Zertifiziertes Gerät
 search-continuity-play-on = { $source } auf { $target } abspielen
+search-continuity-wake-device = Gerät aufwecken
+search-continuity-wake-device-subtitle = Sendet ein Wecksignal von einem Gerät in seinem Netzwerk
+device-wake-app-name = Geräte
+device-wake-rejoined = { $device } ist wach
+device-wake-not-rejoined = { $device } ist nicht aufgewacht
+device-wake-not-rejoined-body = Es hat ein Wecksignal erhalten, ist aber nicht zurückgekommen. Vielleicht ist es aus oder hat keinen Strom.
+device-wake-failed = { $device } konnte nicht geweckt werden
+device-wake-failed-body = In seinem Netzwerk konnte kein Wecksignal gesendet werden.
 search-continuity-media-handoff-subtitle = Diese laufende Mediensitzung auf ein bestimmtes zertifiziertes Gerät verschieben
 search-continuity-media-cancel = Verschieben von „{ $media }“ abbrechen
 search-continuity-media-retry = Verschieben von „{ $media }“ erneut versuchen
@@ -1578,6 +1554,14 @@ search-continuity-calibration-revert = Platzierung für { $device } zurücksetze
 search-continuity-calibration-revert-subtitle = Die vorherige Platzierung des zertifizierten Bildschirms wiederherstellen
 search-continuity-tether-request = { $device } um Tethering bitten
 search-continuity-tether-request-subtitle = Eine kurzlebige, auf dem Telefon bestätigte Verbindung anfragen
+search-continuity-unlock-approve = { $device } entsperren (Code { $code })
+search-continuity-unlock-deny = { $device } gesperrt lassen (Code { $code })
+search-continuity-unlock-subtitle = Es wurde neu gestartet und möchte seine verschlüsselte Festplatte öffnen
+search-continuity-device-remove = { $device } aus deinen Geräten entfernen
+search-continuity-device-remove-subtitle = Es kann nicht mehr für dich handeln und seine Festplatte nicht mehr über deine Geräte entsperren
+device-unlock-error-not-pending = Diese Entsperranfrage wartet nicht mehr
+device-unlock-error-cannot-remove = Dieses Gerät kann jenes Gerät nicht entfernen
+device-unlock-error-no-identity = Dieses Gerät hat deine Identität nicht
 search-continuity-tether-allow = Tethering für { $device } erlauben
 search-continuity-tether-decline = Tethering für { $device } ablehnen
 search-continuity-tether-consent-subtitle = Diese Freigabeanfrage auf dem Telefon beantworten
@@ -1690,14 +1674,28 @@ onboarding-nearby-code-label = Bestätigungscode
 onboarding-nearby-try-again = Erneut versuchen
 
 # Identitätseinrichtung: Koppeln mit einem Gerät in der Nähe
-onboarding-nearby-start-failed = Die Einrichtung über ein Gerät in der Nähe konnte nicht gestartet werden: { $error }
+onboarding-nearby-failed-title = Die Kopplung wurde nicht abgeschlossen
+onboarding-nearby-ended = Das Kopplungsfenster wurde geschlossen oder die Freigabe abgebrochen. Wähle „Erneut versuchen“.
+onboarding-nearby-unknown = Wähle „Erneut versuchen“.
+onboarding-nearby-detail = Details: { $detail }
+onboarding-nearby-permission-title = Zugriff verweigert: Dieser Computer durfte die Kopplung nicht speichern
+onboarding-nearby-permission = Tilo konnte nicht dort schreiben, wo dieser Computer seine Geräteidentität ablegt. Wähle „Erneut versuchen“, sobald das behoben ist.
+onboarding-nearby-storage-full-title = Der Speicher dieses Computers ist voll
+onboarding-nearby-storage-full = Die Kopplung konnte nicht gespeichert werden. Gib etwas Speicherplatz frei und wähle dann „Erneut versuchen“.
+onboarding-nearby-read-only-title = Der Speicher dieses Computers ist schreibgeschützt
+onboarding-nearby-read-only = Die Kopplung konnte nicht gespeichert werden. Wähle „Erneut versuchen“, sobald der Speicher beschreibbar ist.
+onboarding-nearby-unreachable-title = Dein anderes Gerät war nicht erreichbar
+onboarding-nearby-unreachable = Prüfe, ob beide Geräte im selben Netzwerk sind, und wähle dann „Erneut versuchen“.
+onboarding-nearby-timed-out-title = Kein vertrauenswürdiges Gerät hat diesen Computer rechtzeitig freigegeben
+onboarding-nearby-timed-out = Wähle „Erneut versuchen“ und gib ihn dann auf deinem anderen Gerät frei.
+onboarding-nearby-invalid-identity-title = Dein anderes Gerät hat eine ungültige Identität geliefert
+onboarding-nearby-invalid-identity = Wähle „Erneut versuchen“.
+onboarding-nearby-not-started-title = Die Einrichtung über ein Gerät in der Nähe konnte nicht starten
+onboarding-nearby-not-started = Wähle „Erneut versuchen“.
 onboarding-nearby-unavailable = Die Einrichtung über ein Gerät in der Nähe ist in dieser Sitzung nicht verfügbar
 onboarding-nearby-cancelled = Kopplung abgebrochen. Wähle „Erneut versuchen“, um neu zu beginnen.
 onboarding-nearby-code = Prüfe, ob dein anderes Gerät denselben Code zeigt, und gib es dort frei.
 onboarding-nearby-connected = Verbunden. Deine Arbeitsbereiche erscheinen automatisch.
-onboarding-nearby-invalid-identity = Dein anderes Gerät hat eine ungültige Identität geliefert. Wähle „Erneut versuchen“.
-onboarding-nearby-failed = Die Kopplung wurde nicht abgeschlossen: Das Kopplungsfenster wurde geschlossen oder die Freigabe abgebrochen. Wähle „Erneut versuchen“.
-onboarding-nearby-failed-detail = Die Kopplung wurde nicht abgeschlossen: { $detail }. Wähle „Erneut versuchen“.
 
 # Identitätseinrichtung: verschlüsselte Sicherung
 onboarding-backup-title = Deine Tilo-Identität sichern
@@ -1737,36 +1735,32 @@ onboarding-done-backup-verified = Sicherung geprüft
 onboarding-done-backup-verified-body = Bewahre die verschlüsselte Sicherungsdatei und ihre Passphrase an getrennten Orten auf.
 onboarding-done-backup-recommended = Sicherung weiterhin empfohlen
 onboarding-done-backup-recommended-body = Erstelle in den Einstellungen eine verschlüsselte, übertragbare Sicherung, bevor du dich auf diese Identität verlässt.
+onboarding-done-joined-key-elsewhere = Hier gibt es nichts zu sichern
+onboarding-done-joined-key-elsewhere-body = Dieses Gerät ist deiner Identität über ein anderes Gerät beigetreten, das ihren Schlüssel behält. Geht dieses Gerät verloren, geht keine Identität verloren; bewahre die Sicherung des Geräts auf, das den Beitritt bestätigt hat.
 onboarding-done-system-care-title = Systempflege
 onboarding-done-system-care-body = Tilo sucht nach der Einrichtung automatisch nach signierten Systemupdates, sobald der Rechner online ist. In den Einstellungen kannst du Versionen prüfen, vormerken und zurücksetzen.
 onboarding-tour-take = Kurze Tour starten
 onboarding-finish = Weiter zum Desktop
 
-# Einrichtung: Mediencodecs
-onboarding-codecs-title = Mediencodecs installieren?
-onboarding-codecs-body = H.264 und HEVC, die Formate der meisten Videos, Kameras und Anrufe, sind patentiert und nicht Teil von Tilo. Du kannst sie jetzt mit einem Klick hinzufügen.
-onboarding-codecs-enables-title = Was sie ermöglichen
-onboarding-codecs-enables-hardware = Hardwarebeschleunigtes Video auf AMD- und Intel-Grafik.
-onboarding-codecs-enables-playback = Wiedergabe von H.264 und HEVC in Videos, die du öffnest.
-onboarding-codecs-enables-encoding = Kodierung in H.264 und HEVC für Bildschirmfreigabe, Aufnahmen und Anrufe.
-onboarding-codecs-source-title = Woher sie kommen
-onboarding-codecs-source = Dieser Computer lädt sie direkt von RPM Fusion und von Cisco (OpenH264) unter den Lizenzen dieser Projekte herunter und prüft die Signatur jedes Pakets. Tilo stellt sie weder bereit noch verteilt es sie. Du kannst sie jederzeit unter Einstellungen, Updates entfernen.
-onboarding-codecs-background = Die Einrichtung kann weiterlaufen, während der Download läuft. Du erhältst eine Benachrichtigung, sobald die Codecs bereit sind.
+# Einrichtung: mehr Video- und Audioformate
+onboarding-codecs-title = Mehr Video- und Audioformate abspielen
+onboarding-codecs-note = Wird von den Herausgebern der Formate auf dieses Gerät geladen. Du kannst es in den Einstellungen wieder ausschalten.
+onboarding-codecs-background = Die Einrichtung kann weiterlaufen, während der Download läuft. Du erhältst eine Benachrichtigung, sobald alles bereit ist.
 onboarding-codecs-progress = Fortschritt: { $percent } %
 onboarding-codecs-starting = Wird gestartet …
-onboarding-codecs-installing-title = Mediencodecs werden installiert
-onboarding-codecs-installing-message = { $status } Die Einrichtung kann weiterlaufen, während der Download läuft. Du erhältst eine Benachrichtigung, sobald die Codecs bereit sind.
-onboarding-codecs-offline-title = Die Mediencodecs werden installiert, sobald du online bist
-onboarding-codecs-offline-message = Dieser Computer ist nicht mit dem Internet verbunden. Deine Wahl ist gespeichert: Die Codecs werden automatisch installiert, sobald er online ist, und du erhältst eine Benachrichtigung.
-onboarding-codecs-installed-title = Mediencodecs installiert
-onboarding-codecs-failed-title = Mediencodecs konnten nicht installiert werden
-onboarding-codecs-failed-message = Versuche es erneut oder installiere sie später unter Einstellungen, Updates.
-onboarding-codecs-failed-message-detail = { $error } Versuche es erneut oder installiere sie später unter Einstellungen, Updates.
-onboarding-codecs-installer-failed = Das Installationsprogramm konnte nicht gestartet werden: { $error }
+onboarding-codecs-installing-title = Weitere Formate werden installiert
+onboarding-codecs-installing-message = { $status } Die Einrichtung kann weiterlaufen, während der Download läuft. Du erhältst eine Benachrichtigung, sobald alles bereit ist.
+onboarding-codecs-offline-title = Wird installiert, sobald du online bist
+onboarding-codecs-offline-message = Dieses Gerät ist nicht mit dem Internet verbunden. Deine Wahl ist gespeichert: Der Download startet von selbst, sobald es online ist, und du erhältst eine Benachrichtigung.
+onboarding-codecs-installed-title = Mehr Video- und Audioformate sind eingeschaltet
+onboarding-codecs-failed-title = Weitere Formate konnten nicht installiert werden
+onboarding-codecs-failed-message = Versuche es erneut oder später unter Einstellungen, Updates.
+onboarding-codecs-failed-message-detail = { $error } Versuche es erneut oder später unter Einstellungen, Updates.
+onboarding-codecs-installer-failed = Der Download konnte nicht gestartet werden: { $error }
 onboarding-codecs-skip = Überspringen
 onboarding-codecs-not-now = Nicht jetzt
 onboarding-codecs-retry = Erneut versuchen
-onboarding-codecs-install = Mediencodecs installieren
+onboarding-codecs-install = Installieren
 
 # Desktop-Tour
 onboarding-tour-eyebrow = Desktop-Tour
@@ -1782,7 +1776,7 @@ onboarding-tour-navigate-title = Alles in Reichweite
 onboarding-tour-navigate-intro = Tilo hält den Desktop ruhig, bis du nach etwas fragst. Jede Geste hier hat auch einen Weg über die Tastatur.
 onboarding-tour-search-title = Suche
 onboarding-tour-search-title-mac = Suche
-onboarding-tour-search-keys = Super+K oder Super+Leertaste
+onboarding-tour-search-keys = Super+Leertaste
 onboarding-tour-search-keys-mac = Befehl+K oder Wahl+Leertaste
 onboarding-tour-search-body = Öffne sie ohne Eingabe, um Erste Schritte, Alltag, Arbeit, Medien und Systemwerkzeuge zu durchstöbern; tippe, um jede App, Datei, Einstellung oder Aktion zu finden.
 onboarding-tour-overview-title = Übersicht
@@ -2011,9 +2005,14 @@ window-transfer-failed-timeout = Die App hat im anderen Arbeitsbereich nicht rec
 window-transfer-failed-closed = Das neue Fenster wurde geschlossen, bevor es sich geöffnet hat.
 window-transfer-reopen-failed = Das Dokument ist hier, aber die App hat kein Fenster geöffnet. Öffne es erneut, um weiterzumachen.
 window-transfer-bringing-edits = Deine letzten Änderungen werden übernommen …
-window-transfer-receipt-copied = „{ $window }“ aus { $from } hierher kopiert
-window-transfer-receipt-moved-out = „{ $window }“ nach { $to } verschoben
-window-transfer-receipt-moved-in = „{ $window }“ aus { $from } hierher verschoben
+workspace-allow-app-action = { $lifetime ->
+    [once] { $app } darf { $target } nutzen: { $action }, einmal
+    [session] { $app } darf { $target } nutzen: { $action }, für diese Sitzung
+   *[workspace] { $app } darf { $target } nutzen: { $action }, in diesem Arbeitsbereich
+}
+shell-copy-window-in = „{ $window }“ aus { $from } hierher kopiert
+shell-move-window-out = „{ $window }“ nach { $to } verschoben
+shell-move-window-in = „{ $window }“ aus { $from } hierher verschoben
 window-transfer-lost-title = „{ $window }“ wurde während des Verschiebens geschlossen
 window-transfer-lost-detail = Die App wurde unerwartet beendet, daher fehlen eventuell Änderungen aus ihren letzten Sekunden. Alles, was sie gespeichert hatte, ist jetzt in { $to }.
 window-transfer-late-edits-title = Deine letzten Änderungen in „{ $window }“ sind mitgekommen
@@ -2198,8 +2197,6 @@ speaker-calibration-cancelled = Die Kalibrierung wurde abgebrochen
 
 # Drahtlose Bildschirmprojektion
 projection-service-unavailable-detail = Der Projektionsdienst ist nicht verfügbar ({ $error }). Prüfe den Tilo-Projektordienst.
-projection-service-exited = Der Projektionsdienst wurde beendet: { $status }
-projection-service-invalid-discovery = Der Projektionsdienst hat ungültige Suchergebnisse geliefert: { $error }
 projection-mode-unsupported = { $device } unterstützt den Modus „{ $mode }“ nicht
 projection-service-unavailable = Der Projektionsdienst ist nicht verfügbar
 projection-service-stopped = Der Projektionsdienst wurde beendet
@@ -2235,6 +2232,7 @@ device-fabric-error-transfer-no-retry = die Übertragung kann nicht mehr wiederh
 device-fabric-nearby-device = Gerät in der Nähe
 device-fabric-error-output-gone = dieser Audioausgang ist nicht mehr verbunden
 device-fabric-error-input-gone = dieser Eingang ist nicht mehr verbunden
+device-fabric-error-audio-busy = Audioänderungen werden noch übernommen; gleich erneut versuchen
 device-fabric-error-spatial-unavailable = die räumliche Kalibrierung ist nicht verfügbar
 device-fabric-error-proposal-stale = dieser Kalibrierungsvorschlag ist nicht mehr aktuell
 device-fabric-error-no-applied-calibration = es gibt keine angewendete Kalibrierung zum Zurücksetzen
@@ -2319,6 +2317,7 @@ nearby-error-outside-grant = die Quelle für Nearby Send liegt außerhalb der Fr
 nearby-error-one-item = Nearby Send braucht genau eine normale Datei oder einen Ordner
 nearby-error-queue-full = die Warteschlange für Übertragungen ist voll
 nearby-error-quota-full = der Speicherplatz für Übertragungen ist voll
+nearby-error-disk-full = nicht genug freier Speicherplatz für diese Übertragung
 nearby-error-too-many = zu viele Übertragungen
 nearby-error-not-regular = die Quelle ist keine normale Datei
 nearby-error-folder-too-many = der Ordner enthält zu viele Einträge
@@ -2326,6 +2325,21 @@ nearby-error-folder-special = der Ordner enthält eine Verknüpfung oder Sonderd
 nearby-error-folder-too-large = der Ordner überschreitet die Größenbegrenzung
 nearby-error-source-changed = die Quelle hat sich während der Vorbereitung geändert
 nearby-error-name-not-portable = der Name der Quelle ist nicht übertragbar
+
+# AirDrop lab receiver verification
+airdrop-verify-title = AirDrop-Empfänger überprüfen
+airdrop-verify-send-once = Einmal senden
+airdrop-verify-detail = Datei: { $name }
+    Größe: { $bytes } Bytes
+    Empfänger: { $endpoint }
+    Den SHA-256-Fingerabdruck des Empfängerzertifikats als 64 Hexadezimalzeichen von einer vertrauenswürdigen Konsole oder einem unabhängig bestätigten Kanal eingeben. Nur bei Übereinstimmung wird diese vorbereitete Datei einmal gesendet. Ohne Überprüfung abbrechen.
+airdrop-error-unavailable = Das AirDrop-Labor benötigt eine entsperrte lokale Sitzung, Dateiübertragungsrechte und aktuellen Dateizugriff.
+airdrop-error-source = Das AirDrop-Labor unterstützt eine lesbare reguläre Datei bis 16 MiB.
+airdrop-error-busy = Eine AirDrop-Übertragung läuft bereits. Vor einer weiteren Übertragung abbrechen.
+airdrop-error-failed = AirDrop-Übertragung fehlgeschlagen. Den Empfänger vor einem neuen Versuch erneut prüfen.
+airdrop-error-declined = Die AirDrop-Übertragung wurde vor dem Senden abgebrochen.
+airdrop-error-verification = Fingerabdruck stimmt nicht überein. Keine Datei gesendet.
+airdrop-error-fresh-consent = Einen neuen AirDrop-Versuch starten, um Empfänger und Datei erneut zu bestätigen.
 
 # Ein Dokument, das ein Tab nicht wiederherstellen konnte
 hosted-document-unavailable = { $path } ist nicht verfügbar: { $error }
@@ -2344,3 +2358,168 @@ a11y-speaker-listener = { $group } kann mit diesem Mikrofon kalibrieren
 a11y-speaker-listener-description = Die Lautsprecherkalibrierung darf mit diesem Mikrofon hören; aktivieren, um das zu beenden
 speaker-calibration-listening-refused = { $microphone } durfte nicht zuhören, daher kann an deinem Platz nichts gemessen werden
 speaker-error-listening-unavailable = wähle ein Mikrofon, das an deinem Platz zuhören kann
+lock-screen-unlock = Sitzung entsperren
+
+search-provider-permission-prompts = Berechtigungsanfragen
+permission-request-expired = Diese Berechtigungsanfrage ist nicht mehr offen
+permission-request-owner-required = Nur der aktuelle Eigentümer kann über Berechtigungen entscheiden
+permission-request-permanent-owner-required = Eine dauerhafte Berechtigung kann nur der aktuelle Eigentümer erteilen
+permission-request-confirm = Entscheidung über die Berechtigung bestätigen
+
+shortcut-name-dictation-toggle = Diktat starten oder beenden
+shortcut-name-dictation-finish = Diktat beenden
+shortcut-name-dictation-cancel = Diktat abbrechen
+dictation-title = Diktat
+dictation-consent = Mikrofon für dieses Diktat aufnehmen? Audio bleibt auf diesem Gerät.
+dictation-preparing = Aktives Eingabefeld wird geprüft…
+dictation-loading = Lokale Spracherkennung wird geladen. Das Mikrofon ist aus.
+dictation-listening = Mikrofon an · Sprechen und zum Einfügen beenden.
+dictation-finishing = Mikrofon aus · Text wird fertiggestellt…
+dictation-stopping = Diktat wird angehalten…
+dictation-editable-required = Ein Eingabefeld fokussieren. Passwörter erlauben kein Diktat.
+dictation-unsupported-field = Diktate werden in Terminalfeldern noch nicht unterstützt. Ein anderes Eingabefeld fokussieren.
+dictation-busy = Das vorherige Diktat wird noch angehalten. Gleich erneut versuchen.
+dictation-target-changed = Das Feld hat sich geändert. Diktat ohne Texteingabe abgebrochen.
+dictation-timeout = Zeitüberschreitung beim Diktat. Kein Text wurde eingefügt.
+dictation-unavailable = Lokales Diktat nicht verfügbar. Kein Text wurde eingefügt.
+dictation-model-required = Vor dem Diktat ein freigegebenes lokales Sprachmodell installieren.
+dictation-language-unavailable = Das Sprachmodell unterstützt die gewählte Sprache nicht.
+dictation-microphone-unavailable = Mikrofon nicht verfügbar. Eingabegerät prüfen.
+dictation-vocabulary-unavailable = Dein persönliches Wörterbuch wurde geändert oder ist nicht verfügbar. Das Diktat wurde beendet; starte ein neues Diktat.
+dictation-audio-interrupted = Mikrofonaufnahme unterbrochen. Kein Text wurde eingefügt.
+dictation-live-preview = Entwurf · { $text }
+dictation-open-settings = Einrichten
+dictation-edit-rejected = Mikrofon aus · Das ursprüngliche Feld hat den Text abgelehnt oder wurde geändert. Dein Transkript bleibt 10 Minuten privat aufbewahrt. Kopieren überträgt es in die Zwischenablage; Verwerfen entfernt es.
+dictation-delivery-unknown = Mikrofon aus · Das Einfügen wurde nicht bestätigt. Prüfe das ursprüngliche Feld, bevor du erneut einfügst. Dein Transkript bleibt 10 Minuten privat aufbewahrt; Kopieren überträgt es in die Zwischenablage.
+dictation-action-start-detail = Einmalige Mikrofonfreigabe für das aktive Feld anfragen oder die Aufnahme beenden.
+dictation-action-finish-detail = Mikrofon anhalten und den korrigierten Text ins ursprüngliche Feld einfügen.
+dictation-action-cancel-detail = Diktat anhalten und den privaten Entwurf verwerfen.
+dictation-stopping-microphone = Mikrofon wird angehalten…
+
+search-action-axis-enable = Experimentelle Achsennavigation aktivieren
+search-action-axis-enable-subtitle = In dieser Sitzung zwischen Gruppen wechseln und den Fokus sichtbar machen
+search-action-axis-disable = Experimentelle Achsennavigation deaktivieren
+search-action-axis-disable-subtitle = Die normale Fensternavigation für diese Sitzung wiederherstellen
+search-action-axis-gather = Fokussiertes Fenster sichtbar machen
+search-action-axis-gather-subtitle = Experimentelle Achsennavigation: Fokus ohne Animation anzeigen
+axis-navigation-disabled = Die experimentelle Achsennavigation ist deaktiviert
+
+search-provider-device-shell = Shell dieses Geräts
+terminal-request-device-shell = Eigene Shell dieses Geräts anfordern
+terminal-device-shell-owner-required = Nur der Gerätebesitzer darf die eigene Shell dieses Geräts anfordern
+
+terminal-inspect-device-shell = Shell-Sitzung dieses Geräts prüfen
+terminal-run-device-shell = Befehl in der Shell dieses Geräts ausführen
+terminal-read-device-shell = Ausgabe der Shell dieses Geräts lesen
+
+terminal-device-shell-session-param = Genaue lokale Sitzungs-UUID aus der Sitzungsprüfung
+terminal-device-shell-command-param = Ein geprüfter Befehl in der Shell dieses Geräts
+terminal-device-shell-confirm-param = Diesen geprüften Vorgang in der Geräte-Shell bestätigen
+
+shortcut-name-tab-menu = Tab-Menü öffnen
+search-action-tab-menu = Tab-Menü öffnen
+search-action-tab-menu-subtitle = Aktionen für den fokussierten Tab
+search-action-tab-menu-unavailable = Kein fokussierter Tab verfügbar
+
+dictation-transcript-retained = Mikrofon aus · Der Text ist zu lang für einen Einfügeschritt. Für 10 Minuten privat aufbewahrt. Kopieren überträgt den gesamten Text in die Zwischenablage; Verwerfen entfernt ihn.
+dictation-transcript-copied = Gesamtes Transkript kopiert. Füge es im gewünschten Feld ein. Der private Entwurf bleibt bis zum Verwerfen oder Ablauf der 10 Minuten erhalten.
+dictation-copy-failed = Zwischenablage nicht verfügbar. Dein gesamtes Transkript bleibt privat aufbewahrt; versuche es erneut oder verwirf es.
+search-action-tab-drag-cancel = Tab-Ziehen abbrechen
+search-action-tab-drag-cancel-subtitle = Den gezogenen Tab an seinem ursprünglichen Ort lassen
+search-action-tab-drag-cancel-unavailable = Das Tab-Ziehen kann bei gesperrter Sitzung nicht abgebrochen werden.
+
+display-confirm-answer-pending = Die Antwort zur Anzeige wird gespeichert…
+display-confirm-answer-failed = Die Antwort zur Anzeige konnte nicht gespeichert werden: { $reason }
+
+display-sheet-saving-layout = Anordnung wird gespeichert…
+
+session-diagnostics-title = Zeitdiagnose der Sitzung
+session-diagnostics-configure = Zeitdiagnose für folgende App-Starts konfigurieren
+session-diagnostics-inspect = Zeitdiagnose der Sitzung ansehen
+session-diagnostics-presentation = Inhaltsfreie Eingabe- und Präsentationszeiten erfassen
+session-diagnostics-gpu_stages = Zeiten der GPU-Verarbeitungsschritte erfassen
+session-diagnostics-gpu_timestamps = GPU-Zeitstempel aktivieren
+session-diagnostics-gpu_dispatch_timestamps = Zeitstempel der GPU-Aufträge aktivieren
+session-diagnostics-dispatch-requires-timestamps = Die Zeitdiagnose der GPU-Aufträge benötigt GPU-Zeitstempel.
+
+device-fabric-error-layout-changed = Bildschirmanordnung geändert oder nicht verfügbar. Aktualisieren und erneut versuchen.
+search-action-activity-acknowledge = Gesehene Aktivitäten bestätigen
+search-action-activity-acknowledge-subtitle = Ungesehene Änderungen und wartende Aufgaben bleiben offen
+search-action-activity-acknowledge-keywords = Rückblick gelesen gesehen prüfen Bestätigung
+search-action-activity-tasks = Ziele im Arbeitsbereich und die Arbeit von Agenten prüfen
+search-action-catch-up-tasks-subtitle = Wartende Aufgaben, Ergebnisse und Aktionsverlauf ansehen
+search-action-activity-tasks-keywords = Aktivitäten Rückblick Ziele Aufmerksamkeit Entscheidung wartend Agent Aufgaben
+
+task-review-inspect = Aufgabennachweise prüfen
+task-review-steer = Aufgabenanweisungen ändern
+task-review-cancel = Aufgabenlauf abbrechen
+task-review-retry = Aufgabe erneut versuchen
+task-review-status = Verfügbarkeit der Aufgabensteuerung prüfen
+task-review-provider = Aufgabenprüfung
+
+dictation-vocabulary-changed = Das Diktat wurde beendet, weil sich dein persönliches Wörterbuch geändert hat. Starte ein neues Diktat, um die aktualisierten Wörter zu verwenden.
+dictation-vocabulary-draft-retained = Dein persönliches Wörterbuch hat sich geändert. Das Diktat wurde beendet. Du kannst den letzten Entwurf kopieren; er ist möglicherweise unvollständig.
+
+host-history-task-refused-title = Aufgabe konnte nicht geändert werden
+host-history-task-refused-body = Der Arbeitsbereich hat diese Änderung nicht angenommen. Ihr Entwurf bleibt erhalten. Prüfen Sie vor einem erneuten Versuch Ihre Identität und die Berechtigungen im Arbeitsbereich.
+shell-launch-registry-unavailable = Die Prozessverwaltung für Apps ist nicht verfügbar.
+shell-launch-writer-still-closing = Die vorherige App wird noch geschlossen. Öffne sie erneut, sobald sie fertig ist.
+
+shell-window-restore-interrupted = Dieses gespeicherte Fenster wurde nicht vollständig wieder geöffnet.
+shell-window-retry = Fenster erneut öffnen
+
+task-review-approve = Aufgabenausführung freigeben
+
+# Shared activity label used by native task-review rendering.
+activity-task-approve-run = Ausführung freigeben
+device-fabric-error-input-operation-unavailable = Die Eingabesteuerung ist beschäftigt. Versuche es erneut.
+device-fabric-error-input-decline-unavailable = Deine abgelehnten Eingabegeräte konnten nicht gelesen werden.
+device-fabric-error-input-decline-save-failed = Die Eingabesteuerung wurde widerrufen, aber die Ablehnung konnte nicht gespeichert werden. Automatische Eingabe bleibt deaktiviert.
+
+device-fabric-error-input-sequence-exhausted = Die Eingabesequenz ist ausgeschöpft. Fordere eine neue Steuerungsberechtigung an.
+
+device-fabric-error-input-cleanup-pending = Vorherige Eingaben werden noch freigegeben. Versuche es erneut.
+
+display-remote-heading = Deine anderen Bildschirme
+display-remote-title = { $number } · { $name } · { $device }
+display-remote-row = { $status } · { $title }
+display-remote-row-description = Diesen Bildschirm in dein gemeinsames Display-Layout aufnehmen
+display-remote-offline = Offline
+display-remote-offline-excluded = Offline · Nicht im Layout
+display-remote-switched-off = Auf dem Gerät ausgeschaltet
+display-remote-in-layout = Im Layout
+display-remote-out-of-layout = Nicht im Layout
+display-remote-unavailable = Dieser gemeinsame Bildschirm ist nicht mehr verfügbar.
+display-remote-permission = Deine Workspace-Rolle erlaubt keine Änderung des gemeinsamen Display-Layouts.
+display-remote-stale = Die Display-Anordnung hat sich geändert. Aktualisiere sie vor der Änderung.
+search-action-shared-display-inspect = Gemeinsame Bildschirme prüfen
+search-action-shared-display-inspect-subtitle = Bestätigte Ausgänge, Display-Nummern, Layout-Teilnahme und aktuelle Revisionen
+search-action-shared-display-include = Gemeinsame Display-Teilnahme festlegen
+search-action-shared-display-include-subtitle = Einen bestätigten Ausgang aufnehmen oder ausschließen, ohne Eingabezugriff zu gewähren
+activity-morning-choose = Für den Morgen auswählen
+activity-morning-remove = Morgenquelle entfernen
+activity-morning-empty = Morgenquellen: Ressource unter Erkunden → Details auswählen. Bis zu acht Quellen; keine automatische Verbindung.
+activity-morning-description = Ausgewählte Morgenquellen · Anbieter-Vorschauen aus autorisierten Ressourcen. Aktualisierung oder Zeitplan ausdrücklich wählen.
+activity-morning-unavailable = Quelle in diesem Arbeitsbereich nicht verfügbar · keine aktuellen Nachweise
+activity-morning-source = { $source } · letzte aufgezeichnete Aktivität: { $time } · externe Aktualität unbekannt
+activity-morning-open = Morgenquelle öffnen
+
+# Kanonische Zulassung von Einrichtungsaktionen; keine privaten Identitätsdaten.
+onboarding-semantic-unavailable = Diese Einrichtungsaktion ist in diesem Schritt nicht mehr verfügbar.
+onboarding-semantic-failed = Die Einrichtung konnte diese Aktion nicht abschließen. Der Desktop bleibt geschützt.
+activity-morning-payload-unavailable = Anbieter-Zusammenfassung nicht verfügbar. Quelle öffnen, um sie zu prüfen oder zu aktualisieren.
+
+activity-morning-refresh = Quelle aktualisieren
+activity-morning-draft = Geplante Aktualisierung entwerfen…
+activity-morning-draft-description = Öffnet einen Entwurf in Shortcuts. Zeitplan wählen und Berechtigungen vor dem Speichern prüfen; noch ist nichts aktiviert.
+activity-morning-command-unavailable = Quellenaktion nicht verfügbar
+activity-morning-command-pending = Anfrage läuft
+activity-morning-command-accepted = Anfrage angenommen; Ergebnis in Aktionen prüfen
+activity-morning-command-refused = Anfrage abgelehnt
+activity-morning-recorded = { $source } · letzte aufgezeichnete Arbeitsbereichsaktivität: { $time }
+
+activity-morning-next = Nächste ausgewählte Quelle
+qs-network-details = WLAN-Netzwerke
+qs-bluetooth-details = Bluetooth-Geräte
+search-action-quick-settings-network-subtitle = Verfügbare WLAN-Netzwerke durchsuchen
+search-action-quick-settings-bluetooth-subtitle = Gekoppelte Bluetooth-Geräte durchsuchen

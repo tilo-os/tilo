@@ -5,10 +5,8 @@
 //!
 //! The single entry point, [`build_showcase`], seeds the CRDT document with the
 //! state the interactive controls read (toggles, checkbox, slider, text field,
-//! dropdown, table) and returns the root widget: a vertical column of titled
+//! dropdown, data table) and returns the root widget: a vertical column of titled
 //! cards, one per component family.
-
-#![allow(dead_code)]
 
 use automerge::transaction::Transactable;
 
@@ -19,28 +17,32 @@ use tilo_ui::widget::table;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation;
 use tilo_ui::widget::{
-    Avatar, Badge, Banner, BarGauge, Breadcrumb, Button, Chart, Checkbox, Chip, Column, Container,
-    Divider, Dropdown, EmptyState, NumberInput, ProgressBar, RingGauge, Row, SearchField, Series,
-    Slider, Spacer, Sparkline, StatTile, TabBar, TabDescriptor, Table, Text, TextInput, Toggle,
-    ToggleGroup, Toolbar, Trend, Widget,
+    Avatar, AvatarSize, Badge, Banner, BarGauge, Breadcrumb, Button, ButtonRole, Chart, Checkbox,
+    Chip, ChipLead, ChipStyle, Column, Container, Divider, Dropdown, EmptyState, GaugeThresholds,
+    NumberInput, ProgressBar, ProgressRing, Row, SearchField, Series, Slider, Spacer, Sparkline,
+    StatGroup, StatTile, TabBar, TabDescriptor, Text, TextInput, Toggle, ToggleGroup, Tone,
+    Toolbar, Trend, Widget,
 };
 use tilo_ui::{
-    FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign,
-    State, TextStyle, TextWeight,
+    FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign, State,
 };
 
 const CARD_W: f32 = 560.0;
 
 fn title(t: &str) -> Box<dyn Widget> {
-    Box::new(Text::new(t).with_size(20.0))
+    Box::new(Text::new(t).with_role(TextRole::Title))
 }
 
 fn label(t: &str) -> Box<dyn Widget> {
-    Box::new(Text::new(t).with_size(14.0))
+    Box::new(Text::new(t))
 }
 
 fn dim(t: &str, theme: &Theme) -> Box<dyn Widget> {
-    Box::new(Text::new(t).with_size(13.0).with_color(theme.text_dim))
+    Box::new(
+        Text::new(t)
+            .with_role(TextRole::Caption)
+            .with_color(theme.text_dim),
+    )
 }
 
 /// A titled card: heading + divider + body, on a raised background.
@@ -49,7 +51,7 @@ fn card(width: Option<f32>, heading: &str, body: Box<dyn Widget>) -> Box<dyn Wid
         .with_no_padding()
         .with_intrinsic_height()
         .with_gap(12.0)
-        .push(Box::new(Text::new(heading).with_size(15.0)))
+        .push(Box::new(Text::new(heading).with_role(TextRole::Heading)))
         .push(Box::new(Divider::horizontal()))
         .push(body);
     let mut c = Container::new()
@@ -97,194 +99,144 @@ fn specimen_pair(
 ///
 /// Kept as its own builder so the offscreen regression test renders exactly
 /// the same widget developers inspect in the full component gallery.
-/// Heading, lede and serif specimens. Split out of
+/// The role ladder and the serif reading specimens. Split out of
 /// `build_typography_showcase` to keep that under the line cap.
 fn typography_intro_and_serif(column: Column, _theme: &Theme) -> Column {
-    column.push(Box::new(
-        Text::new("A clear hierarchy makes dense interfaces feel calm.")
-            .with_role(TextRole::Heading),
-    ))
-    .push(Box::new(
-        Text::new("A quiet page gives every letter room to speak.").with_style(
-            TextStyle::new(28.0)
-                .with_line_height(1.25)
-                .with_weight(TextWeight::Semibold)
-                .with_family(FontChoice::Serif),
-        ),
-    ))
-    .push(Box::new(
-        Text::new(
-            "Serif specimen — AVATAR · WAVE · To · Ta · Yo · office · affinity · ffi · naïve café.",
-        )
-        .with_style(
-            TextStyle::new(18.0)
-                .with_line_height(1.5)
-                .with_family(FontChoice::Serif),
-        ),
-    ))
-    .push(Box::new(
-        Text::new("Italic serif — Typography should feel composed, never merely typeset.")
-            .with_style(
-                TextStyle::new(17.0)
-                    .with_line_height(1.5)
-                    .with_italic(true)
-                    .with_family(FontChoice::Serif),
-            ),
-    ))
+    column
+        .push(Box::new(
+            Text::new("A clear hierarchy makes dense interfaces feel calm.")
+                .with_role(TextRole::LargeTitle),
+        ))
+        .push(Box::new(
+            Text::new("Every role derives from one body size").with_role(TextRole::Title),
+        ))
+        .push(Box::new(
+            Text::new("Section heading").with_role(TextRole::Heading),
+        ))
+        .push(Box::new(
+            Text::new("Group label inside a section").with_role(TextRole::Subheading),
+        ))
+        .push(Box::new(
+            Text::new("Body text is the default: what most of the interface says.")
+                .with_role(TextRole::Body),
+        ))
+        .push(Box::new(
+            Text::new("Control label, or a row title in a dense list").with_role(TextRole::Label),
+        ))
+        .push(Box::new(
+            Text::new("Caption: a secondary line, a timestamp, metadata.")
+                .with_role(TextRole::Caption),
+        ))
+        .push(Box::new(
+            Text::new(
+                "Serif reading — AVATAR · WAVE · To · Ta · Yo · office · affinity · ffi · naïve café.",
+            )
+            .with_role(TextRole::Reading),
+        ))
+        .push(Box::new(
+            Text::new("Italic serif — Typography should feel composed, never merely typeset.")
+                .with_role(TextRole::Reading)
+                .with_italic(true),
+        ))
 }
 
-/// The first five BEFORE/AFTER typography-feature specimen pairs (kerning
-/// through variable-font optical sizing). Split out of
+/// BEFORE/AFTER typography-feature specimen pairs (kerning through
+/// variable-font optical sizing), all on the reading role. Split out of
 /// `build_typography_showcase` to keep that under the line cap.
 fn typography_feature_pairs(column: Column, theme: &Theme) -> Column {
+    let reading = || TextRole::Reading;
     column
         .push(specimen_pair(
             theme,
-            "BEFORE · kerning disabled",
-            Text::new("AVATAR  WAVE  To Ta Yo").with_style(
-                TextStyle::new(25.0)
-                    .with_family(FontChoice::Serif)
-                    .with_kerning(false),
-            ),
-            "AFTER · kerning enabled",
-            Text::new("AVATAR  WAVE  To Ta Yo").with_style(
-                TextStyle::new(25.0)
-                    .with_family(FontChoice::Serif)
-                    .with_kerning(true),
-            ),
+            "Before: kerning disabled",
+            Text::new("AVATAR  WAVE  To Ta Yo")
+                .with_role(reading())
+                .with_kerning(false),
+            "After: kerning enabled",
+            Text::new("AVATAR  WAVE  To Ta Yo")
+                .with_role(reading())
+                .with_kerning(true),
         ))
         .push(specimen_pair(
             theme,
-            "BEFORE · standard forms",
+            "Before: standard forms",
+            Text::new("office · affinity · historic 1847").with_role(reading()),
+            "After: discretionary ligatures",
             Text::new("office · affinity · historic 1847")
-                .with_style(TextStyle::new(20.0).with_family(FontChoice::Serif)),
-            "AFTER · discretionary ligatures + small caps",
-            Text::new("office · affinity · historic 1847").with_style(
-                TextStyle::new(20.0)
-                    .with_family(FontChoice::Serif)
-                    .with_discretionary_ligatures(true)
-                    .with_small_caps(true),
-            ),
+                .with_role(reading())
+                .with_discretionary_ligatures(true),
         ))
         .push(specimen_pair(
             theme,
-            "BEFORE · proportional lining figures",
-            Text::new("1847  2026  €12,408.50").with_style(
-                TextStyle::new(20.0)
-                    .with_family(FontChoice::Serif)
-                    .with_numeric_style(NumericStyle::ProportionalLining),
-            ),
-            "AFTER · tabular old-style figures",
-            Text::new("1847  2026  €12,408.50").with_style(
-                TextStyle::new(20.0)
-                    .with_family(FontChoice::Serif)
-                    .with_numeric_style(NumericStyle::TabularOldstyle),
-            ),
+            "Before: proportional lining figures",
+            Text::new("1847  2026  €12,408.50")
+                .with_role(reading())
+                .with_numeric_style(NumericStyle::ProportionalLining),
+            "After: tabular old-style figures",
+            Text::new("1847  2026  €12,408.50")
+                .with_role(reading())
+                .with_numeric_style(NumericStyle::TabularOldstyle),
         ))
         .push(specimen_pair(
             theme,
-            "BEFORE · default spacing",
-            Text::new("A WELL-SPACED HEADING").with_style(
-                TextStyle::new(18.0)
-                    .with_weight(TextWeight::Semibold)
-                    .with_family(FontChoice::Serif),
-            ),
-            "AFTER · +0.075em tracking",
-            Text::new("A WELL-SPACED HEADING").with_style(
-                TextStyle::new(18.0)
-                    .with_weight(TextWeight::Semibold)
-                    .with_family(FontChoice::Serif)
-                    .with_tracking(0.075),
-            ),
-        ))
-        .push(specimen_pair(
-            theme,
-            "BEFORE · Adwaita Sans wght 300 · opsz 14",
-            Text::new("Variable fonts adapt continuously").with_style(
-                TextStyle::new(23.0)
-                    .with_family(FontChoice::Named("Adwaita Sans".into()))
-                    .with_font_variation(OpenTypeTag::WEIGHT, 300.0)
-                    .with_optical_sizing(OpticalSizing::Value(14.0)),
-            ),
-            "AFTER · Adwaita Sans wght 720 · optical sizing auto",
-            Text::new("Variable fonts adapt continuously").with_style(
-                TextStyle::new(23.0)
-                    .with_family(FontChoice::Named("Adwaita Sans".into()))
-                    .with_font_variation(OpenTypeTag::WEIGHT, 720.0)
-                    .with_optical_sizing(OpticalSizing::Auto),
-            ),
+            "Before: Adwaita Sans wght 300 · opsz 14",
+            Text::new("Variable fonts adapt continuously")
+                .with_role(TextRole::Title)
+                .with_font_family(FontChoice::Named("Adwaita Sans".into()))
+                .with_font_variation(OpenTypeTag::WEIGHT, 300.0)
+                .with_optical_sizing(OpticalSizing::Value(14.0)),
+            "After: Adwaita Sans wght 720 · optical sizing auto",
+            Text::new("Variable fonts adapt continuously")
+                .with_role(TextRole::Title)
+                .with_font_family(FontChoice::Named("Adwaita Sans".into()))
+                .with_font_variation(OpenTypeTag::WEIGHT, 720.0)
+                .with_optical_sizing(OpticalSizing::Auto),
         ))
 }
 
-/// The remaining three BEFORE/AFTER specimen pairs (wrapping through
-/// hanging punctuation), plus the pagination note. Split out of
+/// The remaining BEFORE/AFTER specimen pairs (wrapping through hanging
+/// punctuation), plus the pagination note. Split out of
 /// `build_typography_showcase` to keep that under the line cap.
 fn typography_wrapping_and_punctuation(column: Column, theme: &Theme) -> Column {
     column
-                .push(specimen_pair(
-                    theme,
-                    "BEFORE · ordinary wrapping",
-                    Text::new(
-                        "A balanced heading wraps its thought into lines of comparable visual weight.",
-                    )
-                    .with_style(
-                        TextStyle::new(21.0)
-                            .with_line_height(1.25)
-                            .with_family(FontChoice::Serif),
-                    ),
-                    "AFTER · balanced wrapping",
-                    Text::new(
-                        "A balanced heading wraps its thought into lines of comparable visual weight.",
-                    )
-                    .with_style(
-                        TextStyle::new(21.0)
-                            .with_line_height(1.25)
-                            .with_family(FontChoice::Serif),
-                    )
-                    .with_balanced_wrap(),
-                ))
-                .push(specimen_pair(
-                    theme,
-                    "BEFORE · ragged start",
-                    Text::new(
-                        "Good typography makes a paragraph feel even before it is read. Spacing should support the argument without calling attention to itself.",
-                    )
-                    .with_style(
-                        TextStyle::new(16.0)
-                            .with_line_height(1.5)
-                            .with_family(FontChoice::Serif),
-                    ),
-                    "AFTER · full justification",
-                    Text::new(
-                        "Good typography makes a paragraph feel even before it is read. Spacing should support the argument without calling attention to itself.",
-                    )
-                    .with_style(
-                        TextStyle::new(16.0)
-                            .with_line_height(1.5)
-                            .with_family(FontChoice::Serif)
-                            .with_align(ParagraphAlign::Justified),
-                    ),
-                ))
-                .push(specimen_pair(
-                    theme,
-                    "BEFORE · punctuation inside the measure",
-                    Text::new("“A composed edge,” she wrote, “lets the words lead.”").with_style(
-                        TextStyle::new(20.0)
-                            .with_line_height(1.4)
-                            .with_family(FontChoice::Serif),
-                    ),
-                    "AFTER · opening and closing punctuation hangs",
-                    Text::new("“A composed edge,” she wrote, “lets the words lead.”").with_style(
-                        TextStyle::new(20.0)
-                            .with_line_height(1.4)
-                            .with_family(FontChoice::Serif)
-                            .with_hanging_punctuation(HangingPunctuation::BOTH),
-                    ),
-                ))
-                .push(dim(
-                    "PAGINATION · RichTextLayout enforces configurable 2-line widow/orphan minima at page and column breaks.",
-                    theme,
-                ))
+        .push(specimen_pair(
+            theme,
+            "Before: ordinary wrapping",
+            Text::new("A balanced heading wraps its thought into lines of comparable visual weight.")
+                .with_role(TextRole::Title),
+            "After: balanced wrapping",
+            Text::new("A balanced heading wraps its thought into lines of comparable visual weight.")
+                .with_role(TextRole::Title)
+                .with_balanced_wrap(),
+        ))
+        .push(specimen_pair(
+            theme,
+            "Before: ragged start",
+            Text::new(
+                "Good typography makes a paragraph feel even before it is read. Spacing should support the argument without calling attention to itself.",
+            )
+            .with_role(TextRole::Reading),
+            "After: full justification",
+            Text::new(
+                "Good typography makes a paragraph feel even before it is read. Spacing should support the argument without calling attention to itself.",
+            )
+            .with_role(TextRole::Reading)
+            .with_align(ParagraphAlign::Justified),
+        ))
+        .push(specimen_pair(
+            theme,
+            "Before: punctuation inside the measure",
+            Text::new("“A composed edge,” she wrote, “lets the words lead.”")
+                .with_role(TextRole::Reading),
+            "After: opening and closing punctuation hangs",
+            Text::new("“A composed edge,” she wrote, “lets the words lead.”")
+                .with_role(TextRole::Reading)
+                .with_hanging_punctuation(HangingPunctuation::BOTH),
+        ))
+        .push(dim(
+            "Pagination: RichTextLayout enforces configurable two-line widow and orphan minima at page and column breaks.",
+            theme,
+        ))
 }
 
 /// Code sample, multilingual scripts, hyphenation demo, `BiDi` text and
@@ -351,8 +303,8 @@ pub fn build_typography_showcase(theme: &Theme) -> Box<dyn Widget> {
 }
 
 /// Seeds `state.doc` with the toggle/checkbox/slider/text/dropdown values
-/// the interactive controls read, plus a small editable table. Split out
-/// of `build_showcase` to keep that under the line cap.
+/// the interactive controls read. Split out of `build_showcase` to keep
+/// that under the line cap.
 fn seed_gallery_state(state: &mut State) {
     let root = state.root.clone();
     let _ = state.doc.put(&root, "sw_wifi", true);
@@ -360,12 +312,6 @@ fn seed_gallery_state(state: &mut State) {
     let _ = state.doc.put(&root, "cb_updates", true);
     let _ = state.doc.put(&root, "sld_vol", 0.65);
     let _ = state.doc.put(&root, "dd_quality", "High");
-    if let Ok(ti) = state
-        .doc
-        .put_object(&root, "ti_name", automerge::ObjType::Text)
-    {
-        let _ = state.doc.splice_text(&ti, 0, 0, "Ada Lovelace");
-    }
 
     for _ in 0..3 {
         table::insert_column(&mut state.doc, &root, usize::MAX);
@@ -397,8 +343,23 @@ fn build_controls_card(theme: &Theme) -> Box<dyn Widget> {
             col(12.0)
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(Button::new("g_save", "Save", None)))
-                        .push(Box::new(Button::new("g_cancel", "Discard", None))),
+                        .push(Box::new(
+                            Button::new("g_save", "Save")
+                                .role(ButtonRole::Primary)
+                                .shortcut_hint(tilo_ui::platform::Shortcut::command("S")),
+                        ))
+                        .push(Box::new(Button::new("g_cancel", "Discard")))
+                        .push(Box::new(
+                            Button::new("g_delete", "Delete").role(ButtonRole::Destructive),
+                        ))
+                        .push(Box::new(
+                            Button::new("g_more", "Details").role(ButtonRole::Plain),
+                        ))
+                        .push(Box::new(Button::icon_only(
+                            "g_open",
+                            tilo_ui::icons::Icon::ExternalLink,
+                            "Open in browser",
+                        ))),
                 ))
                 .push(Box::new(
                     Row::new()
@@ -437,9 +398,9 @@ fn build_inputs_card(theme: &Theme) -> Box<dyn Widget> {
             col(12.0)
                 .push(dim("Text field", theme))
                 .push(Box::new(
-                    TextInput::new(vec![])
-                        .with_id("g_name")
-                        .with_on_change_path("ti_name"),
+                    TextInput::local()
+                        .with_initial_value("Ada Lovelace")
+                        .with_id("g_name"),
                 ))
                 .push(dim("Search field", theme))
                 .push(Box::new(
@@ -472,7 +433,6 @@ fn build_inputs_card(theme: &Theme) -> Box<dyn Widget> {
 /// Badges, chips and avatars. Split out of `build_showcase` to keep that
 /// under the line cap.
 fn build_tags_card(theme: &Theme) -> Box<dyn Widget> {
-    let accent = theme.accent_primary;
     card(
         Some(CARD_W),
         "Badges, Chips & Avatars",
@@ -481,8 +441,14 @@ fn build_tags_card(theme: &Theme) -> Box<dyn Widget> {
                 .push(dim("Badges", theme))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(Badge::pill("NEW", accent)))
-                        .push(Box::new(Badge::text("β")))
+                        .push(Box::new(
+                            Badge::text("New").style(ChipStyle::Tinted(Tone::Info)),
+                        ))
+                        .push(Box::new(Badge::text("Beta")))
+                        .push(Box::new(
+                            Badge::text("Failed").style(ChipStyle::Tinted(Tone::Danger)),
+                        ))
+                        .push(Box::new(Badge::text("Live").style(ChipStyle::Live)))
                         .push(Box::new(Badge::count(3)))
                         .push(Box::new(Badge::count(128)))
                         .push(Box::new(Badge::dot())),
@@ -490,9 +456,9 @@ fn build_tags_card(theme: &Theme) -> Box<dyn Widget> {
                 .push(dim("Chips — plain, selected, selectable, removable", theme))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(
-                            Chip::new("Design").with_dot(theme.tokens.colors.semantic.info),
-                        ))
+                        .push(Box::new(Chip::new("Design").with_lead(ChipLead::Dot(
+                            theme.tokens.colors.presence.series(0),
+                        ))))
                         .push(Box::new(Chip::new("Rust").selected(true)))
                         .push(Box::new(Chip::new("Filter").selectable()))
                         .push(Box::new(Chip::new("alice@example.com").removable())),
@@ -500,10 +466,19 @@ fn build_tags_card(theme: &Theme) -> Box<dyn Widget> {
                 .push(dim("Avatars", theme))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(Avatar::from_initials("AL", 34.0)))
-                        .push(Box::new(Avatar::from_initials("GR", 34.0)))
-                        .push(Box::new(Avatar::from_initials("LT", 34.0)))
-                        .push(Box::new(Avatar::from_initials("DB", 34.0))),
+                        .push(Box::new(
+                            Avatar::person("Ada Lovelace", "ada.lovelace")
+                                .size(AvatarSize::Regular),
+                        ))
+                        .push(Box::new(
+                            Avatar::person("Gwen Rhodes", "gwen.rhodes").size(AvatarSize::Regular),
+                        ))
+                        .push(Box::new(
+                            Avatar::person("Lena Torres", "lena.torres").size(AvatarSize::Regular),
+                        ))
+                        .push(Box::new(
+                            Avatar::person("Dana Brooks", "dana.brooks").size(AvatarSize::Regular),
+                        )),
                 )),
         ),
     )
@@ -535,42 +510,35 @@ fn build_feedback_card(theme: &Theme) -> Box<dyn Widget> {
 
 /// The full-width stat-tile row. Split out of `build_showcase` to keep
 /// that under the line cap.
-fn build_metrics_card(theme: &Theme) -> Box<dyn Widget> {
+fn build_metrics_card() -> Box<dyn Widget> {
     card(
         None,
         "Metrics",
-        Box::new(
-            Row::new()
-                .no_wrap()
-                .push(Box::new(
-                    StatTile::new("Requests", "1,284")
-                        .with_icon(Icon::BarChart)
-                        .with_delta("12%", Trend::Up),
-                ))
-                .push(Box::new(
-                    StatTile::new("Errors", "3")
-                        .with_icon(Icon::Ban)
-                        .with_value_color(theme.tokens.colors.semantic.danger)
-                        .with_delta("2", Trend::Down),
-                ))
-                .push(Box::new(
-                    StatTile::new("Latency", "48 ms")
-                        .with_icon(Icon::Refresh)
-                        .with_delta("0%", Trend::Flat),
-                ))
-                .push(Box::new(
-                    StatTile::new("Uptime", "99.9%")
-                        .with_icon(Icon::Check)
-                        .with_value_color(theme.tokens.colors.semantic.success),
-                )),
-        ),
+        Box::new(StatGroup::new(vec![
+            Box::new(StatTile::new("Requests", "1,284").change("12% this hour", Trend::Up)),
+            Box::new(
+                StatTile::new("Errors", "3")
+                    .tone(Tone::Danger)
+                    .change("2 fewer", Trend::Down),
+            ),
+            Box::new(
+                StatTile::new("Latency", "48")
+                    .unit("ms")
+                    .change("No change", Trend::Flat),
+            ),
+            Box::new(
+                StatTile::new("Uptime", "99.9")
+                    .unit("%")
+                    .tone(Tone::Success),
+            ),
+        ])),
     )
 }
 
 /// Ring gauge, sparkline, bar gauge and area chart. Split out of
 /// `build_showcase` to keep that under the line cap.
 fn build_charts_card(theme: &Theme) -> Box<dyn Widget> {
-    let accent = theme.accent_primary;
+    let accent = theme.tokens.colors.intent.inverted;
     card(
         Some(CARD_W),
         "Charts & Gauges",
@@ -579,9 +547,10 @@ fn build_charts_card(theme: &Theme) -> Box<dyn Widget> {
                 .push(Box::new(
                     Row::new()
                         .push(Box::new(
-                            RingGauge::new(0.72)
-                                .with_label("72%", "CPU")
-                                .with_size(110.0),
+                            ProgressRing::new(0.72)
+                                .value("72%")
+                                .caption("CPU")
+                                .level(GaugeThresholds::default()),
                         ))
                         .push(Box::new(
                             col(8.0).push(dim("Throughput", theme)).push(Box::new(
@@ -664,7 +633,14 @@ fn build_banners_card() -> Box<dyn Widget> {
     )
 }
 
-/// The empty-state and editable-table cards. Split out of `build_showcase`
+/// One row of the gallery's data table.
+struct Task {
+    name: &'static str,
+    owner: &'static str,
+    hours: Option<u32>,
+}
+
+/// The empty-state and data-table cards. Split out of `build_showcase`
 /// to keep that under the line cap.
 fn build_empty_and_table_cards() -> (Box<dyn Widget>, Box<dyn Widget>) {
     let empty = card(
@@ -682,11 +658,45 @@ fn build_empty_and_table_cards() -> (Box<dyn Widget>, Box<dyn Widget>) {
                 )),
         ),
     );
-    let table_card = card(
-        None,
-        "Editable Table",
-        Box::new(Table::new("gallery_table")),
-    );
+    let mut tasks = tilo_ui::widget::data_table::DataTable::new(vec![
+        tilo_ui::widget::data_table::ColumnDef::new(
+            "task",
+            "Task",
+            tilo_ui::widget::data_table::ColumnWidth::Flex(2.0),
+        )
+        .with_text(|t: &Task| t.name.to_owned()),
+        tilo_ui::widget::data_table::ColumnDef::new(
+            "owner",
+            "Owner",
+            tilo_ui::widget::data_table::ColumnWidth::Auto,
+        )
+        .with_text(|t: &Task| t.owner.to_owned()),
+        tilo_ui::widget::data_table::ColumnDef::new(
+            "hours",
+            "Hours",
+            tilo_ui::widget::data_table::ColumnWidth::Flex(1.0),
+        )
+        .with_kind(tilo_ui::text_render::TextKind::Numeric)
+        .with_optional_text(|t: &Task| t.hours.map(|h| h.to_string()), "Not estimated"),
+    ]);
+    tasks.set_rows(vec![
+        Task {
+            name: "Design the review flow",
+            owner: "Ada Lovelace",
+            hours: Some(12),
+        },
+        Task {
+            name: "Build the sync engine",
+            owner: "Grace Hopper",
+            hours: Some(140),
+        },
+        Task {
+            name: "Ship the beta",
+            owner: "Linus Pauling",
+            hours: None,
+        },
+    ]);
+    let table_card = card(None, "Table", Box::new(tasks));
     (empty, table_card)
 }
 
@@ -710,7 +720,7 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
     let feedback = build_feedback_card(theme);
 
     // ---- Metrics (full width) ---------------------------------------------
-    let metrics = build_metrics_card(theme);
+    let metrics = build_metrics_card();
 
     // ---- Row 3: charts | navigation -----------------------------------------
     let charts = build_charts_card(theme);

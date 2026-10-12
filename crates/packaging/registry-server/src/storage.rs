@@ -30,11 +30,17 @@
 //!                                    # form and payload blobs
 //!         <blake3>.tapp              # collected tapp that does not rebuild
 //!     payload-blobs/
-//!         <blake3>                   # reviewed payload blobs, by content
+//!         <blake3>                   # reviewed payload blobs and chunks, by
+//!                                    # content
+//!         <blake3>.chunks            # chunk list of a reviewed blob kept as
+//!                                    # chunks (see `payload_objects`)
+//!         <blake3>.zst               # compressed twin of a blob or chunk
+//!                                    # (see `twins`)
 //!     thin-packages/
 //!         <package-root>.tapp        # reviewed thin tapps, by package root
 //!     artifacts/
 //!         <blake3>.tapp              # operator-imported full tapps, by content
+//!         <blake3>.tapp.zst          # its compressed twin
 //!     uploads/
 //!         <blake3>.tapp              # publisher uploads awaiting review; private
 //! ```
@@ -61,6 +67,11 @@ use registry_types::{
 };
 
 use crate::allowlist::PublisherAllowlist;
+
+mod payload_objects;
+mod twins;
+pub use payload_objects::IncomingObject;
+pub use twins::TwinReport;
 
 /// Signed snapshots kept on disk, newest first. Older members are pruned
 /// behind a [`HistoryCompaction`] record; the oldest retained member's signed
@@ -344,6 +355,7 @@ impl Storage {
             if !path.exists() {
                 atomic_write(&path, bytes)?;
             }
+            self.write_payload_twin(hash, bytes)?;
         }
         let thin = tilo_app_package::tapp::to_bytes(&decoded.meta, None)
             .map_err(|error| StorageError::Encode(format!("thin package: {error}")))?;
@@ -401,6 +413,7 @@ impl Storage {
         if !path.exists() {
             atomic_write(&path, tapp_bytes)?;
         }
+        self.write_artifact_twin(&digest, tapp_bytes)?;
         Ok(digest)
     }
 
@@ -485,6 +498,13 @@ impl Storage {
         let Some(path) = self.payload_blob_path(blake3_hex) else {
             return Ok(None);
         };
+        if std::fs::metadata(&path)
+            .is_ok_and(|metadata| metadata.len() > tilo_app_package::chunks::MAX_OBJECT_BYTES)
+        {
+            return Err(StorageError::Parse(
+                "payload blob exceeds the object size limit".into(),
+            ));
+        }
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -544,6 +564,16 @@ impl Storage {
         let Some(stored) = self.store_package(bytes)? else {
             return Ok(false);
         };
+        // A thin package is small and kept whole; its payload is fetched
+        // into the blob store separately.
+        if stored
+            .meta
+            .payload_hashes()
+            .iter()
+            .any(|hash| !stored.blobs.contains_key(hash))
+        {
+            return Ok(false);
+        }
         let rebuilt = tilo_app_package::tapp::to_bytes(&stored.meta, Some(&stored.blobs))
             .map_err(|error| StorageError::Encode(format!("rebuild package: {error}")))?;
         if rebuilt != bytes {
@@ -1522,7 +1552,9 @@ impl<'a> SnapshotLock<'a> {
     /// Delete the staged packages that no entry this registry holds or may
     /// still publish references, then the thin packages and payload blobs
     /// only they used. An entry counts while it is published, live,
-    /// quarantined, pending, deferred, staged or journalled for promotion.
+    /// quarantined, pending, deferred, staged, journalled for promotion, in a
+    /// retained history snapshot, or in a version index still served, so a
+    /// client one snapshot behind can still fetch what it was offered.
     /// Holding the lock keeps every writer of staged bytes out meanwhile.
     ///
     /// # Errors
@@ -1530,6 +1562,84 @@ impl<'a> SnapshotLock<'a> {
     /// Returns an error if registry state cannot be read or a file cannot be
     /// removed.
     pub fn prune_unreferenced(&self) -> Result<PruneReport, StorageError> {
+        let plan = self.plan_prune(&self.referenced_entries()?)?;
+        let report = plan.report();
+        for path in plan
+            .staged_artifacts
+            .iter()
+            .chain(&plan.thin_packages)
+            .chain(&plan.payload_blobs)
+            .chain(&plan.payload_twins)
+            .map(|(path, _)| path)
+        {
+            remove_file(path)?;
+        }
+        for dir in ["staged-artifacts", "thin-packages", "payload-blobs"] {
+            sync_dir(&self.storage.root.join(dir));
+        }
+        Ok(report)
+    }
+
+    /// What [`Self::prune_unreferenced`] would delete now, and, under
+    /// `retention`, which versions publishers applying it would drop from
+    /// the published entries and what pruning would then delete. Nothing is
+    /// changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if registry state cannot be read.
+    pub fn preview_prune(
+        &self,
+        retention: Option<&registry_types::retention::RetentionPolicy>,
+    ) -> Result<PrunePreview, StorageError> {
+        let referenced = self.referenced_entries()?;
+        let now = self.plan_prune(&referenced)?.report();
+        let Some(policy) = retention else {
+            return Ok(PrunePreview {
+                now,
+                retention: None,
+            });
+        };
+        let mut dropped = Vec::new();
+        if let Some(current) = self.current()? {
+            for entry in &current.entries {
+                let kept = policy.retain(&entry.versions);
+                dropped.extend(
+                    entry
+                        .versions
+                        .iter()
+                        .filter(|version| !kept.contains(version))
+                        .map(|version| DroppedVersion {
+                            package_id: entry.package_id.clone(),
+                            version: version.version.clone(),
+                            platform: version.target.platform.clone(),
+                            architecture: version.target.architecture.clone(),
+                            tapp_size_bytes: version.tapp_size_bytes,
+                        }),
+                );
+            }
+        }
+        let retained: Vec<RegistryEntry> = referenced
+            .into_iter()
+            .map(|mut entry| {
+                entry.versions = policy.retain(&entry.versions);
+                entry
+            })
+            .collect();
+        let after = self.plan_prune(&retained)?.report();
+        Ok(PrunePreview {
+            now,
+            retention: Some(RetentionPreview {
+                releases: policy.limit(false),
+                prereleases: policy.limit(true),
+                dropped_versions: dropped,
+                prune: after,
+            }),
+        })
+    }
+
+    /// Every entry whose versions must stay downloadable.
+    fn referenced_entries(&self) -> Result<Vec<RegistryEntry>, StorageError> {
         let storage = self.storage;
         let mut entries = storage.load_entries()?;
         entries.extend(load_json_dir::<RegistryEntry>(
@@ -1541,6 +1651,19 @@ impl<'a> SnapshotLock<'a> {
             .flatten()
         {
             entries.extend(snapshot.entries);
+        }
+        for sequence in storage.history_members()?.into_keys() {
+            if let Some(snapshot) = storage.load_snapshot_sequence(sequence)? {
+                entries.extend(snapshot.entries);
+            }
+        }
+        let index_dir = storage.root.join("version-indexes");
+        for digest in list_digests(&index_dir, ".json")? {
+            if let Some(bytes) = storage.load_version_index(&digest)? {
+                let index: registry_types::RegistryVersionIndex = serde_json::from_slice(&bytes)
+                    .map_err(|error| StorageError::Parse(format!("version index: {error}")))?;
+                entries.push(index.entry);
+            }
         }
         let mut submissions = storage.load_pending_submissions()?;
         submissions.extend(load_json_dir::<PendingSubmission>(
@@ -1555,6 +1678,13 @@ impl<'a> SnapshotLock<'a> {
             entries.extend(journal.candidate_snapshot.entries);
         }
         entries.extend(submissions.into_iter().map(|pending| pending.change.entry));
+        Ok(entries)
+    }
+
+    /// The staged packages, thin packages and payload blobs that none of
+    /// `entries` reaches.
+    fn plan_prune(&self, entries: &[RegistryEntry]) -> Result<PrunePlan, StorageError> {
+        let storage = self.storage;
         let mut digests = BTreeSet::new();
         let mut roots = BTreeSet::new();
         for version in entries.iter().flat_map(|entry| &entry.versions) {
@@ -1562,14 +1692,13 @@ impl<'a> SnapshotLock<'a> {
             roots.insert(version.tapp_root_hash_hex.to_ascii_lowercase());
         }
 
-        let mut report = PruneReport::default();
+        let mut plan = PrunePlan::default();
         let staged_dir = storage.root.join("staged-artifacts");
         for extension in [".tapp", ".root"] {
             for digest in list_digests(&staged_dir, extension)? {
                 let path = staged_dir.join(format!("{digest}{extension}"));
                 if !digests.contains(&digest) {
-                    remove_file(&path)?;
-                    report.staged_artifacts = report.staged_artifacts.saturating_add(1);
+                    plan.staged_artifacts.push(sized(path)?);
                 } else if extension == ".root"
                     && let Some(root) = read_if_exists(&path, "staged package root")?
                 {
@@ -1582,8 +1711,7 @@ impl<'a> SnapshotLock<'a> {
         for root in list_digests(&thin_dir, ".tapp")? {
             let path = thin_dir.join(format!("{root}.tapp"));
             if !roots.contains(&root) {
-                remove_file(&path)?;
-                report.thin_packages = report.thin_packages.saturating_add(1);
+                plan.thin_packages.push(sized(path)?);
                 continue;
             }
             let Some(thin) = read_if_exists(&path, "thin package")? else {
@@ -1603,18 +1731,35 @@ impl<'a> SnapshotLock<'a> {
             );
         }
         let blob_dir = storage.root.join("payload-blobs");
+        let chunks = storage.live_chunks(&blobs)?;
         for blob in list_digests(&blob_dir, "")? {
-            if !blobs.contains(&blob) {
-                remove_file(&blob_dir.join(&blob))?;
-                report.payload_blobs = report.payload_blobs.saturating_add(1);
+            if !blobs.contains(&blob) && !chunks.contains(&blob) {
+                plan.payload_blobs.push(sized(blob_dir.join(&blob))?);
             }
         }
-        for dir in [staged_dir, thin_dir, blob_dir] {
-            if let Ok(directory) = std::fs::File::open(dir) {
-                let _result = directory.sync_all();
+        // A twin goes with its object.
+        for object in list_digests(&blob_dir, payload_objects::TWIN_SUFFIX)? {
+            if !blobs.contains(&object) && !chunks.contains(&object) {
+                plan.payload_twins.push(sized(
+                    blob_dir.join(format!("{object}{}", payload_objects::TWIN_SUFFIX)),
+                )?);
             }
         }
-        Ok(report)
+        for suffix in [
+            payload_objects::CHUNKS_SUFFIX,
+            payload_objects::PENDING_CHUNKS_SUFFIX,
+        ] {
+            for blob in list_digests(&blob_dir, suffix)? {
+                if !blobs.contains(&blob) {
+                    plan.payload_blobs
+                        .push(sized(blob_dir.join(format!("{blob}{suffix}")))?);
+                }
+            }
+        }
+        for stale in storage.stale_incoming(std::time::Duration::from_secs(24 * 60 * 60))? {
+            plan.payload_blobs.push(sized(stale)?);
+        }
+        Ok(plan)
     }
 
     /// Bound the snapshot history to the newest [`SNAPSHOT_HISTORY_RETAINED`]
@@ -1831,28 +1976,93 @@ impl tilo_app_package::BlobSource for StoredBlobs<'_> {
         &self,
         hash: &tilo_app_package::BlobHash,
     ) -> std::io::Result<Option<tilo_app_package::OpenBlob<'_>>> {
-        let Some(path) = self.0.payload_blob_path(&hash.to_hex()) else {
-            return Ok(None);
-        };
-        let file = match std::fs::File::open(path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        let len = file.metadata()?.len();
-        Ok(Some(tilo_app_package::OpenBlob {
-            len,
-            reader: Box::new(std::io::BufReader::new(file)),
-        }))
+        Ok(self
+            .0
+            .open_payload_stream(hash)?
+            .map(|(len, reader)| tilo_app_package::OpenBlob { len, reader }))
     }
 }
 
-/// What [`SnapshotLock::prune_unreferenced`] removed.
+/// What [`SnapshotLock::prune_unreferenced`] removed, or would remove.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct PruneReport {
     pub staged_artifacts: usize,
     pub thin_packages: usize,
     pub payload_blobs: usize,
+    /// Compressed twins of the payload blobs removed.
+    pub payload_twins: usize,
+    /// Apparent size of everything removed.
+    pub bytes: u64,
+}
+
+/// Files pruning removes, with their sizes.
+#[derive(Default)]
+struct PrunePlan {
+    staged_artifacts: Vec<(PathBuf, u64)>,
+    thin_packages: Vec<(PathBuf, u64)>,
+    payload_blobs: Vec<(PathBuf, u64)>,
+    payload_twins: Vec<(PathBuf, u64)>,
+}
+
+impl PrunePlan {
+    fn report(&self) -> PruneReport {
+        let all = || {
+            self.staged_artifacts
+                .iter()
+                .chain(&self.thin_packages)
+                .chain(&self.payload_blobs)
+                .chain(&self.payload_twins)
+        };
+        PruneReport {
+            staged_artifacts: self.staged_artifacts.len(),
+            thin_packages: self.thin_packages.len(),
+            payload_blobs: self.payload_blobs.len(),
+            payload_twins: self.payload_twins.len(),
+            bytes: all().map(|(_, len)| *len).sum(),
+        }
+    }
+}
+
+fn sized(path: PathBuf) -> Result<(PathBuf, u64), StorageError> {
+    match std::fs::metadata(&path) {
+        Ok(metadata) => Ok((path, metadata.len())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((path, 0)),
+        Err(error) => Err(StorageError::Io(format!(
+            "stat {}: {error}",
+            path.display()
+        ))),
+    }
+}
+
+/// What [`SnapshotLock::preview_prune`] found.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PrunePreview {
+    /// What pruning would delete now.
+    pub now: PruneReport,
+    /// What a retention policy would drop, when one was given.
+    pub retention: Option<RetentionPreview>,
+}
+
+/// The effect of a retention policy on the published entries.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RetentionPreview {
+    /// Versions kept per target among releases and pre-releases.
+    pub releases: usize,
+    pub prereleases: usize,
+    /// Published versions the policy drops.
+    pub dropped_versions: Vec<DroppedVersion>,
+    /// What pruning deletes once no snapshot or index still lists them.
+    pub prune: PruneReport,
+}
+
+/// One published version a retention policy drops.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct DroppedVersion {
+    pub package_id: String,
+    pub version: String,
+    pub platform: String,
+    pub architecture: String,
+    pub tapp_size_bytes: u64,
 }
 
 fn load_json<T: serde::de::DeserializeOwned>(
@@ -1920,6 +2130,18 @@ pub struct PendingSubmission {
     pub submitted_at_unix: u64,
     /// The publisher-signed request that will be re-verified at approval.
     pub change: EntryChangeRequest,
+}
+
+impl PendingSubmission {
+    /// Identify the exact queued request an operator inspected, including
+    /// both signatures and the receipt timestamp. This is a snapshot id,
+    /// not an authorization token. Localized maps serialize in sorted order.
+    ///
+    /// # Errors
+    /// Returns an error if the stored request cannot be serialized.
+    pub fn review_id(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_vec(self).map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2283,15 +2505,24 @@ mod tests {
                 .prune_unreferenced()
                 .unwrap();
             assert_eq!(
-                report,
-                PruneReport {
-                    staged_artifacts: 2,
-                    thin_packages: 2,
-                    payload_blobs: 1,
-                }
+                (
+                    report.staged_artifacts,
+                    report.thin_packages,
+                    report.payload_blobs,
+                    report.payload_twins
+                ),
+                (2, 2, 1, 1)
             );
+            assert!(report.bytes > 0);
             assert_eq!(storage.find_staged_artifact(&digest).unwrap(), None);
             assert_eq!(storage.load_payload_blob(&blob).unwrap(), None);
+            assert!(
+                !dir.path()
+                    .join("payload-blobs")
+                    .join(format!("{blob}.zst"))
+                    .exists(),
+                "a twin goes with its blob"
+            );
             assert_eq!(storage.load_thin_package(&root).unwrap(), None);
         }
         // phase: targetless_single_architecture_staging_remains_readable

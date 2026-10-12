@@ -75,18 +75,6 @@ Ordinary `tilo-build test -p maps` compiles these cases but reports them as
 ignored. The lane drives the whole app rather than duplicating a weaker raw
 `load_tile` network smoke test.
 
-## Running the Chat live-media lane
-
-```bash
-# Real iroh endpoints exchange GStreamer-encoded Opus over QUIC.
-tilo-build test -p chat --lib two_peers_exchange_encoded_audio_over_quic -- \
-  --ignored --nocapture --test-threads 1
-```
-
-Ordinary Chat tests report this case as ignored. An explicit run fails if the
-network endpoints or required GStreamer Opus elements are unavailable; it does
-not convert a missing prerequisite into a passing test.
-
 ## Database client live lane
 
 The database client proves its production PostgreSQL and MySQL query,

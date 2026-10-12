@@ -1,5 +1,6 @@
 //! Strokes a painter makes many of at once: a limb that forks into ever
-//! thinner twigs, or a cluster of short dabs scattered along a path. Each
+//! thinner twigs, a cluster of short dabs scattered along a path, or
+//! parallel hatching across an area. Each
 //! grows from the stroke and its seed alone, so a whole tree or a mass of
 //! foliage is one mark that syncs, edits and undoes as one, and paints the
 //! same on every machine.
@@ -36,6 +37,11 @@ pub enum Form {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         angle: Option<f32>,
     },
+    /// Instead of one line, parallel lines `spacing` cells apart across the
+    /// area the stroke's points enclose, at `angle` degrees, each drawn by
+    /// hand: shading laid in one stroke, cross-hatched by a second at
+    /// another angle.
+    Hatch { spacing: f32, angle: f32 },
 }
 
 /// How one mark's dabs are laid.
@@ -61,6 +67,10 @@ impl Form {
                 count,
                 scatter: scatter * scale,
                 length: length * scale,
+                angle,
+            },
+            Self::Hatch { spacing, angle } => Self::Hatch {
+                spacing: spacing * scale,
                 angle,
             },
             branch @ Self::Branch { .. } => branch,
@@ -90,6 +100,7 @@ impl Stroke {
                 },
                 seed,
             ),
+            Some(Form::Hatch { spacing, angle }) => hatch(self, spacing, angle, seed),
         }
     }
 }
@@ -314,6 +325,85 @@ fn dabs(stroke: &Stroke, dabbing: Dabbing, seed: u64) -> Vec<(Stroke, u64)> {
         .collect()
 }
 
+/// Parallel lines `spacing` apart across the polygon the stroke's points
+/// enclose, at `angle` degrees, each a hand's line: its ends fall a little
+/// short of or past the edge, it leans a fraction off parallel, and it
+/// presses as the stroke's points do on average.
+fn hatch(stroke: &Stroke, spacing: f32, angle: f32, seed: u64) -> Vec<(Stroke, u64)> {
+    let outline: Vec<(f32, f32)> = stroke.points.iter().map(|p| (p.x, p.y)).collect();
+    if outline.len() < 3 || !spacing.is_finite() {
+        return Vec::new();
+    }
+    let spacing = spacing.max(stroke.size * 0.5).max(0.5);
+    let pressure = stroke.points.iter().map(|p| p.pressure).sum::<f32>() / float(outline.len());
+    // Along the lines (dx, dy) and across them (nx, ny).
+    let turn = angle.to_radians();
+    let (dx, dy) = (turn.cos(), turn.sin());
+    let (nx, ny) = (-dy, dx);
+    let across = |(x, y): (f32, f32)| x * nx + y * ny;
+    let lengthwise = |(x, y): (f32, f32)| x * dx + y * dy;
+    let (low, high) = outline
+        .iter()
+        .map(|point| across(*point))
+        .fold((f32::MAX, f32::MIN), |(low, high), at| {
+            (low.min(at), high.max(at))
+        });
+    let mut out = Vec::new();
+    let mut offset = low + spacing * 0.5;
+    let mut line = 0_usize;
+    while offset < high && out.len() < MOST_PIECES {
+        // Where this line crosses the outline's edges, along the line: the
+        // spans between pairs of crossings lie inside.
+        let mut crossings: Vec<f32> = Vec::new();
+        for (index, from) in outline.iter().enumerate() {
+            let to = outline
+                .get(index.saturating_add(1))
+                .or_else(|| outline.first())
+                .unwrap_or(from);
+            let (a, b) = (across(*from), across(*to));
+            if (a <= offset) != (b <= offset) {
+                let t = (offset - a) / (b - a);
+                let at = lengthwise(*from) + (lengthwise(*to) - lengthwise(*from)) * t;
+                crossings.push(at);
+            }
+        }
+        crossings.sort_by(f32::total_cmp);
+        for span in crossings.chunks_exact(2) {
+            let (Some(start), Some(end)) = (span.first(), span.get(1)) else {
+                continue;
+            };
+            if out.len() >= MOST_PIECES || end - start < stroke.size {
+                continue;
+            }
+            let roll = |salt: u64| chance(seed, salt, line);
+            let start = start + (roll(3) - 0.5) * spacing * 0.6;
+            let end = end + (roll(5) - 0.5) * spacing * 0.6;
+            let lean = (roll(7) - 0.5) * spacing * 0.3;
+            let point = |along: f32, off: f32, press: f32| {
+                StrokePoint::new(
+                    along * dx + off * nx,
+                    along * dy + off * ny,
+                    (pressure * press).clamp(0.0, 1.0),
+                )
+            };
+            let press = 0.85 + 0.15 * roll(11);
+            let points = vec![
+                point(start, offset - lean, press * 0.9),
+                point((start + end) * 0.5, offset, press),
+                point(end, offset + lean, press * 0.8),
+            ];
+            let mixed = (0.96 + 0.08 * roll(13), 0.0);
+            out.push((
+                piece(stroke, points, stroke.size, mixed),
+                mix(seed ^ key(line).rotate_left(17)),
+            ));
+            line = line.saturating_add(1);
+        }
+        offset += spacing;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -373,6 +463,52 @@ mod tests {
                     .iter()
                     .any(|(p, _)| p.points.iter().any(|q| q.x < 70.0 || q.x > 92.0))
         );
+    }
+
+    #[test]
+    fn hatching_fills_the_area_the_points_enclose_with_parallel_lines() {
+        let mut stroke = limb(Form::Hatch {
+            spacing: 6.0,
+            angle: 0.0,
+        });
+        stroke.size = 1.5;
+        stroke.points = [(0.0, 0.0), (100.0, 0.0), (100.0, 60.0), (0.0, 60.0)]
+            .map(|(x, y)| StrokePoint::new(x, y, 1.0))
+            .to_vec();
+        let pieces = stroke.pieces(5);
+        assert_eq!(pieces, stroke.pieces(5), "the same from the same seed");
+        assert_eq!(pieces.len(), 10, "60 units at 6 apart");
+        for (line, _) in &pieces {
+            let (first, last) = (line.points[0], *line.points.last().unwrap());
+            assert!((first.y - last.y).abs() < 2.5, "about level");
+            assert!(first.x < 5.0 && last.x > 95.0, "across the area");
+            assert!((0.0..=60.0).contains(&line.points[1].y));
+        }
+        // A concave area: lines stop at the notch and start again past it.
+        stroke.points = [
+            (0.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 60.0),
+            (60.0, 60.0),
+            (60.0, 20.0),
+            (40.0, 20.0),
+            (40.0, 60.0),
+            (0.0, 60.0),
+        ]
+        .map(|(x, y)| StrokePoint::new(x, y, 1.0))
+        .to_vec();
+        let lower: Vec<_> = stroke
+            .pieces(5)
+            .into_iter()
+            .filter(|(line, _)| line.points[1].y > 30.0)
+            .collect();
+        assert!(
+            lower
+                .iter()
+                .all(|(line, _)| line.points[1].x < 40.0 || line.points[1].x > 60.0),
+            "nothing in the notch"
+        );
+        assert!(!lower.is_empty());
     }
 
     #[test]

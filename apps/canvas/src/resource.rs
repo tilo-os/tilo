@@ -2,39 +2,30 @@
 //! by name, and the views a caller with no screen uses to see it.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use ui::tilo_actions::{
-    ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, PermissionRequirement,
-    ResultSpec,
-};
 use ui::tilo_resource::{
-    self, ActionDecl, ActionRef, Doc, JsonSchema, ModelError, Resource, SearchEntry,
+    self, ActionCx, ActionRef, Doc, Invoke, JsonSchema, ModelError, Refusal, SearchEntry, resource,
 };
 
+// The verbs' argument structs, named apart from the verbs' own generated
+// parameter types.
 use crate::actions::{
-    ACTION_TYPE, AddLayer, Align, Arrange, CanvasAction, Draw, EditLayer, EditMarks, NewArtwork,
-    OpenArtwork, Paint, RemoveLayer, RemoveMarks, RemoveMedium, SaveMedium, SetArtwork,
-    SetReference,
+    AddLayer as NewLayer, Align as Alignment, Arrange as Arrangement, Draw as DrawShapes,
+    EditLayer as LayerEdit, EditMarks as MarkEdit, NewArtwork as BlankArtwork,
+    Open as PictureToOpen, OpenArtwork as SavedArtwork, Paint as PaintStrokes,
+    RemoveLayer as LayerRemoval, RemoveMarks as MarkRemoval, RemoveMedium as MediumRemoval,
+    SaveMedium as MediumToSave, SetArtwork as ArtworkSettings, SetReference as ReferenceSettings,
 };
 use crate::model::Artwork;
+use crate::selection::{Combine as Combination, Select as Selecting, UseSelection as SelectionUse};
+use crate::svg::ImportSvg as SvgImport;
 
-/// The operation type the canvas surface answers views and effects under.
-pub const VIEW_TYPE: &str = "canvas.view";
-
-/// The artwork resource.
-pub struct ArtworkResource;
-
-impl ArtworkResource {
-    /// `paint`: a layer (or the top one), then the strokes.
-    pub const PAINT: ActionRef<Self, (Option<String>, Vec<crate::actions::NewStroke>)> =
-        ActionRef::new("paint", &["layer", "strokes"]);
-    /// `draw`: a layer (or the top one), then the shapes.
-    pub const DRAW: ActionRef<Self, (Option<String>, Vec<crate::actions::NewMark>)> =
-        ActionRef::new("draw", &["layer", "marks"]);
+/// Parts of the artwork's verbs that controls bind.
+impl Artwork {
     /// `remove-marks` by id.
-    pub const REMOVE_MARKS: ActionRef<Self, Vec<String>> = ActionRef::new("remove-marks", &["ids"]);
+    pub const REMOVE_MARKS_BY_ID: ActionRef<Self, Vec<String>> =
+        ActionRef::new("remove-marks", &["ids"]);
     /// `add-layer`: its name and medium (empty for plain).
-    pub const ADD_LAYER: ActionRef<Self, (String, String)> =
+    pub const ADD_LAYER_OF: ActionRef<Self, (String, String)> =
         ActionRef::new("add-layer", &["name", "medium"]);
     /// `edit-layer` showing or hiding a layer.
     pub const SET_LAYER_VISIBLE: ActionRef<Self, (String, bool)> =
@@ -43,17 +34,16 @@ impl ArtworkResource {
     pub const MOVE_LAYER: ActionRef<Self, (String, String)> =
         ActionRef::new("edit-layer", &["id", "to"]);
     /// `remove-layer` by id.
-    pub const REMOVE_LAYER: ActionRef<Self, String> = ActionRef::new("remove-layer", &["id"]);
+    pub const REMOVE_LAYER_BY_ID: ActionRef<Self, String> = ActionRef::new("remove-layer", &["id"]);
     /// `arrange`: marks, then `front`, `back`, `forward` or `backward`.
-    pub const ARRANGE: ActionRef<Self, (Vec<String>, String)> =
+    pub const ARRANGE_TO: ActionRef<Self, (Vec<String>, String)> =
         ActionRef::new("arrange", &["ids", "to"]);
-    /// `add-layer` with its id, name and medium, above another layer or on
-    /// top.
-    pub const ADD_LAYER_NAMED: ActionRef<Self, (String, String, String, Option<String>)> =
-        ActionRef::new("add-layer", &["id", "name", "medium", "above"]);
     /// `edit-layer` renaming a layer.
     pub const RENAME_LAYER: ActionRef<Self, (String, String)> =
         ActionRef::new("edit-layer", &["id", "name"]);
+    /// `edit-layer` placing a layer in an organisational folder.
+    pub const SET_LAYER_GROUP: ActionRef<Self, (String, String)> =
+        ActionRef::new("edit-layer", &["id", "group"]);
     /// `edit-layer` locking or unlocking a layer.
     pub const SET_LAYER_LOCKED: ActionRef<Self, (String, bool)> =
         ActionRef::new("edit-layer", &["id", "locked"]);
@@ -133,16 +123,20 @@ impl ArtworkResource {
     pub const UNDO_RUN: ActionRef<Self, String> = ActionRef::new("undo", &["run"]);
     /// `restore` a past version as a new change.
     pub const RESTORE: ActionRef<Self, String> = ActionRef::new("restore", &["version"]);
-    /// `use-selection`: what to make of it, on a layer, in a colour.
-    pub const USE_SELECTION: ActionRef<Self, (String, Option<String>, Option<String>)> =
-        ActionRef::new("use-selection", &["do", "layer", "colour"]);
     /// `select` inverting the selection.
     pub const SELECT_INVERT: ActionRef<Self, bool> = ActionRef::new("select", &["invert"]);
+    /// `select` growing (or, negative, shrinking) the selection by units.
+    pub const SELECT_GROW: ActionRef<Self, f64> = ActionRef::new("select", &["grow"]);
+    /// `select` softening the selection's edge over units.
+    pub const SELECT_FEATHER: ActionRef<Self, f64> = ActionRef::new("select", &["feather"]);
     /// `select` with a mode alone: `none` selects nothing.
     pub const SELECT_MODE: ActionRef<Self, String> = ActionRef::new("select", &["mode"]);
     /// `combine`: marks, then `union`, `subtract`, `intersect` or `exclude`.
-    pub const COMBINE: ActionRef<Self, (Vec<String>, String)> =
+    pub const COMBINE_AS: ActionRef<Self, (Vec<String>, String)> =
         ActionRef::new("combine", &["ids", "op"]);
+    /// `align` spacing marks evenly, `horizontal` or `vertical`.
+    pub const DISTRIBUTE: ActionRef<Self, (Vec<String>, String)> =
+        ActionRef::new("align", &["ids", "distribute"]);
     /// `edit-layer` giving a layer a mask (`reveal`, `hide`) or removing it.
     pub const SET_LAYER_MASK: ActionRef<Self, (String, String)> =
         ActionRef::new("edit-layer", &["id", "mask"]);
@@ -161,6 +155,8 @@ impl ArtworkResource {
     pub const SET_CROP: ActionRef<Self, (Vec<String>, Vec<f64>)> =
         ActionRef::new("edit-marks", &["ids", "crop"]);
     /// `edit-marks` straightening a picture, in degrees.
+    pub const SET_PIXELATED: ActionRef<Self, (Vec<String>, bool)> =
+        ActionRef::new("edit-marks", &["ids", "pixelated"]);
     pub const SET_STRAIGHTEN: ActionRef<Self, (Vec<String>, f64)> =
         ActionRef::new("edit-marks", &["ids", "straighten"]);
     /// `edit-marks` mirroring marks `horizontal` or `vertical`.
@@ -198,11 +194,15 @@ pub struct Look {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Inspect {
+    /// Include literal fill, stroke and gradient colours with mark counts,
+    /// scoped by region/layer, independent of the newest-mark limit.
+    pub palette: Option<bool>,
     /// Only marks touching `[x, y, width, height]`.
     pub region: Option<[f64; 4]>,
     /// Only marks on this layer.
     pub layer: Option<String>,
-    /// How many of the newest matching marks to list, 1 to 400 (default 100).
+    /// How many of the newest matching marks to list, 0 to 400 (default
+    /// 100; none with measure).
     pub limit: Option<u32>,
     /// A past version: a change id from history or a checkpoint name.
     pub version: Option<String>,
@@ -233,12 +233,49 @@ pub struct Compare {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Export {
+    /// Omit the artwork ground for a transparent PNG or WebP.
+    pub transparent: Option<bool>,
     /// Pixels per artwork unit, 0.05 to 4 (default 1).
     pub scale: Option<f64>,
-    /// `png` (default), `jpeg` or `webp` (lossless).
+    /// `png` (default, or the path's), `jpeg` or `webp` (lossless).
     pub format: Option<String>,
-    /// JPEG quality, 1 to 100 (default 90).
+    /// JPEG quality (default 90).
+    #[schema(range(min = 1, max = 100))]
     pub quality: Option<u8>,
+    /// An absolute `.png`, `.jpg` or `.webp` path to write it to.
+    pub path: Option<String>,
+}
+
+/// Find an image's subject or fit the selected edge to the image.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FindArea {
+    /// Find the main subject on-device; with at, the object there.
+    pub subject: Option<bool>,
+    /// Edge reach in artwork units; subject defaults to 6 image pixels.
+    pub refine: Option<f64>,
+    /// Subject point `[x, y]` in artwork units.
+    pub at: Option<[f64; 2]>,
+    /// Find on this layer alone; otherwise use all visible layers.
+    pub layer: Option<String>,
+    /// `replace` (default), `add`, `subtract` or `intersect`.
+    pub mode: Option<String>,
+    /// Feather in artwork units.
+    pub feather: Option<f64>,
+}
+
+impl From<FindArea> for crate::selection::Select {
+    fn from(area: FindArea) -> Self {
+        Self {
+            subject: area.subject,
+            refine: area.refine,
+            at: area.at,
+            layer: area.layer,
+            mode: area.mode,
+            feather: area.feather,
+            ..Self::default()
+        }
+    }
 }
 
 /// Export the artwork, or some of its marks, as SVG.
@@ -251,6 +288,8 @@ pub struct ExportSvg {
     /// Write text as outlines, which look the same without its fonts.
     /// Text along a path is always outlined.
     pub outline_text: Option<bool>,
+    /// An absolute `.svg` path to write it to.
+    pub path: Option<String>,
 }
 
 /// Save the artwork as a `.artwork` file.
@@ -261,18 +300,103 @@ pub struct SaveArtwork {
     pub path: Option<String>,
 }
 
-/// A view or effect the canvas answers.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "kebab-case")]
+/// What the canvas answers to look at, measure, compare and write out the
+/// artwork: views read it as it is or was, effects write a picture or a
+/// file of it. Each takes its fields as named arguments, as its schema
+/// describes them, and answers with JSON.
+#[derive(Clone, Debug, PartialEq, ui::tilo_resource::Effect)]
+#[effect(operation = "canvas.view")]
 pub enum ViewOp {
-    Look(Look),
-    Inspect(Inspect),
+    /// Look at the artwork.
+    ///
+    /// See the artwork as a picture: the whole of it, or a region up close.
+    /// Answers with the image and the revision it shows. grid: true overlays
+    /// labelled coordinates for placing marks.
+    #[effect(job, returns, idempotent, kind = "read")]
+    Look {
+        #[param(flatten)]
+        look: Look,
+    },
+    /// Inspect marks.
+    ///
+    /// List layers and newest marks (ids, bounds, colours), scoped by
+    /// region/layer. palette: true also counts literal fill, stroke and
+    /// gradient colours across all matching marks, independent of limit
+    /// (first 32 colours, `palette_colours` is the total). Named pigments come
+    /// from media. measure weighs ink to balance icons and type.
+    #[effect(view, returns, idempotent)]
+    Inspect {
+        #[param(flatten)]
+        inspect: Inspect,
+    },
+    /// List media.
+    ///
+    /// List the media layers can use (oil, watercolour presets and those
+    /// saved here) with their engines' parameters and pigment palettes, and
+    /// the fonts text can use.
+    #[effect(view, returns, idempotent)]
     Media,
-    Export(Export),
-    Diff(Diff),
-    ExportSvg(ExportSvg),
-    Compare(Compare),
-    SaveArtwork(SaveArtwork),
+    /// Export picture.
+    ///
+    /// Render the artwork at full size (or scaled) as a PNG, JPEG or WebP,
+    /// written to path or kept as content.
+    #[effect(job, returns)]
+    Export {
+        #[param(flatten)]
+        export: Export,
+    },
+    /// Compare versions.
+    ///
+    /// Compare two versions: marks and layers added, removed or changed by id
+    /// (with what changed: stacking, shape, fill, …), the changed region, and
+    /// with look a before|after picture of it.
+    #[effect(view, returns, idempotent)]
+    CompareVersions {
+        #[param(flatten)]
+        diff: Diff,
+    },
+    /// Export SVG.
+    ///
+    /// Export the artwork as SVG (plain layers as exact vectors, painted ones
+    /// as pictures), written to path or kept as content (small ones
+    /// answered).
+    #[effect(returns)]
+    ExportSvg {
+        #[param(flatten)]
+        svg: ExportSvg,
+    },
+    /// Compare with reference.
+    ///
+    /// See the artwork beside (or over, or minus) the reference picture, with
+    /// a difference score (mean colour distance 0..1 in the reference's
+    /// frame; lower is closer) and the regions that differ most, to iterate
+    /// toward it.
+    #[effect(view, returns, idempotent)]
+    Compare {
+        #[param(flatten)]
+        compare: Compare,
+    },
+    /// Save artwork.
+    ///
+    /// Save the artwork as a .artwork file open-artwork reads: to a path, or
+    /// kept as content.
+    #[effect(returns)]
+    SaveArtwork {
+        #[param(flatten)]
+        save: SaveArtwork,
+    },
+    /// Find image area.
+    ///
+    /// Find a photo's subject (subject: true) or refine the selected edge
+    /// (refine: units) in the background, with progress and one undo step.
+    /// Then use-selection mask or fill. Accepts select's
+    /// add/subtract/intersect, layer and feather options. The artwork must
+    /// remain unchanged while the area is found.
+    #[effect(job, returns, kind = "undoable")]
+    FindArea {
+        #[param(flatten)]
+        area: FindArea,
+    },
 }
 
 /// What changed between two versions of the artwork.
@@ -285,71 +409,6 @@ pub struct Diff {
     pub to: Option<String>,
     /// Also a picture of the changed region: before left, after right.
     pub look: Option<bool>,
-}
-
-/// The parameter type a property's schema describes.
-fn param_type(schema: &Value) -> ParamType {
-    let named = match schema.get("type") {
-        Some(Value::String(name)) => Some(name.as_str()),
-        Some(Value::Array(names)) => names
-            .iter()
-            .filter_map(Value::as_str)
-            .find(|name| *name != "null"),
-        _ => None,
-    };
-    match named {
-        Some("string") => ParamType::Text,
-        Some("integer") => ParamType::Integer,
-        Some("number") => ParamType::Number,
-        Some("boolean") => ParamType::Boolean,
-        Some("array") => ParamType::Array,
-        _ => ParamType::Object,
-    }
-}
-
-/// One declared parameter per field of `T`, typed and described from its
-/// schema, so the named action and the typed value accept the same JSON.
-pub fn params_of<T: JsonSchema>() -> Vec<ActionParam> {
-    let schema = T::json_schema();
-    let required: Vec<&str> = schema
-        .get("required")
-        .and_then(Value::as_array)
-        .map(|names| names.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default();
-    schema
-        .get("properties")
-        .and_then(Value::as_object)
-        .map(|properties| {
-            properties
-                .iter()
-                .map(|(name, property)| {
-                    let description = property
-                        .get("description")
-                        .and_then(Value::as_str)
-                        .unwrap_or(name)
-                        .to_owned();
-                    let ty = param_type(property);
-                    // An optional field may also be sent as null, which is
-                    // how many callers say "not given".
-                    let param = if required.contains(&name.as_str()) {
-                        ActionParam::required_owned(name.clone(), ty, description)
-                    } else {
-                        ActionParam::optional_owned(name.clone(), ty, description).nullable()
-                    };
-                    param.with_schema(property.clone())
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// The arguments as `T`, with an error naming what is wrong.
-fn read_args<T: serde::de::DeserializeOwned>(
-    args: &ui::tilo_actions::ActionArgs,
-) -> Result<T, String> {
-    let mut fields = args.to_json();
-    fields.retain(|_, value| !value.is_null());
-    serde_json::from_value(Value::Object(fields)).map_err(|error| error.to_string())
 }
 
 /// A picture named by an absolute path, a content address or a `data:`
@@ -376,7 +435,7 @@ pub fn keep_picture(src: &str) -> Result<(String, (u32, u32)), String> {
             .decode(encoded)
             .map_err(|error| format!("the inline picture is not base64: {error}"))?
     } else if ui::tilo_actions::content_hash(src).is_some() {
-        let bytes = crate::picture::bytes_of(src)
+        let bytes = crate::picture::bytes_of(&crate::content::store(), src)
             .ok_or_else(|| format!("{src} is not in this app's content store"))?;
         let size = picture_size(src, &bytes)?;
         return Ok((src.to_owned(), size));
@@ -403,16 +462,17 @@ pub fn keep_picture_bytes(named: &str, bytes: &[u8]) -> Result<(String, (u32, u3
 ///
 /// # Errors
 /// Returns why the bytes are not a picture or cannot be kept.
-pub fn open_picture(name: &str, bytes: &[u8]) -> Result<CanvasAction, String> {
-    let (src, (width, height)) = keep_picture_bytes(name, bytes)?;
-    Ok(CanvasAction::OpenPicture(crate::actions::Open {
-        src,
-        pixels: [width, height],
-        title: std::path::Path::new(name)
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or_default()
-            .to_owned(),
+pub fn open_picture(name: &str, bytes: &[u8]) -> Result<Invoke<Artwork>, String> {
+    let (src, _) = keep_picture_bytes(name, bytes)?;
+    Ok(Artwork::OPEN_PICTURE.with(crate::actions::Open {
+        path: src,
+        title: Some(
+            std::path::Path::new(name)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default()
+                .to_owned(),
+        ),
     }))
 }
 
@@ -481,38 +541,8 @@ fn title_of(path: &str) -> String {
         .to_owned()
 }
 
-/// Open a picture as a new artwork.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct OpenPath {
-    /// A PNG, JPEG or WebP: an absolute path, a content address or a data:
-    /// URI.
-    pub path: String,
-}
-
-/// Starting a new artwork and opening a saved one.
-fn document_declarations() -> Vec<ActionDecl<ArtworkResource>> {
-    vec![
-        decl::<NewArtwork>(
-            "new-artwork",
-            "New artwork",
-            "Start over on a blank artwork (one undo away). size: screen, a4, letter, square, poster, icon (landscape turns it). start: paper, white, watercolour, oil, panel, dark.",
-            CanvasAction::NewArtwork,
-        ),
-        ActionDecl::new("open-artwork", "Open artwork", params_of::<OpenArtwork>(), |args, _now| {
-            let open: OpenArtwork = read_args(args)?;
-            let bytes = artwork_bytes(&open.file)?;
-            crate::document::ArtworkFile::parse(&bytes)?;
-            let file = String::from_utf8(bytes)
-                .map_err(|_| "the artwork file is not UTF-8 text".to_owned())?;
-            Ok(CanvasAction::OpenArtwork(OpenArtwork { file }))
-        })
-        .describe("Replace the artwork with a saved .artwork file (path, content address or JSON), one undo away."),
-    ]
-}
-
 /// The bytes of the artwork file `file` names: its JSON itself, stored
-/// content, or a file.
+/// content, or a file (a package, or JSON).
 ///
 /// # Errors
 /// Returns why the file cannot be had.
@@ -522,7 +552,7 @@ fn artwork_bytes(file: &str) -> Result<Vec<u8>, String> {
         return Ok(trimmed.as_bytes().to_vec());
     }
     if let Some(hash) = ui::tilo_actions::content_hash(trimmed) {
-        return tilo_content::ContentStore::for_app()
+        return crate::content::store()
             .read(hash)
             .ok_or_else(|| format!("no stored content {trimmed}"));
     }
@@ -553,258 +583,417 @@ pub fn read_file(path: &str, limit: usize) -> Result<Vec<u8>, String> {
 /// # Errors
 /// Returns the store's failure.
 pub fn store(bytes: &[u8]) -> Result<String, String> {
-    let hash = tilo_content::ContentStore::for_app()
+    let hash = crate::content::store()
         .put(bytes)
         .map_err(|error| format!("the content could not be stored: {error}"))?;
     ui::tilo_actions::content_resource(&hash).ok_or_else(|| "the content has no address".to_owned())
 }
 
-/// A short random id, minted where an action is authored.
-fn minted(prefix: &str) -> String {
-    let id = uuid::Uuid::new_v4().simple().to_string();
-    format!("{prefix}-{}", id.get(..8).unwrap_or_default())
-}
+/// What the verbs resolve where they are invoked, from the world outside:
+/// files and inline pictures kept as content, what the window shows. The
+/// invocation then carries the result, so every replica applies the same.
+mod prepare {
+    use super::{artwork, keep_picture, kept_image, title_of};
 
-fn decl<T: JsonSchema + serde::de::DeserializeOwned + 'static>(
-    id: &'static str,
-    label: &str,
-    description: &str,
-    wrap: fn(T) -> CanvasAction,
-) -> ActionDecl<ArtworkResource> {
-    ActionDecl::new(id, label, params_of::<T>(), move |args, _now| {
-        read_args::<T>(args).map(wrap)
-    })
-    .describe(description)
-}
-
-impl Resource for ArtworkResource {
-    const KIND: &'static str = "canvas.artwork";
-    const LABEL: &'static str = "Artwork";
-    const ACTION_TYPE: &'static str = ACTION_TYPE;
-
-    type State = Artwork;
-    type Action = CanvasAction;
-
-    fn read(doc: &Doc) -> Result<Artwork, ModelError> {
-        Ok(crate::doc::read(doc))
-    }
-
-    /// A new artwork is an empty sheet of paper with one plain layer, so the
-    /// first stroke has somewhere to go.
-    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
-        use ui::tilo_actions::Action as _;
-        CanvasAction::AddLayer(AddLayer {
-            id: Some("layer-1".into()),
-            name: "Layer 1".into(),
-            ..AddLayer::default()
-        })
-        .apply(doc)
-        .map_err(|error| ModelError::Invalid {
-            path: "layers".into(),
-            message: error.to_string(),
-        })?;
-        // Created here, not by the first step that writes into them: a step
-        // that created a shared map cannot be undone once others wrote in it.
-        for key in [crate::doc::MARKS, crate::doc::MEDIA] {
-            crate::doc::ensure(doc, &ui::automerge::ROOT, key).map_err(|error| {
-                ModelError::Invalid {
-                    path: key.into(),
-                    message: error.to_string(),
-                }
-            })?;
+    /// A drawn picture given by path or inline is kept as content.
+    pub(super) fn draw(params: &mut artwork::Draw) -> Result<(), String> {
+        for mark in &mut params.shapes.marks {
+            kept_image(&mut mark.shape)?;
         }
         Ok(())
     }
 
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        [
-            decl::<Paint>(
-                "paint",
-                "Paint strokes",
-                "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (light pressure, many strokes; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
-                CanvasAction::Paint,
-            ),
-            ActionDecl::new("draw", "Draw shapes", params_of::<Draw>(), |args, _now| {
-                let mut draw: Draw = read_args(args)?;
-                for mark in &mut draw.marks {
-                    kept_image(&mut mark.shape)?;
-                }
-                Ok(CanvasAction::Draw(draw))
-            })
-            .describe("Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text, stroke or image (src: a file path, content address or data: URI; a unit per pixel unless sized), each with fill, gradient, stroke and opacity. Give ids to address marks later. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes."),
-            ActionDecl::new("edit-marks", "Edit marks", params_of::<EditMarks>(), |args, _now| {
-                let mut edit: EditMarks = read_args(args)?;
-                if let Some(shape) = &mut edit.shape {
-                    kept_image(&mut shape.0)?;
-                }
-                Ok(CanvasAction::edit(edit))
-            })
-            .describe("Change marks by id: colours, opacity, name, move_by [dx,dy], scale, rotate and flip about their centre, or move them to another layer. Strokes: re-brush (brush, size, params), smooth, simplify, extend, split at a point, merge. Pictures: crop, straighten, adjust (exposure, white balance, …; look to judge)."),
-            decl::<RemoveMarks>(
-                "remove-marks",
-                "Remove marks",
-                "Remove marks by id, every mark of a layer, or the strokes a path along crosses.",
-                CanvasAction::RemoveMarks,
-            ),
-            decl::<Arrange>(
-                "arrange",
-                "Arrange marks",
-                "Bring marks to the front or back of their layer, one step forward or backward, or directly above or below another mark or group.",
-                CanvasAction::Arrange,
-            ),
-            ActionDecl::new("add-layer", "Add layer", params_of::<AddLayer>(), |args, _now| {
-                let mut add: AddLayer = read_args(args)?;
-                if add.id.is_none() {
-                    add.id = Some(minted("layer"));
-                }
-                Ok(CanvasAction::AddLayer(add))
-            })
-            .describe("Add a layer on top (or above another). Give it a medium (see media) to paint in oil or watercolour; without one it holds crisp vector art."),
-            decl::<EditLayer>(
-                "edit-layer",
-                "Edit layer",
-                "Rename a layer, change its medium, opacity, visibility, lock or adjustments (grading all its marks), or move it to the front, back, forward or backward.",
-                CanvasAction::EditLayer,
-            ),
-            decl::<RemoveLayer>(
-                "remove-layer",
-                "Remove layer",
-                "Remove a layer and every mark on it.",
-                CanvasAction::RemoveLayer,
-            ),
-            decl::<SetArtwork>(
-                "set-artwork",
-                "Set artwork",
-                "Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen, panel) and colour; or crop the artwork to a region or to what a mark shows (fit).",
-                CanvasAction::SetArtwork,
-            ),
-            decl::<SaveMedium>(
-                "save-medium",
-                "Save medium",
-                "Save a medium preset in the artwork: an engine (oil or watercolour) with parameters, a ground and a pigment palette. Layers can then use its id.",
-                CanvasAction::SaveMedium,
-            ),
-            decl::<RemoveMedium>(
-                "remove-medium",
-                "Remove medium",
-                "Remove a medium saved in this artwork.",
-                CanvasAction::RemoveMedium,
-            ),
-            decl::<Align>(
-                "align",
-                "Align marks",
-                "Align marks or groups to an edge or centre line, and/or distribute them with equal gaps, within their own extent, the artwork or another mark.",
-                CanvasAction::Align,
-            ),
-        ]
-        .into_iter()
-        .chain(picture_declarations())
-        .chain(area_declarations())
-        .chain(document_declarations())
-        .collect()
+    /// A picture an edit gives by path or inline is kept as content.
+    pub(super) fn edit_marks(params: &mut artwork::EditMarks) -> Result<(), String> {
+        if let Some(shape) = &mut params.edit.shape {
+            kept_image(&mut shape.0)?;
+        }
+        Ok(())
     }
 
-    fn action_schema() -> Option<Value> {
-        Some(CanvasAction::json_schema())
+    /// The reference picture is kept as content.
+    pub(super) fn set_reference(params: &mut artwork::SetReference) -> Result<(), String> {
+        let set = &mut params.set;
+        if let Some(image) = &set.image {
+            set.image = Some(keep_picture(image)?.0);
+        }
+        Ok(())
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        let view = |id: &str, label: &str, params: Vec<ActionParam>, wrap: Wrap| {
-            operation(id, label, OperationKind::View, params, wrap)
-        };
-        let mut look = view("look", "Look at the artwork", params_of::<Look>(), |args| {
-            ViewOp::Look(read_args(args).unwrap_or_default())
-        })
-        .with_description(
-            "See the artwork as a picture: the whole of it, or a region up close. Answers with the image and the revision it shows. grid: true overlays labelled coordinates for placing marks.",
-        );
-        look.contract.result = ResultSpec::Json {
-            schema: serde_json::json!({"type": "object"}),
-        };
-        let mut inspect = view("inspect", "Inspect marks", params_of::<Inspect>(), |args| {
-            ViewOp::Inspect(read_args(args).unwrap_or_default())
-        })
-        .with_description(
-            "List the layers and the newest marks (id, kind, name, layer, bounds [x,y,w,h], colours), optionally only in a region or on one layer; measure weighs marks' ink as the eye does, to balance icons and type.",
-        );
-        inspect.contract.result = ResultSpec::Json {
-            schema: serde_json::json!({"type": "object"}),
-        };
-        let mut media = view("media", "List media", Vec::new(), |_| ViewOp::Media).with_description(
-            "List the media layers can use (oil, watercolour presets and those saved here) with their engines' parameters and pigment palettes, and the fonts text can use.",
-        );
-        media.contract.result = ResultSpec::Json {
-            schema: serde_json::json!({"type": "object"}),
-        };
-        let mut export = ActionSpec::typed_operation(
-            "export",
-            "Export picture",
-            "Export picture",
-            OperationKind::Effect,
-            VIEW_TYPE,
-            params_of::<Export>(),
-            |args| {
-                EncodedAction::encode_operation(
-                    VIEW_TYPE,
-                    &ViewOp::Export(read_args(args).unwrap_or_default()),
-                )
-                .unwrap_or_else(|_| EncodedAction {
-                    type_id: VIEW_TYPE.into(),
-                    payload: Vec::new(),
-                })
+    /// The picture is kept as content, with its size and its file's name.
+    pub(super) fn open(params: &mut artwork::OpenPicture) -> Result<(), String> {
+        let open = &mut params.picture;
+        let (src, _) = keep_picture(&open.path)?;
+        if open.title.is_none() {
+            open.title = Some(title_of(&open.path));
+        }
+        open.path = src;
+        Ok(())
+    }
+
+    /// The saved artwork as its JSON, its pictures kept as content.
+    pub(super) fn open_artwork(params: &mut artwork::OpenArtwork) -> Result<(), String> {
+        let open = &mut params.open;
+        let bytes = super::artwork_bytes(&open.file)?;
+        let file = crate::document::unpack(&bytes, &crate::content::store())?;
+        open.file = String::from_utf8_lossy(&file.to_json()).into_owned();
+        Ok(())
+    }
+
+    /// The SVG as its markup.
+    pub(super) fn import_svg(params: &mut artwork::ImportSvg) -> Result<(), String> {
+        params.import.svg = crate::svg::source(&params.import.svg)?;
+        Ok(())
+    }
+
+    /// A colour or magic-wand area as the geometry the window finds.
+    pub(super) fn select(params: &mut artwork::Select) -> Result<(), String> {
+        crate::author::resolve(&mut params.select)
+    }
+
+    /// The matte's pictures defringed and kept as content.
+    pub(super) fn use_selection(params: &mut artwork::UseSelection) -> Result<(), String> {
+        crate::subject::clean(&mut params.using)
+    }
+}
+
+/// The artwork's verbs: everything that changes it beyond one field.
+///
+/// Each takes its documented argument struct flat, applies to the artwork
+/// as read, and is refused whole when any part of it is.
+#[resource(
+    kind = "canvas.artwork",
+    label = "Artwork",
+    initialize = Artwork::genesis,
+    load = Artwork::loaded,
+    search = Artwork::entries,
+    answer = crate::answer::answer,
+    effects = ViewOp
+)]
+impl Artwork {
+    /// Paint strokes.
+    ///
+    /// Paint brush strokes on a layer in one step. On an oil or watercolour
+    /// layer the medium simulates real paint; on a plain layer the brush
+    /// preset draws them: pen for clean line art (pressure swells the line),
+    /// pencil or charcoal to shade (pressure sets darkness; charcoal catches
+    /// the paper), marker for flat see-through tone, airbrush for soft glows,
+    /// calligraphy for lettering. brush eraser (no colour) clears paint under
+    /// it on its layer; remove-marks along takes whole strokes. Each stroke:
+    /// points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or
+    /// pigment:<name>). Answers the new ids. One stroke can be many: forks
+    /// grows a branch or bare tree; dabs scatters foliage, flowers or (with
+    /// `dab_length`, angle -90) grass; hatch shades the area its points
+    /// enclose. Work like a painter, looking close after each passage: big
+    /// shapes first; then forms in a few values (dark mass, middle, lit
+    /// side); small lights and accents last.
+    #[action(answers)]
+    pub fn paint(&mut self, #[param(flatten)] strokes: PaintStrokes) -> Result<(), Refusal> {
+        let art = self.as_read();
+        strokes.apply(self, &art)
+    }
+
+    /// Draw shapes.
+    ///
+    /// Draw shapes on a layer in one step: rect, ellipse, polygon, line, path
+    /// (SVG d), text, stroke or image (src: a file path, content address or
+    /// data: URI; a unit per pixel unless sized), each with fill, gradient,
+    /// stroke and opacity. Answers the new ids; or give your own. On a
+    /// painted layer filled shapes are laid in with the brush: paint a
+    /// building or small figure as filled planes (lit and shadow side) with a
+    /// small brush, not as many strokes.
+    #[action(answers, prepare = prepare::draw)]
+    pub fn draw(&mut self, #[param(flatten)] shapes: DrawShapes) -> Result<(), Refusal> {
+        let art = self.as_read();
+        shapes.apply(self, &art)
+    }
+
+    /// Edit marks.
+    ///
+    /// Change marks by id: colours, opacity, name, `move_by` [dx,dy], scale,
+    /// rotate and flip about their centre, or move them to another layer.
+    /// Strokes: re-brush (brush, size, params), smooth, simplify, extend,
+    /// split at a point, merge. Pictures: crop, straighten, adjust (exposure,
+    /// white balance, …; look to judge).
+    #[action(prepare = prepare::edit_marks)]
+    pub fn edit_marks(&mut self, #[param(flatten)] edit: MarkEdit) -> Result<(), Refusal> {
+        let art = self.as_read();
+        edit.apply(self, &art)
+    }
+
+    /// Remove marks.
+    ///
+    /// Remove marks by id, every mark of a layer, or the strokes a path along
+    /// crosses.
+    #[action]
+    pub fn remove_marks(&mut self, #[param(flatten)] remove: MarkRemoval) -> Result<(), Refusal> {
+        let art = self.as_read();
+        crate::actions::remove_marks(self, &art, &remove)
+    }
+
+    /// Arrange marks.
+    ///
+    /// Bring marks to the front or back of their layer, one step forward or
+    /// backward, or directly above or below another mark or group.
+    #[action]
+    pub fn arrange(&mut self, #[param(flatten)] arrange: Arrangement) -> Result<(), Refusal> {
+        let art = self.as_read();
+        crate::actions::arrange_marks(self, &art, &arrange)
+    }
+
+    /// Add layer.
+    ///
+    /// Add a layer on top (or above another). Give it a medium (see media) to
+    /// paint in oil or watercolour; without one it holds crisp vector art.
+    #[action]
+    pub fn add_layer(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param(flatten)] add: NewLayer,
+    ) -> Result<(), Refusal> {
+        let mut add = add;
+        if add.id.is_none() {
+            let minted = cx.uuid().simple().to_string();
+            add.id = Some(format!("layer-{}", minted.get(..8).unwrap_or_default()));
+        }
+        let art = self.as_read();
+        crate::actions::add_layer(self, &art, &add)
+    }
+
+    /// Edit layer.
+    ///
+    /// Rename or place a layer in an organisational folder (group; empty
+    /// removes it), change its medium, opacity, visibility, lock or
+    /// adjustments (grading all its marks), or move it to the front, back,
+    /// forward or backward.
+    #[action]
+    pub fn edit_layer(&mut self, #[param(flatten)] edit: LayerEdit) -> Result<(), Refusal> {
+        let art = self.as_read();
+        crate::actions::edit_layer(self, &art, &edit)
+    }
+
+    /// Remove layer.
+    ///
+    /// Remove a layer and every mark on it.
+    #[action]
+    pub fn remove_layer(&mut self, #[param(flatten)] remove: LayerRemoval) -> Result<(), Refusal> {
+        let art = self.as_read();
+        crate::actions::remove_layer(self, &art, &remove)
+    }
+
+    /// Set artwork.
+    ///
+    /// Set the title, size (units) or ground: texture (smooth, paper,
+    /// cold-press, rough, linen, panel) and colour; or crop the artwork to a
+    /// region or to what a mark shows (fit).
+    #[action]
+    pub fn set_artwork(&mut self, #[param(flatten)] set: ArtworkSettings) -> Result<(), Refusal> {
+        let art = self.as_read();
+        crate::actions::set_artwork(self, &art, &set)
+    }
+
+    /// Save medium.
+    ///
+    /// Save a medium preset in the artwork: an engine (oil or watercolour)
+    /// with parameters, a ground and a pigment palette. Layers can then use
+    /// its id.
+    #[action]
+    pub fn save_medium(&mut self, #[param(flatten)] save: MediumToSave) -> Result<(), Refusal> {
+        save.medium.validate().map_err(Refusal)?;
+        self.media.insert(save.medium.id.clone(), save.medium);
+        Ok(())
+    }
+
+    /// Remove medium.
+    ///
+    /// Remove a medium saved in this artwork.
+    #[action]
+    pub fn remove_medium(
+        &mut self,
+        #[param(flatten)] remove: MediumRemoval,
+    ) -> Result<(), Refusal> {
+        if self.media.remove(&remove.id).is_none() {
+            return Err(Refusal(format!(
+                "no medium {:?} is saved in this artwork",
+                remove.id
+            )));
+        }
+        Ok(())
+    }
+
+    /// Align marks.
+    ///
+    /// Align marks or groups to an edge or centre line, and/or distribute
+    /// them with equal gaps, within their own extent, the artwork or another
+    /// mark.
+    #[action]
+    pub fn align(&mut self, #[param(flatten)] align: Alignment) -> Result<(), Refusal> {
+        let art = self.as_read();
+        align.apply(self, &art)
+    }
+
+    /// Set reference.
+    ///
+    /// Set the reference picture to recreate or trace: shown over the artwork
+    /// at its opacity, seen by look (reference: false hides it) and compare;
+    /// never exported.
+    #[action(prepare = prepare::set_reference)]
+    pub fn set_reference(
+        &mut self,
+        #[param(flatten)] set: ReferenceSettings,
+    ) -> Result<(), Refusal> {
+        let art = self.as_read();
+        crate::actions::set_reference(self, &art, &set)
+    }
+
+    /// Import SVG.
+    ///
+    /// Import an SVG (markup, file path or content address) as one draw of
+    /// path and text marks in a group: fills, gradients, outlines, opacity,
+    /// blends and clip paths.
+    #[action(answers, prepare = prepare::import_svg)]
+    pub fn import_svg(&mut self, #[param(flatten)] import: SvgImport) -> Result<(), Refusal> {
+        let draw = crate::svg::import(&import).map_err(Refusal)?;
+        let art = self.as_read();
+        draw.apply(self, &art)
+    }
+
+    /// Open picture.
+    ///
+    /// Open a PNG, JPEG or WebP as a new artwork the size of the picture (a
+    /// unit per pixel), the picture its first mark, `picture`. Replaces what
+    /// the artwork held (undo brings it back).
+    #[action(prepare = prepare::open)]
+    pub fn open_picture(
+        &mut self,
+        #[param(flatten)] picture: PictureToOpen,
+    ) -> Result<(), Refusal> {
+        // The picture is named by its content, which every replica reads
+        // from its own store.
+        if ui::tilo_actions::content_hash(&picture.path).is_none() {
+            return Err(Refusal(format!(
+                "{:?} is not kept as content: open names a picture by its content address",
+                picture.path
+            )));
+        }
+        let (_, (width, height)) = keep_picture(&picture.path).map_err(Refusal)?;
+        let art = self.as_read();
+        picture.apply(self, &art, [width, height])
+    }
+
+    /// New artwork.
+    ///
+    /// Start a blank artwork (one undo away). size: screen, a4, letter,
+    /// square, poster, icon (landscape turns it). start: paper, white,
+    /// watercolour, oil, panel, dark.
+    #[action]
+    pub fn new_artwork(&mut self, #[param(flatten)] new: BlankArtwork) -> Result<(), Refusal> {
+        crate::actions::replace(self, &new.file()?)
+    }
+
+    /// Open artwork.
+    ///
+    /// Replace the artwork with a saved .artwork file (path, content address
+    /// or JSON), one undo away.
+    #[action(prepare = prepare::open_artwork)]
+    pub fn open_artwork(&mut self, #[param(flatten)] open: SavedArtwork) -> Result<(), Refusal> {
+        let file = crate::document::ArtworkFile::parse(open.file.as_bytes()).map_err(Refusal)?;
+        crate::actions::replace(self, &file)
+    }
+
+    /// Select area.
+    ///
+    /// Select an area: shapes, marks, magic wand (at) or colour; add,
+    /// subtract, intersect, grow, feather, invert. For subject or edge
+    /// refinement invoke find-area (a background job). Then use-selection, or
+    /// clip: "selection" in paint or draw. Bucket fill: select at,
+    /// use-selection fill. Cut-out: subject, use-selection mask. look
+    /// outlines it
+    #[action(answers, prepare = prepare::select)]
+    pub fn select(&mut self, #[param(flatten)] select: Selecting) -> Result<(), Refusal> {
+        let art = self.as_read();
+        select.apply(self, &art)
+    }
+
+    /// Use selection.
+    ///
+    /// Fill or stroke the selection as a mark on a layer, mask the layer to
+    /// it, or clear it from the layer (by its mask, a layer of grey marks).
+    #[action(answers, prepare = prepare::use_selection)]
+    pub fn use_selection(&mut self, #[param(flatten)] using: SelectionUse) -> Result<(), Refusal> {
+        let art = self.as_read();
+        using.apply(self, &art)
+    }
+
+    /// Combine shapes.
+    ///
+    /// Combine shapes into one path mark, in the bottom one's place and
+    /// style.
+    #[action]
+    pub fn combine(&mut self, #[param(flatten)] combine: Combination) -> Result<(), Refusal> {
+        let art = self.as_read();
+        combine.apply(self, &art)
+    }
+}
+
+impl Artwork {
+    /// A new artwork is an empty sheet of paper with one plain layer, so the
+    /// first stroke has somewhere to go.
+    fn genesis() -> Self {
+        let mut art = Self::default();
+        let empty = art.clone();
+        let added = crate::actions::add_layer(
+            &mut art,
+            &empty,
+            &NewLayer {
+                id: Some("layer-1".into()),
+                name: "Layer 1".into(),
+                ..NewLayer::default()
             },
-        )
-        .requiring(PermissionRequirement::Read)
-        .with_description(
-            "Render the artwork at full size (or scaled) as a PNG, JPEG or WebP and answer with its content address.",
         );
-        export.contract.result = ResultSpec::Json {
-            schema: serde_json::json!({"type": "object"}),
-        };
-        let mut diff = view("diff", "Compare versions", params_of::<Diff>(), |args| {
-            ViewOp::Diff(read_args(args).unwrap_or_default())
-        })
-        .with_description(
-            "Compare two versions: marks and layers added, removed or changed by id (with what changed: stacking, shape, fill, …), the changed region, and with look a before|after picture of it.",
+        debug_assert!(
+            added.is_ok(),
+            "the first layer of a blank artwork: {added:?}"
         );
-        diff.contract.result = ResultSpec::Json {
-            schema: serde_json::json!({"type": "object"}),
-        };
-        let [compare, svg] = vector_operations();
-        let mut save = operation(
-            "save-artwork",
-            "Save artwork",
-            OperationKind::Effect,
-            params_of::<SaveArtwork>(),
-            |args| ViewOp::SaveArtwork(read_args(args).unwrap_or_default()),
-        )
-        .with_description(
-            "Save the artwork as a .artwork file open-artwork reads: to a path, or kept as content.",
-        );
-        save.contract.result = ResultSpec::Json {
-            schema: serde_json::json!({"type": "object"}),
-        };
-        vec![look, inspect, media, export, diff, compare, svg, save]
+        art
     }
 
-    fn search(art: &Artwork) -> Vec<SearchEntry> {
+    /// The artwork as read: settled, and what the next action authored here
+    /// finds in it, even before the window has shown it.
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the signature the resource's load hook is called with"
+    )]
+    fn loaded(
+        art: &mut Self,
+        _doc: &Doc,
+        _demand: &tilo_resource::Demand,
+    ) -> Result<(), ModelError> {
+        art.settle();
+        crate::author::read(art);
+        Ok(())
+    }
+
+    /// The artwork by its title and layers, and its named marks.
+    fn entries(&self) -> Vec<SearchEntry> {
         let mut entries = vec![SearchEntry {
             anchor: None,
-            title: if art.title.is_empty() {
+            title: if self.title.is_empty() {
                 "Artwork".into()
             } else {
-                art.title.clone()
+                self.title.clone()
             },
-            text: art
+            text: self
                 .layers
                 .iter()
                 .map(|layer| layer.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
             action: None,
+            ..Default::default()
         }];
         entries.extend(
-            art.marks
+            self.marks
                 .iter()
                 .filter(|mark| !mark.name.is_empty())
                 .map(|mark| SearchEntry {
@@ -812,109 +1001,26 @@ impl Resource for ArtworkResource {
                     title: mark.name.clone(),
                     text: mark.shape.kind().into(),
                     action: None,
+                    ..Default::default()
                 }),
         );
         entries
     }
 }
 
-/// The actions that bring pictures in: a reference to work from, an SVG
-/// as vector marks, a picture as a new artwork.
-fn picture_declarations() -> Vec<ActionDecl<ArtworkResource>> {
-    vec![
-            ActionDecl::new("set-reference", "Set reference", params_of::<SetReference>(), |args, _now| {
-                let mut set: SetReference = read_args(args)?;
-                if let Some(image) = &set.image {
-                    set.image = Some(keep_picture(image)?.0);
-                }
-                Ok(CanvasAction::SetReference(set))
-            })
-            .describe("Set the reference picture to recreate or trace: shown over the artwork at its opacity, seen by look (reference: false hides it) and compare; never exported."),
-            ActionDecl::new("import-svg", "Import SVG", params_of::<crate::svg::ImportSvg>(), |args, _now| {
-                let request: crate::svg::ImportSvg = read_args(args)?;
-                crate::svg::import(&request).map(CanvasAction::Draw)
-            })
-            .describe("Import an SVG (markup, file path or content address) as one draw of path and text marks in a group: fills, gradients, outlines, opacity, blends and clip paths."),
-            ActionDecl::new("open", "Open picture", params_of::<OpenPath>(), |args, _now| {
-                let open: OpenPath = read_args(args)?;
-                let (src, (width, height)) = keep_picture(&open.path)?;
-                Ok(CanvasAction::OpenPicture(crate::actions::Open {
-                    src,
-                    pixels: [width, height],
-                    title: title_of(&open.path),
-                }))
-            })
-            .describe("Open a PNG, JPEG or WebP as a new artwork the size of the picture (a unit per pixel), the picture its first mark, `picture`. Replaces what the artwork held (undo brings it back)."),
-    ]
-}
+impl Artwork {
+    /// Apply `invoke` to `doc` through the door, as a replica of it does.
+    #[cfg(test)]
+    #[allow(clippy::expect_used, reason = "a test fixture refuses loudly")]
+    pub(crate) fn apply_to(doc: &mut Doc, invoke: impl Into<Invoke<Self>>) {
+        let mut replica = tilo_resource::Replica::<Self>::from_doc(std::mem::take(doc));
+        replica.apply(invoke).expect("the change applies");
+        *doc = std::mem::take(replica.doc_mut());
+    }
 
-/// Selecting areas, using the selection and combining shapes.
-fn area_declarations() -> Vec<ActionDecl<ArtworkResource>> {
-    vec![
-            ActionDecl::new("select", "Select area", params_of::<crate::selection::Select>(), |args, _now| {
-            let mut select: crate::selection::Select = read_args(args)?;
-            crate::author::resolve(&mut select)?;
-            Ok(CanvasAction::Select(Box::new(select)))
-        })
-        .describe("Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. look outlines it"),
-        decl::<crate::selection::UseSelection>(
-            "use-selection",
-            "Use selection",
-            "Fill or stroke the selection as a mark on a layer, mask the layer to it, or clear it from the layer (by its mask, a layer of grey marks).",
-            CanvasAction::UseSelection,
-        ),
-        decl::<crate::selection::Combine>(
-            "combine",
-            "Combine shapes",
-            "Combine shapes into one path mark, in the bottom one's place and style.",
-            CanvasAction::Combine,
-        ),
-    ]
-}
-
-/// How a view's arguments become the operation it asks for.
-type Wrap = fn(&ui::tilo_actions::ActionArgs) -> ViewOp;
-
-/// A read-only operation answered by the surface.
-fn operation(
-    id: &str,
-    label: &str,
-    kind: OperationKind,
-    params: Vec<ActionParam>,
-    wrap: Wrap,
-) -> ActionSpec {
-    ActionSpec::typed_operation(id, label, label, kind, VIEW_TYPE, params, move |args| {
-        EncodedAction::encode_operation(VIEW_TYPE, &wrap(args)).unwrap_or_else(|_| EncodedAction {
-            type_id: VIEW_TYPE.into(),
-            payload: Vec::new(),
-        })
-    })
-    .requiring(PermissionRequirement::Read)
-}
-
-/// The views that compare against the reference and export SVG.
-fn vector_operations() -> [ActionSpec; 2] {
-    let mut compare = operation("compare", "Compare with reference", OperationKind::View, params_of::<Compare>(), |args| {
-            ViewOp::Compare(read_args(args).unwrap_or_default())
-        })
-        .with_description(
-            "See the artwork beside (or over, or minus) the reference picture, with a difference score (mean colour distance 0..1 in the reference's frame; lower is closer) and the regions that differ most, to iterate toward it.",
-        );
-    compare.contract.result = ResultSpec::Json {
-        schema: serde_json::json!({"type": "object"}),
-    };
-    let mut svg = operation(
-        "export-svg",
-        "Export SVG",
-        OperationKind::Effect,
-        params_of::<ExportSvg>(),
-        |args| ViewOp::ExportSvg(read_args(args).unwrap_or_default()),
-    )
-        .with_description(
-            "Export the artwork as SVG: plain layers as exact vector art, painted layers as embedded pictures. Answers with its content address and, when small, the markup.",
-        );
-    svg.contract.result = ResultSpec::Json {
-        schema: serde_json::json!({"type": "object"}),
-    };
-    [compare, svg]
+    /// The artwork settled as a verb reads it, and its state before the verb.
+    fn as_read(&mut self) -> Self {
+        self.settle();
+        self.clone()
+    }
 }

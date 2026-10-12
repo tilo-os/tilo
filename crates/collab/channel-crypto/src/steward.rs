@@ -136,6 +136,26 @@ pub struct ChannelSteward<S: StewardStore = FileStewardStore> {
 }
 
 impl ChannelSteward {
+    /// Recover an already-persisted channel without creating a group.
+    /// Uses the same crash recovery and device/channel validation as opening.
+    ///
+    /// # Errors
+    /// Refuses missing, corrupt or undecryptable state and another channel/device.
+    pub fn open_existing(
+        dir: &Path,
+        channel: ChannelId,
+        device_key: SigningKey,
+        vault: &VaultKey,
+    ) -> Result<Self> {
+        complete_now(Self::open_with_creation(
+            FileStewardStore::new(dir, channel),
+            channel,
+            Box::new(device_key),
+            vault,
+            false,
+        ))
+    }
+
     /// Open the steward state for `channel` under `dir`, as [`Self::open`]
     /// does, signing with `device_key`.
     ///
@@ -167,10 +187,20 @@ impl<S: StewardStore> ChannelSteward<S> {
     /// Returns an error for corrupt or undecryptable state, when a fresh
     /// group cannot be written, or when the signer fails.
     pub async fn open(
+        store: S,
+        channel: ChannelId,
+        signer: Box<dyn StewardSigner>,
+        vault: &VaultKey,
+    ) -> Result<Self> {
+        Self::open_with_creation(store, channel, signer, vault, true).await
+    }
+
+    async fn open_with_creation(
         mut store: S,
         channel: ChannelId,
         signer: Box<dyn StewardSigner>,
         vault: &VaultKey,
+        create: bool,
     ) -> Result<Self> {
         let device = signer.device();
         let journal = match store.read(StewardRecord::Journal)? {
@@ -180,6 +210,11 @@ impl<S: StewardStore> ChannelSteward<S> {
         let group = if let Some(sealed) = store.read(StewardRecord::Group)? {
             ChannelGroup::open_sealed(&sealed, vault)?
         } else {
+            if !create {
+                return Err(Error::InvalidState(
+                    "existing steward group is missing".into(),
+                ));
+            }
             if !journal.frames().is_empty() {
                 return Err(Error::InvalidState(
                     "governance journal exists without its steward group".into(),

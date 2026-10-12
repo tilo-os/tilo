@@ -1,6 +1,6 @@
-//! Library target for `quick-terminal`. The binary in `main.rs` delegates
-//! widget construction to this module so the tilo shell can embed a
-//! `TerminalWidget` as an `AppWidget` inside a tile.
+//! The terminal: a [`Terminal`] session resource and the [`TerminalWidget`]
+//! surface that runs its process. The app is [`TerminalShell`]; the shell
+//! also embeds the widget in a tile.
 //!
 //! See [`actions`] for the resource + action-model split: the shared document is
 //! the emulator's live-screen projection, while Ctrl+K exposes real PTY controls
@@ -24,20 +24,22 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
 pub mod actions;
-pub mod framework_history;
 mod graphics;
+pub mod history;
+mod i18n;
+mod native_editor;
+pub mod parse;
 pub mod resource;
+pub mod runs;
+mod scenarios;
+pub mod screen;
 pub mod target;
 
 pub use graphics::TerminalImagePlacement;
@@ -57,9 +59,13 @@ mod inner {
     include!("target_ui.rs");
 }
 
+mod async_open;
 pub mod sessions;
 
 mod app_widget_impl;
+mod view;
+
+pub use view::TerminalView;
 
 /// A short scripted session, typed into a freshly spawned login shell, that
 /// prints a few recognisable lines in that shell's own syntax. Hosts use it to
@@ -78,11 +84,16 @@ pub fn demo_session_input() -> &'static str {
 }
 
 #[cfg(test)]
-mod framework_history_tests;
+mod run_tests;
 #[cfg(test)]
 mod target_tests;
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// Permission to discover the session-owned supervisor on the open worker.
+/// A real host lends this instead of connecting on its compositor thread.
+#[derive(Clone, Copy, Debug)]
+pub struct HostedSessionSource;
 
 /// Process connections explicitly granted to one hosted Terminal instance.
 #[cfg_attr(not(unix), derive(Default))]
@@ -94,9 +105,20 @@ pub struct HostedProcessServices {
 #[cfg(unix)]
 impl Default for HostedProcessServices {
     fn default() -> Self {
-        let ush = xdg_paths::xdg::runtime_dir()
+        let ush = tilo_paths::xdg::runtime_dir()
             .and_then(|runtime| Self::discover_from_runtime_dir(&runtime).ush);
         Self { ush }
+    }
+}
+
+impl HostedProcessServices {
+    /// No process service: a host that shows a terminal (a capture, a
+    /// fixture) without letting it open sessions.
+    pub fn unavailable() -> Self {
+        Self {
+            #[cfg(unix)]
+            ush: None,
+        }
     }
 }
 
@@ -116,12 +138,21 @@ impl HostedProcessServices {
         first: Option<Self>,
         target: &target::SessionTarget,
         requested_by: Requester,
+        relay_session: Option<&str>,
+        cancellation: Option<&runtime_portal::pending_connection::Cancellation>,
     ) -> Result<TerminalBackend, OpenError> {
         let stream = first
             .and_then(|services| services.ush)
             .or_else(|| Self::default().ush)
-            .ok_or_else(|| OpenError::Unavailable("the shell runtime is not running".into()))?;
-        crate::inner::ush_backend_on(&stream, &[], target, requested_by)
+            .ok_or_else(|| {
+                OpenError::NoRuntime("the required ush supervisor is not running".into())
+            })?;
+        if let Some(cancellation) = cancellation {
+            cancellation
+                .track(&stream)
+                .map_err(|e| OpenError::Failed(e.to_string()))?;
+        }
+        crate::inner::ush_backend_on(&stream, &[], target, requested_by, relay_session)
     }
 
     /// One request to the session's supervisor over a fresh connection;
@@ -372,7 +403,20 @@ impl std::fmt::Display for HostedTerminalError {
     }
 }
 impl std::error::Error for HostedTerminalError {}
-pub use resource::{Terminal, TerminalShell};
+pub use resource::{Terminal, TerminalEffect, TerminalShell};
+
+/// The terminal a host mounted, when `widget` is the root of a terminal
+/// tab: for a host's test that types into the terminal it shows.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn mounted_terminal(widget: &mut dyn ui::widget::Widget) -> Option<&mut TerminalWidget> {
+    ui::framework::testing::surface_in_root::<TerminalShell, TerminalView>(widget)
+        .map(TerminalView::terminal_mut)
+}
+
+/// The terminal's application definition: the one every host mounts.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::built_in_definition!(TerminalShell)
+}
 
 /// Without a hosted process-service transport nothing opens here.
 #[cfg(not(unix))]
@@ -386,9 +430,11 @@ impl HostedProcessServices {
         _first: Option<Self>,
         _target: &target::SessionTarget,
         _requested_by: Requester,
+        _relay_session: Option<&str>,
+        _cancellation: Option<&runtime_portal::pending_connection::Cancellation>,
     ) -> Result<TerminalBackend, OpenError> {
-        Err(OpenError::Unavailable(
-            "Tilo hosted terminal service transport is unavailable here".into(),
+        Err(OpenError::NoRuntime(
+            HostedTerminalError::RequiredServiceMissing("ush").to_string(),
         ))
     }
 

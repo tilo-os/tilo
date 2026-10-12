@@ -1,7 +1,28 @@
 //! Focused widget IME intent shared by native windows and browser input bridges.
+/// Keyed, ephemeral equality check for a field's text and selection. This is
+/// invalidation metadata, never a persisted text hash or insertion authority.
+pub fn edit_fingerprint(text: &str, anchor: usize, focus: usize, key: &[u8; 32]) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new_keyed(key);
+    hash.update(&anchor.to_le_bytes());
+    hash.update(&focus.to_le_bytes());
+    hash.update(text.as_bytes());
+    *hash.finalize().as_bytes()
+}
+
+/// Scope a private field stamp to its editable subtarget inside one widget.
+pub fn scoped_fingerprint(scope: &[u8], field: [u8; 32], key: &[u8; 32]) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new_keyed(key);
+    hash.update(b"tilo.ime.subtarget.v1");
+    hash.update(&field);
+    hash.update(scope);
+    *hash.finalize().as_bytes()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImeWindowState {
     pub purpose: winit::window::ImePurpose,
+    /// The original editable field accepts line feeds, independently of its pixels.
+    pub multiline: bool,
     pub x: u32,
     pub y: u32,
     pub width: u32,
@@ -12,6 +33,13 @@ impl ImeWindowState {
     pub fn from_widget(widget: &dyn crate::Widget) -> Option<Self> {
         let purpose = widget.ime_purpose()?;
         let rect = widget.ime_cursor_rect()?;
+        let mut intent = Self::from_rect(purpose, rect);
+        intent.multiline = purpose == winit::window::ImePurpose::Normal && widget.ime_multiline();
+        Some(intent)
+    }
+
+    #[must_use]
+    pub fn from_rect(purpose: winit::window::ImePurpose, rect: vello::kurbo::Rect) -> Self {
         let bounded = |v: f64| {
             if v.is_finite() {
                 #[allow(
@@ -26,13 +54,14 @@ impl ImeWindowState {
                 0
             }
         };
-        Some(ImeWindowState {
+        ImeWindowState {
             purpose,
+            multiline: false,
             x: bounded(rect.x0),
             y: bounded(rect.y0),
             width: bounded(rect.width()).max(1),
             height: bounded(rect.height()).max(1),
-        })
+        }
     }
 }
 
@@ -68,17 +97,8 @@ impl ImeSurroundingText {
         if !text.is_char_boundary(anchor) || !text.is_char_boundary(focus) {
             return None;
         }
-        let mut start = anchor.min(focus).saturating_sub(Self::CONTEXT);
-        while !text.is_char_boundary(start) {
-            start += 1;
-        }
-        let mut end = anchor
-            .max(focus)
-            .saturating_add(Self::CONTEXT)
-            .min(text.len());
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
+        let start = text.ceil_char_boundary(anchor.min(focus).saturating_sub(Self::CONTEXT));
+        let end = text.floor_char_boundary(anchor.max(focus).saturating_add(Self::CONTEXT));
         Some(Self {
             text: text.get(start..end)?.to_owned(),
             anchor: anchor - start,
@@ -102,7 +122,8 @@ mod tests {
                 anchor: 6,
                 focus: 11
             },
-            &mut automerge::AutoCommit::new(),
+            &[],
+            &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
             &automerge::ROOT,
         ));
         assert_eq!(
@@ -112,6 +133,33 @@ mod tests {
                 anchor: 6,
                 focus: 11,
             })
+        );
+    }
+
+    #[test]
+    fn deferred_input_fingerprint_changes_with_selection_at_the_same_caret() {
+        let key = [7; 32];
+        let mut field = TextInput::local().with_initial_value("hello");
+        field.set_focus(true);
+        field.set_cursor_pos(5);
+        let before = field.ime_edit_fingerprint(&key).unwrap();
+        let caret = field.cursor_pos();
+        assert!(field.perform_action(
+            &crate::a11y::Action::SetSelection {
+                anchor: 0,
+                focus: 5
+            },
+            &[],
+            &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+            &automerge::ROOT,
+        ));
+        assert_eq!(field.cursor_pos(), caret);
+        assert_ne!(field.ime_edit_fingerprint(&key).unwrap(), before);
+        assert!(
+            TextInput::local()
+                .with_secret(true)
+                .ime_edit_fingerprint(&key)
+                .is_none()
         );
     }
 

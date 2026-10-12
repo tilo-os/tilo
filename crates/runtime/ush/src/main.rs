@@ -14,11 +14,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -81,6 +77,15 @@ fn dispatch(args: &[String]) -> anyhow::Result<i32> {
     match args.first().map(String::as_str) {
         Some("serve") => cmd_serve(rest),
         Some("guest-init") => guest::init(rest),
+        Some("__approved-check-supervise") => {
+            let path = rest.first().filter(|_| rest.len() == 1).ok_or_else(|| {
+                anyhow::anyhow!("approved-check supervisor requires one private config")
+            })?;
+            ush::approved_checks::run_guest(Path::new(path)).map_err(anyhow::Error::msg)
+        }
+        Some("__approved-check-init") => {
+            ush::approved_checks::run_init(rest).map_err(anyhow::Error::msg)
+        }
         Some("ush" | "run") => host(rest),
         Some("pkg") => guest::pkg(rest),
         Some("perm") => guest::perm(rest),
@@ -145,6 +150,19 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
             }
             "--host-root" => {
                 opts.host_root = PathBuf::from(value()?);
+                i = i.saturating_add(2);
+            }
+            "--editor-fd" => {
+                use std::os::fd::{FromRawFd, OwnedFd};
+                let fd: i32 = value()?.parse()?;
+                // SAFETY: fcntl only probes the supplied integer; ownership begins below.
+                if fd < 3 || opts.editor.is_some() || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0
+                {
+                    anyhow::bail!("invalid inherited editor descriptor");
+                }
+                // SAFETY: this explicit startup argument transfers one inherited FD.
+                let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+                opts.editor = Some(Arc::new(runtime_portal::editor::Socket::adopt(fd)?));
                 i = i.saturating_add(2);
             }
             "--" => {
@@ -230,7 +248,7 @@ fn cmd_serve(args: &[String]) -> anyhow::Result<i32> {
 /// `$XDG_RUNTIME_DIR/tilo/services/ush.sock` — the path `tilo-launcher` looks in
 /// for a `[sandbox.services]` entry named `ush`.
 fn default_service_socket() -> PathBuf {
-    let runtime = xdg_paths::xdg::runtime_dir()
+    let runtime = tilo_paths::xdg::runtime_dir()
         .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })));
     runtime.join("tilo/services/ush.sock")
 }
@@ -262,7 +280,7 @@ mod guest {
         let show_progress = std::io::stderr().is_terminal();
         let mut stdout = std::io::stdout().lock();
         let mut stderr = std::io::stderr().lock();
-        let mut response = ush::broker::ask_streaming_with_progress(
+        ush::broker::ask_streaming_with_progress(
             &broker_socket(),
             req,
             &mut stdout,
@@ -275,15 +293,7 @@ mod guest {
                  work inside a guest — run `ush` first.",
                 broker_socket().display()
             )
-        })?;
-        // Command output was already copied live. Keep `broker::ask`'s fully
-        // buffered response compatible for library callers, but do not replay
-        // it in the guest CLI.
-        if let Response::Command { stdout, stderr, .. } = &mut response {
-            stdout.clear();
-            stderr.clear();
-        }
-        Ok(response)
+        })
     }
 
     fn report(resp: Response) -> i32 {
@@ -349,7 +359,12 @@ explain when the host does not offer them.\n";
             cwd,
         };
         match ask(&request)? {
-            Response::Command { code, .. } => Ok(code),
+            Response::Command { code } => Ok(code),
+            // A relay worker took the launch; the app runs there.
+            Response::Applied { detail } => {
+                println!("{detail}");
+                Ok(0)
+            }
             Response::Denied { reason } => anyhow::bail!("{reason}"),
             other => anyhow::bail!("the broker returned an unexpected response: {other:?}"),
         }
@@ -373,16 +388,8 @@ explain when the host does not offer them.\n";
             }
         }
         match ask(&request)? {
-            Response::Command {
-                code,
-                stdout,
-                stderr,
-            } => {
-                use std::io::Write as _;
-                std::io::stdout().write_all(stdout.as_bytes())?;
-                std::io::stderr().write_all(stderr.as_bytes())?;
-                Ok(code)
-            }
+            // The output already reached the terminal as it was produced.
+            Response::Command { code } => Ok(code),
             Response::Denied { reason } => anyhow::bail!("{reason}"),
             other => anyhow::bail!("the broker returned an unexpected response: {other:?}"),
         }

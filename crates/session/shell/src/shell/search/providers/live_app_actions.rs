@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use tilo_search::{Document, Matching, Page, SearchIndex};
 use ui::search::FieldWeight;
 
+use crate::shell::certified_action_session::ActionSessionSource;
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::i18n::{t, t_args};
 use crate::shell::search::ActionReceipt;
@@ -24,11 +25,9 @@ use crate::shell::search::{
 use crate::shell::collab_broker_capnp::{
     ActionDirectoryRoot, PublishedAction, PublishedInput, PublishedSurface, launchable_provider,
 };
-use crate::shell::remote_actions::BrokerActionHost;
 use tilo_actions::remote::{
-    ActionHost as _, ActionHostError, Caller, CatalogueLimits, CataloguePage, CatalogueQuery,
-    CatalogueRow, Confirmation, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
-    PendingPoll, RemoteActionTarget,
+    ActionHostError, CatalogueLimits, CataloguePage, CatalogueQuery, CatalogueRow, Confirmation,
+    InvocationReceipt, InvokeArgument, InvokeRequest, Pending, PendingPoll, RemoteActionTarget,
 };
 
 pub const PROVIDER_ID: &str = "app-actions";
@@ -37,6 +36,17 @@ pub const PROVIDER_ID: &str = "app-actions";
 /// error; this only bounds a host that never answers.
 const LOCAL_ADMISSION_TIMEOUT: Duration = Duration::from_secs(40);
 const ID_SEPARATOR: char = '\u{1f}';
+
+/// The parts of one live action result id.
+struct ResultParts<'a> {
+    app: &'a str,
+    kind: &'a str,
+    resource_kind: &'a str,
+    cluster: &'a str,
+    record: &'a str,
+    resource: &'a str,
+    action: &'a str,
+}
 const MAX_DIRECTORY_ROOTS_PER_QUERY: usize = 16;
 /// Jobs are an immediate, useful palette hint rather than a second unbounded
 /// search corpus.  They are deliberately a small first stage before remote
@@ -143,6 +153,11 @@ fn directory_start_ticket(
 /// Poll an admission from the frame loop until it answers or `deadline`
 /// passes. Dropped once answered or given up on, so a start still waiting
 /// sees nobody wants it and does not begin after the deadline.
+///
+/// The answer arrives on the broker's thread; it wakes the loop that made
+/// the ticket ([`invocation_wake`](crate::shell::search::invocation_wake)),
+/// so an idle desktop polls it again at once instead of on its next
+/// unrelated wake.
 fn admission_ticket(
     admission: Pending<Result<(u64, InvocationReceipt), ActionHostError>>,
     deadline: Instant,
@@ -150,11 +165,14 @@ fn admission_ticket(
     timed_out: impl Fn() -> ActionError + 'static,
 ) -> PendingInvocation {
     let admission = Rc::new(RefCell::new(Some(admission)));
+    let waker = crate::shell::search::invocation_wake::waker();
     Rc::new(move || {
         let polled = admission
             .borrow_mut()
             .as_mut()
-            .map_or(PendingPoll::Abandoned, Pending::poll_ready);
+            .map_or(PendingPoll::Abandoned, |admission| {
+                crate::shell::search::invocation_wake::poll(admission, &waker)
+            });
         if !matches!(polled, PendingPoll::Waiting) || Instant::now() >= deadline {
             admission.borrow_mut().take();
         }
@@ -237,6 +255,42 @@ fn job_state_label(state: &str) -> String {
     }
 }
 
+/// Display only bounded application-reported progress, never outcome evidence or logs.
+fn job_subtitle(update: &tilo_actions::InvocationUpdate) -> String {
+    let tilo_actions::InvocationUpdate::Progress {
+        phase,
+        completed,
+        total,
+        ..
+    } = update
+    else {
+        return job_state_label(job_state(update));
+    };
+    let phase: String = phase
+        .chars()
+        .take(128)
+        .filter(|ch| !ch.is_control())
+        .collect();
+    let phase = phase.trim();
+    if phase.is_empty() {
+        return job_state_label("running");
+    }
+    let mut args = vec![("phase", phase.into())];
+    if let Some(completed) = completed {
+        args.push(("completed", completed.to_string().into()));
+    }
+    if let Some(total) = total {
+        args.push(("total", total.to_string().into()));
+    }
+    let key = match (completed, total) {
+        (Some(_), Some(_)) => "search-app-job-reported-counts",
+        (Some(_), None) => "search-app-job-reported-completed",
+        (None, Some(_)) => "search-app-job-reported-total",
+        (None, None) => "search-app-job-reported-phase",
+    };
+    t_args(key, &args)
+}
+
 pub fn job_status_id(id: u64) -> String {
     format!("job{ID_SEPARATOR}{id}")
 }
@@ -247,11 +301,11 @@ pub fn job_cancel_id(id: u64) -> String {
 
 pub struct LiveAppActionsProvider {
     broker: AppActionBroker,
-    /// Directory browsing and starts go through the session's action host,
-    /// like every other caller's.
-    host: BrokerActionHost,
+    action_sessions: ActionSessionSource,
     directory_pages: RefCell<HashMap<DirectoryCacheKey, CataloguePage>>,
     directory_pending: RefCell<HashMap<DirectoryCacheKey, PendingDirectoryPage>>,
+    /// Directory contracts are valid only for the publication they describe.
+    directory_source_generation: Cell<(u64, u64)>,
     /// The palette owns at most one needle's directory projection.
     /// Keeping previous query terms made rapid typing retain unbounded pages
     /// and receivers even though no result could ever be rendered again.
@@ -261,6 +315,8 @@ pub struct LiveAppActionsProvider {
     directory_epoch: AtomicU64,
     surface_snapshot: RefCell<Option<SurfaceSnapshot>>,
     surface_build: RefCell<Option<Receiver<SurfaceSnapshot>>>,
+    /// The long-lived index worker, started by the first rebuild.
+    index_worker: RefCell<Option<mpsc::Sender<IndexJob>>>,
     auxiliary_snapshot: RefCell<Option<AuxiliarySnapshot>>,
     projection: Cell<QueryProjection>,
     #[cfg(test)]
@@ -276,6 +332,15 @@ struct SurfaceSnapshot {
     /// The entries' fields keyed by position, best match first. `None` for a
     /// one-row projection of an entry that already matched.
     index: Option<SearchIndex>,
+    machine_index: Option<SearchIndex>,
+}
+
+/// One rebuild the index worker owes: the scope to project, where the
+/// finished snapshot goes, and the loop to wake once it is there.
+struct IndexJob {
+    scope: SurfaceBuildScope,
+    reply: mpsc::SyncSender<SurfaceSnapshot>,
+    wake: std::task::Waker,
 }
 
 #[cfg(test)]
@@ -309,7 +374,7 @@ enum QueryProjection {
 enum AuxiliaryEntry {
     Job {
         id: u64,
-        state: &'static str,
+        subtitle: String,
         cancel: bool,
         actor: String,
     },
@@ -356,11 +421,11 @@ struct AuxiliaryResume {
 /// retained from a closed app names the host's launchable provider, and the
 /// host launches the app before delivering it.
 struct LocalStart {
-    host: BrokerActionHost,
+    action_sessions: ActionSessionSource,
     provider: String,
     room: String,
     address: tilo_actions::ActionAddress,
-    actor: String,
+    expected_person: String,
     confirmation: tilo_actions::ConfirmationPolicy,
     typed_arguments: bool,
     wants_content: bool,
@@ -395,20 +460,26 @@ impl LocalStart {
                 .text("confirmation_phrase")
                 .map(|phrase| Confirmation::Phrase(phrase.to_owned())),
         };
-        self.host.invoke_job(
-            &Caller::local_person(&self.actor).in_room(&self.room),
-            InvokeRequest {
-                invocation: tilo_actions::InvocationId::new(),
-                target: RemoteActionTarget {
-                    provider: self.provider.clone(),
-                    address: self.address.clone(),
-                },
-                argument,
-                context: None,
-                confirmation,
-                revision: None,
+        let session = match self
+            .action_sessions
+            .open(&self.room, Some(&self.expected_person))
+        {
+            Ok(session) => session,
+            Err(error) => return Pending::ready(Err(ActionHostError::Refused { reason: error })),
+        };
+        session.invoke_job(InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: self.provider.clone(),
+                address: self.address.clone(),
             },
-        )
+            argument,
+            context: None,
+            confirmation,
+            revision: None,
+            wait_ms: None,
+        })
     }
 }
 
@@ -418,6 +489,37 @@ fn deadline_after(duration: std::time::Duration) -> std::time::Instant {
 }
 
 impl LiveAppActionsProvider {
+    fn directory_semantic_identity(
+        &self,
+        peer: u64,
+        revision: &str,
+        resource: &str,
+        operation: &str,
+    ) -> Option<tilo_actions::ResourceSemanticIdentity> {
+        let pages = self.directory_pages.borrow();
+        let publisher = peer.to_string();
+        let mut descriptors = pages
+            .iter()
+            .filter(|((cached_peer, _, _, _), page)| {
+                *cached_peer == peer && page.revision == revision
+            })
+            .flat_map(|(_, page)| &page.rows)
+            .filter(|row| row.provider == publisher)
+            .filter_map(|row| row.action.as_ref())
+            .filter(|descriptor| {
+                descriptor.address.resource == resource && descriptor.address.action == operation
+            });
+        let first = descriptors.next()?;
+        let identity = first.semantic_identity.clone()?;
+        (identity.is_valid()
+            && identity.kind == first.resource_kind
+            && descriptors.all(|descriptor| {
+                descriptor.semantic_identity.as_ref() == Some(&identity)
+                    && descriptor.resource_kind == identity.kind
+            }))
+        .then_some(identity)
+    }
+
     fn wants_resource_rows(wanted: &[ResourceKind]) -> bool {
         wanted.is_empty()
             || wanted
@@ -426,21 +528,27 @@ impl LiveAppActionsProvider {
     }
 
     pub fn new(broker: AppActionBroker) -> Self {
-        let host = BrokerActionHost::new(broker.clone());
+        let directory_source_generation = Cell::new((
+            broker.surfaces_generation(),
+            broker.action_directory_root_page(None, 0).generation,
+        ));
         Self {
+            action_sessions: ActionSessionSource::new(broker.clone()),
             broker,
-            host,
             directory_pages: RefCell::new(HashMap::new()),
             directory_pending: RefCell::new(HashMap::new()),
+            directory_source_generation,
             directory_query: RefCell::new(None),
             resource_kinds: vec![
                 ResourceKind::Action,
+                ResourceKind::Custom("action-job".into()),
                 ResourceKind::Custom("Resources".into()),
             ],
             directory_invalidations: Rc::new(RefCell::new(HashSet::new())),
             directory_epoch: AtomicU64::new(0),
             surface_snapshot: RefCell::new(None),
             surface_build: RefCell::new(None),
+            index_worker: RefCell::new(None),
             auxiliary_snapshot: RefCell::new(None),
             projection: Cell::new(QueryProjection::All),
             #[cfg(test)]
@@ -448,6 +556,114 @@ impl LiveAppActionsProvider {
             #[cfg(test)]
             directory_query_probe: RefCell::new(None),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_fixture_identity(broker: AppActionBroker) -> Self {
+        let mut provider = Self::new(broker.clone());
+        provider.action_sessions = ActionSessionSource::fixture(broker);
+        provider
+    }
+
+    /// Settles on the next change to any invocation's status after this
+    /// call. A control reply waiting for its job to settle sleeps on this
+    /// rather than polling the broker; polled with
+    /// [`invocation_wake`](crate::shell::search::invocation_wake), it wakes
+    /// the loop. `None` without a session runtime to watch from.
+    pub fn next_invocation_change(&self) -> Option<Pending<()>> {
+        // Subscribed before the caller reads the status, so a change racing
+        // that read still settles this.
+        let mut statuses = self.broker.invocation_changes();
+        let runtime = crate::session_runtime::runtime().ok()?;
+        let (signal, change) = tilo_actions::remote::pending();
+        drop(runtime.spawn(async move {
+            let moved = tokio::select! {
+                result = statuses.changed() => result.is_ok(),
+                () = signal.abandoned() => false,
+            };
+            // Otherwise the completer drops unanswered, which wakes a waiter
+            // still there all the same.
+            if moved {
+                signal.complete(());
+            }
+        }));
+        Some(change)
+    }
+
+    /// Settles on the next change to any invocation's status or any
+    /// published surface after this call: what can change a listing of
+    /// these actions. A control listing waiting to settle sleeps on this.
+    /// `None` without a session runtime to watch from.
+    pub fn next_listing_change(&self) -> Option<Pending<()>> {
+        let mut statuses = self.broker.invocation_changes();
+        let mut surfaces = self.broker.surface_changes();
+        let runtime = crate::session_runtime::runtime().ok()?;
+        let (signal, change) = tilo_actions::remote::pending();
+        drop(runtime.spawn(async move {
+            let moved = tokio::select! {
+                Ok(()) = statuses.changed() => true,
+                Ok(()) = surfaces.changed() => true,
+                () = signal.abandoned() => false,
+            };
+            if moved {
+                signal.complete(());
+            }
+        }));
+        Some(change)
+    }
+
+    /// The broker's invocation and publication generations: a waiter that
+    /// kept them knows whether either moved since, whatever woke it.
+    pub fn change_generation(&self) -> (u64, u64) {
+        (
+            self.broker.statuses_generation(),
+            self.broker.surfaces_generation(),
+        )
+    }
+
+    fn local_start(
+        &self,
+        surface: &PublishedSurface,
+        action: &PublishedAction,
+        expected_person: String,
+    ) -> LocalStart {
+        LocalStart {
+            action_sessions: self.action_sessions.clone(),
+            provider: if surface.live {
+                surface.peer_id.to_string()
+            } else {
+                launchable_provider(surface)
+            },
+            room: surface.route.cluster_id.clone(),
+            address: tilo_actions::ActionAddress::new(&action.resource, &action.action),
+            expected_person,
+            confirmation: action.contract.advertised_confirmation(),
+            typed_arguments: !action.params.is_empty(),
+            wants_content: matches!(
+                action.input,
+                PublishedInput::Text {
+                    wants_content: true,
+                    ..
+                }
+            ),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_published_for_test(
+        &self,
+        surface: &PublishedSurface,
+        action: &PublishedAction,
+        expected_person: String,
+        supplied: &serde_json::Map<String, serde_json::Value>,
+    ) -> Pending<Result<(u64, InvocationReceipt), ActionHostError>> {
+        let args = crate::shell::search::action_api::ActionArgs::bind_json(
+            &Self::action_params(action),
+            supplied,
+        )
+        .expect("published test arguments match the action descriptor");
+        self.local_start(surface, action, expected_person)
+            .begin(&args)
     }
 
     fn surface_scope(ctx: &SearchContext<'_>) -> String {
@@ -466,7 +682,7 @@ impl LiveAppActionsProvider {
             .map_or("", |scope| scope.resource.as_str());
         format!(
             "{:?}\u{1f}{room}\u{1f}{app}\u{1f}{resource}",
-            ctx.chrome.search_scope
+            ctx.effective_scope()
         )
     }
 
@@ -483,7 +699,7 @@ impl LiveAppActionsProvider {
         let app = ctx.chrome.active_app_id();
         SurfaceBuildScope {
             key: Self::surface_scope(ctx),
-            scope: ctx.chrome.search_scope,
+            scope: ctx.effective_scope(),
             room,
             app,
         }
@@ -529,20 +745,21 @@ impl LiveAppActionsProvider {
                 // memory, cloning before this map turns a large source into
                 // quadratic worker work.
                 let actions = std::mem::take(&mut surface.actions);
-                // Programmatic actions (a generic typed edit) are for agents
-                // and scripts, never a row a person picks.
+                // Retain every address, including actions used by accessibility
+                // and automation. Only the palette's search index hides them.
                 actions
                     .into_iter()
-                    .filter(|action| !action.contract.is_programmatic())
                     .map(move |action| (surface.clone(), action))
             })
             .collect::<Vec<_>>();
-        let index = Some(index_actions(&entries));
+        let index = Some(index_actions(&entries, false));
+        let machine_index = Some(index_actions(&entries, true));
         SurfaceSnapshot {
             source_generation,
             scope: scope.key.clone(),
             entries,
             index,
+            machine_index,
         }
     }
 
@@ -566,39 +783,84 @@ impl LiveAppActionsProvider {
             })
             && self.surface_build.borrow().is_none()
         {
-            let broker = self.broker.clone();
-            let (sender, receiver) = mpsc::sync_channel(1);
-            if std::thread::Builder::new()
-                .name("tilo-live-action-index".into())
-                .spawn({
-                    #[cfg(test)]
-                    let probe = Arc::clone(&self.build_probe);
-                    move || {
-                        let _ = sender.send(Self::build_local_snapshot(
-                            &broker,
-                            &scope,
-                            #[cfg(test)]
-                            &probe,
-                        ));
-                    }
-                })
-                .is_ok()
-            {
+            let (reply, receiver) = mpsc::sync_channel(1);
+            let job = IndexJob {
+                scope,
+                reply,
+                // The finished build wakes the loop that asked for it, so a
+                // listing waiting to be complete is answered when it is.
+                wake: crate::shell::search::invocation_wake::waker(),
+            };
+            if self.send_index_job(job) {
                 *self.surface_build.borrow_mut() = Some(receiver);
             }
         }
     }
 
+    /// Hand one rebuild to the provider's index worker, starting it on the
+    /// first rebuild (or again, once, if it has ended). One long-lived
+    /// worker serves every surface generation rather than a thread each.
+    fn send_index_job(&self, job: IndexJob) -> bool {
+        let mut worker = self.index_worker.borrow_mut();
+        let job = if let Some(jobs) = worker.as_ref() {
+            match jobs.send(job) {
+                Ok(()) => return true,
+                Err(mpsc::SendError(job)) => job,
+            }
+        } else {
+            job
+        };
+        *worker = Self::spawn_index_worker(
+            self.broker.clone(),
+            #[cfg(test)]
+            Arc::clone(&self.build_probe),
+        );
+        worker.as_ref().is_some_and(|jobs| jobs.send(job).is_ok())
+    }
+
+    /// The worker behind [`Self::send_index_job`]. It ends when the provider
+    /// drops its sender.
+    fn spawn_index_worker(
+        broker: AppActionBroker,
+        #[cfg(test)] probe: Arc<BuildProbe>,
+    ) -> Option<mpsc::Sender<IndexJob>> {
+        let (jobs, queue) = mpsc::channel::<IndexJob>();
+        std::thread::Builder::new()
+            .name("tilo-live-action-index".into())
+            .spawn(move || {
+                while let Ok(job) = queue.recv() {
+                    let snapshot = Self::build_local_snapshot(
+                        &broker,
+                        &job.scope,
+                        #[cfg(test)]
+                        &probe,
+                    );
+                    if job.reply.send(snapshot).is_ok() {
+                        job.wake.wake();
+                    }
+                }
+            })
+            .ok()?;
+        Some(jobs)
+    }
+
     fn local_action_candidates(
         &self,
-        needle: &str,
+        ctx: &SearchContext<'_>,
         max_results: usize,
     ) -> Vec<(PublishedSurface, PublishedAction, i32)> {
         let snapshot = self.surface_snapshot.borrow();
         let Some(snapshot) = snapshot.as_ref() else {
             return Vec::new();
         };
-        let Some(index) = &snapshot.index else {
+        if snapshot.scope != Self::surface_scope(ctx) {
+            return Vec::new();
+        }
+        let Some(index) = (if ctx.include_programmatic {
+            &snapshot.machine_index
+        } else {
+            &snapshot.index
+        }) else {
             return snapshot
                 .entries
                 .iter()
@@ -607,7 +869,7 @@ impl LiveAppActionsProvider {
                 .collect();
         };
         index
-            .search(needle, Page::first(max_results))
+            .search(ctx.needle, Page::first(max_results))
             .hits
             .iter()
             .filter_map(|hit| {
@@ -623,6 +885,55 @@ impl LiveAppActionsProvider {
     /// contracts, confirmation handling, and archived-launch behaviour in
     /// precisely one implementation while `query_page` accounts for this
     /// candidate explicitly.
+    /// A disclosed directory descriptor is the canonical route for that
+    /// exact publisher capability. Keep compatibility rows until it arrives.
+    fn has_disclosed_directory_alias(
+        &self,
+        ctx: &SearchContext<'_>,
+        surface: &PublishedSurface,
+        action: &PublishedAction,
+    ) -> bool {
+        let root = self
+            .broker
+            .state()
+            .action_directory_root_page(surface.peer_id.checked_sub(1), 1)
+            .roots
+            .into_iter()
+            .find(|root| {
+                root.peer_id == surface.peer_id
+                    && root.app_id == surface.app_id
+                    && root.cluster_id == surface.route.cluster_id
+                    && root.record_id == surface.route.record_id
+            });
+        if root.is_none() {
+            return false;
+        }
+        let actor = ctx
+            .chrome
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == surface.route.cluster_id)
+            .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room));
+        let Some(actor) = actor else {
+            return false;
+        };
+        let needle = ctx.needle.trim().to_lowercase();
+        self.directory_pages.borrow().iter().any(|(key, page)| {
+            key.0 == surface.peer_id
+                && key.1 == actor
+                && key.2 == needle
+                && page.rows.iter().any(|row| {
+                    row.app_id == surface.app_id
+                        && row.action.as_ref().is_some_and(|descriptor| {
+                            descriptor.address.resource == action.resource
+                                && descriptor.address.action == action.action
+                        })
+                })
+        })
+    }
+
     fn materialize_local_action(
         &self,
         ctx: &SearchContext<'_>,
@@ -638,16 +949,11 @@ impl LiveAppActionsProvider {
             scope,
             entries: vec![(surface, action)],
             index: None,
+            machine_index: None,
         };
         let previous = self.surface_snapshot.replace(Some(temporary));
         let previous_projection = self.projection.replace(QueryProjection::LocalOnly);
-        let results = self.query(SearchContext {
-            needle: ctx.needle,
-            wanted: ctx.wanted,
-            chrome: ctx.chrome,
-            doc: ctx.doc,
-            doc_root: ctx.doc_root,
-        });
+        let results = self.query(*ctx);
         self.projection.set(previous_projection);
         self.surface_snapshot.replace(previous);
         let mut row = results.into_iter().find(|result| result.id == id)?;
@@ -656,33 +962,95 @@ impl LiveAppActionsProvider {
     }
 
     fn poll_directory_pages_at(&self, now: Instant) {
+        let source = (
+            self.broker.surfaces_generation(),
+            self.broker.action_directory_root_page(None, 0).generation,
+        );
+        if self.directory_source_generation.replace(source) != source {
+            // A native edit can change Undo availability without changing the
+            // query, publisher or action address. Retire both old pages and
+            // outstanding replies before observing their previous contracts.
+            self.directory_pages.borrow_mut().clear();
+            self.directory_pending.borrow_mut().clear();
+            self.auxiliary_snapshot.borrow_mut().take();
+            self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+        }
         let mut ready = Vec::new();
+        let mut expired = false;
+        let mut spent = Vec::new();
         self.directory_pending.borrow_mut().retain(|key, pending| {
-            if pending.deadline <= now {
-                return false;
-            }
-            match pending.receiver.poll_ready() {
+            // The UI may have been idle after the reply arrived. The deadline
+            // bounds unanswered work, not how soon a completed page is read.
+            match crate::shell::search::invocation_wake::poll(
+                &mut pending.receiver,
+                &crate::shell::search::invocation_wake::waker(),
+            ) {
                 PendingPoll::Ready(Ok(page)) if !page.stale_cursor => {
                     ready.push((key.clone(), page, pending.initial_page));
                     false
                 }
-                PendingPoll::Ready(_) | PendingPoll::Abandoned => false,
+                PendingPoll::Ready(answer) => {
+                    // A continuation the app no longer holds (each is
+                    // spent once) cannot be asked for again: its chain
+                    // starts over from the first page.
+                    if !key.3.is_empty() && answer.as_ref().is_ok_and(|page| page.stale_cursor) {
+                        spent.push(key.clone());
+                    }
+                    tracing::debug!(
+                        target: "tilo::listing",
+                        peer = key.0,
+                        needle = %key.2,
+                        cursor_bytes = key.3.len(),
+                        error = ?answer.as_ref().err(),
+                        stale_cursor = answer.as_ref().is_ok_and(|page| page.stale_cursor),
+                        "app directory page not kept"
+                    );
+                    false
+                }
+                PendingPoll::Abandoned => {
+                    tracing::debug!(target: "tilo::listing", peer = key.0, "app directory page abandoned");
+                    false
+                }
+                PendingPoll::Waiting if pending.deadline <= now => {
+                    tracing::debug!(target: "tilo::listing", peer = key.0, "app directory page expired");
+                    expired = true;
+                    false
+                }
                 PendingPoll::Waiting => true,
             }
         });
+        if !spent.is_empty() {
+            self.directory_pages.borrow_mut().retain(|existing, _| {
+                !spent
+                    .iter()
+                    .any(|key| existing.0 == key.0 && existing.1 == key.1 && existing.2 == key.2)
+            });
+        }
+        if expired || !spent.is_empty() {
+            // An empty projection must not prevent another bounded request
+            // after a stalled directory ticket has been cancelled.
+            self.auxiliary_snapshot.borrow_mut().take();
+            self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+        }
         if !ready.is_empty() {
             let mut pages = self.directory_pages.borrow_mut();
             for (key, page, initial_page) in ready {
-                // A continuation only needs the page named by its opaque
-                // cursor.  Superseded pages for this same route/query can be
-                // dropped immediately; this bounds a 100k-row remote source
-                // without making later rows unreachable.
-                pages.retain(|existing, _| {
-                    existing == &key
-                        || existing.0 != key.0
-                        || existing.1 != key.1
-                        || existing.2 != key.2
-                });
+                // A first page starts a new chain: the pages of an earlier
+                // one for this route/query continue cursors this page does
+                // not name, so they go. A continuation keeps the chain it
+                // extends: a complete listing walks it again from its first
+                // page, and dropping that page asked the app for it again,
+                // whose answer named a new continuation, never cached, so the
+                // listing never settled. The chain stays bounded by
+                // MAX_RETAINED_DIRECTORY_PAGES.
+                if initial_page {
+                    pages.retain(|existing, _| {
+                        existing == &key
+                            || existing.0 != key.0
+                            || existing.1 != key.1
+                            || existing.2 != key.2
+                    });
+                }
                 if !pages.contains_key(&key)
                     && pages.len() >= MAX_RETAINED_DIRECTORY_PAGES
                     && let Some(evicted) = pages.keys().next().cloned()
@@ -818,17 +1186,17 @@ impl LiveAppActionsProvider {
                 if entries.len() >= root_limit {
                     break;
                 }
-                let state = job_state(&update);
+                let subtitle = job_subtitle(&update);
                 entries.push(AuxiliaryEntry::Job {
                     id,
-                    state,
+                    subtitle: subtitle.clone(),
                     cancel: false,
                     actor: actor.clone(),
                 });
                 if self.broker.can_cancel(id, &actor) && entries.len() < root_limit {
                     entries.push(AuxiliaryEntry::Job {
                         id,
-                        state,
+                        subtitle,
                         cancel: true,
                         actor: actor.clone(),
                     });
@@ -849,7 +1217,7 @@ impl LiveAppActionsProvider {
                 break;
             }
             if !matches!(
-                ctx.chrome.search_scope,
+                ctx.effective_scope(),
                 crate::shell::chrome_state::SearchScope::All
             ) && ctx
                 .chrome
@@ -994,7 +1362,7 @@ impl LiveAppActionsProvider {
         clippy::significant_drop_tightening,
         reason = "the broker handle is cloned once per callback; each clone moves into its own closure"
     )]
-    fn job_result(&self, id: u64, state: &'static str, cancel: bool, actor: &str) -> SearchResult {
+    fn job_result(&self, id: u64, subtitle: &str, cancel: bool, actor: &str) -> SearchResult {
         if cancel {
             let broker = self.broker.clone();
             let actor = actor.to_string();
@@ -1043,7 +1411,7 @@ impl LiveAppActionsProvider {
             provider_id: PROVIDER_ID.into(),
             id: job_status_id(id),
             title: t_args("search-app-job", &[("id", id.to_string().into())]),
-            subtitle: Some(job_state_label(state)),
+            subtitle: Some(subtitle.to_owned()),
             badge: None,
             score: -10,
             params: Vec::new(),
@@ -1090,7 +1458,7 @@ impl LiveAppActionsProvider {
         if cancel && !self.broker.can_cancel(id, &actor) {
             return page;
         }
-        let row = self.job_result(id, job_state(&update), cancel, &actor);
+        let row = self.job_result(id, &job_subtitle(&update), cancel, &actor);
         let bytes = row
             .title
             .len()
@@ -1268,11 +1636,15 @@ impl LiveAppActionsProvider {
         };
         #[cfg(test)]
         self.directory_query_probe.replace(Some(query.clone()));
-        let caller = Caller::local_person(actor).in_room(cluster_id);
+        let Ok(session) = self.action_sessions.open(cluster_id, Some(actor)) else {
+            return;
+        };
         self.directory_pending.borrow_mut().insert(
             key,
             PendingDirectoryPage {
-                receiver: self.host.query(&caller, query),
+                // Its answer wakes the loop: a listing waiting to be complete
+                // is answered when the page is in.
+                receiver: crate::shell::search::invocation_wake::watch(session.query(query)),
                 deadline: deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
                 initial_page: cursor.is_empty(),
             },
@@ -1283,10 +1655,17 @@ impl LiveAppActionsProvider {
     /// action host offers them to the local user of that workspace,
     /// ordered by publisher.
     fn directory_roots(&self, ctx: &SearchContext<'_>) -> (Vec<ActionDirectoryRoot>, String) {
+        self.directory_roots_in(ctx.chrome)
+    }
+
+    /// [`Self::directory_roots`] as `chrome` sees them.
+    fn directory_roots_in(
+        &self,
+        chrome: &crate::shell::chrome_state::ChromeState,
+    ) -> (Vec<ActionDirectoryRoot>, String) {
         let mut roots = Vec::new();
         let mut revision = String::new();
-        let workspace_rooms = ctx
-            .chrome
+        let workspace_rooms = chrome
             .tree()
             .desktop
             .workspaces
@@ -1295,15 +1674,14 @@ impl LiveAppActionsProvider {
             .collect::<Vec<_>>();
         for workspace_room in workspace_rooms {
             let room = workspace_room.to_string();
-            let caller = Caller::local_person(ctx.chrome.local_user_for_room(&workspace_room))
-                .in_room(room.clone());
-            let mut providers = self.host.query(
-                &caller,
-                CatalogueQuery {
-                    max_results: 0,
-                    ..CatalogueQuery::default()
-                },
-            );
+            let expected = chrome.local_user_for_room(&workspace_room);
+            let Ok(session) = self.action_sessions.open(&room, Some(&expected)) else {
+                continue;
+            };
+            let mut providers = session.query(CatalogueQuery {
+                max_results: 0,
+                ..CatalogueQuery::default()
+            });
             // Listing publishers is answered from memory, never an app.
             let PendingPoll::Ready(Ok(page)) = providers.poll_ready() else {
                 continue;
@@ -1328,6 +1706,66 @@ impl LiveAppActionsProvider {
         (roots, revision)
     }
 
+    /// What [`Self::directory_roots_in`] answers changes with, read without
+    /// opening a certified session: the broker's published surfaces and
+    /// directory roots, and per workspace its local Person and that Person's
+    /// identity files. Stamps and counters only, so the palette can ask on
+    /// every tick.
+    fn directory_revision(&self, chrome: &crate::shell::chrome_state::ChromeState) -> String {
+        use std::hash::{Hash as _, Hasher as _};
+        /// Moves on every call while some identity can't be trusted to its
+        /// stamp, so such a revision never matches the previous one.
+        static UNSETTLED: AtomicU64 = AtomicU64::new(0);
+        let rooms = chrome
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.room)
+            .collect::<Vec<_>>();
+        let mut identities = std::collections::hash_map::DefaultHasher::new();
+        for room in rooms {
+            let name = room.to_string();
+            let Some(identity) = self.action_sessions.identity_revision(&name) else {
+                return format!("unsettled-{}", UNSETTLED.fetch_add(1, Ordering::Relaxed));
+            };
+            (name, chrome.local_user_for_room(&room), identity).hash(&mut identities);
+        }
+        format!(
+            "{}.{}.{:016x}",
+            self.broker.surfaces_generation(),
+            self.broker.action_directory_root_page(None, 0).generation,
+            identities.finish()
+        )
+    }
+
+    /// The drill-down scope for `resource` of the app `app_id` in the active
+    /// workspace, labelled `label`, as entering it from a directory row
+    /// would set it. `None` while the app publishes no browsable directory
+    /// there.
+    pub(crate) fn resource_scope_for(
+        &self,
+        chrome: &crate::shell::chrome_state::ChromeState,
+        app_id: &str,
+        resource: &str,
+        label: &str,
+    ) -> Option<crate::shell::chrome_state::SearchResourceScope> {
+        let workspace_room = chrome.tree().desktop.active_workspace()?.room.to_string();
+        let root = self
+            .directory_roots_in(chrome)
+            .0
+            .into_iter()
+            .find(|root| root.app_id == app_id && root.cluster_id == workspace_room)?;
+        Some(crate::shell::chrome_state::SearchResourceScope {
+            peer_id: root.peer_id,
+            cluster_id: root.cluster_id,
+            app_id: root.app_id,
+            resource: resource.to_owned(),
+            label: label.to_owned(),
+            kind: String::new(),
+        })
+    }
+
     /// One bounded page of [`Self::directory_roots`] after `after_peer`,
     /// with the continuation for the next.
     fn directory_root_page(
@@ -1348,34 +1786,49 @@ impl LiveAppActionsProvider {
         (page, next)
     }
 
-    fn result_parts(id: &str) -> Option<(&str, &str, &str, &str, &str, &str)> {
+    fn result_parts(id: &str) -> Option<ResultParts<'_>> {
         let mut parts = id.split(ID_SEPARATOR);
         let app = parts.next()?;
-        let permission = parts.next()?;
+        let kind = parts.next()?;
+        let resource_kind = parts.next()?;
         let cluster = parts.next()?;
         let record = parts.next()?;
         let resource = parts.next()?;
         let action = parts.next()?;
-        parts
-            .next()
-            .is_none()
-            .then_some((app, permission, cluster, record, resource, action))
+        parts.next().is_none().then_some(ResultParts {
+            app,
+            kind,
+            resource_kind,
+            cluster,
+            record,
+            resource,
+            action,
+        })
     }
 
-    pub fn capability_target(
+    /// The action one result id names, as a node below the room and the
+    /// kind of action it is.
+    pub fn action_target(
         id: &str,
-    ) -> Option<(&str, tilo_actions::PermissionRequirement, &str)> {
-        let (app, permission, _cluster, _record, _resource, action) = Self::result_parts(id)?;
-        let permission = match permission {
-            "none" => tilo_actions::PermissionRequirement::None,
-            "read" => tilo_actions::PermissionRequirement::Read,
-            "comment" => tilo_actions::PermissionRequirement::Comment,
-            "write" => tilo_actions::PermissionRequirement::Write,
-            "invite" => tilo_actions::PermissionRequirement::Invite,
-            "admin" => tilo_actions::PermissionRequirement::Admin,
+    ) -> Option<(tilo_action_policy::TreePath, tilo_actions::ActionKind)> {
+        let parts = Self::result_parts(id)?;
+        let kind = match parts.kind {
+            "read" => tilo_actions::ActionKind::Read,
+            "undoable" => tilo_actions::ActionKind::Undoable,
+            "outside" => tilo_actions::ActionKind::Outside,
             _ => return None,
         };
-        Some((app, permission, action))
+        Some((
+            tilo_actions::action_node(
+                &tilo_action_policy::TreePath::root(),
+                parts.app,
+                parts.resource_kind,
+                parts.resource,
+                None,
+                parts.action,
+            ),
+            kind,
+        ))
     }
 
     /// The application, room, record, resource, and operation represented by
@@ -1387,23 +1840,28 @@ impl LiveAppActionsProvider {
     /// context. Keep the decoding beside `Self::result_id`, where the wire
     /// address is minted, rather than making those integrations duplicate it.
     pub fn hierarchy(id: &str) -> Option<(&str, &str, &str, &str, &str)> {
-        let (app, _permission, cluster, record, resource, action) = Self::result_parts(id)?;
-        Some((app, cluster, record, resource, action))
+        let parts = Self::result_parts(id)?;
+        Some((
+            parts.app,
+            parts.cluster,
+            parts.record,
+            parts.resource,
+            parts.action,
+        ))
     }
 
     fn result_id(surface: &PublishedSurface, action: &PublishedAction) -> String {
         format!(
-            "{}{}{}{}{}{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}{}{}{}{}{}{}",
             surface.app_id,
             ID_SEPARATOR,
-            match action.contract.permission {
-                tilo_actions::PermissionRequirement::None => "none",
-                tilo_actions::PermissionRequirement::Read => "read",
-                tilo_actions::PermissionRequirement::Comment => "comment",
-                tilo_actions::PermissionRequirement::Write => "write",
-                tilo_actions::PermissionRequirement::Invite => "invite",
-                tilo_actions::PermissionRequirement::Admin => "admin",
+            match action.contract.kind {
+                tilo_actions::ActionKind::Read => "read",
+                tilo_actions::ActionKind::Undoable => "undoable",
+                tilo_actions::ActionKind::Outside => "outside",
             },
+            ID_SEPARATOR,
+            action.resource_kind,
             ID_SEPARATOR,
             surface.route.cluster_id,
             ID_SEPARATOR,
@@ -1448,10 +1906,9 @@ impl LiveAppActionsProvider {
         needle: &str,
         actor: &str,
         cursor: &[u8],
-    ) -> Option<SearchResult> {
-        if descriptor.contract.is_programmatic() {
-            return None;
-        }
+    ) -> SearchResult {
+        // Exact addresses also materialize programmatic actions; browse
+        // callers filter their visibility before reaching this shared path.
         // The app's own index found this row for the needle.
         let score = crate::shell::search::remote_score(
             needle,
@@ -1461,7 +1918,7 @@ impl LiveAppActionsProvider {
         let contract = descriptor.contract.clone();
         let mut params = descriptor.params.clone();
         push_confirmation_params(&mut params, &contract.advertised_confirmation());
-        let host = self.host.clone();
+        let action_sessions = self.action_sessions.clone();
         let peer_id = root.peer_id;
         let cluster_id = root.cluster_id.clone();
         let revision = revision.to_string();
@@ -1472,7 +1929,7 @@ impl LiveAppActionsProvider {
         let typed = !descriptor.params.is_empty();
         let resource = address.resource.clone();
         let action = address.action.clone();
-        Some(SearchResult {
+        SearchResult {
             kind: ResourceKind::Action,
             operation_kind: descriptor.kind,
             provider_id: PROVIDER_ID.into(),
@@ -1510,9 +1967,11 @@ impl LiveAppActionsProvider {
                 // The same non-blocking door, confirmation check and
                 // idempotent ledger every other caller uses; the owner
                 // re-resolves the row at `revision` before anything starts.
-                let admission = host.invoke_job(
-                    &Caller::local_person(&actor).in_room(&cluster_id),
-                    InvokeRequest {
+                let admission = action_sessions
+                    .open(&cluster_id, Some(&actor))
+                    .map_err(ActionError::Refused)?
+                    .invoke_job(InvokeRequest {
+                        on_behalf_of: None,
                         invocation: tilo_actions::InvocationId::new(),
                         target: RemoteActionTarget {
                             provider: peer_id.to_string(),
@@ -1522,8 +1981,8 @@ impl LiveAppActionsProvider {
                         context: None,
                         confirmation,
                         revision: Some(revision.clone()),
-                    },
-                );
+                        wait_ms: None,
+                    });
                 let ticket = directory_start_ticket(
                     admission,
                     Rc::clone(&invalidations),
@@ -1532,7 +1991,7 @@ impl LiveAppActionsProvider {
                 );
                 Ok(InvocationDisposition::Pending(ticket))
             })),
-        })
+        }
     }
 
     fn directory_resource_result(
@@ -1650,6 +2109,8 @@ impl SearchProvider for LiveAppActionsProvider {
                 record: root.record_id,
                 resource: resource.into(),
                 operation: operation.into(),
+                semantic_identity: self
+                    .directory_semantic_identity(peer, revision, resource, operation),
             });
         }
         let (application, room, record, resource, operation) = Self::hierarchy(id)?;
@@ -1659,6 +2120,26 @@ impl SearchProvider for LiveAppActionsProvider {
             record: record.into(),
             resource: resource.into(),
             operation: operation.into(),
+            semantic_identity: self
+                .surface_snapshot
+                .borrow()
+                .as_ref()
+                .filter(|snapshot| snapshot.source_generation == self.broker.surfaces_generation())
+                .and_then(|snapshot| {
+                    snapshot
+                        .entries
+                        .iter()
+                        .find(|(surface, action)| Self::result_id(surface, action) == id)
+                        .and_then(|(_, action)| {
+                            action
+                                .semantic_identity
+                                .as_ref()
+                                .filter(|identity| {
+                                    identity.is_valid() && identity.kind == action.resource_kind
+                                })
+                                .cloned()
+                        })
+                }),
         })
     }
 
@@ -1746,7 +2227,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     continue;
                 }
                 if !matches!(
-                    ctx.chrome.search_scope,
+                    ctx.effective_scope(),
                     crate::shell::chrome_state::SearchScope::All
                 ) && ctx
                     .chrome
@@ -1792,16 +2273,16 @@ impl SearchProvider for LiveAppActionsProvider {
                 if let Some(page) = page {
                     for row in page.rows {
                         if let Some(descriptor) = row.action
-                            && let Some(result) = self.directory_action_result(
+                            && (ctx.include_programmatic || !descriptor.contract.is_programmatic())
+                        {
+                            results.push(self.directory_action_result(
                                 &root,
                                 &page.revision,
                                 &descriptor,
                                 &needle,
                                 &root_actor,
                                 &[],
-                            )
-                        {
-                            results.push(result);
+                            ));
                         }
                     }
                 }
@@ -1811,7 +2292,6 @@ impl SearchProvider for LiveAppActionsProvider {
             && (needle.is_empty() || "jobs status progress".contains(&needle))
         {
             for (id, update) in self.broker.statuses(&actor) {
-                let state = job_state(&update);
                 let status_broker = self.broker.clone();
                 results.push(SearchResult {
                     kind: ResourceKind::Custom("action-job".into()),
@@ -1819,7 +2299,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     provider_id: PROVIDER_ID.into(),
                     id: job_status_id(id),
                     title: t_args("search-app-job", &[("id", id.to_string().into())]),
-                    subtitle: Some(job_state_label(state)),
+                    subtitle: Some(job_subtitle(&update)),
                     badge: None,
                     score: -10,
                     params: Vec::new(),
@@ -1874,9 +2354,36 @@ impl SearchProvider for LiveAppActionsProvider {
         }
         if self.projection.get() != QueryProjection::All {
             for (surface, owned_action, rank) in
-                self.local_action_candidates(&needle, SearchBudget::PALETTE.max_results)
+                self.local_action_candidates(&ctx, SearchBudget::PALETTE.max_results)
             {
+                // The index is a retained search accelerator, not a live
+                // publication. A closed/replaced window can disappear while
+                // its replacement index is still building. Resolve only this
+                // bounded candidate, preserving its disclosed authority, and
+                // construct metadata and callbacks from the selected source.
+                let id = Self::result_id(&surface, &owned_action);
+                let Some((surface, owned_action)) = self.broker.published_action(
+                    &surface.route,
+                    &owned_action.resource,
+                    &owned_action.action,
+                ) else {
+                    continue;
+                };
+                if Self::result_id(&surface, &owned_action) != id {
+                    continue;
+                }
                 let action = &owned_action;
+                let expected_person = ctx
+                    .chrome
+                    .tree()
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.room.to_string() == surface.route.cluster_id)
+                    .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room));
+                let Some(expected_person) = expected_person else {
+                    continue;
+                };
                 let unavailable_reason = match &action.contract.availability {
                     tilo_actions::Availability::Available => None,
                     tilo_actions::Availability::Unavailable { reason, .. } => Some(reason.clone()),
@@ -1884,26 +2391,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 let score = crate::shell::search::provider_score(rank);
                 let params = Self::action_params(action);
                 let surface_live = surface.live;
-                let start = Rc::new(LocalStart {
-                    host: self.host.clone(),
-                    provider: if surface_live {
-                        surface.peer_id.to_string()
-                    } else {
-                        launchable_provider(&surface)
-                    },
-                    room: surface.route.cluster_id.clone(),
-                    address: tilo_actions::ActionAddress::new(&action.resource, &action.action),
-                    actor: actor.clone(),
-                    confirmation: action.contract.advertised_confirmation(),
-                    typed_arguments: !action.params.is_empty(),
-                    wants_content: matches!(
-                        action.input,
-                        PublishedInput::Text {
-                            wants_content: true,
-                            ..
-                        }
-                    ),
-                });
+                let start = Rc::new(self.local_start(&surface, action, expected_person));
                 // Availability on a retained launchable descriptor is only a
                 // last-known hint. The host launches the app first and lets
                 // the freshly published surface decide; otherwise an app
@@ -2002,11 +2490,50 @@ impl SearchProvider for LiveAppActionsProvider {
         }
         let mut fields = id.split(ID_SEPARATOR);
         if fields.next() != Some("directory") {
-            return self
-                .query_page(ctx, None, SearchBudget::PALETTE)
-                .results
-                .into_iter()
-                .find(|result| result.id == id);
+            if Self::result_parts(id).is_none() {
+                return self
+                    .query_page(ctx, None, SearchBudget::PALETTE)
+                    .results
+                    .into_iter()
+                    .find(|result| result.id == id);
+            }
+            // An explicit All-scope lookup already addresses its resource.
+            // Implicit palette lookups still respect the browsed resource.
+            if ctx.chrome.search_resource_scope.is_some()
+                && ctx.query_scope != Some(crate::shell::chrome_state::SearchScope::All)
+            {
+                return None;
+            }
+            let (app, cluster, record, resource, action) = Self::hierarchy(id)?;
+            let scope = Self::build_scope(&ctx);
+            let in_scope = match scope.scope {
+                crate::shell::chrome_state::SearchScope::All => true,
+                crate::shell::chrome_state::SearchScope::Workspace => {
+                    scope.room.as_deref() == Some(cluster)
+                }
+                crate::shell::chrome_state::SearchScope::ActiveApp => {
+                    scope.room.as_deref() == Some(cluster)
+                        && scope
+                            .app
+                            .as_deref()
+                            .is_some_and(|active| active.eq_ignore_ascii_case(app))
+                }
+            };
+            if !in_scope {
+                return None;
+            }
+            let route = crate::shell::collab_broker::CrdtRoute {
+                app_id: app.into(),
+                cluster_id: cluster.into(),
+                record_id: record.into(),
+            };
+            let candidate = self.broker.published_action(&route, resource, action)?;
+            // The opaque address includes its permission requirement. Never
+            // use an old address with a newly changed contract or route.
+            if Self::result_id(&candidate.0, &candidate.1) != id {
+                return None;
+            }
+            return self.materialize_local_action(&ctx, candidate.0, candidate.1, 0);
         }
         let peer_id = fields.next()?.parse::<u64>().ok()?;
         let revision = fields.next()?;
@@ -2024,7 +2551,7 @@ impl SearchProvider for LiveAppActionsProvider {
             .into_iter()
             .find(|root| root.peer_id == peer_id)?;
         if !matches!(
-            ctx.chrome.search_scope,
+            ctx.effective_scope(),
             crate::shell::chrome_state::SearchScope::All
         ) && ctx
             .chrome
@@ -2056,7 +2583,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 })
             },
         )?;
-        self.directory_action_result(&root, revision, &cached.0, &cached.1, &actor, &cached.2)
+        Some(self.directory_action_result(&root, revision, &cached.0, &cached.1, &actor, &cached.2))
             .filter(|result| result.id == id)
     }
 
@@ -2076,14 +2603,44 @@ impl SearchProvider for LiveAppActionsProvider {
                 snapshot.source_generation == source_generation && snapshot.scope == scope
             });
         format!(
-            "{}:{source_generation}:{}:{}:{}:{}",
+            "{}:{source_generation}:{}:{}:{}:{}:{}:{}",
             if ready { "ready" } else { "indexing" },
             self.directory_epoch.load(Ordering::Relaxed),
             // Listing publishers is a memory read; it never asks an app.
-            self.directory_roots(ctx).1,
+            self.directory_revision(ctx.chrome),
             self.broker.statuses_generation(),
             ctx.chrome.active_local_user(),
+            ctx.include_programmatic,
+            crate::shell::i18n::current_locale(),
         )
+    }
+
+    /// Settling while the local index for this scope is not built from the
+    /// current publications, or while a directory page is still owed. Both
+    /// wake the loop that asked when they land.
+    fn index_settling(&self, ctx: &SearchContext<'_>) -> bool {
+        let scope = Self::surface_scope(ctx);
+        let source_generation = self.broker.surfaces_generation();
+        let built = self
+            .surface_snapshot
+            .borrow()
+            .as_ref()
+            .map(|snapshot| (snapshot.source_generation, snapshot.scope == scope));
+        let ready = built == Some((source_generation, true));
+        let pending = self.directory_pending.borrow().len();
+        if !ready || pending > 0 {
+            // Why a listing is not complete yet, for whoever has to find
+            // out why one never settles.
+            tracing::debug!(
+                target: "tilo::listing",
+                source_generation,
+                ?built,
+                building = self.surface_build.borrow().is_some(),
+                pending_directory_pages = pending,
+                "app actions still settling"
+            );
+        }
+        !ready || pending > 0
     }
 
     #[allow(
@@ -2203,7 +2760,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 let row = match entry {
                     AuxiliaryEntry::Job {
                         id,
-                        state,
+                        subtitle,
                         cancel,
                         actor,
                     } => {
@@ -2212,7 +2769,7 @@ impl SearchProvider for LiveAppActionsProvider {
                             work = work.saturating_add(1);
                             continue;
                         }
-                        self.job_result(*id, state, *cancel, actor)
+                        self.job_result(*id, subtitle, *cancel, actor)
                     }
                     AuxiliaryEntry::Directory {
                         root,
@@ -2221,20 +2778,17 @@ impl SearchProvider for LiveAppActionsProvider {
                         actor,
                         cursor,
                     } => {
-                        if !ctx.wanted.is_empty() && !ctx.wanted.contains(&ResourceKind::Action) {
+                        if (descriptor.contract.is_programmatic() && !ctx.include_programmatic)
+                            || (!ctx.wanted.is_empty()
+                                && !ctx.wanted.contains(&ResourceKind::Action))
+                        {
                             position = position.saturating_add(1);
                             work = work.saturating_add(1);
                             continue;
                         }
-                        if let Some(row) = self.directory_action_result(
+                        self.directory_action_result(
                             root, revision, descriptor, &needle, actor, cursor,
-                        ) {
-                            row
-                        } else {
-                            position = position.saturating_add(1);
-                            work = work.saturating_add(1);
-                            continue;
-                        }
+                        )
                     }
                     AuxiliaryEntry::Resource { root, row } => {
                         if !Self::wants_resource_rows(ctx.wanted) {
@@ -2323,7 +2877,17 @@ impl SearchProvider for LiveAppActionsProvider {
             let Some(snapshot) = snapshot.as_ref() else {
                 return SearchPage::exhausted(revision, results);
             };
-            let Some(index) = &snapshot.index else {
+            // A completed projection may belong to the preceding palette scope
+            // while its replacement builds. Never publish those rows in the
+            // new scope, even when their current permission is unchanged.
+            if snapshot.scope != scope {
+                return SearchPage::exhausted(revision, results);
+            }
+            let Some(index) = (if ctx.include_programmatic {
+                &snapshot.machine_index
+            } else {
+                &snapshot.index
+            }) else {
                 return SearchPage::exhausted(revision, results);
             };
             let found = index.search(
@@ -2347,9 +2911,20 @@ impl SearchProvider for LiveAppActionsProvider {
         };
         let mut considered = 0usize;
         for candidate in candidates {
-            let row = candidate.and_then(|(surface, action, rank)| {
-                self.materialize_local_action(&ctx, surface, action, rank)
-            });
+            let row = candidate
+                .filter(|(surface, action, _)| {
+                    !self.has_disclosed_directory_alias(&ctx, surface, action)
+                })
+                .and_then(|(surface, action, rank)| {
+                    self.materialize_local_action(&ctx, surface, action, rank)
+                })
+                .filter(|row| {
+                    ctx.include_programmatic
+                        || !row
+                            .contract
+                            .as_ref()
+                            .is_some_and(tilo_actions::ActionContract::is_programmatic)
+                });
             if let Some(row) = row {
                 let row_bytes = row
                     .title
@@ -2372,19 +2947,28 @@ impl SearchProvider for LiveAppActionsProvider {
 }
 
 /// Index the fields a local action row ranks by, keyed by position.
-fn index_actions(entries: &[(PublishedSurface, PublishedAction)]) -> SearchIndex {
+fn index_actions(
+    entries: &[(PublishedSurface, PublishedAction)],
+    include_programmatic: bool,
+) -> SearchIndex {
     let mut index = SearchIndex::new(Matching {
         spanning: true,
         typos: false,
     });
-    index.replace_all(entries.iter().enumerate().map(|(at, (surface, action))| {
-        Document::new(at as u64)
-            .field(action.action_label.as_str(), FieldWeight::TITLE)
-            .field(action.resource_label.as_str(), FieldWeight::SUBTITLE)
-            .field(action.action.as_str(), FieldWeight::IDENTITY)
-            .field(action.resource.as_str(), FieldWeight::IDENTITY)
-            .field(surface.app_id.as_str(), FieldWeight::METADATA)
-    }));
+    index.replace_all(
+        entries
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, action))| include_programmatic || !action.contract.is_programmatic())
+            .map(|(at, (surface, action))| {
+                Document::new(at as u64)
+                    .field(action.action_label.as_str(), FieldWeight::TITLE)
+                    .field(action.resource_label.as_str(), FieldWeight::SUBTITLE)
+                    .field(action.action.as_str(), FieldWeight::IDENTITY)
+                    .field(action.resource.as_str(), FieldWeight::IDENTITY)
+                    .field(surface.app_id.as_str(), FieldWeight::METADATA)
+            }),
+    );
     if let Err(error) = index.commit() {
         tracing::error!(%error, "could not index live app actions");
     }
@@ -2398,7 +2982,7 @@ pub(crate) fn fixture_with_directory_page(
     actor: String,
     page: CataloguePage,
 ) -> Rc<dyn SearchProvider> {
-    let provider = Rc::new(LiveAppActionsProvider::new(broker));
+    let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(broker));
     provider
         .directory_pages
         .borrow_mut()
@@ -2414,7 +2998,6 @@ pub(crate) fn fixture_with_directory_page(
 mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use super::{
@@ -2432,7 +3015,6 @@ mod tests {
     };
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
-    use parking_lot::RwLock;
     use tilo_actions::remote::{
         ActionHostError, CataloguePage, CatalogueResource, CatalogueRow, pending,
     };
@@ -2443,6 +3025,8 @@ mod tests {
         doc: &'a AutoCommit,
     ) -> SearchContext<'a> {
         SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle,
             wanted: &[ResourceKind::Action],
             chrome,
@@ -2458,7 +3042,8 @@ mod tests {
             .workspaces
             .push(Workspace::new(WorkspaceId(1), "Search fixture"));
         workspace_tree.desktop.active = WorkspaceId(1);
-        let tree: WorkspaceTreeHandle = Arc::new(RwLock::new(workspace_tree));
+        let tree: WorkspaceTreeHandle =
+            crate::shell::state::WorkspaceTreeHandle::new(workspace_tree);
         ChromeState::new_with_handle(tree)
     }
 
@@ -2470,6 +3055,28 @@ mod tests {
     }
 
     #[test]
+    fn search_revision_opens_no_session_when_nothing_changed() {
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+        );
+        let chrome = chrome();
+        let chrome = chrome.borrow();
+        let doc = AutoCommit::new();
+        let ctx = context("", &chrome, &doc);
+        let first = provider.search_revision(&ctx);
+        assert_eq!(provider.search_revision(&ctx), first);
+        assert_eq!(
+            provider.action_sessions.opens(),
+            0,
+            "the palette tick reads stamps and counters, never a certified session"
+        );
+        // Listing the roots themselves still goes through each workspace's session.
+        let _ = provider.directory_roots(&ctx);
+        assert!(provider.action_sessions.opens() > 0);
+        assert_eq!(provider.search_revision(&ctx), first);
+    }
+
+    #[test]
     fn job_receipts_resolve_beyond_the_preview_and_only_for_their_actor() {
         fn ctx<'a>(
             chrome: &'a crate::shell::chrome_state::ChromeState,
@@ -2477,6 +3084,8 @@ mod tests {
             doc: &'a AutoCommit,
         ) -> SearchContext<'a> {
             SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "",
                 wanted,
                 chrome,
@@ -2488,7 +3097,7 @@ mod tests {
         let chrome = chrome();
         let broker =
             crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
-        let provider = LiveAppActionsProvider::new(broker.clone());
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
         let doc = AutoCommit::new();
         let actor = chrome.borrow().active_local_user();
         let wanted = provider.resource_kinds().to_vec();
@@ -2533,8 +3142,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn action_catalog_routes_receipts_through_the_registered_job_kind() {
+        use crate::shell::search::SearchRegistry;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+
+        let chrome = chrome();
+        let broker =
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let actor = chrome.borrow().active_local_user();
+        broker.record_completion_for_test(17, &actor, succeeded(17));
+        broker.record_completion_for_test(18, "someone-else", succeeded(18));
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(LiveAppActionsProvider::new_with_fixture_identity(
+            broker,
+        )));
+        let mut doc = AutoCommit::new();
+        for (id, visible) in [(17, true), (18, false), (19, false)] {
+            let resource = ResourceRef::new(PROVIDER_ID, super::job_status_id(id));
+            let catalog = ActionCatalog::build_for_resource(
+                &registry,
+                &resource,
+                crate::shell::chrome_state::SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &automerge::ROOT,
+                &AllVisible,
+            );
+            let selected = catalog.select(&resource);
+            assert_eq!(selected.is_some(), visible);
+            if let Some(selected) = selected {
+                let disposition = selected
+                    .invoke_nullary(
+                        &mut ui::widget::Edits::lend(&mut doc),
+                        &automerge::ROOT,
+                        &chrome,
+                    )
+                    .unwrap();
+                let crate::shell::search::InvocationDisposition::Accepted(receipt) = disposition
+                else {
+                    panic!("an existing receipt must resolve immediately");
+                };
+                assert_eq!(receipt.broker_invocation_id, Some(id));
+                assert_eq!(receipt.update, succeeded(id));
+            }
+        }
+    }
+
     fn exported(label: &str, action: &str) -> tilo_actions::ActionDescriptor {
         tilo_actions::ActionDescriptor {
+            semantic_identity: None,
             address: tilo_actions::ActionAddress::new(format!("resource:{action}"), action),
             resource_kind: "fixture".into(),
             resource_label: "Fixture".into(),
@@ -2547,6 +3205,122 @@ mod tests {
             params: Vec::new(),
             view: None,
         }
+    }
+
+    #[test]
+    fn hierarchy_projects_only_exact_retained_semantic_identity() {
+        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+            peer_id: 9,
+            app_id: "so.tilo.store".into(),
+            cluster_id: "room".into(),
+            record_id: "record".into(),
+        }]);
+        let provider = LiveAppActionsProvider::new(broker);
+        let identity =
+            tilo_actions::ResourceSemanticIdentity::new("store.app", "app:so.tilo.chat").unwrap();
+        let mut descriptor = exported("Misleading label", "open");
+        descriptor.resource_kind = "store.app".into();
+        descriptor.semantic_identity = Some(identity.clone());
+        let row = CatalogueRow {
+            provider: "9".into(),
+            app_id: "so.tilo.store".into(),
+            parent_resource: String::new(),
+            resource: CatalogueResource {
+                id: descriptor.address.resource.clone(),
+                kind: "fixture".into(),
+                label: "Not an identity".into(),
+                presentation: None,
+            },
+            action: Some(descriptor),
+            has_children: false,
+            visibility: None,
+        };
+        provider.directory_pages.borrow_mut().insert(
+            (9, "actor".into(), String::new(), Vec::new()),
+            page(vec![row.clone()], Vec::new()),
+        );
+        let id = ["directory", "9", "r1", "resource:open", "open"].join(&ID_SEPARATOR.to_string());
+        assert_eq!(
+            provider.action_hierarchy(&id).unwrap().semantic_identity,
+            Some(identity)
+        );
+        assert!(
+            provider
+                .action_hierarchy(&id.replace("r1", "r0"))
+                .unwrap()
+                .semantic_identity
+                .is_none()
+        );
+        let mut conflicting = row;
+        conflicting.action.as_mut().unwrap().semantic_identity =
+            tilo_actions::ResourceSemanticIdentity::new("store.app", "other");
+        provider.directory_pages.borrow_mut().insert(
+            (9, "actor".into(), "another-query".into(), Vec::new()),
+            page(vec![conflicting], Vec::new()),
+        );
+        assert!(
+            provider
+                .action_hierarchy(&id)
+                .unwrap()
+                .semantic_identity
+                .is_none()
+        );
+        provider.directory_pages.borrow_mut().clear();
+        assert!(
+            provider
+                .action_hierarchy(&id)
+                .unwrap()
+                .semantic_identity
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn local_hierarchy_identity_requires_current_retained_descriptor() {
+        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let provider = LiveAppActionsProvider::new(broker.clone());
+        let mut action = local_action("Display label is not identity", "open");
+        action.resource_kind = "store.app".into();
+        action.resource = "opaque-address".into();
+        let identity =
+            tilo_actions::ResourceSemanticIdentity::new("store.app", "app:so.tilo.chat").unwrap();
+        action.semantic_identity = Some(identity.clone());
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.store".into(),
+            route: CrdtRoute::app("so.tilo.store", "room"),
+            actions: vec![action.clone()],
+            live: true,
+        };
+        let entries = vec![(surface.clone(), action)];
+        let id = LiveAppActionsProvider::result_id(&surface, surface.actions.first().unwrap());
+        assert!(
+            provider
+                .action_hierarchy(&id)
+                .unwrap()
+                .semantic_identity
+                .is_none()
+        );
+        *provider.surface_snapshot.borrow_mut() = Some(SurfaceSnapshot {
+            source_generation: broker.surfaces_generation(),
+            scope: String::new(),
+            entries,
+            index: None,
+            machine_index: None,
+        });
+        assert_eq!(
+            provider.action_hierarchy(&id).unwrap().semantic_identity,
+            Some(identity)
+        );
+        broker.replace_published_surfaces_for_test(vec![surface]);
+        assert!(
+            provider
+                .action_hierarchy(&id)
+                .unwrap()
+                .semantic_identity
+                .is_none()
+        );
     }
 
     /// A broker whose workspace authority is the chrome's own tree, so the
@@ -2570,6 +3344,7 @@ mod tests {
 
     fn local_action(label: &str, action: &str) -> PublishedAction {
         PublishedAction {
+            semantic_identity: None,
             resource: format!("resource:{action}"),
             action: action.into(),
             resource_kind: "fixture".into(),
@@ -2582,6 +3357,231 @@ mod tests {
             view: None,
             input: PublishedInput::None,
         }
+    }
+
+    #[test]
+    fn cached_directory_action_replaces_only_its_exact_local_alias() {
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let state = chrome.borrow();
+        let cluster_id = state.tree().desktop.workspaces[0].room.to_string();
+        let actor = state.local_user_for_room(&state.tree().desktop.workspaces[0].room);
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.fixture".into(),
+            route: CrdtRoute::app("so.tilo.fixture", &cluster_id),
+            actions: vec![
+                local_action("Inspect playback", "inspect"),
+                local_action("Inspect playback", "inspect-other"),
+            ],
+            live: true,
+        };
+        broker.replace_published_surfaces_for_test(vec![surface.clone()]);
+        let root = ActionDirectoryRoot {
+            peer_id: surface.peer_id,
+            app_id: surface.app_id.clone(),
+            cluster_id,
+            record_id: surface.route.record_id.clone(),
+        };
+        broker.replace_action_directory_roots_for_test(vec![root]);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+        let doc = AutoCommit::new();
+        let ctx = context("Inspect playback", &state, &doc);
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(&ctx),
+                &provider.build_probe,
+            ));
+        let before = provider.query_page(ctx, None, SearchBudget::PALETTE);
+        assert_eq!(
+            before.results.len(),
+            2,
+            "cold directories retain the local action"
+        );
+        let row = CatalogueRow {
+            provider: "7".into(),
+            app_id: surface.app_id.clone(),
+            parent_resource: String::new(),
+            resource: CatalogueResource {
+                id: "resource:inspect".into(),
+                kind: "fixture".into(),
+                label: "Fixture".into(),
+                presentation: None,
+            },
+            action: Some(exported("Inspect playback", "inspect")),
+            has_children: false,
+            visibility: None,
+        };
+        let key = (7, actor, "inspect playback".into(), Vec::new());
+        provider
+            .directory_pages
+            .borrow_mut()
+            .insert(key.clone(), page(vec![row], Vec::new()));
+        provider
+            .directory_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let cached = provider.query_page(ctx, None, SearchBudget::PALETTE);
+        assert_eq!(
+            cached.results.len(),
+            2,
+            "replace the exact alias while preserving a different capability with the same label"
+        );
+        assert_eq!(
+            cached
+                .results
+                .iter()
+                .filter(|row| row.id.starts_with("directory\u{1f}"))
+                .count(),
+            1
+        );
+        assert!(cached.results.iter().any(|row| {
+            row.id == LiveAppActionsProvider::result_id(&surface, &surface.actions[1])
+        }));
+        provider.directory_pages.borrow_mut().remove(&key);
+        provider
+            .directory_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let restored = provider.query_page(ctx, None, SearchBudget::PALETTE);
+        assert_eq!(restored.results.len(), 2);
+        assert!(restored.results.iter().any(|row| {
+            row.id == LiveAppActionsProvider::result_id(&surface, &surface.actions[0])
+        }));
+    }
+
+    #[test]
+    fn changed_native_history_retires_the_cached_directory_contract() {
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let state = chrome.borrow();
+        let room = state.tree().desktop.workspaces[0].room.to_string();
+        let actor = state.local_user_for_room(&state.tree().desktop.workspaces[0].room);
+        let mut action = local_action("Undo", "undo");
+        action.resource = "tilo.host:edit".into();
+        action.contract.availability = tilo_actions::Availability::Unavailable {
+            code: "nothing_to_undo".into(),
+            reason: "No native edit yet".into(),
+        };
+        let mut surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.terminal".into(),
+            route: CrdtRoute::app("so.tilo.terminal", &room),
+            actions: vec![action.clone()],
+            live: true,
+        };
+        broker.replace_published_surfaces_for_test(vec![surface.clone()]);
+        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+            peer_id: 7,
+            app_id: surface.app_id.clone(),
+            cluster_id: room,
+            record_id: surface.route.record_id.clone(),
+        }]);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+        let mut descriptor = exported("Undo", "undo");
+        descriptor.address.resource = action.resource.clone();
+        descriptor.contract = action.contract.clone();
+        let row = CatalogueRow {
+            provider: "7".into(),
+            app_id: surface.app_id.clone(),
+            parent_resource: String::new(),
+            resource: CatalogueResource {
+                id: action.resource.clone(),
+                kind: "tilo.host.edit".into(),
+                label: "Edit".into(),
+                presentation: None,
+            },
+            action: Some(descriptor),
+            has_children: false,
+            visibility: None,
+        };
+        provider.directory_pages.borrow_mut().insert(
+            (7, actor, String::new(), Vec::new()),
+            page(vec![row], Vec::new()),
+        );
+        let doc = AutoCommit::new();
+        let id = "directory\u{1f}7\u{1f}r1\u{1f}tilo.host:edit\u{1f}undo";
+        let old = provider.resolve(id, context("", &state, &doc)).unwrap();
+        assert_eq!(
+            old.contract.unwrap().availability,
+            action.contract.availability
+        );
+        surface.actions[0].contract.availability = tilo_actions::Availability::Available;
+        broker.replace_published_surfaces_for_test(vec![surface]);
+        assert!(
+            provider.resolve(id, context("", &state, &doc)).is_none(),
+            "the unchanged query must not retain the pre-edit Undo contract"
+        );
+    }
+
+    #[test]
+    fn completed_directory_page_survives_idle_poll() {
+        let provider = LiveAppActionsProvider::new(
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+        );
+        let key: DirectoryCacheKey = (7, "actor".into(), "read".into(), Vec::new());
+        let (sender, receiver) = pending();
+        let deadline = Instant::now();
+        provider.directory_pending.borrow_mut().insert(
+            key.clone(),
+            PendingDirectoryPage {
+                receiver,
+                deadline,
+                initial_page: true,
+            },
+        );
+        sender.complete(Ok(page(Vec::new(), Vec::new())));
+
+        provider.poll_directory_pages_at(deadline + Duration::from_secs(3));
+
+        assert_eq!(provider.directory_pages.borrow()[&key].revision, "r1");
+        assert!(provider.directory_pending.borrow().is_empty());
+        assert_eq!(
+            provider
+                .directory_epoch
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn expired_directory_page_retries_empty_projection() {
+        let provider = LiveAppActionsProvider::new(
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+        );
+        let (sender, receiver) = pending();
+        let deadline = Instant::now();
+        provider.directory_pending.borrow_mut().insert(
+            (7, "actor".into(), "read".into(), Vec::new()),
+            PendingDirectoryPage {
+                receiver,
+                deadline,
+                initial_page: true,
+            },
+        );
+        *provider.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
+            revision: "r1".into(),
+            query: "read".into(),
+            scope: String::new(),
+            resume: AuxiliaryResume {
+                root_after: None,
+                directory: None,
+            },
+            entries: Vec::new(),
+            pending_directory: Vec::new(),
+            next_resume: None,
+        });
+
+        provider.poll_directory_pages_at(deadline + Duration::from_secs(3));
+
+        assert!(sender.is_abandoned(), "unanswered work still expires");
+        assert!(provider.directory_pending.borrow().is_empty());
+        assert!(provider.auxiliary_snapshot.borrow().is_none());
+        assert_eq!(
+            provider
+                .directory_epoch
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
     }
 
     #[test]
@@ -2712,6 +3712,65 @@ mod tests {
         }
     }
 
+    /// A listing walks a directory's pages from its first every time it
+    /// runs again, so a continuation's answer must not drop the first page:
+    /// asking the app for it again mints a new continuation, never cached,
+    /// and the listing never settled. A continuation the app no
+    /// longer holds restarts its chain instead of being asked for again.
+    #[test]
+    fn a_directory_chain_is_kept_until_its_continuation_is_spent() {
+        let provider = LiveAppActionsProvider::new(
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+        );
+        provider.set_directory_query("note");
+        let key = |cursor: &[u8]| -> DirectoryCacheKey {
+            (7, "actor-a".into(), "note".into(), cursor.to_vec())
+        };
+        let answer = |cursor: &[u8], answered: CataloguePage| {
+            let (sender, receiver) = pending();
+            provider.directory_pending.borrow_mut().insert(
+                key(cursor),
+                PendingDirectoryPage {
+                    receiver,
+                    deadline: super::deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
+                    initial_page: cursor.is_empty(),
+                },
+            );
+            sender.complete(Ok(answered));
+            provider.poll_directory_pages_at(Instant::now());
+        };
+
+        answer(b"", page(Vec::new(), b"c1".to_vec()));
+        answer(b"c1", page(Vec::new(), b"c2".to_vec()));
+        answer(b"c2", page(Vec::new(), Vec::new()));
+        for cursor in [&b""[..], b"c1", b"c2"] {
+            assert!(
+                provider.directory_pages.borrow().contains_key(&key(cursor)),
+                "the chain keeps its page at {cursor:?}"
+            );
+        }
+
+        // A new first page starts a new chain; the old one's pages go.
+        answer(b"", page(Vec::new(), b"c3".to_vec()));
+        assert!(provider.directory_pages.borrow().contains_key(&key(b"")));
+        assert!(!provider.directory_pages.borrow().contains_key(&key(b"c1")));
+
+        // The app no longer holds c3: the chain starts over.
+        let epoch = provider
+            .directory_epoch
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let mut stale = page(Vec::new(), Vec::new());
+        stale.stale_cursor = true;
+        answer(b"c3", stale);
+        assert!(provider.directory_pages.borrow().is_empty());
+        assert!(
+            provider
+                .directory_epoch
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > epoch
+        );
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -2720,7 +3779,7 @@ mod tests {
     fn remote_action_pages_never_repeat_and_cursors_are_self_contained() {
         // Phase `remote_actions_page_without_repeats_under_tiny_budgets`.
         {
-            let provider = LiveAppActionsProvider::new(
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(
                 crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
             );
             let chrome = chrome();
@@ -2736,7 +3795,7 @@ mod tests {
                 cluster_id: "room".into(),
                 record_id: "record".into(),
             };
-            assert!(
+            assert_eq!(
                 provider
                     .directory_action_result(
                         &root,
@@ -2746,7 +3805,10 @@ mod tests {
                         "fixture",
                         &[]
                     )
-                    .is_some()
+                    .id,
+                format!(
+                    "directory{ID_SEPARATOR}7{ID_SEPARATOR}r1{ID_SEPARATOR}resource:one{ID_SEPARATOR}one"
+                )
             );
             *provider.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
                 revision,
@@ -2810,7 +3872,6 @@ mod tests {
         {
             let chrome = chrome();
             let broker = broker_for(&chrome);
-            let provider = LiveAppActionsProvider::new(broker.clone());
             let chrome = chrome.borrow();
             let cluster_id = chrome.tree().desktop.workspaces[0].room.to_string();
             let actor = chrome.local_user_for_room(&chrome.tree().desktop.workspaces[0].room);
@@ -2821,6 +3882,7 @@ mod tests {
                 record_id: "root".into(),
             };
             broker.replace_action_directory_roots_for_test(vec![root]);
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
             let row = |label: &str, action: &str| CatalogueRow {
                 provider: "9".into(),
                 app_id: "so.tilo.remote".into(),
@@ -2913,8 +3975,712 @@ mod tests {
     }
 
     #[test]
+    fn programmatic_directory_actions_resolve_without_entering_palette_search() {
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let state = chrome.borrow();
+        let workspace_room = state.tree().desktop.workspaces[0].room;
+        let actor = state.local_user_for_room(&workspace_room);
+        let root = ActionDirectoryRoot {
+            peer_id: 9,
+            app_id: "so.tilo.browser".into(),
+            cluster_id: workspace_room.to_string(),
+            record_id: "root".into(),
+        };
+        broker.replace_action_directory_roots_for_test(vec![root]);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
+        let mut descriptor = exported("Read page content", "read");
+        descriptor
+            .contract
+            .tags
+            .push(tilo_actions::PROGRAMMATIC_TAG.into());
+        let row = CatalogueRow {
+            provider: "9".into(),
+            app_id: "so.tilo.browser".into(),
+            parent_resource: String::new(),
+            resource: CatalogueResource {
+                id: descriptor.address.resource.clone(),
+                kind: "fixture".into(),
+                label: "Fixture".into(),
+                presentation: None,
+            },
+            action: Some(descriptor),
+            has_children: false,
+            visibility: None,
+        };
+        provider.set_directory_query("read");
+        provider.directory_pages.borrow_mut().insert(
+            (9, actor, "read".into(), Vec::new()),
+            page(vec![row], Vec::new()),
+        );
+        let doc = AutoCommit::new();
+        let id = format!(
+            "directory{ID_SEPARATOR}9{ID_SEPARATOR}r1{ID_SEPARATOR}resource:read{ID_SEPARATOR}read"
+        );
+        assert!(provider.query(context("read", &state, &doc)).is_empty());
+        assert!(
+            provider
+                .query_page(context("read", &state, &doc), None, SearchBudget::PALETTE)
+                .results
+                .is_empty()
+        );
+        let discovered = provider.query_page(
+            SearchContext {
+                include_programmatic: true,
+                ..context("read", &state, &doc)
+            },
+            None,
+            SearchBudget::PALETTE,
+        );
+        assert_eq!(discovered.results.len(), 1);
+        assert_eq!(discovered.results[0].id, id);
+        assert!(
+            discovered.results[0]
+                .contract
+                .as_ref()
+                .is_some_and(tilo_actions::ActionContract::is_programmatic)
+        );
+        let resolved = provider.resolve(&id, context("", &state, &doc));
+        assert!(
+            resolved.is_some(),
+            "a cached programmatic directory action must resolve by address"
+        );
+        assert!(
+            provider
+                .resolve(&id.replace("r1", "stale"), context("", &state, &doc))
+                .is_none()
+        );
+    }
+
+    fn assert_machine_catalogue_visibility(
+        registry: &crate::shell::search::SearchRegistry,
+        resource: &crate::shell::search::action_api::ResourceRef,
+        chrome: &crate::shell::chrome_state::Chrome,
+        doc: &AutoCommit,
+    ) {
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        let state = chrome.borrow();
+        let args = crate::shell::search::QueryArgs {
+            needle: "Read page content",
+            scope: crate::shell::chrome_state::SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &state,
+            doc,
+            doc_root: &automerge::ROOT,
+        };
+        let normal = ActionCatalog::build_query(registry, &args, &AllVisible, false);
+        assert!(!normal.contains(resource));
+        let started = Instant::now();
+        let machine = loop {
+            let catalogue = ActionCatalog::build_query(registry, &args, &AllVisible, true);
+            if catalogue.contains(resource) || started.elapsed() >= Duration::from_secs(5) {
+                break catalogue;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(machine.contains(resource));
+        assert!(
+            machine.enumerate()[0]
+                .contract
+                .as_ref()
+                .is_some_and(tilo_actions::ActionContract::is_programmatic)
+        );
+        let refused = ActionCatalog::build_query(
+            registry,
+            &args,
+            &|candidate: &ResourceRef, _: &ResourceKind| candidate != resource,
+            true,
+        );
+        assert!(
+            !refused.contains(resource),
+            "machine discovery keeps the visibility gate"
+        );
+    }
+
+    #[test]
+    fn programmatic_actions_resolve_by_address_without_entering_palette_search() {
+        use crate::shell::search::SearchRegistry;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        let mut programmatic = local_action("Read page content", "read");
+        programmatic
+            .contract
+            .tags
+            .push(tilo_actions::PROGRAMMATIC_TAG.into());
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.fixture".into(),
+            route: CrdtRoute::app("so.tilo.fixture", &room),
+            actions: vec![local_action("Open address", "navigate"), programmatic],
+            live: true,
+        };
+        let id = LiveAppActionsProvider::result_id(&surface, &surface.actions[1]);
+        broker.replace_published_surfaces_for_test(vec![surface]);
+        let provider = Rc::new(LiveAppActionsProvider::new(broker.clone()));
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        let ctx = context("", &state, &doc);
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(&ctx),
+                &provider.build_probe,
+            ));
+        let page = provider.query_page(ctx, None, SearchBudget::PALETTE);
+        assert_eq!(page.results.len(), 1);
+        assert!(page.results.iter().all(|row| row.id != id));
+        assert!(
+            provider
+                .query_page(
+                    context("Read page content", &state, &doc),
+                    None,
+                    SearchBudget::PALETTE
+                )
+                .results
+                .is_empty()
+        );
+        drop(state);
+        let mut registry = SearchRegistry::new();
+        registry.register(provider);
+        let resource = ResourceRef::new(PROVIDER_ID, id);
+        assert_machine_catalogue_visibility(&registry, &resource, &chrome, &doc);
+        let catalog = ActionCatalog::build_for_resource(
+            &registry,
+            &resource,
+            crate::shell::chrome_state::SearchScope::Workspace,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        assert!(
+            catalog.select(&resource).is_some(),
+            "the published programmatic action must be addressable"
+        );
+    }
+
+    #[test]
+    fn exact_local_action_resolves_beyond_the_preview_and_rejects_stale_or_other_scopes() {
+        use crate::shell::search::SearchRegistry;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.fixture".into(),
+            route: CrdtRoute::app("so.tilo.fixture", &room),
+            actions: (0..400)
+                .map(|index| local_action(&format!("action {index}"), &format!("action-{index}")))
+                .collect(),
+            live: true,
+        };
+        let id = LiveAppActionsProvider::result_id(&surface, &surface.actions[399]);
+        broker.replace_published_surfaces_for_test(vec![surface]);
+        let provider = Rc::new(LiveAppActionsProvider::new(broker.clone()));
+        let doc = AutoCommit::new();
+        let chrome_state = chrome.borrow();
+        let ctx = context("", &chrome_state, &doc);
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(&ctx),
+                &provider.build_probe,
+            ));
+        let preview = provider.query_page(ctx, None, SearchBudget::PALETTE);
+        drop(chrome_state);
+        assert!(preview.results.iter().all(|row| row.id != id));
+        let mut registry = SearchRegistry::new();
+        registry.register(provider.clone());
+        let resource = ResourceRef::new(PROVIDER_ID, id.clone());
+        let catalog = ActionCatalog::build_for_resource(
+            &registry,
+            &resource,
+            crate::shell::chrome_state::SearchScope::Workspace,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        assert!(catalog.select(&resource).is_some());
+        chrome.borrow_mut().search_scope = crate::shell::chrome_state::SearchScope::ActiveApp;
+        assert!(
+            provider
+                .resolve(&id, context("", &chrome.borrow(), &doc))
+                .is_none()
+        );
+        chrome.borrow_mut().search_scope = crate::shell::chrome_state::SearchScope::Workspace;
+        broker.replace_published_surfaces_for_test(Vec::new());
+        assert!(
+            provider
+                .resolve(&id, context("", &chrome.borrow(), &doc))
+                .is_none()
+        );
+    }
+
+    fn exact_catalogue_contains(
+        registry: &crate::shell::search::SearchRegistry,
+        resource: &crate::shell::search::action_api::ResourceRef,
+        chrome: &crate::shell::chrome_state::Chrome,
+        doc: &AutoCommit,
+    ) -> bool {
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible};
+        ActionCatalog::build_for_resource(
+            registry,
+            resource,
+            crate::shell::chrome_state::SearchScope::All,
+            None,
+            &chrome.borrow(),
+            doc,
+            &automerge::ROOT,
+            &AllVisible,
+        )
+        .contains(resource)
+    }
+
+    #[test]
+    fn canonical_exact_action_ignores_resource_palette_scope_but_keeps_visibility_and_withdrawal() {
+        use crate::shell::chrome_state::{SearchResourceScope, SearchScope};
+        use crate::shell::search::action_api::{ActionCatalog, ResourceRef};
+
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.notes".into(),
+            route: CrdtRoute::app("so.tilo.notes", &room),
+            actions: vec![local_action("Read notebook", "read")],
+            live: true,
+        };
+        let resource = ResourceRef::new(
+            PROVIDER_ID,
+            LiveAppActionsProvider::result_id(&surface, &surface.actions[0]),
+        );
+        broker.replace_published_surfaces_for_test(vec![surface]);
+        let provider = Rc::new(LiveAppActionsProvider::new(broker.clone()));
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        registry.register(provider.clone());
+        let doc = AutoCommit::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !exact_catalogue_contains(&registry, &resource, &chrome, &doc) {
+            assert!(
+                Instant::now() < deadline,
+                "the actual publication was never observed"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let palette_scope = SearchResourceScope {
+            peer_id: 9,
+            cluster_id: room,
+            app_id: "so.tilo.reader".into(),
+            resource: "book:42".into(),
+            label: "Book".into(),
+            kind: "book".into(),
+        };
+        chrome.borrow_mut().search_resource_scope = Some(palette_scope.clone());
+        assert!(
+            exact_catalogue_contains(&registry, &resource, &chrome, &doc),
+            "an explicitly addressed All-scope action must survive unrelated resource browsing"
+        );
+        assert!(
+            provider
+                .resolve(&resource.id, context("", &chrome.borrow(), &doc))
+                .is_none(),
+            "the implicit palette keeps its resource scope"
+        );
+        let deny = |_: &ResourceRef, _: &ResourceKind| false;
+        assert!(
+            !ActionCatalog::build_for_resource(
+                &registry,
+                &resource,
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &automerge::ROOT,
+                &deny,
+            )
+            .contains(&resource),
+            "explicit addressing cannot bypass visibility"
+        );
+        assert_eq!(chrome.borrow().search_resource_scope, Some(palette_scope));
+        broker.replace_published_surfaces_for_test(Vec::new());
+        assert!(
+            !exact_catalogue_contains(&registry, &resource, &chrome, &doc),
+            "withdrawn publication must remain unavailable"
+        );
+    }
+
+    #[test]
+    fn canonical_all_scope_does_not_inherit_the_active_app_palette_filter() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.notes".into(),
+            route: CrdtRoute::app("so.tilo.notes", &room),
+            actions: vec![local_action("Read notebook", "read")],
+            live: true,
+        };
+        let resource = ResourceRef::new(
+            PROVIDER_ID,
+            LiveAppActionsProvider::result_id(&surface, &surface.actions[0]),
+        );
+        broker.replace_published_surfaces_for_test(vec![surface]);
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        registry.register(Rc::new(LiveAppActionsProvider::new(broker)));
+        chrome.borrow_mut().search_scope = SearchScope::ActiveApp;
+        let doc = AutoCommit::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let all = loop {
+            let all = ActionCatalog::build(
+                &registry,
+                "so.tilo.notes",
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &automerge::ROOT,
+                &AllVisible,
+            );
+            if all.contains(&resource) || Instant::now() >= deadline {
+                break all;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(
+            all.contains(&resource),
+            "canonical All must include an inactive app"
+        );
+        assert!(exact_catalogue_contains(
+            &registry, &resource, &chrome, &doc
+        ));
+        let palette = ActionCatalog::build(
+            &registry,
+            "so.tilo.notes",
+            SearchScope::ActiveApp,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        assert!(
+            !palette.contains(&resource),
+            "the palette keeps its active-app scope"
+        );
+    }
+
+    #[test]
+    fn disclosed_local_address_survives_unrelated_publication_but_not_changed_authority() {
+        use crate::shell::search::SearchRegistry;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.notes".into(),
+            route: CrdtRoute::app("so.tilo.notes", &room),
+            actions: vec![local_action("Read notebook", "read")],
+            live: true,
+        };
+        let resource = ResourceRef::new(
+            PROVIDER_ID,
+            LiveAppActionsProvider::result_id(&surface, &surface.actions[0]),
+        );
+        broker.replace_published_surfaces_for_test(vec![surface.clone()]);
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(LiveAppActionsProvider::new(broker.clone())));
+        let doc = AutoCommit::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let catalogue = ActionCatalog::build(
+                &registry,
+                "Read notebook",
+                crate::shell::chrome_state::SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &automerge::ROOT,
+                &AllVisible,
+            );
+            if catalogue.contains(&resource) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "ordinary catalogue must disclose the read"
+            );
+            std::thread::yield_now();
+        }
+        let unrelated = PublishedSurface {
+            peer_id: 8,
+            app_id: "so.tilo.settings".into(),
+            route: CrdtRoute::app("so.tilo.settings", &room),
+            actions: vec![local_action("Read settings", "read")],
+            live: true,
+        };
+        broker.replace_published_surfaces_for_test(vec![surface.clone(), unrelated]);
+        assert!(
+            exact_catalogue_contains(&registry, &resource, &chrome, &doc),
+            "another app's publication must not invalidate an unchanged disclosed address"
+        );
+        let mut changed = surface.clone();
+        changed.actions[0].contract.kind = tilo_actions::ActionKind::Outside;
+        broker.replace_published_surfaces_for_test(vec![changed]);
+        assert!(!exact_catalogue_contains(
+            &registry, &resource, &chrome, &doc
+        ));
+        let mut removed = surface;
+        removed.actions.clear();
+        broker.replace_published_surfaces_for_test(vec![removed]);
+        assert!(!exact_catalogue_contains(
+            &registry, &resource, &chrome, &doc
+        ));
+    }
+
+    #[test]
+    fn retained_local_rows_reject_closed_windows_and_changed_authority() {
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.store".into(),
+            route: CrdtRoute::app("so.tilo.store", &room),
+            actions: vec![local_action("Inspect catalogue", "inspect-catalogue")],
+            live: true,
+        };
+        broker.replace_published_surfaces_for_test(vec![surface.clone()]);
+        let provider = LiveAppActionsProvider::new(broker.clone());
+        let doc = AutoCommit::new();
+        let chrome = chrome.borrow();
+        let ctx = context("", &chrome, &doc);
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(&ctx),
+                &provider.build_probe,
+            ));
+        let id = LiveAppActionsProvider::result_id(&surface, &surface.actions[0]);
+        assert_eq!(
+            provider
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .len(),
+            1
+        );
+
+        let mut changed = surface.clone();
+        changed.actions[0].contract.kind = tilo_actions::ActionKind::Outside;
+        broker.replace_published_surfaces_for_test(vec![changed]);
+        assert!(
+            provider
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .is_empty(),
+            "a retained index must not advertise an address with obsolete authority"
+        );
+        assert!(provider.resolve(&id, ctx).is_none());
+
+        broker.replace_published_surfaces_for_test(Vec::new());
+        assert!(
+            provider
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .is_empty(),
+            "a closed window must disappear before the replacement index is ready"
+        );
+        assert!(provider.resolve(&id, ctx).is_none());
+
+        let mut reopened = surface;
+        reopened.peer_id = 8;
+        reopened.actions[0].resource = "new-window:catalogue".into();
+        broker.replace_published_surfaces_for_test(vec![reopened.clone()]);
+        assert!(
+            provider
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .is_empty()
+        );
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(&ctx),
+                &provider.build_probe,
+            ));
+        let fresh = provider.query_page(ctx, None, SearchBudget::PALETTE);
+        assert_eq!(fresh.results.len(), 1);
+        assert_eq!(
+            fresh.results[0].id,
+            LiveAppActionsProvider::result_id(&reopened, &reopened.actions[0])
+        );
+        assert!(provider.resolve(&fresh.results[0].id, ctx).is_some());
+    }
+
+    #[test]
+    fn retained_local_rows_apply_current_programmatic_visibility() {
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.store".into(),
+            route: CrdtRoute::app("so.tilo.store", &room),
+            actions: vec![local_action("Inspect catalogue", "inspect-catalogue")],
+            live: true,
+        };
+        broker.replace_published_surfaces_for_test(vec![surface.clone()]);
+        let provider = LiveAppActionsProvider::new(broker.clone());
+        let doc = AutoCommit::new();
+        let chrome = chrome.borrow();
+        let ctx = context("", &chrome, &doc);
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(&ctx),
+                &provider.build_probe,
+            ));
+        let id = LiveAppActionsProvider::result_id(&surface, &surface.actions[0]);
+        assert_eq!(
+            provider
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .len(),
+            1
+        );
+
+        let mut programmatic = surface;
+        programmatic.actions[0]
+            .contract
+            .tags
+            .push(tilo_actions::PROGRAMMATIC_TAG.into());
+        broker.replace_published_surfaces_for_test(vec![programmatic]);
+        assert!(
+            provider
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .is_empty(),
+            "current programmatic visibility supersedes the retained palette index"
+        );
+        assert!(
+            provider.resolve(&id, ctx).is_some(),
+            "programmatic actions remain exactly addressable"
+        );
+        assert_eq!(
+            provider
+                .query_page(
+                    SearchContext {
+                        include_programmatic: true,
+                        ..ctx
+                    },
+                    None,
+                    SearchBudget::PALETTE
+                )
+                .results
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn retained_local_rows_materialize_and_invoke_the_current_publication() {
+        use crate::shell::search::action_api::ActionArgs;
+        let chrome = chrome();
+        chrome.borrow_mut().act_as("store-row-owner".into());
+        chrome.borrow().tree_mut().desktop.workspaces[0].set_owner("store-row-owner");
+        let broker = broker_for(&chrome);
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.store".into(),
+            route: CrdtRoute::app("so.tilo.store", &room),
+            actions: vec![local_action("Old catalogue", "inspect-catalogue")],
+            live: true,
+        };
+        broker.replace_published_surfaces_for_test(vec![surface.clone()]);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+        let mut doc = AutoCommit::new();
+        {
+            let chrome = chrome.borrow();
+            let ctx = context("", &chrome, &doc);
+            *provider.surface_snapshot.borrow_mut() =
+                Some(LiveAppActionsProvider::build_local_snapshot(
+                    &broker,
+                    &LiveAppActionsProvider::build_scope(&ctx),
+                    &provider.build_probe,
+                ));
+        }
+        let mut old_peer = broker.capture_invocations_for_test(7);
+        let mut new_peer = broker.capture_invocations_for_test(8);
+        let mut current = surface;
+        current.peer_id = 8;
+        current.actions[0].action_label = "Current catalogue".into();
+        broker.replace_published_surfaces_for_test(vec![current]);
+        let row = provider
+            .query_page(
+                context("", &chrome.borrow(), &doc),
+                None,
+                SearchBudget::PALETTE,
+            )
+            .results
+            .pop()
+            .expect("unchanged address remains available");
+        assert_eq!(row.title, "Current catalogue");
+        let resolved = provider
+            .resolve(&row.id, context("", &chrome.borrow(), &doc))
+            .unwrap();
+        assert_eq!(resolved.title, row.title);
+        (row.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::bind(&[], []).unwrap(),
+        )
+        .unwrap();
+        let delivered = new_peer
+            .try_recv()
+            .expect("browse callback routes to the current peer");
+        assert_eq!(delivered.action, "inspect-catalogue");
+        assert!(
+            old_peer.try_recv().is_err(),
+            "the replaced publisher receives no invocation"
+        );
+    }
+
+    #[test]
     fn a_100001_action_snapshot_reaches_a_unique_tail_without_scanning_the_corpus() {
-        let provider = LiveAppActionsProvider::new(
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(
             crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
         );
         let chrome = chrome();
@@ -2924,7 +4690,10 @@ mod tests {
         let surface = PublishedSurface {
             peer_id: 1,
             app_id: "so.tilo.fixture".into(),
-            route: CrdtRoute::app("so.tilo.fixture", "room"),
+            route: CrdtRoute::app(
+                "so.tilo.fixture",
+                chrome.tree().desktop.workspaces[0].room.to_string(),
+            ),
             actions: Vec::new(),
             live: true,
         };
@@ -2941,12 +4710,19 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        let index = Some(index_actions(&entries));
+        let mut published = surface;
+        published.actions = entries.iter().map(|(_, action)| action.clone()).collect();
+        provider
+            .broker
+            .replace_published_surfaces_for_test(vec![published]);
+        let index = Some(index_actions(&entries, false));
+        let machine_index = Some(index_actions(&entries, true));
         *provider.surface_snapshot.borrow_mut() = Some(SurfaceSnapshot {
             source_generation: provider.broker.surfaces_generation(),
             scope: LiveAppActionsProvider::surface_scope(&ctx),
             entries,
             index,
+            machine_index,
         });
         let page = provider.query_page(
             ctx,
@@ -2967,11 +4743,15 @@ mod tests {
 
     #[test]
     fn source_backed_cold_query_does_no_action_index_work_before_refresh() {
+        let chrome = chrome();
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
         let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
         broker.replace_published_surfaces_for_test(vec![PublishedSurface {
             peer_id: 1,
             app_id: "so.tilo.fixture".into(),
-            route: CrdtRoute::app("so.tilo.fixture", "room"),
+            route: CrdtRoute::app("so.tilo.fixture", room),
             actions: (0..=4_000)
                 .map(|index| {
                     local_action(
@@ -2986,8 +4766,7 @@ mod tests {
                 .collect(),
             live: true,
         }]);
-        let provider = LiveAppActionsProvider::new(broker);
-        let chrome = chrome();
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
         chrome.borrow_mut().search_scope = crate::shell::chrome_state::SearchScope::All;
         let chrome = chrome.borrow();
         let doc = AutoCommit::new();
@@ -3067,7 +4846,8 @@ mod tests {
         {
             let id = [
                 "so.tilo.files",
-                "write",
+                "undoable",
+                "files.entry",
                 "room-7",
                 "file:/Brief.md",
                 "files.entry:/Brief.md",
@@ -3151,7 +4931,7 @@ mod tests {
                 record_id: "record".into(),
             }]);
             let provider = LiveAppActionsProvider::new(broker);
-            let local = provider.action_hierarchy("dev.tilo.files\u{1f}write\u{1f}room-7\u{1f}file:/Brief.md\u{1f}files.entry:/Brief.md\u{1f}rename").unwrap();
+            let local = provider.action_hierarchy("dev.tilo.files\u{1f}undoable\u{1f}files.entry\u{1f}room-7\u{1f}file:/Brief.md\u{1f}files.entry:/Brief.md\u{1f}rename").unwrap();
             assert_eq!(local.application, "dev.tilo.files");
             assert_eq!(local.room, "room-7");
             assert_eq!(local.record, "file:/Brief.md");
@@ -3194,7 +4974,8 @@ mod tests {
                 provider_id: PROVIDER_ID.into(),
                 id: [
                     "so.tilo.files",
-                    "write",
+                    "undoable",
+                    "files.entry",
                     cluster,
                     "file:/Brief.md",
                     "files.entry:/Brief.md",
@@ -3226,7 +5007,6 @@ mod tests {
         {
             let chrome = chrome();
             let broker = broker_for(&chrome);
-            let provider = LiveAppActionsProvider::new(broker.clone());
             let cluster_id = chrome.borrow().tree().desktop.workspaces[0]
                 .room
                 .to_string();
@@ -3240,6 +5020,7 @@ mod tests {
                 record_id: "library".into(),
             };
             broker.replace_action_directory_roots_for_test(vec![root]);
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
             provider.directory_pages.borrow_mut().insert(
                 (9, actor, "book".into(), Vec::new()),
                 page(
@@ -3269,6 +5050,8 @@ mod tests {
             let chrome_ref = chrome.borrow();
             let page = provider.query_page(
                 SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "book",
                     wanted: &wanted,
                     chrome: &chrome_ref,
@@ -3287,7 +5070,7 @@ mod tests {
             );
             assert_eq!(page.results[0].badge.as_deref(), Some("2 collaborators"));
             (page.results[0].on_open)(
-                &mut AutoCommit::new(),
+                &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
                 &chrome,
                 &crate::shell::search::action_api::ActionArgs::none(),
@@ -3307,6 +5090,8 @@ mod tests {
             let chrome_ref = chrome.borrow();
             let _ = provider.query_page(
                 SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "",
                     wanted: &wanted,
                     chrome: &chrome_ref,
@@ -3328,3 +5113,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "live_app_actions/job_progress_tests.rs"]
+mod job_progress_tests;

@@ -7,7 +7,7 @@ use crate::num;
 
 pub(super) const LIST_INDENT_STEP: f64 = 24.0;
 pub(super) const LIST_MARKER_TEXT_GAP: f64 = 8.0;
-const LINE_SPACINGS: [f64; 4] = [1.0, 1.15, 1.5, 2.0];
+pub(super) const LINE_SPACINGS: [f64; 4] = [1.0, 1.15, 1.5, 2.0];
 
 pub(super) fn page_break_before(block: &BlockView) -> bool {
     matches!(
@@ -24,28 +24,17 @@ pub(super) fn line_spacing(block: &BlockView) -> f32 {
     }
 }
 
-pub(super) fn next_line_spacing(current: f64) -> f64 {
-    let index = LINE_SPACINGS
-        .iter()
-        .enumerate()
-        .min_by(|(_, left), (_, right)| {
-            (**left - current)
-                .abs()
-                .partial_cmp(&(**right - current).abs())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map_or(0, |(index, _)| index);
-    LINE_SPACINGS
-        .get((index + 1) % LINE_SPACINGS.len())
-        .copied()
-        .unwrap_or(1.0)
-}
-
+/// The name of a line spacing: "Single" and "Double" by name, anything
+/// else as its multiplier.
 pub(super) fn line_spacing_label(multiplier: f64) -> String {
-    if (multiplier - multiplier.round()).abs() < 0.005 {
-        format!("⇕ {}", num::i64_of_f64(multiplier.round()))
+    if (multiplier - 1.0).abs() < 0.005 {
+        crate::i18n::t("line-spacing-single")
+    } else if (multiplier - 2.0).abs() < 0.005 {
+        crate::i18n::t("line-spacing-double")
+    } else if (multiplier - multiplier.round()).abs() < 0.005 {
+        format!("{}", num::i64_of_f64(multiplier.round()))
     } else {
-        format!("⇕ {multiplier:.2}")
+        format!("{multiplier:.2}").trim_end_matches('0').to_string()
     }
 }
 
@@ -183,7 +172,6 @@ mod tests {
             assert_eq!(line_spacing(&block), 1.0);
             assert_eq!(list_level(&block), 0);
             assert_eq!(cell_rc(&block), (0, 0));
-            assert_eq!(next_line_spacing(f64::NAN), 1.15);
         }
     }
 }

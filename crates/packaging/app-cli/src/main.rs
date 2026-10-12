@@ -30,11 +30,17 @@ enum Cmd {
         #[arg(value_enum)]
         shell: Shell,
     },
-    /// List apps available to install.
+    /// List installed apps, the system image's included, and the apps
+    /// available to install.
     #[command(visible_aliases = ["ls", "l"])]
     List {
+        /// Print the apps available to install as JSON.
         #[arg(long)]
         json: bool,
+        /// Only the installed apps, and where each came from: `image`,
+        /// `user` (installed or updated since), or `held` (rolled back).
+        #[arg(long)]
+        installed: bool,
     },
     /// Search the app store.
     #[command(visible_aliases = ["s", "find"])]
@@ -50,7 +56,9 @@ enum Cmd {
     /// Update one app, or every installed app when no name is given.
     #[command(visible_aliases = ["u", "upgrade"])]
     Update { app: Option<String> },
-    /// Go back to an older version of an installed app, keeping its saved state.
+    /// Go back to an older version of an installed app, keeping its saved
+    /// state. An app the system image ships goes back to the image's version
+    /// when that is the next older one.
     Rollback {
         app: String,
         /// The version to go back to (default: the newest older one).
@@ -70,7 +78,12 @@ enum Cmd {
 
 #[derive(Debug, Subcommand)]
 enum RepoCmd {
-    List,
+    List {
+        /// Print the repositories as JSON: the list the App Store reads
+        /// through the app host.
+        #[arg(long)]
+        json: bool,
+    },
     Add {
         name: String,
         url: String,
@@ -109,7 +122,14 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Cmd::List { json } => list(json),
+        Cmd::List {
+            json,
+            installed: true,
+        } => list_installed(json),
+        Cmd::List {
+            json,
+            installed: false,
+        } => list(json),
         Cmd::Search { query } => search(&query),
         Cmd::Install { app, version: None } => change_one(&app, false),
         Cmd::Install {
@@ -149,7 +169,50 @@ fn print_apps(apps: &[CatalogueApp]) {
     }
 }
 
+fn list_installed(json: bool) -> ExitCode {
+    let apps = match app_cli::installed_apps() {
+        Ok(apps) => apps,
+        Err(error) => {
+            eprintln!("app: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if json {
+        return match serde_json::to_string(&apps) {
+            Ok(value) => {
+                println!("{value}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("app: could not encode the installed apps: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    print_installed(&apps);
+    ExitCode::SUCCESS
+}
+
+fn print_installed(apps: &[app_cli::InstalledApp]) {
+    for app in apps {
+        println!("{}  {}  ({})", app.package_id, app.version, app.from);
+    }
+}
+
 fn list(json: bool) -> ExitCode {
+    if !json {
+        match app_cli::installed_apps() {
+            Ok(apps) => {
+                println!("Installed:");
+                print_installed(&apps);
+                println!("Available:");
+            }
+            Err(error) => {
+                eprintln!("app: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
     announce("Loading the Tilo Store…");
     let listing = app_cli::available();
     if json {
@@ -209,10 +272,11 @@ fn search(query: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Say what is about to take a while. On stderr, so `--json` output stays
+/// clean, and whether or not a terminal is watching: the Terminal's shell
+/// forwards host commands through pipes, and silence there reads as a hang.
 fn announce(message: &str) {
-    if std::io::stderr().is_terminal() {
-        eprintln!("{message}");
-    }
+    eprintln!("{message}");
 }
 
 fn progress_reporter() -> impl FnMut(DownloadProgress) {
@@ -361,6 +425,10 @@ fn change_one(query: &str, update: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // Opening an app for the first time takes the newest version this device
+    // can run without fetching a runtime; `app update` moves it on later.
+    let first_open = (!update && installed.is_none()).then(|| app_cli::first_open_offer(app));
+    let app = first_open.as_ref().unwrap_or(app);
     let result = change_app(app, update, installed.as_deref());
     if update && !listing.unreachable.is_empty() {
         ExitCode::FAILURE
@@ -444,6 +512,11 @@ fn install_version(query: &str, version: &str) -> ExitCode {
     };
     match app_cli::installed_version(&app.package_id) {
         Ok(None) => change_app(offer, false, None),
+        Ok(Some(installed))
+            if !tilo_app_package::version::compare(&offer.version, &installed).is_lt() =>
+        {
+            change_app(offer, true, Some(&installed))
+        }
         Ok(Some(installed)) => {
             eprintln!(
                 "app: '{}' {installed} is already installed; use 'app rollback {} --to {version}' or 'app update {}'",
@@ -459,6 +532,13 @@ fn install_version(query: &str, version: &str) -> ExitCode {
 }
 
 fn rollback(query: &str, to: Option<&str>) -> ExitCode {
+    // An app the system image ships can go back to the image's version
+    // without the store, by removing the user's copy above it.
+    if let Ok(id) = resolve_installed(query)
+        && let Some(code) = rollback_to_image(&id, to)
+    {
+        return code;
+    }
     announce("Finding older versions in the Tilo Store…");
     let (app, versions) = match offered_versions(query) {
         Ok(found) => found,
@@ -521,6 +601,52 @@ fn rollback(query: &str, to: Option<&str>) -> ExitCode {
     }
 }
 
+/// Go back to the system image's version of `id` when that is the version
+/// asked for, or the next older one when none is named; `None` when the
+/// store decides instead.
+fn rollback_to_image(id: &str, to: Option<&str>) -> Option<ExitCode> {
+    let image = app_cli::image_version_beneath(id).ok()??;
+    let installed = app_cli::installed_version(id).ok()??;
+    if !tilo_app_package::version::compare(&image, &installed).is_lt() {
+        return None;
+    }
+    match to {
+        Some(version) if version != image => return None,
+        Some(_) => {}
+        None => {
+            // Prefer the image when no published version lies between it and
+            // the installed one; an unreachable store leaves the image.
+            let newer_in_store = offered_versions(id).ok().is_some_and(|(_, versions)| {
+                versions.iter().any(|offer| {
+                    tilo_app_package::version::compare(&offer.version, &installed).is_lt()
+                        && tilo_app_package::version::compare(&offer.version, &image).is_gt()
+                })
+            });
+            if newer_in_store {
+                return None;
+            }
+        }
+    }
+    let status = Command::new(app_cli::install::tilo_install_bin())
+        .args(["uninstall", id, "--keep-state"])
+        .stdout(std::process::Stdio::null())
+        .status();
+    Some(match status {
+        Ok(status) if status.success() => {
+            println!("rolled back {id} {installed} -> {image} (the system image's)");
+            ExitCode::SUCCESS
+        }
+        Ok(_) => {
+            eprintln!("app: could not remove the updated copy of '{id}'");
+            ExitCode::FAILURE
+        }
+        Err(error) => {
+            eprintln!("app: could not run tilo-install: {error}");
+            ExitCode::FAILURE
+        }
+    })
+}
+
 fn resolve_installed(query: &str) -> Result<String, String> {
     let ids = app_cli::installed_ids();
     if let Some(id) = ids.iter().find(|id| id.eq_ignore_ascii_case(query)) {
@@ -545,8 +671,8 @@ fn update(query: Option<&str>) -> ExitCode {
     if let Some(query) = query {
         return change_one(query, true);
     }
-    announce("Checking installed apps for updates…");
-    let listing = app_cli::all_offers();
+    // Updating everything can take minutes; say what is happening from the
+    // first moment, whether or not a terminal is watching.
     let installed = match app_cli::installed_versions() {
         Ok(installed) => installed,
         Err(error) => {
@@ -554,7 +680,42 @@ fn update(query: Option<&str>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let repositories = app_cli::config::load_registries()
+        .enabled()
+        .map(|registry| registry.name.clone())
+        .collect::<Vec<_>>();
+    println!(
+        "Checking {} installed app{} for updates in {}…",
+        installed.len(),
+        if installed.len() == 1 { "" } else { "s" },
+        if repositories.is_empty() {
+            "no repositories".to_owned()
+        } else {
+            repositories.join(", ")
+        }
+    );
+    let _ = std::io::stdout().flush();
+    let listing = app_cli::all_offers();
     update_from_listing(&listing, &installed)
+}
+
+/// The offers newer than what is installed, with the installed version.
+fn outdated<'a>(
+    listing: &'a app_cli::CatalogueListing,
+    installed: &'a std::collections::HashMap<String, String>,
+) -> (Vec<(&'a CatalogueApp, &'a str)>, usize) {
+    let mut checked = 0usize;
+    let mut outdated = Vec::new();
+    for app in &listing.apps {
+        let Some(version) = installed.get(&app.package_id) else {
+            continue;
+        };
+        checked = checked.saturating_add(1);
+        if tilo_app_package::version::compare(&app.version, version).is_gt() {
+            outdated.push((app, version.as_str()));
+        }
+    }
+    (outdated, checked)
 }
 
 fn update_from_listing(
@@ -563,42 +724,61 @@ fn update_from_listing(
 ) -> ExitCode {
     report_unreachable(&listing.unreachable);
     let mut failed = !listing.unreachable.is_empty();
-    let candidates = listing
-        .apps
-        .iter()
-        .filter_map(|app| installed.get(&app.package_id).map(|version| (app, version)))
-        .collect::<Vec<_>>();
-    let checked = candidates.len();
-    for (index, (app, version)) in candidates.into_iter().enumerate() {
+    let (outdated, checked) = outdated(listing, installed);
+    if outdated.is_empty() {
+        println!("{}", bulk_update_summary(installed.len(), checked, 0));
+        return if failed {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        };
+    }
+    println!(
+        "{} update{} available: {}",
+        outdated.len(),
+        if outdated.len() == 1 { "" } else { "s" },
+        outdated
+            .iter()
+            .map(|(app, _)| app.display_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let total = outdated.len();
+    let mut updated = 0usize;
+    for (index, (app, version)) in outdated.into_iter().enumerate() {
         println!(
-            "Checking {} ({}/{checked})…",
+            "Updating {} {version} -> {} ({}/{total})…",
             app.display_name,
+            app.version,
             index.saturating_add(1)
         );
-        if change_app(app, true, Some(version)) != ExitCode::SUCCESS {
+        let _ = std::io::stdout().flush();
+        if change_app(app, true, Some(version)) == ExitCode::SUCCESS {
+            updated = updated.saturating_add(1);
+        } else {
             failed = true;
         }
     }
+    println!("{}", bulk_update_summary(installed.len(), checked, updated));
     if failed {
         ExitCode::FAILURE
     } else {
-        println!("{}", bulk_update_summary(installed.len(), checked));
         ExitCode::SUCCESS
     }
 }
 
-fn bulk_update_summary(installed: usize, checked: usize) -> String {
+fn bulk_update_summary(installed: usize, checked: usize, updated: usize) -> String {
+    let apps = |n: usize| format!("{n} installed app{}", if n == 1 { "" } else { "s" });
     if installed == 0 {
         "no apps are installed yet".into()
     } else if checked == 0 {
-        format!(
-            "could not find update metadata for {installed} installed app{}",
-            if installed == 1 { "" } else { "s" }
-        )
+        format!("could not find update metadata for {}", apps(installed))
+    } else if updated == 0 {
+        format!("checked {checked} of {}; all up to date", apps(installed))
     } else {
         format!(
-            "checked {checked} of {installed} installed app{}",
-            if installed == 1 { "" } else { "s" }
+            "checked {checked} of {}; updated {updated}",
+            apps(installed)
         )
     }
 }
@@ -639,7 +819,19 @@ fn repo(cmd: RepoCmd) -> ExitCode {
     use app_cli::config;
     let mut registries = config::load_registries();
     let confirmation = match cmd {
-        RepoCmd::List => {
+        RepoCmd::List { json: true } => {
+            return match serde_json::to_string(&registries) {
+                Ok(value) => {
+                    println!("{value}");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("app: could not encode the repositories: {error}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        RepoCmd::List { json: false } => {
             for registry in registries.registries {
                 println!(
                     "{}  {}  ({}, {}, key pinned)",
@@ -772,16 +964,23 @@ mod tests {
         }
         // Phase `bulk_update_always_reports_what_it_checked`.
         {
-            assert_eq!(bulk_update_summary(0, 0), "no apps are installed yet");
+            assert_eq!(bulk_update_summary(0, 0, 0), "no apps are installed yet");
             assert_eq!(
-                bulk_update_summary(1, 0),
+                bulk_update_summary(1, 0, 0),
                 "could not find update metadata for 1 installed app"
             );
             assert_eq!(
-                bulk_update_summary(3, 0),
+                bulk_update_summary(3, 0, 0),
                 "could not find update metadata for 3 installed apps"
             );
-            assert_eq!(bulk_update_summary(2, 2), "checked 2 of 2 installed apps");
+            assert_eq!(
+                bulk_update_summary(2, 2, 0),
+                "checked 2 of 2 installed apps; all up to date"
+            );
+            assert_eq!(
+                bulk_update_summary(3, 2, 1),
+                "checked 2 of 3 installed apps; updated 1"
+            );
         }
         // Phase `bulk_update_fails_when_a_configured_repository_is_unreachable`.
         {

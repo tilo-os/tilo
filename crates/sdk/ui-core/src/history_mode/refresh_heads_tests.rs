@@ -113,7 +113,9 @@ fn state(document: &AutoCommit) -> (Vec<automerge::ChangeHash>, usize, Option<St
 fn refresh_heads_current_and_changed_real_component_frontier_without_owned_clone() {
     let mut fixture = BoundFixture::new();
     let outer = outer();
-    let history = fixture.history(&outer);
+    let mut history = fixture.history(&outer);
+    assert!(history.request_open());
+    history.refresh(&outer);
     let owner = HistoryOwner::component(fixture.binding.clone());
     let expected = owner.document(&outer).unwrap().base_heads();
     reset_clones();
@@ -286,7 +288,7 @@ fn refresh_heads_host_and_unversioned_borrow_outer_committed_frontier() {
         scope: "document",
         reason: "unversioned",
     };
-    let host = HistoryHost::new(
+    let mut host = HistoryHost::new(
         HistoryRegistration::new(&DEFINITION, vec![host_source]).unwrap(),
         &document,
     )
@@ -296,6 +298,8 @@ fn refresh_heads_host_and_unversioned_borrow_outer_committed_frontier() {
         &document,
     )
     .unwrap();
+    assert!(host.request_open());
+    host.refresh(&document);
     assert!(!host.needs_refresh(&document, 900.0));
     assert!(unversioned_host.controller.is_none());
     document.put(ROOT, "body", "pending outer edit").unwrap();
@@ -407,4 +411,46 @@ fn refresh_heads_allocation_growth_independent_of_real_graph_size_in_all_documen
         failures.is_empty(),
         "content-dependent refresh allocation/owned clones: {failures:#?}"
     );
+}
+
+#[test]
+fn closed_history_defers_frontier_refresh_until_opening() {
+    let mut fixture = BoundFixture::new();
+    let outer = outer();
+    let mut history = fixture.history(&outer);
+    let before = history
+        .controller
+        .as_ref()
+        .unwrap()
+        .observed_live_heads
+        .clone();
+    fixture
+        .binding
+        .records
+        .with_history(&fixture.binding.checkout.id, |doc, _| {
+            doc.put(ROOT, "body", "edited with history closed").unwrap();
+            doc.commit();
+        })
+        .unwrap();
+    let next = super::super::sorted_heads(history.source().committed_heads(&outer).unwrap());
+    assert_ne!(before, next);
+    assert!(!history.needs_refresh(&outer, 900.0));
+    history.refresh(&outer);
+    assert!(
+        !history.needs_refresh(&outer, 900.0),
+        "closed refresh must not request itself again"
+    );
+    assert_eq!(
+        history.controller.as_ref().unwrap().observed_live_heads,
+        before
+    );
+    assert!(history.request_open());
+    assert!(history.needs_refresh(&outer, 900.0));
+    history.refresh(&outer);
+    assert_eq!(
+        history.controller.as_ref().unwrap().observed_live_heads,
+        next
+    );
+    assert!(!history.needs_refresh(&outer, 900.0));
+    fixture.close();
 }

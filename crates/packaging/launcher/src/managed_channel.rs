@@ -178,9 +178,35 @@ pub struct PendingManagedConnection {
     executable: Arc<Executable>,
     channel_id: String,
 }
+
+/// Cancellation of exactly one connected startup descriptor. This cannot
+/// read/write protocol data, identify a process, or grant launch authority.
+/// Shutting it down also wakes an in-flight blocking descriptor challenge.
+pub struct ManagedConnectionCancellation(UnixStream);
+
+impl ManagedConnectionCancellation {
+    /// Interrupt this connection only; the owning launcher must still stop
+    /// its actual children and retire canonical session custody.
+    ///
+    /// # Errors
+    /// Reports a kernel failure to shut down the retained connected socket.
+    pub fn cancel(&self) -> std::io::Result<()> {
+        self.0.shutdown(std::net::Shutdown::Both)
+    }
+}
+
 impl PendingManagedConnection {
     pub fn channel_id(&self) -> &str {
         &self.channel_id
+    }
+
+    /// Retain cancellation before moving the one-use connection into a worker.
+    /// No protocol endpoint or process authority is exposed by this handle.
+    ///
+    /// # Errors
+    /// Refuses a kernel failure to duplicate the retained socket descriptor.
+    pub fn cancellation(&self) -> std::io::Result<ManagedConnectionCancellation> {
+        self.socket.try_clone().map(ManagedConnectionCancellation)
     }
     /// Allocate this attempt's one connected descriptor pair and challenge.
     ///
@@ -679,6 +705,36 @@ mod received_rights_tests {
             receive_credentials(&receiver).unwrap(),
             ([37; 32], std::process::id()),
             "credential-only challenge remains valid"
+        );
+    }
+
+    #[test]
+    fn cancelling_one_descriptor_wakes_its_challenge_without_affecting_another() {
+        let (receiver, mut sender) = socket_pair(true);
+        let cancellation = ManagedConnectionCancellation(receiver.try_clone().unwrap());
+        let (ready, waiting) = std::sync::mpsc::channel();
+        let (finished, result) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            ready.send(()).unwrap();
+            finished.send(receive_credentials(&receiver)).unwrap();
+        });
+        waiting.recv_timeout(Duration::from_secs(1)).unwrap();
+        cancellation.cancel().unwrap();
+        assert!(
+            result
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .is_err(),
+            "cancellation must wake and refuse the real credential receive"
+        );
+        worker.join().unwrap();
+        assert!(sender.write_all(&[37; 32]).is_err());
+        let (other_receiver, mut other_sender) = socket_pair(true);
+        other_sender.write_all(&[41; 32]).unwrap();
+        assert_eq!(
+            receive_credentials(&other_receiver).unwrap(),
+            ([41; 32], std::process::id()),
+            "cancelling a prior connection must not affect another agent"
         );
     }
 }

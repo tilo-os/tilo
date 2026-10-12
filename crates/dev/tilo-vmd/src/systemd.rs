@@ -10,12 +10,12 @@ use std::process::Command;
 
 use tilo_vm_protocol::{BootChange, BootConfirmResult, ControlResult, InputAction, OutputSpec};
 
-use crate::apply::{Apply, Session, SessionProcess};
+use crate::apply::{Apply, GREETER_UNIT, Session, SessionProcess};
 use crate::boot::Boot;
 use crate::error::DaemonError;
 use crate::fsutil::{symlink, walk, write_atomic};
 use crate::input;
-use crate::slots::DeviceSession;
+use crate::slots::{DeviceSession, Login};
 
 const UNIT_DIR: &str = "/etc/systemd/system";
 const SYSEXT_DIR: &str = "/var/lib/extensions";
@@ -29,6 +29,7 @@ const SLOT_USER_GROUPS: &str = "tilo-identity,video";
 
 pub struct SystemdApply {
     layers_dir: PathBuf,
+    views_dir: PathBuf,
     boot: Boot,
 }
 
@@ -36,6 +37,7 @@ impl SystemdApply {
     pub fn new(root: &Path) -> Self {
         Self {
             layers_dir: root.join("layers"),
+            views_dir: root.join("views"),
             boot: Boot::new(root),
         }
     }
@@ -73,10 +75,219 @@ fn device_session_unit(listing: &str) -> Option<String> {
         .map(|(unit, _)| (*unit).to_owned())
 }
 
+/// One logind session, as `loginctl show-session` describes it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LogindSession {
+    id: String,
+    name: String,
+    seat: String,
+    class: String,
+    remote: bool,
+    state: String,
+    leader: u32,
+    scope: String,
+}
+
+/// `loginctl show-session <id>` output (`Key=value` lines).
+fn parse_logind_session(id: &str, text: &str) -> LogindSession {
+    let mut session = LogindSession {
+        id: id.to_owned(),
+        ..LogindSession::default()
+    };
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim().to_owned();
+        match key {
+            "Name" => session.name = value,
+            "Seat" => session.seat = value,
+            "Class" => session.class = value,
+            "Remote" => session.remote = value == "yes",
+            "State" => session.state = value,
+            "Leader" => session.leader = value.parse().unwrap_or(0),
+            "Scope" => session.scope = value,
+            _ => {}
+        }
+    }
+    session
+}
+
+/// The owner's login among `sessions`: a local user session on seat0 that
+/// greetd (main process `greetd`) started; its session worker, the leader,
+/// is greetd's child. `parent` gives a process's parent. The greeter's own
+/// session is of class `greeter`, and a tilo-vm slot's session is started by
+/// systemd, not greetd.
+fn greetd_login(
+    sessions: &[LogindSession],
+    greetd: u32,
+    parent: impl Fn(u32) -> Option<u32>,
+) -> Option<&LogindSession> {
+    sessions.iter().find(|s| {
+        s.seat == "seat0"
+            && s.class == "user"
+            && !s.remote
+            && matches!(s.state.as_str(), "active" | "online")
+            && s.leader > 0
+            && greetd > 0
+            && parent(s.leader) == Some(greetd)
+            && s.scope.starts_with("session-")
+    })
+}
+
+/// The process name `tilo-session` runs under (its script's file name).
+const LOGIN_WRAPPER: &str = "tilo-session";
+/// The compositor's process name.
+const COMPOSITOR: &str = "shell";
+
+fn parent_of(pid: u32) -> Option<u32> {
+    proc_field(pid, "PPid:")?.parse().ok()
+}
+
+fn comm(pid: u32) -> Option<String> {
+    fs::read_to_string(format!("/proc/{pid}/comm"))
+        .ok()
+        .map(|c| c.trim().to_owned())
+}
+
+/// The processes in the cgroup `pid` belongs to (a login's session scope).
+fn cgroup_members(pid: u32) -> Vec<u32> {
+    let Some(path) = fs::read_to_string(format!("/proc/{pid}/cgroup"))
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("0::").map(str::to_owned))
+        })
+    else {
+        return Vec::new();
+    };
+    fs::read_to_string(format!("/sys/fs/cgroup{path}/cgroup.procs"))
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|p| p.parse().ok())
+        .collect()
+}
+
+/// The running compositor `wrapper` (a `tilo-session`) started.
+fn compositor_of(wrapper: u32) -> Option<u32> {
+    fs::read_to_string(format!("/proc/{wrapper}/task/{wrapper}/children"))
+        .ok()?
+        .split_whitespace()
+        .filter_map(|c| c.parse::<u32>().ok())
+        .find(|c| comm(*c).as_deref() == Some(COMPOSITOR) && !zombie(*c))
+}
+
+fn zombie(pid: u32) -> bool {
+    proc_field(pid, "State:").is_none_or(|state| state.starts_with('Z'))
+}
+
+/// The owner's Tilo login through greetd on seat0, if someone is logged in.
+fn login_session() -> Option<DeviceSession> {
+    let greetd = Command::new("systemctl")
+        .args(["show", "--property=MainPID", "--value", GREETER_UNIT])
+        .output()
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<u32>()
+                .ok()
+        })
+        .filter(|pid| *pid > 0)?;
+    let listing = Command::new("loginctl")
+        .args(["list-sessions", "--no-legend"])
+        .output()
+        .ok()?;
+    let sessions: Vec<LogindSession> = String::from_utf8_lossy(&listing.stdout)
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter_map(|id| {
+            let shown = Command::new("loginctl")
+                .args(["show-session", id])
+                .output()
+                .ok()?;
+            Some(parse_logind_session(
+                id,
+                &String::from_utf8_lossy(&shown.stdout),
+            ))
+        })
+        .collect();
+    let login = greetd_login(&sessions, greetd, parent_of)?;
+    let uid = uid_of(&login.name)?;
+    // A Tilo login runs tilo-session as its user; another desktop is not
+    // the device slot.
+    let wrapper = cgroup_members(login.leader).into_iter().find(|pid| {
+        comm(*pid).as_deref() == Some(LOGIN_WRAPPER)
+            && proc_field(*pid, "Uid:").and_then(|u| u.split_whitespace().next().map(str::to_owned))
+                == Some(uid.to_string())
+    })?;
+    Some(DeviceSession {
+        unit: login.scope.clone(),
+        account: login.name.clone(),
+        units: Vec::new(),
+        control_socket: device_control_socket(uid),
+        login: Some(Login {
+            session: Some(login.id.clone()),
+            wrapper: Some(wrapper),
+        }),
+    })
+}
+
 /// The compositor's control socket in the board session
-/// (`TILO_TEST_CONTROL`, set by `tilo-seat-session`).
+/// (`TILO_TEST_CONTROL`, set by `tilo-seat-session`) and in a dev image's
+/// greetd login (set by `tilo-session`).
 fn device_control_socket(uid: u32) -> PathBuf {
     PathBuf::from(format!("/run/user/{uid}/tilo-session/test-control.sock"))
+}
+
+/// A component update preserves the operator's service activation state.
+/// Validate the installed unit first: try-restart alone can be a successful
+/// no-op for an absent unit on some systemd versions.
+fn try_restart_unit_with(
+    user: Option<&str>,
+    unit: &str,
+    mut execute: impl FnMut(&str, &mut Command) -> Result<String, DaemonError>,
+) -> Result<(), DaemonError> {
+    if user.is_some() {
+        execute(
+            "reload component user manager",
+            &mut manager_command(user, &["daemon-reload"]),
+        )?;
+    }
+    validate_unit_with(user, unit, &mut execute)?;
+    execute(
+        &format!("systemctl try-restart {unit}"),
+        &mut manager_command(user, &["try-restart", unit]),
+    )
+    .map(drop)
+}
+
+/// The same installed-unit check for immediate and deferred activation.
+fn validate_unit_with(
+    user: Option<&str>,
+    unit: &str,
+    execute: &mut impl FnMut(&str, &mut Command) -> Result<String, DaemonError>,
+) -> Result<(), DaemonError> {
+    let loaded = execute(
+        "validate component unit",
+        &mut manager_command(user, &["show", "--property=LoadState", "--value", unit]),
+    )?;
+    if !matches!(loaded.trim(), "loaded" | "merged") {
+        return Err(DaemonError::Apply {
+            step: format!("validate component unit {unit}"),
+            detail: format!("unit is not loadable ({})", loaded.trim()),
+        });
+    }
+    Ok(())
+}
+
+fn manager_command(user: Option<&str>, args: &[&str]) -> Command {
+    let mut command = Command::new("systemctl");
+    if let Some(user) = user {
+        command.arg(format!("--machine={user}@")).arg("--user");
+    }
+    command.args(args);
+    command
 }
 
 fn run(step: &str, command: &mut Command) -> Result<String, DaemonError> {
@@ -155,6 +366,53 @@ fn uid_of(user: &str) -> Option<u32> {
 }
 
 impl Apply for SystemdApply {
+    fn device_action_owner(&mut self, session: &Session) -> bool {
+        let Some(home) =
+            home_of(&session.user).and_then(|home| PathBuf::from(home).canonicalize().ok())
+        else {
+            return false;
+        };
+        if !crate::disk_unlock::account_is_admin(&session.user) {
+            return false;
+        }
+        let config = self
+            .session_environment(session)
+            .into_iter()
+            .find(|(name, _)| name == "XDG_CONFIG_HOME")
+            .map_or_else(|| home.join(".config"), |(_, value)| PathBuf::from(value));
+        let Ok(identity) = config.join("tilo/identity").canonicalize() else {
+            return false;
+        };
+        identity.starts_with(&home)
+            && tilo_identity_host::provisioning::active_identity_owns_device(
+                &identity,
+                &tilo_user_identity::IdentityPaths::under(Path::new("/var/lib/tilo")),
+            )
+            .unwrap_or(false)
+    }
+    fn enroll_device_unlock(
+        &mut self,
+        uid: u32,
+        request: &tilo_vm_protocol::DeviceUnlockEnrol,
+    ) -> Result<tilo_vm_protocol::DeviceUnlockEnrolResult, DaemonError> {
+        crate::disk_unlock::enroll(uid, request)
+    }
+    fn session_layer_dropin(
+        &mut self,
+        slot: &str,
+        generation: u64,
+        layers: &[PathBuf],
+    ) -> Result<String, DaemonError> {
+        let view = crate::session_view::prepare(&self.views_dir, slot, layers)?;
+        Ok(format!(
+            "# Written by tilo-vmd: slot {slot}, generation {generation}. Do not edit.\n[Service]\nExtensionDirectories=\nBindReadOnlyPaths={}/usr:/usr {}/opt:/opt\n",
+            view.display(),
+            view.display()
+        ))
+    }
+    fn remove_session_view(&mut self, slot: &str) -> Result<(), DaemonError> {
+        crate::session_view::remove(&self.views_dir, slot)
+    }
     fn boot_kernel(
         &mut self,
         layer: Option<&Path>,
@@ -170,6 +428,40 @@ impl Apply for SystemdApply {
         expect_version: Option<&str>,
     ) -> Result<BootConfirmResult, DaemonError> {
         self.boot.confirm(expect_version)
+    }
+
+    fn hold_awake(&mut self, lease: &Path) -> Result<(), DaemonError> {
+        let unit = crate::awake::AWAKE_UNIT;
+        if self.unit_state(unit) == "active" {
+            // It rereads the lease and takes the new deadline itself.
+            return Ok(());
+        }
+        let _ = Command::new("systemctl")
+            .args(["reset-failed", unit])
+            .output();
+        let exe = std::env::current_exe().map_err(DaemonError::io("find the tilo-vmd binary"))?;
+        let mut command = Command::new("systemd-run");
+        command
+            .arg(format!("--unit={unit}"))
+            .args(["--collect", "--quiet"])
+            .arg("--description=tilo-vm keeps this machine awake while someone works on it")
+            .arg(exe)
+            .args(["awake-hold", "--lease"])
+            .arg(lease);
+        match run(&format!("systemd-run --unit {unit}"), &mut command) {
+            Ok(_) => Ok(()),
+            // Another connection started it meanwhile.
+            Err(_) if self.unit_state(unit) == "active" => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn release_awake(&mut self) -> Result<(), DaemonError> {
+        let unit = crate::awake::AWAKE_UNIT;
+        if self.unit_state(unit) == "active" {
+            systemctl("stop", unit)?;
+        }
+        Ok(())
     }
 
     fn ensure_user(&mut self, user: &str) -> Result<u32, DaemonError> {
@@ -208,7 +500,7 @@ impl Apply for SystemdApply {
 
     fn device_session(&mut self) -> Option<DeviceSession> {
         if !Path::new(DEVICE_SESSION_MARKER).exists() {
-            return None;
+            return login_session();
         }
         let listing = Command::new("systemctl")
             .args([
@@ -235,6 +527,7 @@ impl Apply for SystemdApply {
                 .map(|u| (*u).to_owned())
                 .collect(),
             control_socket: device_control_socket(uid),
+            login: None,
         })
     }
 
@@ -283,6 +576,51 @@ impl Apply for SystemdApply {
 
     fn restart_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
         systemctl("restart", unit)
+    }
+
+    fn validate_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
+        validate_unit_with(None, unit, &mut run)
+    }
+    fn try_restart_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
+        try_restart_unit_with(None, unit, run)
+    }
+
+    fn restart_desktop(&mut self, session: &Session) -> Result<(), DaemonError> {
+        let step = format!("restart {}'s desktop", session.user);
+        let fail = |detail: String| DaemonError::Apply {
+            step: step.clone(),
+            detail,
+        };
+        let wrapper = session
+            .login
+            .as_ref()
+            .and_then(|login| login.wrapper)
+            .filter(|pid| comm(*pid).as_deref() == Some(LOGIN_WRAPPER))
+            .ok_or_else(|| fail("the login's tilo-session is gone: the owner logged out".into()))?;
+        let old = compositor_of(wrapper);
+        run(
+            &step,
+            Command::new("kill").args(["-USR1", &wrapper.to_string()]),
+        )?;
+        let Some(old) = old else {
+            return Ok(());
+        };
+        // tilo-session sends the compositor SIGTERM and waits for it.
+        let started = std::time::Instant::now();
+        while Path::new(&format!("/proc/{old}")).exists() && !zombie(old) {
+            if started.elapsed() >= DESKTOP_EXIT_TIMEOUT {
+                return Err(fail(format!(
+                    "the compositor (pid {old}) did not exit within {}s of SIGTERM",
+                    DESKTOP_EXIT_TIMEOUT.as_secs()
+                )));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        Ok(())
+    }
+
+    fn restart_user_unit(&mut self, user: &str, unit: &str) -> Result<(), DaemonError> {
+        try_restart_unit_with(Some(user), unit, run)
     }
 
     fn unit_state(&mut self, unit: &str) -> String {
@@ -482,6 +820,11 @@ impl Apply for SystemdApply {
         // Restart=always turns a failing start into active/activating flapping,
         // so the unit has to stay active under one main process for a while.
         const SETTLE: std::time::Duration = std::time::Duration::from_millis(1500);
+        if let Some(login) = &session.login {
+            return login
+                .wrapper
+                .map_or(Ok(()), |wrapper| wait_desktop(wrapper, SETTLE));
+        }
         // A board session first waits for its user manager, the network and
         // the clock (tilo-board-session-prepare).
         let timeout = std::time::Duration::from_secs(if session.stand_in { 20 } else { 120 });
@@ -515,6 +858,13 @@ impl Apply for SystemdApply {
     }
 
     fn session_pid(&mut self, session: &Session) -> Option<u32> {
+        // A login: its compositor, whose environment has the session's
+        // variables, else the tilo-session around it.
+        if let Some(login) = &session.login {
+            let wrapper = login.wrapper?;
+            return compositor_of(wrapper)
+                .or_else(|| (comm(wrapper).as_deref() == Some(LOGIN_WRAPPER)).then_some(wrapper));
+        }
         let output = Command::new("systemctl")
             .args(["show", "--property=MainPID", "--value", &session.unit])
             .output()
@@ -644,34 +994,129 @@ impl Apply for SystemdApply {
         Ok(())
     }
 
-    fn install_app(&mut self, user: &str, tapp: &Path) -> Result<String, DaemonError> {
-        let uid = uid_of(user).ok_or_else(|| DaemonError::Apply {
+    fn install_app(&mut self, session: &Session, tapp: &Path) -> Result<String, DaemonError> {
+        install_app_in_session(self, session, tapp, false)
+    }
+
+    fn install_cohort_app(
+        &mut self,
+        session: &Session,
+        tapp: &Path,
+    ) -> Result<String, DaemonError> {
+        install_app_in_session(self, session, tapp, true)
+    }
+}
+
+fn install_app_in_session(
+    apply: &mut SystemdApply,
+    session: &Session,
+    tapp: &Path,
+    preserve_held: bool,
+) -> Result<String, DaemonError> {
+    // The installed runtime and publisher pins are part of the resolved
+    // slot's verified /usr view, not the daemon's global namespace.
+    let pid = apply
+        .session_pid(session)
+        .ok_or_else(|| DaemonError::Apply {
             step: "tilo-install".into(),
-            detail: format!("no user {user}"),
+            detail: "the slot has no live session mount namespace".into(),
         })?;
-        let home = home_of(user).unwrap_or_else(|| format!("/home/{user}"));
-        // The slot user must read the package; the state root is root's.
-        let dir =
-            Path::new("/var/tmp").join(format!("tilo-vm-app-{}", uuid::Uuid::new_v4().simple()));
-        fs::create_dir_all(&dir).map_err(DaemonError::io("stage the app package"))?;
-        let staged = dir.join("app.tapp");
-        let result = fs::copy(tapp, &staged)
-            .map_err(DaemonError::io("stage the app package"))
-            .and_then(|_| {
-                make_readable(&dir, &staged)?;
-                run(
-                    "tilo-install install --allow-self-signed --force",
-                    Command::new("runuser")
-                        .args(["-u", user, "--", "env"])
-                        .arg(format!("HOME={home}"))
-                        .arg(format!("USER={user}"))
-                        .arg(format!("XDG_RUNTIME_DIR=/run/user/{uid}"))
-                        .args(["tilo-install", "install", "--allow-self-signed", "--force"])
-                        .arg(&staged),
-                )
-            });
-        let _ = fs::remove_dir_all(&dir);
-        result
+    let user = &session.user;
+    let uid = uid_of(user).ok_or_else(|| DaemonError::Apply {
+        step: "tilo-install".into(),
+        detail: format!("no user {user}"),
+    })?;
+    let home = home_of(user).unwrap_or_else(|| format!("/home/{user}"));
+    // The slot user must read the package; the state root is root's.
+    let dir = Path::new("/var/tmp").join(format!("tilo-vm-app-{}", uuid::Uuid::new_v4().simple()));
+    fs::create_dir_all(&dir).map_err(DaemonError::io("stage the app package"))?;
+    let staged = dir.join("app.tapp");
+    let result = fs::copy(tapp, &staged)
+        .map_err(DaemonError::io("stage the app package"))
+        .and_then(|_| {
+            make_readable(&dir, &staged)?;
+            run(
+                "tilo-install install --allow-self-signed --force",
+                &mut if preserve_held {
+                    selected_app_install_command(pid, user, uid, &home, &staged, true)
+                } else {
+                    app_install_command(pid, user, uid, &home, &staged)
+                },
+            )
+        });
+    let _ = fs::remove_dir_all(&dir);
+    result
+}
+
+fn app_install_command(pid: u32, user: &str, uid: u32, home: &str, staged: &Path) -> Command {
+    selected_app_install_command(pid, user, uid, home, staged, false)
+}
+
+fn selected_app_install_command(
+    pid: u32,
+    user: &str,
+    uid: u32,
+    home: &str,
+    staged: &Path,
+    preserve_held: bool,
+) -> Command {
+    let mut arguments = vec![
+        "/usr/bin/tilo-install".into(),
+        "install".into(),
+        "--allow-self-signed".into(),
+        "--force".into(),
+    ];
+    if preserve_held {
+        arguments.push("--preserve-held".into());
+    }
+    arguments.push(staged.to_string_lossy().into_owned());
+    crate::exec::in_session(
+        pid,
+        user,
+        &[
+            ("HOME".into(), home.into()),
+            ("USER".into(), user.into()),
+            ("XDG_RUNTIME_DIR".into(), format!("/run/user/{uid}")),
+        ],
+        &arguments,
+    )
+}
+
+/// How long a login's compositor may take to exit after SIGTERM.
+const DESKTOP_EXIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// How long the restarted compositor may take to come up.
+const DESKTOP_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Wait until `wrapper` (a login's tilo-session) runs one compositor for
+/// `settle`. The wrapper exiting means the compositor did not come up and
+/// the owner is back at the login screen.
+fn wait_desktop(wrapper: u32, settle: std::time::Duration) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    let mut stable: Option<(std::time::Instant, u32)> = None;
+    loop {
+        if comm(wrapper).as_deref() != Some(LOGIN_WRAPPER) || zombie(wrapper) {
+            return Err(
+                "the login ended because its compositor did not keep running; \
+                 the machine shows the login screen"
+                    .into(),
+            );
+        }
+        match (compositor_of(wrapper), stable) {
+            (Some(pid), Some((since, seen))) if pid == seen => {
+                if since.elapsed() >= settle {
+                    return Ok(());
+                }
+            }
+            (Some(pid), _) => stable = Some((std::time::Instant::now(), pid)),
+            (None, _) => stable = None,
+        }
+        if started.elapsed() >= DESKTOP_START_TIMEOUT {
+            return Err(format!(
+                "no compositor kept running within {}s",
+                DESKTOP_START_TIMEOUT.as_secs()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
 }
 
@@ -723,11 +1168,12 @@ fn start_input_server(
     })
 }
 
-/// The desktop layout under `~/.config/tilo`: the tree, its document and
-/// the document's meta, and the action invocations recorded against it.
-const DESKTOP_STATE: [&str; 4] = [
+/// The desktop layout under `~/.config/tilo`: the tree, its document, the
+/// document's log and meta, and the action invocations recorded against it.
+const DESKTOP_STATE: [&str; 5] = [
     "state.json",
     "state.automerge",
+    "state.automerge.log",
     "state.automerge.meta",
     "state.json.invocations",
 ];
@@ -848,7 +1294,250 @@ fn vkms_card(seat: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn app_install_uses_the_verified_slot_namespace_and_never_ignores_runtime() {
+        let command = super::app_install_command(
+            123,
+            "you",
+            1002,
+            "/var/home/you",
+            std::path::Path::new("/var/tmp/private/app.tapp"),
+        );
+        assert_eq!(command.get_program(), "nsenter");
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(&args[..2], ["--target=123", "--mount"]);
+        assert!(
+            args.windows(4)
+                .any(|args| args == ["runuser", "-u", "you", "--"])
+        );
+        assert!(args.contains(&"HOME=/var/home/you".into()));
+        assert!(args.contains(&"XDG_RUNTIME_DIR=/run/user/1002".into()));
+        assert_eq!(
+            &args[args.len() - 5..],
+            [
+                "/usr/bin/tilo-install",
+                "install",
+                "--allow-self-signed",
+                "--force",
+                "/var/tmp/private/app.tapp"
+            ]
+        );
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.contains("ignore-missing-runtime"))
+        );
+        let selected = super::selected_app_install_command(
+            123,
+            "you",
+            1002,
+            "/var/home/you",
+            std::path::Path::new("/var/tmp/private/app.tapp"),
+            true,
+        );
+        let selected: Vec<_> = selected
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(&selected[..2], ["--target=123", "--mount"]);
+        assert_eq!(
+            &selected[selected.len() - 6..],
+            [
+                "/usr/bin/tilo-install",
+                "install",
+                "--allow-self-signed",
+                "--force",
+                "--preserve-held",
+                "/var/tmp/private/app.tapp",
+            ]
+        );
+        assert!(
+            !selected
+                .iter()
+                .any(|arg| arg.contains("ignore-missing-runtime"))
+        );
+    }
+
+    #[test]
+    fn app_install_refuses_a_missing_session_without_host_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        let session = super::Session {
+            slot: "missing".into(),
+            unit: "tilo-test-missing-install-session.service".into(),
+            user: "missing-user".into(),
+            units: vec![],
+            control_socket: root.path().join("control"),
+            stand_in: true,
+            login: None,
+        };
+        let mut apply = super::SystemdApply::new(root.path());
+        let error =
+            super::Apply::install_app(&mut apply, &session, &root.path().join("missing.tapp"))
+                .unwrap_err();
+        assert!(
+            matches!(error, super::DaemonError::Apply { step, detail } if step == "tilo-install" && detail == "the slot has no live session mount namespace")
+        );
+    }
+
     use super::*;
+
+    #[test]
+    fn changed_user_unit_is_reloaded_before_restart_and_reload_failure_stops_it() {
+        let mut calls = Vec::new();
+        let mut loaded_pin = false;
+        try_restart_unit_with(Some("xaver"), "tilo-ush.service", |_, command| {
+            assert_eq!(command.get_program(), "systemctl");
+            let args: Vec<_> = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(&args[..2], ["--machine=xaver@", "--user"]);
+            calls.push(args[2].clone());
+            match args[2].as_str() {
+                "daemon-reload" => loaded_pin = true,
+                "show" => {
+                    assert!(loaded_pin);
+                    return Ok("loaded\n".into());
+                }
+                "try-restart" => {
+                    assert!(
+                        loaded_pin,
+                        "restart must observe the newly layered service definition"
+                    );
+                    assert_eq!(args[3], "tilo-ush.service");
+                }
+                unexpected => panic!("unexpected user manager operation {unexpected}"),
+            }
+            Ok(String::new())
+        })
+        .unwrap();
+        assert_eq!(calls, ["daemon-reload", "show", "try-restart"]);
+
+        let mut calls = 0;
+        let error = try_restart_unit_with(Some("xaver"), "tilo-ush.service", |_, _| {
+            calls += 1;
+            Err(DaemonError::Apply {
+                step: "reload".into(),
+                detail: "manager unavailable".into(),
+            })
+        });
+        assert!(error.is_err());
+        assert_eq!(calls, 1, "a failed reload cannot restart the stale unit");
+    }
+
+    #[test]
+    fn deferred_greeter_activation_still_validates_the_installed_manager() {
+        for loaded in ["loaded", "merged", "not-found", "masked", "error", ""] {
+            let mut calls = Vec::new();
+            let result = validate_unit_with(None, GREETER_UNIT, &mut |_, command| {
+                calls.push(
+                    command
+                        .get_args()
+                        .map(|arg| arg.to_string_lossy().into_owned())
+                        .collect::<Vec<_>>(),
+                );
+                Ok(loaded.into())
+            });
+            assert_eq!(result.is_ok(), matches!(loaded, "loaded" | "merged"));
+            assert_eq!(
+                calls,
+                [vec![
+                    "show",
+                    "--property=LoadState",
+                    "--value",
+                    GREETER_UNIT
+                ]]
+            );
+        }
+        let result = validate_unit_with(None, GREETER_UNIT, &mut |_, _| {
+            Err(DaemonError::Apply {
+                step: "manager unavailable".into(),
+                detail: "failure".into(),
+            })
+        });
+        assert!(
+            result.is_err(),
+            "manager failures cannot become a successful deferral"
+        );
+    }
+
+    #[test]
+    fn component_restart_validates_units_and_preserves_manager_failures() {
+        for user in [None, Some("xaver")] {
+            for state in ["not-found", "masked", "error", ""] {
+                let mut tried = false;
+                let result = try_restart_unit_with(user, "optional.service", |_, command| {
+                    let args: Vec<_> = command.get_args().map(|a| a.to_string_lossy()).collect();
+                    if args.iter().any(|a| a == "try-restart") {
+                        tried = true;
+                    }
+                    Ok(if args.iter().any(|a| a == "show") {
+                        state.into()
+                    } else {
+                        String::new()
+                    })
+                });
+                assert!(result.is_err(), "invalid installed-unit state {state}");
+                assert!(
+                    !tried,
+                    "missing or unloadable units cannot be silently skipped"
+                );
+            }
+            let error = try_restart_unit_with(user, "active.service", |step, command| {
+                if command.get_args().any(|a| a == "try-restart") {
+                    return Err(DaemonError::Apply {
+                        step: step.into(),
+                        detail: "restart denied".into(),
+                    });
+                }
+                Ok("loaded".into())
+            })
+            .unwrap_err();
+            assert!(error.to_string().contains("restart denied"));
+        }
+    }
+
+    #[test]
+    fn component_restart_uses_conditional_operation_for_both_managers() {
+        for user in [None, Some("xaver")] {
+            let mut verbs = Vec::new();
+            try_restart_unit_with(user, "optional.service", |_, command| {
+                let args: Vec<_> = command
+                    .get_args()
+                    .map(|a| a.to_string_lossy().into_owned())
+                    .collect();
+                let offset = if user.is_some() { 2 } else { 0 };
+                let verb = &args[offset];
+                verbs.push(verb.clone());
+                if verb == "show" {
+                    assert_eq!(
+                        &args[offset..],
+                        [
+                            "show",
+                            "--property=LoadState",
+                            "--value",
+                            "optional.service"
+                        ]
+                    );
+                    return Ok("loaded\n".into());
+                }
+                if verb == "try-restart" {
+                    assert_eq!(
+                        args.iter().skip(offset).nth(1).map(String::as_str),
+                        Some("optional.service")
+                    );
+                } else {
+                    assert_eq!(verb, "daemon-reload");
+                }
+                Ok(String::new())
+            })
+            .unwrap();
+            assert_eq!(verbs.last().map(String::as_str), Some("try-restart"));
+        }
+    }
 
     /// The board session tilo-vmd looks for is the one the board layer
     /// installs, and the units and socket it names are the ones
@@ -899,6 +1588,66 @@ mod tests {
                 device_session_unit("tilo-board-headless-session@.service loaded"),
                 None
             );
+        }
+    }
+
+    /// On a laptop the device slot is the owner's greetd login: the session
+    /// greetd's worker leads on seat0, never the greeter's or a slot's.
+    #[test]
+    fn the_device_session_of_a_laptop_is_the_owners_greetd_login() {
+        // Phase `a_login_is_found_by_its_greetd_worker`.
+        {
+            let shown = |id: &str, text: &str| parse_logind_session(id, text);
+            let greeter = shown(
+                "1",
+                "Name=greetd\nSeat=seat0\nClass=greeter\nRemote=no\nState=closing\nLeader=900\nScope=session-1.scope\n",
+            );
+            let ssh = shown(
+                "2",
+                "Name=quickuser\nSeat=\nClass=user\nRemote=yes\nState=active\nLeader=700\nScope=session-2.scope\n",
+            );
+            let slot = shown(
+                "4",
+                "Name=tds-a\nSeat=seat0\nClass=user\nRemote=no\nState=active\nLeader=800\nScope=session-4.scope\n",
+            );
+            let owner = shown(
+                "3",
+                "Name=quickuser\nSeat=seat0\nClass=user\nRemote=no\nState=active\nLeader=901\nScope=session-3.scope\n",
+            );
+            assert_eq!(owner.leader, 901);
+            assert_eq!(owner.scope, "session-3.scope");
+            // greetd is pid 500; its workers lead the greeter's and the owner's sessions.
+            let parent = |pid: u32| match pid {
+                900 | 901 => Some(500),
+                _ => Some(1),
+            };
+            let sessions = [greeter, ssh, slot, owner];
+            assert_eq!(
+                greetd_login(&sessions, 500, parent).map(|s| s.id.as_str()),
+                Some("3")
+            );
+            assert_eq!(greetd_login(&sessions[..3], 500, parent), None);
+            assert_eq!(greetd_login(&sessions, 0, parent), None);
+        }
+        // Phase `the_names_match_tilo_session`.
+        {
+            let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+            let wrapper = repo.join("os/usr/libexec").join(LOGIN_WRAPPER);
+            let script = fs::read_to_string(&wrapper).unwrap();
+            assert!(
+                script.contains("trap request_restart USR1"),
+                "{}",
+                wrapper.display()
+            );
+            assert!(script.contains("readonly SHELL_BIN=/usr/bin/shell"));
+            assert_eq!(Path::new("/usr/bin/shell").file_name().unwrap(), COMPOSITOR);
+            assert!(script.contains(
+                r#"export TILO_TEST_CONTROL="$runtime_dir/tilo-session/test-control.sock""#
+            ));
+            let session =
+                fs::read_to_string(repo.join("os/usr/share/wayland-sessions/shell.desktop"))
+                    .unwrap();
+            assert!(session.contains(&format!("Exec=/usr/libexec/{LOGIN_WRAPPER} ")));
         }
     }
 

@@ -15,6 +15,7 @@ pub mod header;
 pub mod history;
 pub mod inspector;
 pub mod layers;
+pub(crate) mod layout;
 pub mod pane;
 pub mod picture;
 pub mod shortcuts;
@@ -23,11 +24,9 @@ pub mod well;
 
 use ui::icons::Icon;
 use ui::prelude::*;
+use ui::widget::{ButtonRole, ControlSize};
 
-use crate::resource::ArtworkResource;
-
-/// The side of an icon button in a panel row.
-pub(crate) const ICON_BUTTON: f32 = 32.0; // a compact icon button's face; the toolkit keeps its pointer target
+use crate::model::Artwork;
 
 /// Small dimmed text beside a value.
 pub(crate) fn caption(text: &str) -> Element {
@@ -42,17 +41,17 @@ pub(crate) fn heading(id: &str) -> Element {
 /// An icon-only button invoking `invoke`, `name` its tooltip and the name
 /// a screen reader announces.
 pub(crate) fn icon_button(
-    cx: &ViewCx<ArtworkResource>,
+    cx: &ViewCx<Artwork>,
     icon: Icon,
     name: &str,
-    invoke: Invoke<ArtworkResource>,
+    invoke: Invoke<Artwork>,
 ) -> Button {
     cx.button("", invoke)
         .with_icon(icon)
-        .ghost()
         .with_accessible_name(name)
         .tooltip(name)
-        .with_size(ICON_BUTTON, ICON_BUTTON)
+        .role(ButtonRole::Plain)
+        .control_size(ControlSize::Small)
 }
 
 /// `0..=1` as a whole percentage.

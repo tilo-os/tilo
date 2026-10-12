@@ -17,8 +17,6 @@ use std::{
 use tilo_actions::ControlInvocation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ControlProducerId(uuid::Uuid, u64);
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ControlRequestId(uuid::Uuid, u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlProducerDiscipline {
@@ -82,7 +80,6 @@ struct DomainState {
     incarnation: uuid::Uuid,
     closed: bool,
     initial_installation: bool,
-    next_producer: u64,
     next_request: u64,
     owner: Option<ControlOwner>,
     parent: WeakControlDomain,
@@ -106,6 +103,7 @@ impl ControlOwner {
             },
             Self::Component(binding) => {
                 PendingControlOrigin::Component(crate::bound_dispatch::BoundActionTarget {
+                    input: crate::bound_dispatch::Input::Discrete,
                     binding: binding.clone(),
                     address: crate::bound_dispatch::BoundActionAddress {
                         instance_id: binding.instance_id,
@@ -128,9 +126,12 @@ enum DomainEntry {
     Child(WeakControlDomain),
 }
 struct Producer {
-    id: ControlProducerId,
     discipline: ControlProducerDiscipline,
-    pending: VecDeque<(ControlRequestId, ControlInvocation)>,
+    pending: VecDeque<(
+        ControlRequestId,
+        ControlInvocation,
+        crate::bound_dispatch::Input,
+    )>,
 }
 /// A retained producer does not keep its owner, registry or widget alive.
 #[derive(Clone)]
@@ -174,7 +175,6 @@ impl ControlDomain {
             incarnation: id,
             closed: false,
             initial_installation: true,
-            next_producer: 1,
             next_request: 1,
             owner: None,
             parent: WeakControlDomain::default(),
@@ -302,22 +302,9 @@ impl ControlDomain {
         }
         child
     }
-    /// # Panics
-    ///
-    /// Panics if this domain has issued `u64::MAX` producer identities.
-    #[expect(
-        clippy::expect_used,
-        reason = "a per-domain u64 producer counter cannot be exhausted; wrapping would reuse an identity"
-    )]
     pub fn producer(&self, discipline: ControlProducerDiscipline) -> ControlOutbox {
         let mut state = self.0.borrow_mut();
-        let id = ControlProducerId(state.id, state.next_producer);
-        state.next_producer = state
-            .next_producer
-            .checked_add(1)
-            .expect("control producer identity exhausted");
         let producer = Rc::new(RefCell::new(Producer {
-            id,
             discipline,
             pending: VecDeque::new(),
         }));
@@ -393,9 +380,15 @@ impl ControlDomain {
             match entry {
                 DomainEntry::Producer(producer) => {
                     if let Some(owner) = &owner {
-                        for (_, invocation) in producer.borrow_mut().pending.drain(..) {
+                        for (_, invocation, physical_text) in
+                            producer.borrow_mut().pending.drain(..)
+                        {
+                            let mut origin = owner.origin(&invocation);
+                            if let PendingControlOrigin::Component(target) = &mut origin {
+                                target.input = physical_text;
+                            }
                             output.push(OwnedControl {
-                                origin: owner.origin(&invocation),
+                                origin,
                                 invocation,
                                 domain: self.downgrade(),
                             });
@@ -430,9 +423,6 @@ impl ControlDomain {
     }
 }
 impl ControlOutbox {
-    pub fn producer_id(&self) -> ControlProducerId {
-        self.producer.borrow().id
-    }
     pub fn emit(&self, invocation: ControlInvocation) -> Result<LocalEmission, EmitError> {
         let domain = self.domain.upgrade().ok_or(EmitError::Closed)?;
         if domain.closed() || domain.0.borrow().incarnation != self.owner_incarnation {
@@ -459,7 +449,9 @@ impl ControlOutbox {
                 }
             }
         }
-        producer.pending.push_back((id, invocation));
+        producer
+            .pending
+            .push_back((id, invocation, crate::bound_dispatch::input()));
         Ok(LocalEmission::Queued(id))
     }
     pub fn replace(&self, invocation: ControlInvocation) -> Result<LocalEmission, EmitError> {
@@ -481,7 +473,7 @@ pub(crate) struct ControlHolder {
 }
 enum HolderStorage {
     Legacy {
-        pending: VecDeque<ControlInvocation>,
+        pending: VecDeque<(ControlInvocation, crate::bound_dispatch::Input)>,
         emitted: bool,
     },
     Registered(ControlOutbox),
@@ -549,8 +541,9 @@ impl ControlHolder {
         let outbox = domain.producer(self.discipline);
         let old = std::mem::replace(&mut self.storage, HolderStorage::Registered(outbox.clone()));
         if let HolderStorage::Legacy { pending, .. } = old {
-            for invocation in pending {
-                let _ = outbox.emit(invocation);
+            for (invocation, physical_text) in pending {
+                let _ =
+                    crate::bound_dispatch::with_input(physical_text, || outbox.emit(invocation));
             }
         }
         Ok(())
@@ -582,14 +575,19 @@ impl ControlHolder {
                         }
                     }
                 }
-                pending.push_back(invocation);
+                pending.push_back((invocation, crate::bound_dispatch::input()));
                 Ok(RawControlEmission::LegacyPending)
             }
         }
     }
     pub(crate) fn take(&mut self) -> Option<ControlInvocation> {
         match &mut self.storage {
-            HolderStorage::Legacy { pending, .. } => pending.pop_front(),
+            HolderStorage::Legacy { pending, .. } => {
+                pending.pop_front().map(|(invocation, physical_text)| {
+                    crate::bound_dispatch::note_drained_input(physical_text);
+                    invocation
+                })
+            }
             HolderStorage::Registered(_) => None,
         }
     }
@@ -602,13 +600,15 @@ impl ControlHolder {
     #[cfg(any(test, feature = "test-support"))]
     fn controlled_pending_for_test(&self) -> Option<ControlInvocation> {
         match &self.storage {
-            HolderStorage::Legacy { pending, .. } => pending.front().cloned(),
+            HolderStorage::Legacy { pending, .. } => {
+                pending.front().map(|(invocation, _)| invocation.clone())
+            }
             HolderStorage::Registered(outbox) => outbox
                 .producer
                 .borrow()
                 .pending
                 .front()
-                .map(|(_, invocation)| invocation.clone()),
+                .map(|(_, invocation, _)| invocation.clone()),
         }
     }
 }
@@ -996,10 +996,7 @@ mod tests {
                     Ok(LocalEmission::Suppressed)
                 );
                 *output.borrow_mut() = Some(producer);
-                Box::new(
-                    crate::widget::Button::new("passive", "Passive", None)
-                        .on_action(unit_binding()),
-                )
+                Box::new(crate::widget::Button::new("passive", "Passive").on_action(unit_binding()))
             },
         );
         crate::widget::controls::install_control_custody(
@@ -1010,12 +1007,13 @@ mod tests {
         let (lease, saved) = domain.suspend();
         assert!(saved.is_empty());
         let mut doc = automerge::AutoCommit::new();
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         drop(lease);
         assert!(domain.drain_live().is_empty());
         assert!(view.children_mut()[0].perform_action(
             &crate::a11y::Action::Activate,
-            &mut doc,
+            &[],
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         let requests = domain.drain_live();
@@ -1062,11 +1060,11 @@ mod lifecycle_tests {
             CustodyAttachment::Initial,
         );
         let c = domain.producer(ControlProducerDiscipline::ReplaceOne);
-        let mut doc = automerge::AutoCommit::new();
+        let doc = automerge::AutoCommit::new();
         for revision in 0..128 {
             let want = if revision == 0 { "B0" } else { "B1" };
             *key.borrow_mut() = revision;
-            model.sync(&mut doc, &automerge::ROOT);
+            model.sync(&doc, &automerge::ROOT);
             let scope = domain.children().into_iter().next().unwrap();
             assert_eq!(domain.0.borrow().order.len(), 3, "stable A/subtree/C slots");
             assert_eq!(

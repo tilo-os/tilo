@@ -21,6 +21,288 @@ use crate::notifications::{
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::i18n::t_args;
 use crate::shell::room_activity::RoomActivityPane;
+use crate::shell::state::WorkspaceAuthority as _;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NotificationLaunch {
+    pub app_id: String,
+    pub target: tilo_desktop::notifications::ScheduledNotificationTarget,
+}
+
+pub(crate) fn scheduled_launch(notification: &Notification) -> Option<NotificationLaunch> {
+    if notification.remote_route.is_some() {
+        return None;
+    }
+    let target = notification
+        .scheduled_target
+        .clone()
+        .filter(tilo_desktop::notifications::ScheduledNotificationTarget::valid)?;
+    Some(NotificationLaunch {
+        app_id: notification.app_id.clone()?,
+        target,
+    })
+}
+
+pub(crate) fn launch_scheduled_notification(
+    request: NotificationLaunch,
+    tree: &crate::shell::state::WorkspaceTreeHandle,
+) -> Result<(), String> {
+    let workspace = tree
+        .read()
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room.to_string() == request.target.room)
+        .cloned()
+        .ok_or("notification's original room is unavailable")?;
+    crate::shell::launcher::queue_package_target_in_workspace(
+        request.app_id,
+        &workspace,
+        request.target.uri,
+    )
+    .map_err(|error| error.to_string())
+}
+
+pub(crate) fn alarm_action_address(
+    id: &str,
+) -> Option<(u64, crate::notifications::ScheduledAction)> {
+    let (notice, action) = id.strip_prefix("notification.")?.split_once('.')?;
+    let notice = notice.parse::<u64>().ok().filter(|id| *id != 0)?;
+    let action = match action {
+        "snooze" => crate::notifications::ScheduledAction::Snooze,
+        "dismiss" => crate::notifications::ScheduledAction::Dismiss,
+        _ => return None,
+    };
+    Some((notice, action))
+}
+
+pub(crate) fn snoozed_alarm_dismiss_id(
+    target: &tilo_desktop::notifications::ScheduledNotificationTarget,
+) -> String {
+    format!(
+        "snoozed-alarm.{}.{}.dismiss",
+        target.token, target.occurrence_ms
+    )
+}
+
+pub(crate) fn is_snoozed_alarm_action(id: &str) -> bool {
+    id.strip_prefix("snoozed-alarm.")
+        .and_then(|id| id.strip_suffix(".dismiss"))
+        .and_then(|id| id.split_once('.'))
+        .is_some_and(|(token, at)| {
+            token.len() == 32
+                && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && at.parse::<i64>().is_ok()
+        })
+}
+
+fn pending_snoozes_for_active_room(state: &ChromeState) -> Vec<crate::notifications::SnoozedAlarm> {
+    // Do not hold a tree guard while reading the scheduler: delivery reads
+    // its room mapping while holding the scheduler's own lock.
+    let room = state
+        .tree()
+        .desktop
+        .active_workspace()
+        .map(|workspace| workspace.room.to_string());
+    room.map_or_else(Vec::new, |room| state.snoozed_alarms(&room))
+}
+
+fn snoozed_alarm_rows(
+    state: &ChromeState,
+    workspace: &crate::shell::state::Workspace,
+    sources: Vec<crate::notifications::SnoozedAlarm>,
+) -> Vec<crate::shell::search::SearchResult> {
+    use crate::shell::search::action_api::ActionError;
+    use crate::shell::search::{ResourceKind, SearchResult};
+    let actor = workspace.actor_for_person(&state.local_user_for_room(&workspace.room));
+    sources
+        .into_iter()
+        .filter_map(|source| {
+            let id = snoozed_alarm_dismiss_id(&source.target);
+            if source.target.room != workspace.room.to_string()
+                || !crate::shell::search::providers::actions::shell_action_authorized_for(
+                    workspace, &actor, &id,
+                )
+            {
+                return None;
+            }
+            let already_reachable = state
+                .notification_log()
+                .active()
+                .iter()
+                .chain(state.notification_log().history())
+                .any(|notice| {
+                    scheduled_launch(notice).is_some_and(|request| {
+                        request.target.calendar_alarm
+                            && request.app_id == source.app_id
+                            && request.target.room == source.target.room
+                            && request.target.token == source.target.token
+                            && request.target.uri == source.target.uri
+                            && request.target.occurrence_ms == source.target.occurrence_ms
+                    })
+                });
+            if already_reachable {
+                return None;
+            }
+            let expected_room = source.target.room.clone();
+            let address = id.clone();
+            let label = tilo_desktop::notifications::alarm_action_labels()
+                .into_iter()
+                .find(|(key, _)| key == "dismiss")?
+                .1;
+            Some(SearchResult {
+                kind: ResourceKind::Action,
+                operation_kind: tilo_actions::OperationKind::Effect,
+                provider_id: "actions".into(),
+                id: id.clone(),
+                title: tilo_desktop::notifications::alarm_action_title(&label, &source.title),
+                subtitle: Some(tilo_desktop::notifications::alarm_snoozed_label()),
+                badge: None,
+                score: 0,
+                params: Vec::new(),
+                contract: Some(
+                    crate::shell::search::providers::actions::shell_action_contract(&id),
+                ),
+                on_open: std::rc::Rc::new(|_, _, _, _| {
+                    Err(ActionError::Refused(
+                        "alarm actions require lifecycle dispatch".into(),
+                    ))
+                }),
+                on_invoke: None,
+                on_begin_invoke: Some(std::rc::Rc::new(move |_, _, chrome, _| {
+                    begin_alarm_action(chrome, &address, &expected_room, Some(&source))
+                })),
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn alarm_action_rows(state: &ChromeState) -> Vec<crate::shell::search::SearchResult> {
+    use crate::shell::search::action_api::{ActionArgs, ActionError};
+    use crate::shell::search::{ResourceKind, SearchResult};
+    let pending = pending_snoozes_for_active_room(state);
+    let tree = state.tree();
+    let Some(workspace) = tree.desktop.active_workspace() else {
+        return Vec::new();
+    };
+    if !state.alarm_actions_available() {
+        return Vec::new();
+    }
+    let room = workspace.room.to_string();
+    let actor = workspace.actor_for_person(&state.local_user_for_room(&workspace.room));
+    let mut seen = std::collections::HashSet::new();
+    let mut rows = Vec::new();
+    for notice in state
+        .notification_log()
+        .active()
+        .iter()
+        .chain(state.notification_log().history())
+    {
+        if !seen.insert(notice.id) {
+            continue;
+        }
+        let Some(request) = scheduled_launch(notice)
+            .filter(|request| request.target.calendar_alarm && request.target.room == room)
+        else {
+            continue;
+        };
+        for (key, label) in tilo_desktop::notifications::alarm_action_labels() {
+            if key == "snooze" && request.target.snoozed {
+                continue;
+            }
+            let id = format!("notification.{}.{key}", notice.id);
+            if !crate::shell::search::providers::actions::shell_action_authorized_for(
+                workspace, &actor, &id,
+            ) {
+                continue;
+            }
+            let expected_room = request.target.room.clone();
+            let action_id = id.clone();
+            rows.push(SearchResult {
+                kind: ResourceKind::Action,
+                operation_kind: tilo_actions::OperationKind::Effect,
+                provider_id: "actions".into(),
+                id: id.clone(),
+                title: tilo_desktop::notifications::alarm_action_title(&label, &notice.title),
+                subtitle: Some(tilo_desktop::notifications::alarm_action_subtitle()),
+                badge: None,
+                score: 0,
+                params: Vec::new(),
+                contract: Some(
+                    crate::shell::search::providers::actions::shell_action_contract(&id),
+                ),
+                on_open: std::rc::Rc::new(|_, _, _, _| {
+                    Err(ActionError::Refused(
+                        "alarm actions require lifecycle dispatch".into(),
+                    ))
+                }),
+                on_invoke: None,
+                on_begin_invoke: Some(std::rc::Rc::new(
+                    move |_, _, chrome: &Chrome, _: &ActionArgs| {
+                        begin_alarm_action(chrome, &action_id, &expected_room, None)
+                    },
+                )),
+            });
+        }
+    }
+    rows.extend(snoozed_alarm_rows(state, workspace, pending));
+    drop(tree);
+    rows
+}
+
+fn begin_alarm_action(
+    chrome: &Chrome,
+    address: &str,
+    expected_room: &str,
+    source: Option<&crate::notifications::SnoozedAlarm>,
+) -> Result<
+    crate::shell::search::InvocationDisposition,
+    crate::shell::search::action_api::ActionError,
+> {
+    use crate::shell::search::action_api::ActionError;
+    use crate::shell::search::{ActionReceipt, InvocationDisposition};
+    let request = {
+        let mut state = chrome.borrow_mut();
+        let allowed = {
+            let tree = state.tree();
+            tree.desktop.active_workspace().is_some_and(|workspace| {
+                let actor = workspace.actor_for_person(&state.local_user_for_room(&workspace.room));
+                workspace.room.to_string() == expected_room
+                    && crate::shell::search::providers::actions::shell_action_authorized_for(
+                        workspace, &actor, address,
+                    )
+            })
+        };
+        if !allowed {
+            return Err(ActionError::Refused(
+                "alarm's original workspace authority changed".into(),
+            ));
+        }
+        if let Some(source) = source {
+            state
+                .request_snoozed_alarm_dismiss(source)
+                .map_err(ActionError::Refused)?
+        } else {
+            let (notice_id, action) = alarm_action_address(address)
+                .ok_or_else(|| ActionError::Refused("unknown alarm action".into()))?;
+            state
+                .request_alarm_action(notice_id, action, true)
+                .map_err(ActionError::Refused)?
+        }
+    };
+    let chrome = chrome.clone();
+    let ticket = std::rc::Rc::new(move || {
+        chrome
+            .borrow_mut()
+            .take_alarm_action_result(request)
+            .map_or(Ok(None), |result| {
+                result
+                    .map(|()| Some(ActionReceipt::completed()))
+                    .map_err(ActionError::Refused)
+            })
+    });
+    Ok(InvocationDisposition::Pending(ticket))
+}
 
 /// Put a startup refusal on the screen and leave it there. The compositor
 /// falling back to a bootstrapped tree means the person is looking at a
@@ -190,6 +472,39 @@ impl<'a> ChromeNotifications<'a> {
 }
 
 impl NotificationHost for ChromeNotifications<'_> {
+    fn actions_for(&self, notification: &Notification) -> Vec<(String, String)> {
+        let state = self.chrome.borrow();
+        let available = state.alarm_actions_available();
+        if available && state.alarm_action_authorized(notification) {
+            let snoozed = notification
+                .scheduled_target
+                .as_ref()
+                .is_some_and(|target| target.snoozed);
+            tilo_desktop::notifications::alarm_action_labels()
+                .into_iter()
+                .filter(|(key, _)| !snoozed || key != "snooze")
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn invoke_action(&self, id: u64, key: &str) {
+        let action = match key {
+            "snooze" => crate::notifications::ScheduledAction::Snooze,
+            "dismiss" => crate::notifications::ScheduledAction::Dismiss,
+            _ => return,
+        };
+        let mut state = self.chrome.borrow_mut();
+        if let Err(error) = state.request_alarm_action(id, action, false) {
+            tracing::warn!(%error, "alarm notification action refused");
+            state.push_warning_notification(
+                tilo_desktop::notifications::alarm_action_failed_label(),
+                tilo_desktop::notifications::alarm_action_retry_label(),
+            );
+        }
+    }
+
     fn log(&self) -> Ref<'_, NotificationLog> {
         Ref::map(self.chrome.borrow(), ChromeState::notification_log)
     }
@@ -214,7 +529,18 @@ impl NotificationHost for ChromeNotifications<'_> {
     }
 
     fn dismiss(&self, id: u64) {
-        self.chrome.borrow_mut().dismiss_notification(id);
+        let alarm = self
+            .chrome
+            .borrow()
+            .notifications()
+            .iter()
+            .find(|notice| notice.id == id)
+            .is_some_and(|notice| !self.actions_for(notice).is_empty());
+        if alarm {
+            self.invoke_action(id, "dismiss");
+        } else {
+            self.chrome.borrow_mut().dismiss_notification(id);
+        }
     }
 
     fn activate(&self, id: u64) {
@@ -226,11 +552,24 @@ impl NotificationHost for ChromeNotifications<'_> {
     }
 
     fn dismiss_history(&self, id: u64) {
-        self.chrome.borrow_mut().dismiss_history_notification(id);
+        let alarm = self
+            .chrome
+            .borrow()
+            .notification_log()
+            .history_entry(id)
+            .is_some_and(|notice| !self.actions_for(notice).is_empty());
+        if alarm {
+            self.invoke_action(id, "dismiss");
+        } else {
+            self.chrome.borrow_mut().dismiss_history_notification(id);
+        }
     }
 
     fn dismiss_history_group(&self, key: &str) {
-        self.chrome.borrow_mut().dismiss_history_group(key);
+        let ids = self.chrome.borrow().notification_log().group_ids(key);
+        for id in ids {
+            self.dismiss_history(id);
+        }
     }
 
     fn clear_history(&self) {
@@ -854,6 +1193,27 @@ mod tests {
         remote_activation_routes_command_and_origin_retire_removes_history();
         a_retained_mirrored_notification_routes_its_action_back_to_its_device();
         origin_remote_command_invokes_live_app_closes_toast_and_retires_siblings();
+    }
+
+    #[test]
+    fn scheduled_activation_never_falls_back_to_another_room() {
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        assert!(!tree.read().desktop.workspaces.is_empty());
+        let request = NotificationLaunch {
+            app_id: "so.tilo.clocks".into(),
+            target: tilo_desktop::notifications::ScheduledNotificationTarget {
+                room: "missing-original-room".into(),
+                token: "0123456789abcdef0123456789abcdef".into(),
+                occurrence_ms: 1,
+                calendar_alarm: true,
+                snoozed: false,
+                uri: "tilo-clocks:alarm/exact-alarm-id".into(),
+            },
+        };
+        assert_eq!(
+            launch_scheduled_notification(request, &tree),
+            Err("notification's original room is unavailable".into())
+        );
     }
 
     #[test]

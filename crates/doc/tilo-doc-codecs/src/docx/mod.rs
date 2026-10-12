@@ -12,6 +12,7 @@ pub mod meta;
 pub mod notes;
 mod paragraph;
 mod section;
+mod side_part;
 pub mod styles;
 
 use crate::format::{CodecError, Confidence, FormatProvider};

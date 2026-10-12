@@ -43,6 +43,10 @@ impl ClipboardBackend for BrowserClipboard {
         write_clipboard_text(text, forward.as_ref().unchecked_ref())
     }
 
+    fn rich_text(&self) -> Option<crate::RichTextOffer> {
+        events::read_rich()
+    }
+
     fn text(&self, target: ClipboardTarget) -> Option<String> {
         if target != ClipboardTarget::Clipboard {
             return None;

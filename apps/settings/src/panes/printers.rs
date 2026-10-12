@@ -1,34 +1,30 @@
-#![allow(
-    clippy::struct_excessive_bools,
-    reason = "loading, discovery, local-document isolation, and dirty states are independent"
-)]
-
 //! Daily printer/scanner control backed by the shared typed CUPS/SANE service.
 //!
 //! Settings owns discovery, adding a driverless queue, defaults, queue health
 //! and recovery. A future Print Centre may offer long job history, finishing
 //! workflows and diagnostics, but must consume the same `PrintService` rather
-//! than maintaining another printer database.
+//! than maintaining another printer database. Every change is a
+//! [`PrinterEffect`], offered on the queue, nearby printer or job it names.
 
-use std::collections::HashMap;
+use std::cell::OnceCell;
+use std::rc::Rc;
 use std::sync::{Arc, mpsc};
-use ui::time::{Duration, Instant};
-use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use os_actions::printing::{
     DiscoveredPrinter, JobState, PrintJob, PrinterQueue, QueueState, Scanner,
 };
-use taffy::{NodeId, TaffyTree};
-use ui::theme::Theme;
-use ui::widget::{Button, Column, Row, Spacer, Text, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
-
+use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::i18n::ArgValue;
+use ui::tilo_resource::{self, Effect};
+use ui::time::{Duration, Instant};
+use ui::widget::{Button, Column, Row, Spacer, Text, Widget};
 
+use crate::effects::SettingsEffect;
+use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
+use crate::panes::model::{PaneModel, Shared};
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
 use crate::widgets::{
     El, StatusTone, caption, card, card_with_action, error_caption, rows, semantic_status_pill,
 };
@@ -56,15 +52,121 @@ fn adopt<T>(read: Result<Vec<T>, String>, shown: &mut Vec<T>) -> Option<String> 
     }
 }
 
-pub(crate) const REFRESH_KEY: &str = "settings.printers.refresh";
-pub(crate) const SCAN_KEY: &str = "settings.printers.discover";
+/// The most queues, nearby printers and jobs published as rows.
+const MAX_ROWS: usize = 64;
 
-pub(crate) fn queue_action_key(action: &str, name: &str) -> String {
-    format!("settings.printers.{action}.{}", slug(name))
+/// Changes to this device's printers and print jobs.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum PrinterEffect {
+    /// Read the printers, jobs and scanners again.
+    #[effect(job, idempotent)]
+    RefreshPrinters,
+    /// Look for driverless printers on the network.
+    #[effect(job, idempotent)]
+    FindPrinters,
+    /// Add a nearby driverless printer as a queue.
+    #[effect(job, row, label = "Add printer")]
+    AddPrinter {
+        #[param("The printer's address, as found nearby")]
+        uri: String,
+    },
+    /// Make a printer the one apps print to unless told otherwise.
+    #[effect(job, row, idempotent, label = "Make default")]
+    SetDefaultPrinter {
+        #[param("The printer's queue name")]
+        printer: String,
+    },
+    /// Pause a printer's queue, or let it print again.
+    #[effect(job, row, idempotent)]
+    SetPrinterPaused {
+        #[param("The printer's queue name")]
+        printer: String,
+        #[param("Whether the queue holds its jobs")]
+        paused: bool,
+    },
+    /// Remove a printer's queue from this device.
+    #[effect(job, row, destructive, label = "Remove printer")]
+    RemovePrinter {
+        #[param("The printer's queue name")]
+        printer: String,
+    },
+    /// Cancel a print job.
+    #[effect(job, row, destructive, label = "Cancel job")]
+    CancelPrintJob {
+        #[param("The job's id")]
+        job: String,
+    },
+    /// Send a stopped or failed print job again.
+    #[effect(job, row, label = "Retry job")]
+    RetryPrintJob {
+        #[param("The job's id")]
+        job: String,
+    },
 }
 
-pub(crate) fn job_action_key(action: &str, id: &str) -> String {
-    format!("settings.printers.job.{action}.{}", slug(id))
+/// Answer `effect`: reads start on the model; changes run on a worker and
+/// then read the printers again.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "every area answers through the effect vocabulary's one signature"
+)]
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: PrinterEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    let model = app.printers().model();
+    match effect {
+        PrinterEffect::RefreshPrinters => {
+            model.borrow_mut().request_refresh();
+            Ok(Effected::done())
+        }
+        PrinterEffect::FindPrinters => {
+            model.borrow_mut().request_discovery();
+            Ok(Effected::done())
+        }
+        effect => {
+            let discovered = model.borrow().discovered.clone();
+            let service = Arc::clone(&model.borrow().service);
+            Ok(cx.thread(
+                move |_| carry_out(service.as_ref(), &discovered, &effect),
+                |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+                    let model = app.printers().model();
+                    let mut model = model.borrow_mut();
+                    model.error = outcome.as_ref().err().cloned();
+                    model.changed = true;
+                    model.request_refresh();
+                    outcome.map(|()| Effected::done())
+                },
+            ))
+        }
+    }
+}
+
+/// Carry out a change on `service`. Never called on the UI thread.
+fn carry_out(
+    service: &dyn PrintService,
+    discovered: &[DiscoveredPrinter],
+    effect: &PrinterEffect,
+) -> Result<(), String> {
+    match effect {
+        PrinterEffect::RefreshPrinters | PrinterEffect::FindPrinters => Ok(()),
+        PrinterEffect::AddPrinter { uri } => {
+            let printer = discovered
+                .iter()
+                .find(|printer| &printer.uri == uri)
+                .ok_or_else(|| format!("no printer at `{uri}` was found nearby"))?;
+            service.add(printer)
+        }
+        PrinterEffect::SetDefaultPrinter { printer } => service.set_default(printer),
+        PrinterEffect::SetPrinterPaused { printer, paused } => {
+            service.set_enabled(printer, !paused)
+        }
+        PrinterEffect::RemovePrinter { printer } => service.remove(printer),
+        PrinterEffect::CancelPrintJob { job } => service.cancel(job),
+        PrinterEffect::RetryPrintJob { job } => service.retry(job),
+    }
 }
 
 pub trait PrintService: Send + Sync {
@@ -163,8 +265,144 @@ impl PrintService for CupsService {
     }
 }
 
-pub struct PrintersPane {
+/// What the printers area keeps for the window: the model, read when
+/// first needed.
+pub struct PrintersArea {
+    cx: PaneCx,
+    model: OnceCell<Shared<PrintersModel>>,
+}
+
+impl PrintersArea {
+    pub fn new(cx: &PaneCx) -> Self {
+        Self {
+            cx: cx.clone(),
+            model: OnceCell::new(),
+        }
+    }
+
+    /// The model, created on first use over CUPS, or over sample printers
+    /// for a screenshot.
+    pub fn model(&self) -> &Shared<PrintersModel> {
+        self.model.get_or_init(|| {
+            let service: Arc<dyn PrintService> = if self.cx.reaches_devices() {
+                Arc::new(CupsService)
+            } else {
+                Arc::new(SamplePrintService)
+            };
+            let mut model =
+                PrintersModel::new(self.cx.clone(), service, !self.cx.reaches_devices());
+            model.request_refresh();
+            Rc::new(std::cell::RefCell::new(model))
+        })
+    }
+
+    /// Take in finished reads, if the model exists. Only an open pane
+    /// keeps reading the queues again.
+    pub(crate) fn poll(&self) {
+        if let Some(model) = self.model.get() {
+            model.borrow_mut().poll_background();
+        }
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
+    }
+
+    /// One row per queue, nearby printer and job, offering what can be done
+    /// to it now.
+    pub(crate) fn rows(&self) -> Vec<LiveRow> {
+        let model = self.model().borrow();
+        let printers = model.printers.iter().take(MAX_ROWS).map(|printer| {
+            let name = printer.name.clone();
+            let paused = printer.state == QueueState::Paused;
+            let mut row = LiveRow::new(
+                format!("settings.printer:{name}"),
+                "settings.printer",
+                name.clone(),
+            )
+            .operation(
+                SettingsEffect::from(PrinterEffect::SetPrinterPaused {
+                    printer: name.clone(),
+                    paused: !paused,
+                })
+                .bound(),
+            )
+            .operation(
+                SettingsEffect::from(PrinterEffect::RemovePrinter {
+                    printer: name.clone(),
+                })
+                .bound(),
+            );
+            if !printer.default {
+                row = row.operation(
+                    SettingsEffect::from(PrinterEffect::SetDefaultPrinter { printer: name })
+                        .bound(),
+                );
+            }
+            row
+        });
+        let nearby = model.discovered.iter().take(MAX_ROWS).map(|printer| {
+            LiveRow::new(
+                format!("settings.nearby-printer:{}", printer.uri),
+                "settings.nearby-printer",
+                printer.name.clone(),
+            )
+            .operation(
+                SettingsEffect::from(PrinterEffect::AddPrinter {
+                    uri: printer.uri.clone(),
+                })
+                .bound(),
+            )
+        });
+        let jobs = model.jobs.iter().take(MAX_ROWS).map(|job| {
+            let mut row = LiveRow::new(
+                format!("settings.print-job:{}", job.id),
+                "settings.print-job",
+                job.title.clone().unwrap_or_else(|| job.id.clone()),
+            );
+            if retryable(job) {
+                row = row.operation(
+                    SettingsEffect::from(PrinterEffect::RetryPrintJob {
+                        job: job.id.clone(),
+                    })
+                    .bound(),
+                );
+            }
+            if cancellable(job) {
+                row = row.operation(
+                    SettingsEffect::from(PrinterEffect::CancelPrintJob {
+                        job: job.id.clone(),
+                    })
+                    .bound(),
+                );
+            }
+            row
+        });
+        printers.chain(nearby).chain(jobs).collect()
+    }
+}
+
+fn retryable(job: &PrintJob) -> bool {
+    matches!(
+        job.state,
+        Some(JobState::Stopped | JobState::Canceled | JobState::Aborted)
+    )
+}
+
+fn cancellable(job: &PrintJob) -> bool {
+    matches!(
+        job.state,
+        None | Some(JobState::Pending | JobState::Held | JobState::Processing | JobState::Stopped)
+    )
+}
+
+pub struct PrintersModel {
+    cx: PaneCx,
     service: Arc<dyn PrintService>,
+    sample: bool,
     printers: Vec<PrinterQueue>,
     jobs: Vec<PrintJob>,
     discovered: Vec<DiscoveredPrinter>,
@@ -172,21 +410,12 @@ pub struct PrintersPane {
     refresh_rx: Option<mpsc::Receiver<PrinterSnapshot>>,
     discover_rx: Option<mpsc::Receiver<Result<Vec<DiscoveredPrinter>, String>>>,
     last_refresh: Instant,
-    loading: bool,
-    discovering: bool,
-    confirm_remove: Option<String>,
     error: Option<String>,
     /// Why each list could not be read in the last refresh. A list that
     /// could not be read is shown as that failure, not as empty, and stays
     /// so until a later refresh reads it, whatever else succeeds meanwhile.
     read_errors: PrinterReadErrors,
-    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
-    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    local_doc: AutoCommit,
-    isolate_document: bool,
-    structure_dirty: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
+    changed: bool,
 }
 
 struct PrinterSnapshot {
@@ -195,22 +424,12 @@ struct PrinterSnapshot {
     scanners: Result<Vec<Scanner>, String>,
 }
 
-impl Default for PrintersPane {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PrintersPane {
-    pub fn new() -> Self {
-        let mut pane = Self::empty(Arc::new(CupsService));
-        pane.request_refresh();
-        pane
-    }
-
-    fn empty(service: Arc<dyn PrintService>) -> Self {
+impl PrintersModel {
+    fn new(cx: PaneCx, service: Arc<dyn PrintService>, sample: bool) -> Self {
         Self {
+            cx,
             service,
+            sample,
             printers: Vec::new(),
             jobs: Vec::new(),
             discovered: Vec::new(),
@@ -218,63 +437,30 @@ impl PrintersPane {
             refresh_rx: None,
             discover_rx: None,
             last_refresh: ui::time::now(),
-            loading: false,
-            discovering: false,
-            confirm_remove: None,
             error: None,
             read_errors: PrinterReadErrors::default(),
-            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            command_state: ui::LocalState::new(None),
-            local_doc: AutoCommit::new(),
-            isolate_document: false,
-            structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
+            changed: false,
         }
     }
 
-    #[cfg(test)]
-    fn from_service(service: Arc<dyn PrintService>) -> Self {
-        let printers = service.queues().unwrap_or_default();
-        let jobs = service.jobs().unwrap_or_default();
-        let scanners = service.scanners().unwrap_or_default();
-        Self {
-            service,
-            printers,
-            jobs,
-            discovered: Vec::new(),
-            scanners,
-            refresh_rx: None,
-            discover_rx: None,
-            last_refresh: ui::time::now(),
-            loading: false,
-            discovering: false,
-            confirm_remove: None,
-            error: None,
-            read_errors: PrinterReadErrors::default(),
-            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            command_state: ui::LocalState::new(None),
-            local_doc: AutoCommit::new(),
-            isolate_document: false,
-            structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
-        }
-    }
-
-    #[cfg(test)]
-    fn with_service(service: Arc<dyn PrintService>) -> Self {
-        Self::from_service(service)
-    }
-
-    fn request_refresh(&mut self) {
+    pub(crate) fn request_refresh(&mut self) {
         if self.refresh_rx.is_some() {
+            return;
+        }
+        // Capture and test snapshots are already in memory. Publishing their
+        // rows must not depend on whether an OS worker has been scheduled.
+        if self.sample {
+            self.adopt_snapshot(PrinterSnapshot {
+                printers: self.service.queues(),
+                jobs: self.service.jobs(),
+                scanners: self.service.scanners(),
+            });
             return;
         }
         let service = self.service.clone();
         let (tx, rx) = mpsc::channel();
         self.refresh_rx = Some(rx);
-        self.loading = true;
+
         if let Err(error) = std::thread::Builder::new()
             .name("tilo-printer-status".into())
             .spawn(move || {
@@ -286,7 +472,7 @@ impl PrintersPane {
             })
         {
             self.refresh_rx = None;
-            self.loading = false;
+
             self.error = Some(t_args(
                 "settings-printers-worker-failed",
                 &[("error", ArgValue::Text(error.to_string()))],
@@ -294,14 +480,14 @@ impl PrintersPane {
         }
     }
 
-    fn request_discovery(&mut self) {
+    pub(crate) fn request_discovery(&mut self) {
         if self.discover_rx.is_some() {
             return;
         }
         let service = self.service.clone();
         let (tx, rx) = mpsc::channel();
         self.discover_rx = Some(rx);
-        self.discovering = true;
+
         if let Err(error) = std::thread::Builder::new()
             .name("tilo-printer-discovery".into())
             .spawn(move || {
@@ -309,7 +495,7 @@ impl PrintersPane {
             })
         {
             self.discover_rx = None;
-            self.discovering = false;
+
             self.error = Some(t_args(
                 "settings-printers-discover-failed",
                 &[("error", ArgValue::Text(error.to_string()))],
@@ -317,21 +503,25 @@ impl PrintersPane {
         }
     }
 
+    fn adopt_snapshot(&mut self, result: PrinterSnapshot) {
+        self.last_refresh = ui::time::now();
+        self.read_errors = PrinterReadErrors {
+            printers: adopt(result.printers, &mut self.printers),
+            jobs: adopt(result.jobs, &mut self.jobs),
+            scanners: adopt(result.scanners, &mut self.scanners),
+        };
+        self.changed = true;
+    }
+
     fn poll_background(&mut self) {
         if let Some(result) = self.refresh_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.refresh_rx = None;
-            self.loading = false;
-            self.last_refresh = ui::time::now();
-            self.read_errors = PrinterReadErrors {
-                printers: adopt(result.printers, &mut self.printers),
-                jobs: adopt(result.jobs, &mut self.jobs),
-                scanners: adopt(result.scanners, &mut self.scanners),
-            };
-            self.structure_dirty = true;
+
+            self.adopt_snapshot(result);
         }
         if let Some(result) = self.discover_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.discover_rx = None;
-            self.discovering = false;
+
             match result {
                 Ok(value) => {
                     self.discovered = value;
@@ -339,45 +529,8 @@ impl PrintersPane {
                 }
                 Err(error) => self.error = Some(error),
             }
-            self.structure_dirty = true;
+            self.changed = true;
         }
-    }
-
-    fn apply(&mut self, result: Result<(), String>) {
-        if let crate::actions::LocalOperationStatus::Running { token } = self.operation_status.get()
-            && token.starts_with(crate::actions::PRINTER_OPERATION_TYPE)
-        {
-            self.operation_status.set(match &result {
-                Ok(()) => crate::actions::LocalOperationStatus::Succeeded {
-                    token,
-                    message: t("settings-printers-op-done"),
-                },
-                Err(error) => crate::actions::LocalOperationStatus::Failed {
-                    token,
-                    message: error.clone(),
-                },
-            });
-        }
-        self.error = result.err();
-        self.request_refresh();
-    }
-
-    #[must_use]
-    pub fn with_operation_status(
-        mut self,
-        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
-    ) -> Self {
-        self.operation_status = status.clone();
-        self
-    }
-    #[must_use]
-    pub fn with_command_state(
-        mut self,
-        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    ) -> Self {
-        self.command_state = commands.clone();
-        self.isolate_document = true;
-        self
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -389,19 +542,15 @@ impl PrintersPane {
             ));
         }
 
-        let refresh_label = if self.loading {
+        let refresh_label = if self.refresh_rx.is_some() {
             t("settings-printers-refreshing")
         } else {
             t("settings-printers-refresh")
         };
-        let refresh = Box::new(
-            Button::new(
-                "settings.printers.refresh",
-                &refresh_label,
-                Some(REFRESH_KEY),
-            )
-            .content_sized(),
-        );
+        let refresh = Box::new(self.cx.bind_invocation(
+            Button::new("settings.printers.refresh", &refresh_label),
+            PrinterEffect::RefreshPrinters,
+        ));
         let printers = if let Some(error) = &self.read_errors.printers {
             rows(vec![error_caption(&t_args(
                 "settings-printers-read-error",
@@ -418,22 +567,28 @@ impl PrintersPane {
             printers,
         ));
 
-        let find_label = if self.discovering {
+        let find_label = if self.discover_rx.is_some() {
             t("settings-printers-searching")
         } else {
             t("settings-printers-find")
         };
-        let find = Box::new(
-            Button::new("settings.printers.discover", &find_label, Some(SCAN_KEY)).content_sized(),
-        );
+        let find = Box::new(self.cx.bind_invocation(
+            Button::new("settings.printers.discover", &find_label),
+            PrinterEffect::FindPrinters,
+        ));
         let discovery = if self.discovered.is_empty() {
-            rows(vec![caption(&t(if self.discovering {
+            rows(vec![caption(&t(if self.discover_rx.is_some() {
                 "settings-printers-discovering"
             } else {
                 "settings-printers-discover-empty"
             }))])
         } else {
-            rows(self.discovered.iter().map(|p| discovered_row(p)).collect())
+            rows(
+                self.discovered
+                    .iter()
+                    .map(|p| self.discovered_row(p))
+                    .collect(),
+            )
         };
         cards.push(card_with_action(
             &t("settings-printers-nearby"),
@@ -449,11 +604,17 @@ impl PrintersPane {
         } else if self.jobs.is_empty() {
             rows(vec![caption(&t("settings-printers-no-jobs"))])
         } else {
-            rows(self.jobs.iter().map(job_row).collect())
+            rows(self.jobs.iter().map(|job| self.job_row(job)).collect())
         };
         cards.push(card(&t("settings-printers-activity"), jobs));
 
-        let scanners = if let Some(error) = &self.read_errors.scanners {
+        let scanners = self.scanner_rows();
+        cards.push(card(&t("settings-printers-scanners"), scanners));
+        crate::widgets::cards(cards)
+    }
+
+    fn scanner_rows(&self) -> El {
+        if let Some(error) = &self.read_errors.scanners {
             rows(vec![error_caption(&t_args(
                 "settings-printers-scanners-read-error",
                 &[("error", error.as_str().into())],
@@ -469,56 +630,70 @@ impl PrintersPane {
                             Column::new()
                                 .with_no_padding()
                                 .with_intrinsic_height()
-                                .push(Box::new(Text::new(&s.description).with_size(13.0)))
-                                .push(Box::new(Text::new(&s.device).with_size(11.0).dimmed())),
+                                .push(Box::new(
+                                    Text::new(&s.description).with_role(ui::TextRole::Body),
+                                ))
+                                .push(Box::new(
+                                    Text::new(&s.device)
+                                        .with_role(ui::TextRole::Caption)
+                                        .dimmed(),
+                                )),
                         ) as El
                     })
                     .collect(),
             )
-        };
-        cards.push(card(&t("settings-printers-scanners"), scanners));
-        crate::widgets::cards(cards)
+        }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a queue's three controls, its state and its supplies"
+    )]
     fn printer_row(&self, printer: &PrinterQueue) -> El {
-        let default_key = format!("settings.printers.default.{}", slug(&printer.name));
-        let enabled_key = format!("settings.printers.enabled.{}", slug(&printer.name));
-        let remove_key = format!("settings.printers.remove.{}", slug(&printer.name));
-        let confirm_key = format!("settings.printers.confirm_remove.{}", slug(&printer.name));
+        let name = printer.name.clone();
         let state = state_label(printer.state);
         let mut top = Row::new()
-            .push(Box::new(Text::new(&printer.name).with_size(13.0)))
+            .push(Box::new(
+                Text::new(&printer.name).with_role(ui::TextRole::Body),
+            ))
             .push(Box::new(Spacer::new()))
             .push(semantic_status_pill(&state, state_tone(printer.state)));
         if !printer.default {
             let make_default = t("settings-printers-make-default");
-            top = top.push(Box::new(
-                Button::new(&default_key, &make_default, Some(&default_key)).content_sized(),
-            ));
+            top = top.push(Box::new(self.cx.bind_invocation(
+                Button::new(
+                    &format!("settings.printers.default.{}", slug(&name)),
+                    &make_default,
+                ),
+                PrinterEffect::SetDefaultPrinter {
+                    printer: name.clone(),
+                },
+            )));
         }
-        let pause_label = t(if printer.state == QueueState::Paused {
+        let paused = printer.state == QueueState::Paused;
+        let pause_label = t(if paused {
             "settings-printers-resume"
         } else {
             "settings-printers-pause"
         });
-        top = top.push(Box::new(
-            Button::new(&enabled_key, &pause_label, Some(&enabled_key)).content_sized(),
-        ));
-        let remove_label = t(
-            if self.confirm_remove.as_deref() == Some(printer.name.as_str()) {
-                "settings-printers-remove-confirm"
-            } else {
-                "settings-printers-remove"
+        top = top.push(Box::new(self.cx.bind_invocation(
+            Button::new(
+                &format!("settings.printers.enabled.{}", slug(&name)),
+                &pause_label,
+            ),
+            PrinterEffect::SetPrinterPaused {
+                printer: name.clone(),
+                paused: !paused,
             },
-        );
-        let remove_action = if self.confirm_remove.as_deref() == Some(printer.name.as_str()) {
-            confirm_key
-        } else {
-            remove_key
-        };
-        top = top.push(Box::new(
-            Button::new(&remove_action, &remove_label, Some(&remove_action)).content_sized(),
-        ));
+        )));
+        let remove_label = t("settings-printers-remove");
+        top = top.push(Box::new(self.cx.bind_invocation(
+            Button::new(
+                &format!("settings.printers.remove.{}", slug(&name)),
+                &remove_label,
+            ),
+            PrinterEffect::RemovePrinter { printer: name },
+        )));
         let role = t(if printer.default {
             "settings-printers-role-default"
         } else {
@@ -556,7 +731,7 @@ impl PrintersPane {
                         ),
                     })
                     .collect::<Vec<_>>()
-                    .join(" · ");
+                    .join("\n");
                 t_args("settings-printers-supplies-list", &[("list", list.into())])
             }
             None if printer.telemetry.available => t("settings-printers-supplies-unreported"),
@@ -567,14 +742,204 @@ impl PrintersPane {
                 .with_no_padding()
                 .with_intrinsic_height()
                 .push(Box::new(top))
-                .push(Box::new(Text::new(&detail).with_size(11.0).dimmed()))
-                .push(Box::new(Text::new(&supplies).with_size(11.0).dimmed())),
+                .push(Box::new(
+                    Text::new(&detail).with_role(ui::TextRole::Caption).dimmed(),
+                ))
+                .push(Box::new(
+                    Text::new(&supplies)
+                        .with_role(ui::TextRole::Caption)
+                        .dimmed(),
+                )),
+        )
+    }
+
+    fn discovered_row(&self, p: &DiscoveredPrinter) -> El {
+        let key = format!("settings.printers.add.{}", slug(&p.uri));
+        let add = t("settings-printers-add");
+        let location = p
+            .location
+            .clone()
+            .unwrap_or_else(|| t("settings-printers-driverless"));
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(Box::new(
+                    Row::new()
+                        .push(Box::new(Text::new(&p.name).with_role(ui::TextRole::Body)))
+                        .push(Box::new(Spacer::new()))
+                        .push(Box::new(self.cx.bind_invocation(
+                            Button::new(&key, &add),
+                            PrinterEffect::AddPrinter { uri: p.uri.clone() },
+                        ))),
+                ))
+                .push(Box::new(
+                    Text::new(&location)
+                        .with_role(ui::TextRole::Caption)
+                        .dimmed(),
+                )),
+        )
+    }
+
+    fn job_row(&self, job: &PrintJob) -> El {
+        let cancel = format!("settings.printers.job.cancel.{}", slug(&job.id));
+        let retry = format!("settings.printers.job.retry.{}", slug(&job.id));
+        let size = ui::format::bytes_si(job.size_bytes);
+        let state = job
+            .state
+            .map_or_else(|| t("settings-printers-job-state-missing"), job_state_label);
+        let progress = match (job.impressions_completed, job.impressions_total) {
+            (Some(done), Some(total)) if total > 0 => t_args(
+                "settings-printers-job-progress",
+                &[
+                    ("done", ArgValue::Number(f64::from(done))),
+                    ("total", ArgValue::Number(f64::from(total))),
+                    (
+                        "percent",
+                        ArgValue::Number(f64::from(job.progress_percent().unwrap_or(0))),
+                    ),
+                ],
+            ),
+            (Some(done), _) => t_args(
+                "settings-printers-job-done",
+                &[("done", ArgValue::Number(f64::from(done)))],
+            ),
+            _ => t("settings-printers-job-progress-unknown"),
+        };
+        let reason = job
+            .state_reasons
+            .first()
+            .map_or(String::new(), |reason| format!("\n{reason}"));
+        let retry_label = t("settings-printers-retry");
+        let cancel_label = t("settings-printers-cancel");
+        let mut action_row = Row::new()
+            .push(Box::new(
+                Text::new(&format!("{} → {}", job.id, job.destination))
+                    .with_role(ui::TextRole::Body),
+            ))
+            .push(Box::new(Spacer::new()));
+        if matches!(
+            job.state,
+            Some(JobState::Stopped | JobState::Canceled | JobState::Aborted)
+        ) {
+            action_row = action_row.push(Box::new(self.cx.bind_invocation(
+                Button::new(&retry, &retry_label),
+                PrinterEffect::RetryPrintJob {
+                    job: job.id.clone(),
+                },
+            )));
+        }
+        if matches!(
+            job.state,
+            None | Some(
+                JobState::Pending | JobState::Held | JobState::Processing | JobState::Stopped
+            )
+        ) {
+            action_row = action_row.push(Box::new(self.cx.bind_invocation(
+                Button::new(&cancel, &cancel_label),
+                PrinterEffect::CancelPrintJob {
+                    job: job.id.clone(),
+                },
+            )));
+        }
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(Box::new(action_row))
+                .push(Box::new(
+                    Text::new(&format!("{}\n{}\n{}", job.owner, size, job.submitted))
+                        .with_role(ui::TextRole::Caption)
+                        .dimmed(),
+                ))
+                .push(Box::new(
+                    Text::new(&format!("{state}\n{progress}{reason}"))
+                        .with_role(ui::TextRole::Caption)
+                        .dimmed(),
+                )),
         )
     }
 }
 
-pub fn build() -> Box<dyn Widget> {
-    Box::new(PrintersPane::new())
+impl PaneModel for PrintersModel {
+    fn compose(&self) -> Box<dyn Widget> {
+        self.build_composition()
+    }
+
+    fn poll(&mut self) -> bool {
+        self.poll_background();
+        if self.last_refresh.elapsed() >= Duration::from_secs(3) {
+            self.request_refresh();
+        }
+        std::mem::take(&mut self.changed)
+    }
+
+    fn name(&self) -> &'static str {
+        "PrintersPane"
+    }
+
+    fn busy(&self) -> bool {
+        self.refresh_rx.is_some() || self.discover_rx.is_some()
+    }
+}
+
+/// The printers a screenshot and the crate's tests show: one office queue
+/// printing a report, one more found nearby.
+struct SamplePrintService;
+
+impl PrintService for SamplePrintService {
+    fn queues(&self) -> Result<Vec<PrinterQueue>, String> {
+        Ok(vec![PrinterQueue {
+            name: "Office".into(),
+            state: QueueState::Ready,
+            default: true,
+            accepting_jobs: true,
+            reason: None,
+            telemetry: os_actions::printing::PrinterTelemetry::default(),
+        }])
+    }
+    fn jobs(&self) -> Result<Vec<PrintJob>, String> {
+        Ok(vec![PrintJob {
+            id: "Office-42".into(),
+            title: Some("Quarterly report.pdf".into()),
+            owner: "ada".into(),
+            size_bytes: 2048,
+            submitted: "now".into(),
+            destination: "Office".into(),
+            state: Some(JobState::Processing),
+            state_reasons: vec!["job-printing".into()],
+            impressions_completed: Some(1),
+            impressions_total: Some(4),
+        }])
+    }
+    fn discover(&self) -> Result<Vec<DiscoveredPrinter>, String> {
+        Ok(vec![DiscoveredPrinter {
+            uri: "ipps://studio.local/ipp/print".into(),
+            name: "Studio".into(),
+            location: Some("Room 2".into()),
+        }])
+    }
+    fn scanners(&self) -> Result<Vec<Scanner>, String> {
+        Ok(Vec::new())
+    }
+    fn add(&self, _: &DiscoveredPrinter) -> Result<(), String> {
+        Ok(())
+    }
+    fn set_default(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn set_enabled(&self, _: &str, _: bool) -> Result<(), String> {
+        Ok(())
+    }
+    fn remove(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn cancel(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn retry(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 fn state_label(state: QueueState) -> String {
@@ -605,99 +970,6 @@ fn slug(s: &str) -> String {
         .collect()
 }
 
-fn discovered_row(p: &DiscoveredPrinter) -> El {
-    let key = format!("settings.printers.add.{}", slug(&p.uri));
-    let add = t("settings-printers-add");
-    let location = p
-        .location
-        .clone()
-        .unwrap_or_else(|| t("settings-printers-driverless"));
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(
-                Row::new()
-                    .push(Box::new(Text::new(&p.name).with_size(13.0)))
-                    .push(Box::new(Spacer::new()))
-                    .push(Box::new(
-                        Button::new(&key, &add, Some(&key)).content_sized(),
-                    )),
-            ))
-            .push(Box::new(Text::new(&location).with_size(11.0).dimmed())),
-    )
-}
-
-fn job_row(job: &PrintJob) -> El {
-    let cancel = format!("settings.printers.job.cancel.{}", slug(&job.id));
-    let retry = format!("settings.printers.job.retry.{}", slug(&job.id));
-    let size = ui::format::bytes_si(job.size_bytes);
-    let state = job
-        .state
-        .map_or_else(|| t("settings-printers-job-state-missing"), job_state_label);
-    let progress = match (job.impressions_completed, job.impressions_total) {
-        (Some(done), Some(total)) if total > 0 => t_args(
-            "settings-printers-job-progress",
-            &[
-                ("done", ArgValue::Number(f64::from(done))),
-                ("total", ArgValue::Number(f64::from(total))),
-                (
-                    "percent",
-                    ArgValue::Number(f64::from(job.progress_percent().unwrap_or(0))),
-                ),
-            ],
-        ),
-        (Some(done), _) => t_args(
-            "settings-printers-job-done",
-            &[("done", ArgValue::Number(f64::from(done)))],
-        ),
-        _ => t("settings-printers-job-progress-unknown"),
-    };
-    let reason = job
-        .state_reasons
-        .first()
-        .map_or(String::new(), |reason| format!(" · {reason}"));
-    let retry_label = t("settings-printers-retry");
-    let cancel_label = t("settings-printers-cancel");
-    let mut action_row = Row::new()
-        .push(Box::new(
-            Text::new(&format!("{} → {}", job.id, job.destination)).with_size(13.0),
-        ))
-        .push(Box::new(Spacer::new()));
-    if matches!(
-        job.state,
-        Some(JobState::Stopped | JobState::Canceled | JobState::Aborted)
-    ) {
-        action_row = action_row.push(Box::new(
-            Button::new(&retry, &retry_label, Some(&retry)).content_sized(),
-        ));
-    }
-    if matches!(
-        job.state,
-        None | Some(JobState::Pending | JobState::Held | JobState::Processing | JobState::Stopped)
-    ) {
-        action_row = action_row.push(Box::new(
-            Button::new(&cancel, &cancel_label, Some(&cancel)).content_sized(),
-        ));
-    }
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(action_row))
-            .push(Box::new(
-                Text::new(&format!("{} · {} · {}", job.owner, size, job.submitted))
-                    .with_size(11.0)
-                    .dimmed(),
-            ))
-            .push(Box::new(
-                Text::new(&format!("{state} · {progress}{reason}"))
-                    .with_size(11.0)
-                    .dimmed(),
-            )),
-    )
-}
-
 fn job_state_label(state: JobState) -> String {
     t(match state {
         JobState::Pending => "settings-printers-job-waiting",
@@ -711,215 +983,28 @@ fn job_state_label(state: JobState) -> String {
     })
 }
 
-fn take_bool(state: &mut AutoCommit, root: &ObjId, key: &str) -> bool {
-    let pressed = matches!(state.get(root, key), Ok(Some((Value::Scalar(v), _))) if matches!(v.as_ref(), automerge::ScalarValue::Boolean(true)));
-    if pressed {
-        let _ = state.put(root, key, false);
-    }
-    pressed
-}
-
-impl Widget for PrintersPane {
-    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
-        let (shared, _) = ui::doc::document(shared, root);
-        let isolated = self.isolate_document;
-        let mut state = if isolated {
-            std::mem::take(&mut self.local_doc)
-        } else {
-            std::mem::take(shared)
-        };
-        let root = automerge::ROOT;
-        if let Some(crate::actions::LocalPaneCommand::Printer(operation)) = self.command_state.get()
-        {
-            self.command_state.set(None);
-            let key = match operation {
-                crate::actions::PrinterOperation::Refresh => REFRESH_KEY.into(),
-                crate::actions::PrinterOperation::Discover => SCAN_KEY.into(),
-                crate::actions::PrinterOperation::SetDefault { name } => {
-                    queue_action_key("default", &name)
-                }
-                crate::actions::PrinterOperation::SetEnabled { name, .. } => {
-                    queue_action_key("enabled", &name)
-                }
-                crate::actions::PrinterOperation::Remove { name } => {
-                    queue_action_key("remove", &name)
-                }
-                crate::actions::PrinterOperation::CancelJob { id } => job_action_key("cancel", &id),
-                crate::actions::PrinterOperation::RetryJob { id } => job_action_key("retry", &id),
-            };
-            let _ = state.put(&root, key, true);
-        }
-        {
-            let state = &mut state;
-            let root = &root;
-            self.poll_background();
-            if self.last_refresh.elapsed() >= Duration::from_secs(3) {
-                self.request_refresh();
-            }
-            if take_bool(state, root, REFRESH_KEY) {
-                self.request_refresh();
-            }
-            if take_bool(state, root, SCAN_KEY) {
-                self.request_discovery();
-            }
-            for p in self.discovered.clone() {
-                let key = format!("settings.printers.add.{}", slug(&p.uri));
-                if take_bool(state, root, &key) {
-                    let result = self.service.add(&p);
-                    self.apply(result);
-                }
-            }
-            for p in self.printers.clone() {
-                let default = queue_action_key("default", &p.name);
-                let enabled = queue_action_key("enabled", &p.name);
-                let remove = queue_action_key("remove", &p.name);
-                let confirm = format!("settings.printers.confirm_remove.{}", slug(&p.name));
-                if take_bool(state, root, &default) {
-                    let result = self.service.set_default(&p.name);
-                    self.apply(result);
-                }
-                if take_bool(state, root, &enabled) {
-                    let result = self
-                        .service
-                        .set_enabled(&p.name, p.state == QueueState::Paused);
-                    self.apply(result);
-                }
-                if take_bool(state, root, &remove) {
-                    self.confirm_remove = Some(p.name.clone());
-                    self.structure_dirty = true;
-                }
-                if take_bool(state, root, &confirm) {
-                    self.confirm_remove = None;
-                    let result = self.service.remove(&p.name);
-                    self.apply(result);
-                }
-            }
-            for job in self.jobs.clone() {
-                let cancel = job_action_key("cancel", &job.id);
-                let retry = job_action_key("retry", &job.id);
-                if take_bool(state, root, &cancel) {
-                    let result = self.service.cancel(&job.id);
-                    self.apply(result);
-                }
-                if take_bool(state, root, &retry) {
-                    let result = self.service.retry(&job.id);
-                    self.apply(result);
-                }
-            }
-            if let Some(c) = &mut self.composed {
-                c.sync(state, root);
-            }
-        }
-        if isolated {
-            self.local_doc = state;
-        } else {
-            *shared = state;
-        }
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        // `new_with_children` only fails when a child belongs to a different
-        // tree; `child` was just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "child was just created in this same tree"
-        )]
-        let node = taffy
-            .new_with_children(
-                taffy::Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::auto(),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x + l.size.width),
-            origin.y + f64::from(l.location.y + l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(ch) = taffy.children(node)
-            && let Some(&child) = ch.first()
-        {
-            c.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(ch) = ctx.taffy.children(ctx.node_id)
-            && let Some(&child) = ch.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, child));
-        }
-    }
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
-    fn name(&self) -> &'static str {
-        "PrintersPane"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_structure_dirty());
-        own || child
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn sample_area_rows_do_not_wait_for_workers() {
+        let profile = tempfile::tempdir().unwrap();
+        let area = PrintersArea::new(&PaneCx::in_file(profile.path().join("settings.json")));
+        assert_eq!(
+            area.rows().len(),
+            2,
+            "printer and job rows publish on the first read"
+        );
+        let model = area.model().borrow();
+        assert!(
+            model.refresh_rx.is_none(),
+            "sample rows are ready when the area reads"
+        );
+        assert_eq!(model.printers.len(), 1);
+        assert_eq!(model.jobs.len(), 1);
+    }
 
     struct RecordingService {
         calls: Mutex<Vec<String>>,
@@ -998,46 +1083,89 @@ mod tests {
         }
     }
 
-    /// Printer actions reach one typed backend and removal needs a second action.
+    /// Each change reaches the one typed backend, for the printer or job it
+    /// names; a nearby printer is added by its address.
     #[test]
-    fn printer_actions_use_one_backend_and_confirm_removal() {
-        // Case `actions_reach_one_typed_backend`.
-        {
-            let service = Arc::new(RecordingService::new());
-            let mut pane = PrintersPane::with_service(service.clone());
-            let mut doc = AutoCommit::new();
-            doc.put(&automerge::ROOT, "settings.printers.default.office", true)
-                .unwrap();
-            doc.put(
-                &automerge::ROOT,
-                "settings.printers.job.cancel.office_42",
-                true,
-            )
-            .unwrap();
-            pane.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(
-                service.calls.lock().unwrap().as_slice(),
-                ["default:Office", "cancel:Office-42"]
-            );
+    fn changes_reach_one_typed_backend() {
+        let service = RecordingService::new();
+        let nearby = service.discover().unwrap();
+        for effect in [
+            PrinterEffect::SetDefaultPrinter {
+                printer: "Office".into(),
+            },
+            PrinterEffect::CancelPrintJob {
+                job: "Office-42".into(),
+            },
+            PrinterEffect::SetPrinterPaused {
+                printer: "Office".into(),
+                paused: true,
+            },
+            PrinterEffect::AddPrinter {
+                uri: "ipps://office/ipp/print".into(),
+            },
+        ] {
+            carry_out(&service, &nearby, &effect).unwrap();
         }
+        assert!(
+            carry_out(
+                &service,
+                &nearby,
+                &PrinterEffect::AddPrinter {
+                    uri: "ipps://elsewhere".into()
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(
+            service.calls.lock().unwrap().as_slice(),
+            [
+                "default:Office",
+                "cancel:Office-42",
+                "enabled:Office:false",
+                "add:ipps://office/ipp/print"
+            ]
+        );
+    }
 
-        // Case `remove_requires_a_second_explicit_action`.
-        {
-            let service = Arc::new(RecordingService::new());
-            let mut pane = PrintersPane::with_service(service.clone());
-            let mut doc = AutoCommit::new();
-            doc.put(&automerge::ROOT, "settings.printers.remove.office", true)
-                .unwrap();
-            pane.sync(&mut doc, &automerge::ROOT);
-            assert!(service.calls.lock().unwrap().is_empty());
-            doc.put(
-                &automerge::ROOT,
-                "settings.printers.confirm_remove.office",
-                true,
-            )
+    /// Queues and jobs are rows offering their changes; removing a queue
+    /// asks first.
+    #[test]
+    fn printers_and_jobs_are_rows() {
+        use crate::resource::SettingsShell;
+        use ui::prelude::TestApp;
+
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        app.effect(&SettingsEffect::from(PrinterEffect::RefreshPrinters))
             .unwrap();
-            pane.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(service.calls.lock().unwrap().as_slice(), ["remove:Office"]);
-        }
+        app.harness()
+            .wait_until(Duration::from_secs(10), |harness| {
+                harness
+                    .resources()
+                    .iter()
+                    .any(|resource| tilo_actions_has(resource, "settings.print-job:Office-42"))
+            });
+        app.effect_on(
+            "settings.print-job:Office-42",
+            &SettingsEffect::from(PrinterEffect::CancelPrintJob {
+                job: "Office-42".into(),
+            }),
+        )
+        .expect_err("cancelling a job asks first");
+        app.effect_on(
+            "settings.printer:Office",
+            &SettingsEffect::from(PrinterEffect::SetPrinterPaused {
+                printer: "Office".into(),
+                paused: true,
+            }),
+        )
+        .expect("the queue is paused");
+    }
+
+    fn tilo_actions_has(resource: &ui::tilo_actions::Resource, id: &str) -> bool {
+        resource.id.as_str() == id
+            || resource
+                .children
+                .iter()
+                .any(|child| tilo_actions_has(child, id))
     }
 }

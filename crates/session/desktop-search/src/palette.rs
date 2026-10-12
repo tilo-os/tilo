@@ -185,7 +185,7 @@ impl DesktopSearch {
                     entry
                         .group(label.clone())
                         .group_total(group.total)
-                        .icon(hit.kind.icon()),
+                        .icon(ui::search::system::icon_for_kind(&hit.kind)),
                 );
                 rows.push(hit);
             }
@@ -280,7 +280,9 @@ mod tests {
         search.set_query("sheets");
         assert_eq!(search.results()[0].title, "Open Sheets");
         let mut doc = AutoCommit::new();
-        search.palette_mut().activate_selected(&mut doc, &ROOT);
+        search
+            .palette_mut()
+            .activate_selected(&mut ui::widget::Edits::lend(&mut doc), &ROOT);
         assert!(search.observe(), "choosing a row closes search");
         assert_eq!(
             search.take_choice(),
@@ -311,7 +313,9 @@ mod tests {
         search.open(data());
         search.set_query("sheets");
         let mut doc = AutoCommit::new();
-        search.palette_mut().activate_selected(&mut doc, &ROOT);
+        search
+            .palette_mut()
+            .activate_selected(&mut ui::widget::Edits::lend(&mut doc), &ROOT);
         search.observe();
         search.open(data());
         assert_eq!(search.results()[0].provider, "recent");
@@ -340,7 +344,9 @@ mod tests {
         search.set_query("duplicate");
         assert_eq!(search.results()[0].title, "Duplicate note");
         let mut doc = AutoCommit::new();
-        search.palette_mut().activate_selected(&mut doc, &ROOT);
+        search
+            .palette_mut()
+            .activate_selected(&mut ui::widget::Edits::lend(&mut doc), &ROOT);
         assert!(search.observe());
         assert_eq!(search.take_choice(), None, "the host's action door runs it");
         let invocation = ui::widget::controls::take_control_invocation(search.palette_mut())

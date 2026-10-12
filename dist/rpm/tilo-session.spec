@@ -18,22 +18,24 @@
 # here as a tarball, and refuses to package anything it did not build.
 
 %global tilo_summary Tilo compositor as a Wayland session
-%{!?tilo_version:%global tilo_version 0.1.12}
+%{!?tilo_version:%global tilo_version 0.1.13}
 # Release builds keep 1; a developer build names its commit here (e.g.
 # 0.202609271530.git5764267571) so `rpm -q tilo-session` on a host says which
 # tree is layered. See dist/rpm/host-update.sh.
 %{!?tilo_release:%global tilo_release 1}
 
-# The payload is already built and stripped; there is no source to extract
-# debug symbols from, and an empty -debuginfo subpackage would fail the
-# build.
+# The payload is prebuilt. Its native binaries deliberately keep their symbol
+# table (`[profile.release]` in Cargo.toml) so a crash log on the user's
+# machine names each frame's function, and carry no debug info to extract.
 %global debug_package %{nil}
 
-# The signed Tilo runtime is already stripped before its bundle manifest is
-# hashed and signed. Fedora's generic brp-strip pass would mutate the bundled
-# ELF loader and shared libraries after that signature was created, leaving a
-# formally packaged but unusable runtime. Keep the ordinary post-processing
-# chain, but make its strip helpers no-ops for this prebuilt, signed payload.
+# Nothing in the payload is stripped here. The signed Tilo runtime is already
+# stripped before its bundle manifest is hashed and signed, and Fedora's
+# generic brp-strip pass would mutate the bundled ELF loader and shared
+# libraries after that signature was created, leaving a formally packaged but
+# unusable runtime; on the session binaries it would remove the symbol table
+# the crash log needs. Keep the ordinary post-processing chain, but make its strip
+# helpers no-ops for this prebuilt payload.
 %global __strip /bin/true
 
 # These signature-covered application trees are private sandbox payloads, not
@@ -92,6 +94,8 @@ Requires:       xdg-dbus-proxy
 # The session wrapper synchronizes desktop identity with both systemd's user
 # manager and classic D-Bus activation, so host services such as GCR's prompt
 # helper cannot retain the previous desktop's routing state.
+Requires:       fuse3
+Requires:       python3
 Requires:       dbus-tools
 # The wrapper owns graphical-session.target while Tilo is logged in. This makes
 # standard session services available and stops them before another desktop
@@ -197,6 +201,11 @@ makes before it execs anything, and DEVELOPMENT.md for the threat model.
 
 %install
 install -Dpm 0755 bin/tilo-shell             %{buildroot}%{_bindir}/tilo-shell
+install -Dpm 0755 bin/fs %{buildroot}%{_bindir}/fs
+install -Dpm 0755 bin/tilo-relay-admin %{buildroot}%{_bindir}/tilo-relay-admin
+install -Dpm 0755 bin/tilo-enroll %{buildroot}%{_bindir}/tilo-enroll
+install -Dpm 0755 libexec/tilo-files-workspace %{buildroot}%{_libexecdir}/tilo-files-workspace
+install -Dpm 0644 systemd-user/tilo-files-workspace.service %{buildroot}%{_userunitdir}/tilo-files-workspace.service
 install -Dpm 0755 bin/tilo-launcher          %{buildroot}%{_bindir}/tilo-launcher
 install -Dpm 0755 bin/tilo-import-folders %{buildroot}%{_bindir}/tilo-import-folders
 install -Dpm 0644 applications/tilo-import-folders.desktop %{buildroot}%{_datadir}/applications/tilo-import-folders.desktop
@@ -233,6 +242,7 @@ install -Dpm 0644 license/LICENSE \
 cp -a apps/usr/. %{buildroot}%{_prefix}/
 install -Dpm 0644 apps/etc/tilo/runtime-bundle-trusted-publishers.txt \
                   %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
+install -Dpm 0755 apps/bin/app %{buildroot}%{_bindir}/app
 install -Dpm 0755 apps/bin/tilo-install %{buildroot}%{_bindir}/tilo-install
 install -Dpm 0755 apps/bin/tilo-app-package %{buildroot}%{_bindir}/tilo-app-package
 install -Dpm 0755 apps/bin/tilo-runtime-bundle %{buildroot}%{_bindir}/tilo-runtime-bundle
@@ -241,6 +251,9 @@ install -Dpm 0755 apps/bin/tilo-model-gateway %{buildroot}%{_bindir}/tilo-model-
 install -Dpm 0755 apps/libexec/tilo-cli-shim %{buildroot}%{_libexecdir}/tilo-cli-shim
 install -Dpm 0755 apps/libexec/tilo-app-host %{buildroot}%{_libexecdir}/tilo-app-host
 install -Dpm 0755 apps/libexec/tilo-ush %{buildroot}%{_libexecdir}/tilo-ush
+install -Dpm 0755 apps/libexec/tilo-relay-environment %{buildroot}%{_libexecdir}/tilo-relay-environment
+install -Dpm 0755 apps/libexec/tilo-relay-offers %{buildroot}%{_libexecdir}/tilo-relay-offers
+install -Dpm 0755 apps/bin/tilo-legacy %{buildroot}%{_bindir}/tilo-legacy
 for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
     install -Dpm 0644 apps/systemd-user/$unit.service \
         %{buildroot}%{_userunitdir}/$unit.service
@@ -259,6 +272,12 @@ install -Dpm 0644 wayland-sessions/tilo-app.desktop \
                   %{buildroot}%{_datadir}/wayland-sessions/tilo-app.desktop
 
 %check
+# Files readiness and normal same-person enrollment are first-party tools.
+# Keep automatic ELF requirements enabled for these host executables; only the
+# separately signed private app/runtime stores are excluded above.
+for program in fs tilo-relay-admin tilo-enroll; do
+    test -x %{buildroot}%{_bindir}/$program
+done
 test -x %{buildroot}%{_bindir}/tilo-import-folders
 grep -Fxq "Exec=/usr/bin/tilo-import-folders --import-folders" %{buildroot}%{_datadir}/applications/tilo-import-folders.desktop
 %{buildroot}%{_bindir}/tilo-import-folders --tilo-package-smoke
@@ -303,10 +322,18 @@ grep -q '^id = "so.tilo.settings"$' %{buildroot}%{_datadir}/tilo-apps/registry.t
 grep -q '^payload_root = "/usr/lib/tilo-apps/' %{buildroot}%{_datadir}/tilo-apps/registry.toml
 test -d %{buildroot}%{_prefix}/lib/tilo-apps/pkgs
 test ! -e %{buildroot}%{_datadir}/tilo-apps/pkgs
-test -f %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml
-test "$(stat -c %%a %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml)" = 644
+# One runtime build of the 2026.07 release, named by its ABI digest.
+test -f %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07+native.*/bundle.toml
+test "$(stat -c %%a %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07+native.*/bundle.toml)" = 644
+# The runtime collector's lock lives in a per-user root; the system root is
+# read-only and never collected, so staging leaves no .gc.lock to ship.
+test ! -e %{buildroot}%{_prefix}/lib/tilo-runtime/.gc.lock
 grep -q '/usr/lib/tilo-apps/bin' %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.sh
 test -s %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
+# What the ush supervisor runs, at the paths it looks for them.
+test -x %{buildroot}%{_libexecdir}/tilo-relay-environment
+test -x %{buildroot}%{_libexecdir}/tilo-relay-offers
+test -x %{buildroot}%{_bindir}/tilo-legacy
 for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
     test -f %{buildroot}%{_userunitdir}/$unit.service
     test -f %{buildroot}%{_userunitdir}/$unit.socket
@@ -315,6 +342,11 @@ done
 
 %files
 %{_bindir}/tilo-shell
+%{_bindir}/fs
+%{_bindir}/tilo-relay-admin
+%{_bindir}/tilo-enroll
+%{_libexecdir}/tilo-files-workspace
+%{_userunitdir}/tilo-files-workspace.service
 %{_bindir}/tilo-launcher
 %{_bindir}/tilo-import-folders
 %{_datadir}/applications/tilo-import-folders.desktop
@@ -332,6 +364,8 @@ done
 %license %{_datadir}/licenses/%{name}/LICENSE
 
 %files apps
+%{_bindir}/app
+%{_datadir}/tilo/trust/tilo-main-registry-owner.pub
 %{_bindir}/tilo-install
 %{_bindir}/tilo-app-package
 %{_bindir}/tilo-runtime-bundle
@@ -340,6 +374,9 @@ done
 %{_libexecdir}/tilo-cli-shim
 %{_libexecdir}/tilo-app-host
 %{_libexecdir}/tilo-ush
+%{_libexecdir}/tilo-relay-environment
+%{_libexecdir}/tilo-relay-offers
+%{_bindir}/tilo-legacy
 %{_userunitdir}/tilo-app-host.service
 %{_userunitdir}/tilo-app-host.socket
 %{_userunitdir}/tilo-models.service

@@ -95,6 +95,66 @@ pub fn find_all_bounded(haystack: &[u8], needle: &[u8], limit: usize) -> (Vec<us
     (hits, truncated)
 }
 
+/// How a text query matches the bytes: letter case and word boundaries. A
+/// hex query is always exact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatchRules {
+    /// Letters must agree in case.
+    pub match_case: bool,
+    /// The match must not touch another letter, digit or underscore.
+    pub whole_word: bool,
+}
+
+impl MatchRules {
+    /// Byte-exact, anywhere: how a hex pattern matches.
+    pub const EXACT: Self = Self {
+        match_case: true,
+        whole_word: false,
+    };
+}
+
+fn is_word_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// Like [`find_all_bounded`], under `rules`.
+pub fn find_matches(
+    haystack: &[u8],
+    needle: &[u8],
+    rules: MatchRules,
+    limit: usize,
+) -> (Vec<usize>, bool) {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return (Vec::new(), false);
+    }
+    let mut hits = Vec::new();
+    let mut truncated = false;
+    for (offset, window) in haystack.windows(needle.len()).enumerate() {
+        let same = if rules.match_case {
+            window == needle
+        } else {
+            window.eq_ignore_ascii_case(needle)
+        };
+        if !same {
+            continue;
+        }
+        if rules.whole_word {
+            let before = offset.checked_sub(1).and_then(|i| haystack.get(i));
+            let after = haystack.get(offset + needle.len());
+            if before.copied().is_some_and(is_word_byte) || after.copied().is_some_and(is_word_byte)
+            {
+                continue;
+            }
+        }
+        if hits.len() == limit {
+            truncated = true;
+            break;
+        }
+        hits.push(offset);
+    }
+    (hits, truncated)
+}
+
 /// The first match at or after `from`, wrapping to the start of the
 /// buffer if none is found in the tail.
 pub fn find_next(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
@@ -180,6 +240,27 @@ mod tests {
             find_prev(&hay, &[0], MAX_RETAINED_MATCHES + 5),
             Some(MAX_RETAINED_MATCHES + 4)
         );
+    }
+
+    #[test]
+    fn find_matches_honours_case_and_word_boundaries() {
+        let hay = b"IHDR ihdr IHDRx _IHDR";
+        let any = MatchRules {
+            match_case: false,
+            whole_word: false,
+        };
+        assert_eq!(find_matches(hay, b"ihdr", any, 10).0, vec![0, 5, 10, 17]);
+        let exact = MatchRules {
+            match_case: true,
+            whole_word: false,
+        };
+        assert_eq!(find_matches(hay, b"ihdr", exact, 10).0, vec![5]);
+        let word = MatchRules {
+            match_case: false,
+            whole_word: true,
+        };
+        assert_eq!(find_matches(hay, b"ihdr", word, 10).0, vec![0, 5]);
+        assert_eq!(find_matches(hay, b"IHDR", word, 1), (vec![0], true));
     }
 
     #[test]

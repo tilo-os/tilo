@@ -7,10 +7,7 @@ struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
         let temporary = std::env::temp_dir().canonicalize().unwrap();
-        let unique = ui::time::wall()
-            .duration_since(ui::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let unique = ui::time::try_unix_now_ns().unwrap();
         let root = temporary.join(format!(
             "wp-headless-launch-{}-{unique}",
             std::process::id()
@@ -59,8 +56,7 @@ impl Fixture {
         }
         command
             .env("TILO_PACKAGE_ID", "so.tilo.word-processor")
-            .env("TILO_WORKSPACE_ID", "00000000-0000-0000-0000-000000000000")
-            .env("TILO_WP_RECOVERY_DIR", self.0.join("recovery"));
+            .env("TILO_WORKSPACE_ID", "00000000-0000-0000-0000-000000000000");
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -96,6 +92,14 @@ impl Drop for Fixture {
     }
 }
 
+/// Whether the inspected tree under `node` holds a widget named `name`.
+fn has_widget(node: &serde_json::Value, name: &str) -> bool {
+    node["widget"] == name
+        || node["children"]
+            .as_array()
+            .is_some_and(|children| children.iter().any(|child| has_widget(child, name)))
+}
+
 #[test]
 fn positional_markdown_reaches_production_headless_root_without_stale_body_merge() {
     let fixture = Fixture::new();
@@ -110,7 +114,10 @@ fn positional_markdown_reaches_production_headless_root_without_stale_body_merge
         assert!(success, "actual headless CLI failed for {name}");
         let text = std::fs::read_to_string(inspect).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(value["root"]["widget"], "WordProcessor");
+        assert!(
+            has_widget(&value["root"], "ResourceApp"),
+            "the framework app is the production root: {text}"
+        );
         assert!(
             text.contains(marker),
             "supplied file text missing from actual production root: {text}"

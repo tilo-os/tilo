@@ -1,0 +1,122 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "shortcuts.workbench"
+label = "Shortcuts"
+version = 1
+fields = [
+  { path = "drafts", type = "Collection<Draft>", stored = "collection" },
+  { path = "drafts.*.name", type = "String", label = true },
+  { path = "drafts.*.shortcut_id", type = "String" },
+  { path = "drafts.*.inputs", type = "Collection<Json<Option<ActionParam>>>", stored = "collection" },
+  { path = "drafts.*.steps", type = "Collection<StepNode>", stored = "collection" },
+  { path = "drafts.*.steps.*.parent", type = "Atom" },
+  { path = "drafts.*.steps.*.branch", type = "Atom" },
+  { path = "drafts.*.steps.*.id", type = "Atom" },
+  { path = "drafts.*.steps.*.head", type = "Json<Option<Head>>" },
+  { path = "drafts.*.steps.*.args", type = "BTreeMap<String, Json<Option<Binding>>>" },
+  { path = "drafts.*.output", type = "Json<Option<Binding>>" },
+  { path = "drafts.*.triggers", type = "Json<Vec<TriggerSpec>>" },
+  { path = "drafts.*.replaces_saved", type = "bool" },
+]
+
+[[resources.verbs]]
+id = "new-draft"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "draft-shortcut"
+kind = "undoable"
+params = [
+  { name = "shortcut", required = true, schema = {} },
+]
+
+[[resources.verbs]]
+id = "open-shortcut"
+kind = "undoable"
+params = [
+  { name = "shortcut", required = true, schema = {} },
+]
+
+[[resources.verbs]]
+id = "set-schedule"
+kind = "undoable"
+params = [
+  { name = "draft", required = true, schema = { type = "string" } },
+  { name = "enabled", required = true, schema = { type = "boolean" } },
+  { name = "hour", required = true, schema = { type = "integer" } },
+  { name = "minute", required = true, schema = { type = "integer" } },
+]
+
+[[resources.verbs]]
+id = "discard"
+kind = "undoable"
+params = [
+  { name = "draft", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "add-step"
+kind = "undoable"
+params = [
+  { name = "draft", required = true, schema = { type = "string" } },
+  { name = "block", required = true, schema = { type = "string" } },
+  { name = "step", required = true, schema = {} },
+]
+
+[[resources.verbs]]
+id = "replace-step"
+kind = "undoable"
+params = [
+  { name = "draft", required = true, schema = { type = "string" } },
+  { name = "path", required = true, schema = { type = "string" } },
+  { name = "step", required = true, schema = {} },
+]
+
+[[resources.verbs]]
+id = "bind-argument"
+kind = "undoable"
+params = [
+  { name = "draft", required = true, schema = { type = "string" } },
+  { name = "path", required = true, schema = { type = "string" } },
+  { name = "param", required = true, schema = { type = "string" } },
+  { name = "binding", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-step"
+kind = "undoable"
+params = [
+  { name = "draft", required = true, schema = { type = "string" } },
+  { name = "path", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "move-step"
+kind = "undoable"
+params = [
+  { name = "draft", required = true, schema = { type = "string" } },
+  { name = "path", required = true, schema = { type = "string" } },
+  { name = "earlier", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "add-input"
+kind = "undoable"
+params = [
+  { name = "draft", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "kind", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-input"
+kind = "undoable"
+params = [
+  { name = "draft", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+]
+

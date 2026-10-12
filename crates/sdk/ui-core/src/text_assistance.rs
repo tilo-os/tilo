@@ -12,11 +12,18 @@ use std::sync::{Mutex, OnceLock};
 pub const SETTINGS_SECTION: &str = "text_assistance";
 pub const CHECK_SPELLING_KEY: &str = "check_spelling";
 pub const AUTO_CORRECT_KEY: &str = "auto_correct";
+pub const SPELLING_LANGUAGE_KEY: &str = "spelling_language";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::Model,
+)]
 pub struct TextAssistancePrefs {
     pub check_spelling: bool,
     pub auto_correct: bool,
+    /// The language words are checked in (`en_US`, `de_DE`); empty for the
+    /// session's own language.
+    #[serde(default)]
+    pub spelling_language: String,
 }
 
 impl Default for TextAssistancePrefs {
@@ -24,6 +31,7 @@ impl Default for TextAssistancePrefs {
         Self {
             check_spelling: true,
             auto_correct: true,
+            spelling_language: String::new(),
         }
     }
 }
@@ -31,6 +39,10 @@ impl Default for TextAssistancePrefs {
 impl crate::storage::SettingsSchema for TextAssistancePrefs {
     const SCOPE: crate::storage::Scope = crate::storage::Scope::Shared(SETTINGS_SECTION);
 }
+
+/// The section as a record the person edits by path.
+#[tilo_resource::resource(kind = "settings.text-assistance", label = "Spelling and text")]
+impl TextAssistancePrefs {}
 
 #[derive(Default)]
 struct CachedPrefs {
@@ -52,7 +64,7 @@ pub fn preferences() -> TextAssistancePrefs {
             .checked_at
             .is_some_and(|checked| checked.elapsed() < Duration::from_secs(2))
     {
-        return cache.prefs;
+        return cache.prefs.clone();
     }
     let settings = crate::storage::Settings::<TextAssistancePrefs>::shared();
     let stamp = Some(settings.revision());
@@ -62,5 +74,5 @@ pub fn preferences() -> TextAssistancePrefs {
         cache.loaded = true;
     }
     cache.checked_at = Some(crate::time::now());
-    cache.prefs
+    cache.prefs.clone()
 }

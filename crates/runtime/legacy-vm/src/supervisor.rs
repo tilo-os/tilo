@@ -16,7 +16,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use legacy_agent_protocol::client;
-use legacy_agent_protocol::vsock::VsockStream;
+use legacy_agent_protocol::link::AgentLink;
 use legacy_agent_protocol::window::GUEST_ENV;
 use legacy_agent_protocol::{AGENT_PORT, GuestMessage, GuestShare, HostMessage};
 use libvirt_domain::{DomainState, vsock_cid};
@@ -24,17 +24,20 @@ use thiserror::Error;
 
 use crate::config::VmConfig;
 use crate::control::{ControlReply, ControlRequest, FRAMING, StatusReport};
-use crate::domain::{attached_tags, filesystem_xml, is_ours, render_domain_xml};
+use crate::domain::{
+    attached_tags, domain_uuid, filesystem_xml, is_ours, render_domain_xml, with_uuid,
+};
 use crate::grants::{Grants, HostShare};
 use crate::lifecycle::{Action, Lifecycle, Phase};
 use crate::memory::actual_mib;
+use crate::transport::{VsockBackend, hybrid_link, vhost_device_vsock_argv};
 use crate::virsh::{Virsh, VirshError};
 use crate::{image, virtiofs};
 
 /// How often a running VM is asked what runs and how much memory it has.
 const POLL: Duration = Duration::from_secs(5);
 /// How long a first boot or restore may take before the agent answers.
-const AGENT_PATIENCE: Duration = Duration::from_secs(180);
+const AGENT_PATIENCE: Duration = Duration::from_secs(300);
 /// A supervisor nobody asked anything exits after this.
 const UNUSED: Duration = Duration::from_secs(60);
 
@@ -52,6 +55,10 @@ pub enum SupervisorError {
     ForeignDomain(String),
     #[error("the VM has no vsock context id")]
     NoContextId,
+    #[error("this host has no vsock for VMs: it needs /dev/vhost-vsock or vhost-device-vsock")]
+    NoVsock,
+    #[error("vhost-device-vsock did not come up")]
+    VsockDaemon,
     #[error("the guest agent did not answer within {0:?}")]
     AgentTimeout(Duration),
     #[error("guest agent: {0}")]
@@ -76,8 +83,11 @@ pub struct Supervisor {
     /// A local qcow2 to create the disk from instead of the pinned image.
     image_override: Option<PathBuf>,
     self_exe: PathBuf,
-    cid: Option<u32>,
+    backend: Option<VsockBackend>,
+    link: Option<AgentLink>,
     forwarder: Option<Child>,
+    /// `vhost-device-vsock`, when the host has no kernel vhost-vsock.
+    vsock_daemon: Option<Child>,
     shares: BTreeMap<String, ShareDaemon>,
     /// Directories a launch asked to share until the VM next sleeps.
     session_shares: Vec<HostShare>,
@@ -94,8 +104,10 @@ impl Supervisor {
             config,
             image_override,
             self_exe,
-            cid: None,
+            backend: VsockBackend::detect(),
+            link: None,
             forwarder: None,
+            vsock_daemon: None,
             shares: BTreeMap::new(),
             session_shares: Vec::new(),
             memory_mib: None,
@@ -168,8 +180,8 @@ impl Supervisor {
     fn handle(&mut self, request: ControlRequest) -> ControlReply {
         let result = match request {
             ControlRequest::Ensure { extra } => {
-                self.ensure(&extra).map(|cid| ControlReply::Ready {
-                    cid,
+                self.ensure(&extra).map(|link| ControlReply::Ready {
+                    link,
                     waypipe_port: self.config.waypipe_port,
                 })
             }
@@ -179,7 +191,11 @@ impl Supervisor {
             },
             ControlRequest::Status => Ok(ControlReply::Status(StatusReport {
                 phase: format!("{:?}", self.life.phase()),
-                cid: self.cid,
+                transport: self
+                    .backend
+                    .map_or("none", VsockBackend::as_str)
+                    .to_string(),
+                link: self.link.clone(),
                 shares: self
                     .shares
                     .values()
@@ -197,7 +213,7 @@ impl Supervisor {
         })
     }
 
-    fn ensure(&mut self, extra: &[PathBuf]) -> Result<u32, SupervisorError> {
+    fn ensure(&mut self, extra: &[PathBuf]) -> Result<AgentLink, SupervisorError> {
         for path in extra {
             let share = HostShare {
                 path: path.clone(),
@@ -215,7 +231,7 @@ impl Supervisor {
         }
         let actions = self.life.wake()?;
         self.execute(&actions)?;
-        self.cid.ok_or(SupervisorError::NoContextId)
+        self.link.clone().ok_or(SupervisorError::NoContextId)
     }
 
     fn execute(&mut self, actions: &[Action]) -> Result<(), SupervisorError> {
@@ -224,7 +240,8 @@ impl Supervisor {
                 Action::CreateDisk => self.create_disk()?,
                 Action::Define => self.define()?,
                 Action::Start => {
-                    self.cid = None;
+                    self.link = None;
+                    self.start_vsock_daemon()?;
                     self.start_forwarder();
                     self.virsh.start()?;
                 }
@@ -235,9 +252,13 @@ impl Supervisor {
                 Action::SyncShares => self.sync_shares()?,
                 Action::DetachShares => self.detach_all(),
                 Action::Suspend => {
-                    self.virsh.managed_save()?;
+                    if self.backend.is_some_and(VsockBackend::snapshots) {
+                        self.virsh.managed_save()?;
+                    } else {
+                        self.power_off()?;
+                    }
                     self.life.suspended();
-                    self.cid = None;
+                    self.link = None;
                     self.stop_devices();
                 }
             }
@@ -259,25 +280,38 @@ impl Supervisor {
     }
 
     fn define(&self) -> Result<(), SupervisorError> {
-        if self.virsh.state()? != DomainState::Absent
-            && !is_ours(&self.virsh.dumpxml()?, &self.config)
-        {
-            return Err(SupervisorError::ForeignDomain(
-                self.config.domain_name.clone(),
-            ));
+        let backend = self.backend.ok_or(SupervisorError::NoVsock)?;
+        let mut xml = render_domain_xml(&self.config, backend)?;
+        if self.virsh.state()? != DomainState::Absent {
+            let existing = self.virsh.dumpxml()?;
+            if !is_ours(&existing, &self.config) {
+                return Err(SupervisorError::ForeignDomain(
+                    self.config.domain_name.clone(),
+                ));
+            }
+            // Redefining keeps the domain's identity; libvirt refuses a new
+            // definition under the same name with another UUID.
+            if let Some(uuid) = domain_uuid(&existing) {
+                xml = with_uuid(&xml, uuid);
+            }
         }
-        self.virsh.define(&render_domain_xml(&self.config)?)?;
+        self.virsh.define(&xml)?;
         Ok(())
     }
 
     fn await_agent(&mut self) -> Result<(), SupervisorError> {
         let deadline = Instant::now().checked_add(AGENT_PATIENCE);
         loop {
-            if self.cid.is_none() {
-                self.cid = vsock_cid(&self.virsh.dumpxml()?);
+            if self.link.is_none() {
+                self.link = match self.backend.ok_or(SupervisorError::NoVsock)? {
+                    VsockBackend::Kernel => {
+                        vsock_cid(&self.virsh.dumpxml()?).map(|cid| AgentLink::Kernel { cid })
+                    }
+                    VsockBackend::Hybrid => Some(hybrid_link(&self.config.paths.vsock_uds())),
+                };
             }
-            if let Some(cid) = self.cid
-                && let Ok(mut stream) = VsockStream::connect(cid, AGENT_PORT)
+            if let Some(link) = &self.link
+                && let Ok(mut stream) = link.connect(AGENT_PORT)
             {
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
                 if client::handshake(&mut stream).is_ok() {
@@ -292,14 +326,14 @@ impl Supervisor {
     }
 
     fn agent(&self, message: &HostMessage) -> Result<GuestMessage, SupervisorError> {
-        let cid = self.cid.ok_or(SupervisorError::NoContextId)?;
-        let mut stream = VsockStream::connect(cid, AGENT_PORT)?;
+        let link = self.link.as_ref().ok_or(SupervisorError::NoContextId)?;
+        let mut stream = link.connect(AGENT_PORT)?;
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
         Ok(client::request(&mut stream, message)?)
     }
 
     fn desired_shares(&self) -> Vec<HostShare> {
-        let now = tilo_clock_now();
+        let now = tilo_clock::unix_now();
         let mut desired = Grants::load(&self.config.paths.grants()).shares(Some(now));
         for share in &self.session_shares {
             if !desired.iter().any(|granted| granted.path == share.path) {
@@ -419,7 +453,14 @@ impl Supervisor {
             eprintln!("tilo-legacy: no compositor socket; windows will not appear");
             return;
         };
-        let argv = legacy_agent_protocol::waypipe::client_argv("waypipe", self.config.waypipe_port);
+        let port = self.config.waypipe_port;
+        let argv = if self.backend == Some(VsockBackend::Hybrid) {
+            let listener = AgentLink::hybrid_listener(&self.config.paths.vsock_uds(), port);
+            let _ = std::fs::remove_file(&listener);
+            legacy_agent_protocol::waypipe::client_argv_unix("waypipe", &listener)
+        } else {
+            legacy_agent_protocol::waypipe::client_argv("waypipe", port)
+        };
         let Some((program, rest)) = argv.split_first() else {
             return;
         };
@@ -461,7 +502,7 @@ impl Supervisor {
                 let _ = self.virsh.set_memory_mib(target);
             }
         }
-        if let Some(actions) = self.life.activity(health.running, tilo_clock_now())
+        if let Some(actions) = self.life.activity(health.running, tilo_clock::unix_now())
             && let Err(error) = self.execute(&actions)
         {
             eprintln!("tilo-legacy: could not suspend: {error}");
@@ -481,6 +522,57 @@ impl Supervisor {
             let _ = forwarder.kill();
             let _ = forwarder.wait();
         }
+        if let Some(mut daemon) = self.vsock_daemon.take() {
+            let _ = daemon.kill();
+            let _ = daemon.wait();
+        }
+    }
+
+    /// Start `vhost-device-vsock` before QEMU connects to it, when this host
+    /// has no kernel vhost-vsock.
+    fn start_vsock_daemon(&mut self) -> Result<(), SupervisorError> {
+        if self.backend.ok_or(SupervisorError::NoVsock)? != VsockBackend::Hybrid {
+            return Ok(());
+        }
+        if let Some(daemon) = self.vsock_daemon.as_mut()
+            && matches!(daemon.try_wait(), Ok(None))
+        {
+            return Ok(());
+        }
+        let paths = &self.config.paths;
+        let vhost_user = paths.vsock_vhost_user();
+        let _ = std::fs::remove_file(&vhost_user);
+        let _ = std::fs::remove_file(paths.vsock_uds());
+        let argv = vhost_device_vsock_argv(&vhost_user, &paths.vsock_uds());
+        let (program, rest) = argv.split_first().ok_or(SupervisorError::VsockDaemon)?;
+        let mut daemon = Command::new(program)
+            .args(rest)
+            .stdin(Stdio::null())
+            .process_group(0)
+            .spawn()?;
+        if !wait_for_socket(&vhost_user, &mut daemon) {
+            let _ = daemon.kill();
+            let _ = daemon.wait();
+            return Err(SupervisorError::VsockDaemon);
+        }
+        self.vsock_daemon = Some(daemon);
+        Ok(())
+    }
+
+    /// Shut the guest down, cleanly when it lets us within a minute.
+    fn power_off(&self) -> Result<(), SupervisorError> {
+        if self.virsh.state()? != DomainState::Running {
+            return Ok(());
+        }
+        self.virsh.shutdown()?;
+        for _ in 0..120 {
+            if self.virsh.state()? != DomainState::Running {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        self.virsh.destroy()?;
+        Ok(())
     }
 }
 
@@ -549,10 +641,4 @@ fn compositor_display() -> Option<String> {
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty())
         .or_else(|| std::env::var("WAYLAND_DISPLAY").ok())
-}
-
-fn tilo_clock_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs())
 }

@@ -6,7 +6,8 @@
 
 use crate::model::{AnalysisProvenance, ImageAnalysis, OpenImage};
 use crate::people::{VerifiedFaceCluster, VerifiedFaceClusterBatch};
-use crate::{doc, pixels};
+use crate::pixels;
+use crate::strings::tr;
 use tilo_content::ContentStore;
 
 /// Maximum text retained from an OCR engine.  This is deliberately below the
@@ -26,16 +27,13 @@ pub fn recognize_text(
     store: &ContentStore,
 ) -> Result<ImageAnalysis, String> {
     if !valid_language(language) {
-        return Err("OCR language must be a short ASCII language code".to_owned());
+        return Err(tr("photos-analysis-error-language"));
     }
-    let bytes = doc::bytes_of(open, store).ok_or_else(|| {
-        "This photograph is not available on this device yet; retry after it syncs".to_owned()
-    })?;
-    let rgba = pixels::decode(&bytes).ok_or_else(|| {
-        "This photograph cannot be safely prepared for text recognition".to_owned()
-    })?;
+    let bytes =
+        crate::model::bytes_of(open, store).ok_or_else(|| tr("photos-analysis-error-not-here"))?;
+    let rgba = pixels::decode(&bytes).ok_or_else(|| tr("photos-analysis-error-unreadable"))?;
     let image = image::RgbaImage::from_raw(rgba.w, rgba.h, rgba.bytes)
-        .ok_or_else(|| "This photograph has invalid decoded pixels".to_owned())?;
+        .ok_or_else(|| tr("photos-analysis-error-unreadable"))?;
     let document = tilo_ocr::recognize(&image::DynamicImage::ImageRgba8(image), language)
         .map_err(|error| error.user_message().to_owned())?;
     let mut text = document.plain_text();
@@ -75,13 +73,11 @@ pub fn analyze_image(
     capability: &tilo_vision::LocalVisionCapability,
     store: &ContentStore,
 ) -> Result<ImageAnalysis, String> {
-    let bytes = doc::bytes_of(open, store).ok_or_else(|| {
-        "This photograph is not available on this device yet; retry after it syncs".to_owned()
-    })?;
-    let rgba = pixels::decode(&bytes)
-        .ok_or_else(|| "This photograph cannot be safely prepared for local analysis".to_owned())?;
+    let bytes =
+        crate::model::bytes_of(open, store).ok_or_else(|| tr("photos-analysis-error-not-here"))?;
+    let rgba = pixels::decode(&bytes).ok_or_else(|| tr("photos-analysis-error-unreadable"))?;
     let image = image::RgbaImage::from_raw(rgba.w, rgba.h, rgba.bytes)
-        .ok_or_else(|| "This photograph has invalid decoded pixels".to_owned())?;
+        .ok_or_else(|| tr("photos-analysis-error-unreadable"))?;
     let prepared = tilo_vision::prepare(&image::DynamicImage::ImageRgba8(image), &bytes)
         .map_err(|error| error.user_message().to_owned())?;
     let result = tilo_vision::analyze(capability, prepared)
@@ -106,11 +102,11 @@ pub fn detect_people(
     store: &ContentStore,
 ) -> Result<VerifiedFaceClusterBatch, String> {
     if images.is_empty() || images.len() > tilo_vision::MAX_FACE_BATCH {
-        return Err("People recognition can scan up to 12 photographs at a time".to_owned());
+        return Err(tr("photos-people-error-batch"));
     }
     let mut prepared = Vec::with_capacity(images.len());
     for (photo_id, open) in images {
-        let bytes = doc::bytes_of(&open, store).ok_or_else(|| {
+        let bytes = crate::model::bytes_of(&open, store).ok_or_else(|| {
             "A selected photograph is not available on this device yet; retry after it syncs"
                 .to_owned()
         })?;
@@ -177,7 +173,6 @@ fn image_analysis_from_vision_result(
         provenance: provenance.clone(),
         ocr_provenance: has_ocr.then(|| provenance.clone()),
         vision_provenance: Some(provenance),
-        ..ImageAnalysis::default()
     }
 }
 
@@ -238,7 +233,6 @@ mod tests {
                 },
             );
             assert_eq!(analysis.objects, ["dog", "bicycle"]);
-            assert!(analysis.people.is_empty());
             assert_eq!(analysis.pets, ["dog"]);
             assert_eq!(analysis.ocr_text, "42 North Street");
             assert_eq!(analysis.provenance.source, "local-vision");

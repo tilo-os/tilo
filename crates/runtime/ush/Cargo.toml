@@ -16,11 +16,16 @@ name = "tilo-ush"
 path = "src/main.rs"
 
 [dependencies]
+getrandom.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
+bounded-command = { path = "../../system/bounded-command" }
+sha2.workspace = true
 runtime-portal = { path = "../runtime-portal" }
 collab-types = { path = "../../collab/collab-types" }
 # The environment record a guest is built from, and the tool builder seam.
 tilo-environment = { path = "../environment" }
+# The person's relays (home-peer registrations) and their personal workspace.
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # Atomic writes of the host-shell decisions.
 tilo-files = { path = "../../platform/tilo-files" }
 # Builds the tool images `pkg install` adds.
@@ -47,10 +52,10 @@ tilo-sandbox-core = { path = "../../system/sandbox-core" }
 # record's NetHost grants, and nftables that admit only what it answered.
 tilo-egress = { path = "../egress" }
 # Installed legacy apps become commands in every guest (`LegacyLaunch`).
-legacy-vm = { path = "../legacy-vm" }
+legacy-vm = { path = "../legacy-vm", default-features = false }
 
 anyhow.workspace = true
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 landlock.workspace = true
 libc.workspace = true
 seccompiler.workspace = true
@@ -64,6 +69,7 @@ uuid.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+base64.workspace = true
 ed25519-dalek.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

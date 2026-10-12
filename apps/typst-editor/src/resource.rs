@@ -1,124 +1,230 @@
-//! Typst Editor as a [`tilo_resource::Resource`]: source text stays on the
-//! CRDT-native text path; compile / open / save / zoom are View and Effect
-//! operations published from the resource. Live diagnostics and preview-page
-//! hits stay on the surface — hosted
-//! [`PublishesResources`](ui::resources::PublishesResources) returns only that
-//! slice beside the framework door.
+//! Typst Editor's record: a workspace of Typst files, each with its name,
+//! the path it is saved at and its source.
+//!
+//! Renaming a file and typing in its source are the built-in field edits
+//! every path offers (`Workspace::paths().files.item(&id).source.splice(..)`);
+//! the methods below are the operations that are more than setting a field.
+//! Compile, open, save, export and zoom are effects and views of the app
+//! ([`crate::actions::TypstEffect`]); live diagnostics and preview pages are
+//! rows the surface publishes.
 
 use std::rc::Rc;
 
-use serde::{Deserialize, Serialize};
-use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{Action, ActionError, ActionRegistry, ActionSpec, OperationKind};
-use ui::tilo_resource::{Doc, ModelError, Resource};
+use ui::framework::{
+    Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
+};
+use ui::i18n::EmbeddedCatalog;
+use ui::record::RecordId;
+use ui::tilo_resource::{self, ActionCx, Atom, Collection, Id, Invoke, Model, Refusal, resource};
 use ui::widget::Element;
 
-use crate::actions;
 use crate::app::TypstApp;
+use crate::samples::{DEFAULT_INDEX, SAMPLES};
 
-/// Document actions for the shared source text. Keystrokes stay on the CRDT
-/// text object the editor is bound to; creating that object and replacing the
-/// whole source are actions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum TypstDocAction {
-    /// Create `source` when it is missing and seed it once.
-    EnsureSource { seed: String },
-    /// Replace the shared source, diffing the unchanged prefix and suffix.
-    ReplaceSource { text: String },
+/// Typst Editor's Fluent catalogs, source locale first.
+pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
+
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+
+/// One Typst file of the workspace.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct TypstFile {
+    /// Name
+    ///
+    /// The file name shown in the switcher (`report.typ`). Written whole, so
+    /// two people renaming it at once do not merge two names.
+    #[model(label)]
+    pub name: Atom,
+    /// Path
+    ///
+    /// Where the file was opened from or last saved to, if anywhere. Only
+    /// opening and saving change it.
+    #[model(readonly)]
+    pub path: Option<Atom>,
+    /// Source
+    ///
+    /// The Typst text, merged character by character.
+    pub source: String,
 }
 
-impl Action for TypstDocAction {
-    fn apply(&self, doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
-        use automerge::transaction::Transactable;
-        use automerge::{ObjType, ReadDoc, Value};
-        let (id, created) = match doc.get(automerge::ROOT, "source")? {
-            Some((Value::Object(ObjType::Text), id)) => (id, false),
-            Some(_) => {
-                return Err(ActionError::Refused("typst source is not text".into()));
-            }
-            None => (
-                doc.put_object(automerge::ROOT, "source", ObjType::Text)?,
-                true,
-            ),
-        };
-        match self {
-            Self::EnsureSource { seed } => {
-                if created && !seed.is_empty() {
-                    doc.splice_text(&id, 0, 0, seed)?;
-                }
-            }
-            Self::ReplaceSource { text } => {
-                ui::doc::splice_text_diffed(doc, &id, text);
-            }
-        }
+/// The workspace: its files, in the order they were added.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct Workspace {
+    pub files: Collection<TypstFile>,
+}
+
+impl Workspace {
+    /// The file `id`, if the workspace has it.
+    pub fn file(&self, id: &Id) -> Option<&TypstFile> {
+        self.files.get(id)
+    }
+}
+
+#[resource(kind = "typst-editor.workspace", label = "Typst workspace")]
+impl Workspace {
+    /// Create a Typst file.
+    #[action]
+    pub fn new_file(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("File name")] name: String,
+        #[param("Where it is saved, if anywhere")] path: Option<String>,
+        #[param("Its Typst source; empty when none")] source: Option<String>,
+    ) {
+        self.files.push(
+            cx.id(),
+            TypstFile {
+                name: Atom(name.trim().to_owned()),
+                path: path.map(Atom),
+                source: source.unwrap_or_default(),
+            },
+        );
+    }
+
+    /// Record where a file was saved.
+    ///
+    /// It lives at that path now and takes the path's name.
+    #[action]
+    pub fn saved_at(
+        &mut self,
+        file: &Id,
+        #[param("Where it was saved")] path: String,
+    ) -> Result<(), Refusal> {
+        let file = self.files.get_mut(file).ok_or("no such file")?;
+        file.name = Atom(file_name(&path));
+        file.path = Some(Atom(path));
         Ok(())
     }
-}
 
-/// Workspace resource. Kind matches the published tree root.
-pub struct TypstEditor;
-
-impl Resource for TypstEditor {
-    const KIND: &'static str = "typst.workspace";
-    const LABEL: &'static str = "Typst workspace";
-    const ACTION_TYPE: &'static str = "typst.action";
-
-    type State = ();
-    type Action = TypstDocAction;
-
-    fn register(registry: &mut ActionRegistry) {
-        registry.register::<TypstDocAction>(Self::ACTION_TYPE);
-    }
-
-    fn read(_doc: &Doc) -> Result<(), ModelError> {
+    /// Load a file from disk into this one.
+    ///
+    /// Its source becomes what the file holds, and it lives at the file's
+    /// path.
+    #[action]
+    pub fn load(
+        &mut self,
+        file: &Id,
+        #[param("Where the file was read from")] path: String,
+        #[param("What it holds")] source: String,
+    ) -> Result<(), Refusal> {
+        let file = self.files.get_mut(file).ok_or("no such file")?;
+        file.name = Atom(file_name(&path));
+        file.path = Some(Atom(path));
+        file.source = source;
         Ok(())
     }
 
-    fn children(_state: &()) -> Vec<tilo_actions::Resource> {
-        // Static document / preview / export door only — live diagnostics and
-        // preview pages ride [`PublishesResources`] via [`actions::live_extras`].
-        actions::workspace_resource().children
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        let root = actions::workspace_resource();
-        let nested = root.children.into_iter().flat_map(|child| {
-            child
-                .actions
-                .into_iter()
-                .chain(child.children.into_iter().flat_map(|g| g.actions))
-        });
-        root.actions
-            .into_iter()
-            .chain(nested)
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
+    /// Close a file.
+    ///
+    /// It leaves the workspace.
+    #[action(destructive)]
+    pub fn close_file(&mut self, file: &Id) -> Result<(), Refusal> {
+        self.files
+            .remove(file)
+            .map(drop)
+            .ok_or_else(|| Refusal::new("no such file"))
     }
 }
 
-/// Framework app: the typst widget is the surface over [`TypstEditor`].
+/// The last component of `path`, which names a file saved there.
+pub(crate) fn file_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("untitled.typ")
+        .to_owned()
+}
+
+/// The action that adds a new file named `name` with `source`, saved at
+/// `path` if anywhere.
+pub(crate) fn new_file(name: &str, path: Option<&str>, source: &str) -> Invoke<Workspace> {
+    Workspace::NEW_FILE.with(workspace::NewFile {
+        name: name.to_owned(),
+        path: path.map(str::to_owned),
+        source: Some(source.to_owned()),
+    })
+}
+
+/// The bundled example a capture shows, with a fixed id so every capture of
+/// a scenario is the same.
+pub(crate) fn sample_files(scenario: Option<&str>) -> Vec<(Id, TypstFile)> {
+    SAMPLES
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index == DEFAULT_INDEX)
+        .map(|(index, sample)| {
+            let source = match scenario {
+                Some("scrolled") if index == DEFAULT_INDEX => crate::app::SCROLL_DEMO,
+                Some("errors") if index == DEFAULT_INDEX => crate::samples::ERROR_WARNING,
+                _ => sample.source,
+            };
+            let file = TypstFile {
+                name: Atom(sample.name.to_owned()),
+                path: None,
+                source: source.to_owned(),
+            };
+            (sample_id(index), file)
+        })
+        .collect()
+}
+
+/// The id of the bundled example at `index` in a capture.
+pub(crate) fn sample_id(index: usize) -> Id {
+    Id::from_raw(format!("sample-{index}"))
+}
+
+/// Framework app: the typst widget is the surface over [`Workspace`].
 pub struct TypstEditorShell;
 
 impl ResourceApp for TypstEditorShell {
-    type Resource = TypstEditor;
+    type Resource = Workspace;
     const ID: &'static str = "so.tilo.typst-editor";
     const TITLE: &'static str = "Typst";
     const ICON: Option<&'static str> = Some("typst-editor");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
+    /// The narrow-window scenarios are captured at a phone width.
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        scenario
+            .and_then(|name| matches!(name, "preview" | "documents").then_some((520, 820)))
+            .unwrap_or((1280, 800))
+    }
+    const ARGUMENTS: usize = 1;
+
+    fn view(cx: &mut ViewCx<Workspace>) -> Element {
+        cx.surface(TypstApp::new())
     }
 
-    fn view(cx: &mut ViewCx<TypstEditor>) -> Element {
-        // Live path starts empty (no demo seed).
-        cx.surface(TypstApp::new())
+    /// A `.typ` path on the command line opens that file's own workspace.
+    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+        input.argument().map(RecordId::identify_file)
+    }
+
+    /// A window edits one document: the file it was opened on, or a new
+    /// empty one. Another document is another editor in a desktop tab.
+    fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Workspace>> {
+        if !created {
+            return Vec::new();
+        }
+        let file = if let Some(path) = input.argument() {
+            new_file(
+                &file_name(path),
+                Some(path),
+                &crate::app::read_text(std::path::Path::new(path)).unwrap_or_default(),
+            )
+        } else if let Some(file) = input.file() {
+            new_file(file.name(), None, &String::from_utf8_lossy(file.bytes()))
+        } else {
+            new_file("untitled.typ", None, "")
+        };
+        vec![file]
     }
 
     fn scenarios() -> &'static [&'static str] {
         &[
             "preview",
-            "menu",
+            "documents",
+            "pages",
             "problems",
-            "scrolled",
+            "long-line",
             "errors",
             "editor-select",
             "preview-zoom",
@@ -128,273 +234,66 @@ impl ResourceApp for TypstEditorShell {
             "status",
         ]
     }
-}
 
-impl ResourceSurface<TypstEditor> for TypstApp {
-    fn present(&mut self, _state: &Rc<()>) {
-        // Source lives on the CRDT text object and local document list — an
-        // empty projection must not wipe unpublished local source.
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&CATALOG)
     }
 
-    fn attach(&mut self, cx: SurfaceCx<TypstEditor>) {
-        self.attach_document_actions(cx.dispatcher());
-        self.set_framework_hosted(true);
+    fn fixture(fixture: &mut Fixture<Workspace>) {
+        fixture.provide(CaptureFile(sample_id(DEFAULT_INDEX)));
+    }
+
+    /// Every capture shows the bundled examples.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Workspace>> {
+        sample_files(name)
+            .iter()
+            .enumerate()
+            .filter_map(|(at, (id, file))| {
+                Invoke::edit(&Workspace::paths().files.insert_as(id, at, file)).ok()
+            })
+            .collect()
     }
 }
 
-/// Live launch on the framework host.
-pub fn launch_spec() -> ui::launch::LaunchSpec {
-    // Window title / capture protection live in main.rs via configure_app
-    // (native App only). The browser mounts the definition without that path.
-    ui::framework::launch_spec::<TypstEditorShell>()
+/// The file a capture shows first.
+pub(crate) struct CaptureFile(pub(crate) Id);
+
+impl ResourceSurface<Workspace, crate::actions::TypstEffect> for TypstApp {
+    fn effect(
+        &mut self,
+        effect: crate::actions::TypstEffect,
+        cx: &mut ui::framework::EffectCx<Workspace, Self>,
+    ) -> ui::framework::EffectAnswer {
+        self.answer_effect(effect, cx)
+    }
+
+    fn present(&mut self, state: &Rc<Workspace>) {
+        self.present_state(state);
+    }
+
+    fn attach(&mut self, cx: SurfaceCx<Workspace>) {
+        self.attach_surface(&cx);
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
+    }
+
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.live_rows()
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.live_rows()
+            .into_iter()
+            .flat_map(|row| {
+                let resource = row.into_resource();
+                std::iter::once(resource.clone()).chain(resource.children)
+            })
+            .find(|resource| resource.id.as_str() == id)
+            .map(crate::actions::live_row)
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::compile::{DiagKind, Diagnostic, PageImage};
-    use std::sync::Arc;
-    use ui::resources::PublishesResources;
-    use ui::tilo_actions::OperationKind;
-    use ui::widget::Widget;
-
-    fn blank_page() -> PageImage {
-        PageImage {
-            rgba: Arc::from([255u8, 255, 255, 255].as_slice()),
-            width: 1,
-            height: 1,
-            width_pt: 100.0,
-            height_pt: 100.0,
-        }
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one hosted extras check covers problems, preview pages, and overlay"
-    )]
-    #[test]
-    fn hosted_resources_keep_live_extras_without_workspace_root() {
-        let published =
-            ui::tilo_resource::publish::<TypstEditor>("typst.workspace", "Typst workspace", &());
-        assert_eq!(published.kind, "typst.workspace");
-        let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
-        for expected in [
-            "open",
-            "save",
-            "compile",
-            "export-pdf",
-            "zoom-in",
-            "problems",
-            "apply",
-            "group",
-        ] {
-            assert!(
-                ids.contains(&expected),
-                "palette `{expected}` must ride local_operations via publish: {ids:?}"
-            );
-        }
-        let compile = published
-            .actions
-            .iter()
-            .find(|action| action.id == "compile")
-            .expect("compile");
-        assert_eq!(compile.kind, OperationKind::Effect);
-        assert!(
-            published
-                .children
-                .iter()
-                .any(|child| child.kind == "typst.document"),
-            "document door must ride Resource children: {:?}",
-            published
-                .children
-                .iter()
-                .map(|child| child.id.as_str())
-                .collect::<Vec<_>>()
-        );
-
-        let mut app = TypstApp::with_demo_documents();
-        let mut state = ui::State::new();
-        Widget::sync(&mut app, &mut state.doc, &state.root);
-        assert!(
-            !app.is_framework_hosted(),
-            "standalone stays on the full action tree"
-        );
-
-        let pages = [blank_page(), blank_page()];
-        app.stage_live_extras_for_test(
-            vec![
-                Diagnostic {
-                    kind: DiagKind::Error,
-                    message: "unknown variable".into(),
-                    line: Some(4),
-                    col: Some(28),
-                    end_line: Some(4),
-                    end_col: Some(43),
-                    hints: Vec::new(),
-                },
-                Diagnostic {
-                    kind: DiagKind::Warning,
-                    message: "unknown font family".into(),
-                    line: Some(1),
-                    col: Some(12),
-                    end_line: Some(1),
-                    end_col: Some(26),
-                    hints: Vec::new(),
-                },
-            ],
-            &pages,
-        );
-        assert!(
-            app.live_diagnostic_count_for_test() > 0,
-            "staged diagnostics required for the hosted extras contract"
-        );
-        assert!(
-            app.live_page_count_for_test() > 1,
-            "staged pages required for the hosted extras contract"
-        );
-
-        let standalone = app.resources(&state.doc);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, "typst.workspace");
-        let document = standalone[0]
-            .children
-            .iter()
-            .find(|child| child.kind == "typst.document")
-            .expect("standalone nests the document under the workspace");
-        let standalone_problems = document
-            .children
-            .iter()
-            .find(|child| child.kind == "typst.problems")
-            .expect("standalone nests diagnostics under the document");
-        assert!(
-            !standalone_problems.children.is_empty(),
-            "standalone problems projection carries diagnostic rows"
-        );
-        assert!(
-            standalone_problems.children.iter().all(|hit| {
-                hit.kind == "typst.diagnostic"
-                    && hit.actions.iter().any(|action| action.id == "open")
-            }),
-            "each diagnostic is a navigable typst.diagnostic row"
-        );
-        let standalone_pages = document
-            .children
-            .iter()
-            .find(|child| child.kind == "typst.preview-pages")
-            .expect("standalone nests preview pages under the document");
-        assert_eq!(
-            standalone_pages.children.len(),
-            app.live_page_count_for_test(),
-            "standalone keeps one row per compiled page"
-        );
-
-        let document_id = document.id.as_str().to_owned();
-        app.set_framework_hosted(true);
-        assert!(app.is_framework_hosted());
-        assert!(ui::resources::resource(&app, &state.doc, "typst.workspace").is_none());
-        assert!(
-            ui::resources::resource(&app, &state.doc, &document_id).is_some(),
-            "a hosted document stays the published row"
-        );
-        let extras = app.resources(&state.doc);
-        assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != "typst.workspace"
-                    && resource.kind != "typst.document"),
-            "hosted must not republish typst.workspace beside ResourceRoot: {:?}",
-            extras
-                .iter()
-                .map(|resource| resource.id.as_str())
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(extras.len(), 2, "hosted returns problems + pages slices");
-        assert!(
-            extras
-                .iter()
-                .any(|resource| resource.kind == "typst.problems"),
-            "hosted keeps the problems slice"
-        );
-        assert!(
-            extras
-                .iter()
-                .any(|resource| resource.kind == "typst.preview-pages"),
-            "hosted keeps the preview-pages slice"
-        );
-        let hosted_problems = extras
-            .iter()
-            .find(|resource| resource.kind == "typst.problems")
-            .expect("hosted returns the problems slice");
-        assert_eq!(
-            hosted_problems.id, standalone_problems.id,
-            "hosted problems tree matches the standalone nested slice"
-        );
-        assert_eq!(
-            hosted_problems.children.len(),
-            standalone_problems.children.len(),
-            "hosted keeps the same bounded diagnostic rows"
-        );
-
-        app.clear_live_extras_for_test();
-        assert!(
-            app.resources(&state.doc).is_empty(),
-            "hosted publishes no live extras when compile reported none"
-        );
-    }
-
-    #[test]
-    fn present_empty_does_not_wipe_unpublished_local_source() {
-        let mut app = TypstApp::new();
-        app.seed_unpublished_source_for_test("local-only.typ", "= Not published yet\n");
-        let empty = Rc::new(());
-        ResourceSurface::<TypstEditor>::present(&mut app, &empty);
-        assert_eq!(
-            app.local_document_names_for_test(),
-            vec!["local-only.typ".to_owned()],
-            "empty present must not wipe unpublished local source"
-        );
-        assert_eq!(
-            app.local_source_for_test(),
-            "= Not published yet\n",
-            "empty present must keep the local source body"
-        );
-    }
-
-    #[test]
-    fn a_standalone_source_is_created_through_the_local_host() {
-        use automerge::ReadDoc;
-        let mut app = TypstApp::with_demo_documents();
-        assert!(!app.is_framework_hosted());
-        let mut doc = automerge::AutoCommit::new();
-        let id = app.ensure_source_obj(&mut doc);
-        assert!(
-            !doc.text(&id).unwrap_or_default().is_empty(),
-            "standalone source setup seeds the sample"
-        );
-        assert!(
-            app.take_source_action_for_test().is_some(),
-            "standalone source setup is recorded on the local action host"
-        );
-    }
-
-    #[test]
-    fn hosted_source_setup_is_submitted_as_an_action() {
-        use automerge::ReadDoc;
-        let mut app = TypstApp::with_demo_documents();
-        app.set_framework_hosted(true);
-        let mut doc = automerge::AutoCommit::new();
-        let id = app.ensure_source_obj(&mut doc);
-        let text = doc.text(&id).expect("seeded source");
-        assert!(!text.is_empty(), "the first source action seeds the sample");
-        assert!(
-            app.take_source_action_for_test().is_some(),
-            "hosted source setup is an action the host records"
-        );
-        app.ensure_source_obj(&mut doc);
-        assert_eq!(
-            doc.text(&id).unwrap(),
-            text,
-            "a second setup leaves the source in place"
-        );
-    }
-}
+mod tests;

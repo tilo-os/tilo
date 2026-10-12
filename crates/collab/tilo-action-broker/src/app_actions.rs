@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use collab_types::caps::Expiry;
+use tilo_action_policy::Lifetime;
 use tokio::sync::oneshot;
 
 /// What an application declared it may do on the door under its own
@@ -51,13 +51,21 @@ pub struct AppActionConsentRequest {
     pub app_id: String,
     /// The application whose action it wants to use.
     pub target_app: String,
-    /// The action's id within `target_app`, as a grant scopes it.
+    /// The resource of `target_app` that publishes the action, as a grant
+    /// scopes it.
+    pub resource: String,
+    /// The action's id on `resource`, as a grant scopes it.
     pub action: String,
+    /// The resource as its publisher labels it.
+    pub resource_label: String,
     /// The action as its publisher labels it.
     pub action_label: String,
     pub risk: tilo_actions::RiskLevel,
     /// Whether each use still asks for confirmation, whatever is granted.
     pub needs_confirmation: bool,
+    /// The person confirms this one invocation, which `app_id` (an agent or
+    /// an application) makes for them, rather than granting anything.
+    pub confirming: bool,
 }
 
 /// The person's answer.
@@ -80,22 +88,25 @@ impl AppActionConsent {
     /// How long the grant this answer records lives; `None` records
     /// nothing.
     #[must_use]
-    pub const fn expiry(self) -> Option<Expiry> {
+    pub fn grant_lifetime(self) -> Option<Lifetime> {
         match self {
-            Self::Once => Some(Expiry::AfterUse),
-            Self::Session => Some(Expiry::EndOfSession),
-            Self::Always => Some(Expiry::Never),
+            Self::Once => Some(Lifetime::Once),
+            Self::Session => Some(Lifetime::Session(
+                tilo_desktop_model::session_id().to_owned(),
+            )),
+            Self::Always => Some(Lifetime::UntilRevoked),
             Self::Deny => None,
         }
     }
 
-    /// How long the grant lives, in words for the workspace's history.
+    /// How long the grant lives, as the workspace's history records it:
+    /// `once`, `session` or `workspace`.
     #[must_use]
     pub const fn lifetime(self) -> &'static str {
         match self {
             Self::Once => "once",
-            Self::Session => "for this session",
-            Self::Always | Self::Deny => "in this workspace",
+            Self::Session => "session",
+            Self::Always | Self::Deny => "workspace",
         }
     }
 }
@@ -113,13 +124,21 @@ mod tests {
 
     #[test]
     fn each_answer_records_the_matching_lifetime() {
-        assert_eq!(AppActionConsent::Once.expiry(), Some(Expiry::AfterUse));
         assert_eq!(
-            AppActionConsent::Session.expiry(),
-            Some(Expiry::EndOfSession)
+            AppActionConsent::Once.grant_lifetime(),
+            Some(Lifetime::Once)
         );
-        assert_eq!(AppActionConsent::Always.expiry(), Some(Expiry::Never));
-        assert_eq!(AppActionConsent::Deny.expiry(), None);
+        assert_eq!(
+            AppActionConsent::Session.grant_lifetime(),
+            Some(Lifetime::Session(
+                tilo_desktop_model::session_id().to_owned()
+            ))
+        );
+        assert_eq!(
+            AppActionConsent::Always.grant_lifetime(),
+            Some(Lifetime::UntilRevoked)
+        );
+        assert_eq!(AppActionConsent::Deny.grant_lifetime(), None);
         assert_eq!(AppActionConsent::ALLOWING[0], AppActionConsent::Once);
     }
 }

@@ -2,14 +2,17 @@
 //! Inferred words are visibly marked and controlled beside the user's status;
 //! they are never presented as if the participant typed them.
 
+use crate::agent_identity::{AgentIdentityStyle, draw_agent_identity_mark};
 use crate::history_source::{ActivityBrief, ActivityDigest};
+use crate::icons::Icon;
 use crate::live_collaboration::{
     CollaborationExperience, PersonPresence, StatusOrigin, StatusSharing,
 };
 use crate::presence::{PresenceCtx, user_color};
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
-use crate::widget::avatar::Avatar;
+use crate::tokens::TextRole;
+use crate::widget::avatar::AvatarFace;
 use crate::widget::{TaffyTreeExt, Widget};
 use std::collections::{HashMap, HashSet};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -26,11 +29,10 @@ pub enum CollaborationOverviewAction {
     EditStatus,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct OverviewTextStyle {
-    size: f32,
+    style: TextStyle,
     color: Color,
-    weight: TextWeight,
 }
 
 #[derive(Clone, Copy)]
@@ -82,15 +84,6 @@ impl CollaborationOverview {
     pub fn experience(&self) -> &CollaborationExperience {
         &self.experience
     }
-    pub fn experience_mut(&mut self) -> &mut CollaborationExperience {
-        self.dirty = true;
-        &mut self.experience
-    }
-    pub fn set_digest(&mut self, digest: ActivityDigest) {
-        self.digest = digest;
-        self.expanded.clear();
-        self.dirty = true;
-    }
     pub fn take_action(&mut self) -> Option<CollaborationOverviewAction> {
         self.pending.take()
     }
@@ -104,14 +97,13 @@ impl CollaborationOverview {
         x: f64,
         y: f64,
     ) {
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             text,
-            style.size,
             style.color,
             transform.pre_translate(Vec2::new(x, y)),
             None,
-            style.weight,
+            &style.style,
         );
     }
     fn initials(name: &str) -> String {
@@ -129,30 +121,16 @@ impl CollaborationOverview {
         rect: Rect,
         ringed: bool,
     ) {
-        let c = user_color(identity.id);
-        let fill = Color::from_rgb8(c.0, c.1, c.2);
+        let fill = theme.tokens.colors.presence.of_rgb(user_color(identity.id));
+        let initials = Self::initials(identity.name);
+        let mut face = AvatarFace::new(&initials, identity.id).presence(fill);
         if ringed {
-            Avatar::draw_ringed_at(
-                &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
-                rect,
-                &Self::initials(identity.name),
-                fill,
-                crate::widget::AvatarRing {
-                    color: theme.bg_primary,
-                    width: 2.0,
-                },
-            );
-        } else {
-            Avatar::draw_at(
-                scene,
-                transform,
-                rect,
-                &Self::initials(identity.name),
-                fill,
-                theme,
-                tr,
-            );
+            face = face.ringed_on(theme.region(crate::surface::Region::Inspector));
         }
+        face.paint(
+            &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
+            rect,
+        );
     }
     fn card(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
         scene.fill(
@@ -178,9 +156,8 @@ impl CollaborationOverview {
             transform,
             "TOGETHER",
             OverviewTextStyle {
-                size: 11.0,
+                style: theme.text(TextRole::Subheading),
                 color: theme.text_tertiary,
-                weight: TextWeight::Semibold,
             },
             self.rect.x0 + PAD,
             self.rect.y0 + 12.0,
@@ -191,9 +168,8 @@ impl CollaborationOverview {
             transform,
             &format!("{} here now", people.len()),
             OverviewTextStyle {
-                size: 18.0,
+                style: theme.text(TextRole::Title),
                 color: theme.text_primary,
-                weight: TextWeight::Semibold,
             },
             self.rect.x0 + PAD,
             self.rect.y0 + 31.0,
@@ -237,9 +213,8 @@ impl CollaborationOverview {
             transform,
             "MY STATUS",
             OverviewTextStyle {
-                size: 11.0,
+                style: theme.text(TextRole::Subheading),
                 color: theme.text_tertiary,
-                weight: TextWeight::Semibold,
             },
             self.rect.x0 + PAD,
             top,
@@ -257,32 +232,26 @@ impl CollaborationOverview {
             .into_iter()
             .find(|p| p.is_self)
             .and_then(|p| p.status.as_ref());
-        let (mark, label, ink) = status.map_or(
-            ("○", "Set what you're working toward…", theme.text_dim),
+        let (automatic, label, ink) = status.map_or(
+            (false, "Set what you're working toward…", theme.text_dim),
             |s| {
                 (
-                    if matches!(s.origin, StatusOrigin::Inferred { .. }) {
-                        "✦"
-                    } else {
-                        "●"
-                    },
+                    matches!(s.origin, StatusOrigin::Inferred { .. }),
                     s.text.as_str(),
                     theme.text_primary,
                 )
             },
         );
-        Self::text(
-            tr,
+        if automatic {
+            Icon::Sparkles
+        } else {
+            Icon::Pencil
+        }
+        .draw(
             scene,
             transform,
-            mark,
-            OverviewTextStyle {
-                size: 15.0,
-                color: theme.accent_primary,
-                weight: TextWeight::Semibold,
-            },
-            r.x0 + 12.0,
-            r.y0 + 10.0,
+            Rect::new(r.x0 + 12.0, r.y0 + 11.0, r.x0 + 27.0, r.y0 + 26.0),
+            theme.tokens.colors.intent.inverted,
         );
         Self::text(
             tr,
@@ -290,9 +259,8 @@ impl CollaborationOverview {
             transform,
             label,
             OverviewTextStyle {
-                size: 13.0,
+                style: theme.text(TextRole::Body),
                 color: ink,
-                weight: TextWeight::Regular,
             },
             r.x0 + 34.0,
             r.y0 + 11.0,
@@ -312,7 +280,7 @@ impl CollaborationOverview {
     ) {
         self.sharing_hits.clear();
         for (i, (mode, label)) in [
-            (StatusSharing::Automatic, "✦ Auto"),
+            (StatusSharing::Automatic, "Auto"),
             (StatusSharing::ManualOnly, "Manual"),
             (StatusSharing::Off, "Hidden"),
         ]
@@ -328,35 +296,45 @@ impl CollaborationOverview {
                 r.y1 - 8.0,
             );
             let active = self.experience.sharing() == mode;
+            let ink = if active {
+                theme.tokens.colors.intent.on_inverted
+            } else {
+                theme.text_dim
+            };
             scene.fill(
                 Fill::NonZero,
                 transform,
                 if active {
-                    theme.accent_primary
+                    theme.tokens.colors.intent.inverted
                 } else {
                     theme.tokens.colors.lift(0.72)
                 },
                 None,
                 &RoundedRect::from_rect(chip, 8.0),
             );
+            if mode == StatusSharing::Automatic {
+                Icon::Sparkles.draw(
+                    scene,
+                    transform,
+                    Rect::new(chip.x0 + 7.0, chip.y0 + 6.0, chip.x0 + 18.0, chip.y0 + 17.0),
+                    ink,
+                );
+            }
             Self::text(
                 tr,
                 scene,
                 transform,
                 label,
                 OverviewTextStyle {
-                    size: 11.0,
-                    color: if active {
-                        theme
-                            .tokens
-                            .colors
-                            .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
-                    } else {
-                        theme.text_dim
-                    },
-                    weight: TextWeight::Semibold,
+                    style: theme.text(TextRole::Subheading),
+                    color: ink,
                 },
-                chip.x0 + 8.0,
+                chip.x0
+                    + if mode == StatusSharing::Automatic {
+                        22.0
+                    } else {
+                        8.0
+                    },
                 chip.y0 + 5.0,
             );
             self.sharing_hits.push((mode, chip));
@@ -377,9 +355,8 @@ impl CollaborationOverview {
             transform,
             "LIVE",
             OverviewTextStyle {
-                size: 11.0,
+                style: theme.text(TextRole::Subheading),
                 color: theme.text_tertiary,
-                weight: TextWeight::Semibold,
             },
             self.rect.x0 + PAD,
             top,
@@ -410,23 +387,40 @@ impl CollaborationOverview {
         rect: Rect,
     ) {
         Self::card(scene, transform, theme, rect);
-        Self::avatar(
-            scene,
-            transform,
-            tr,
-            theme,
-            AvatarIdentity {
-                name: &person.name,
-                id: &person.id.0,
-            },
-            Rect::new(
-                rect.x0 + 10.0,
-                rect.y0 + 13.0,
-                rect.x0 + 46.0,
-                rect.y0 + 49.0,
-            ),
-            false,
+        let identity_rect = Rect::new(
+            rect.x0 + 10.0,
+            rect.y0 + 13.0,
+            rect.x0 + 46.0,
+            rect.y0 + 49.0,
         );
+        if person.is_agent {
+            let color = theme
+                .tokens
+                .colors
+                .presence
+                .of_rgb(user_color(&person.id.0));
+            draw_agent_identity_mark(
+                scene,
+                transform,
+                identity_rect,
+                color,
+                theme,
+                AgentIdentityStyle::Solid,
+            );
+        } else {
+            Self::avatar(
+                scene,
+                transform,
+                tr,
+                theme,
+                AvatarIdentity {
+                    name: &person.name,
+                    id: &person.id.0,
+                },
+                identity_rect,
+                false,
+            );
+        }
         scene.fill(
             Fill::NonZero,
             transform,
@@ -434,20 +428,15 @@ impl CollaborationOverview {
             None,
             &Circle::new((rect.x0 + 42.0, rect.y0 + 45.0), 4.0),
         );
-        let name = if person.is_agent {
-            format!("{}  ◇", person.name)
-        } else {
-            person.name.clone()
-        };
+        let name = person.name.clone();
         Self::text(
             tr,
             scene,
             transform,
             &name,
             OverviewTextStyle {
-                size: 13.0,
+                style: theme.text(TextRole::Label),
                 color: theme.text_primary,
-                weight: TextWeight::Semibold,
             },
             rect.x0 + 56.0,
             rect.y0 + 8.0,
@@ -464,30 +453,39 @@ impl CollaborationOverview {
             transform,
             doing,
             OverviewTextStyle {
-                size: 11.0,
+                style: theme.text(TextRole::Caption),
                 color: theme.text_dim,
-                weight: TextWeight::Regular,
             },
             rect.x0 + 56.0,
             rect.y0 + 27.0,
         );
         if let Some(status) = &person.status {
-            let mark = if matches!(status.origin, StatusOrigin::Inferred { .. }) {
-                "✦  "
+            let icon = if matches!(status.origin, StatusOrigin::Inferred { .. }) {
+                Icon::Sparkles
             } else {
-                "↳  "
+                Icon::Pencil
             };
+            icon.draw(
+                scene,
+                transform,
+                Rect::new(
+                    rect.x0 + 56.0,
+                    rect.y0 + 45.0,
+                    rect.x0 + 67.0,
+                    rect.y0 + 56.0,
+                ),
+                theme.tokens.colors.intent.inverted,
+            );
             Self::text(
                 tr,
                 scene,
                 transform,
-                &format!("{mark}{}", status.text),
+                &status.text,
                 OverviewTextStyle {
-                    size: 11.0,
-                    color: theme.accent_primary,
-                    weight: TextWeight::Regular,
+                    style: theme.text(TextRole::Caption),
+                    color: theme.tokens.colors.intent.inverted,
                 },
-                rect.x0 + 56.0,
+                rect.x0 + 72.0,
                 rect.y0 + 45.0,
             );
         }
@@ -505,18 +503,16 @@ impl CollaborationOverview {
         let BriefPlacement { index, rect: r } = placement;
         Self::card(scene, transform, theme, r);
         let open = self.expanded.contains(&index);
-        Self::text(
-            tr,
+        (if open {
+            Icon::ChevronDown
+        } else {
+            Icon::ChevronRight
+        })
+        .draw(
             scene,
             transform,
-            if open { "⌄" } else { "›" },
-            OverviewTextStyle {
-                size: 18.0,
-                color: theme.text_dim,
-                weight: TextWeight::Regular,
-            },
-            r.x0 + 10.0,
-            r.y0 + 10.0,
+            Rect::new(r.x0 + 9.0, r.y0 + 10.0, r.x0 + 25.0, r.y0 + 26.0),
+            theme.text_dim,
         );
         let mut x = r.x0 + 32.0;
         for a in brief.authors.iter().take(3) {
@@ -540,9 +536,8 @@ impl CollaborationOverview {
             transform,
             &brief.glance(),
             OverviewTextStyle {
-                size: 13.0,
+                style: theme.text(TextRole::Label),
                 color: theme.text_primary,
-                weight: TextWeight::Semibold,
             },
             r.x0 + 32.0,
             r.y0 + 38.0,
@@ -553,9 +548,8 @@ impl CollaborationOverview {
             transform,
             &brief.detail,
             OverviewTextStyle {
-                size: 11.0,
+                style: theme.text(TextRole::Caption),
                 color: theme.text_dim,
-                weight: TextWeight::Regular,
             },
             r.x0 + 32.0,
             r.y0 + 57.0,
@@ -569,9 +563,8 @@ impl CollaborationOverview {
                     transform,
                     &format!("·  {}  {}", a.author.name, a.summary),
                     OverviewTextStyle {
-                        size: 11.0,
+                        style: theme.text(TextRole::Caption),
                         color: theme.text_dim,
-                        weight: TextWeight::Regular,
                     },
                     r.x0 + 34.0,
                     y,
@@ -598,9 +591,8 @@ impl CollaborationOverview {
             transform,
             "WHILE YOU WERE AWAY",
             OverviewTextStyle {
-                size: 11.0,
+                style: theme.text(TextRole::Subheading),
                 color: theme.text_tertiary,
-                weight: TextWeight::Semibold,
             },
             self.rect.x0 + PAD,
             top,
@@ -614,9 +606,8 @@ impl CollaborationOverview {
                 self.digest.total_changes, self.digest.people
             ),
             OverviewTextStyle {
-                size: 11.0,
+                style: theme.text(TextRole::Caption),
                 color: theme.text_dim,
-                weight: TextWeight::Regular,
             },
             self.rect.x1 - PAD - 116.0,
             top,
@@ -669,13 +660,7 @@ impl Widget for CollaborationOverview {
         n
     }
     fn apply_layout(&mut self, t: &TaffyTree<()>, n: NodeId, o: Point) {
-        let l = t.layout(n).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            o.x + f64::from(l.location.x),
-            o.y + f64::from(l.location.y),
-            o.x + f64::from(l.location.x + l.size.width),
-            o.y + f64::from(l.location.y + l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(t, n, o);
         self.dirty = true;
     }
     fn draw(
@@ -686,7 +671,7 @@ impl Widget for CollaborationOverview {
         th: &Theme,
         _: &PresenceCtx,
     ) {
-        s.fill(Fill::NonZero, a, th.bg_primary, None, &self.rect);
+        crate::surface::region(s, a, self.rect, crate::surface::Region::Inspector, th);
         self.draw_header(s, a, tr, th);
         let top = self.draw_own_status(s, a, tr, th, self.rect.y0 + 72.0);
         let top = self.draw_people(s, a, tr, th, top);

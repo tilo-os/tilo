@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "assets": [
+    {
+      "file": "arabic.pdf",
+      "sha256": "ef31f7b460ff3312d249b35e64407a30496b8f3edb53d5965191b2024c55913c",
+      "bytes": 7551,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/ef31f7b460ff3312d249b35e64407a30496b8f3edb53d5965191b2024c55913c/arabic.pdf"
+    },
+    {
+      "file": "cjk.pdf",
+      "sha256": "a0588bd15cc3f229c20685f1a4231f00548a2dd0c9fe01ad769ecd90c1c57b5c",
+      "bytes": 8417,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/a0588bd15cc3f229c20685f1a4231f00548a2dd0c9fe01ad769ecd90c1c57b5c/cjk.pdf"
+    },
+    {
+      "file": "columns.pdf",
+      "sha256": "50ad66e3611dcaeb51548399d74ceb74d8591525a9d4573ffba9f015bf1339f4",
+      "bytes": 12359,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/50ad66e3611dcaeb51548399d74ceb74d8591525a9d4573ffba9f015bf1339f4/columns.pdf"
+    },
+    {
+      "file": "form.pdf",
+      "sha256": "e4fea4dbe6cdf79b0ed40b8915343d82d691a0f56d07de70d3734db46cd08ad1",
+      "bytes": 1730,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/e4fea4dbe6cdf79b0ed40b8915343d82d691a0f56d07de70d3734db46cd08ad1/form.pdf"
+    },
+    {
+      "file": "latin.pdf",
+      "sha256": "fba23d4b1682db9f9ab1cb8fc3c3439ae2271b1f1290d561dd830a2d971ee873",
+      "bytes": 9278,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/fba23d4b1682db9f9ab1cb8fc3c3439ae2271b1f1290d561dd830a2d971ee873/latin.pdf"
+    },
+    {
+      "file": "ligatures.pdf",
+      "sha256": "29a6de888b27ee65569d82bf7714950dc00464c68c8033418528c5e9293eda84",
+      "bytes": 7363,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/29a6de888b27ee65569d82bf7714950dc00464c68c8033418528c5e9293eda84/ligatures.pdf"
+    },
+    {
+      "file": "links.pdf",
+      "sha256": "3b98da122fca7f48a1a9c00e3f7fa52dde53f3f70f0151e760e10dead89e7649",
+      "bytes": 13992,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/3b98da122fca7f48a1a9c00e3f7fa52dde53f3f70f0151e760e10dead89e7649/links.pdf"
+    },
+    {
+      "file": "multipage.pdf",
+      "sha256": "9adb7ae87c38e32ec6c1dac517dc22381e9b5cd8ea2b286927a13dd302a7455a",
+      "bytes": 15876,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/9adb7ae87c38e32ec6c1dac517dc22381e9b5cd8ea2b286927a13dd302a7455a/multipage.pdf"
+    }
+  ]
+}

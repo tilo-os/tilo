@@ -11,20 +11,30 @@
 )]
 
 use std::collections::BTreeMap;
+use ui::num::f64_of_usize;
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_actions::{self, ActionError};
-use ui::tilo_resource::{self, Doc, JsonSchema, order};
+use ui::tilo_resource::Refusal;
+use ui::tilo_resource::{self, JsonSchema, order};
 use ui::vello::kurbo::BezPath;
 
-use crate::doc;
 use crate::media::{self, MediumSpec};
 use crate::model::{
     Adjust, Artwork, BLENDS, Gradient, Layer, MAX_MARKS_PER_ACTION, MAX_SIDE, Mark, Reference,
     Shadow, Shape, StrokePoint, Style, valid_id,
 };
 
-pub const ACTION_TYPE: &str = "canvas.artwork";
+/// The arguments `invoke` gives the verb `id`, read as that verb's struct;
+/// none when it invokes another.
+pub fn read_as<T: serde::de::DeserializeOwned>(
+    invoke: &ui::tilo_resource::Invoke<Artwork>,
+    id: &str,
+) -> Option<T> {
+    if invoke.id != id {
+        return None;
+    }
+    serde_json::from_value(serde_json::Value::Object(invoke.arguments.clone())).ok()
+}
 
 /// Set the artwork's title, size or ground.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -122,6 +132,9 @@ impl<T> std::ops::Deref for Taught<T> {
 pub struct EditLayer {
     pub id: String,
     pub name: Option<String>,
+    /// Organisational folder name; empty removes the layer from its folder.
+    /// Consecutive members are presented together without changing stacking.
+    pub group: Option<String>,
     /// A medium id, or empty for plain vector art.
     pub medium: Option<String>,
     pub opacity: Option<f64>,
@@ -135,7 +148,8 @@ pub struct EditLayer {
     /// Colour and tone of all on it, as `edit-marks` adjust; `{}` clears.
     pub adjust: Option<Taught<Box<Adjust>>>,
     /// `reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint
-    /// greys on, white shows, black hides.
+    /// greys on, white shows, black hides; `unlink` keeps it put as the
+    /// layer's marks move (`link` again).
     pub mask: Option<String>,
     /// Invert the mask.
     pub invert: Option<bool>,
@@ -154,6 +168,8 @@ pub struct RemoveLayer {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NewMark {
+    /// Images: preserve hard pixel edges when enlarged.
+    pub pixelated: Option<bool>,
     /// An id to address the mark by later (`sun`, `hill-2`); one is made when
     /// absent.
     pub id: Option<String>,
@@ -193,8 +209,8 @@ pub struct NewMark {
     /// `exclusion`, `hue`, `saturation`, `color` or `luminosity`.
     pub blend: Option<String>,
     pub shadow: Option<Shadow>,
-    /// Inside the mark from its edge; light colour = highlight.
-    pub inner_shadow: Option<Shadow>,
+    /// As shadow, inside the mark from its edge; light colour = highlight.
+    pub inner_shadow: Option<Taught<Shadow>>,
     /// `0..=1` film grain.
     pub grain: Option<f64>,
     /// Soften the edge outward over this many units.
@@ -213,6 +229,7 @@ impl NewMark {
     /// `shape` with nothing else given.
     pub fn new(shape: Shape) -> Self {
         Self {
+            pixelated: None,
             id: None,
             name: None,
             shape,
@@ -269,7 +286,8 @@ pub struct NewStroke {
     /// `airbrush` (soft spray that builds up), `charcoal` (picks up the
     /// ground's tooth), `calligraphy` (broad nib at `angle`, default 45).
     /// Any layer: `eraser` clears paint beneath it on its layer. A round
-    /// ink brush when absent.
+    /// ink brush when absent. Plain layers: `pixel` and `pixel-eraser`
+    /// paint or clear whole square cells, ignoring pressure and taper.
     pub brush: Option<String>,
     pub opacity: Option<f64>,
     /// Paint into what is still wet: blends in oil, bleeds in watercolour.
@@ -292,8 +310,12 @@ pub struct NewStroke {
     /// With `dabs`: how long each is, in units (about `size` when absent);
     /// much longer than `size`, each is a flick lifting to a point (grass).
     pub dab_length: Option<f64>,
-    /// With `dabs`: the way they point, in degrees (-90 is up); along the
-    /// path when absent.
+    /// Instead of one line, lines this many units apart across the area
+    /// the points enclose: shading in one stroke; another at a second
+    /// angle cross-hatches.
+    pub hatch: Option<f64>,
+    /// With `dabs`, the way they point in degrees (-90 is up; along the
+    /// path when absent); with `hatch`, the lines' (default 45).
     pub angle: Option<f64>,
     /// Keep the paint inside this mark's shape, as a painter cuts in
     /// against an edge: texture a rock or a crown within its silhouette.
@@ -309,12 +331,16 @@ pub struct Paint {
     /// The layer to paint on; the top layer when absent.
     pub layer: Option<String>,
     pub strokes: Vec<NewStroke>,
+    /// Put them in this group, to edit or remove them as one.
+    pub group: Option<String>,
 }
 
 /// Change marks: their colours and style, position, size, rotation or layer.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EditMarks {
+    /// Images: preserve hard pixel edges when enlarged.
+    pub pixelated: Option<bool>,
     /// Marks, or groups (all their members).
     pub ids: Vec<String>,
     pub name: Option<String>,
@@ -326,10 +352,10 @@ pub struct EditMarks {
     pub cap: Option<String>,
     pub join: Option<String>,
     pub blend: Option<String>,
-    /// Zero offset and blur removes it.
-    pub shadow: Option<Shadow>,
-    /// Zero offset and blur removes it.
-    pub inner_shadow: Option<Shadow>,
+    /// As draw's; zero offset and blur removes it.
+    pub shadow: Option<Taught<Shadow>>,
+    /// As draw's; zero offset and blur removes it.
+    pub inner_shadow: Option<Taught<Shadow>>,
     /// 0 removes it.
     pub grain: Option<f64>,
     /// 0 removes it.
@@ -341,7 +367,8 @@ pub struct EditMarks {
     pub clip: Option<String>,
     /// A colour (replacing a gradient), or `none`.
     pub fill: Option<String>,
-    pub gradient: Option<Gradient>,
+    /// As draw's.
+    pub gradient: Option<Taught<Gradient>>,
     /// A colour, or `none`.
     pub stroke: Option<String>,
     pub stroke_width: Option<f64>,
@@ -460,58 +487,46 @@ pub struct SetReference {
     pub remove: Option<bool>,
 }
 
-/// One edit of the artwork.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "action", rename_all = "kebab-case")]
-pub enum CanvasAction {
-    SetArtwork(SetArtwork),
-    NewArtwork(NewArtwork),
-    OpenArtwork(OpenArtwork),
-    AddLayer(AddLayer),
-    EditLayer(EditLayer),
-    RemoveLayer(RemoveLayer),
-    Draw(Draw),
-    Paint(Paint),
-    EditMarks(Box<EditMarks>),
-    RemoveMarks(RemoveMarks),
-    Arrange(Arrange),
-    SaveMedium(SaveMedium),
-    RemoveMedium(RemoveMedium),
-    Align(Align),
-    SetReference(SetReference),
-    Select(Box<crate::selection::Select>),
-    UseSelection(crate::selection::UseSelection),
-    Combine(crate::selection::Combine),
-    OpenPicture(Open),
-}
-
 /// Start a new artwork from a picture: sized to it, the picture its first
 /// mark (`picture`) on its one layer. Everything the artwork held before is
 /// replaced, as one step.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Open {
-    /// The picture's content address.
-    pub src: String,
-    /// Its size in pixels.
-    pub pixels: [u32; 2],
-    pub title: String,
+    /// A PNG, JPEG or WebP: an absolute path, a content address or a data:
+    /// URI.
+    pub path: String,
+    /// The new artwork's title; the file's name when absent.
+    pub title: Option<String>,
 }
 
-impl CanvasAction {
-    /// An `edit-marks`.
-    pub fn edit(edit: EditMarks) -> Self {
-        Self::EditMarks(Box::new(edit))
-    }
-}
-
-pub(crate) fn refuse(message: impl Into<String>) -> ActionError {
-    ActionError::Refused(message.into())
+pub(crate) fn refuse(message: impl Into<String>) -> Refusal {
+    Refusal(message.into())
 }
 
 /// The id of a mark or layer given none: a hash of what it is and where it
 /// sits in its action, so every replica of the action names it alike and two
 /// collaborators drawing different things never collide.
+/// A name for a new layer made from `base` that no layer has yet: "Layer
+/// 3" after "Layer 2"; another medium's base alone while it is unused
+/// ("Oil"), numbered once it is ("Oil 2"). Plain layers are always
+/// numbered, as people count them.
+pub fn numbered_name<'a>(names: impl IntoIterator<Item = &'a str>, base: &str) -> String {
+    let number = |name: &str| -> Option<u32> {
+        let rest = name.strip_prefix(base)?;
+        if rest.is_empty() {
+            return Some(1);
+        }
+        rest.strip_prefix(' ')?.parse().ok()
+    };
+    let highest = names.into_iter().filter_map(number).max();
+    match highest {
+        None if base != "Layer" => base.to_owned(),
+        None => format!("{base} 1"),
+        Some(highest) => format!("{base} {}", highest.saturating_add(1)),
+    }
+}
+
 pub fn derived_id(prefix: &str, content: &impl Serialize, index: usize) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(
@@ -529,7 +544,7 @@ pub(crate) fn check_colour(
     layer: &str,
     colour: &str,
     what: &str,
-) -> Result<(), ActionError> {
+) -> Result<(), Refusal> {
     if colour == "none"
         || tilo_wet_media::parse_paint(colour, &media::palette_for(art, layer)).is_some()
     {
@@ -545,7 +560,7 @@ pub(crate) fn check_colour(
     )))
 }
 
-fn check_unit(value: Option<f64>, what: &str) -> Result<(), ActionError> {
+fn check_unit(value: Option<f64>, what: &str) -> Result<(), Refusal> {
     match value {
         Some(value) if !(0.0..=1.0).contains(&value) => {
             Err(refuse(format!("{what} must be within 0..=1, got {value}")))
@@ -554,7 +569,7 @@ fn check_unit(value: Option<f64>, what: &str) -> Result<(), ActionError> {
     }
 }
 
-fn check_style(art: &Artwork, layer: &str, style: &Style) -> Result<(), ActionError> {
+fn check_style(art: &Artwork, layer: &str, style: &Style) -> Result<(), Refusal> {
     for (colour, what) in [(&style.fill, "fill"), (&style.stroke, "stroke")] {
         if let Some(colour) = colour {
             check_colour(art, layer, colour, what)?;
@@ -634,7 +649,7 @@ fn check_style(art: &Artwork, layer: &str, style: &Style) -> Result<(), ActionEr
 
 /// A transform must be finite and keep some area, so the mark can be found
 /// and turned back.
-fn check_transform(transform: [f64; 6]) -> Result<(), ActionError> {
+fn check_transform(transform: [f64; 6]) -> Result<(), Refusal> {
     let affine = ui::vello::kurbo::Affine::new(transform);
     if transform
         .iter()
@@ -652,10 +667,7 @@ fn check_transform(transform: [f64; 6]) -> Result<(), ActionError> {
 /// The marks `ids` address, as units that move, scale and rotate together:
 /// a mark id is that mark, a group id all of the group's members. A mark
 /// named twice (itself and through its group) counts once.
-pub(crate) fn units<'a>(
-    art: &'a Artwork,
-    ids: &[String],
-) -> Result<Vec<Vec<&'a Mark>>, ActionError> {
+pub(crate) fn units<'a>(art: &'a Artwork, ids: &[String]) -> Result<Vec<Vec<&'a Mark>>, Refusal> {
     if ids.is_empty() {
         return Err(refuse("name marks or groups in ids"));
     }
@@ -697,7 +709,7 @@ fn extent(art: &Artwork, unit: &[&Mark]) -> ui::vello::kurbo::Rect {
 }
 
 /// A group id must be valid and not already a mark's id.
-fn check_group(art: &Artwork, group: &str, new_ids: &[String]) -> Result<(), ActionError> {
+fn check_group(art: &Artwork, group: &str, new_ids: &[String]) -> Result<(), Refusal> {
     if !crate::model::valid_group(group) {
         return Err(refuse(format!(
             "group {group:?} must be 1-48 of a-z, 0-9, '-' and '_', or such ids joined by / to nest one group in another"
@@ -718,7 +730,7 @@ fn check_clip(
     (id, group): (&str, &str),
     clip: &str,
     new: &[Mark],
-) -> Result<(), ActionError> {
+) -> Result<(), Refusal> {
     if clip == id {
         return Err(refuse(format!("mark {id:?} cannot clip itself")));
     }
@@ -741,7 +753,7 @@ fn check_clip(
 }
 
 /// The layer an action names, or the top one.
-pub(crate) fn target_layer(art: &Artwork, named: Option<&str>) -> Result<String, ActionError> {
+pub(crate) fn target_layer(art: &Artwork, named: Option<&str>) -> Result<String, Refusal> {
     match named {
         Some(id) => art.layer(id).map(|layer| layer.id.clone()).ok_or_else(|| {
             refuse(format!(
@@ -773,7 +785,7 @@ pub(crate) fn on_top(art: &Artwork, layer: &str, count: usize) -> Vec<String> {
     order::sequence(last.as_deref(), None, count)
 }
 
-fn unique_ids(art: &Artwork, ids: &[String]) -> Result<(), ActionError> {
+fn unique_ids(art: &Artwork, ids: &[String]) -> Result<(), Refusal> {
     let mut seen = std::collections::BTreeSet::new();
     for id in ids {
         if !valid_id(id) {
@@ -796,11 +808,11 @@ fn unique_ids(art: &Artwork, ids: &[String]) -> Result<(), ActionError> {
 /// Write `marks` (their layer and order still to be given) on top of
 /// `layer`.
 pub(crate) fn add_marks(
-    doc: &mut Doc,
+    doc: &mut Artwork,
     art: &Artwork,
     layer: &str,
     marks: Vec<Mark>,
-) -> Result<(), ActionError> {
+) -> Result<(), Refusal> {
     if marks.is_empty() {
         return Err(refuse("give at least one mark"));
     }
@@ -812,7 +824,7 @@ pub(crate) fn add_marks(
     let ids: Vec<String> = marks.iter().map(|mark| mark.id.clone()).collect();
     unique_ids(art, &ids)?;
     for (index, mark) in marks.iter().enumerate() {
-        let problem = |error: ActionError| refuse(format!("mark {index}: {error}"));
+        let problem = |error: Refusal| refuse(format!("mark {index}: {error}"));
         if let Some(problem) = mark.shape.problem() {
             return Err(refuse(format!("mark {index}: {problem}")));
         }
@@ -830,14 +842,11 @@ pub(crate) fn add_marks(
     }
     let orders = on_top(art, layer, marks.len());
     for (mark, order) in marks.into_iter().zip(orders) {
-        doc::write_mark(
-            doc,
-            &Mark {
-                layer: layer.to_owned(),
-                order,
-                ..mark
-            },
-        )?;
+        doc.put_mark(Mark {
+            layer: layer.to_owned(),
+            order,
+            ..mark
+        });
     }
     Ok(())
 }
@@ -861,10 +870,7 @@ pub(crate) fn placed(id: String, name: String, shape: Shape, style: Style) -> Ma
 /// What a new mark's `clip` names, as the mark keeps it: the mark it is
 /// cut to, or the area it is kept inside (`selection` is the selection's
 /// area as it is now; SVG path data is an area of its own).
-pub(crate) fn clip_named(
-    art: &Artwork,
-    clip: Option<&str>,
-) -> Result<(String, String), ActionError> {
+pub(crate) fn clip_named(art: &Artwork, clip: Option<&str>) -> Result<(String, String), Refusal> {
     match clip {
         None | Some("") => Ok((String::new(), String::new())),
         Some(SELECTION_CLIP) => {
@@ -892,13 +898,13 @@ pub(crate) fn clip_named(
 pub const SELECTION_CLIP: &str = "selection";
 
 impl Draw {
-    fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
+    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
         let layer = target_layer(art, self.layer.as_deref())?;
         let clips = self
             .marks
             .iter()
             .map(|mark| clip_named(art, mark.clip.as_deref()))
-            .collect::<Result<Vec<(String, String)>, ActionError>>()?;
+            .collect::<Result<Vec<(String, String)>, Refusal>>()?;
         let marks = self
             .marks
             .iter()
@@ -909,6 +915,7 @@ impl Draw {
                     .clone()
                     .unwrap_or_else(|| derived_id("m", mark, index));
                 let style = Style {
+                    pixelated: mark.pixelated.unwrap_or(false),
                     fill: mark.fill.clone(),
                     gradient: mark.gradient.clone(),
                     stroke: mark.stroke.clone(),
@@ -926,7 +933,7 @@ impl Draw {
                     join: mark.join.clone(),
                     blend: mark.blend.clone().filter(|blend| blend != "normal"),
                     shadow: mark.shadow.clone(),
-                    inner_shadow: mark.inner_shadow.clone(),
+                    inner_shadow: mark.inner_shadow.clone().map(|shadow| shadow.0),
                     grain: mark.grain.filter(|grain| *grain > 0.0),
                     feather: mark.feather.filter(|feather| *feather > 0.0),
                     adjust: None,
@@ -968,13 +975,13 @@ impl Draw {
 }
 
 impl Paint {
-    fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
+    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
         let layer = target_layer(art, self.layer.as_deref())?;
         let clips = self
             .strokes
             .iter()
             .map(|stroke| clip_named(art, stroke.clip.as_deref()))
-            .collect::<Result<Vec<(String, String)>, ActionError>>()?;
+            .collect::<Result<Vec<(String, String)>, Refusal>>()?;
         let marks = self
             .strokes
             .iter()
@@ -1001,8 +1008,10 @@ impl Paint {
                     dabs: stroke.dabs,
                     scatter: stroke.scatter,
                     dab_length: stroke.dab_length,
+                    hatch: stroke.hatch,
                 };
                 let mut mark = placed(id, stroke.name.clone().unwrap_or_default(), shape, style);
+                mark.group = self.group.clone().unwrap_or_default();
                 let (clip, area) = clips.get(index).cloned().unwrap_or_default();
                 mark.clip = clip;
                 mark.keep_inside(&area);
@@ -1028,8 +1037,52 @@ impl Paint {
     }
 }
 
+/// Move each linked mask with its layer's marks when they all moved as
+/// one (`moves`: each mark edited, and where it went): the mask belongs to
+/// the layer's content, as a picture's cut-out goes with the picture. A
+/// mask whose own marks were edited too, or whose layer's marks moved
+/// apart or only in part, stays where it is.
+fn carry_masks(doc: &mut Artwork, art: &Artwork, travels: &[(&Mark, ui::vello::kurbo::Affine)]) {
+    let same = |a: ui::vello::kurbo::Affine, b: ui::vello::kurbo::Affine| {
+        a.as_coeffs()
+            .iter()
+            .zip(b.as_coeffs())
+            .all(|(a, b)| (a - b).abs() < 1e-9)
+    };
+    for layer in &art.layers {
+        let Some(mask) = art.mask_of(&layer.id).filter(|mask| !mask.unlinked) else {
+            continue;
+        };
+        let mut layer_travels = travels.iter().filter(|(mark, _)| mark.layer == layer.id);
+        let Some(&(_, went)) = layer_travels.next() else {
+            continue;
+        };
+        let count = 1 + layer_travels.clone().count();
+        let together = layer_travels.all(|&(_, other)| same(went, other));
+        let whole = count == art.marks_of(&layer.id).count();
+        let mask_edited = travels.iter().any(|(mark, _)| mark.layer == mask.id);
+        if !together || !whole || mask_edited || same(went, ui::vello::kurbo::Affine::IDENTITY) {
+            continue;
+        }
+        let [a, b, c, d, dx, dy] = went.as_coeffs();
+        let shift = same(
+            ui::vello::kurbo::Affine::new([a, b, c, d, 0.0, 0.0]),
+            ui::vello::kurbo::Affine::IDENTITY,
+        );
+        for mark in art.marks_of(&mask.id) {
+            let mut carried = mark.clone();
+            if shift {
+                carried = carried.moved(dx, dy);
+            } else {
+                carried.transform = Some((went * mark.affine()).as_coeffs());
+            }
+            doc.put_mark(carried);
+        }
+    }
+}
+
 /// Why a stroke's preset or dynamics cannot draw it on its layer.
-fn check_brush(art: &Artwork, layer: &str, mark: &Mark) -> Result<(), ActionError> {
+fn check_brush(art: &Artwork, layer: &str, mark: &Mark) -> Result<(), Refusal> {
     if !matches!(mark.shape, Shape::Stroke { .. }) {
         return Ok(());
     }
@@ -1039,6 +1092,14 @@ fn check_brush(art: &Artwork, layer: &str, mark: &Mark) -> Result<(), ActionErro
         return Err(refuse(
             "an eraser does not fork; give it dabs to clear broken patches, or erase along plain strokes",
         ));
+    }
+    if crate::brushes::Preset::of(&mark.style).pixel() {
+        let bounds = mark.bounds();
+        if bounds.width().max(bounds.height()) > 16384.0 {
+            return Err(refuse(
+                "a pixel stroke may travel at most 16384 artwork units",
+            ));
+        }
     }
     let plain = art.layer(layer).is_none_or(|layer| layer.medium.is_empty());
     match crate::brushes::problem(mark.style.brush.as_deref(), &mark.style.params, plain) {
@@ -1061,7 +1122,7 @@ fn colour_patch(value: Option<&String>) -> ColourEdit {
 }
 
 impl EditMarks {
-    fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
+    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
         self.check_reshape()?;
         if self.merge == Some(true) {
             let kept = crate::strokes::merge(doc, art, &self.ids)?;
@@ -1070,7 +1131,7 @@ impl EditMarks {
                 merge: None,
                 ..self.clone()
             }
-            .apply(doc, &doc::read(doc));
+            .apply(doc, &doc.settled());
         }
         if let Some(at) = self.split {
             let made = crate::strokes::split(doc, art, &self.ids, at)?;
@@ -1079,7 +1140,7 @@ impl EditMarks {
                 split: None,
                 ..self.clone()
             }
-            .apply(doc, &doc::read(doc));
+            .apply(doc, &doc.settled());
         }
         let units = units(art, &self.ids)?;
         let count: usize = units.iter().map(Vec::len).sum();
@@ -1101,16 +1162,11 @@ impl EditMarks {
         if !scale.is_finite() || scale <= 0.0 || !rotate.is_finite() {
             return Err(refuse("scale must be positive and rotate finite"));
         }
-        if let Some(problem) = self.shape.as_deref().and_then(Shape::problem) {
-            return Err(refuse(problem));
-        }
-        if let Some(group) = self.group.as_deref().filter(|group| !group.is_empty()) {
-            check_group(art, group, &[])?;
-        }
-        if let Some(transform) = self.transform {
-            check_transform(transform)?;
-        }
+        self.check_whole(art)?;
         let (mirror, crop) = self.picture_edits()?;
+        let turns = self.scale.is_some() || self.rotate.is_some() || self.flip.is_some();
+        // Where each mark went, for the masks that go with their layer.
+        let mut travels: Vec<(&Mark, ui::vello::kurbo::Affine)> = Vec::new();
         for unit in units {
             let centre = extent(art, &unit).center() + ui::vello::kurbo::Vec2::new(dx, dy);
             let about = ui::vello::kurbo::Affine::translate(centre.to_vec2())
@@ -1118,7 +1174,14 @@ impl EditMarks {
                 * ui::vello::kurbo::Affine::scale(scale)
                 * mirror
                 * ui::vello::kurbo::Affine::translate(-centre.to_vec2());
+            let went = self.travel(turns.then_some(about), (dx, dy));
             for original in unit {
+                if destination
+                    .as_ref()
+                    .is_none_or(|layer| *layer == original.layer)
+                {
+                    travels.push((original, went));
+                }
                 let mut mark = original.clone();
                 if let Some(layer) = &destination
                     && *layer != mark.layer
@@ -1140,7 +1203,7 @@ impl EditMarks {
                 if dx != 0.0 || dy != 0.0 {
                     mark = mark.moved(dx, dy);
                 }
-                if self.scale.is_some() || self.rotate.is_some() || self.flip.is_some() {
+                if turns {
                     mark.transform = Some((about * mark.affine()).as_coeffs());
                 }
                 if let Some(transform) = self.transform {
@@ -1154,15 +1217,44 @@ impl EditMarks {
                 if let Some(problem) = mark.shape.problem() {
                     return Err(refuse(format!("mark {:?}: {problem}", mark.id)));
                 }
-                doc::write_mark(doc, &mark)?;
+                doc.put_mark(mark.clone());
             }
+        }
+        carry_masks(doc, art, &travels);
+        Ok(())
+    }
+
+    /// Refuse a new shape, group or transform no mark can take.
+    fn check_whole(&self, art: &Artwork) -> Result<(), Refusal> {
+        if let Some(problem) = self.shape.as_deref().and_then(Shape::problem) {
+            return Err(refuse(problem));
+        }
+        if let Some(group) = self.group.as_deref().filter(|group| !group.is_empty()) {
+            check_group(art, group, &[])?;
+        }
+        if let Some(transform) = self.transform {
+            check_transform(transform)?;
         }
         Ok(())
     }
 
+    /// Where a unit goes: moved by `by`, turned `about` its centre when it
+    /// turns, then the edit's own transform.
+    fn travel(
+        &self,
+        about: Option<ui::vello::kurbo::Affine>,
+        by: (f64, f64),
+    ) -> ui::vello::kurbo::Affine {
+        self.transform.map_or(
+            ui::vello::kurbo::Affine::IDENTITY,
+            ui::vello::kurbo::Affine::new,
+        ) * about.unwrap_or(ui::vello::kurbo::Affine::IDENTITY)
+            * ui::vello::kurbo::Affine::translate(by)
+    }
+
     /// The flip as an affine about the origin, and the crop asked for,
     /// refusing what cannot be.
-    fn picture_edits(&self) -> Result<(ui::vello::kurbo::Affine, Option<[f64; 4]>), ActionError> {
+    fn picture_edits(&self) -> Result<(ui::vello::kurbo::Affine, Option<[f64; 4]>), Refusal> {
         let mirror = match self.flip.as_deref() {
             None => ui::vello::kurbo::Affine::IDENTITY,
             Some("horizontal") => ui::vello::kurbo::Affine::FLIP_X,
@@ -1190,7 +1282,7 @@ impl EditMarks {
     }
 
     /// An image's crop and straightening, onto `mark`.
-    fn reframe(&self, mark: &mut Mark, crop: Option<[f64; 4]>) -> Result<(), ActionError> {
+    fn reframe(&self, mark: &mut Mark, crop: Option<[f64; 4]>) -> Result<(), Refusal> {
         if crop.is_none() && self.straighten.is_none() {
             return Ok(());
         }
@@ -1215,7 +1307,7 @@ impl EditMarks {
     }
 
     /// Cut `mark` to what `clip` names, if it names anything.
-    fn recut(&self, art: &Artwork, mark: &mut Mark) -> Result<(), ActionError> {
+    fn recut(&self, art: &Artwork, mark: &mut Mark) -> Result<(), Refusal> {
         if let Some(clip) = &self.clip {
             let (cut, area) = clip_named(art, Some(clip))?;
             mark.clip = cut;
@@ -1228,7 +1320,7 @@ impl EditMarks {
     }
 
     /// Refuse reshaping values no stroke can take.
-    fn check_reshape(&self) -> Result<(), ActionError> {
+    fn check_reshape(&self) -> Result<(), Refusal> {
         check_unit(self.smooth, "smooth")?;
         if self
             .simplify
@@ -1269,7 +1361,7 @@ impl EditMarks {
         }
         if let Some(amount) = self.smooth {
             // Laid evenly to smooth it, then as few points as keep its curve.
-            let smooth = crate::brushes::smoothed(points, amount);
+            let smooth = crate::brushes::smoothed(points, amount, *size);
             *points = crate::brushes::simplified(&smooth, 0.1);
         }
         if let Some(tolerance) = self.simplify {
@@ -1301,7 +1393,7 @@ impl EditMarks {
             (&self.shadow, &mut mark.style.shadow),
             (&self.inner_shadow, &mut mark.style.inner_shadow),
         ] {
-            if let Some(shadow) = edit {
+            if let Some(Taught(shadow)) = edit {
                 *field = (shadow.blur > 0.0 || shadow.offset != [0.0, 0.0]).then(|| shadow.clone());
             }
         }
@@ -1327,14 +1419,17 @@ impl EditMarks {
             if let ColourEdit::Set(stroke) = colour_patch(self.stroke.as_ref()) {
                 mark.style.stroke = stroke;
             }
-            if self.gradient.is_some() {
-                mark.style.gradient.clone_from(&self.gradient);
+            if let Some(Taught(gradient)) = &self.gradient {
+                mark.style.gradient = Some(gradient.clone());
             }
             if let Some(width) = self.stroke_width {
                 mark.style.stroke_width = width;
             }
             if let Some(opacity) = self.opacity {
                 mark.style.opacity = Some(opacity);
+            }
+            if let Some(pixelated) = self.pixelated {
+                mark.style.pixelated = pixelated;
             }
             if let Some(brush) = &self.brush {
                 mark.style.brush = crate::brushes::stored(brush);
@@ -1366,7 +1461,7 @@ fn rearranged(
     ids: &[String],
     to: &str,
     of: &[String],
-) -> Result<Vec<(String, String)>, ActionError> {
+) -> Result<Vec<(String, String)>, Refusal> {
     let moving: Vec<&(String, String)> = all.iter().filter(|(id, _)| ids.contains(id)).collect();
     let staying: Vec<&(String, String)> = all.iter().filter(|(id, _)| !ids.contains(id)).collect();
     let anchor = || {
@@ -1448,7 +1543,11 @@ fn rearranged(
 }
 
 /// Move marks within their layer's stacking order.
-fn arrange_marks(doc: &mut Doc, art: &Artwork, arrange: &Arrange) -> Result<(), ActionError> {
+pub(crate) fn arrange_marks(
+    doc: &mut Artwork,
+    art: &Artwork,
+    arrange: &Arrange,
+) -> Result<(), Refusal> {
     let ids: Vec<String> = units(art, &arrange.ids)?
         .into_iter()
         .flatten()
@@ -1479,122 +1578,87 @@ fn arrange_marks(doc: &mut Doc, art: &Artwork, arrange: &Arrange) -> Result<(), 
     };
     for (id, order) in rearranged(&all, &ids, &arrange.to, &of)? {
         if let Some(mark) = art.mark(&id) {
-            doc::write_mark(
-                doc,
-                &Mark {
-                    order,
-                    ..mark.clone()
-                },
-            )?;
+            doc.put_mark(Mark {
+                order,
+                ..mark.clone()
+            });
         }
     }
     Ok(())
 }
 
-impl tilo_actions::Action for CanvasAction {
-    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        let art = doc::read(doc);
-        match self {
-            Self::SetArtwork(set) => set_artwork(doc, &art, set),
-            Self::NewArtwork(new) => replace(doc, &new.file()?),
-            Self::OpenArtwork(open) => {
-                let file =
-                    crate::document::ArtworkFile::parse(open.file.as_bytes()).map_err(refuse)?;
-                replace(doc, &file)
-            }
-            Self::AddLayer(add) => add_layer(doc, &art, add),
-            Self::EditLayer(edit) => edit_layer(doc, &art, edit),
-            Self::RemoveLayer(remove) => {
-                if art.layer(&remove.id).is_none() {
-                    return Err(refuse(format!(
-                        "there is no layer {:?}; the layers are {}",
-                        remove.id,
-                        layer_list(&art)
-                    )));
-                }
-                // A layer's mask goes with it.
-                let mask = art.mask_of(&remove.id).map(|mask| mask.id.clone());
-                for layer in std::iter::once(remove.id.clone()).chain(mask) {
-                    crate::selection::remove_layer_marks(doc, &art, &layer)?;
-                    doc::remove(doc, doc::LAYERS, &layer)?;
-                }
-                Ok(())
-            }
-            Self::Draw(draw) => draw.apply(doc, &art),
-            Self::Paint(paint) => paint.apply(doc, &art),
-            Self::EditMarks(edit) => edit.apply(doc, &art),
-            Self::RemoveMarks(remove) => {
-                let mut ids: Vec<String> = if remove.ids.is_empty() {
-                    Vec::new()
-                } else {
-                    units(&art, &remove.ids)?
-                        .into_iter()
-                        .flatten()
-                        .map(|mark| mark.id.clone())
-                        .collect()
-                };
-                if let Some(path) = &remove.along {
-                    let layer = match &remove.layer {
-                        Some(layer) => Some(target_layer(&art, Some(layer))?),
-                        None => None,
-                    };
-                    let crossed = crate::strokes::crossed(&art, path, layer.as_deref());
-                    if crossed.is_empty() && ids.is_empty() {
-                        return Err(refuse(
-                            "along crosses no brush stroke on a shown, unlocked layer; look with grid: true to find them",
-                        ));
-                    }
-                    ids.extend(crossed);
-                } else if let Some(layer) = &remove.layer {
-                    let layer = target_layer(&art, Some(layer))?;
-                    ids.extend(art.marks_of(&layer).map(|mark| mark.id.clone()));
-                    if ids.is_empty() {
-                        return Ok(());
-                    }
-                }
-                if ids.is_empty() {
-                    return Err(refuse(
-                        "name marks or groups in ids, a layer to clear, or a path along",
-                    ));
-                }
-                for id in ids {
-                    doc::remove(doc, doc::MARKS, &id)?;
-                }
-                Ok(())
-            }
-            Self::Arrange(arrange) => arrange_marks(doc, &art, arrange),
-            Self::SaveMedium(save) => {
-                save.medium.validate().map_err(refuse)?;
-                doc::write_medium(doc, &save.medium)?;
-                Ok(())
-            }
-            Self::RemoveMedium(remove) => {
-                if !art.media.contains_key(&remove.id) {
-                    return Err(refuse(format!(
-                        "no medium {:?} is saved in this artwork",
-                        remove.id
-                    )));
-                }
-                doc::remove(doc, doc::MEDIA, &remove.id)?;
-                Ok(())
-            }
-            Self::Align(align) => align.apply(doc, &art),
-            Self::SetReference(set) => set_reference(doc, &art, set),
-            Self::OpenPicture(open) => open.apply(doc, &art),
-            Self::Select(select) => select.apply(doc, &art),
-            Self::UseSelection(using) => using.apply(doc, &art),
-            Self::Combine(combine) => combine.apply(doc, &art),
-        }
+/// Remove layer `remove.id` and every mark on it; its mask goes with it.
+pub(crate) fn remove_layer(
+    doc: &mut Artwork,
+    art: &Artwork,
+    remove: &RemoveLayer,
+) -> Result<(), Refusal> {
+    if art.layer(&remove.id).is_none() {
+        return Err(refuse(format!(
+            "there is no layer {:?}; the layers are {}",
+            remove.id,
+            layer_list(art)
+        )));
     }
-
-    fn locus(&self) -> tilo_actions::ExecutionLocus {
-        tilo_actions::ExecutionLocus::ClientLocal
+    let mask = art.mask_of(&remove.id).map(|mask| mask.id.clone());
+    for layer in std::iter::once(remove.id.clone()).chain(mask) {
+        crate::selection::remove_layer_marks(doc, art, &layer);
+        doc.drop_layer(&layer);
     }
+    Ok(())
 }
 
-fn set_artwork(doc: &mut Doc, art: &Artwork, set: &SetArtwork) -> Result<(), ActionError> {
-    use ui::automerge::ROOT;
-    use ui::automerge::transaction::Transactable as _;
+/// Remove the marks `remove` names, a layer's, or the strokes its path
+/// crosses.
+pub(crate) fn remove_marks(
+    doc: &mut Artwork,
+    art: &Artwork,
+    remove: &RemoveMarks,
+) -> Result<(), Refusal> {
+    let mut ids: Vec<String> = if remove.ids.is_empty() {
+        Vec::new()
+    } else {
+        units(art, &remove.ids)?
+            .into_iter()
+            .flatten()
+            .map(|mark| mark.id.clone())
+            .collect()
+    };
+    if let Some(path) = &remove.along {
+        let layer = match &remove.layer {
+            Some(layer) => Some(target_layer(art, Some(layer))?),
+            None => None,
+        };
+        let crossed = crate::strokes::crossed(art, path, layer.as_deref());
+        if crossed.is_empty() && ids.is_empty() {
+            return Err(refuse(
+                "along crosses no brush stroke on a shown, unlocked layer; look with grid: true to find them",
+            ));
+        }
+        ids.extend(crossed);
+    } else if let Some(layer) = &remove.layer {
+        let layer = target_layer(art, Some(layer))?;
+        ids.extend(art.marks_of(&layer).map(|mark| mark.id.clone()));
+        if ids.is_empty() {
+            return Ok(());
+        }
+    }
+    if ids.is_empty() {
+        return Err(refuse(
+            "name marks or groups in ids, a layer to clear, or a path along",
+        ));
+    }
+    for id in ids {
+        doc.remove_mark(&id);
+    }
+    Ok(())
+}
+
+pub(crate) fn set_artwork(
+    doc: &mut Artwork,
+    art: &Artwork,
+    set: &SetArtwork,
+) -> Result<(), Refusal> {
     let crop = match (&set.crop, &set.fit) {
         (Some(_), Some(_)) => return Err(refuse("give crop or fit, not both")),
         (Some([x, y, width, height]), None) => {
@@ -1621,14 +1685,18 @@ fn set_artwork(doc: &mut Doc, art: &Artwork, set: &SetArtwork) -> Result<(), Act
             if !(16.0..=MAX_SIDE).contains(&value) {
                 return Err(refuse(format!("{what} must be within 16..={MAX_SIDE}")));
             }
-            doc.put(&ROOT, what, value)?;
+            if what == "width" {
+                doc.width = value;
+            } else {
+                doc.height = value;
+            }
         }
     }
     if let Some(title) = &set.title {
-        doc::put_text(doc, &ROOT, "title", title)?;
+        doc.title.clone_from(title);
     }
     if set.texture.is_some() || set.ground_colour.is_some() {
-        let mut ground = doc::read(doc).ground;
+        let mut ground = doc.ground.clone();
         if let Some(texture) = &set.texture {
             if tilo_wet_media::Texture::parse(texture).is_none() {
                 return Err(refuse(format!(
@@ -1644,8 +1712,7 @@ fn set_artwork(doc: &mut Doc, art: &Artwork, set: &SetArtwork) -> Result<(), Act
             }
             ground.colour.clone_from(colour);
         }
-        let encoded = serde_json::to_string(&ground).unwrap_or_default();
-        doc::put_text(doc, &ROOT, "ground", &encoded)?;
+        doc.ground = ground;
     }
     Ok(())
 }
@@ -1657,7 +1724,7 @@ impl NewArtwork {
     /// # Errors
     /// Names the size, start, side, texture, colour or medium that is not
     /// one of the choices.
-    pub fn file(&self) -> Result<crate::document::ArtworkFile, ActionError> {
+    pub fn file(&self) -> Result<crate::document::ArtworkFile, Refusal> {
         use crate::document::{self, ArtworkFile, FileLayer};
         let size = match &self.size {
             Some(id) => Some(document::size(id).ok_or_else(|| {
@@ -1733,6 +1800,7 @@ impl NewArtwork {
             ground: crate::model::Ground { texture, colour },
             layers: vec![FileLayer {
                 id: "layer-1".into(),
+                group: String::new(),
                 name,
                 medium,
                 opacity: 1.0,
@@ -1743,6 +1811,7 @@ impl NewArtwork {
                 base: 1.0,
                 invert: false,
                 clip: false,
+                unlinked: false,
                 adjust: None,
             }],
             ..ArtworkFile::of(&Artwork::default())
@@ -1751,7 +1820,7 @@ impl NewArtwork {
 }
 
 /// Refuse a file whose sides, marks, layer ids or media are not valid.
-fn check_file(file: &crate::document::ArtworkFile) -> Result<(), ActionError> {
+fn check_file(file: &crate::document::ArtworkFile) -> Result<(), Refusal> {
     for (value, what) in [(file.width, "width"), (file.height, "height")] {
         if !(16.0..=MAX_SIDE).contains(&value) {
             return Err(refuse(format!("{what} must be within 16..={MAX_SIDE}")));
@@ -1796,65 +1865,61 @@ fn check_file(file: &crate::document::ArtworkFile) -> Result<(), ActionError> {
 /// Make the artwork `file`: everything the artwork had is removed and the
 /// file's title, size, ground, layers, marks and media written in their
 /// order.
-fn replace(doc: &mut Doc, file: &crate::document::ArtworkFile) -> Result<(), ActionError> {
-    use ui::automerge::ROOT;
-    use ui::automerge::transaction::Transactable as _;
+pub(crate) fn replace(
+    doc: &mut Artwork,
+    file: &crate::document::ArtworkFile,
+) -> Result<(), Refusal> {
     check_file(file)?;
-    let old = doc::read(doc);
+    let old = doc.settled();
     for mark in &old.marks {
-        doc::remove(doc, doc::MARKS, &mark.id)?;
+        doc.remove_mark(&mark.id);
     }
     for layer in &old.layers {
-        doc::remove(doc, doc::LAYERS, &layer.id)?;
+        doc.drop_layer(&layer.id);
     }
     for id in old.media.keys() {
-        doc::remove(doc, doc::MEDIA, id)?;
+        doc.media.remove(id);
     }
-    doc::write_reference(doc, None)?;
-    doc::write_selection(doc, None)?;
-    doc::put_text(doc, &ROOT, "title", &file.title)?;
-    doc.put(&ROOT, "width", file.width)?;
-    doc.put(&ROOT, "height", file.height)?;
-    let ground = serde_json::to_string(&file.ground).unwrap_or_default();
-    doc::put_text(doc, &ROOT, "ground", &ground)?;
+    doc.reference = None;
+    doc.selection = None;
+    doc.title.clone_from(&file.title);
+    doc.width = file.width;
+    doc.height = file.height;
+    doc.ground = file.ground.clone();
     for medium in file.media.values() {
-        doc::write_medium(doc, medium)?;
+        doc.media.insert(medium.id.clone(), medium.clone());
     }
     let mut below: Option<String> = None;
     for layer in &file.layers {
         let order = order::between(below.as_deref(), None);
-        doc::write_layer(
-            doc,
-            &Layer {
-                id: layer.id.clone(),
-                name: layer.name.clone(),
-                order: order.clone(),
-                medium: layer.medium.clone(),
-                opacity: layer.opacity.clamp(0.0, 1.0),
-                visible: layer.visible,
-                texture: layer.texture.clamp(0.0, 1.0),
-                locked: layer.locked,
-                mask_of: layer.mask_of.clone(),
-                base: layer.base.clamp(0.0, 1.0),
-                invert: layer.invert,
-                clip: layer.clip,
-                adjust: layer.adjust.clone(),
-            },
-        )?;
+        doc.put_layer(Layer {
+            id: layer.id.clone(),
+            name: layer.name.clone(),
+            group: layer.group.clone(),
+            order: order.clone(),
+            medium: layer.medium.clone(),
+            opacity: layer.opacity.clamp(0.0, 1.0),
+            visible: layer.visible,
+            texture: layer.texture.clamp(0.0, 1.0),
+            locked: layer.locked,
+            mask_of: layer.mask_of.clone(),
+            base: layer.base.clamp(0.0, 1.0),
+            invert: layer.invert,
+            clip: layer.clip,
+            unlinked: layer.unlinked,
+            adjust: layer.adjust.clone(),
+        });
         below = Some(order);
     }
     let mut last: BTreeMap<&str, String> = BTreeMap::new();
     for mark in &file.marks {
         let order = order::between(last.get(mark.layer.as_str()).map(String::as_str), None);
-        doc::write_mark(
-            doc,
-            &Mark::of_body(
-                mark.id.clone(),
-                mark.layer.clone(),
-                order.clone(),
-                mark.body.clone(),
-            ),
-        )?;
+        doc.put_mark(Mark::of_body(
+            mark.id.clone(),
+            mark.layer.clone(),
+            order.clone(),
+            mark.body.clone(),
+        ));
         last.insert(&mark.layer, order);
     }
     Ok(())
@@ -1863,12 +1928,10 @@ fn replace(doc: &mut Doc, file: &crate::document::ArtworkFile) -> Result<(), Act
 /// The artwork cut down to `area`: its corner becomes the origin, every
 /// mark and the reference moving with it.
 fn crop_artwork(
-    doc: &mut Doc,
+    doc: &mut Artwork,
     art: &Artwork,
     area: ui::vello::kurbo::Rect,
-) -> Result<(), ActionError> {
-    use ui::automerge::ROOT;
-    use ui::automerge::transaction::Transactable as _;
+) -> Result<(), Refusal> {
     // Whole units, so the picture an export makes is exactly the area.
     let (x0, y0) = (area.x0.round(), area.y0.round());
     let (width, height) = ((area.x1.round() - x0), (area.y1.round() - y0));
@@ -1882,11 +1945,11 @@ fn crop_artwork(
             "a crop is [x, y, width, height] with width and height 16 to {MAX_SIDE}"
         )));
     }
-    doc.put(&ROOT, "width", width)?;
-    doc.put(&ROOT, "height", height)?;
+    doc.width = width;
+    doc.height = height;
     if x0 != 0.0 || y0 != 0.0 {
         for mark in &art.marks {
-            doc::write_mark(doc, &mark.moved(-x0, -y0))?;
+            doc.put_mark(mark.moved(-x0, -y0));
         }
         if let Some(reference) = &art.reference
             && let Some([x, y, w, h]) = reference.frame
@@ -1895,17 +1958,21 @@ fn crop_artwork(
                 frame: Some([x - x0, y - y0, w, h]),
                 ..reference.clone()
             };
-            doc::write_reference(doc, Some(&moved))?;
+            doc.reference = Some(moved);
         }
     }
     Ok(())
 }
 
 impl Open {
-    fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
-        use ui::automerge::ROOT;
-        use ui::automerge::transaction::Transactable as _;
-        let [width, height] = self.pixels.map(f64::from);
+    /// Open the picture, kept as content, whose size is `pixels`.
+    pub(crate) fn apply(
+        &self,
+        doc: &mut Artwork,
+        art: &Artwork,
+        pixels: [u32; 2],
+    ) -> Result<(), Refusal> {
+        let [width, height] = pixels.map(f64::from);
         if width < 1.0 || height < 1.0 {
             return Err(refuse("the picture has no pixels"));
         }
@@ -1915,25 +1982,23 @@ impl Open {
         let fit = fit.max(16.0 / width.min(height));
         let (width, height) = ((width * fit).round(), (height * fit).round());
         for mark in &art.marks {
-            doc::remove(doc, doc::MARKS, &mark.id)?;
+            doc.remove_mark(&mark.id);
         }
         for layer in &art.layers {
-            doc::remove(doc, doc::LAYERS, &layer.id)?;
+            doc.drop_layer(&layer.id);
         }
         for medium in art.media.keys() {
-            doc::remove(doc, doc::MEDIA, medium)?;
+            doc.media.remove(medium);
         }
-        doc::write_reference(doc, None)?;
-        doc.put(&ROOT, "width", width.clamp(16.0, MAX_SIDE))?;
-        doc.put(&ROOT, "height", height.clamp(16.0, MAX_SIDE))?;
-        doc::put_text(doc, &ROOT, "title", &self.title)?;
-        let ground = crate::model::Ground {
+        doc.reference = None;
+        doc.width = width.clamp(16.0, MAX_SIDE);
+        doc.height = height.clamp(16.0, MAX_SIDE);
+        doc.title = self.title.clone().unwrap_or_default();
+        doc.ground = crate::model::Ground {
             texture: "smooth".into(),
             colour: "#ffffff".into(),
         };
-        let encoded = serde_json::to_string(&ground).unwrap_or_default();
-        doc::put_text(doc, &ROOT, "ground", &encoded)?;
-        let fresh = doc::read(doc);
+        let fresh = doc.settled();
         add_layer(
             doc,
             &fresh,
@@ -1943,9 +2008,9 @@ impl Open {
                 ..AddLayer::default()
             },
         )?;
-        let fresh = doc::read(doc);
+        let fresh = doc.settled();
         let shape = Shape::Image {
-            src: self.src.clone(),
+            src: self.path.clone(),
             x: 0.0,
             y: 0.0,
             width,
@@ -1959,7 +2024,7 @@ impl Open {
             "layer-1",
             vec![placed(
                 "picture".into(),
-                self.title.clone(),
+                self.title.clone().unwrap_or_default(),
                 shape,
                 Style::default(),
             )],
@@ -1967,7 +2032,7 @@ impl Open {
     }
 }
 
-fn check_medium(art: &Artwork, medium: &str) -> Result<(), ActionError> {
+fn check_medium(art: &Artwork, medium: &str) -> Result<(), Refusal> {
     if medium.is_empty() || media::resolve(art, medium).is_some() {
         return Ok(());
     }
@@ -1981,7 +2046,7 @@ fn check_medium(art: &Artwork, medium: &str) -> Result<(), ActionError> {
     )))
 }
 
-fn add_layer(doc: &mut Doc, art: &Artwork, add: &AddLayer) -> Result<(), ActionError> {
+pub(crate) fn add_layer(doc: &mut Artwork, art: &Artwork, add: &AddLayer) -> Result<(), Refusal> {
     let id = add
         .id
         .clone()
@@ -2014,28 +2079,29 @@ fn add_layer(doc: &mut Doc, art: &Artwork, add: &AddLayer) -> Result<(), ActionE
         }
         None => order::between(art.layers.last().map(|layer| layer.order.as_str()), None),
     };
-    doc::write_layer(
-        doc,
-        &Layer {
-            id,
-            name: if add.name.trim().is_empty() {
-                "Layer".into()
-            } else {
-                add.name.clone()
-            },
-            order,
-            medium,
-            opacity: add.opacity.unwrap_or(1.0),
-            visible: true,
-            texture: add.texture.unwrap_or(0.0),
-            locked: false,
-            ..Layer::default()
+    doc.put_layer(Layer {
+        id,
+        name: if add.name.trim().is_empty() {
+            numbered_name(art.layers.iter().map(|layer| layer.name.as_str()), "Layer")
+        } else {
+            add.name.clone()
         },
-    )?;
+        order,
+        medium,
+        opacity: add.opacity.unwrap_or(1.0),
+        visible: true,
+        texture: add.texture.unwrap_or(0.0),
+        locked: false,
+        ..Layer::default()
+    });
     Ok(())
 }
 
-fn edit_layer(doc: &mut Doc, art: &Artwork, edit: &EditLayer) -> Result<(), ActionError> {
+pub(crate) fn edit_layer(
+    doc: &mut Artwork,
+    art: &Artwork,
+    edit: &EditLayer,
+) -> Result<(), Refusal> {
     let mut layer = art.layer(&edit.id).cloned().ok_or_else(|| {
         refuse(format!(
             "there is no layer {:?}; the layers are {}",
@@ -2045,6 +2111,16 @@ fn edit_layer(doc: &mut Doc, art: &Artwork, edit: &EditLayer) -> Result<(), Acti
     })?;
     if let Some(name) = &edit.name {
         layer.name.clone_from(name);
+    }
+    if let Some(group) = &edit.group {
+        if layer.is_mask() {
+            return Err(refuse("a mask belongs to its layer’s folder"));
+        }
+        let group = group.trim();
+        if group.chars().count() > 80 {
+            return Err(refuse("a layer folder name must be at most 80 characters"));
+        }
+        layer.group = group.into();
     }
     if let Some(medium) = &edit.medium {
         check_medium(art, medium)?;
@@ -2062,13 +2138,10 @@ fn edit_layer(doc: &mut Doc, art: &Artwork, edit: &EditLayer) -> Result<(), Acti
     if let Some(invert) = edit.invert {
         // A layer's mask is inverted by naming the layer or the mask.
         match art.mask_of(&layer.id) {
-            Some(mask) if !layer.is_mask() => doc::write_layer(
-                doc,
-                &Layer {
-                    invert,
-                    ..mask.clone()
-                },
-            )?,
+            Some(mask) if !layer.is_mask() => doc.put_layer(Layer {
+                invert,
+                ..mask.clone()
+            }),
             _ if layer.is_mask() => layer.invert = invert,
             _ => {
                 return Err(refuse(format!(
@@ -2109,15 +2182,15 @@ fn edit_layer(doc: &mut Doc, art: &Artwork, edit: &EditLayer) -> Result<(), Acti
             layer.order = order;
         }
     }
-    doc::write_layer(doc, &layer)?;
+    doc.put_layer(layer.clone());
     if let Some(mask) = &edit.mask {
-        crate::selection::edit_mask(doc, &doc::read(doc), &layer.id, mask)?;
+        crate::selection::edit_mask(doc, &doc.settled(), &layer.id, mask)?;
     }
     Ok(())
 }
 
 impl Align {
-    fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
+    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
         use ui::vello::kurbo::Rect;
         let units = units(art, &self.ids)?;
         if self.edge.is_none() && self.distribute.is_none() {
@@ -2190,7 +2263,7 @@ impl Align {
                 (start(&all), start(&all) + length(&all))
             };
             let total: f64 = boxes.iter().map(length).sum();
-            let gaps = count_f64(boxes.len().saturating_sub(1)).max(1.0);
+            let gaps = f64_of_usize(boxes.len().saturating_sub(1)).max(1.0);
             let gap = (to - from - total) / gaps;
             let mut cursor = if boxes.len() == 1 {
                 from + (to - from - total) / 2.0
@@ -2214,29 +2287,29 @@ impl Align {
                 continue;
             }
             for mark in unit {
-                doc::write_mark(doc, &mark.moved(dx, dy))?;
+                doc.put_mark(mark.moved(dx, dy));
             }
         }
         Ok(())
     }
 }
 
-fn count_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
 /// The members `id` addresses: a mark, or a group's members.
-fn units_of<'a>(art: &'a Artwork, id: &str) -> Result<Vec<&'a Mark>, ActionError> {
+fn units_of<'a>(art: &'a Artwork, id: &str) -> Result<Vec<&'a Mark>, Refusal> {
     Ok(units(art, &[id.to_owned()])?
         .into_iter()
         .flatten()
         .collect())
 }
 
-fn set_reference(doc: &mut Doc, art: &Artwork, set: &SetReference) -> Result<(), ActionError> {
+pub(crate) fn set_reference(
+    doc: &mut Artwork,
+    art: &Artwork,
+    set: &SetReference,
+) -> Result<(), Refusal> {
     if set.remove == Some(true) {
         if art.reference.is_some() {
-            doc::write_reference(doc, None)?;
+            doc.reference = None;
         }
         return Ok(());
     }
@@ -2281,6 +2354,6 @@ fn set_reference(doc: &mut Doc, art: &Artwork, set: &SetReference) -> Result<(),
     if let Some(visible) = set.visible {
         reference.visible = visible;
     }
-    doc::write_reference(doc, Some(&reference))?;
+    doc.reference = Some(reference);
     Ok(())
 }

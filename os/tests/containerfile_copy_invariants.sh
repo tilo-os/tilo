@@ -32,8 +32,7 @@ containerfile="$repo/os/Containerfile"
 # into its loader, so the former systemd environment override is absent.
 # Tilo build outputs are installed through os/components.toml, so their rows
 # name the manifest component and build output instead of a builder /out path;
-# every destination is unchanged, and /out/optional/ -> /usr/bin/ is now the
-# explicit optional /usr/bin/browser entry it always carried. The VM console
+# every destination is unchanged. The VM console
 # port udev rule and the generated bash/fish/zsh completions for app and tilo
 # (with their store/system aliases) are deliberate additions, as is the
 # sandboxed PDF engine helper at /usr/libexec/tilo-pdf-helper, and the
@@ -91,8 +90,75 @@ containerfile="$repo/os/Containerfile"
 # The extension-manifest public key ships beside the helper.
 # The release gate's greetd session-context check ships beside the other
 # booted-guest checks in /usr/libexec/tilo.
-# The release gate's input hotplug check ships beside them.
-expected_contract=7d64151bd79040d2ef18820677dd1e9c9297bd43b9fa8ce648ee73b429841494
+# The image ships one login session and no peer-sync marker unit.
+# The release gate's input hotplug check and the device admin's action-model
+# check ship beside them.
+# The boot units gate ships with the rollback units whose confirmation it gates.
+# The ush supervisor ships with what it runs: the two relay helpers for
+# Terminal, and the legacy VM service behind app shims. The WPE engine overlay
+# and /usr/bin/browser are deliberate removals: the Browser is a tapp in the
+# app store and its Chromium engine a signed runtime bundle under
+# /usr/lib/tilo-runtime, both already copied.
+# NetworkManager's Wake-on-LAN default ships as a conf.d drop-in.
+# The sibling-unlock client (/usr/bin/tilo-sibling-unlock, through
+# components.toml) and its dracut module ship in the rollback-files overlay
+# beside tilo-rollback, which the initramfs carries the same way.
+# The registry's runtime publisher key (/usr/share/tilo/registry-runtime-
+# publisher.hex), which the launcher trusts for runtimes the Store installs,
+# is a deliberate addition.
+# /usr/bin/terminal, /usr/bin/file-explorer and /usr/bin/settings are
+# deliberate removals: those apps ship only as packages in the app store.
+# The system-interface declaration (/usr/share/tilo/system-interfaces.toml),
+# which says what app builds this OS can run, is a deliberate addition.
+# The ush service unit is installed through its component manifest so normal
+# component updates carry the same owned reexec path as the OS image.
+# The public /usr/bin/ush symlink deliberately exposes the same confined
+# runtime already installed at /usr/libexec/tilo-ush.
+# The confined speech worker and its full MIT notice are deliberate additions.
+# The tilo-projector.service and .socket user units, which run the projection
+# broker as a socket-activated service in place of per-command helper runs, are
+# deliberate additions.
+# Cisco requires the complete OpenH264 binary license notice in a licensing
+# information location. Only that text is added to extension-files; Cisco
+# binaries remain separately downloaded by opted-in devices.
+# The offline, signed Flathub descriptor is the one additional payload row.
+# The AppHost service unit moves from a direct context COPY into its component
+# manifest; the installed path, reviewed bytes and 0644 mode are unchanged.
+# Firstboot account handoff and authenticated startup recovery now ship in the
+# base image too: their three helpers, three units and the greeter baseline.
+# The session wrapper moves into the shell component beside its compositor;
+# the destination, source bytes and executable mode remain the same.
+# The disk-unlock polkit action and exact-command read rule ship beside the
+# existing policies. Their two rootfs payload rows are the intentional delta.
+# The version-bound cooperative Bash editor at /usr/lib/tilo/ush/bash-editor.so
+# is an intentional ush component payload addition; no permission is activated.
+# The signed SDK font-catalog tree adds one native-builder-payload row.
+# Combining the application publisher with the existing runtime publisher
+# COPY preserves their exact payload mappings and the 156-instruction budget.
+# The first-login Flatpak unit and cooperative Bash editor are both retained.
+# The Windows egress reaper gains two path units (tilo-windows-vm-egress-reaper
+# .path and tilo-windows-vm-egress-lease.path); they are the intentional delta.
+# The user-identity component carries the board-successor verifier, hardware
+# profile and pinned Cosign. Its staged-trust and verified-update helpers move
+# from direct rootfs COPY to that component at the same installed paths and
+# executable mode; the component installer tests cover their staged sources.
+# The baked runtime, /usr/share/fonts/tilo and the font-catalogs tree arrive
+# in one COPY of the runtime-image-payload tree (hard links carry the font
+# catalog's bytes once, TIL-609): that row replaces the runtime's and the font
+# catalogs' native-builder-payload rows; every installed path is unchanged and
+# /usr/share/fonts/tilo, formerly written by a RUN, is new to the contract.
+# The Plymouth theme arrives rendered from the plymouth-assets stage, which
+# replaces the context copy of its sources; make-plymouth-assets.py, which
+# rendered it inside the rootfs, no longer enters /usr/local/bin (TIL-733).
+# The app store arrives from the app-store stage, the builder's store with the
+# env-runtime's host-identical files left out and named in its host-sources
+# (TIL-735); the installed path is unchanged.
+# tilo-network-start.service replaces tilo-network-start.timer: the network is
+# queued once logins are allowed instead of at OnBootSec=0, where it held the
+# greeter through network.target (TIL-767).
+# The installer locale list is copied from the install-profile-model crate,
+# which compiles it in; the installed path is unchanged.
+expected_contract=034b3e3003b9077e17f816fdf1f4e466f0b2b86b38b74da7047d10ef1686c69e
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -103,8 +169,15 @@ actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" 
 # A unique destination makes the sorted contract sufficient: no later COPY can
 # mask an earlier payload at the same path. Directory-content copies remain
 # single-source entries and were intentionally not consolidated.
+# Two directory-content copies share /usr/ as their destination, with disjoint
+# trees: the Windows provider's (provider.json; on ARM also the FEX payload
+# and the x86 guest under /usr/lib/tilo/windows-runners), and the assembled
+# runtime tree
+# (/usr/lib/tilo-runtime, /usr/share/fonts/tilo, /usr/share/tilo/font-catalogs),
+# which must be one COPY so its hard links stay one layer's.
 duplicates="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
-  awk -F '\t' '{ count[$3]++ } END { for (path in count) if (count[path] > 1) print path }')"
+  awk -F '\t' '$1 == "runtime-image-payload" && $2 == "/image/usr/" && $3 == "/usr/" { next }
+    { count[$3]++ } END { for (path in count) if (count[path] > 1) print path }')"
 [ -z "$duplicates" ] || {
   printf 'rootfs copy destinations are no longer unique:\n%s\n' "$duplicates" >&2
   exit 1
@@ -136,8 +209,10 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # kernel image identity into that layer's cache key adds one ARG (153).
 # Redeclaring RPMS_REF before the first snapshot install, for the same reason,
 # adds one more (154).
-[ "$instructions" -le 154 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 154)" >&2
+# NetworkManager's Wake-on-LAN drop-in adds one COPY (155).
+# The offline predefined Flathub descriptor adds one reviewed COPY (156).
+[ "$instructions" -le 156 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 156)" >&2
   exit 1
 }
 
@@ -171,7 +246,6 @@ containerfile_instructions "$containerfile" |
 
 for path in \
   os/scripts/finalize-rpmdb.sh \
-  os/usr/libexec/tilo-session \
   os/usr/libexec/tilo-disk-encrypt \
   os/usr/libexec/tilo-store-volume \
   os/usr/libexec/tilo-verified-boot-install-preflight \
@@ -194,3 +268,15 @@ for path in \
 done
 
 echo "rootfs COPY contract unchanged; $instructions-instruction layer budget satisfied"
+
+# The shell's startup companion is now installed by the canonical component
+# installer rather than a direct COPY --chmod. Observe that actual image path
+# and its mandatory executable-mode plan instead of accepting a staging COPY.
+containerfile_installs_output "$containerfile" '@manifest/usr/libexec/tilo-session' /usr/libexec/tilo-session
+python3 "$repo/os/scripts/install-components.py" shell --dry-run --format json |
+  python3 -c 'import json,sys
+rows = [row for row in json.load(sys.stdin) if row["to"] == "/usr/libexec/tilo-session"]
+assert len(rows) == 1, "shell must install exactly one startup wrapper"
+row = rows[0]
+assert row["from"] == "@manifest/usr/libexec/tilo-session", row
+assert row["mode"] == "0755" and not row["optional"], row'

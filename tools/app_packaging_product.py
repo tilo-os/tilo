@@ -29,7 +29,9 @@ REQUIRED_PATHS = {'.forgejo/workflows/' + WORKFLOW,
                   'tools/ci/python.py', 'tools/ci/__init__.py',
                   'tools/app_packaging_contract.py',
                   'tools/app_packaging_qualification.py', 'tools/apps/app_release.py',
+                  'tools/apps/browser_runtime_release.py',
                   'tools/app_packaging_plan.py', 'tools/ci/workspace_graph.py',
+                  'tools/ci/runner_labels.py',
                   'dist/apps/app-collections.toml',
                   'tools/ci/resolve_builder.py', 'tools/ci/images.toml',
                   'dist/apps/package-apps.sh',
@@ -41,7 +43,7 @@ REQUIRED_PATHS = {'.forgejo/workflows/' + WORKFLOW,
                   'tools/ci/rustc-thin-app-wrapper.sh', 'os/scripts/bake-runtime-bundle.sh',
                   'os/scripts/verify-elf-hardening.sh', 'tools/ci/sccache.sh',
                   '.forgejo/actions/restore-cargo-downloads/action.yml',
-                  'tools/canonical_verifier_bundle.py'}
+                  'tools/canonical_verifier_bundle.py', 'tools/apps/publish-collections.sh'}
 
 
 def bounded_output(command, maximum, timeout=30):
