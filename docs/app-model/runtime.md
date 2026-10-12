@@ -1,35 +1,32 @@
-# The `runtime` SDK
+# The app runtime crates
 
-Every Tilo app depends on the `runtime` umbrella crate. It re-exports four
-submodules and one error type; everything else in the SDK is layered on top.
+A Tilo app talks to the session through four small client crates. Depend on
+the ones you use; each is independent of the others except `runtime-portal`,
+which they all build on.
 
 ```rust
-use runtime::{collab, fs, identity, portal};
-use runtime::{NotAvailable, is_tilo_native};
+use runtime_collab as collab;
+use runtime_fs as fs;
+use runtime_identity as identity;
+use runtime_portal::{NotAvailable, is_tilo_native};
 ```
 
-**Design intent.** Every service reachable through this SDK is optional.
-Apps built against `runtime` MUST run as Flatpaks on stock Linux with no
+**Design intent.** Every service reachable through these crates is optional.
+Apps built against them MUST run as Flatpaks on stock Linux with no
 Tilo services present — every `try_connect` / `load` returns
 `Result<T, NotAvailable>` and never panics, so the app falls back to a
 local-only mode. `is_tilo_native()` is the cheap probe you may use to gate
 first-run welcome UI, but you must NOT use it as an authorization gate —
 `try_connect` is the source of truth.
 
-## The umbrella (`runtime`)
+| Crate              | What it is                                  |
+| ------------------ | ------------------------------------------- |
+| `runtime-collab`   | The collab broker client.                   |
+| `runtime-fs`       | The workspace filesystem client.            |
+| `runtime-identity` | Local Ed25519 signing.                      |
+| `runtime-portal`   | Service-fd + Cap'n Proto plumbing, `NotAvailable` (the single error type every fallible entry returns) and `is_tilo_native` (`bool` — "is `TILO_WORKSPACE_ID` set?"). |
 
-Re-exports:
-
-| Path                   | What it is                                  |
-| ---------------------- | ------------------------------------------- |
-| `runtime::collab`      | The collab broker client (`runtime_collab`).|
-| `runtime::fs`          | The workspace filesystem client (`runtime_fs`). |
-| `runtime::identity`    | Local Ed25519 signing (`runtime_identity`). |
-| `runtime::portal`      | Service-fd + Cap'n Proto plumbing (`runtime_portal`). |
-| `runtime::NotAvailable`| The single error type every fallible SDK entry returns. |
-| `runtime::is_tilo_native` | `bool` — heuristic ("is `TILO_WORKSPACE_ID` set?"). |
-
-## `runtime::portal` — service discovery and RPC plumbing
+## `runtime_portal` — service discovery and RPC plumbing
 
 Low-level. Most apps don't touch it directly.
 
@@ -51,7 +48,7 @@ pub fn try_open_service<C: FromClientHook>(name: &str) -> Result<C, NotAvailable
 verifies the fd is still open with `fcntl(F_GETFD)`. Names are
 case-insensitive; call sites pass lowercase.
 
-## `runtime::collab` — the collab broker
+## `runtime_collab` — the collab broker
 
 ```rust
 pub fn try_connect() -> Result<CollabClient, NotAvailable>;
@@ -86,7 +83,7 @@ that own their own RPC system.
 `send_unsigned_snapshot` / `send_unsigned_incremental` are the raw CRDT
 transport channels; `send` is the higher-level op protocol.
 
-## `runtime::fs` — the workspace filesystem client
+## `runtime_fs` — the workspace filesystem client
 
 ```rust
 pub fn try_connect() -> Result<FsClient, NotAvailable>;
@@ -148,7 +145,7 @@ qdoc documents follow the same rule:
 Content is never garbage-collected by guesswork. Only a caller that holds
 every live reference may `collect_unreferenced`.
 
-## `runtime::identity` — local signing
+## `runtime_identity` — local signing
 
 ```rust
 pub struct SigningIdentity { … }
@@ -196,8 +193,8 @@ The launcher plumbs sockets in via:
 ```
 
 Your app reads the fd number out of the env and hands it to
-`runtime::portal::UnixCapnpClient::from_connected_fd`. The higher-level
-`runtime::collab` / `runtime::fs` wrappers already do this for you — you
+`runtime_portal::UnixCapnpClient::from_connected_fd`. The higher-level
+`runtime_collab` / `runtime_fs` wrappers already do this for you — you
 only touch `service_fd` directly if you are speaking a custom protocol.
 
 ## The graceful-degradation contract, in code
@@ -243,18 +240,18 @@ but because the manifest did not declare any `[sandbox.portals]` entry, the
 launcher did not bind the bus socket into the sandbox, so a portal call fails
 as it would on stock Linux without a bus.
 
-## Depending on `runtime`
+## Depending on the runtime crates
 
-Path-dependency (workspace) form:
+Path-dependency (workspace) form, listing only the services the app uses:
 
 ```toml
 [dependencies]
-runtime = { path = "crates/runtime/runtime" }
+runtime-portal = { path = "crates/runtime/runtime-portal" }
+runtime-fs = { path = "crates/runtime/runtime-fs" }
 ```
 
-For an out-of-workspace crate publish (until we cut a crates.io release),
-depend directly by pinned path relative to your worktree. The SDK carries
-`ashpd`, `capnp-rpc`, `tokio` at pinned versions and nothing else.
+For an out-of-workspace crate (until we cut a crates.io release), depend
+directly by pinned path relative to your worktree.
 
 Next: [`cli-apps.md`](./cli-apps.md) — the CLI-flavour of the same
 package model.

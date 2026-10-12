@@ -7,14 +7,17 @@
     )
 )]
 
-use runtime::{collab, fs, identity, is_tilo_native, portal};
+use runtime_collab as collab;
+use runtime_fs as fs;
+use runtime_identity as identity;
+use runtime_portal::{self as portal, NotAvailable, is_tilo_native};
 
 // Thin build only: pull the shared runtime SDK dylib
 // (`libruntime_dylib.so`) into the link graph. Without this reference
 // rustc's unused-crate elimination drops the wrapper, and
-// `-C prefer-dynamic` then satisfies `runtime` from its static rlib
+// `-C prefer-dynamic` then satisfies the runtime crates from their static rlibs
 // instead of the dylib. Naming it here forces the dylib to be linked,
-// so `runtime` (and its whole graph) is served dynamically and the
+// so the runtime crates (and their whole graph) are served dynamically and the
 // `tilo-hello` binary keeps only its own code. Compiled out entirely in
 // normal (static) builds.
 #[cfg(feature = "thin")]
@@ -50,10 +53,10 @@ fn main() {
             let hex = hex_encode(&id.group_public_key());
             println!("  identity : connected (pubkey={hex})");
         }
-        Err(runtime::NotAvailable::ServiceFdMissing) => {
+        Err(NotAvailable::ServiceFdMissing) => {
             println!("  identity : unavailable (env var unset — graceful)");
         }
-        Err(runtime::NotAvailable::ConnectionFailed(e)) => {
+        Err(NotAvailable::ConnectionFailed(e)) => {
             println!("  identity : unavailable (load failed: {e})");
         }
         Err(other) => println!("  identity : unavailable ({other:?})"),
@@ -139,16 +142,16 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-fn report(name: &str, result: Result<(), runtime::NotAvailable>) {
+fn report(name: &str, result: Result<(), NotAvailable>) {
     match result {
         Ok(()) => println!("  {name}: connected"),
-        Err(runtime::NotAvailable::ServiceFdMissing) => {
+        Err(NotAvailable::ServiceFdMissing) => {
             println!("  {name}: unavailable (no fd — graceful)");
         }
-        Err(runtime::NotAvailable::ConnectionFailed(e)) => {
+        Err(NotAvailable::ConnectionFailed(e)) => {
             println!("  {name}: unavailable (connect failed: {e})");
         }
-        Err(runtime::NotAvailable::ProtocolMismatch { expected, got }) => {
+        Err(NotAvailable::ProtocolMismatch { expected, got }) => {
             println!("  {name}: protocol mismatch (want v{expected}, got v{got})");
         }
         Err(other) => println!("  {name}: unavailable ({other:?})"),
