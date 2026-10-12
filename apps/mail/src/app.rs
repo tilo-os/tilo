@@ -2024,6 +2024,9 @@ impl MailApp {
         }
         match self.engine.as_ref() {
             Some(_) => {
+                if let Some(fields) = self.setup_fields() {
+                    fields.expect_oauth();
+                }
                 self.post_engine(EngineRequest::oauth_authorize(
                     email.clone(),
                     provider,
@@ -2303,6 +2306,9 @@ impl MailApp {
                 request_id,
                 account_id,
             } if self.expects_engine_event(request_id, EngineRequestKind::OAuthAuthorize) => {
+                if let Some(fields) = self.setup_fields() {
+                    fields.complete_oauth(&account_id);
+                }
                 st.status = Some(format!("Signed in as {account_id}"));
                 report_account_sync(
                     &account_id,
