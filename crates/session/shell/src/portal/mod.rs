@@ -119,6 +119,15 @@ pub mod remote_desktop;
 #[cfg(any(test, target_os = "linux"))]
 #[cfg_attr(
     not(target_os = "linux"),
+    allow(
+        dead_code,
+        reason = "only the Linux portal adapters load a store; other hosts build it for their tests"
+    )
+)]
+mod restore;
+#[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
     expect(
         dead_code,
         reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"

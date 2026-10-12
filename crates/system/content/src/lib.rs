@@ -47,7 +47,7 @@ pub use dir::DirBackend;
 #[cfg(feature = "dir")]
 pub use files::FilesBackend;
 pub use memory::MemoryBackend;
-pub use sniff::sniff;
+pub use sniff::{ImageFormat, image_format, sniff};
 
 /// The app-files owner of a page's content store (see [`ContentStore::for_app`]).
 #[cfg(feature = "dir")]

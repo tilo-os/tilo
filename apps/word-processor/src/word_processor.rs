@@ -86,7 +86,7 @@ pub struct Heading {
 /// (carries a truthy `toc` attr). Used to find the old TOC for replacement and to
 /// keep TOC lines out of the heading outline.
 pub(crate) fn block_is_toc(b: &tilo_doc::snapshot::BlockView) -> bool {
-    matches!(b.attrs.get("toc"), Some(tilo_doc::AttrVal::Bool(true)))
+    b.flag("toc")
 }
 
 /// Parse the comma-separated `tab_stops` attr into px positions, sorted ascending
@@ -377,18 +377,9 @@ impl WordProcessor {
                     })
                 })
                 .collect();
-            let int = |k: &str| match b.attrs.get(k) {
-                Some(tilo_doc::AttrVal::Int(n)) => Some(*n),
-                _ => None,
-            };
-            let bool_ = |k: &str| match b.attrs.get(k) {
-                Some(tilo_doc::AttrVal::Bool(v)) => Some(*v),
-                _ => None,
-            };
-            let str_ = |k: &str| match b.attrs.get(k) {
-                Some(tilo_doc::AttrVal::Str(v)) => Some(v.clone()),
-                _ => None,
-            };
+            let int = |k: &str| b.int_attr(k);
+            let bool_ = |k: &str| b.bool_attr(k);
+            let str_ = |k: &str| b.str_attr(k).map(str::to_owned);
             blocks.push(ClipBlock {
                 kind: b.kind.clone(),
                 text,
@@ -529,9 +520,7 @@ impl WordProcessor {
             let fallback_blocks = snap
                 .blocks
                 .iter()
-                .filter(|block| {
-                    matches!(block.attrs.get("style"), Some(tilo_doc::AttrVal::Str(style)) if style == &id)
-                })
+                .filter(|block| block.str_attr("style") == Some(id.as_str()))
                 .map(|block| block.id.clone())
                 .collect();
             let action = crate::actions::RichTextAction::DeleteStyle {
@@ -609,9 +598,7 @@ impl WordProcessor {
         let orphans: Vec<String> = tilo_doc::model::materialize(state, &containers)
             .blocks
             .iter()
-            .filter(
-                |b| matches!(b.attrs.get("style"), Some(tilo_doc::AttrVal::Str(s)) if s == style_id),
-            )
+            .filter(|b| b.str_attr("style") == Some(style_id))
             .map(|b| b.id.clone())
             .collect();
         let action = crate::actions::RichTextAction::DeleteStyle {
@@ -682,7 +669,7 @@ impl WordProcessor {
             .blocks
             .iter()
             .find(|b| b.id == block_id)
-            .is_some_and(|b| matches!(b.attrs.get(key), Some(tilo_doc::AttrVal::Bool(true))));
+            .is_some_and(|b| b.flag(key));
         let next = !cur;
         if self.ids.is_none() {
             return next;
@@ -1357,10 +1344,7 @@ impl WordProcessor {
             .blocks
             .iter()
             .find(|b| b.id == block)
-            .and_then(|b| match b.attrs.get("tab_stops") {
-                Some(tilo_doc::AttrVal::Str(s)) => Some(s.clone()),
-                _ => None,
-            })
+            .and_then(|b| b.str_attr("tab_stops").map(str::to_owned))
             .unwrap_or_default();
         parse_tab_stops(&raw)
     }
@@ -1472,21 +1456,16 @@ impl WordProcessor {
         let containers = self.containers.as_ref()?;
         let snap = tilo_doc::model::materialize(state, containers);
         let cur = snap.blocks.iter().find(|b| b.id == self.caret.block)?;
-        let tid = match cur.attrs.get("table") {
-            Some(tilo_doc::AttrVal::Str(s)) => s.clone(),
-            _ => return None,
-        };
-        let int = |b: &tilo_doc::snapshot::BlockView, k: &str| match b.attrs.get(k) {
-            Some(tilo_doc::AttrVal::Int(n)) if *n >= 0 => num::usize_of_i64(*n),
-            _ => 0,
+        let tid = cur.str_attr("table")?.to_owned();
+        let int = |b: &tilo_doc::snapshot::BlockView, k: &str| {
+            b.int_attr(k)
+                .filter(|n| *n >= 0)
+                .map_or(0, num::usize_of_i64)
         };
         let cells = snap
             .blocks
             .iter()
-            .filter(|b| {
-                b.kind == "cell"
-                    && matches!(b.attrs.get("table"), Some(tilo_doc::AttrVal::Str(s)) if s == &tid)
-            })
+            .filter(|b| b.kind == "cell" && b.str_attr("table") == Some(tid.as_str()))
             .map(|b| (b.id.clone(), int(b, "row"), int(b, "col")))
             .collect();
         Some((tid, cells))
@@ -2079,10 +2058,7 @@ impl WordProcessor {
             .iter()
             .filter(|b| b.kind == "heading" && !block_is_toc(b))
             .map(|b| {
-                let level = match b.attrs.get("level") {
-                    Some(tilo_doc::AttrVal::Int(n)) if *n >= 1 => *n,
-                    _ => 1,
-                };
+                let level = b.int_attr("level").filter(|n| *n >= 1).unwrap_or(1);
                 Heading {
                     id: b.id.clone(),
                     level,
@@ -2148,12 +2124,8 @@ impl WordProcessor {
         };
         let b = views.iter().find(|b| b.id == block);
         let kind = b.map_or_else(|| "paragraph".into(), |b| b.kind.clone());
-        let ordered = b
-            .is_some_and(|b| matches!(b.attrs.get("ordered"), Some(tilo_doc::AttrVal::Bool(true))));
-        let level = b.and_then(|b| match b.attrs.get("level") {
-            Some(tilo_doc::AttrVal::Int(n)) => Some(*n),
-            _ => None,
-        });
+        let ordered = b.is_some_and(|b| b.flag("ordered"));
+        let level = b.and_then(|b| b.int_attr("level"));
         (kind, ordered, level)
     }
 
@@ -3541,10 +3513,7 @@ mod tests {
             .blocks
             .iter()
             .find(|b| b.id == id)
-            .and_then(|b| match b.attrs.get("align") {
-                Some(tilo_doc::AttrVal::Str(s)) => Some(s.clone()),
-                _ => None,
-            })
+            .and_then(|b| b.str_attr("align").map(str::to_owned))
     }
 
     /// Table rows and columns add and delete; an inserted table has editable cells; inserted image bytes
@@ -3774,9 +3743,10 @@ mod tests {
     fn table_grid(wp: &WordProcessor, state: &AutoCommit) -> Vec<(usize, usize)> {
         let c = wp.containers.as_ref().unwrap();
         let snap = tilo_doc::model::materialize(state, c);
-        let int = |b: &tilo_doc::snapshot::BlockView, k: &str| match b.attrs.get(k) {
-            Some(tilo_doc::AttrVal::Int(n)) if *n >= 0 => num::usize_of_i64(*n),
-            _ => 0,
+        let int = |b: &tilo_doc::snapshot::BlockView, k: &str| {
+            b.int_attr(k)
+                .filter(|n| *n >= 0)
+                .map_or(0, num::usize_of_i64)
         };
         let mut g: Vec<(usize, usize)> = snap
             .blocks

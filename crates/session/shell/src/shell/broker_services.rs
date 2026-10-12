@@ -691,6 +691,37 @@ fn launch_host_application(
 }
 
 impl LauncherServices for NativeLauncher {
+    fn begin_executing_binding_observation(&self, launcher_pid: u32) -> Option<u64> {
+        super::launcher::LaunchSession::current()
+            .launch_history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .binding(
+                launcher_pid,
+                super::launcher::launch_history::Phase::BindingStarted,
+            )
+    }
+    fn observe_executing_binding(
+        &self,
+        observation: u64,
+        phase: tilo_action_broker::services::ExecutingBindingPhase,
+    ) {
+        use super::launcher::launch_history::Phase;
+        use tilo_action_broker::services::ExecutingBindingPhase as Binding;
+        let phase = match phase {
+            Binding::Started => Phase::BindingStarted,
+            Binding::Challenge => Phase::BindingChallenge,
+            Binding::Answer => Phase::BindingAnswer,
+            Binding::Admitted => Phase::BindingAdmitted,
+            Binding::Refused => Phase::BindingRefused,
+            Binding::TimedOut => Phase::BindingTimedOut,
+        };
+        super::launcher::LaunchSession::current()
+            .launch_history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .event(observation, phase);
+    }
     fn applications(&self) -> Vec<LaunchableApplication> {
         launchable_applications(super::launcher::gui_apps(), super::host_apps::host_apps())
     }
