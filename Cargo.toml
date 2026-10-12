@@ -299,6 +299,7 @@ members = [
     "crates/session/console-control",
     "crates/session/control-cli",
     "crates/session/desktop-model",
+    "crates/session/install-profile",
     "crates/session/desktop-search",
     "crates/session/desktop-surface",
     "crates/session/greetd-client",

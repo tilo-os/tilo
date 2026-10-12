@@ -125,13 +125,13 @@ impl RawMediaProfile {
             self.hostname,
             MediaProfileField::Hostname,
             &mut repairs,
-            crate::installer_app::valid_hostname,
+            tilo_install_profile::valid_hostname,
         );
         let username = retain_valid(
             self.username,
             MediaProfileField::Username,
             &mut repairs,
-            crate::installer_app::valid_username,
+            tilo_install_profile::valid_username,
         );
         // Full name is optional in both the imager and installer. Omitting it
         // is therefore a valid configured choice; only a supplied bad value
@@ -142,14 +142,14 @@ impl RawMediaProfile {
                 value,
                 MediaProfileField::FullName,
                 &mut repairs,
-                crate::installer_app::valid_full_name,
+                tilo_install_profile::valid_full_name,
             ),
         };
         let locale = retain_valid(
             self.locale,
             MediaProfileField::Locale,
             &mut repairs,
-            crate::installer_app::valid_locale,
+            tilo_install_profile::valid_locale,
         );
         let keyboard = retain_valid(
             self.keyboard,
@@ -166,7 +166,7 @@ impl RawMediaProfile {
             MediaProfileField::Timezone,
             &mut repairs,
             |timezone| {
-                crate::installer_app::valid_timezone_name(timezone)
+                tilo_install_profile::valid_timezone_name(timezone)
                     && zoneinfo_root.join(timezone).is_file()
             },
         );
@@ -174,7 +174,7 @@ impl RawMediaProfile {
             self.filesystem,
             MediaProfileField::Filesystem,
             &mut repairs,
-            |filesystem| matches!(filesystem, "btrfs" | "ext4" | "xfs"),
+            |filesystem| tilo_install_profile::FILESYSTEMS.contains(&filesystem),
         );
         Ok(MediaProfile {
             hostname,

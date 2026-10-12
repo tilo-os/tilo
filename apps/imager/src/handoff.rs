@@ -137,7 +137,7 @@ pub(crate) fn chosen_hostname(profile: &InstallProfile) -> Option<&str> {
 /// Name the target. Tilo images announce their hostname over mDNS (Avahi),
 /// so this is also the `<hostname>.local` a headless machine is reached at.
 fn write_hostname(root: &Path, hostname: &str) -> Result<(), String> {
-    if !crate::model::hostname_is_valid(hostname) {
+    if !tilo_install_profile::valid_hostname(hostname) {
         return Err(
             "Hostname must be 1–63 letters, numbers or hyphens, without a hyphen at either end."
                 .into(),

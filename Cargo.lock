@@ -6932,6 +6932,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-files",
  "tilo-identity-host",
+ "tilo-install-profile",
  "tilo-net",
  "tilo-ntfs-protocol",
  "tilo-paths",
@@ -7088,6 +7089,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-automerge-fork",
+ "tilo-install-profile",
  "tilo-power-mgmt",
  "tilo-test-env",
  "tilo-ui",
@@ -17109,6 +17111,13 @@ dependencies = [
  "wayland-client",
  "wayland-scanner",
  "wayland-server",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-install-profile"
+version = "0.1.0"
+dependencies = [
  "workspace-hack",
 ]
 
