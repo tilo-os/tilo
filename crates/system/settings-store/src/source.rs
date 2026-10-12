@@ -173,6 +173,17 @@ pub trait SettingsSource: Send + Sync {
         self.update_section_by(name, change(&current), origin)
     }
 
+    /// Write every change this source accepted but has not made durable yet
+    /// (see [`defer_writes_on_this_thread`]). Sources whose writes are
+    /// durable when they return have nothing to do.
+    fn flush_pending(&self) {}
+
+    /// The newest failure of a write this source accepted before it was made
+    /// durable, once: the change was reverted in the document.
+    fn take_deferred_failure(&self) -> Option<String> {
+        None
+    }
+
     /// Preserve the storage owner's explicit durable/copy-repair receipt.
     /// Ordinary sources report only successful writes; errors stay errors.
     ///
@@ -295,6 +306,45 @@ impl ChangeSignal {
 }
 
 static SOURCE: RwLock<Option<Arc<dyn SettingsSource>>> = RwLock::new(None);
+
+thread_local! {
+    static DEFER_WRITES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Make the writes this thread makes to the installed source non-blocking.
+///
+/// A write is durable only after a lock, several syncs and a rename, and on a
+/// busy disk that took hundreds of milliseconds. A thread that must keep
+/// answering input (the compositor's loop) calls this once: its writes then
+/// update the document readers see at once, return, and reach the records on
+/// the source's own thread. A failed write is reverted there and reported
+/// through [`take_deferred_failure`]; it cannot be returned to a caller that
+/// has gone on. Writes that return a receipt ([`SettingsSource::update_section_report`],
+/// the compare-and-update calls) stay durable on return whatever thread makes
+/// them. [`flush_pending_writes`] waits for everything accepted so far.
+pub fn defer_writes_on_this_thread() {
+    DEFER_WRITES.with(|flag| flag.set(true));
+}
+
+/// Whether [`defer_writes_on_this_thread`] was called on this thread.
+#[must_use]
+pub fn writes_deferred_on_this_thread() -> bool {
+    DEFER_WRITES.with(std::cell::Cell::get)
+}
+
+/// Make durable every write the installed source accepted without waiting
+/// for the disk. Called before the session ends or sleeps.
+pub fn flush_pending_writes() {
+    if let Some(source) = installed_source() {
+        source.flush_pending();
+    }
+}
+
+/// The newest failure of a deferred write, once ([`SettingsSource::take_deferred_failure`]).
+#[must_use]
+pub fn take_deferred_failure() -> Option<String> {
+    installed_source()?.take_deferred_failure()
+}
 
 /// Make `source` the settings document of this process, or restore the
 /// local file with `None`.

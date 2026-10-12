@@ -264,6 +264,19 @@ pub struct SessionSettings {
     revision: AtomicU64,
     changes: crate::ChangeSignal,
     committed: Mutex<std::sync::Arc<Committed>>,
+    /// Writes accepted without waiting for the disk, oldest first. Readers
+    /// see them already ([`Self::publish_committed`] lays them over the
+    /// records); [`Self::write_pending`] makes them durable.
+    pending: Mutex<Vec<Edit>>,
+    /// The newest deferred write that failed, until taken.
+    deferred_failure: Mutex<Option<String>>,
+}
+
+/// A write accepted before it was durable.
+struct Edit {
+    section: String,
+    values: Map<String, Value>,
+    origin: ChangeOrigin,
 }
 
 impl SessionSettings {
@@ -301,6 +314,8 @@ impl SessionSettings {
             revision: AtomicU64::new(1),
             changes: crate::ChangeSignal::default(),
             committed: Mutex::new(std::sync::Arc::new(committed)),
+            pending: Mutex::new(Vec::new()),
+            deferred_failure: Mutex::new(None),
         })
     }
 
@@ -336,17 +351,180 @@ impl SessionSettings {
         view::start(self, Some(interval))
     }
 
+    /// The document readers see: the records, with the writes not yet made
+    /// durable laid over them.
+    fn visible_document(state: &State, pending: &[Edit]) -> Map<String, Value> {
+        let mut document = state.projection();
+        for edit in pending {
+            merge_section(&mut document, &edit.section, edit.values.clone());
+        }
+        document
+    }
+
     fn publish_committed(&self, state: &State) {
+        let pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
         self.revision.fetch_add(1, Ordering::AcqRel);
         let committed = std::sync::Arc::new(Committed {
-            document: state.projection(),
+            document: Self::visible_document(state, &pending),
             revision: self.revision.load(Ordering::Acquire),
         });
         *self
             .committed
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = committed;
+        drop(pending);
         self.changes.ring();
+    }
+
+    /// Accept a write without waiting for the disk: readers see it from the
+    /// moment this returns, in order after every earlier write, and
+    /// [`Self::write_pending`] makes it durable. `change` sees section
+    /// `name` as readers see it now, so two toggles in a row flip twice.
+    pub(crate) fn accept_deferred(
+        &self,
+        name: &str,
+        origin: &ChangeOrigin,
+        change: &mut SectionChange<'_>,
+    ) {
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let current = std::sync::Arc::clone(
+            &self
+                .committed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        let empty = Map::new();
+        let section = current
+            .document
+            .get(name)
+            .and_then(Value::as_object)
+            .unwrap_or(&empty);
+        let values: Map<String, Value> = change(section)
+            .into_iter()
+            .filter(|(leaf, value)| section.get(leaf) != Some(value))
+            .collect();
+        if values.is_empty() {
+            return;
+        }
+        let mut document = current.document.clone();
+        merge_section(&mut document, name, values.clone());
+        pending.push(Edit {
+            section: name.to_string(),
+            values,
+            origin: origin.clone(),
+        });
+        let revision = self
+            .revision
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        *self
+            .committed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) =
+            std::sync::Arc::new(Committed { document, revision });
+        drop(pending);
+        self.changes.ring();
+    }
+
+    /// Whether a write is accepted and not yet durable.
+    pub(crate) fn has_pending(&self) -> bool {
+        !self
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+    }
+
+    /// Make every deferred write durable. Waits for the copy's lock and the
+    /// disk, so never from a thread that must keep answering input.
+    pub fn write_pending(&self) {
+        if !self.has_pending() {
+            return;
+        }
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let Ok(_lock) = lock_copy(&self.paths.copy) else {
+            // Still pending: the next call tries again.
+            return;
+        };
+        self.apply_pending(&mut state);
+    }
+
+    /// With the state and the copy locked: apply what the loop accepted and
+    /// write it. A failure reverts the writes in the document.
+    fn apply_pending(&self, state: &mut State) {
+        if !self.has_pending() {
+            return;
+        }
+        // Another process's write to the copy first, as every write does;
+        // the pending writes stay laid over what it publishes.
+        if self.take_in_copy(state).is_err() {
+            return;
+        }
+        let edits =
+            std::mem::take(&mut *self.pending.lock().unwrap_or_else(PoisonError::into_inner));
+        if edits.is_empty() {
+            return;
+        }
+        let (person, device) = (state.person.clone(), state.device.clone());
+        let mut touched = Touched::default();
+        let mut logs = Vec::new();
+        for edit in &edits {
+            let mut log = Vec::new();
+            for (leaf, value) in edit.values.clone() {
+                touched = touched.or(state.put(&edit.section, &leaf, value, &mut log));
+            }
+            logs.push((log, &edit.origin));
+        }
+        if let Err(error) = persist(&self.paths, state, touched) {
+            state.person = person;
+            state.device = device;
+            let message = format!("settings were not saved and are reverted: {error}");
+            eprintln!("settings-store: {message}");
+            *self
+                .deferred_failure
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(message);
+            self.publish_committed(state);
+            return;
+        }
+        for (log, origin) in &logs {
+            change_log::append(&self.paths.change_log(), log, Some(origin));
+        }
+        // The records keep the change even when the copy cannot be written;
+        // the next change or refresh writes it again.
+        let _ = write_copy(&self.paths, state);
+        self.resync_committed(state);
+    }
+
+    /// Make the visible document the records plus what is still pending,
+    /// telling readers only when that differs from what they were last shown
+    /// (another process's write was taken in meanwhile).
+    fn resync_committed(&self, state: &State) {
+        let pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let document = Self::visible_document(state, &pending);
+        let mut committed = self
+            .committed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if committed.document == document {
+            return;
+        }
+        let revision = self
+            .revision
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        *committed = std::sync::Arc::new(Committed { document, revision });
+        drop(committed);
+        drop(pending);
+        self.changes.ring();
+    }
+
+    /// The newest deferred write that failed, once.
+    pub fn take_deferred_failure(&self) -> Option<String> {
+        self.deferred_failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 
     /// Take in a write another process made to the copy since this source
@@ -461,6 +639,9 @@ impl SessionSettings {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let _lock = lock_copy(&self.paths.copy)?;
         self.take_in_copy(&mut state)?;
+        // Writes the loop accepted come first, so this one is decided and
+        // ordered after them.
+        self.apply_pending(&mut state);
         let current = state.projection().get(name).cloned();
         let Some(values) = decide(current.as_ref()) else {
             return Ok(ConditionalUpdate::Superseded);
@@ -555,6 +736,7 @@ impl SettingsSource for SessionSettings {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let _lock = lock_copy(&self.paths.copy)?;
         self.take_in_copy(&mut state)?;
+        self.apply_pending(&mut state);
         if !update.matches(&state.projection()) {
             return Ok(ConditionalUpdate::Superseded);
         }
@@ -598,6 +780,14 @@ impl SettingsSource for SessionSettings {
     fn revision(&self) -> u64 {
         self.refresh();
         self.revision.load(Ordering::Acquire)
+    }
+
+    fn flush_pending(&self) {
+        self.write_pending();
+    }
+
+    fn take_deferred_failure(&self) -> Option<String> {
+        SessionSettings::take_deferred_failure(self)
     }
 
     fn changes(&self) -> &crate::ChangeSignal {
@@ -792,6 +982,142 @@ mod tests {
 
     fn open(dir: &Path) -> SessionSettings {
         SessionSettings::open(SessionPaths::beside(dir.join("settings.json"))).unwrap()
+    }
+
+    /// A host view over a session in `dir`, its calling thread deferring writes.
+    fn deferring_view(
+        dir: &Path,
+    ) -> (
+        std::sync::Arc<SessionSettings>,
+        std::sync::Arc<dyn SettingsSource>,
+    ) {
+        let session = std::sync::Arc::new(open(dir));
+        let view = session.host_view().unwrap();
+        crate::defer_writes_on_this_thread();
+        (session, view)
+    }
+
+    #[test]
+    fn a_deferred_write_returns_while_the_disk_is_parked_and_is_read_back_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (session, view) = deferring_view(dir.path());
+        let before = view.revision();
+        // The copy's lock stands for a disk that does not answer: every
+        // durable write waits for it.
+        let parked = lock_copy(&session.paths.copy).unwrap();
+        let (done, returned) = std::sync::mpsc::channel();
+        let writer = {
+            let view = std::sync::Arc::clone(&view);
+            std::thread::spawn(move || {
+                crate::defer_writes_on_this_thread();
+                view.update_section("appearance", object(json!({"theme": "dark"})))
+                    .unwrap();
+                let _ = done.send(view.load());
+            })
+        };
+        let seen = returned
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the write waited for the disk");
+        writer.join().unwrap();
+        assert_eq!(seen["appearance"]["theme"], "dark", "read back at once");
+        assert!(view.revision() > before, "readers are told");
+        assert!(
+            !load_at(&session.paths.person).contains_key("appearance"),
+            "nothing reached the record while the disk was parked"
+        );
+        drop(parked);
+        view.flush_pending();
+        assert_eq!(
+            load_at(&session.paths.person)["appearance"]["theme"],
+            "dark"
+        );
+        assert_eq!(load_at(&session.paths.copy)["appearance"]["theme"], "dark");
+    }
+
+    #[test]
+    fn deferred_writes_keep_their_order_and_their_read_modify_write_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        let (session, view) = deferring_view(dir.path());
+        let parked = lock_copy(&session.paths.copy).unwrap();
+        let origin = ChangeOrigin::default();
+        let flip = |section: &Map<String, Value>| {
+            let on = section.get("on").and_then(Value::as_bool).unwrap_or(false);
+            object(json!({ "on": !on }))
+        };
+        view.update_section_with("sounds", &origin, &mut |s| flip(s))
+            .unwrap();
+        view.update_section_with("sounds", &origin, &mut |s| flip(s))
+            .unwrap();
+        view.update_section_with("sounds", &origin, &mut |s| flip(s))
+            .unwrap();
+        view.update_section("sounds", object(json!({"volume": 1})))
+            .unwrap();
+        view.update_section("sounds", object(json!({"volume": 2})))
+            .unwrap();
+        let seen = view.load();
+        assert_eq!(
+            seen["sounds"],
+            json!({"on": true, "volume": 2}),
+            "three flips, newest wins"
+        );
+        drop(parked);
+        // A writer that waits for the disk is decided and ordered after them.
+        let sync = {
+            let view = std::sync::Arc::clone(&view);
+            std::thread::spawn(move || {
+                view.update_section_with("sounds", &ChangeOrigin::default(), &mut |s| {
+                    let volume = s.get("volume").and_then(Value::as_i64).unwrap_or(0);
+                    object(json!({ "volume": volume + 10 }))
+                })
+                .unwrap();
+            })
+        };
+        sync.join().unwrap();
+        assert_eq!(view.load()["sounds"], json!({"on": true, "volume": 12}));
+        view.flush_pending();
+        assert_eq!(
+            load_at(&session.paths.copy)["sounds"],
+            json!({"on": true, "volume": 12})
+        );
+    }
+
+    #[test]
+    fn dropping_the_view_makes_accepted_writes_durable() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = SessionPaths::beside(dir.path().join("settings.json"));
+        {
+            let (session, view) = deferring_view(dir.path());
+            let parked = lock_copy(&session.paths.copy).unwrap();
+            view.update_section("appearance", object(json!({"theme": "light"})))
+                .unwrap();
+            drop(parked);
+            drop(view);
+        }
+        let reopened = SessionSettings::open(paths).unwrap();
+        assert_eq!(reopened.load()["appearance"]["theme"], "light");
+    }
+
+    #[test]
+    fn a_deferred_write_that_cannot_be_stored_is_reverted_and_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let (session, view) = deferring_view(dir.path());
+        let before = view.load();
+        std::fs::create_dir_all(session.paths.device.parent().unwrap()).unwrap();
+        std::fs::create_dir(&session.paths.device).unwrap();
+        std::fs::create_dir(&session.paths.person).unwrap();
+        view.update_section("appearance", object(json!({"theme": "dark"})))
+            .unwrap();
+        assert_eq!(
+            view.load()["appearance"]["theme"],
+            "dark",
+            "accepted for now"
+        );
+        let revision = view.revision();
+        view.flush_pending();
+        assert_eq!(view.load(), before, "the document went back");
+        assert!(view.revision() > revision, "readers are told it went back");
+        assert!(view.take_deferred_failure().is_some());
+        assert!(view.take_deferred_failure().is_none(), "reported once");
     }
 
     #[test]

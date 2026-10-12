@@ -9017,6 +9017,11 @@ fn backend_nested_loop_uses_edge_wake(source: &str) -> bool {
               the block already ends right after both are computed"
 )]
 pub fn run() {
+    // This thread answers input and flips frames: a settings write it makes
+    // must not wait for the disk (lock, syncs, rename). Readers see it at
+    // once and the settings worker makes it durable; session exit flushes it.
+    settings_store::defer_writes_on_this_thread();
+
     // Arm recovery before creating services, clients or a renderer.
     let recovery = super::session_recovery::SessionRecovery::from_env().unwrap_or_else(|error| {
         eprintln!("tilo compositor: cannot establish session lock recovery: {error}");
