@@ -28,9 +28,21 @@ PROTOCOL = "2025-06-18"
 
 
 def daemons() -> set[int]:
-    """Pids of standalone runtime daemons: a `--connect` in a session must never start one."""
-    out = subprocess.run(["pgrep", "-x", "tilo-runtime"], capture_output=True, text=True).stdout
-    return {int(p) for p in out.split() if p.isdigit()}
+    """Pids of standalone runtime daemons: a `--connect` in a session must never start one.
+
+    Read from /proc (what `pgrep -x` matches, the process name), so the client needs no
+    process tools beyond the standard library."""
+    found = set()
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry.name}/comm", encoding="utf-8") as comm:
+                if comm.read().strip() == "tilo-runtime":
+                    found.add(int(entry.name))
+        except OSError:
+            continue  # it exited, or is not ours to read
+    return found
 
 
 class Client:
