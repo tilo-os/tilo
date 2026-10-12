@@ -110,13 +110,11 @@ fn decode_favicon_png(
     if decoded.width != expected_width || decoded.height != expected_height {
         return None;
     }
-    Some(vello::peniko::ImageData {
-        data: vello::peniko::Blob::new(std::sync::Arc::new(decoded.rgba)),
-        format: vello::peniko::ImageFormat::Rgba8,
-        alpha_type: vello::peniko::ImageAlphaType::Alpha,
-        width: expected_width,
-        height: expected_height,
-    })
+    Some(ui::raster::rgba8(
+        decoded.rgba,
+        expected_width,
+        expected_height,
+    ))
 }
 
 /// Browser's public navigation boundary. Keep this separate from the generic
