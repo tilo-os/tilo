@@ -27,6 +27,32 @@ const MOST_OUTPUT_TOKENS: u32 = 16_000;
 /// The efforts Claude takes (`output_config.effort`).
 const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
+/// Models known to refuse a tool call asked for outright (`tool_choice`
+/// `any`): they think before they answer, so every agent's first call
+/// would otherwise be refused and sent again.
+const UNFORCED: &[&str] = &["claude-sonnet-5", "claude-opus-5", "claude-fable-"];
+
+/// The models this process has seen refuse a forced tool call, so an agent
+/// started after the first refusal asks the way the model takes.
+static REFUSED_FORCING: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Whether `model` may be asked for a tool call outright.
+fn forcible(model: &str) -> bool {
+    !UNFORCED.iter().any(|prefix| model.starts_with(prefix))
+        && !REFUSED_FORCING
+            .lock()
+            .is_ok_and(|refused| refused.iter().any(|seen| seen == model))
+}
+
+/// Remember that `model` refused a forced tool call.
+fn refused_forcing(model: &str) {
+    if let Ok(mut refused) = REFUSED_FORCING.lock()
+        && !refused.iter().any(|seen| seen == model)
+    {
+        refused.push(model.to_owned());
+    }
+}
+
 /// A Claude model at a Messages API base URL.
 pub struct AnthropicModel {
     endpoint: String,
@@ -37,8 +63,9 @@ pub struct AnthropicModel {
     service_tier: Option<String>,
     hedge_after: Option<std::time::Duration>,
     /// Whether a tool call is asked for outright (`tool_choice` `any`).
-    /// Models that think before they answer refuse that; the first refusal
-    /// leaves the choice to the model from then on.
+    /// Models that think before they answer refuse that; those known to are
+    /// never forced, and the first refusal leaves the choice to the model
+    /// from then on, for every agent of this process.
     forced: bool,
     client: std::sync::Arc<std::sync::OnceLock<Box<dyn std::any::Any + Send + Sync>>>,
 }
@@ -56,7 +83,7 @@ impl AnthropicModel {
             effort: None,
             service_tier: None,
             hedge_after: None,
-            forced: true,
+            forced: forcible(model),
             client: std::sync::Arc::new(std::sync::OnceLock::new()),
         }
     }
@@ -123,6 +150,7 @@ impl AnthropicModel {
         match self.post(&self.body(tools, messages), key, deadline) {
             Err(error) if self.forced && error.contains("HTTP 400") => {
                 self.forced = false;
+                refused_forcing(&self.model);
                 self.post(
                     &self.body(tools, messages),
                     &format!("{key}-auto"),
@@ -408,6 +436,24 @@ mod tests {
         thinking.forced = false;
         let body = thinking.body(&tools, &[first_message(("reference", "the task"))]);
         assert_eq!(body["tool_choice"]["type"], "auto");
+    }
+
+    #[test]
+    fn a_model_known_to_think_first_is_never_forced() {
+        let model = |name: &str| {
+            AnthropicModel::new(
+                "https://api.anthropic.com/v1",
+                name,
+                ApiKey::None,
+                std::time::Duration::from_secs(60),
+            )
+        };
+        for name in ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"] {
+            assert!(!model(name).forced, "{name}");
+        }
+        assert!(model("claude-haiku-5-5").forced);
+        refused_forcing("claude-refuses-later-1");
+        assert!(!model("claude-refuses-later-1").forced);
     }
 
     #[test]

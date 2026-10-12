@@ -336,6 +336,52 @@ pub fn carried_arguments(
     Ok(arguments)
 }
 
+/// What a plan writes for content a step before it in the same task
+/// produces (a picture an export makes), whose address no plan can know
+/// before that step has run.
+pub const LATEST_CONTENT: &str = "tilo.content:latest";
+
+/// Bind every content placeholder among `arguments` to `latest`, the content
+/// the task's latest content-producing step made: [`LATEST_CONTENT`], or any
+/// `tilo.content:` address whose hash is not one (`tilo.content:<export>`).
+/// Returns how many it bound.
+pub fn bind_latest_content(
+    arguments: &mut serde_json::Map<String, serde_json::Value>,
+    latest: &str,
+) -> usize {
+    arguments
+        .values_mut()
+        .map(|value| bind_placeholders(value, latest))
+        .sum()
+}
+
+fn bind_placeholders(value: &mut serde_json::Value, latest: &str) -> usize {
+    match value {
+        serde_json::Value::String(text) if is_content_placeholder(text) => {
+            latest.clone_into(text);
+            1
+        }
+        serde_json::Value::Array(items) => items
+            .iter_mut()
+            .map(|item| bind_placeholders(item, latest))
+            .sum(),
+        serde_json::Value::Object(fields) => fields
+            .values_mut()
+            .map(|field| bind_placeholders(field, latest))
+            .sum(),
+        _ => 0,
+    }
+}
+
+/// Whether `text` stands for content rather than naming it: a
+/// `tilo.content:` address without a well-formed hash.
+fn is_content_placeholder(text: &str) -> bool {
+    let Some(rest) = text.trim().strip_prefix("tilo.content:") else {
+        return false;
+    };
+    !(rest.len() == 64 && rest.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
 /// The content hash `planned` names outright in its content input: a
 /// `tilo.content:` address of a well-formed hash, not a placeholder.
 #[must_use]
@@ -587,6 +633,31 @@ pub fn find_addressed(blocks: &[Block], name: &str) -> Option<(usize, String)> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A plan names content an earlier step makes by placeholder; the
+    /// placeholder, however the model wrote it, becomes that content, and
+    /// an address that names content outright is kept.
+    #[test]
+    fn content_placeholders_bind_to_the_latest_content() {
+        let latest = format!("tilo.content:{}", "a".repeat(64));
+        let kept = format!("tilo.content:{}", "b".repeat(64));
+        let mut arguments = serde_json::json!({
+            "src": LATEST_CONTENT,
+            "images": ["tilo.content:<export-result>", kept],
+            "style": {"background": " tilo.content:hero "},
+            "title": "Meet Lumo",
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+        assert_eq!(bind_latest_content(&mut arguments, &latest), 3);
+        assert_eq!(arguments["src"], latest.as_str());
+        assert_eq!(arguments["images"][0], latest.as_str());
+        assert_eq!(arguments["images"][1], kept.as_str());
+        assert_eq!(arguments["style"]["background"], latest.as_str());
+        assert_eq!(arguments["title"], "Meet Lumo");
+    }
+
     use super::*;
 
     fn para(id: &str, text: &str) -> Block {

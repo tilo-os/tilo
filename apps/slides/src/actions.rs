@@ -773,6 +773,21 @@ fn live_element<'a>(
         .ok_or_else(|| refused("the target element no longer exists"))
 }
 
+/// The slide `slide` names: its id, else its number as `read` shows it (1
+/// for the first slide), which resolves to whichever slide is there when the
+/// action applies.
+fn slide_index(deck: &crate::model::Deck, slide: &str) -> Option<usize> {
+    deck.slides
+        .iter()
+        .position(|candidate| candidate.id == slide)
+        .or_else(|| {
+            let number = slide.trim().parse::<usize>().ok()?;
+            number
+                .checked_sub(1)
+                .filter(|index| *index < deck.slides.len())
+        })
+}
+
 /// Resolve a slide by stable resource id, using its serialized index only as a
 /// fast path. This prevents a remote insert/reorder from redirecting a local
 /// mutation to whichever slide has inherited the old numeric position.
@@ -1037,9 +1052,11 @@ impl Action for SlidesAction {
                 SlidesDoc::move_slide(doc, source, *to);
             }
             SlidesAction::SetSlideOrder { slide_id, rank } => {
-                if !deck.slides.iter().any(|slide| slide.id == *slide_id)
-                    || !SlidesDoc::set_slide_order(doc, slide_id, *rank)
-                {
+                let slide_id = slide_index(&deck, slide_id)
+                    .and_then(|index| deck.slides.get(index))
+                    .map(|slide| slide.id.clone())
+                    .ok_or_else(|| refused("no slide has that id or number"))?;
+                if !SlidesDoc::set_slide_order(doc, &slide_id, *rank) {
                     return Err(refused("the target slide no longer exists"));
                 }
             }
@@ -1082,11 +1099,8 @@ impl Action for SlidesAction {
                 add_element_checked(doc, deck, index, element)?;
             }
             SlidesAction::CreateElement { slide_id, element } => {
-                let index = deck
-                    .slides
-                    .iter()
-                    .position(|slide| slide.id == *slide_id)
-                    .ok_or_else(|| refused("the target slide no longer exists"))?;
+                let index = slide_index(&deck, slide_id)
+                    .ok_or_else(|| refused("no slide has that id or number"))?;
                 let data = self.created_element(doc, &deck, index, element)?;
                 add_element_checked(doc, deck, index, &data)?;
             }
@@ -1898,7 +1912,8 @@ fn slide_param() -> ActionParam {
     ActionParam::required(
         "slide",
         ParamType::Text,
-        "Slide id (or its `slides.slide:<id>` resource id)",
+        "Slide id (or its `slides.slide:<id>` resource id), or its number as `read` shows it \
+         (1 for the first slide)",
     )
 }
 
@@ -2529,6 +2544,11 @@ mod tests {
                 &Element::shape(ElementKind::Ellipse, 100.0, 100.0, 200.0, 200.0),
             )),
             door_add_element => |doc| through_door(doc, ADD_ELEMENT, add_text_args(doc)),
+            door_add_element_by_number => |doc| {
+                let mut args = add_text_args(doc);
+                args["slide"] = "2".into();
+                through_door(doc, ADD_ELEMENT, args)
+            },
             door_move_element => |doc| through_door(doc, MOVE_ELEMENT, serde_json::json!({
                 "element": deck(doc).slides[1].elements[0].id, "x": 10, "y": 20,
             })),

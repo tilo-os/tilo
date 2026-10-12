@@ -1047,6 +1047,17 @@ impl AgentParticipant {
             ),
             StepAction::Open | StepAction::Continue(_) => None,
         };
+        // Content a step before it made, which the plan could not name.
+        let arguments = arguments.map(|mut arguments| {
+            if let Some(latest) = self
+                .running
+                .as_ref()
+                .and_then(|running| running.produced.last())
+            {
+                tilo_agent::plan::bind_latest_content(&mut arguments, latest);
+            }
+            arguments
+        });
         let route = match &step.record {
             Some(record) => self.open(&step.app, Some(record))?,
             None => match self.apps.keys().find(|route| route.app_id == step.app) {
