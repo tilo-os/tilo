@@ -13,17 +13,27 @@ pub struct Worktree {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
+    git_said(dir, args).ok()
+}
+
+/// `git -C dir args`: its trimmed, non-empty stdout, or what went wrong (git's
+/// own stderr), for checks that must say why they could not observe a fact.
+fn git_said(dir: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(dir)
         .args(args)
         .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        .filter(|s| !s.is_empty())
+        .map_err(|e| format!("cannot run git: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if output.status.success() && !stdout.is_empty() {
+        return Ok(stdout);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(match stderr.trim() {
+        "" => format!("git {} {}", args.join(" "), output.status),
+        said => said.to_owned(),
+    })
 }
 
 impl Worktree {
@@ -53,6 +63,16 @@ impl Worktree {
 
     pub fn head(&self) -> Option<String> {
         git(&self.root, &["rev-parse", "HEAD"])
+    }
+
+    /// The commit this checkout's HEAD names, read the way build provenance
+    /// (`head`) and the acceptance harness read it. Resolving HEAD to its id
+    /// does not open the commit object, so a worktree whose shared object
+    /// store this user cannot read (an unprivileged user's worktree of a
+    /// root-owned CI clone) still answers. A checkout's HEAD always names a
+    /// commit, and that id is the identity: peeling it adds no guarantee.
+    pub fn checkout_commit(&self) -> Result<String, String> {
+        git_said(&self.root, &["rev-parse", "--verify", "HEAD"])
     }
 
     /// The full commit a revision names, if this repository has it.
