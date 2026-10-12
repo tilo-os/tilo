@@ -6860,6 +6860,11 @@ impl ShellOverlayHost {
         self.window_previews.begin_refresh(now, &wanted)
     }
 
+    /// Whether any chrome shows window previews now.
+    pub fn wants_window_previews(&self) -> bool {
+        !self.window_preview_targets().is_empty()
+    }
+
     /// The compositor went through `visited` requests of this round.
     pub fn advance_window_previews(&mut self, visited: usize) {
         self.window_previews.advance(visited);
