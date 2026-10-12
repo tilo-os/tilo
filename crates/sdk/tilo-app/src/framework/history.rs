@@ -5,6 +5,8 @@
 //! - `undo` / `redo`: the caller's own last steps (an agent's are those of
 //!   its run), or a named agent run's;
 //! - `restore`: a past version, whole or only some items, as a new step;
+//! - `review-restore` / `restore-reviewed`: pin a causal review and restore
+//!   exact differing paths only if the live frontier still matches;
 //! - `checkpoint`: name the current version;
 //! - `history`: every step with what it was given, who made it, in which
 //!   run, and which are undone or checkpointed;
@@ -14,6 +16,8 @@
 //! are [`ui_core::history_source::steps`]; an app with a richer comparison
 //! of its own (a picture of what changed) publishes its own `diff`, which
 //! takes the place of this one.
+
+pub(crate) mod review;
 
 use std::collections::HashSet;
 use ui_core::automerge::transaction::Transactable;
@@ -59,6 +63,9 @@ pub(crate) enum HistoryEdit {
         version: String,
         ids: Option<Vec<String>>,
     },
+    RestoreReviewed {
+        review: review::RestoreReview,
+    },
     Checkpoint {
         name: String,
     },
@@ -91,7 +98,7 @@ impl HistoryEdit {
             } => (HistoryOp::Undo, steps.unwrap_or(1)),
             Self::Undo { steps, .. } => (HistoryOp::Undo, steps.unwrap_or(0)),
             Self::Redo { steps } => (HistoryOp::Redo, steps.unwrap_or(1)),
-            Self::Restore { .. } => (HistoryOp::Restore, 0),
+            Self::Restore { .. } | Self::RestoreReviewed { .. } => (HistoryOp::Restore, 0),
             Self::Checkpoint { name } => (HistoryOp::Checkpoint { name: name.clone() }, 0),
         };
         let of = match self {
@@ -170,6 +177,7 @@ impl<R: tilo_resource::Resource> tilo_actions::Action for ResourceHistoryEdit<R>
 enum HistoryView {
     History { last: Option<u32> },
     Diff { from: String, to: Option<String> },
+    ReviewRestore { version: String, paths: Vec<String> },
 }
 
 fn invalid(reason: &str) -> EncodedAction {
@@ -269,6 +277,7 @@ const VERSION: &str = "A change id from history, or a checkpoint name";
 pub(crate) fn specs() -> Vec<ActionSpec> {
     let mut specs = edit_specs();
     specs.extend(view_specs());
+    specs.extend(review::specs());
     specs
 }
 
@@ -408,7 +417,10 @@ fn view_specs() -> Vec<ActionSpec> {
 
 /// Whether `action` is a history verb that writes the document.
 pub(crate) fn is_edit(action: &str) -> bool {
-    matches!(action, "undo" | "redo" | "restore" | "checkpoint")
+    matches!(
+        action,
+        "undo" | "redo" | "restore" | "restore-reviewed" | "checkpoint"
+    )
 }
 
 /// A version's name in an answer: its change id, or several for a version
@@ -699,6 +711,7 @@ pub(crate) fn answer(doc: &AutoCommit, payload: &[u8]) -> Result<ActionOutput, S
         .map_err(|error| format!("not a history view: {error}"))?;
     let value = match view {
         HistoryView::History { last } => history(doc, limit(last, 50)),
+        HistoryView::ReviewRestore { version, paths } => review::answer(doc, &version, &paths)?,
         HistoryView::Diff { from, to } => {
             let from = steps::resolve(doc, &from)?;
             let to = match to {
@@ -712,6 +725,8 @@ pub(crate) fn answer(doc: &AutoCommit, payload: &[u8]) -> Result<ActionOutput, S
             json!({
                 "from": version_name(&from),
                 "to": version_name(&to),
+                "from_heads": from.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                "to_heads": to.iter().map(ToString::to_string).collect::<Vec<_>>(),
                 "items": items,
             })
         }
@@ -804,7 +819,7 @@ pub(crate) fn result(action: &str, doc: &AutoCommit, patches: &[Patch]) -> Optio
         "redo" => {
             json!({"redone": described(ledger(patches, steps::UNDONE_KEY, false), &mut doc), "now": now})
         }
-        "restore" => json!({"restored": items(patches), "now": now}),
+        "restore" | "restore-reviewed" => json!({"restored": items(patches), "now": now}),
         "checkpoint" => {
             let name = ledger(patches, steps::CHECKPOINT_KEY, true);
             let version = steps::checkpoints(&doc)
@@ -827,6 +842,9 @@ impl HistoryEdit {
         doc: &mut tilo_actions::Doc,
         register: fn(&mut tilo_actions::ActionRegistry),
     ) -> Result<(), ActionError> {
+        if let Self::RestoreReviewed { review } = self {
+            return review.apply(doc).map_err(ActionError::Refused);
+        }
         let registry = tilo_actions::ActionRegistry::with(register);
         let mut original = doc.fork();
         match self {
@@ -859,6 +877,7 @@ impl HistoryEdit {
             Self::Restore { version, ids } => steps::resolve(doc, version).and_then(|heads| {
                 steps::restore(doc, &heads, ids.as_deref().unwrap_or_default()).map(drop)
             }),
+            Self::RestoreReviewed { review } => review.apply(doc),
             Self::Checkpoint { name } => steps::checkpoint(doc, name),
         }
         .map_err(ActionError::Refused)
