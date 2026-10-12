@@ -991,18 +991,6 @@ fn commit_staged_personal_enrollment(
         &std::fs::read(staged(&stage_dir, "registry.json"))?,
         0o600,
     )?;
-    // The joined identity is the one this device now acts for: select it, or
-    // the next login resolves the absent default and asks to create one. Only
-    // the directory's owner can select (the selector is theirs alone); a
-    // root-run join into someone else's directory leaves it to them.
-    if owns_directory(&marker.identity_dir)? {
-        let record_id = record
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .context("joined identity record has no runtime id")?;
-        runtime_identity::set_active_identity(&marker.identity_dir, record_id)
-            .context("select the joined identity")?;
-    }
     checkpoint(PersonalCommitCheckpoint::UserPublicKey)?;
     // The public key and certificates are public, whatever the umask this
     // commit runs under: the session reads them to verify the device, and
@@ -1033,6 +1021,20 @@ fn commit_staged_personal_enrollment(
     // Publish this last: every projection file has been durably installed.
     checkpoint(PersonalCommitCheckpoint::DefaultCert)?;
     tilo_files::native::atomic::write_with_mode(&paths.device_cert, &cert_bytes, public)?;
+    // The joined identity is the one this device now acts for: select it, or
+    // the next login resolves the absent default and asks to create one. The
+    // first-use UI reads a selected joined identity as a finished join, so it
+    // is selected only once every file of the join is in place. Only the
+    // directory's owner can select (the selector is theirs alone); a root-run
+    // join into someone else's directory leaves it to them.
+    if owns_directory(&marker.identity_dir)? {
+        let record_id = record
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .context("joined identity record has no runtime id")?;
+        runtime_identity::set_active_identity(&marker.identity_dir, record_id)
+            .context("select the joined identity")?;
+    }
     // A root-run (headless) enrollment wrote these as root. Restore each
     // one's directory owner and group before the marker is cleared, so
     // recovery repeats this step if it is interrupted. Parents come before
@@ -3407,6 +3409,13 @@ mod tests {
                 .is_err()
             );
             assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
+            // First use reads a selected joined identity as a finished join;
+            // an interrupted commit has selected nothing yet.
+            assert_eq!(
+                runtime_identity::resolve_active_identity(identity_dir.path()),
+                None,
+                "an unfinished join selected its identity"
+            );
             requester.kill().unwrap();
             requester.wait().unwrap();
             assert!(lease.validate().is_err());
@@ -3457,6 +3466,10 @@ mod tests {
             assert_eq!(
                 recorded,
                 vec![hex::encode(member.verifying_key().to_bytes())]
+            );
+            assert!(
+                runtime_identity::resolve_active_identity(identity_dir.path()).is_some(),
+                "the finished join selects its identity"
             );
         }
         // Phase `personal_projection_loads_without_root_signing_material`.
