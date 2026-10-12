@@ -140,6 +140,17 @@ impl NativeDocumentReads for Reads {
         let read = self
             .meter
             .timed(|| self.inner.capture(context, revision, maximum))?;
+        if matches!(read, NativeDocumentRead::Captured { .. }) {
+            // Which reader read whole, and whether it held a revision: a
+            // whole read after the document is large is what this journey
+            // must not see.
+            eprintln!(
+                "active journey: whole read of {}/{:?} holding a revision: {}",
+                context.route().app_id,
+                context.route().record_id,
+                revision.is_some()
+            );
+        }
         self.meter.handed(&read);
         Ok(read)
     }
