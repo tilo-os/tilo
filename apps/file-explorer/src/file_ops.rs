@@ -80,6 +80,35 @@ fn text(path: &Path) -> String {
     path.display().to_string()
 }
 
+impl FileOp {
+    /// Every path carrying out this operation writes, as absolute paths; a
+    /// folder stands for what it writes inside it. What an agent's writes
+    /// are named for ([`crate::write_attribution`]). A revert, and a
+    /// transfer the native host carries out, name none here.
+    #[must_use]
+    pub fn written_paths(&self) -> Vec<String> {
+        let sibling = |path: &str, name: &str| {
+            Path::new(path)
+                .parent()
+                .map(|parent| text(&parent.join(name)))
+        };
+        match self {
+            Self::NewFolder { parent, name } => vec![text(&Path::new(parent).join(name))],
+            Self::Rename { path, name } => std::iter::once(path.clone())
+                .chain(sibling(path, name))
+                .collect(),
+            Self::Trash { paths } => paths.clone(),
+            Self::Move { paths, folder, .. } => paths
+                .iter()
+                .cloned()
+                .chain(std::iter::once(folder.clone()))
+                .collect(),
+            Self::Copy { folder, .. } => vec![folder.clone()],
+            Self::ClipboardReceipt { .. } | Self::Revert { .. } => Vec::new(),
+        }
+    }
+}
+
 /// Carry out `op` on this device's filesystem. A revert is given the changes
 /// the operation it takes back made (`None` when that operation is unknown).
 pub fn execute(op: &FileOp, reverting: Option<&[Change]>) -> Outcome {
@@ -330,5 +359,54 @@ mod tests {
             Some(outcome.result().as_slice()),
         ));
         assert!(root.path().join("a.txt").exists());
+    }
+
+    /// An operation names every path it writes, so an agent's writes are
+    /// named for exactly them; what it does not carry out itself names none.
+    #[test]
+    fn operations_name_the_paths_they_write() {
+        let paths = |op: FileOp| op.written_paths();
+        assert_eq!(
+            paths(FileOp::NewFolder {
+                parent: "/w/Reports".into(),
+                name: "Q3".into()
+            }),
+            ["/w/Reports/Q3"]
+        );
+        assert_eq!(
+            paths(FileOp::Rename {
+                path: "/w/a.txt".into(),
+                name: "b.txt".into()
+            }),
+            ["/w/a.txt", "/w/b.txt"]
+        );
+        assert_eq!(
+            paths(FileOp::Move {
+                paths: vec!["/w/a.txt".into()],
+                folder: "/w/Archive".into(),
+                create: true
+            }),
+            ["/w/a.txt", "/w/Archive"]
+        );
+        assert_eq!(
+            paths(FileOp::Copy {
+                paths: vec!["/w/a.txt".into()],
+                folder: "/w/Copies".into()
+            }),
+            ["/w/Copies"]
+        );
+        assert_eq!(
+            paths(FileOp::Trash {
+                paths: vec!["/w/a.txt".into()]
+            }),
+            ["/w/a.txt"]
+        );
+        assert!(
+            paths(FileOp::ClipboardReceipt {
+                operation: "x".into()
+            })
+            .is_empty()
+        );
+        assert!(paths(FileOp::Revert { op: "x".into() }).is_empty());
     }
 }

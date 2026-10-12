@@ -914,6 +914,7 @@ impl App {
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
             | CollabEvent::LocalFileClipboardResult { .. }
+            | CollabEvent::FileWritesAttributed { .. }
             | CollabEvent::Realtime(_) => {}
         }
     }

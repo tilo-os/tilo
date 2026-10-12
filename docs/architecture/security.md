@@ -190,11 +190,15 @@ delegation) and keeps agent devices out of the devices sharing encrypts to.
 
 An agent that acts through its person's own session has no key of its own:
 it invokes an app's action, and the write lands through the mount, signed by
-this device for its person like any other. The desktop session knows from
-the action's authenticated context which agent it ran for, and leases that
-attribution to the filesystem for the paths the action writes, for at most a
-minute, over `SessionBlobs.attributeWrites` on the document media socket,
-which no sandbox reaches (`crates/system/fs/src/write_attribution.rs`). Each
+this device for its person like any other. Before it writes, the app names
+the paths and the invocation it is running (`attributeFileWrites`); it never
+names an agent. The broker takes the agent from that one live invocation's
+custody, and only for an agent acting through this device's own session (a
+local connection or a broker-leased run, never a peer's device): see
+`collab_broker_capnp/file_attribution.rs`. The session then leases that
+attribution to the filesystem for those paths, for at most a minute, over
+`SessionBlobs.attributeWrites` on the document media socket, which no
+sandbox reaches (`crates/system/fs/src/write_attribution.rs`). Each
 version the mount then makes of a leased path is followed by a signed
 `RecordOperationV1::AttributeVersion` (`record_replication.rs`). The
 attribution names the agent; the person it acted for is always the version's

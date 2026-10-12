@@ -58,6 +58,7 @@ pub mod shortcut_menu;
 pub mod templates;
 pub mod toolbar;
 pub mod views;
+pub(crate) mod write_attribution;
 
 pub use command::{CommandSink, FileCommand};
 pub use files_app::{FileExplorerWidget, StartupInputs};

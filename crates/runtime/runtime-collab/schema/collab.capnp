@@ -417,6 +417,17 @@ interface ChannelHandle {
   # endpoint asks on a timer as before.
   channelKeysChanged @59 (after :UInt64) -> (change :UInt64);
 
+  # Name the agent behind the writes this application is about to make to
+  # `paths` (absolute paths under the workspace mount; a folder covers what
+  # is under it) for the invocation `onBehalfOf` it is running. The agent is
+  # never the app's to name: the broker takes it from that invocation's own
+  # custody, and only for an agent acting through this device's session, so
+  # each resulting file version reads as that agent, for this device's
+  # person. `attributed` is false when the invocation is no such agent's.
+  # Grants nothing; refused without exactly one live invocation of this
+  # connection by that id.
+  attributeFileWrites @60 (paths :List(Text), onBehalfOf :Data) -> (attributed :Bool);
+
 }
 
 # Optional result on @35, minted from the same captured directory and worker.

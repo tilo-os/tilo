@@ -530,6 +530,8 @@ pub struct FileExplorerWidget {
     shown_selection: shown_selection::ShownSelection,
     shown_folder: Option<Arc<host_fs::RetainedObject>>,
     local_clipboard: clipboard_client::Client,
+    /// Changes waiting for the broker to name the agent behind their writes.
+    write_attribution: crate::write_attribution::Client,
     error: Option<String>,
     is_loading: bool,
     last_click: Option<(usize, Instant)>,
@@ -1613,6 +1615,7 @@ impl FileExplorerWidget {
             merge_preflight_pending: None,
             effect_reply: None,
             local_clipboard: clipboard_client::Client::new(),
+            write_attribution: crate::write_attribution::Client::default(),
             accounts_root: None,
             accounts_cache: Vec::new(),
             host_intent: None,
@@ -8747,6 +8750,7 @@ impl Collaborative for FileExplorerWidget {
         let mut requests = self.nearby_send.take_requests();
         requests.extend(self.shortcut_menu.take_requests());
         requests.extend(self.local_clipboard.take_request());
+        requests.extend(self.write_attribution.take_requests(now));
         requests
     }
 
@@ -8755,6 +8759,7 @@ impl Collaborative for FileExplorerWidget {
         if let Some(result) = self.local_clipboard.event(event) {
             self.complete_clipboard_publication(result);
         }
+        self.write_attribution.event(event);
         let mut changed = self.handle_shortcut_event(event);
         for effect in self.nearby_send.handle_event(event) {
             match effect {
@@ -8940,6 +8945,7 @@ impl Widget for FileExplorerWidget {
             .chain(changed_directory)
             .chain(document_open_reply)
             .chain(self.local_clipboard.next_wake())
+            .chain(self.write_attribution.next_wake())
             .chain(self.nav.next_wake_deadline())
             .min()
     }

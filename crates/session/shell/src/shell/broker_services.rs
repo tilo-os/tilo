@@ -413,6 +413,33 @@ pub fn decide_receipt_against_surfaces() {
     });
 }
 
+/// How long the filesystem names an agent for the writes of one of its
+/// invocations: the app writes right after asking.
+const WRITE_ATTRIBUTION_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The filesystem's write attribution, reached as the desktop session over
+/// the document media socket, which no sandbox reaches. The broker hands it
+/// only an agent it took from an invocation's custody.
+struct SessionWriteAttributions;
+
+impl tilo_action_broker::services::FileWriteAttributions for SessionWriteAttributions {
+    fn attribute(
+        &self,
+        attribution: tilo_action_broker::services::FileWriteAttribution,
+    ) -> Result<(), String> {
+        with_session_blobs(|client| {
+            client.attribute_writes(runtime_fs::blobs::WriteAttribution {
+                paths: attribution.paths.clone(),
+                actor: format!("agent:{}", attribution.agent_id),
+                label: attribution.label.clone(),
+                color: attribution.color,
+                ttl: WRITE_ATTRIBUTION_TTL,
+            })
+        })
+        .map_err(|error| error.to_string())
+    }
+}
+
 impl LaunchContentReader for SessionContentStore {
     fn read(&self, room: &str, app: &str, hash: &str) -> Result<Vec<u8>, String> {
         use runtime_fs::blobs::ReadOutcome;
@@ -1661,6 +1688,7 @@ pub fn native_services(
         }),
         app_action_access: Some(super::app_action_access::installed_resolver()),
         app_action_grants,
+        file_write_attributions: Some(Arc::new(SessionWriteAttributions)),
         committed_documents,
         workspace_memberships,
         task_execution,

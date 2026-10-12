@@ -684,6 +684,11 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
         // records what it changed; a change asked for here runs under the
         // invocation that asked, which completes once it settled.
         let native = self.native_undo_queue();
+        // Hosted, a change an invocation asked for first names the agent
+        // behind its writes, from that invocation's custody at the broker.
+        let attributing = self
+            .hosted_clipboard()
+            .then(|| self.write_attribution_queue());
         let ops = cx.device().map(|device| {
             let me = device.to_owned();
             cx.outbox_awaited(
@@ -693,7 +698,24 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                     let Some((operation, redo)) =
                         cx.live().with(|state| native_compensation(state, &task))
                     else {
-                        return cx.live().with(|state| carry_out(state, &task));
+                        let paths = task.op.written_paths();
+                        let invocation = cx.invocation();
+                        let (Some(attributing), Some(invocation), false) =
+                            (attributing.as_ref(), invocation, paths.is_empty())
+                        else {
+                            return cx.live().with(|state| carry_out(state, &task));
+                        };
+                        let reply = cx.reply_then(move |(), _, cx| {
+                            cx.live().with(|state| carry_out(state, &task))
+                        });
+                        attributing
+                            .borrow_mut()
+                            .push(crate::write_attribution::Attributing {
+                                invocation,
+                                paths,
+                                reply,
+                            });
+                        return Ok(Effected::Pending);
                     };
                     // The host acts for the invocation that asked for it.
                     let invocation = cx

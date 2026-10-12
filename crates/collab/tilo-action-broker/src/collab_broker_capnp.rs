@@ -28,6 +28,9 @@ mod authority_sample_tests;
 mod canonical_route;
 mod committed_document;
 mod durable_local_invocation;
+mod file_attribution;
+#[cfg(test)]
+mod file_attribution_tests;
 mod file_clipboard;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
@@ -6669,6 +6672,7 @@ impl CapnpBrokerState {
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
             | CollabEvent::LocalFileClipboardResult { .. }
+            | CollabEvent::FileWritesAttributed { .. }
             | CollabEvent::Realtime(_)
             | CollabEvent::RecordContent { .. }
             | CollabEvent::RemoteAction { .. } => {
@@ -8521,6 +8525,37 @@ impl channel_handle::Server for CapnpChannelHandle {
         {
             Ok(reply) => {
                 results.get().set_reply_json(&reply);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(error),
+        }
+    }
+
+    fn attribute_file_writes(
+        self: Rc<Self>,
+        params: channel_handle::AttributeFileWritesParams,
+        mut results: channel_handle::AttributeFileWritesResults,
+    ) -> Promise<(), capnp::Error> {
+        let answer = params.get().and_then(|request| {
+            let rows = request.get_paths()?;
+            if rows.len() as usize > file_attribution::MAX_ATTRIBUTED_PATHS {
+                return Err(capnp::Error::failed("too many attributed paths".into()));
+            }
+            let paths = rows
+                .iter()
+                .map(|row| {
+                    row?.to_str()
+                        .map(str::to_owned)
+                        .map_err(|error| capnp::Error::failed(error.to_string()))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let parent = observed_launch::launch_parent(request.get_on_behalf_of()?)?;
+            self.attribute_writes_for_invocation(paths, parent)
+                .map_err(capnp::Error::failed)
+        });
+        match answer {
+            Ok(attributed) => {
+                results.get().set_attributed(attributed);
                 Promise::ok(())
             }
             Err(error) => Promise::err(error),

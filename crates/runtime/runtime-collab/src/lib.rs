@@ -957,6 +957,37 @@ impl ChannelHandle {
     ///
     /// # Errors
     /// Rejects oversized, malformed or unavailable commands and replies.
+    /// Ask the broker to name the agent behind the writes this application
+    /// is about to make to `paths` for its running invocation `parent`. The
+    /// broker takes the agent from that invocation's custody, never from the
+    /// app. `false` when the invocation is no agent's acting through this
+    /// device's session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the broker refuses (no such live
+    /// invocation, no paths, too many) or the connection is gone.
+    pub async fn attribute_file_writes(
+        &self,
+        paths: &[String],
+        parent: [u8; 16],
+    ) -> Result<bool, NotAvailable> {
+        let count = u32::try_from(paths.len()).map_err(|_| {
+            NotAvailable::Capnp(capnp::Error::failed("too many attributed paths".into()))
+        })?;
+        let mut request = self.inner.attribute_file_writes_request();
+        {
+            let mut params = request.get();
+            let mut rows = params.reborrow().init_paths(count);
+            for (index, path) in (0..count).zip(paths) {
+                rows.set(index, path.as_str());
+            }
+            params.set_on_behalf_of(parent.as_slice());
+        }
+        let response = request.send().promise.await?;
+        Ok(response.get()?.get_attributed())
+    }
+
     pub async fn local_file_clipboard_command(
         &self,
         command: &file_clipboard::Command,

@@ -191,6 +191,14 @@ pub fn pump(relay: &mut MemoryRelay) {
             CollabRequest::LocalFileClipboard { request_id, .. } => {
                 refuse_file_clipboard(&mut inboxes, &from, request_id);
             }
+            CollabRequest::AttributeFileWrites { request_id, .. } => {
+                if let Some(inbox) = inboxes.get_mut(&from) {
+                    inbox.push_back(CollabEvent::FileWritesAttributed {
+                        request_id,
+                        result: Err("no broker attributes writes in this harness".into()),
+                    });
+                }
+            }
             CollabRequest::WorkspaceControlInput { .. }
             | CollabRequest::OfferContent { .. }
             | CollabRequest::WantContent { .. }

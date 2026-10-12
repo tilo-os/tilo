@@ -114,7 +114,7 @@ impl DocumentMedia {
     ///
     /// # Errors
     ///
-    /// Refuses when this daemon mounts no workspace, a path lies outside the
+    /// Refuses when this daemon mounts no workspace, no path lies inside the
     /// mount, or the lease is invalid.
     pub fn lease_write_attribution(
         &self,
@@ -125,12 +125,18 @@ impl DocumentMedia {
                 "this filesystem attributes no writes".into(),
             ));
         };
+        // A change may also write outside the workspace (a person's own
+        // folders): only what this mount versions is attributed here.
         let paths = attribution
             .paths
             .iter()
-            .map(|path| crate::write_attribution::mount_relative(mount_point, path))
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| BlobError::Refused("an attributed path is outside the mount".into()))?;
+            .filter_map(|path| crate::write_attribution::mount_relative(mount_point, path))
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            return Err(BlobError::Refused(
+                "no attributed path is inside the mount".into(),
+            ));
+        }
         leases
             .grant(
                 paths,

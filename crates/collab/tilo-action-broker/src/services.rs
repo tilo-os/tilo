@@ -1020,8 +1020,36 @@ pub trait DisplayControlServices: Send + Sync {
     fn command(&self, context: &DisplayControlContext, command: &[u8]) -> Result<Vec<u8>, String>;
 }
 
+/// The agent an application's coming writes are for, as the broker took it
+/// from the custody of the invocation those writes run under: never from
+/// the application. The person it acts for is this device's own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileWriteAttribution {
+    /// Absolute paths under the workspace mount; a folder covers its subtree.
+    pub paths: Vec<String>,
+    /// The agent's id (its principal is `agent:<id>`).
+    pub agent_id: String,
+    /// How the agent is shown.
+    pub label: String,
+    /// Its presence colour, sRGB.
+    pub color: [u8; 3],
+}
+
+/// Hands a [`FileWriteAttribution`] to the filesystem, which names the agent
+/// in the signed record of each version it then makes of those paths.
+/// Presentation only: it grants nothing.
+pub trait FileWriteAttributions: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns why the filesystem could not take the attribution.
+    fn attribute(&self, attribution: FileWriteAttribution) -> Result<(), String>;
+}
+
 #[derive(Clone, Default)]
 pub struct HostServices {
+    /// The filesystem's write attribution, reached as the desktop session.
+    /// Without it an agent's writes through an app read as its person's.
+    pub file_write_attributions: Option<Arc<dyn FileWriteAttributions>>,
     /// Fixed project-host registrations, unavailable unless actual enforcement is configured.
     pub approved_checks: Option<Arc<dyn crate::collab_broker_capnp::ApprovedCheckServices>>,
     /// Read-only existing-resource discovery, absent unless the native host

@@ -217,6 +217,15 @@ impl From<TransportError> for CollabSendError {
 
 #[derive(Debug, Clone)]
 pub enum CollabRequest {
+    /// Name the agent behind this app's coming writes to `paths` (absolute,
+    /// under the workspace mount) for its running invocation `on_behalf_of`.
+    /// The broker takes the agent from that invocation's custody, never from
+    /// the app. Answered by [`CollabEvent::FileWritesAttributed`].
+    AttributeFileWrites {
+        request_id: u64,
+        paths: Vec<String>,
+        on_behalf_of: tilo_actions::InvocationId,
+    },
     LocalFileClipboard {
         request_id: u64,
         command: runtime_collab::file_clipboard::Command,
@@ -631,6 +640,12 @@ impl ChannelAccessState {
 
 #[derive(Debug, Clone)]
 pub enum CollabEvent {
+    /// The broker's answer to [`CollabRequest::AttributeFileWrites`]:
+    /// whether the writes now name an agent.
+    FileWritesAttributed {
+        request_id: u64,
+        result: Result<bool, String>,
+    },
     LocalFileClipboardResult {
         request_id: u64,
         result: Result<runtime_collab::file_clipboard::Reply, String>,

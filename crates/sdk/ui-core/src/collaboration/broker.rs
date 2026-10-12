@@ -892,6 +892,12 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         }
         CollabRequest::RemoteAction { message } => serialized_bytes(message, &mut meter),
         CollabRequest::LocalFileClipboard { command, .. } => serialized_bytes(command, &mut meter),
+        CollabRequest::AttributeFileWrites { paths, .. } => {
+            meter.add_product(paths.capacity(), std::mem::size_of::<String>());
+            for path in paths {
+                meter.string_capacity(path);
+            }
+        }
         CollabRequest::OfferContent { hash, bytes } => {
             meter.string_capacity(hash);
             meter.bytes(bytes);
@@ -1517,6 +1523,12 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
                 Err(error) => meter.string_capacity(error),
             }
             "RealtimeCommandResult"
+        }
+        CollabEvent::FileWritesAttributed { result, .. } => {
+            if let Err(error) = result {
+                meter.string_capacity(error);
+            }
+            "FileWritesAttributed"
         }
         CollabEvent::LocalFileClipboardResult { result, .. } => {
             match result {
@@ -6263,6 +6275,19 @@ async fn dispatch_sdk_request(
                 .map_err(|error| error.to_string());
             let _ = inbound_tx
                 .send_durable(CollabEvent::NearbyTransferCommandResult { request_id, result });
+        }
+        CollabRequest::AttributeFileWrites {
+            request_id,
+            paths,
+            on_behalf_of,
+        } => {
+            let result = route
+                .channel
+                .attribute_file_writes(&paths, *on_behalf_of.0.as_bytes())
+                .await
+                .map_err(|error| error.to_string());
+            let _ =
+                inbound_tx.send_durable(CollabEvent::FileWritesAttributed { request_id, result });
         }
         CollabRequest::LocalFileClipboard {
             request_id,

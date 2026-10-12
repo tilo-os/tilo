@@ -523,6 +523,14 @@ fn selected(path: &Path, retained: &RetainedObject) -> Result<SelectedDescriptor
 
 impl FileExplorerWidget {
     /// Where native Undo and Redo of recorded transfers wait for the host.
+    /// Where a change queues the paths it is about to write, to name the
+    /// agent behind them first.
+    pub(crate) fn write_attribution_queue(
+        &self,
+    ) -> Rc<RefCell<Vec<crate::write_attribution::Attributing>>> {
+        self.write_attribution.queue()
+    }
+
     pub(crate) fn native_undo_queue(&self) -> Rc<RefCell<Vec<UndoRequest>>> {
         Rc::clone(&self.local_clipboard.undo_queue)
     }

@@ -5,7 +5,7 @@ use runtime_collab::file_clipboard::{Command, MAX_WIRE_BYTES};
 use tilo_actions::{ActionKind, InvocationId};
 
 impl CapnpChannelHandle {
-    fn clipboard_original(
+    pub(super) fn clipboard_original(
         &self,
         parent: Option<InvocationId>,
     ) -> Result<Option<super::PendingInvocation>, String> {
