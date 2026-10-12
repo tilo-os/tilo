@@ -1445,34 +1445,31 @@ mod tests {
         let mut rng = UnwrapErr(SysRng);
         let mut bootstrap = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (host_session, host_round1) = bootstrap.begin_enrolment(1, 2, 2, &mut rng).unwrap();
-        let mut host = ui::widget::identity_flow::add_device_host::AddDeviceHostScreen::new();
-        host.begin(host_round1, host_session, *bootstrap.group_public_key())
-            .unwrap();
-        let nonce = host.handshake().unwrap().nonce;
-        let server = PairingBrokerServer::start(authority.clone(), nonce).unwrap();
+        let mut host = tilo_identity_ceremony::HostPairing::begin(
+            &host_round1,
+            host_session,
+            bootstrap.group_public_key(),
+        )
+        .unwrap();
+        let server = PairingBrokerServer::start(authority.clone(), host.nonce()).unwrap();
         host.attach_broker(server.endpoint().to_string(), server.certificate_der())
             .unwrap();
-        let payload = host.handshake().unwrap().payload.clone();
-        let pairer = std::thread::spawn(move || {
-            let mut screen = ui::widget::identity_flow::pair_device::PairDeviceScreen::new();
-            screen.perform_pairing_from_payload(&payload).unwrap()
-        });
+        let payload = host.payload().clone();
+        let pairer =
+            std::thread::spawn(move || tilo_identity_ceremony::pair_with_host(&payload).unwrap());
         // The exchange crosses a real TLS broker and a DKG on each side; the
         // loop ends as soon as it completes, so this bound only catches a hang.
         let deadline = tilo_test_env::hang_deadline();
-        let completed = loop {
-            if host.poll_handshake(&authority).unwrap() {
-                break true;
+        let host_identity = loop {
+            if let Some(identity) = host.poll(&authority).unwrap() {
+                break identity;
             }
-            if std::time::Instant::now() >= deadline {
-                break false;
-            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pinned TLS broker DKG did not finish"
+            );
             std::thread::sleep(Duration::from_millis(2));
         };
-        assert!(completed, "pinned TLS broker DKG did not finish");
-        let host_identity = host
-            .take_completed_identity()
-            .expect("completed broker DKG must retain the host identity");
         let pairer_identity = pairer.join().unwrap();
         assert_eq!(
             host_identity.group_public_key(),

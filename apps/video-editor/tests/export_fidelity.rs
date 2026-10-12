@@ -95,7 +95,6 @@ fn project_over(path: &std::path::Path, len: f64, name: &str) -> Project {
         fps: f64::from(generated_clip::FPS),
         palette: 3,
         path: path.to_string_lossy().into_owned(),
-        hydration: video_editor::media::Hydration::Local,
         ..Default::default()
     });
     let tid = uuid::Uuid::new_v4();
@@ -540,7 +539,8 @@ fn exported_geometry_titles_transforms_and_speed_reach_the_file() {
                 id: uuid::Uuid::new_v4(),
                 kind: EffectKind::Invert,
                 amount: 1.0,
-            }];
+            }]
+            .into();
             p
         };
 
@@ -1100,7 +1100,6 @@ fn av_project(name: &str, video: &std::path::Path, audio: &std::path::Path) -> P
         kind: MediaKind::Audio,
         duration: FIXTURE_SECS,
         path: audio.to_string_lossy().into_owned(),
-        hydration: video_editor::media::Hydration::Local,
         ..Default::default()
     });
     let tid = uuid::Uuid::new_v4();
@@ -1611,7 +1610,6 @@ fn plate_stack(name: &str) -> (Project, uuid::Uuid) {
             fps: PLATE_FPS as f64,
             palette: 3,
             path: plate.to_string_lossy().into_owned(),
-            hydration: video_editor::media::Hydration::Local,
             ..Default::default()
         });
         id
@@ -1645,7 +1643,8 @@ fn plate_stack(name: &str) -> (Project, uuid::Uuid) {
         id: uuid::Uuid::new_v4(),
         kind: EffectKind::Invert,
         amount: 1.0,
-    }];
+    }]
+    .into();
     (p, over)
 }
 
@@ -2124,7 +2123,6 @@ fn wedge_project(name: &str) -> (Project, uuid::Uuid) {
         fps: WEDGE_FPS as f64,
         palette: 3,
         path: wedge.to_string_lossy().into_owned(),
-        hydration: video_editor::media::Hydration::Local,
         ..Default::default()
     });
     let tid = uuid::Uuid::new_v4();

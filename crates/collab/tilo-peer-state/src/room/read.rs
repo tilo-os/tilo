@@ -66,7 +66,9 @@ pub(crate) trait RoomRead {
 /// Borrowed logical governance values.
 pub(crate) enum GovernanceEntry<'a> {
     Owner(&'a str),
-    Capability { key: &'a str, bytes: &'a [u8] },
+    Grant { key: &'a str, bytes: &'a [u8] },
+    Member { key: &'a str, bytes: &'a [u8] },
+    Sandbox { key: &'a str, bytes: &'a [u8] },
     Peer { key: &'a str, name: &'a str },
     Identity { key: &'a str, bytes: &'a [u8] },
 }
@@ -89,7 +91,13 @@ pub(crate) fn visit_governance_entries<R: RoomRead, E>(
     {
         return Err(error);
     }
-    for (field, kind) in [("capabilities", 0), ("peers", 1), ("peer_identities_v1", 2)] {
+    for (field, kind) in [
+        ("grants", 0),
+        ("peers", 1),
+        ("peer_identities_v1", 2),
+        ("members", 3),
+        ("sandbox", 4),
+    ] {
         let values = read
             .visit_property(&root, field, Selection::Winner, |value| {
                 // Map-key lookup ignores malformed sequence containers: a
@@ -104,7 +112,13 @@ pub(crate) fn visit_governance_entries<R: RoomRead, E>(
                             read.visit_property(&object, key, Selection::Winner, |value| {
                                 match (kind, value) {
                                     (0, RoomValue::Bytes(bytes)) => {
-                                        visitor(GovernanceEntry::Capability { key, bytes })
+                                        visitor(GovernanceEntry::Grant { key, bytes })
+                                    }
+                                    (3, RoomValue::Bytes(bytes)) => {
+                                        visitor(GovernanceEntry::Member { key, bytes })
+                                    }
+                                    (4, RoomValue::Bytes(bytes)) => {
+                                        visitor(GovernanceEntry::Sandbox { key, bytes })
                                     }
                                     (1, RoomValue::Str(name)) => {
                                         visitor(GovernanceEntry::Peer { key, name })
@@ -338,7 +352,9 @@ mod tests {
         let expected = super::super::governance_of(Some(doc));
         let expected_count = [
             usize::from(expected.owner.is_some()),
-            expected.capabilities.len(),
+            expected.grants.len(),
+            expected.members.len(),
+            expected.sandbox.len(),
             expected.peers.len(),
             expected.identities.len(),
         ]
@@ -356,11 +372,14 @@ mod tests {
             count = count.checked_add(1).unwrap();
             match entry {
                 GovernanceEntry::Owner(value) => assert_eq!(Some(value), expected.owner.as_deref()),
-                GovernanceEntry::Capability { key, bytes } => {
-                    assert_eq!(
-                        expected.capabilities.get(key).map(Vec::as_slice),
-                        Some(bytes)
-                    );
+                GovernanceEntry::Grant { key, bytes } => {
+                    assert_eq!(expected.grants.get(key).map(Vec::as_slice), Some(bytes));
+                }
+                GovernanceEntry::Member { key, bytes } => {
+                    assert_eq!(expected.members.get(key).map(Vec::as_slice), Some(bytes));
+                }
+                GovernanceEntry::Sandbox { key, bytes } => {
+                    assert_eq!(expected.sandbox.get(key).map(Vec::as_slice), Some(bytes));
                 }
                 GovernanceEntry::Peer { key, name } => {
                     assert_eq!(expected.peers.get(key).map(String::as_str), Some(name));
@@ -386,7 +405,7 @@ mod tests {
         for kind in [ObjType::List, ObjType::Text] {
             let mut doc = automerge::AutoCommit::new();
             doc.put(automerge::ROOT, "owner", "real owner").unwrap();
-            for field in ["capabilities", "peers"] {
+            for field in ["grants", "peers"] {
                 let object = doc.put_object(automerge::ROOT, field, kind).unwrap();
                 if kind == ObjType::List {
                     doc.insert(&object, 0, "not a map row").unwrap();
@@ -405,7 +424,7 @@ mod tests {
             .unwrap();
             doc.commit();
             let legacy = super::super::governance_of(Some(&doc));
-            assert!(legacy.capabilities.is_empty());
+            assert!(legacy.grants.is_empty());
             assert!(legacy.peers.is_empty());
             assert_eq!(
                 legacy.identities.get("later valid row"),
@@ -420,14 +439,14 @@ mod tests {
         use automerge::transaction::Transactable;
         let mut scalar = automerge::AutoCommit::new();
         scalar.put(automerge::ROOT, "owner", "owner").unwrap();
-        for field in ["capabilities", "peers", "peer_identities_v1"] {
+        for field in ["grants", "peers", "peer_identities_v1"] {
             scalar.put(automerge::ROOT, field, 42_u64).unwrap();
         }
         scalar.commit();
         assert_eq!(compare_governance_entries(&scalar), 1);
         let mut valid = scalar.clone();
         let capabilities = valid
-            .put_object(automerge::ROOT, "capabilities", ObjType::Map)
+            .put_object(automerge::ROOT, "grants", ObjType::Map)
             .unwrap();
         valid
             .put(&capabilities, "valid cap", ScalarValue::Bytes(vec![3, 4]))
@@ -440,23 +459,20 @@ mod tests {
                 .with_actor(automerge::ActorId::from(vec![if map_wins { 3 } else { 1 }]));
             let mut list = scalar.clone().with_actor(automerge::ActorId::from(vec![2]));
             let capabilities = map
-                .put_object(automerge::ROOT, "capabilities", ObjType::Map)
+                .put_object(automerge::ROOT, "grants", ObjType::Map)
                 .unwrap();
             map.put(&capabilities, "winning cap", ScalarValue::Bytes(vec![1, 2]))
                 .unwrap();
             map.commit();
             let malformed = list
-                .put_object(automerge::ROOT, "capabilities", ObjType::List)
+                .put_object(automerge::ROOT, "grants", ObjType::List)
                 .unwrap();
             list.insert(&malformed, 0, "not a capability").unwrap();
             list.commit();
             map.merge_incoming(&mut list).unwrap();
+            assert_eq!(map.get_all(automerge::ROOT, "grants").unwrap().len(), 2);
             assert_eq!(
-                map.get_all(automerge::ROOT, "capabilities").unwrap().len(),
-                2
-            );
-            assert_eq!(
-                map.get(automerge::ROOT, "capabilities").unwrap().unwrap().0,
+                map.get(automerge::ROOT, "grants").unwrap().unwrap().0,
                 Value::Object(if map_wins {
                     ObjType::Map
                 } else {

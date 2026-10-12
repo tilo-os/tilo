@@ -52,9 +52,31 @@ pub struct RunStep {
     pub record: String,
     /// The band of changes this step produced, in that app's document.
     pub run: ChangeRun,
-    /// What the step did, in the words the history pane would use. Display
-    /// only — never the source of truth for what gets undone.
-    pub summary: String,
+    /// What the step did, as history entries record it, each different
+    /// thing once. Readers render it ([`RunStep::sentence`]); never the source
+    /// of truth for what gets undone.
+    pub what: Vec<tilo_actions::Described>,
+}
+
+impl RunStep {
+    /// What the step did, in this thread's language: each thing it did, in
+    /// order.
+    pub fn sentence(&self) -> String {
+        let entries: Vec<String> = self
+            .what
+            .iter()
+            .map(|described| {
+                crate::history_source::sentence::sentence(
+                    &tilo_actions::ActionContext::for_app(&self.app, &self.app)
+                        .with_described(described.clone()),
+                )
+            })
+            .collect();
+        entries.join(&crate::i18n::widget_format(
+            "history-run-step-separator",
+            &[],
+        ))
+    }
 }
 
 /// One instruction that spanned one or more applications.
@@ -157,7 +179,9 @@ pub fn record_run_with_details(
         let _ = doc.put(&m, "record", s.record.as_str());
         let _ = doc.put(&m, "start", hex16(&s.run.start));
         let _ = doc.put(&m, "end", hex16(&s.run.end));
-        let _ = doc.put(&m, "summary", s.summary.as_str());
+        if let Ok(what) = serde_json::to_string(&s.what) {
+            let _ = doc.put(&m, "what", what.as_str());
+        }
     }
     Some(key)
 }
@@ -202,7 +226,9 @@ pub fn read_runs(doc: &AutoCommit) -> Vec<AgentRun> {
                     app: str_at(doc, &m, "app").unwrap_or_default(),
                     record: str_at(doc, &m, "record").unwrap_or_default(),
                     run: ChangeRun::new(start, end),
-                    summary: str_at(doc, &m, "summary").unwrap_or_default(),
+                    what: str_at(doc, &m, "what")
+                        .and_then(|what| serde_json::from_str(&what).ok())
+                        .unwrap_or_default(),
                 });
             }
         }

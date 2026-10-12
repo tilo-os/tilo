@@ -4,6 +4,8 @@
 //! inside the state file ([`TreeStore`]), so every owner publication also
 //! binds an enrolled slot, projects the room into the tree and exports the
 //! resulting file-system capabilities under the same writer lock.
+#[cfg(test)]
+mod frame_loop_tests;
 mod local_filesystem_consents;
 pub(crate) mod publication;
 #[cfg(test)]

@@ -37,7 +37,6 @@
 pub mod actions;
 pub mod app;
 pub mod chrome;
-pub mod doc;
 pub mod draw;
 pub mod engine;
 pub mod graph2d;
@@ -55,5 +54,5 @@ pub use resource::{Calculator, CalculatorShell};
 /// The calculator's application definition, which the browser desktop and
 /// other hosts mount.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<CalculatorShell>()
+    ui::built_in_definition!(CalculatorShell)
 }

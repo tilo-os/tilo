@@ -79,12 +79,24 @@ class OsDevArchesTests(unittest.TestCase):
                 workflow = (ROOT / ".forgejo/workflows" / name).read_text()
                 self.assertRegex(workflow, r"(?m)^  workflow_dispatch:$")
                 self.assertNotRegex(workflow, r"(?m)^  push:$")
-                self.assertIn(f"  group: os-dev-{arch}-main\n  cancel-in-progress: false\n", workflow)
+                group = "os-dev-x86-native" if arch == "x86_64" else "os-dev-aarch64-main"
+                self.assertIn(f"  group: {group}\n  cancel-in-progress: false\n", workflow)
                 self.assertIn('if [[ $head == "$GITHUB_SHA" ]]; then', workflow)
                 self.assertIn("    if: needs.newest.outputs.build == 'true'\n"
                               "    uses: ./.forgejo/workflows/build-image.yml\n"
                               "    with:\n"
                               f"      arches: '[\"{arch}\"]'\n", workflow)
+
+    def test_pr_and_main_dev_images_share_the_native_queue_without_cancellation(self):
+        for name in ("os-dev.yml", "os-dev-x86.yml"):
+            with self.subTest(workflow=name):
+                workflow = (ROOT / ".forgejo/workflows" / name).read_text()
+                concurrency = re.search(r"(?ms)^concurrency:\n(.*?)(?=^[^ ].*|\Z)", workflow)
+                self.assertIsNotNone(concurrency, "Cannot observe caller concurrency")
+                self.assertEqual(concurrency.group(1).strip(),
+                                 "group: os-dev-x86-native\n  cancel-in-progress: false")
+                self.assertIn("uses: ./.forgejo/workflows/build-image.yml", workflow)
+
 
 
 if __name__ == "__main__":

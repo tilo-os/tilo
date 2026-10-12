@@ -200,6 +200,22 @@ pub struct Output {
     pub stderr: Vec<u8>,
 }
 
+impl Output {
+    /// Standard error as a short diagnostic safe to log or show a person: lossy
+    /// UTF-8 without control characters other than space, newline and tab, at
+    /// most 512 characters, trimmed.
+    #[must_use]
+    pub fn stderr_diagnostic(&self) -> String {
+        String::from_utf8_lossy(&self.stderr)
+            .chars()
+            .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
+            .take(512)
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
+}
+
 /// Failures before a bounded child completes successfully or unsuccessfully.
 #[derive(Debug, Error)]
 pub enum Error {

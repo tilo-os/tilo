@@ -11,8 +11,8 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
-    Action, ActionContext, ActionError, ActionRegistry, Doc, EncodedAction, LocalTransport,
-    dispatch_with_context, invoking_context, replay,
+    Action, ActionContext, ActionError, ActionKey, ActionRegistry, Described, Did, Doc,
+    EncodedAction, LocalTransport, Scalar, dispatch_with_context, invoking_context, replay,
 };
 
 /// Writes the work group of whoever invoked it.
@@ -42,7 +42,7 @@ fn apply_reads_the_invoking_context_and_replay_reads_it_again() {
     let mut doc = AutoCommit::new();
     let base = doc.fork();
     let context =
-        ActionContext::for_resource("Stamp", "r", "k", "l").with_group("run-7", "Run", "agent-run");
+        ActionContext::for_resource("r", "k", "l").with_group("run-7", "Run", "agent-run");
     let encoded = EncodedAction::encode(TYPE, &StampGroup).unwrap();
     let mut transport = LocalTransport::new();
     dispatch_with_context(&mut doc, &StampGroup, encoded, &mut transport, context).unwrap();
@@ -65,11 +65,9 @@ fn caller_context_cannot_install_executable_history_compensation() {
     let mut doc = AutoCommit::new();
     let encoded = EncodedAction::encode(TYPE, &StampGroup).unwrap();
     let context = ActionContext {
-        compensation: Some(tilo_actions::context::ActionCompensation {
-            undo: encoded.clone(),
-            redo: encoded.clone(),
-        }),
-        ..ActionContext::for_resource("Stamp", "r", "k", "l")
+        action: Some(encoded.clone()),
+        compensation: Some(encoded.clone()),
+        ..ActionContext::for_resource("r", "k", "l")
     };
     let mut transport = LocalTransport::new();
     dispatch_with_context(&mut doc, &StampGroup, encoded, &mut transport, context).unwrap();
@@ -125,21 +123,16 @@ fn canonical_executor_persists_the_actual_before_state_compensation_on_replay() 
         &action,
         encoded.clone(),
         &mut transport,
-        ActionContext::for_resource("Set counter", "r", "k", "l"),
+        ActionContext::for_resource("r", "k", "l"),
     )
     .unwrap();
-    let compensation = transport.replicated[0]
-        .context
-        .as_ref()
-        .unwrap()
-        .compensation
-        .as_ref()
-        .unwrap();
+    let recorded = transport.replicated[0].context.as_ref().unwrap();
+    let compensation = recorded.compensation.as_ref().unwrap();
     assert_eq!(
-        compensation.undo,
-        EncodedAction::encode("test.counter", &SetCounter(7)).unwrap()
+        compensation,
+        &EncodedAction::encode("test.counter", &SetCounter(7)).unwrap()
     );
-    assert_eq!(compensation.redo, encoded);
+    assert_eq!(recorded.action.as_ref(), Some(&encoded));
     let mut registry = ActionRegistry::new();
     registry.register::<SetCounter>("test.counter");
     replay(&mut peer, &transport.replicated[0], &registry).unwrap();
@@ -161,27 +154,39 @@ impl Action for Tally {
         Ok(())
     }
 
-    fn history_label(&self, doc: &Doc) -> Option<String> {
+    fn describe(&self, doc: &Doc) -> Option<Described> {
         // Read before the apply: nothing tallied yet.
         let before = doc.get(ROOT, "tally").unwrap().is_none();
-        before.then(|| "Tally 3 items".to_owned())
+        before.then(|| {
+            Described::new(Did::verb(
+                ActionKey::new("test", "test.tally", "tally"),
+                [("count".to_string(), Scalar::from(3))],
+            ))
+            .on("t", "Tally")
+        })
     }
 }
 
 #[test]
-fn a_step_is_named_by_what_it_did_and_replicas_replay_the_name() {
+fn a_step_records_what_it_did_and_replicas_replay_the_entry() {
     let mut doc = AutoCommit::new();
     let base = doc.fork();
-    let context = ActionContext::for_resource("Edit", "r", "k", "l");
+    let context = ActionContext::for_resource("r", "k", "l");
     let encoded = EncodedAction::encode("test.tally", &Tally).unwrap();
     let mut transport = LocalTransport::new();
     dispatch_with_context(&mut doc, &Tally, encoded, &mut transport, context).unwrap();
     let sent = &transport.replicated[0];
+    let entry = sent.context.as_ref().expect("an entry");
     assert_eq!(
-        sent.context
-            .as_ref()
-            .map(|context| context.action_label.as_str()),
-        Some("Tally 3 items")
+        entry.what,
+        Some(Did::verb(
+            ActionKey::new("test", "test.tally", "tally"),
+            [("count".to_string(), Scalar::from(3))],
+        ))
+    );
+    assert_eq!(
+        entry.item.as_ref().map(|item| item.label.as_str()),
+        Some("Tally")
     );
     let mut registry = ActionRegistry::new();
     registry.register::<Tally>("test.tally");
@@ -207,17 +212,14 @@ fn replay_refuses_a_forged_inverse_before_mutating_the_replica() {
         &SetCounter(11),
         EncodedAction::encode("test.counter", &SetCounter(11)).unwrap(),
         &mut transport,
-        ActionContext::for_resource("Set", "r", "k", "l"),
+        ActionContext::for_resource("r", "k", "l"),
     )
     .unwrap();
     transport.replicated[0]
         .context
         .as_mut()
         .unwrap()
-        .compensation
-        .as_mut()
-        .unwrap()
-        .undo = EncodedAction::encode("test.counter", &SetCounter(99)).unwrap();
+        .compensation = Some(EncodedAction::encode("test.counter", &SetCounter(99)).unwrap());
     let mut registry = ActionRegistry::new();
     registry.register::<SetCounter>("test.counter");
     assert!(replay(&mut peer, &transport.replicated[0], &registry).is_err());
@@ -235,11 +237,9 @@ fn raw_change_metadata_cannot_install_an_unrelated_compensation() {
     doc.commit();
     let encoded = EncodedAction::encode("test.counter", &SetCounter(11)).unwrap();
     let context = ActionContext {
-        compensation: Some(tilo_actions::context::ActionCompensation {
-            undo: EncodedAction::encode("test.counter", &SetCounter(7)).unwrap(),
-            redo: encoded,
-        }),
-        ..ActionContext::for_resource("Set", "r", "k", "l")
+        action: Some(encoded),
+        compensation: Some(EncodedAction::encode("test.counter", &SetCounter(7)).unwrap()),
+        ..ActionContext::for_resource("r", "k", "l")
     };
     // A well-shaped inverse, but the actual mutation differs from its claim.
     doc.put(ROOT, "counter", 12_i64).unwrap();

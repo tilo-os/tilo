@@ -79,6 +79,7 @@ fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs(
             command: Vec::new(),
             requested_by: ush::host::RequestedBy::Person,
             relay_session: None,
+            runs: None,
             editor_protocol: None,
         })
         .expect_err("the host target was served");
@@ -175,6 +176,7 @@ fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usabl
         command: Vec::new(),
         requested_by: ush::host::RequestedBy::Person,
         relay_session: None,
+        runs: None,
         editor_protocol: None,
     };
 
@@ -428,6 +430,7 @@ fn open_default_session(socket: &Path) -> (UnixStream, i32) {
         command: Vec::new(),
         requested_by: ush::host::RequestedBy::Person,
         relay_session: None,
+        runs: None,
         editor_protocol: None,
     })
     .unwrap();

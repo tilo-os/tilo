@@ -9,8 +9,7 @@ use tilo_delivery_protocol::workspace_join::{
 };
 use tilo_peer_state::join::{
     JoinBootstrap, JoinChallengeRequest, JoinTransportRequest, JoinTransportResponse,
-    MembershipChallengeRequest, MembershipCompleteRequest, TransportHint, sign_join_proof,
-    sign_membership_proof,
+    TransportHint, sign_join_proof,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -184,56 +183,6 @@ impl WorkspaceJoinClient {
             ));
         }
         Ok(WorkspaceJoinAdmission { bootstrap, trust })
-    }
-
-    /// Refresh bootstrap state for an already admitted member without reusing an invitation.
-    ///
-    /// # Errors
-    ///
-    /// Returns `WorkspaceJoinError` if the request cannot be sent or its reply is rejected.
-    pub async fn refresh_membership(
-        &self,
-        address: iroh::EndpointAddr,
-        room: String,
-        workspace_id: u64,
-        device_cert: DeviceCert,
-        device_key: &ed25519_dalek::SigningKey,
-        request_id: [u8; 32],
-    ) -> Result<JoinBootstrap, WorkspaceJoinError> {
-        if *self.endpoint.id().as_bytes() != device_cert.device_public_key
-            || device_key.verifying_key().to_bytes() != device_cert.device_public_key
-        {
-            return Err(WorkspaceJoinError::Protocol(
-                "membership client endpoint, certificate, and proof key disagree".into(),
-            ));
-        }
-        let challenge = match self
-            .request(
-                address.clone(),
-                JoinTransportRequest::MembershipChallenge(MembershipChallengeRequest {
-                    room,
-                    workspace_id,
-                    device_cert,
-                    request_id,
-                }),
-            )
-            .await?
-        {
-            JoinTransportResponse::MembershipChallenge(response) => response.challenge,
-            response => return Err(response_error(response)),
-        };
-        let proof =
-            sign_membership_proof(challenge, device_key).map_err(WorkspaceJoinError::Protocol)?;
-        match self
-            .request(
-                address,
-                JoinTransportRequest::MembershipComplete(MembershipCompleteRequest { proof }),
-            )
-            .await?
-        {
-            JoinTransportResponse::MembershipComplete(bootstrap) => Ok(bootstrap),
-            response => Err(response_error(response)),
-        }
     }
 }
 

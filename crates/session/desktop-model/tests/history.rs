@@ -2,7 +2,8 @@
 //! it is now: [`history::without_history`] serialisation and
 //! [`Workspace::policy_view`].
 
-use collab_types::caps::{CapOverride, Principal, ResourceRef, Scope, Subject, Verb};
+use collab_types::caps::{Access, Actor, CapOverride, ResourceRef, Scope};
+use tilo_action_policy::{ActionKind, Answer, Grant, KindSet, Subject, TreePath};
 use tilo_actions::{ActionContext, EffectReceiptStatus, InvocationId};
 use tilo_desktop_model::*;
 
@@ -31,10 +32,13 @@ fn task(audit: usize) -> WorkspaceTask {
         created_at: 1,
         updated_at: 2,
         audit: (0..audit)
-            .map(|at| WorkspaceTaskAuditEvent {
-                at: i64::try_from(at).unwrap_or(i64::MAX),
-                actor: "owner".into(),
-                summary: "moved".into(),
+            .map(|at| {
+                WorkspaceTaskAuditEvent::new(
+                    i64::try_from(at).unwrap_or(i64::MAX),
+                    "owner",
+                    "retry",
+                    [],
+                )
             })
             .collect(),
     }
@@ -78,11 +82,7 @@ fn serialising_without_history_leaves_out_every_history_field() {
     // Everything that is not history is still there.
     assert_eq!(workspace["tasks"][0]["title"], "Tidy up");
     assert_eq!(workspace["strips"][0]["name"], "Main");
-    assert!(
-        workspace["capabilities"]
-            .as_array()
-            .is_some_and(|caps| !caps.is_empty())
-    );
+    assert_eq!(workspace["policy"]["owner"], "owner");
 
     // The switch is scoped: serialising after it writes history again, so
     // persistence and replication are never affected.
@@ -119,15 +119,20 @@ fn nested_switches_restore_the_outer_one() {
 #[test]
 fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
     let mut workspace = desktop(50).workspaces.remove(0);
-    workspace.grant_capability(CapOverride::grant(
-        Subject::Principal(Principal::Person("editor".into())),
-        Scope::Workspace,
-        Verb::Write,
+    workspace.admit("editor", tilo_action_policy::Role::Editor);
+    let notes = workspace.node().app("so.tilo.notes");
+    workspace.grant(Grant::new(
+        "notes-reads",
+        Subject::app("so.tilo.notes"),
+        notes,
+        KindSet::READ,
+        Answer::Allow,
+        Subject::person("owner"),
     ));
-    workspace.grant_capability(CapOverride::grant(
-        Subject::Principal(Principal::App("so.tilo.notes".into())),
-        Scope::App("so.tilo.notes".into()),
-        Verb::Read,
+    workspace.grant_sandbox(CapOverride::grant(
+        collab_types::caps::Subject::app("so.tilo.notes"),
+        Scope::FsPath("/var/workspace/notes".into()),
+        Access::Read,
     ));
     let view = workspace.policy_view();
 
@@ -143,45 +148,39 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
         (workspace.id, &workspace.room, &workspace.name)
     );
 
-    let people = ["owner", "editor", "stranger"].map(String::from);
-    for person in &people {
+    let people = ["owner", "editor", "stranger"];
+    let decided_at = [workspace.node(), workspace.node().app("so.tilo.notes")];
+    for person in people {
         assert_eq!(
-            view.may_administer_at(person, NOW),
-            workspace.may_administer_at(person, NOW),
+            view.may_govern_at(person, tilo_action_policy::roles::governance::GRANT, NOW),
+            workspace.may_govern_at(person, tilo_action_policy::roles::governance::GRANT, NOW),
             "{person}"
         );
-        assert_eq!(
-            view.role_of_at(person, NOW),
-            workspace.role_of_at(person, NOW)
-        );
-        let actor = workspace.actor_for_person_at(person, NOW);
-        assert_eq!(view.actor_for_person_at(person, NOW), actor);
-        for verb in [Verb::Read, Verb::Write, Verb::Admin] {
-            for resource in [
-                ResourceRef::Workspace,
-                ResourceRef::App("so.tilo.notes".into()),
-            ] {
+        assert_eq!(view.role_of(person), workspace.role_of(person));
+        for kind in ActionKind::ALL {
+            for node in &decided_at {
                 assert_eq!(
-                    view.decide_at(&actor, &resource, verb, NOW),
-                    workspace.decide_at(&actor, &resource, verb, NOW),
-                    "{person} {verb:?} {resource:?}"
+                    view.answer_at(person, node, kind, NOW),
+                    workspace.answer_at(person, node, kind, NOW),
+                    "{person} {kind:?} {node}"
                 );
             }
         }
     }
-    let app = workspace.actor_for_app("so.tilo.notes");
+    let app = |ws: &Workspace| {
+        ws.subject_authority(Subject::app("so.tilo.notes"))
+            .decide(
+                &ws.node().join(&TreePath::root().app("so.tilo.notes")),
+                ActionKind::Read,
+                &context_at(NOW),
+            )
+            .answer
+    };
+    assert_eq!(app(&view), app(&workspace));
+    let code = Actor::app("so.tilo.notes").in_room(workspace.room.to_string());
+    let notes_files = ResourceRef::FsPath("/var/workspace/notes/a.md".into());
     assert_eq!(
-        view.decide_at(
-            &app,
-            &ResourceRef::App("so.tilo.notes".into()),
-            Verb::Read,
-            NOW
-        ),
-        workspace.decide_at(
-            &app,
-            &ResourceRef::App("so.tilo.notes".into()),
-            Verb::Read,
-            NOW
-        ),
+        view.sandbox_decide_at(&code, &notes_files, Access::Read, NOW),
+        workspace.sandbox_decide_at(&code, &notes_files, Access::Read, NOW),
     );
 }

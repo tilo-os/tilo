@@ -39,9 +39,7 @@ impl ShellOverlayHost {
     pub fn apply_input_environment(&mut self, environment: ui::InteractionEnvironment) {
         if environment != self.interaction {
             ui::widget::Widget::set_interaction_environment(self, environment);
-            if let Some(chrome) = self.chrome.as_ref() {
-                chrome.borrow_mut().bump();
-            }
+            self.bump_chrome();
         }
     }
 

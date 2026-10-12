@@ -69,40 +69,6 @@ pub(crate) fn comparison(left: &str, right: &str) -> std::sync::Arc<DiffModel> {
     })
 }
 
-thread_local! {
-    // Scalar operation IDs identify immutable source values, including across
-    // forks. This avoids reading/hash-walking their bytes on publication frames.
-    static RECORD_COMPARISONS: std::cell::RefCell<std::collections::VecDeque<RecordComparison>> =
-        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
-}
-
-struct RecordComparison {
-    values: (automerge::ObjId, automerge::ObjId),
-    model: std::sync::Arc<DiffModel>,
-}
-
-pub(crate) fn record_comparison(
-    values: &(automerge::ObjId, automerge::ObjId),
-    left: &str,
-    right: &str,
-) -> std::sync::Arc<DiffModel> {
-    RECORD_COMPARISONS.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if let Some(entry) = cache.iter().find(|entry| &entry.values == values) {
-            return std::sync::Arc::clone(&entry.model);
-        }
-        let model = comparison(left, right);
-        if cache.len() >= 2 {
-            cache.pop_front();
-        }
-        cache.push_back(RecordComparison {
-            values: values.clone(),
-            model: std::sync::Arc::clone(&model),
-        });
-        model
-    })
-}
-
 /// The kind of change a single aligned row represents in a two-way diff.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowKind {

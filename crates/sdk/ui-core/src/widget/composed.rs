@@ -13,12 +13,14 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
 /// A widget's composition: the element tree it rebuilds at every layout and
-/// lays out as the only child of its own node, plus the box it was given.
-/// The owning widget forwards its tree methods here.
+/// lays out as the only child of its own node, plus the box it was given and
+/// whether the owner asked for a rebuild. The owning widget forwards its tree
+/// methods here.
 #[derive(Default)]
 pub struct Composed {
     rect: Rect,
     element: Option<Element>,
+    invalidated: bool,
 }
 
 impl Composed {
@@ -31,6 +33,7 @@ impl Composed {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.invalidated = false;
         self.element
             .insert(element)
             .build_layout(taffy, theme, node_map)
@@ -38,6 +41,7 @@ impl Composed {
 
     /// Swap in `element` without laying it out.
     pub fn replace(&mut self, element: Element) -> &mut (dyn Widget + 'static) {
+        self.invalidated = false;
         self.element.insert(element).as_mut()
     }
 
@@ -45,6 +49,12 @@ impl Composed {
     /// and lays it out again with [`Self::build_layout`].
     pub fn take(&mut self) -> Option<Element> {
         self.element.take()
+    }
+
+    /// Rebuild the composition at the next layout: the owner's state that it
+    /// is built from changed. A fresh composition settles it.
+    pub fn invalidate(&mut self) {
+        self.invalidated = true;
     }
 
     /// Drop the composition until the next layout builds a fresh one.
@@ -123,17 +133,21 @@ impl Composed {
             .collect()
     }
 
-    /// Whether the composition asked to be rebuilt.
+    /// Whether the owner invalidated the composition or the composition
+    /// asked to be rebuilt. Reading clears both.
     pub fn take_structure_dirty(&mut self) -> bool {
-        self.element
+        let invalidated = std::mem::take(&mut self.invalidated);
+        let child = self
+            .element
             .as_mut()
-            .is_some_and(|element| element.take_structure_dirty())
+            .is_some_and(|element| element.take_structure_dirty());
+        invalidated || child
     }
 }
 
 /// The [`Widget`] methods a view owning a [`Composed`] in `self.$field`
 /// forwards to it unchanged: layout placement, painting, events, child
-/// walks and its box.
+/// walks, its box and whether it must be rebuilt.
 #[macro_export]
 macro_rules! forward_to_composed {
     ($field:ident) => {
@@ -176,6 +190,10 @@ macro_rules! forward_to_composed {
 
         fn get_rect(&self) -> $crate::kurbo::Rect {
             self.$field.rect()
+        }
+
+        fn take_structure_dirty(&mut self) -> bool {
+            self.$field.take_structure_dirty()
         }
     };
 }
@@ -238,4 +256,26 @@ macro_rules! forward_to_child {
             self.$rect
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::Spacer;
+
+    #[test]
+    fn invalidation_is_read_once_and_settled_by_a_fresh_composition() {
+        let mut composed = Composed::default();
+        assert!(!composed.take_structure_dirty());
+        composed.invalidate();
+        assert!(composed.take_structure_dirty());
+        assert!(!composed.take_structure_dirty(), "reading clears it");
+
+        composed.invalidate();
+        composed.replace(Box::new(Spacer::new()));
+        assert!(
+            !composed.take_structure_dirty(),
+            "the rebuild it asked for happened"
+        );
+    }
 }

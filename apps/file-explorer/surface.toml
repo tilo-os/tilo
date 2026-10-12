@@ -1,0 +1,99 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "files.folder"
+label = "Folder"
+version = 1
+fields = [
+  { path = "places", type = "Collection<Bookmark>", stored = "collection" },
+  { path = "places.*.place", type = "Atom", label = true, readonly = true },
+  { path = "ops", type = "Outbox<FileTask, Vec<Change>>" },
+]
+
+[[resources.verbs]]
+id = "add-bookmark"
+kind = "undoable"
+params = [
+  { name = "place", required = true, schema = { type = "string" } },
+  { name = "at", required = false, schema = { type = ["integer", "null"], minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "remove-bookmark"
+kind = "undoable"
+params = [
+  { name = "place", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "new-folder"
+kind = "outside"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "parent", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "rename"
+kind = "outside"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "folder", required = true, schema = { type = "string" } },
+  { name = "entry", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "trash"
+kind = "outside"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "folder", required = true, schema = { type = "string" } },
+  { name = "entries", required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "move"
+kind = "outside"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "from", required = true, schema = { type = "string" } },
+  { name = "entries", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "to", required = true, schema = { type = "string" } },
+  { name = "create", required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "copy-into"
+kind = "outside"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "from", required = true, schema = { type = "string" } },
+  { name = "entries", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "to", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "record-clipboard-transfer"
+kind = "outside"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "receipt", required = true, schema = { type = "object", additionalProperties = false, properties = { completed = { type = "integer", minimum = 0 }, cut = { type = "boolean" }, error = { type = ["string", "null"] }, operation = { type = "string" }, restore = { type = "boolean" } }, required = ["operation", "completed", "cut"] } },
+]
+
+[[resources.verbs]]
+id = "record-trash-restore"
+kind = "outside"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "receipt", required = true, schema = { type = "object", additionalProperties = false, properties = { completed = { type = "integer", minimum = 0 }, cut = { type = "boolean" }, error = { type = ["string", "null"] }, operation = { type = "string" }, restore = { type = "boolean" } }, required = ["operation", "completed", "cut"] } },
+]
+
+[[resources.verbs]]
+id = "revert"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "string" } },
+]
+

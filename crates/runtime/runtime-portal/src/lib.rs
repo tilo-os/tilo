@@ -170,15 +170,8 @@ impl CapnpClient {
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
     {
-        let (read_half, write_half) = tokio::io::split(stream);
-        let network = Box::new(twoparty::VatNetwork::new(
-            read_half.compat(),
-            write_half.compat_write(),
-            side,
-            capnp::message::ReaderOptions::default(),
-        ));
         Self {
-            rpc_system: RpcSystem::new(network, None),
+            rpc_system: rpc_system(stream, side, None),
             bootstrap_side: match side {
                 rpc_twoparty_capnp::Side::Client => rpc_twoparty_capnp::Side::Server,
                 rpc_twoparty_capnp::Side::Server => rpc_twoparty_capnp::Side::Client,
@@ -245,6 +238,42 @@ impl CapnpClient {
         });
         client
     }
+}
+
+#[cfg(feature = "rpc")]
+/// Serve `bootstrap` as the root capability to the peer on an owned,
+/// already-connected transport; the server-side counterpart of
+/// [`CapnpClient::from_connected_io`]. The returned system is the connection's
+/// driver: await or `spawn_local` it, and it resolves when the peer hangs up.
+pub fn serve_connected_io<S>(
+    stream: S,
+    bootstrap: capnp::capability::Client,
+) -> RpcSystem<rpc_twoparty_capnp::Side>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
+{
+    rpc_system(stream, rpc_twoparty_capnp::Side::Server, Some(bootstrap))
+}
+
+#[cfg(feature = "rpc")]
+fn rpc_system<S>(
+    stream: S,
+    side: rpc_twoparty_capnp::Side,
+    bootstrap: Option<capnp::capability::Client>,
+) -> RpcSystem<rpc_twoparty_capnp::Side>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
+{
+    // Buffered: a message is a segment table plus segments, which would
+    // otherwise be one syscall each. The protocol flushes after every message.
+    let (read_half, write_half) = tokio::io::split(stream);
+    let network = Box::new(twoparty::VatNetwork::new(
+        tokio::io::BufReader::new(read_half).compat(),
+        tokio::io::BufWriter::new(write_half).compat_write(),
+        side,
+        capnp::message::ReaderOptions::default(),
+    ));
+    RpcSystem::new(network, bootstrap)
 }
 
 #[cfg(feature = "rpc")]

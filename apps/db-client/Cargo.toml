@@ -20,7 +20,6 @@ thin = ["dep:runtime-dylib"]
 hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -44,7 +43,6 @@ workspace-hack = { version = "0.1" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 tempfile.workspace = true
-tilo-automerge.workspace = true
 
 [lints]
 workspace = true

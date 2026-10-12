@@ -9,13 +9,7 @@ impl crate::widget::Widget for InitialHistoryProbe {
         dyn crate::resources::PublishesResources,
         dyn crate::widget::controls::ActionControls
     );
-    crate::testing::inert_widget_methods!(
-        unregistered_leaf_layout,
-        apply_layout,
-        draw,
-        get_rect,
-        name = "initial-history-probe"
-    );
+    crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "initial-history-probe");
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["initial-history.probe"]
     }

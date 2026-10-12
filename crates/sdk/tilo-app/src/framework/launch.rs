@@ -19,8 +19,7 @@
 //! runs rather than what it opens: the layout an on-screen keyboard starts
 //! in, a debug overlay. The launch hands them over beside the arguments, and
 //! views and surfaces read them where they set themselves up
-//! ([`ViewCx::launch_option`](super::ViewCx::launch_option),
-//! [`SurfaceCx::launch_option`](super::SurfaceCx::launch_option)).
+//! ([`RecordEnv::launch_option`](super::RecordEnv::launch_option)).
 
 use ui_core::application::{LaunchOption, OpenFile, PlaybackHandoff};
 
@@ -182,7 +181,7 @@ pub struct Helper {
 
 /// Opens what a launch naming some arguments opens in the window an app runs
 /// in, in place of the record it shows: what
-/// [`ViewCx::open_here`](super::ViewCx::open_here) does, kept by a custom
+/// [`RecordEnv::open_here`](super::RecordEnv::open_here) does, kept by a custom
 /// surface for the input that later asks for it (a file chosen in a picker).
 #[derive(Clone)]
 pub struct OpenHere(std::rc::Rc<dyn Fn(Vec<String>) -> ui_core::application::ReplacementOutcome>);

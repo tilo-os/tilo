@@ -6,7 +6,7 @@ use crate::record_publisher::RecordPublisher;
 use crate::record_replication::{
     RecordAction, RecordAuthorizer, RecordEnvelopeV1, RecordOperationV1,
 };
-use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};
+use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Scope, Subject};
 use fs_protocol::{
     ContentHash, ContentRevisionV1, FILE_BINDING_VERSION, FILE_MUTATION_TRANSACTION_VERSION,
     FileActor, FileBindingV1, FileMetadataV1, FileMutationOperation, FileMutationParticipant,
@@ -155,7 +155,7 @@ fn signed_read_authority(
                 Subject::User(Ed25519PublicKey(owner)),
                 Scope::FsPath("/".into()),
                 Effect::Grant,
-                Verb::Read,
+                Access::Read,
             ),
             CapOverride::new(
                 Subject::User(Ed25519PublicKey(collaborator)),
@@ -165,7 +165,7 @@ fn signed_read_authority(
                 } else {
                     Effect::Grant
                 },
-                Verb::Read,
+                Access::Read,
             ),
         ],
         false,
@@ -2226,11 +2226,12 @@ async fn publish_durable_test_revision(
 async fn three_live_peers_require_a_fresh_exact_replica_before_eviction_and_rehydrate_after_gc() {
     use crate::availability::{
         AvailabilityError, AvailabilityRegistry, EvictionBlocker, EvictionDecision,
-        EvictionRequirements, RecordAvailability, RecordKind, Residency,
+        EvictionRequirements, RecordAvailability, RecordKind,
     };
     use crate::eviction::{
         EvictionCatalog, EvictionQueue, EvictionRequestState, PlanError, plan_safe_eviction,
     };
+    use fs_protocol::Residency;
 
     let temp = tempfile::tempdir().unwrap();
     let (owner_ep, _owner_lookup, owner_identity, _owner_root, _owner_device) =

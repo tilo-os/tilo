@@ -1041,6 +1041,25 @@ impl Automerge {
         patch_log.make_patches(self)
     }
 
+    /// The changes in `data` (what [`Self::save_incremental`] writes: one
+    /// or more concatenated change chunks), parsed and checksummed but
+    /// applied to no document, so a receiver can read each change's hash,
+    /// message and dependencies before deciding whether to merge it.
+    ///
+    /// # Errors
+    /// Returns the first chunk that does not parse.
+    pub fn parse_changes(data: &[u8]) -> Result<Vec<Change>, AutomergeError> {
+        match load::load_changes(
+            storage::parse::Input::new(data),
+            TextEncoding::UnicodeCodePoint,
+            &ChangeGraph::new(0),
+            load::MarkOrderValidation::Validate,
+        ) {
+            load::LoadedChanges::Complete(changes) => Ok(changes),
+            load::LoadedChanges::Partial { error, .. } => Err(error.into()),
+        }
+    }
+
     /// Load an incremental save of a document.
     ///
     /// Unlike [`Self::load()`] this imports changes into an existing document. It will work with

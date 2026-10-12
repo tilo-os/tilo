@@ -7,7 +7,7 @@
 //!   - `handle_event` (click + hover)
 //!   - `compute_layout_with_measure` (taffy re-flow + measure callbacks)
 //!   - `apply_layout` (writes rects into widgets)
-//!   - `draw_with_presence` (widget → vello scene)
+//!   - `draw` (widget → vello scene)
 //!   - `OffscreenRenderer::render`     (vello → wgpu, includes GPU submit)
 //!
 //! Output is a per-phase mean / min / max across iterations, plus a
@@ -28,7 +28,6 @@ use chrono::NaiveDate;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use tilo_ui::i18n::I18nManager;
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::permissions::PermissionContext;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -178,7 +177,6 @@ struct Bench {
     doc: AutoCommit,
     text_renderer: TextRenderer,
     presence: PresenceCtx,
-    perms: PermissionContext,
     theme: Theme,
     scene: Scene,
     renderer: OffscreenRenderer,
@@ -197,7 +195,6 @@ impl Bench {
             root_node,
             text_renderer,
             presence,
-            perms,
             theme,
             scene,
             renderer,
@@ -242,14 +239,7 @@ impl Bench {
 
         let t_draw = tilo_ui::time::now();
         scene.reset();
-        root.draw_with_presence(
-            scene,
-            Affine::IDENTITY,
-            text_renderer,
-            theme,
-            presence,
-            perms,
-        );
+        root.draw(scene, Affine::IDENTITY, text_renderer, theme, presence);
         times.draw_us = t_draw.elapsed().as_micros();
 
         let t_render = tilo_ui::time::now();
@@ -300,7 +290,6 @@ pub fn run(_args: &[String]) {
     let theme = Theme::dark();
     let text_renderer = TextRenderer::new();
     let presence = PresenceCtx::default();
-    let perms = PermissionContext::permissive();
     let doc = AutoCommit::new();
 
     let mut root = build_tree();
@@ -316,7 +305,6 @@ pub fn run(_args: &[String]) {
         doc,
         text_renderer,
         presence,
-        perms,
         theme,
         scene,
         renderer,

@@ -3,6 +3,7 @@
 autotests = false
 name = "settings"
 version = "0.1.0"
+description = "Personal Settings: the device and account settings hub"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
@@ -27,7 +28,8 @@ tilo-clock = { path = "../../crates/platform/tilo-clock" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # One owner for ~/.config/tilo/settings.json.
-settings-store = { path = "../../crates/system/settings-store" }
+settings-store = { path = "../../crates/system/settings-store", features = ["model"] }
+tilo-accessibility-settings = { path = "../../crates/platform/tilo-accessibility-settings", features = ["model"] }
 desktop-policy = { path = "../../crates/system/desktop-policy" }
 package-store = { path = "../../crates/packaging/package-store" }
 # Installed manifests are read through the package format's one decoder,
@@ -72,7 +74,7 @@ accounts = { path = "../../crates/system/accounts", features = ["person"] }
 account-custody = { path = "../../crates/system/account-custody" }
 # Provider metadata is shared with the headless agent runner. This dependency
 # contains no HTTP client and no secret values.
-agent-provider-config = { path = "../../crates/agent/provider-config" }
+agent-provider-config = { path = "../../crates/agent/provider-config", features = ["model"] }
 # Settings uses this only over the launcher-passed service FD to put/remove a
 # key; no vault file or provider network capability is linked into the app.
 tilo-model-gateway = { path = "../../crates/agent/model-gateway" }

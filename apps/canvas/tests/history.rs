@@ -64,7 +64,10 @@ fn a_bad_passage_is_found_by_diff_and_undone_by_its_run() {
     );
 
     let diff = app
-        .call("diff", json!({"from": "before sky rework", "look": true}))
+        .call(
+            "compare-versions",
+            json!({"from": "before sky rework", "look": true}),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(ids(&diff["marks"]["added"]), ["blot"], "{diff}");
@@ -95,7 +98,7 @@ fn a_bad_passage_is_found_by_diff_and_undone_by_its_run() {
     assert_eq!(fill(&app, "sky").as_deref(), Some("#6fa8dc"));
     assert!(fill(&app, "blot").is_none());
     let same = app
-        .call("diff", json!({"from": "before sky rework"}))
+        .call("compare-versions", json!({"from": "before sky rework"}))
         .unwrap()
         .unwrap();
     assert_eq!(same["same"], true, "{same}");
@@ -104,12 +107,7 @@ fn a_bad_passage_is_found_by_diff_and_undone_by_its_run() {
     let versions = carried(history["versions"].as_array().unwrap());
     let blot = versions
         .iter()
-        .find(|version| {
-            version["args"]
-                .as_str()
-                .is_some_and(|args| args == r#"{marks:["blot"]}"#)
-                && version["undone"] == true
-        })
+        .find(|version| version["what"]["action"]["action"] == "draw" && version["undone"] == true)
         .unwrap_or_else(|| panic!("the blot step is listed as undone: {history}"));
     assert_eq!(blot["run_id"], RUN, "{history}");
     assert_eq!(history["checkpoints"][0]["name"], "before sky rework");
@@ -174,19 +172,23 @@ fn a_past_version_is_looked_at_and_its_marks_restored_by_id() {
     assert_eq!(fills(&now), ["#808080", "#808080"]);
 
     let look_now = app
-        .effect(&canvas::resource::ViewOp::Look(canvas::resource::Look {
-            size: Some(256),
-            ..Default::default()
-        }))
+        .effect(&canvas::resource::ViewOp::Look {
+            look: canvas::resource::Look {
+                size: Some(256),
+                ..Default::default()
+            },
+        })
         .unwrap()
         .value
         .unwrap();
     let look_then = app
-        .effect(&canvas::resource::ViewOp::Look(canvas::resource::Look {
-            size: Some(256),
-            version: Some("good".into()),
-            ..Default::default()
-        }))
+        .effect(&canvas::resource::ViewOp::Look {
+            look: canvas::resource::Look {
+                size: Some(256),
+                version: Some("good".into()),
+                ..Default::default()
+            },
+        })
         .unwrap()
         .value
         .unwrap();
@@ -203,10 +205,12 @@ fn a_past_version_is_looked_at_and_its_marks_restored_by_id() {
     assert_eq!(fill(&app, "sky").as_deref(), Some("#808080"));
 
     let unknown = app
-        .effect(&canvas::resource::ViewOp::Look(canvas::resource::Look {
-            version: Some("nothing-like-it".into()),
-            ..Default::default()
-        }))
+        .effect(&canvas::resource::ViewOp::Look {
+            look: canvas::resource::Look {
+                version: Some("nothing-like-it".into()),
+                ..Default::default()
+            },
+        })
         .expect_err("an unknown version is refused")
         .to_string();
     assert!(
@@ -318,20 +322,24 @@ fn history_names_each_step_by_what_it_did_for_people_and_agents_alike() {
         .unwrap();
     app.call("add-layer", json!({"name": ""})).unwrap();
     let history = app.call("history", json!({})).unwrap().unwrap();
-    let actions: Vec<&str> = history["versions"]
+    let steps: Vec<(&str, &Value)> = history["versions"]
         .as_array()
         .unwrap()
         .iter()
-        .filter_map(|version| version["action"].as_str())
+        .filter_map(|version| {
+            Some((
+                version["what"]["action"]["action"].as_str()?,
+                &version["what"]["args"],
+            ))
+        })
         .collect();
-    for expected in [
-        "Draw 2 shapes",
-        "Recolour 2 marks",
-        "Move Sun",
-        "Add Layer 2",
-    ] {
-        assert!(actions.contains(&expected), "{expected:?} in {actions:?}");
-    }
+    let verbs: Vec<&str> = steps.iter().map(|(verb, _)| *verb).collect();
+    assert_eq!(
+        verbs,
+        ["draw", "edit-marks", "edit-marks", "add-layer"],
+        "{history}"
+    );
+    assert_eq!(steps[1].1["fill"], "#cc0000", "{history}");
     let layers: Vec<String> = app
         .state()
         .layers

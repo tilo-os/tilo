@@ -9,7 +9,7 @@
 use super::{SEQUENCE_RESERVATION_NS, State, isolated_test_workers, replay};
 use crate::coedit::CoeditPayload;
 use crate::store::WorkspaceStore;
-use crate::store::replay::{Step, WorkDiscard, WorkLimit};
+use crate::store::replay::{Step, WorkLimit};
 use crate::transport::Envelope;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::Path;
@@ -55,8 +55,8 @@ fn edit(index: u32) -> Vec<u8> {
 }
 
 /// The owner's work for one admitted edit, as `peer.rs` drives it: take a
-/// sequence, retain the frame to `Done`, then dispose of the transaction's
-/// scratch. Asserts the retention created no scratch directory.
+/// sequence and retain the frame to `Done`. Asserts the retention created no
+/// scratch directory and left the owner none to dispose of.
 fn commit(state: &State, sequence: u64, index: u32) {
     let mut build = state
         .store
@@ -67,9 +67,10 @@ fn commit(state: &State, sequence: u64, index: u32) {
         assert!(!scratch.exists(), "a delta's retention created scratch");
     }
     assert!(!scratch.exists(), "a delta's retention created scratch");
-    drop(build);
-    let mut discard = WorkDiscard::new(scratch).unwrap();
-    while let Step::More = discard.step(WorkLimit::default()).unwrap() {}
+    assert!(
+        !build.holds_scratch(),
+        "a delta's owner job must not queue a scratch disposal"
+    );
 }
 
 /// The bodies of the workspace's retained edits, in retained order.

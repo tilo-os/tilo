@@ -1404,7 +1404,6 @@ mod tests {
         reason = "tests place retained animation clocks at exact elapsed phases"
     )]
     use super::*;
-    use taffy::{Dimension, Style};
     use vello_encoding::DrawTag;
 
     #[test]
@@ -1635,14 +1634,7 @@ mod tests {
             _t: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let style = Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            };
-            taffy.widget_leaf(style, node_map, self)
+            taffy.fill_leaf(node_map, self)
         }
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let l = taffy.layout(node).copied().unwrap_or_default();
@@ -1652,15 +1644,6 @@ mod tests {
                 origin.x + f64::from(l.size.width),
                 origin.y + f64::from(l.size.height),
             );
-        }
-        fn draw(
-            &mut self,
-            _s: &mut Scene,
-            _t: Affine,
-            _tr: &mut TextRenderer,
-            _th: &Theme,
-            _p: &PresenceCtx,
-        ) {
         }
         fn handle_event(&mut self, _e: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
             self.events.set(self.events.get().saturating_add(1));

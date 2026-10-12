@@ -6,36 +6,39 @@ use crate::StatePeer;
 use crate::TransportOrigin;
 use crate::state::backend::restore::tests::restore_bounded;
 use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
-use collab_types::caps::{CapOverride, Expiry, Scope, Subject, Verb};
+use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Role, Subject, TreePath};
 use tilo_user_identity::RevocationList;
 use web_time::SystemTime;
 fn fixture(nonpersistent: bool) -> (StatePeer, SystemTime) {
     let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
     let mut room = peer.admitted_room().unwrap().clone();
-    let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
-    for (index, expiry) in [
-        Expiry::AtUnix(8),
-        Expiry::AtUnix(7),
-        Expiry::AtUnix(7),
+    let caps = room.get(ROOT, "grants").unwrap().unwrap().1;
+    for (index, lifetime) in [
+        Lifetime::Until(8_000),
+        Lifetime::Until(7_000),
+        Lifetime::Until(7_000),
         if nonpersistent {
-            Expiry::AfterUse
+            Lifetime::Once
         } else {
-            Expiry::AtUnix(3)
+            Lifetime::Until(3_000)
         },
     ]
     .into_iter()
     .enumerate()
     {
-        let cap = CapOverride::grant(
-            Subject::Role(collab_types::Role::Editor),
-            Scope::Workspace,
-            Verb::Read,
+        let grant = Grant::new(
+            "editor-reads",
+            Subject::Role(Role::Editor),
+            TreePath::room(peer.room()),
+            KindSet::READ,
+            Answer::Allow,
+            Subject::Role(Role::Owner),
         )
-        .expiring(expiry);
+        .with_lifetime(lifetime);
         room.put(
             &caps,
             index.to_string(),
-            ScalarValue::Bytes(serde_json::to_vec(&cap).unwrap()),
+            ScalarValue::Bytes(serde_json::to_vec(&grant).unwrap()),
         )
         .unwrap();
     }

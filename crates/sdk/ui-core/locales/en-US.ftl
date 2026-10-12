@@ -232,7 +232,6 @@ history-files-error-unavailable = File history is temporarily unavailable
 history-files-error-too-large = Historical preview exceeds the supported size
 history-files-error-no-content = This version has no recorded content reference
 history-files-outcome-applied = Restored revision { $revision } (intent { $intent }). Current converged file content is shown separately. Prior reference: observed revision.
-history-files-outcome-applied-legacy = Restored revision { $revision } (intent { $intent }). Current converged file content is shown separately. Prior reference: legacy content representative; prior authorship unknown.
 history-files-outcome-unchanged = Selected content already matches; no new revision or undo entry
 history-files-outcome-pending = Restore is pending. Check result or retry the same intent
 history-files-outcome-review = Live file changed. Refresh review; the selected old version remains pinned
@@ -352,7 +351,12 @@ relative-ago-years = { $count ->
     }
 
 # A software participant in history, presence and activity rows.
+history-run-step-separator = {", "}
 participant-agent = { $name } · Agent
+participant-shortcut = { $name } · Shortcut
+participant-app = { $name } · App
+# An agent, a Shortcut or an app acting for a person.
+participant-acting-for = { $name }, for { $person }
 interaction-agent = Agent
 interaction-collaborator = Collaborator
 interaction-action-status = { $action } ({ $phase }) - { $name }
@@ -473,3 +477,20 @@ device-display-session-disconnected = The Tilo session disconnected.
 
 app-activate-window = Show this window
 app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.
+
+# Shown instead of an app's view while its record does not read as the app expects.
+framework-unreadable = This cannot be opened
+display-arrangement-offline = Offline
+display-arrangement-excluded = Not in layout
+display-arrangement-offline-excluded = Offline · Not in layout
+display-arrangement-item-status = { $position }; { $status }
+display-arrangement-caption-status = { $status } · { $name }
+
+# Search: starting points in the empty applications palette
+search-apps-group-start-here = Start here
+search-apps-group-everyday = Everyday
+search-apps-group-work = Work
+search-apps-group-media = Media
+search-apps-group-system-tools = System tools
+search-apps-group-more-apps = More apps
+search-apps-group-developer-tools = Developer tools

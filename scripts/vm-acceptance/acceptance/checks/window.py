@@ -622,8 +622,78 @@ def _transition(ctx, res, name, act, reached):
         raise CheckFailed(f"{name}: the transition did not reach its end state")
 
 
-def _judge(name, st, b, hardware) -> tuple[list[str], list[str]]:
-    """(problems, unobservable) for one transition."""
+def _judge_lateness(name, st, b, software) -> tuple[list[str], list[str]]:
+    """Frames submitted after the compositor's own deadline (counted from when each
+    frame was wanted, so a park with nothing to paint is not lateness).
+
+    On a software renderer the rasteriser's threads compete with the loop thread for
+    the CPUs, so wall-clock lateness mixes the compositor's work with waiting to be
+    scheduled. There the part bounded by each tick's own CPU time is judged; lateness
+    beyond it is unobservable on that VM unless that part already fails."""
+    problems, unseen = [], []
+    if st["late_ms_p95"] is None or st["late_ms_p95"] <= b["frame_late_ms_p95"]:
+        return problems, unseen
+    cpu = st.get("longest_tick_cpu_ms")
+    split = ("" if cpu is None else
+             f"; its longest loop tick ran {st['longest_tick_ms']} ms, {cpu} ms of it on the CPU, "
+             f"blocked or descheduled for the rest")
+    wall = (f"{name}: frames submitted p95 {st['late_ms_p95']} ms after the compositor's "
+            f"own deadline > {b['frame_late_ms_p95']} ms{split}")
+    if not software:
+        problems.append(wall)
+    elif st.get("late_cpu_ms_p95") is None:
+        unseen.append(wall + " (a software renderer, and the trace carries no per-tick CPU to tell "
+                             "the compositor's work from waiting for a CPU)")
+    elif st["late_cpu_ms_p95"] > b["frame_late_ms_p95"]:
+        problems.append(f"{name}: frames submitted p95 {st['late_cpu_ms_p95']} ms of the compositor's "
+                        f"own CPU after its deadline > {b['frame_late_ms_p95']} ms{split}")
+    else:
+        unseen.append(wall + f"; only {st['late_cpu_ms_p95']} ms of it on the loop thread's CPU (a "
+                             "software renderer: the rest is waiting behind the rasteriser for a "
+                             "CPU, which this VM cannot tell from blocking)")
+    return problems, unseen
+
+
+def _judge_cpu_and_input(name, st, b, timed_input) -> tuple[list[str], list[str]]:
+    problems, unseen = [], []
+    if not st["cpu_recorded"]:
+        unseen.append(f"{name}: the frame trace carries no per-tick CPU time (cpu_us); the "
+                      "installed compositor predates it")
+    elif st["cpu_ms_max"] > b["frame_cpu_ms_max"]:
+        problems.append(f"{name}: a {st['cpu_ms_max']} ms CPU stall in the compositor loop "
+                        f"> {b['frame_cpu_ms_max']} ms{core.describe_phases(st.get('cpu_max_tick'))}")
+    if not timed_input:
+        return problems, unseen
+    if st["input_to_first_frame_compositor_ms"] is None:
+        unseen.append(f"{name}: no painted frame carried the input's latency")
+    elif st["input_to_first_frame_compositor_ms"] > b["input_first_frame_ms"]:
+        problems.append(f"{name}: first frame {st['input_to_first_frame_compositor_ms']} ms after the "
+                        f"input (display waits taken out) > {b['input_first_frame_ms']} ms")
+    return problems, unseen
+
+
+def _judge_instant(name, st, b) -> tuple[list[str], list[str]]:
+    """(problems, unobservable) for a keyboard overview toggle, which by design lands
+    in its end state on the first frame instead of fading: no compositor transition
+    frame run, a prompt first frame, no CPU stall. Other paints in the window (a
+    client's frame, the cursor) are not the overview's and are not counted."""
+    problems, unseen = [], []
+    if not st["settled"]:
+        unseen.append(f"{name}: the compositor kept asking for frames for {TRANSITION_TIMEOUT_S} s")
+        return problems, unseen
+    if not st.get("reasons_recorded"):
+        unseen.append(f"{name}: the frame trace does not say why each frame painted "
+                      "(paint_reasons); the installed compositor predates it")
+    elif st["transition_frames"]:
+        problems.append(f"{name}: {st['transition_frames']} frames painted for a transition's frame "
+                        "run; the keyboard toggle must arrive on its first frame, without the fade")
+    p, u = _judge_cpu_and_input(name, st, b, True)
+    return problems + p, unseen + u
+
+
+def _judge(name, st, b, hardware, software=False, timed_input=True) -> tuple[list[str], list[str]]:
+    """(problems, unobservable) for one transition. `timed_input` is false for a
+    transition started through an action, which carries no input to time from."""
     problems, unseen = [], []
     if not st["settled"] or (st["frames"] == 0 and st["blocked_ticks"]):
         held = (f"{name}: the display took {st['frames']} frames in {TRANSITION_TIMEOUT_S} s while "
@@ -636,24 +706,10 @@ def _judge(name, st, b, hardware) -> tuple[list[str], list[str]]:
     if st["frames"] < b["animation_min_frames"]:
         problems.append(f"{name}: {st['frames']} frames painted (a jump, not an animation; "
                         f"want >= {b['animation_min_frames']})")
-    if st["late_ms_p95"] is not None and st["late_ms_p95"] > b["frame_late_ms_p95"]:
-        cpu = st.get("longest_tick_cpu_ms")
-        split = ("" if cpu is None else
-                 f"; its longest loop tick ran {st['longest_tick_ms']} ms, {cpu} ms of it on the CPU, "
-                 f"blocked or descheduled for the rest")
-        problems.append(f"{name}: frames submitted p95 {st['late_ms_p95']} ms after the compositor's "
-                        f"own deadline > {b['frame_late_ms_p95']} ms{split}")
-    if not st["cpu_recorded"]:
-        unseen.append(f"{name}: the frame trace carries no per-tick CPU time (cpu_us); the "
-                      "installed compositor predates it")
-    elif st["cpu_ms_max"] > b["frame_cpu_ms_max"]:
-        problems.append(f"{name}: a {st['cpu_ms_max']} ms CPU stall in the compositor loop "
-                        f"> {b['frame_cpu_ms_max']} ms")
-    if st["input_to_first_frame_compositor_ms"] is None:
-        unseen.append(f"{name}: no painted frame carried the input's latency")
-    elif st["input_to_first_frame_compositor_ms"] > b["input_first_frame_ms"]:
-        problems.append(f"{name}: first frame {st['input_to_first_frame_compositor_ms']} ms after the "
-                        f"input (display waits taken out) > {b['input_first_frame_ms']} ms")
+    for p, u in (_judge_lateness(name, st, b, software),
+                 _judge_cpu_and_input(name, st, b, timed_input)):
+        problems += p
+        unseen += u
     if hardware:
         if (st["span_ms"] or 0) > b["transition_ms_max"]:
             problems.append(f"{name}: the transition took {st['span_ms']} ms first to last frame "
@@ -694,7 +750,7 @@ def judge_switch_lines(switches: list[dict], expected: int, b: dict, hardware: b
 
 
 @check("W16", AREA, "Animations are paced: overview and workspace transitions paint many frames "
-                    "with no stalls", needs=("workspaces",))
+                    "with no stalls, and the keyboard overview arrives at once", needs=("workspaces",))
 def animations(ctx, res):
     # The compositor's side is judged everywhere: frames painted per transition, their
     # lateness against its own deadlines, CPU per tick, input to first frame. On a
@@ -704,10 +760,16 @@ def animations(ctx, res):
     ctx.settle(1.5)
     display = ctx.facts.get("display") or {}
     hardware = bool(display.get("hardware"))
+    software = (ctx.facts.get("renderer") or "").lower().startswith("software")
     res.metrics.update(renderer=ctx.facts.get("renderer"), display=display)
     overview = lambda s: core.overlays(s)["overview"]  # noqa: E731
-    _transition(ctx, res, "overview_open", lambda: ctx.vm.key("super+Tab"), overview)
-    _transition(ctx, res, "overview_close", lambda: ctx.vm.key("Escape"), lambda s: not overview(s))
+    # The overview's fade runs when it is opened through its action (or the pointer);
+    # from the keyboard it arrives at once by design, judged separately below.
+    toggle = lambda: ctx.vm.invoke("actions", "overview.toggle")  # noqa: E731
+    _transition(ctx, res, "overview_open", toggle, overview)
+    _transition(ctx, res, "overview_close", toggle, lambda s: not overview(s))
+    _transition(ctx, res, "overview_key_open", lambda: ctx.vm.key("super+Tab"), overview)
+    _transition(ctx, res, "overview_key_close", lambda: ctx.vm.key("Escape"), lambda s: not overview(s))
     st = ctx.state()
     first = st["workspace_tree"]["active"]
     ids = [w["id"] for w in st["workspace_tree"]["workspaces"]]
@@ -724,8 +786,13 @@ def animations(ctx, res):
     res.metrics["workspace_switch_lines"] = switches
     b = ctx.config["budgets"]
     problems, unseen = [], []
-    for name in ("overview_open", "overview_close", "workspace_switch", "workspace_back"):
-        p, u = _judge(name, res.metrics[name], b, hardware)
+    for name, timed_input in (("overview_open", False), ("overview_close", False),
+                              ("workspace_switch", True), ("workspace_back", True)):
+        p, u = _judge(name, res.metrics[name], b, hardware, software, timed_input)
+        problems += p
+        unseen += u
+    for name in ("overview_key_open", "overview_key_close"):
+        p, u = _judge_instant(name, res.metrics[name], b)
         problems += p
         unseen += u
     problems += judge_switch_lines(switches, 2, b, hardware)

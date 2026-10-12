@@ -78,6 +78,9 @@ class HostSessionRpmReplayTests(unittest.TestCase):
             self.assertEqual(source["harness_commit"], "b" * 40)
             self.assertEqual(source["run_id"], 123)
             self.assertEqual(set(source["rpms"]), set(NAMES))
+            self.assertEqual(source["artifact_purpose"], "host-session-acceptance-only")
+            self.assertEqual(source["release_signing_claim"], "none")
+            self.assertEqual(source["signature_verification"], "not-performed-by-this-source-report")
             self.assertFalse((output / "unrelated-os-payload.tar.gz").exists())
             request.assert_called_once_with(replay.API + "/actions/artifacts/789/zip", timeout=60)
 
@@ -91,6 +94,25 @@ class HostSessionRpmReplayTests(unittest.TestCase):
                 replay.fetch("123", SHA, output)
             self.assertFalse(output.exists())
             self.assertEqual(list(Path(temporary).iterdir()), [])
+
+    def test_actual_workflow_report_does_not_turn_an_artifact_name_into_authority(self):
+        workflow = (CI.parents[1] / ".forgejo/workflows/host-session-e2e.yml").read_text()
+        block = workflow.split("- name: Record this run's RPMs", 1)[1]
+        script = textwrap.dedent(block.split("        run: |\n", 1)[1].split("      - name:", 1)[0])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'rpms').mkdir()
+            for name in NAMES:
+                (root / 'rpms' / name).write_bytes(b'unsigned development fixture')
+            result = subprocess.run(['bash', '-c', script], capture_output=True,
+                                    env=dict(os.environ, WORK=str(root), RUN_NUMBER='456', RUN_ID='123',
+                                             WORKFLOW='host-session-e2e', GITHUB_SHA=SHA,
+                                             GITHUB_REF_NAME='topic', ARTIFACT='signed-fedora-44-amd64'))
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            source = json.loads((root / 'rpms/source.json').read_text())
+            self.assertEqual(source['artifact'], 'signed-fedora-44-amd64')
+            self.assertEqual(source['release_signing_claim'], 'none')
+            self.assertEqual(source['signature_verification'], 'not-performed-by-this-source-report')
 
     def test_actual_workflow_preflight_rejects_partial_or_invalid_replay_inputs(self):
         workflow = (CI.parents[1] / ".forgejo/workflows/host-session-e2e.yml").read_text()

@@ -9,8 +9,6 @@ mod subject;
 use std::fs;
 #[cfg(test)]
 use std::io::Read;
-use std::os::fd::FromRawFd;
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 #[cfg(test)]
 use std::os::unix::net::UnixStream;
@@ -28,6 +26,7 @@ use std::future::Future;
 use tilo_model_gateway::{
     EVENT_TOOL_CALL, EVENT_TOOL_CALL_DELTA, FRAMING, FaceImage, Frame, MAX_DELTA_EVENTS,
     MAX_STREAM_EVENTS, PlanTrace, RPC_VERSION, Request, Response, TraceEvent, VisionImage,
+    is_pinned_revision, is_supervised_loopback,
 };
 #[cfg(test)]
 use tilo_model_gateway::{read_frame, write_frame};
@@ -126,9 +125,11 @@ fn control(request: Request) -> Result<(), String> {
     Ok(())
 }
 
-fn serve(socket: &PathBuf) -> Result<(), String> {
-    // Activation is taken over before the runtime starts any thread.
-    let listener = if let Some(listener) = systemd_listener(socket)? {
+fn serve(socket: &Path) -> Result<(), String> {
+    // SAFETY: activation is taken over before the runtime starts any thread.
+    let activated = unsafe { tilo_files::native::private::activated_socket(socket) }
+        .map_err(|error| error.to_string())?;
+    let listener = if let Some(listener) = activated {
         listener
     } else {
         bind_listener(socket)?
@@ -204,64 +205,11 @@ async fn serve_on(
     }
 }
 
-fn bind_listener(socket: &PathBuf) -> Result<UnixListener, String> {
+fn bind_listener(socket: &Path) -> Result<UnixListener, String> {
     if let Some(parent) = socket.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    if socket.exists() {
-        let metadata = fs::symlink_metadata(socket).map_err(|error| error.to_string())?;
-        if !metadata.file_type().is_socket() {
-            return Err("refusing to replace a non-socket gateway path".into());
-        }
-        fs::remove_file(socket).map_err(|error| error.to_string())?;
-    }
-    let listener = UnixListener::bind(socket).map_err(|error| error.to_string())?;
-    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))
-        .map_err(|error| error.to_string())?;
-    Ok(listener)
-}
-
-#[allow(
-    clippy::disallowed_methods,
-    reason = "systemd socket activation: LISTEN_* must not leak to spawned children; cleared once, right after the descriptor is taken at the start of `serve`, before any thread is spawned"
-)]
-fn systemd_listener(expected: &Path) -> Result<Option<UnixListener>, String> {
-    const SYSTEMD_LISTEN_FD: i32 = 3;
-
-    let pid_matches = std::env::var("LISTEN_PID")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-        == Some(std::process::id());
-    if !pid_matches {
-        return Ok(None);
-    }
-    if std::env::var("LISTEN_FDS").as_deref() != Ok("1") {
-        return Err("systemd must pass exactly one model-gateway listener".into());
-    }
-    // SAFETY: fcntl only validates whether fd 3 is open; it consumes no pointer.
-    if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } == -1 {
-        return Err("systemd model-gateway listener fd is closed".into());
-    }
-    // SAFETY: systemd's LISTEN_PID/FDS contract transfers ownership of fd 3
-    // to this process exactly once.
-    let listener = unsafe { UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
-    let actual = listener.local_addr().map_err(|error| error.to_string())?;
-    if actual.as_pathname() != Some(expected) {
-        return Err("systemd model-gateway listener has an unexpected path".into());
-    }
-    // systemd supplies activation descriptors without CLOEXEC.
-    // This daemon can launch request-handling subprocesses; none may inherit
-    // the session's authenticated listener or activation metadata.
-    if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
-        return Err("cannot mark systemd model-gateway listener close-on-exec".into());
-    }
-    // SAFETY: activation is consumed once, before worker threads exist.
-    unsafe {
-        std::env::remove_var("LISTEN_PID");
-        std::env::remove_var("LISTEN_FDS");
-        std::env::remove_var("LISTEN_FDNAMES");
-    }
-    Ok(Some(listener))
+    tilo_files::native::private::bind_socket(socket).map_err(|error| error.to_string())
 }
 
 /// One authenticated connection: the launcher handoff, then framed requests
@@ -2343,10 +2291,7 @@ fn vision_request(
 ) -> Result<(ProviderProfile, serde_json::Value), String> {
     validate_vision_image(image)?;
     let profile = configured_profile(profile_id)?;
-    if profile.location != EndpointLocation::ThisDevice
-        || profile.protocol != ProviderProtocol::OpenAiCompatible
-        || !loopback_http_endpoint(&profile.endpoint)
-    {
+    if !is_supervised_loopback(&profile) {
         return Err("image analysis requires a supervised loopback OpenAI-compatible model".into());
     }
     let model = profile
@@ -2396,10 +2341,7 @@ fn face_request(
 ) -> Result<(ProviderProfile, serde_json::Value), String> {
     validate_face_images(images)?;
     let profile = configured_profile(profile_id)?;
-    if profile.location != EndpointLocation::ThisDevice
-        || profile.protocol != ProviderProtocol::OpenAiCompatible
-        || !loopback_http_endpoint(&profile.endpoint)
-    {
+    if !is_supervised_loopback(&profile) {
         return Err("face clustering requires a supervised loopback local model".into());
     }
     let model = profile
@@ -2489,30 +2431,6 @@ fn validate_face_images(images: &[FaceImage]) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn loopback_http_endpoint(endpoint: &str) -> bool {
-    let Ok(url) = url::Url::parse(endpoint) else {
-        return false;
-    };
-    if !matches!(url.scheme(), "http" | "https") || url.username() != "" || url.password().is_some()
-    {
-        return false;
-    }
-    match url.host() {
-        Some(url::Host::Domain("localhost")) => true,
-        Some(url::Host::Ipv4(address)) => address.is_loopback(),
-        Some(url::Host::Ipv6(address)) => address.is_loopback(),
-        _ => false,
-    }
-}
-
-fn is_pinned_revision(revision: &str) -> bool {
-    matches!(revision.len(), 40 | 64)
-        && revision
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-        && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn local_vision_body(model_id: &str, image: &VisionImage) -> serde_json::Value {
@@ -2997,25 +2915,6 @@ mod tests {
             let mut bad_hash = vision_image();
             bad_hash.source_content_hash = "x".repeat(64);
             assert!(validate_vision_image(&bad_hash).is_err());
-        }
-
-        // Phase: local_vision_never_routes_to_a_lan_or_hosted_endpoint.
-        {
-            assert!(loopback_http_endpoint("http://127.0.0.1:8123/v1"));
-            assert!(loopback_http_endpoint("http://[::1]:8123/v1"));
-            assert!(!loopback_http_endpoint("http://192.168.1.20:8123/v1"));
-            assert!(!loopback_http_endpoint("https://models.example.test/v1"));
-            assert!(!loopback_http_endpoint(
-                "http://localhost.evil.test:8123/v1"
-            ));
-        }
-
-        // Phase: local_vision_requires_an_immutable_model_revision.
-        {
-            assert!(is_pinned_revision(&"a".repeat(40)));
-            assert!(is_pinned_revision(&"b".repeat(64)));
-            assert!(!is_pinned_revision("main"));
-            assert!(!is_pinned_revision(&"A".repeat(40)));
         }
 
         // Phase: local_vision_prompt_is_fixed_and_contains_no_identity_request.

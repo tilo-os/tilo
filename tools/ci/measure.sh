@@ -34,6 +34,9 @@ for resource in cpu memory io; do
 done
 
 status=0
+# Nested ci-run.sh retains streaming, failure summaries and heartbeat behavior,
+# while this wrapper owns the one resource measurement for the command.
+export TILO_CI_MEASURE_ACTIVE=1
 if command -v /usr/bin/time >/dev/null 2>&1; then
   /usr/bin/time -f 'wall_seconds=%e\nuser_seconds=%U\nsystem_seconds=%S\nmax_rss_kib=%M' -o "$timing" "$@" || status=$?
 else
