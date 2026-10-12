@@ -1009,22 +1009,13 @@ fn page_results(
         end = end.saturating_add(1);
     }
     let exhausted = end == results.len();
-    SearchPage {
-        revision: revision.clone(),
-        // end starts at start and only grows, so this cannot saturate.
-        results: results
-            .into_iter()
-            .skip(start)
-            .take(end.saturating_sub(start))
-            .collect(),
-        next_cursor: (!exhausted).then(|| SearchCursor {
-            revision,
-            token: end.to_string(),
-        }),
-        exhausted,
-        stale_cursor: false,
-        budget_exhausted: !exhausted,
-    }
+    // end starts at start and only grows, so this cannot saturate.
+    let results = results
+        .into_iter()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect();
+    SearchPage::continuing(revision, results, (!exhausted).then(|| end.to_string()))
 }
 
 fn device_projection(
