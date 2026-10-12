@@ -478,8 +478,29 @@ impl ui::storage::SettingsSchema for UpdatePrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("updates");
 }
 
-#[ui::tilo_resource::resource(kind = "settings.updates", label = "Updates")]
-impl UpdatePrefs {}
+#[ui::tilo_resource::resource(
+    kind = "settings.updates",
+    label = "Updates",
+    version = 2,
+    migrate = UpdatePrefs::upgrade
+)]
+impl UpdatePrefs {
+    /// Version 1 also stored the update channel, which nothing read.
+    fn upgrade(
+        doc: &mut ui::tilo_resource::Doc,
+        from: u32,
+    ) -> Result<(), ui::tilo_resource::ModelError> {
+        if from != 1 {
+            return Err(ui::tilo_resource::ModelError::invalid(format!(
+                "no migration from {from}"
+            )));
+        }
+        if automerge::ReadDoc::get(doc, automerge::ROOT, "channel")?.is_some() {
+            automerge::transaction::Transactable::delete(doc, automerge::ROOT, "channel")?;
+        }
+        Ok(())
+    }
+}
 
 impl Default for UpdatePrefs {
     fn default() -> Self {
