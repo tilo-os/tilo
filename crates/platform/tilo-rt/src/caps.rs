@@ -1,6 +1,6 @@
 //! What this crate provides on each target, as data an app can query.
 
-pub use tilo_platform_caps::Availability;
+pub use tilo_platform_caps::{Availability, availability};
 /// One capability of this crate, for [`availability`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -22,57 +22,23 @@ const WEB_BLOCK_ON: &str = "A browser page's one thread cannot wait on work.";
 const WEB_DAEMON: &str = "A browser page cannot run a multi-threaded runtime.";
 const WEB_IO: &str = "A browser page has no file-I/O threads.";
 
-/// Every feature with its availability on Linux, macOS and the web, in that
-/// order.
-pub const CAPABILITIES: &[(Feature, [Availability; 3])] = {
-    use Availability::{Available, Unsupported};
-    &[
-        (
-            Feature::Threads,
-            [Available, Available, Unsupported(WEB_THREADS)],
-        ),
-        (
-            Feature::BlockOn,
-            [Available, Available, Unsupported(WEB_BLOCK_ON)],
-        ),
-        (
-            Feature::DaemonRuntime,
-            [Available, Available, Unsupported(WEB_DAEMON)],
-        ),
-        (Feature::Io, [Available, Available, Unsupported(WEB_IO)]),
-    ]
-};
-
-/// Whether `feature` can be used on this target.
-pub fn availability(feature: Feature) -> Availability {
-    tilo_platform_caps::availability(CAPABILITIES, feature)
+impl tilo_platform_caps::Feature for Feature {
+    /// The feature's availability on Linux, macOS and the web, in that
+    /// order.
+    fn targets(self) -> [Availability; 3] {
+        use Availability::{Available, Unsupported};
+        match self {
+            Self::Threads => [Available, Available, Unsupported(WEB_THREADS)],
+            Self::BlockOn => [Available, Available, Unsupported(WEB_BLOCK_ON)],
+            Self::DaemonRuntime => [Available, Available, Unsupported(WEB_DAEMON)],
+            Self::Io => [Available, Available, Unsupported(WEB_IO)],
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const ALL: [Feature; 4] = [
-        Feature::Threads,
-        Feature::BlockOn,
-        Feature::DaemonRuntime,
-        Feature::Io,
-    ];
-
-    #[test]
-    fn every_feature_is_listed_once() {
-        for feature in ALL {
-            let rows = CAPABILITIES.iter().filter(|(listed, _)| *listed == feature);
-            assert_eq!(rows.count(), 1, "{feature:?}");
-        }
-    }
-
-    #[test]
-    fn availability_matches_the_table_for_this_target() {
-        for (feature, row) in CAPABILITIES {
-            assert_eq!(availability(*feature), row[tilo_platform_caps::COLUMN]);
-        }
-    }
 
     #[test]
     fn spawn_thread_agrees_with_threads_availability() {

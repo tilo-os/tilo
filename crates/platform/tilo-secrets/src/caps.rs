@@ -1,6 +1,6 @@
 //! What this crate provides on each target, as data an app can query.
 
-pub use tilo_platform_caps::Availability;
+pub use tilo_platform_caps::{Availability, availability};
 
 /// A feature this target, or this particular host, cannot provide.
 pub type Unsupported = tilo_platform_caps::Unsupported<Feature>;
@@ -22,57 +22,29 @@ pub(crate) const WEB_KEYCHAIN: &str =
     "Browsers have no keychain; Tilo encrypts secrets with a key the browser keeps.";
 pub(crate) const WEB_BLOCKING: &str = "The browser's storage answers asynchronously.";
 
-/// Every feature with its availability on Linux (and Windows), macOS and the
-/// web, in that order. A Linux session without a Secret Service provides less; the macOS
-/// Keychain may ask the user to allow access.
-pub const CAPABILITIES: &[(Feature, [Availability; 3])] = {
-    use Availability::{Available, Unsupported};
-    &[
-        (Feature::Store, [Available, Available, Available]),
-        (
-            Feature::OsKeychain,
-            [Available, Available, Unsupported(WEB_KEYCHAIN)],
-        ),
-        (
-            Feature::Blocking,
-            [Available, Available, Unsupported(WEB_BLOCKING)],
-        ),
-    ]
-};
-
-/// Whether `feature` can be used on this target.
-pub fn availability(feature: Feature) -> Availability {
-    tilo_platform_caps::availability(CAPABILITIES, feature)
-}
-
-/// The error for `feature` on this target.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) fn unsupported(feature: Feature) -> Unsupported {
-    Unsupported::of(CAPABILITIES, feature)
+impl tilo_platform_caps::Feature for Feature {
+    /// The feature's availability on Linux (and Windows), macOS and the web,
+    /// in that order. A Linux session without a Secret Service provides less;
+    /// the macOS Keychain may ask the user to allow access.
+    fn targets(self) -> [Availability; 3] {
+        use Availability::{Available, Unsupported};
+        match self {
+            Self::Store => [Available, Available, Available],
+            Self::OsKeychain => [Available, Available, Unsupported(WEB_KEYCHAIN)],
+            Self::Blocking => [Available, Available, Unsupported(WEB_BLOCKING)],
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const ALL: [Feature; 3] = [Feature::Store, Feature::OsKeychain, Feature::Blocking];
-
-    #[test]
-    fn every_feature_is_listed_once() {
-        for feature in ALL {
-            let rows = CAPABILITIES.iter().filter(|(listed, _)| *listed == feature);
-            assert_eq!(rows.count(), 1, "{feature:?}");
-        }
-        assert_eq!(CAPABILITIES.len(), ALL.len());
-    }
+    use tilo_platform_caps::Feature as _;
 
     #[test]
     fn this_target_reads_its_own_column() {
         assert_eq!(availability(Feature::Store), Availability::Available);
-        let web = CAPABILITIES
-            .iter()
-            .find(|(feature, _)| *feature == Feature::Blocking)
-            .map(|(_, targets)| targets[2]);
-        assert_eq!(web, Some(Availability::Unsupported(WEB_BLOCKING)));
+        let web = Feature::Blocking.targets()[2];
+        assert_eq!(web, Availability::Unsupported(WEB_BLOCKING));
     }
 }
