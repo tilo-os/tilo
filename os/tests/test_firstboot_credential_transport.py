@@ -25,6 +25,7 @@ class CredentialTransportTests(unittest.TestCase):
         home = root / "home/fixtureuser"
         if seeded_home:
             home.mkdir(parents=True)
+        (root / "home").mkdir(exist_ok=True)
         # This inert helper covers unlock ordering only. The separate native
         # seed/adoption fixture uses the actual root-owned script and real NSS.
         seeds = root / "home-seeds.py"
@@ -38,6 +39,7 @@ class CredentialTransportTests(unittest.TestCase):
             '"/home/$user"': f'"{root}/home/$user"',
             '"/var/home/$user"': f'"{root}/var-home/$user"',
             'seed_helper=/etc/tilo/firstboot-home-seeds.py': f'seed_helper={seeds}',
+            'FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files.py"': f'FILES_HELPER="{ROOT}/os/usr/libexec/tilo-firstboot-files.py"',
         }
         for original, replacement in replacements.items():
             self.assertGreaterEqual(source.count(original), 1, original)
@@ -49,9 +51,11 @@ class CredentialTransportTests(unittest.TestCase):
         # Account tools and the seed producer are inert in this credential
         # boundary fixture; production parsing and unlock ordering run unchanged.
         stubs = {
+            "sync": "fd = os.open(sys.argv[-1], os.O_RDONLY); os.fsync(fd); os.close(fd)",
             "id": "raise SystemExit(1)",
             "stat": "print('0:600:1' if sys.argv[2] == '%u:%a:%h' else Path(sys.argv[-1]).stat().st_size)",
             "useradd": "(root / 'useradd.json').write_text(json.dumps(sys.argv[1:]))",
+            "getent": "print('fixtureuser:x:' + str(os.getuid()) + ':' + str(os.getgid()) + '::' + str(root / 'home/fixtureuser') + ':/bin/bash')",
             "chpasswd": "(root / 'chpasswd.json').write_text(json.dumps(sys.argv[1:])); (root / 'password-stdin').write_text(sys.stdin.read()); raise SystemExit(int(os.environ.get('FIXTURE_PASSWORD_FAILURE', '0')))",
             "shred": "Path(sys.argv[-1]).unlink()",
             "chown": "pass",

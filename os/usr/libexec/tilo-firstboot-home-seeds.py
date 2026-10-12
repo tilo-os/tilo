@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Create only absent firstboot defaults and attest exactly those generated files."""
 import hashlib
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -10,6 +12,70 @@ import sys
 
 PROOFS = Path('/var/lib/tilo/firstboot-home-seeds')
 LIMIT = 4 << 20
+
+# Shared no-replace publication keeps interrupted writes out of final paths.
+_spec = importlib.util.spec_from_file_location(
+    'firstboot_files', Path(__file__).with_name('tilo-firstboot-files.py'))
+atomic = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(atomic)
+
+
+def publish_bytes(directory, name, data, mode, uid, gid):
+    fd = os.open(directory, atomic.DIR)
+    try:
+        atomic.publish(fd, name, lambda temporary: atomic.write_file(
+            fd, temporary, io.BytesIO(data), mode, uid, gid))
+    finally:
+        os.close(fd)
+
+
+def verify_receipt(receipt, home, uid):
+    trusted(receipt)
+    info = receipt.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > LIMIT:
+        raise ValueError('unsafe firstboot seed proof')
+    fd = os.open(receipt, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, 'rb') as stream:
+        body = json.loads(stream.read(LIMIT + 1))
+        if stamp(os.fstat(stream.fileno())) != stamp(info):
+            raise ValueError('firstboot seed proof changed')
+    if (not isinstance(body, dict) or body.get('schema') != 1
+            or body.get('uid') != uid or body.get('home_inode') != home.stat().st_ino
+            or body.get('filesystem') != os.statvfs(home).f_fsid
+            or not isinstance(body.get('files'), list) or len(body['files']) > 4096):
+        raise ValueError('firstboot seed proof does not match home')
+    seen = set()
+    for entry in body['files']:
+        if not isinstance(entry, dict) or not isinstance(entry.get('path'), str):
+            raise ValueError('malformed firstboot seed proof')
+        relative = Path(entry['path'])
+        if (relative.is_absolute() or not relative.parts or '..' in relative.parts
+                or str(relative) != entry['path'] or entry['path'] in seen
+                or any(relative == Path(custody) or Path(custody) in relative.parents
+                       for custody in ('.config/tilo', '.local/state/tilo'))):
+            raise ValueError('unsafe firstboot seed proof path')
+        seen.add(entry['path'])
+        directory = os.open(home, atomic.DIR)
+        try:
+            for part in relative.parts[:-1]:
+                child = os.open(part, atomic.DIR, dir_fd=directory)
+                os.close(directory)
+                directory = child
+            fd = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                         dir_fd=directory)
+            with os.fdopen(fd, 'rb') as stream:
+                before = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                        or before.st_uid != uid or before.st_size > LIMIT
+                        or stamp(before) != entry.get('stamp')):
+                    raise ValueError('attested firstboot default changed')
+                data = stream.read(LIMIT + 1)
+                if (stamp(os.fstat(stream.fileno())) != stamp(before)
+                        or hashlib.sha256(data).hexdigest() != entry.get('sha256')):
+                    raise ValueError('attested firstboot default changed')
+        finally:
+            os.close(directory)
+    return body
 
 
 def trusted(path):
@@ -31,13 +97,14 @@ def seed(home, skeleton, uid, gid, proofs=PROOFS):
     proofs.mkdir(mode=0o755, exist_ok=True)
     trusted(proofs)
     receipt = proofs / (str(uid) + '.json')
-    if os.path.lexists(receipt):
-        raise ValueError('firstboot seed proof already exists')
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = home.lstat()
     if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
         raise ValueError('firstboot home is redirected')
-    os.chown(home, uid, gid)
+    if os.path.lexists(receipt):
+        return verify_receipt(receipt, home, uid)
+    if (info.st_uid, info.st_gid) != (uid, gid):
+        os.chown(home, uid, gid)
     files = []
     if skeleton.exists():
         trusted(skeleton)
@@ -71,8 +138,15 @@ def seed(home, skeleton, uid, gid, proofs=PROOFS):
                         literal = os.readlink(source)
                         if len(os.fsencode(literal)) > 4096:
                             raise ValueError('firstboot skeleton link exceeds bounds')
-                        os.symlink(literal, target)
-                        os.chown(target, uid, gid, follow_symlinks=False)
+                        directory_fd = os.open(destination, atomic.DIR)
+                        try:
+                            def link(temporary):
+                                os.symlink(literal, temporary, dir_fd=directory_fd)
+                                os.chown(temporary, uid, gid, dir_fd=directory_fd,
+                                         follow_symlinks=False)
+                            atomic.publish(directory_fd, name, link)
+                        finally:
+                            os.close(directory_fd)
                     continue
                 trusted(source)
                 if not stat.S_ISREG(metadata.st_mode):
@@ -87,15 +161,9 @@ def seed(home, skeleton, uid, gid, proofs=PROOFS):
                         data = input_stream.read(LIMIT + 1)
                         if len(data) != metadata.st_size or stamp(os.fstat(input_stream.fileno())) != stamp(metadata):
                             raise ValueError('firstboot skeleton changed')
-                    target_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                                        stat.S_IMODE(metadata.st_mode) & 0o777)
-                    with os.fdopen(target_fd, 'wb') as output:
-                        output.write(data)
-                        output.flush()
-                        os.fchmod(output.fileno(), stat.S_IMODE(metadata.st_mode) & 0o777)
-                        os.fchown(output.fileno(), uid, gid)
-                        os.fsync(output.fileno())
-                        witness = stamp(os.fstat(output.fileno()))
+                    publish_bytes(destination, name, data,
+                                  stat.S_IMODE(metadata.st_mode) & 0o777, uid, gid)
+                    witness = stamp(target.lstat())
                     relative_file = target.relative_to(home)
                     if not any(relative_file == Path(custody) or Path(custody) in relative_file.parents
                                for custody in ('.config/tilo', '.local/state/tilo')):
@@ -115,11 +183,10 @@ def seed(home, skeleton, uid, gid, proofs=PROOFS):
     encoded = (json.dumps(body, separators=(',', ':')) + '\n').encode()
     if len(encoded) > LIMIT:
         raise ValueError('firstboot seed proof exceeds bounds')
-    fd = os.open(receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
-    with os.fdopen(fd, 'wb') as output:
-        output.write(encoded)
-        output.flush()
-        os.fsync(output.fileno())
+    # Files published before an interrupted receipt are conservatively treated
+    # as existing user data on retry. Never reconstruct their provenance merely
+    # because their contents match skel: migrated files can match it too.
+    publish_bytes(proofs, receipt.name, encoded, 0o644, 0, 0)
     for directory in (home, proofs):
         fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:

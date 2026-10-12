@@ -149,6 +149,7 @@ repair_enrolled_device_key() {
 
 # The private intent's random locked shadow value proves transaction ownership.
 TRANSACTION=/etc/tilo/install-user.transaction
+FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files.py"
 retry=0
 lock_value=""
 if [ -e "$TRANSACTION" ] || [ -L "$TRANSACTION" ]; then
@@ -191,7 +192,7 @@ fi
 if [ -z "$lock_value" ]; then
   lock_value="!tilo-firstboot-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
   # Do not replace an unexpected intent; create it before useradd can succeed.
-  (umask 077; set -C; printf '%s:%s\n' "$user" "$lock_value" > "$TRANSACTION")
+  printf '%s:%s\n' "$user" "$lock_value" | /usr/bin/python3 -I "$FILES_HELPER" intent "$TRANSACTION"
 fi
 # Persist the ownership witness before useradd commits the locked account.
 sync -f -- "$TRANSACTION"
@@ -231,13 +232,16 @@ if [ "$retry" -eq 0 ]; then
   fi
 fi
 
-# Recursive ownership repair must also run after an interrupted creation.
-for candidate in "$native_home" "/home/$user"; do
-  if [ -d "$candidate" ] && [ ! -L "$candidate" ]; then
-    chown -R "$user:$user" "$candidate"
-    break
-  fi
-done
+# Provision the exact passwd home even after useradd committed only the account.
+# Defaults remain the attesting helper's responsibility, never an untracked copy.
+passwd_entry="$(getent passwd "$user")" || exit 1
+IFS=: read -r passwd_user _ account_uid account_gid _ account_home _ <<< "$passwd_entry"
+[ "$passwd_user" = "$user" ] && [[ "$account_uid:$account_gid" =~ ^[0-9]+:[0-9]+$ ]] || exit 1
+case "$account_home" in
+  "/home/$user"|"/var/home/$user") ;;
+  *) echo "tilo-firstboot-user: refusing unexpected account home" >&2; exit 1 ;;
+esac
+/usr/bin/python3 -I "$FILES_HELPER" home "$account_home" "$account_uid" "$account_gid"
 
 seed_helper=/etc/tilo/firstboot-home-seeds.py
 if [ ! -e "$seed_helper" ] && [ ! -L "$seed_helper" ]; then
