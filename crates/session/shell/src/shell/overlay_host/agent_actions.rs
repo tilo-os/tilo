@@ -393,15 +393,15 @@ impl AgentActions {
                     self.tasks.clear();
                     return;
                 }
-                let choices: Option<Vec<_>> = rows
+                let frontiers: Option<Vec<Frontier>> = rows
                     .iter()
-                    .map(|row| {
-                        serde_json::from_value::<Frontier>(row.clone())
-                            .ok()?
-                            .choice(owner)
-                    })
+                    .map(|row| serde_json::from_value(row.clone()).ok())
                     .collect();
-                self.tasks = choices.unwrap_or_default();
+                self.tasks = frontiers
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|row| row.choice(owner))
+                    .collect();
             }
             Purpose::Submit(request) => {
                 let outcome = mutation_outcome(request, value.as_ref());
@@ -842,6 +842,51 @@ fn mutation_outcome(request: &ComposerRequest, value: Option<&Value>) -> Compose
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_and_queued_tasks_do_not_hide_an_active_composer_target() {
+        let owner = request(ComposerIntent::Message).owner;
+        let mut actions = AgentActions {
+            owner: Some(owner.clone()),
+            ..AgentActions::default()
+        };
+        let operation = Operation {
+            resource: TASKS.into(),
+            action: "read-current-tasks".into(),
+            arguments: Map::new(),
+            purpose: Purpose::Current,
+            chat: false,
+        };
+        let mut composer = AgentQuickComposer::default();
+        let active = serde_json::json!({
+            "task_id":"task:active", "title":"Active", "assigned_agent":owner.agent,
+            "active_agent":owner.agent, "status":"in_progress", "route":"model",
+            "run_epoch":7, "after_revision":2, "applied_revision":1,
+        });
+        let mut queued = active.clone();
+        queued["task_id"] = "task:queued".into();
+        queued["status"] = "todo".into();
+        queued["run_epoch"] = 0.into();
+        queued["active_agent"] = Value::Null;
+        let mut finished = queued.clone();
+        finished["task_id"] = "task:finished".into();
+        finished["status"] = "done".into();
+        actions.complete(
+            &operation,
+            Some(serde_json::json!({"complete":true,"total":3,"tasks":[active,queued,finished]})),
+            &mut composer,
+        );
+        assert_eq!(actions.tasks.len(), 1);
+        assert_eq!(actions.tasks[0].task_id, "task:active");
+        actions.complete(
+            &operation,
+            Some(serde_json::json!({"complete":true,"total":1,"tasks":[{"malformed":true}]})),
+            &mut composer,
+        );
+        let empty = actions.tasks.is_empty();
+        drop(actions);
+        assert!(empty, "malformed inventories still fail closed");
+    }
 
     fn request(intent: ComposerIntent) -> ComposerRequest {
         ComposerRequest {
