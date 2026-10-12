@@ -156,6 +156,7 @@ fn clients_report(clients: &[crate::support::desktop::Client]) -> String {
 /// at the top left, quick settings at the top right), and the next click lands
 /// on it. A person moves on; so does the scenario, closing whatever the sweep
 /// opened before it clicks anything.
+#[track_caller]
 fn close_overlays(desktop: &Desktop) {
     const OVERLAYS: [&str; 4] = ["overview", "quick_settings", "ws_settings", "collaborators"];
     let open = |desktop: &Desktop| {
@@ -168,17 +169,30 @@ fn close_overlays(desktop: &Desktop) {
         if !open(desktop) {
             return;
         }
+        eprintln!(
+            "[desktop-smoke] closing overlays at {}: {}",
+            std::panic::Location::caller(),
+            desktop.chrome()["overlays"]
+        );
         desktop.key("Escape");
         desktop.pause(Duration::from_millis(100));
     }
     desktop.wait_for("the corner overlays to close", || !open(desktop));
 }
 
+/// A click as a person makes it: on the desktop, not on whatever the pointer's
+/// last visit left open.
+#[track_caller]
+fn click(desktop: &Desktop, x: f64, y: f64) {
+    close_overlays(desktop);
+    desktop.click_at(x, y);
+}
+
 fn window_count(desktop: &Desktop) -> usize {
     desktop.windows().len()
 }
 
-fn scenario(desktop: &Desktop, max_idle_cpu: f64) {
+fn scenario(desktop: &Desktop) {
     // Restored: the tree the compositor was started on is what it shows.
     let restored = desktop.windows();
     let titles: Vec<&str> = restored
@@ -231,7 +245,7 @@ fn scenario(desktop: &Desktop, max_idle_cpu: f64) {
         // compositor lists its windows in no order of ours. The click says: the
         // client under the pointer is the one that reports it.
         let clicks: Vec<usize> = clients.iter().map(|c| c.count("EVENT:CLICK")).collect();
-        desktop.click_at(cx, cy);
+        click(desktop, cx, cy);
         let mut hit = None;
         desktop.wait_for_with(
             "a client to report the click",
@@ -281,13 +295,26 @@ fn scenario(desktop: &Desktop, max_idle_cpu: f64) {
             || client.count("EVENT:KEY PRESS") >= wanted,
         );
     }
-    // ... and the in-process apps take theirs.
-    let (w, h) = (f64::from(SCREEN.0), f64::from(SCREEN.1));
-    for x in [w * 0.1, w * 0.3, w * 0.5] {
-        desktop.click_at(x, h * 0.5);
+    // ... and the in-process apps take theirs, wherever they are laid out: the
+    // screen's left edge is the workspace wheel, and a click there opens the
+    // overview.
+    let apps: Vec<[f64; 4]> = desktop
+        .targets()
+        .into_iter()
+        .filter(|(name, rect)| name.starts_with("so.tilo.") && rect[2] > 50.0 && rect[3] > 50.0)
+        .map(|(_, rect)| rect)
+        .collect();
+    assert!(
+        !apps.is_empty(),
+        "the session has Tilo app windows on screen"
+    );
+    for rect in apps {
+        let (cx, cy) = centre(rect);
+        click(desktop, cx, cy);
         desktop.type_text("hello");
         desktop.key("Enter");
     }
+    close_overlays(desktop);
 
     // Resize and maximize.
     for permille in [260, 340, 220] {
@@ -356,14 +383,18 @@ fn scenario(desktop: &Desktop, max_idle_cpu: f64) {
         },
         || painted_clients(desktop).len() == 2,
     );
+}
 
-    // Left alone, the desktop is idle. A widget that reports a wake deadline
-    // nothing can satisfy makes the loop pump every app on every pass: the
-    // Files app did, while its nearby-transfer snapshot went unanswered.
-    desktop.pause(Duration::from_secs(1));
+/// Left alone, the desktop is idle. A widget that reports a wake deadline
+/// nothing can satisfy makes the loop pump every app on every pass: the Files
+/// app did, while its nearby-transfer snapshot went unanswered. Measured on a
+/// machine nothing else is loading, after the backlog the scenario left has
+/// drained.
+fn assert_idle(desktop: &Desktop) {
+    desktop.pause(Duration::from_secs(2));
     let share = desktop.idle_cpu_share(Duration::from_secs(2));
     assert!(
-        share < max_idle_cpu,
+        share < 0.25,
         "an untouched desktop used {:.0}% of a core; it is spinning on a wake deadline that \
          never clears",
         share * 100.0
@@ -389,8 +420,11 @@ fn sweep_edges(desktop: &Desktop) {
     close_overlays(desktop);
 }
 
-fn run(desktop: &Desktop, max_idle_cpu: f64) {
-    scenario(desktop, max_idle_cpu);
+fn run(desktop: &Desktop, pressure: Option<Pressure>) {
+    scenario(desktop);
+    // The pressure ends with the scenario: idleness is judged without it.
+    drop(pressure);
+    assert_idle(desktop);
     let (beats, worst) = desktop.heartbeat_summary();
     eprintln!(
         "[desktop-smoke] {beats} heartbeats acknowledged; the slowest wake took {worst:?} \
@@ -406,15 +440,13 @@ fn run(desktop: &Desktop, max_idle_cpu: f64) {
 #[test]
 fn desktop_smoke_keeps_the_main_loop_turning() {
     let desktop = Desktop::start(SCREEN, &smoke_tree());
-    run(&desktop, 0.25);
+    run(&desktop, None);
 }
 
 #[test]
 fn desktop_smoke_under_cpu_and_memory_pressure() {
     let desktop = Desktop::start(SCREEN, &smoke_tree());
-    let _pressure = Pressure::for_this_machine();
-    // Starved of CPU the loop uses less, never more, than when quiet.
-    run(&desktop, 0.25);
+    run(&desktop, Some(Pressure::for_this_machine()));
 }
 
 // The compositor serves each Wayland client a bounded number of requests per

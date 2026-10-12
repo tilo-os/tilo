@@ -460,6 +460,27 @@ impl Desktop {
             .unwrap_or_else(|| panic!("windows answered {reply}"))
     }
 
+    /// The named widget rectangles, `(name, [x, y, w, h])`.
+    #[track_caller]
+    pub fn targets(&self) -> Vec<(String, [f64; 4])> {
+        let reply = self.ok(&json!({"op": "list_targets"}));
+        reply
+            .get("targets")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.get("name")?.as_str()?.to_string();
+                let rect = entry.get("rect")?.as_array()?;
+                let mut out = [0.0; 4];
+                for (slot, value) in out.iter_mut().zip(rect) {
+                    *slot = value.as_f64()?;
+                }
+                Some((name, out))
+            })
+            .collect()
+    }
+
     /// The tracked foreign (Wayland) surfaces.
     #[track_caller]
     pub fn foreign_frames(&self) -> Vec<Value> {
