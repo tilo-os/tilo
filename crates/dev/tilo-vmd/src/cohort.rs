@@ -17,6 +17,13 @@ pub(crate) struct VerifiedCohort {
     pub(crate) packages: Vec<CohortPackage>,
 }
 
+impl VerifiedCohort {
+    /// The applications this cohort selects into the session user's store.
+    pub(crate) fn ids(&self) -> impl Iterator<Item = &str> {
+        self.packages.iter().map(|package| package.row.id.as_str())
+    }
+}
+
 pub(crate) struct CohortPackage {
     row: InstalledPackage,
     archive: PathBuf,
