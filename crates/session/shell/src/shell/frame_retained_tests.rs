@@ -66,12 +66,11 @@ fn assert_xrgb_pixels_eq(actual: &[u8], expected: &[u8], label: &str) {
             });
         }
     }
-    // Independent WGPU recordings can differ by a one-unit rounding result at
-    // blend edges: one antialiased row along a top-bar pill's lower edge is
-    // ~90 such bytes. The one-unit delta bound is what catches structural
-    // divergence; the count only bounds that backend raster noise.
+    // Independent WGPU recordings can differ by a one-unit rounding result at a
+    // handful of blend edges. Keep the oracle tight enough to catch structural
+    // divergence while admitting that bounded backend raster noise.
     assert!(
-        mismatches <= 256 && max_delta <= 1,
+        mismatches <= 16 && max_delta <= 1,
         "{label}: {mismatches} XRGB bytes differ; max channel delta {max_delta}; first mismatch {first:?}"
     );
 }
