@@ -1056,20 +1056,7 @@ impl Widget for TimeDatePane {
         self.composed.sync(state, root);
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let composition = self.build_composition();
-        let child = self
-            .composed
-            .build_layout(composition, taffy, theme, node_map);
-        crate::panes::pane_node(taffy, child, node_map, self)
-    }
-
-    ui::forward_to_composed!(composed);
+    crate::panes::composed_pane!();
 
     fn name(&self) -> &'static str {
         "TimeDatePane"
