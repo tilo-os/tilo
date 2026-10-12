@@ -56,6 +56,13 @@ Each adapter reads what a benchmark already prints and emits records through
   `.hosted_whole_frames.<size>`. `FRAMEWORK-SCROLL-PEER` lines are the
   window scrolled with a collaborator's pointer resting over the list:
   `render.framework_scroll.peer_pixels.<size>` and `.peer_whole_frames.<size>`.
+- `framework-focus LOG...`: the `FRAMEWORK-FOCUS tasks=<n> add_ms=<a,...>
+  recompute_ms=<b,...> native_ms=<c,...>` lines of the same example's `focus`
+  mode: the keyboard focus order of a window over `n` items (about four
+  widgets per item). Each size becomes `render.framework_focus.add_item_ms.<size>`
+  (an agent call adding one item, end to end), `.recompute_ms.<size>` (one
+  focus-order recomputation inside it) and `.native_recompute_ms.<size>` (one
+  recomputation of the live window's order); every timing is a sample.
 - `hosting-load REPORT_JSON`: the relay load bench's `hosting-load.json`
   (`crates/hosting/tilo-relay/examples/relay_load`). Each KPI it measured
   becomes `<kpi>.n<collaborators>`, one sample per measured minute (fan-out
@@ -72,6 +79,7 @@ Usage:
     python3 tools/perf/adapters.py idle-wakeups --env-json env.json run-*.log >> results.jsonl
     python3 tools/perf/adapters.py framework-open --env-json env.json framework-open.log >> results.jsonl
     python3 tools/perf/adapters.py framework-scroll --env-json env.json framework-scroll.log >> results.jsonl
+    python3 tools/perf/adapters.py framework-focus --env-json env.json framework-focus.log >> results.jsonl
     python3 tools/perf/adapters.py hosting-load --env-json env.json hosting-load.json >> results.jsonl
 
 An adapter that finds nothing to record fails: a benchmark whose output format
@@ -272,6 +280,31 @@ def framework_open(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
     return [record.from_samples(kpi, units[kpi], values, meta=meta, **base) for kpi, values in samples.items()]
 
 
+FRAMEWORK_FOCUS_LINE = re.compile(
+    r"^FRAMEWORK-FOCUS tasks=(?P<tasks>[0-9]+) add_ms=(?P<add>[0-9.]+(?:,[0-9.]+)*) "
+    r"recompute_ms=(?P<recompute>[0-9.]+(?:,[0-9.]+)*) native_ms=(?P<native>[0-9.]+(?:,[0-9.]+)*)$")
+
+
+def framework_focus(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
+    """Records for one or more runs of the framework-scaling example's focus mode."""
+    samples: dict[str, list[float]] = {}
+    for log in logs:
+        lines = [match for line in log.splitlines() if (match := FRAMEWORK_FOCUS_LINE.match(line.strip()))]
+        if not lines:
+            raise ValueError("no `FRAMEWORK-FOCUS` line: did framework-scaling run to the end?")
+        for line in lines:
+            size = framework_open_size(int(line["tasks"]))
+            for field, kpi in (("add", "add_item_ms"), ("recompute", "recompute_ms"),
+                               ("native", "native_recompute_ms")):
+                samples.setdefault(f"render.framework_focus.{kpi}.{size}", []).extend(
+                    float(value) for value in line[field].split(","))
+    if not logs:
+        raise ValueError("no framework-scaling logs")
+    meta = {**env.get("meta", {}), "runs": str(len(logs))}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    return [record.from_samples(kpi, "ms", values, meta=meta, **base) for kpi, values in samples.items()]
+
+
 FRAMEWORK_SCROLL_LINE = re.compile(
     r"^FRAMEWORK-SCROLL(?P<kind>-HOSTED|-PEER)? tasks=(?P<tasks>[0-9]+) step=(?P<step>[0-9.]+) copying=(?P<copying>true|false) "
     r"pixels_p50=(?P<pixels>[0-9]+) pixels_max=(?P<max>[0-9]+) copied_p50=(?P<copied>[0-9]+) "
@@ -439,6 +472,10 @@ def main(argv: list[str] | None = None) -> int:
                                     help="records from framework-scaling's FRAMEWORK-SCROLL lines")
     scrolling.add_argument("--env-json", required=True, type=Path)
     scrolling.add_argument("logs", nargs="+", type=Path)
+    focusing = commands.add_parser("framework-focus",
+                                   help="records from framework-scaling's FRAMEWORK-FOCUS lines")
+    focusing.add_argument("--env-json", required=True, type=Path)
+    focusing.add_argument("logs", nargs="+", type=Path)
     hosting = commands.add_parser("hosting-load", help="records from the relay load bench's hosting-load.json")
     hosting.add_argument("--env-json", required=True, type=Path)
     hosting.add_argument("--prices", type=Path, default=PRICES)
@@ -468,6 +505,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "framework-scroll":
             records = framework_scroll([path.read_text(encoding="utf-8", errors="replace") for path in args.logs],
                                        env)
+        elif args.command == "framework-focus":
+            records = framework_focus([path.read_text(encoding="utf-8", errors="replace") for path in args.logs],
+                                      env)
         elif args.command == "idle-wakeups":
             records = idle_wakeups([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
         else:

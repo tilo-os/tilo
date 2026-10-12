@@ -19,6 +19,42 @@ fn native_focus_order_enumerates_history_once() {
 }
 
 #[test]
+fn native_focus_order_walks_history_ownership_once() {
+    use crate::history_mode::host::OWNERSHIP_WALKS;
+    let walks = || OWNERSHIP_WALKS.with(std::cell::Cell::get);
+    let ids: Vec<String> = (0..2_000).map(|row| format!("row-{row}")).collect();
+    let root = ids.iter().fold(crate::widget::Column::new(), |column, id| {
+        column.push(Box::new(crate::widget::Button::new(id, "Row")))
+    });
+    let mut app = app_with_root(State::new(), Box::new(root));
+    layout(&mut app);
+    // History closed: the live rows, then History's own controls last.
+    OWNERSHIP_WALKS.with(|count| count.set(0));
+    app.update_focusable_order();
+    assert!(
+        app.focusable_order.len() > 2_000,
+        "every live row and History's toggle take focus"
+    );
+    assert_eq!(walks(), 1, "one ownership walk per recomputation");
+    // History open: it captures input, so only its own controls take focus.
+    let history = named(&mut app, "History");
+    app.dispatch_a11y_action(history, &crate::a11y::Action::Activate);
+    layout(&mut app);
+    assert!(app.history.as_ref().unwrap().captures_input());
+    OWNERSHIP_WALKS.with(|count| count.set(0));
+    app.update_focusable_order();
+    assert_eq!(walks(), 1, "one ownership walk per recomputation");
+    let history = app.history.as_ref().unwrap();
+    assert!(!app.focusable_order.is_empty());
+    assert!(
+        app.focusable_order
+            .iter()
+            .all(|&node| history.owns_node(node, &app.layout.taffy)),
+        "only History's controls take focus while it captures input"
+    );
+}
+
+#[test]
 fn native_focus_order_keeps_live_rows_before_history_controls() {
     let root = crate::widget::Column::new()
         .push(Box::new(crate::widget::Button::new("first-row", "First")))
