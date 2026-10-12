@@ -60,15 +60,9 @@ pub fn crx_url(id: &str, chromium_version: &str) -> Option<Url> {
     {
         return None;
     }
-    let arch = if cfg!(target_arch = "aarch64") {
-        "arm64"
-    } else {
-        "x64"
-    };
-    let nacl = if cfg!(target_arch = "aarch64") {
-        "arm"
-    } else {
-        "x86-64"
+    let (arch, nacl) = match std::env::consts::ARCH {
+        "aarch64" => ("arm64", "arm"),
+        _ => ("x64", "x86-64"),
     };
     let mut url = Url::parse(UPDATE_SERVICE).ok()?;
     url.query_pairs_mut()
