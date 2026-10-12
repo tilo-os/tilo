@@ -76,7 +76,10 @@ impl OdsCodec {
             ..ParsedWorkbook::default()
         };
         if let Some(meta) = pkg.get("meta.xml") {
-            parsed.properties = parse_meta(meta);
+            parsed.properties = crate::office_props::element_props(
+                meta,
+                crate::office_props::odf::prop_for_element,
+            );
         }
         // Preserve styles + other unmodeled parts so `table:style-name` refs resolve; content.xml is regenerated on export.
         for (name, bytes) in &pkg.parts {
@@ -383,50 +386,6 @@ fn resolve_cell(cell: &OdsCell) -> Option<CellInput> {
     })
 }
 
-fn parse_meta(xml: &[u8]) -> BTreeMap<String, String> {
-    let mut props = BTreeMap::new();
-    let Ok(s) = std::str::from_utf8(xml) else {
-        return props;
-    };
-    let mut reader = Reader::from_str(s);
-    let mut cur: Option<&'static str> = None;
-    let mut buf = String::new();
-    while let Ok(ev) = reader.read_event() {
-        match ev {
-            Event::Start(e) => {
-                cur = match local_name(&e) {
-                    b"title" => Some("title"),
-                    b"creator" => Some("author"),
-                    b"creation-date" => Some("created"),
-                    b"date" => Some("modified"),
-                    _ => None,
-                };
-                buf.clear();
-            }
-            Event::Text(t) => {
-                if cur.is_some()
-                    && let Ok(txt) = t.xml10_content()
-                {
-                    buf.push_str(&txt);
-                }
-            }
-            Event::GeneralRef(r) if cur.is_some() => {
-                buf.extend(crate::resolve_general_ref(&r));
-            }
-            Event::End(_) => {
-                if let Some(key) = cur.take()
-                    && !buf.is_empty()
-                {
-                    props.insert(key.to_string(), buf.clone());
-                }
-            }
-            Event::Eof => break,
-            _ => {}
-        }
-    }
-    props
-}
-
 const CONTENT_NS: &str = r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:of="urn:oasis:names:tc:opendocument:xmlns:of:1.2" xmlns:calcext="urn:org:documentfoundation:names:experimental:calc:xmlns:calcext:1.0""#;
 
 fn content_xml(snap: &WorkbookSnapshot) -> String {
@@ -528,26 +487,11 @@ fn cell_xml(cell: &CellView) -> String {
 }
 
 fn meta_xml(props: &BTreeMap<String, String>) -> String {
-    let mut fields = String::new();
-    if let Some(v) = props.get("title") {
-        let _ = write!(fields, "<dc:title>{}</dc:title>", escape_attr_quotes(v));
-    }
-    if let Some(v) = props.get("author") {
-        let _ = write!(fields, "<dc:creator>{}</dc:creator>", escape_attr_quotes(v));
-    }
-    if let Some(v) = props.get("created") {
-        let _ = write!(
-            fields,
-            "<meta:creation-date>{}</meta:creation-date>",
-            escape_attr_quotes(v)
-        );
-    }
-    if let Some(v) = props.get("modified") {
-        let _ = write!(fields, "<dc:date>{}</dc:date>", escape_attr_quotes(v));
-    }
+    let fields = crate::office_props::odf::modeled_children(|key| props.get(key).cloned());
+    let ns = crate::office_props::odf::META_NS;
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
-<office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0"><office:meta>{fields}</office:meta></office:document-meta>"#
+<office:document-meta {ns}><office:meta>{fields}</office:meta></office:document-meta>"#
     )
 }
 

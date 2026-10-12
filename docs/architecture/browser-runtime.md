@@ -129,8 +129,8 @@ time, so they are not compile blockers; they are listed under run-time gaps.
 | 3 | tokio `net` | `runtime-portal` | Moved to `[target.'cfg(unix)']`; only the Unix socket path used it, non-Unix already returned `NotAvailable` | fixed |
 | 4 | tokio `rt-multi-thread` | `tilo-rt` | `daemon()` runtimes are not built on wasm; `app()`, `cpu()` and `io` remain. Positioned I/O gains an `Unsupported` arm | fixed |
 | 5 | OpenMLS refuses wasm without `js` | `channel-crypto` | wasm target dep `openmls/js`; required `getrandom` 0.4.1 → 0.4.3 in `Cargo.lock` | fixed |
-| 6 | `ring`/`rustls` (pairing TLS in `tilo-identity-ceremony`) | `tilo-ui` | As in PR 541: `rustls` and `private-fs` are native-only dependencies; `remote_call` answers `None` in the browser. The bundle no longer contains `ring` or C code | fixed |
-| 7 | No private-file platform | `private-fs` | Third `platform` arm refusing with `Unsupported` | fixed |
+| 6 | `ring`/`rustls` (pairing TLS in `tilo-identity-ceremony`) | `tilo-ui` | As in PR 541: `rustls` and `tilo_files::native::private` are native-only dependencies; `remote_call` answers `None` in the browser. The bundle no longer contains `ring` or C code | fixed |
+| 7 | No private-file platform | `tilo_files::native::private` | Third `platform` arm refusing with `Unsupported` | fixed |
 | 8 | `libc::clock_gettime`; `Url::from_file_path` | `media` | Non-Unix `monotonic_now_ns` reports unreadable (0), as a failed `clock_gettime` did; `path_to_file_uri` returns `Unsupported` | fixed |
 | 9 | `Url::to_file_path` | `tilo-host::portal::to_local_path` | Non-Unix/Windows hosts have no local paths: `None` | fixed |
 | 10 | `web_time::SystemTime` ≠ `std::time::SystemTime` on wasm | `tilo-ui` (settings stamps, signed ops, identity flow) | `ui::time::{to_std, from_std}` — identity on native, epoch arithmetic on the web — at the six crossings | fixed |
@@ -1102,7 +1102,7 @@ browser runtime. Parts that work on `main`'s APIs were ported, renamed
 | `scripts/build.sh` | `scripts/build.sh` | MoQ bundle dropped; optional `--wasm-opt`; fonts from the manifest's `browser_startup` flags |
 | `tilo-ui` `ime.rs`, `headless.rs` frame API, `image_store.rs` host factory | same files | Ported onto `main`'s `FrameHarness`; 541-only system-search and caller-palette branches left out |
 | `tilo-ui` browser fonts (`font_catalog.rs`, `text_render.rs`, `query_text.rs`, `name_field.rs`, `rich_text_editor.rs`, manifest, `tilo-font-catalog`) | same files | Patch applied; `richtext.rs` browser-emoji entry points hand-ported without 541's paragraph chunking and layout reuse |
-| `tilo-ui` rustls/`private-fs` exclusion, `tilo-user-identity` `persist` exclusion, `channel-crypto` `openmls/js`, wasm entropy deps | same | Ported; `tilo-ui` gating otherwise stays feature-based (`native`/`broker-transport` add `tokio/full`) |
+| `tilo-ui` rustls/`tilo_files::native::private` exclusion, `tilo-user-identity` `persist` exclusion, `channel-crypto` `openmls/js`, wasm entropy deps | same | Ported; `tilo-ui` gating otherwise stays feature-based (`native`/`broker-transport` add `tokio/full`) |
 
 ## Deliberately not taken
 

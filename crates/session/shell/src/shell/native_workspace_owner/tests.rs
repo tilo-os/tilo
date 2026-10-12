@@ -115,6 +115,42 @@ fn native_owner_publication_encodes_the_state_file_once_and_keeps_the_live_docum
     );
 }
 
+/// The state file is written with its owner record encoded once; it is still
+/// exactly the tree pretty-printed, the file on disk is those bytes, and the
+/// digest that pass computed is the one the writer checks the file against.
+#[test]
+fn native_owner_state_file_encoded_once_is_the_pretty_tree_and_its_digest() {
+    let (directory, owner, _room, _now, _key) = test_enrolled_owner();
+    let tree = tree_of(&owner);
+    let tree = tree.read();
+    assert!(
+        !tree.native_authority.is_empty(),
+        "the fixture holds an enrolled record"
+    );
+    let encoded = persist::encode_tree(&tree).unwrap();
+    let oracle = serde_json::to_vec_pretty(&persist::DurableTree::of(&tree)).unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&encoded.bytes),
+        String::from_utf8_lossy(&oracle),
+        "the state file keeps its exact bytes"
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("state.json")).unwrap(),
+        oracle,
+        "the last publication wrote exactly those bytes"
+    );
+    assert_eq!(
+        encoded.authority,
+        store::digest(&tree.native_authority).unwrap()
+    );
+    assert_eq!(
+        tree.native_runtime.expected_digest(),
+        Some(encoded.authority),
+        "the writer expects the record the file holds"
+    );
+    tilo_joined_room::preflight_storage(&tree.native_authority).unwrap();
+}
+
 #[test]
 fn native_owner_commits_exact_chat_and_reopens() {
     // Losing the admitted Chat bytes or treating a room-only policy as ready

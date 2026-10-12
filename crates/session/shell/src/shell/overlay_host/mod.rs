@@ -452,6 +452,16 @@ struct PendingLaunchpadAction {
     >,
 }
 
+/// The one local source a Quick Settings device click routes to another device.
+#[derive(Clone, Debug, PartialEq)]
+enum QsDeviceSource {
+    Media(String),
+    Realtime(String),
+    Gamepad(u64),
+    RemoteAudio(u64),
+    RemoteCapture(crate::shell::remote_capture::device::RemoteCaptureKind),
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independently-toggled, documented piece of overlay/transition \
@@ -659,13 +669,9 @@ pub struct ShellOverlayHost {
     /// compact implementation, no enrolled device disappears after row seven.
     qs_device_fabric_start: usize,
     qs_device_fabric_wheel_remainder: f64,
-    /// The local session selected as the source for a certified-device route.
-    /// This is private view state, never convergent fabric state.
-    qs_selected_media: Option<String>,
-    qs_selected_realtime: Option<String>,
-    qs_selected_gamepad: Option<u64>,
-    qs_selected_remote_audio: Option<u64>,
-    qs_selected_remote_capture: Option<crate::shell::remote_capture::device::RemoteCaptureKind>,
+    /// The local source the next device click routes to. This is private
+    /// view state, never convergent fabric state.
+    qs_selected_source: Option<QsDeviceSource>,
     /// The overlays that are self-contained [`layers::ShellLayer`]s, and the
     /// ordering, dismissal and release bookkeeping they share. The tab menu
     /// is opened by `harvest_pending_tab_context_menus` from the tab bar's
@@ -2380,11 +2386,7 @@ impl ShellOverlayHost {
             qs_clipboard_query: String::new(),
             qs_device_fabric_start: 0,
             qs_device_fabric_wheel_remainder: 0.0,
-            qs_selected_media: None,
-            qs_selected_realtime: None,
-            qs_selected_gamepad: None,
-            qs_selected_remote_audio: None,
-            qs_selected_remote_capture: None,
+            qs_selected_source: None,
             layers: OverlayStack::default(),
             session_action_channel: std::sync::mpsc::channel(),
             power_bridge: None,
@@ -6504,7 +6506,7 @@ impl ShellOverlayHost {
     /// This is read-only presentation state. The developer control transport
     /// serialises it when that transport is enabled, while normal production
     /// sessions never bind the transport at all.
-    pub fn active_window_control_rects(&self) -> Option<(Rect, Rect)> {
+    pub fn active_window_bounds(&self) -> Option<ui::widget::WindowGroupBounds> {
         let chrome = self.chrome.clone()?;
         let (strip_id, group_id) = {
             let st = chrome.borrow();
@@ -6520,8 +6522,17 @@ impl ShellOverlayHost {
         // SAFETY: same ownership contract as `group_at_for_tests` above.
         let row: &GroupRow = unsafe { &*ptr };
         let group = row.groups.iter().find(|group| group.id == group_id)?;
-        let maximize = group.active_maximize_rect().unwrap_or(Rect::ZERO);
-        Some((maximize, group.restore_rect()))
+        Some(group.presentation_bounds())
+    }
+
+    /// Compatibility view for the existing developer transport.
+    pub fn active_window_control_rects(&self) -> Option<(Rect, Rect)> {
+        self.active_window_bounds().map(|bounds| {
+            (
+                bounds.maximize.unwrap_or(Rect::ZERO),
+                bounds.restore.unwrap_or(Rect::ZERO),
+            )
+        })
     }
 
     /// Test-only: runs the per-frame active-group reconcile outside `update`.
@@ -11635,12 +11646,51 @@ impl ShellOverlayHost {
             chrome.borrow_mut().projection_follow =
                 crate::shell::chrome_state::ProjectionFollow::Person;
         }
+        if let Some(request) = self.projection_overlay.take_request() {
+            self.invoke_display_request(request, ctx);
+        }
         if outcome.invalidate
             && let Some(chrome) = self.chrome.as_ref()
         {
             chrome.borrow_mut().bump();
         }
         outcome.consumed
+    }
+
+    /// Make a display choice from the sheet through its published action,
+    /// resolved and invoked exactly as the control socket does, so the
+    /// person at the sheet and an agent pass one authority check and stage
+    /// through one door. The sheet follows the job to its receipt.
+    fn invoke_display_request(
+        &mut self,
+        request: crate::shell::projection_overlay::DisplayRequest,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        use crate::shell::search::action_api::{ActionError, AllVisible, ResourceRef};
+        let outcome = self
+            .chrome
+            .clone()
+            .ok_or_else(|| ActionError::Refused("this shell has no desktop to act on".into()))
+            .and_then(|chrome| {
+                let resource = ResourceRef::new(
+                    crate::shell::search::providers::actions::PROVIDER_ID,
+                    request.action_id(),
+                );
+                // Visibility is not authority: the action itself checks the
+                // workspace's grant when it is invoked, as for every caller.
+                let catalog = self.action_catalog_for_resource(
+                    &resource,
+                    &chrome.borrow(),
+                    ctx.state.doc(),
+                    ctx.path,
+                    &AllVisible,
+                );
+                let selected = catalog.select(&resource).ok_or_else(|| {
+                    ActionError::Refused(format!("{} is not published", request.action_id()))
+                })?;
+                selected.invoke_nullary(&mut ctx.state, ctx.path, &chrome)
+            });
+        self.projection_overlay.follow_request(request, outcome);
     }
 
     /// Close the display sheet a `display.layout.*` action opened once the
@@ -15057,13 +15107,7 @@ impl ShellOverlayHost {
                 ),
             )),
             DeviceFabricPaneRow::RemoteAudioConsent(consent) => {
-                let (allow, decline) =
-                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
-                let approved = if allow.contains(point) {
-                    true
-                } else if decline.contains(point) {
-                    false
-                } else {
+                let Some(approved) = self.qs_device_row_choice(row_index, point) else {
                     return;
                 };
                 Some((
@@ -15085,22 +15129,12 @@ impl ShellOverlayHost {
                 ))
             }
             DeviceFabricPaneRow::RemoteAudioSource(source) => {
-                self.qs_selected_remote_audio = Some(source.token);
-                self.qs_selected_realtime = None;
-                self.qs_selected_media = None;
-                self.qs_selected_gamepad = None;
-                self.qs_selected_remote_capture = None;
+                self.qs_selected_source = Some(QsDeviceSource::RemoteAudio(source.token));
                 self.bump_chrome();
                 return;
             }
             DeviceFabricPaneRow::SpeakerConsent(consent) => {
-                let (allow, decline) =
-                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
-                let approved = if allow.contains(point) {
-                    true
-                } else if decline.contains(point) {
-                    false
-                } else {
+                let Some(approved) = self.qs_device_row_choice(row_index, point) else {
                     return;
                 };
                 Some((
@@ -15121,10 +15155,13 @@ impl ShellOverlayHost {
                     &[("group", session.name.into())],
                 ),
             )),
-            DeviceFabricPaneRow::SpeakerGroup(group) if self.qs_selected_remote_audio.is_some() => {
+            DeviceFabricPaneRow::SpeakerGroup(group)
+                if let Some(QsDeviceSource::RemoteAudio(source_token)) =
+                    self.qs_selected_source =>
+            {
                 Some((
                     DeviceFabricUiAction::StartSpeakerGroupAudio {
-                        source_token: self.qs_selected_remote_audio.unwrap_or_default(),
+                        source_token,
                         group: group.id,
                     },
                     t_args(
@@ -15133,16 +15170,20 @@ impl ShellOverlayHost {
                     ),
                 ))
             }
-            DeviceFabricPaneRow::SpeakerGroup(group) if self.qs_selected_media.is_some() => Some((
-                DeviceFabricUiAction::PlayMediaOnSpeakerGroup {
-                    session_id: self.qs_selected_media.clone().unwrap_or_default(),
-                    group: group.id,
-                },
-                t_args(
-                    "host-fabric-speaker-playing-media",
-                    &[("group", group.name.into())],
-                ),
-            )),
+            DeviceFabricPaneRow::SpeakerGroup(group)
+                if let Some(QsDeviceSource::Media(session_id)) = &self.qs_selected_source =>
+            {
+                Some((
+                    DeviceFabricUiAction::PlayMediaOnSpeakerGroup {
+                        session_id: session_id.clone(),
+                        group: group.id,
+                    },
+                    t_args(
+                        "host-fabric-speaker-playing-media",
+                        &[("group", group.name.into())],
+                    ),
+                ))
+            }
             DeviceFabricPaneRow::SpeakerSetup => {
                 if let Some(chrome) = self.chrome.clone() {
                     {
@@ -15178,13 +15219,7 @@ impl ShellOverlayHost {
                 },
             )),
             DeviceFabricPaneRow::RemoteCaptureConsent(consent) => {
-                let (allow, decline) =
-                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
-                let approved = if allow.contains(point) {
-                    true
-                } else if decline.contains(point) {
-                    false
-                } else {
+                let Some(approved) = self.qs_device_row_choice(row_index, point) else {
                     return;
                 };
                 Some((
@@ -15206,11 +15241,7 @@ impl ShellOverlayHost {
                 ))
             }
             DeviceFabricPaneRow::RemoteCaptureSource(kind) => {
-                self.qs_selected_remote_capture = Some(kind);
-                self.qs_selected_remote_audio = None;
-                self.qs_selected_realtime = None;
-                self.qs_selected_media = None;
-                self.qs_selected_gamepad = None;
+                self.qs_selected_source = Some(QsDeviceSource::RemoteCapture(kind));
                 self.bump_chrome();
                 return;
             }
@@ -15234,13 +15265,7 @@ impl ShellOverlayHost {
                 }
             }
             DeviceFabricPaneRow::RealtimeConsent(consent) => {
-                let (allow, decline) =
-                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
-                let approved = if allow.contains(point) {
-                    true
-                } else if decline.contains(point) {
-                    false
-                } else {
+                let Some(approved) = self.qs_device_row_choice(row_index, point) else {
                     return;
                 };
                 let result =
@@ -15266,22 +15291,12 @@ impl ShellOverlayHost {
                 return;
             }
             DeviceFabricPaneRow::RealtimeSource(source) => {
-                self.qs_selected_realtime = Some(source.session);
-                self.qs_selected_media = None;
-                self.qs_selected_gamepad = None;
-                self.qs_selected_remote_capture = None;
-                self.qs_selected_remote_audio = None;
+                self.qs_selected_source = Some(QsDeviceSource::Realtime(source.session));
                 self.bump_chrome();
                 return;
             }
             DeviceFabricPaneRow::BluetoothAuthorization(authorization) => {
-                let (allow, decline) =
-                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
-                let approved = if allow.contains(point) {
-                    true
-                } else if decline.contains(point) {
-                    false
-                } else {
+                let Some(approved) = self.qs_device_row_choice(row_index, point) else {
                     return;
                 };
                 Some((
@@ -15334,13 +15349,7 @@ impl ShellOverlayHost {
                 }
             }
             DeviceFabricPaneRow::GamepadAuthorization(authorization) => {
-                let (allow, decline) =
-                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
-                let approved = if allow.contains(point) {
-                    true
-                } else if decline.contains(point) {
-                    false
-                } else {
+                let Some(approved) = self.qs_device_row_choice(row_index, point) else {
                     return;
                 };
                 let action = DeviceFabricUiAction::AuthorizeGamepadForwarding {
@@ -15375,11 +15384,7 @@ impl ShellOverlayHost {
                         ),
                     ))
                 } else {
-                    self.qs_selected_gamepad = Some(gamepad.token);
-                    self.qs_selected_media = None;
-                    self.qs_selected_realtime = None;
-                    self.qs_selected_remote_audio = None;
-                    self.qs_selected_remote_capture = None;
+                    self.qs_selected_source = Some(QsDeviceSource::Gamepad(gamepad.token));
                     self.bump_chrome();
                     return;
                 }
@@ -15413,11 +15418,7 @@ impl ShellOverlayHost {
                 crate::shell::device_fabric_runtime::MediaHandoffPhase::Completed => None,
             },
             DeviceFabricPaneRow::Media(media) => {
-                self.qs_selected_media = Some(media.session_id);
-                self.qs_selected_realtime = None;
-                self.qs_selected_gamepad = None;
-                self.qs_selected_remote_audio = None;
-                self.qs_selected_remote_capture = None;
+                self.qs_selected_source = Some(QsDeviceSource::Media(media.session_id));
                 self.bump_chrome();
                 return;
             }
@@ -15443,13 +15444,7 @@ impl ShellOverlayHost {
                 if status.phase
                     == crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired
                 {
-                    let (allow, decline) =
-                        Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
-                    let approved = if allow.contains(point) {
-                        true
-                    } else if decline.contains(point) {
-                        false
-                    } else {
+                    let Some(approved) = self.qs_device_row_choice(row_index, point) else {
                         return;
                     };
                     Some((
@@ -15486,7 +15481,7 @@ impl ShellOverlayHost {
             DeviceFabricPaneRow::Device(device)
                 if !device.is_local
                     && device.online
-                    && let Some(kind) = self.qs_selected_remote_capture =>
+                    && let Some(QsDeviceSource::RemoteCapture(kind)) = self.qs_selected_source =>
             {
                 Some((
                     DeviceFabricUiAction::RequestRemoteCapture {
@@ -15506,11 +15501,12 @@ impl ShellOverlayHost {
                 if !device.is_local
                     && device.online
                     && device.audio_output
-                    && self.qs_selected_remote_audio.is_some() =>
+                    && let Some(QsDeviceSource::RemoteAudio(source_token)) =
+                        self.qs_selected_source =>
             {
                 Some((
                     DeviceFabricUiAction::StartRemoteAudio {
-                        source_token: self.qs_selected_remote_audio.unwrap_or_default(),
+                        source_token,
                         target: device.id,
                     },
                     t_args(
@@ -15523,11 +15519,7 @@ impl ShellOverlayHost {
                 if !device.is_local
                     && device.online
                     && device.kind == crate::shell::device_fabric::DeviceKind::Phone
-                    && self.qs_selected_remote_audio.is_none()
-                    && self.qs_selected_gamepad.is_none()
-                    && self.qs_selected_realtime.is_none()
-                    && self.qs_selected_remote_capture.is_none()
-                    && self.qs_selected_media.is_none() =>
+                    && self.qs_selected_source.is_none() =>
             {
                 Some((
                     DeviceFabricUiAction::RequestPhoneTethering { phone: device.id },
@@ -15538,11 +15530,14 @@ impl ShellOverlayHost {
                 ))
             }
             DeviceFabricPaneRow::Device(device)
-                if !device.is_local && device.online && self.qs_selected_gamepad.is_some() =>
+                if !device.is_local
+                    && device.online
+                    && let Some(QsDeviceSource::Gamepad(source_token)) =
+                        self.qs_selected_source =>
             {
                 Some((
                     DeviceFabricUiAction::StartPhysicalGamepad {
-                        source_token: self.qs_selected_gamepad.unwrap_or_default(),
+                        source_token,
                         target: device.id,
                     },
                     t_args(
@@ -15552,9 +15547,11 @@ impl ShellOverlayHost {
                 ))
             }
             DeviceFabricPaneRow::Device(device)
-                if !device.is_local && device.online && self.qs_selected_realtime.is_some() =>
+                if !device.is_local
+                    && device.online
+                    && let Some(QsDeviceSource::Realtime(session)) = &self.qs_selected_source =>
             {
-                let session = self.qs_selected_realtime.clone().unwrap_or_default();
+                let session = session.clone();
                 let result = self.realtime_continuity_call(RealtimeContinuityUiAction::Propose {
                     session,
                     target: device.id,
@@ -15576,9 +15573,11 @@ impl ShellOverlayHost {
                 return;
             }
             DeviceFabricPaneRow::Device(device)
-                if !device.is_local && device.online && self.qs_selected_media.is_some() =>
+                if !device.is_local
+                    && device.online
+                    && let Some(QsDeviceSource::Media(session_id)) = &self.qs_selected_source =>
             {
-                let session_id = self.qs_selected_media.clone().unwrap_or_default();
+                let session_id = session_id.clone();
                 let compatible = view.local_media.iter().any(|media| {
                     media.session_id == session_id && media.targets.contains(&device.id)
                 });
@@ -15703,15 +15702,8 @@ impl ShellOverlayHost {
             if !input.is_default {
                 return None;
             }
-            let (lower, raise) =
-                Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
-            let raise = if raise.contains(point) {
-                true
-            } else if lower.contains(point) {
-                false
-            } else {
-                return None;
-            };
+            // The first button lowers, the second raises.
+            let raise = !self.qs_device_row_choice(row_index, point)?;
             // A level step is its own feedback: the row's level updates.
             return Some((
                 DeviceFabricUiAction::StepInputLevel {
@@ -17788,8 +17780,9 @@ impl Widget for ShellOverlayHost {
         let pairing_dirty = self.pairing.pump(doc, path);
         let radio_dirty = self.poll_quick_settings_radio();
         let quick_settings_dirty = self.apply_quick_settings_readings();
+        let projection_open = self.overlay_flags().projection;
         let display_storage_dirty =
-            self.projection_overlay.poll_storage() | self.close_settled_projection();
+            self.projection_overlay.poll_storage(projection_open) | self.close_settled_projection();
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
         self.tick_shortcut_triggers();
@@ -19326,7 +19319,7 @@ impl Widget for ShellOverlayHost {
                             let view = self
                                 .device_fabric_call(DeviceFabricUiAction::Snapshot)
                                 .unwrap_or_default();
-                            let selected_id = self.qs_selected_media.as_ref().or_else(|| {
+                            let selected_id = self.qs_selected_media().or_else(|| {
                                 view.local_media
                                     .iter()
                                     .find(|media| media.playing)
@@ -21358,9 +21351,9 @@ impl ShellOverlayHost {
     }
 
     /// Wireless projection is an OS-owned edge sheet. Discovery and
-    /// protocol handshakes complete off-thread; polling only moves
-    /// already-completed state into this frame. Split out of
-    /// `draw_dropdowns_and_sheets`.
+    /// protocol handshakes complete off-thread, and the host update moves
+    /// their results and the display state into the sheet; painting only
+    /// draws it. Split out of `draw_dropdowns_and_sheets`.
     fn draw_projection_sheet(
         &mut self,
         scene: &mut Scene,
@@ -21370,7 +21363,7 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
-        let changed = self.projection_overlay.draw(
+        self.projection_overlay.draw(
             scene,
             transform,
             text_renderer,
@@ -21379,9 +21372,6 @@ impl ShellOverlayHost {
             self.rect,
             flags.projection,
         );
-        if changed && let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
     }
 
     fn shortcut_help_panel_rect(&self) -> Rect {
@@ -24539,20 +24529,44 @@ impl ShellOverlayHost {
         )
     }
 
-    fn normalise_qs_selected_media(&mut self, view: &DeviceFabricView) {
-        if self.qs_selected_media.as_ref().is_some_and(|selected| {
-            view.local_media
-                .iter()
-                .any(|media| &media.session_id == selected)
-        }) {
-            return;
+    fn qs_selected_media(&self) -> Option<&String> {
+        match &self.qs_selected_source {
+            Some(QsDeviceSource::Media(session_id)) => Some(session_id),
+            _ => None,
         }
-        self.qs_selected_media = view
+    }
+
+    /// Which of a device row's two trailing buttons `point` hits: `true` for
+    /// the first (allow), `false` for the second (decline), `None` for neither.
+    fn qs_device_row_choice(&self, row_index: usize, point: Point) -> Option<bool> {
+        let (first, second) = Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
+        if first.contains(point) {
+            Some(true)
+        } else if second.contains(point) {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    /// Defaults the source to the playing (or first) local media session
+    /// while no other source is chosen, and drops a media session that ended.
+    fn normalise_qs_selected_media(&mut self, view: &DeviceFabricView) {
+        match &self.qs_selected_source {
+            Some(QsDeviceSource::Media(selected))
+                if !view
+                    .local_media
+                    .iter()
+                    .any(|media| &media.session_id == selected) => {}
+            None => {}
+            Some(_) => return,
+        }
+        self.qs_selected_source = view
             .local_media
             .iter()
             .find(|media| media.playing)
             .or_else(|| view.local_media.first())
-            .map(|media| media.session_id.clone());
+            .map(|media| QsDeviceSource::Media(media.session_id.clone()));
     }
 
     fn fabric_device_detail(
@@ -24902,8 +24916,10 @@ impl ShellOverlayHost {
                 ui::icons::Icon::Volume2,
                 false,
                 group.ready_members() > 0
-                    && (self.qs_selected_remote_audio.is_some()
-                        || self.qs_selected_media.is_some()),
+                    && matches!(
+                        self.qs_selected_source,
+                        Some(QsDeviceSource::RemoteAudio(_) | QsDeviceSource::Media(_))
+                    ),
             ),
             DeviceFabricPaneRow::SpeakerSetup => (
                 t("a11y-speaker-setup"),
@@ -24947,7 +24963,7 @@ impl ShellOverlayHost {
                     t("qs-devices-audio-system")
                 },
                 ui::icons::Icon::Volume2,
-                self.qs_selected_remote_audio == Some(source.token),
+                self.qs_selected_source == Some(QsDeviceSource::RemoteAudio(source.token)),
                 true,
             ),
             DeviceFabricPaneRow::RemoteAudioRoute(route) => {
@@ -25015,7 +25031,7 @@ impl ShellOverlayHost {
                 ),
                 t("qs-devices-capture-source-note"),
                 ui::icons::Icon::Camera,
-                self.qs_selected_remote_capture == Some(*kind),
+                self.qs_selected_source == Some(QsDeviceSource::RemoteCapture(*kind)),
                 true,
             ),
             DeviceFabricPaneRow::RemoteCaptureSession(session) => {
@@ -25102,7 +25118,7 @@ impl ShellOverlayHost {
                 ),
                 t("qs-devices-call-source-note"),
                 ui::icons::Icon::Camera,
-                self.qs_selected_realtime.as_ref() == Some(&source.session),
+                matches!(&self.qs_selected_source, Some(QsDeviceSource::Realtime(session)) if *session == source.session),
                 true,
             ),
             DeviceFabricPaneRow::BluetoothAuthorization(authorization) => (
@@ -25192,7 +25208,7 @@ impl ShellOverlayHost {
                     },
                 ),
                 ui::icons::Icon::Mouse,
-                self.qs_selected_gamepad == Some(gamepad.token) || gamepad.forwarding.is_some(),
+                self.qs_selected_source == Some(QsDeviceSource::Gamepad(gamepad.token)) || gamepad.forwarding.is_some(),
                 true,
             ),
             DeviceFabricPaneRow::MediaHandoff(status) => (
@@ -25242,7 +25258,7 @@ impl ShellOverlayHost {
                 } else {
                     ui::icons::Icon::Music
                 },
-                self.qs_selected_media.as_ref() == Some(&media.session_id),
+                self.qs_selected_media() == Some(&media.session_id),
                 true,
             ),
             DeviceFabricPaneRow::LocalInput(input) => (
@@ -25303,28 +25319,29 @@ impl ShellOverlayHost {
                 let enabled = !device.is_local
                     && device.online
                     && (device.kind == crate::shell::device_fabric::DeviceKind::Phone
-                        || self.qs_selected_gamepad.is_some()
-                        || self.qs_selected_remote_audio.is_some()
-                        || self.qs_selected_remote_capture.is_some()
-                        || self.qs_selected_realtime.is_some()
+                        || matches!(
+                            self.qs_selected_source,
+                            Some(
+                                QsDeviceSource::Gamepad(_)
+                                    | QsDeviceSource::RemoteAudio(_)
+                                    | QsDeviceSource::RemoteCapture(_)
+                                    | QsDeviceSource::Realtime(_)
+                            )
+                        )
                         || selected.is_some_and(|media| media.targets.contains(&device.id)));
                 let mut detail = if device.kind
                     == crate::shell::device_fabric::DeviceKind::Phone
                     && !device.is_local
                     && device.online
-                    && self.qs_selected_gamepad.is_none()
-                    && self.qs_selected_remote_audio.is_none()
-                    && self.qs_selected_remote_capture.is_none()
-                    && self.qs_selected_realtime.is_none()
-                    && self.qs_selected_media.is_none()
+                    && self.qs_selected_source.is_none()
                 {
                     t("qs-devices-ask-phone")
-                } else if self.qs_selected_gamepad.is_some()
+                } else if matches!(self.qs_selected_source, Some(QsDeviceSource::Gamepad(_)))
                     && !device.is_local
                     && device.online
                 {
                     t("qs-devices-use-controller")
-                } else if let Some(kind) = self.qs_selected_remote_capture
+                } else if let Some(QsDeviceSource::RemoteCapture(kind)) = self.qs_selected_source
                     && !device.is_local
                     && device.online
                 {
@@ -25332,7 +25349,7 @@ impl ShellOverlayHost {
                         "qs-devices-use-input",
                         &[("input", t(remote_capture_kind_key(kind)).into())],
                     )
-                } else if self.qs_selected_remote_audio.is_some()
+                } else if matches!(self.qs_selected_source, Some(QsDeviceSource::RemoteAudio(_)))
                     && !device.is_local
                     && device.online
                 {
@@ -25447,7 +25464,7 @@ impl ShellOverlayHost {
             return;
         };
         self.normalise_qs_selected_media(&view);
-        let selected = self.qs_selected_media.as_ref().and_then(|id| {
+        let selected = self.qs_selected_media().and_then(|id| {
             view.local_media
                 .iter()
                 .find(|media| &media.session_id == id)
