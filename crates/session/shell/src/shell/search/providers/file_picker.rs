@@ -162,7 +162,7 @@ impl SearchProvider for FilePickerProvider {
                 score: 0,
                 params,
                 contract: Some(tilo_actions::ActionContract {
-                    permission: tilo_actions::PermissionRequirement::Admin,
+                    kind: tilo_actions::ActionKind::Outside,
                     risk: if grants {
                         tilo_actions::RiskLevel::Destructive
                     } else {
