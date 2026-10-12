@@ -347,7 +347,7 @@ Upstream evicts a resident image only when an allocation fails, and never
 shrinks the atlas. A Wayland client's frame is a new image on every commit,
 so every superseded frame kept its CPU pixels alive until the atlas was full,
 the atlas grew to its maximum on the way, and the compositor kept that
-high-water mark for the rest of the session (TIL-692: about 14 MiB per app
+high-water mark for the rest of the session (#3971: about 14 MiB per app
 opened and closed, past 1 GiB). Now:
 
 - `ImageCache::finish_resolve` evicts every resident no pass drew in the last
@@ -369,7 +369,7 @@ opened and closed, past 1 GiB). Now:
   (`SHRINK_SOON_RESOLVES`) a pass after a sparse one halves the atlas at once,
   as often as the eighth-full rule allows, instead of after 60. A desktop that
   goes idle after a close draws a handful of frames, so the slow rule kept a
-  256 MiB atlas after four apps closed (TIL-731).
+  256 MiB atlas after four apps closed.
 
 Own tests in `image_cache.rs`: stale residents are released without
 allocation pressure, an image survives two passes that skip it, a committing

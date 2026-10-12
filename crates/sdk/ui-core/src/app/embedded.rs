@@ -1054,7 +1054,7 @@ mod theme_repaint_tests {
     }
 }
 
-/// TIL-696: a tile whose record was still being written at its last frame
+/// #3986: a tile whose record was still being written at its last frame
 /// left a wake deadline that only its next `draw` moved, so a compositor that
 /// does not paint for a due deadline woke for it on every park.
 #[cfg(test)]

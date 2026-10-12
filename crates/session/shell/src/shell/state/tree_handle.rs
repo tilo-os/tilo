@@ -84,7 +84,7 @@ struct TreeCell {
     holder: parking_lot::Mutex<Option<Holder>>,
 }
 
-/// The parts of the tree an authorization decision reads (TIL-707): each
+/// The parts of the tree an authorization decision reads: each
 /// workspace's room, owner, roster, grants, permission profiles, tasks and
 /// pending ownership transfer, and the session's room authorities, admitted
 /// devices, authenticated persons and stewarded rooms. Strips, records,
@@ -363,7 +363,7 @@ impl Drop for WorkspaceTreeWriteGuard<'_> {
         *self.holder.lock() = None;
         // Rosters, roles, grants and the devices a room admitted live here:
         // the collaboration broker re-checks what it admitted on this
-        // announcement rather than on a clock (TIL-707). Only a write that
+        // announcement rather than on a clock. Only a write that
         // changed them announces; most writes are a frame's strips and
         // records, and announcing each kept the broker on a one-second
         // cadence. A reader it wakes takes the read lock once this guard has
@@ -475,7 +475,7 @@ mod tests {
         assert!(handle.policy_revision() > first, "a grant is a new policy");
     }
 
-    /// TIL-707: the collaboration broker re-checks rosters, roles and
+    /// #4022: the collaboration broker re-checks rosters, roles and
     /// grants on the policy announcement a released write makes when it
     /// changed them, so no writer can change who may do what without it
     /// hearing; and the frame's writes to strips and records, which decide
