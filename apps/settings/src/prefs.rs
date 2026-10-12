@@ -24,7 +24,7 @@
 //!   "input":   { "touchpad_natural_scroll": true, "tap_to_click": true,
 //!                "pointer_speed": 0.5, "key_repeat": 0.5,
 //!                "keyboard_layout": "us" },
-//!   "updates": { "auto": true, "channel": "Stable", "last_checked": "Never" },
+//!   "updates": { "auto": true, "last_checked": "Never" },
 //!   "appearance": { "theme": "Dark", "high_contrast": false,
 //!                   "reduce_motion": false, "text_scale": 1.0, "ui_scale": 1.0 },
 //!   "notifications": { "do_not_disturb": false, "show_banners": true,
@@ -468,10 +468,6 @@ impl Default for PowerPrefs {
 pub struct UpdatePrefs {
     #[model(readonly)]
     pub auto: bool,
-    /// Legacy serialized field. The actual image reference is managed by
-    /// bootc; Settings never treats this string as an actionable channel.
-    #[model(readonly)]
-    pub channel: String,
     /// Human-readable timestamp of the last successful check, or `"Never"`.
     #[model(readonly)]
     pub last_checked: String,
@@ -482,14 +478,34 @@ impl ui::storage::SettingsSchema for UpdatePrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("updates");
 }
 
-#[ui::tilo_resource::resource(kind = "settings.updates", label = "Updates")]
-impl UpdatePrefs {}
+#[ui::tilo_resource::resource(
+    kind = "settings.updates",
+    label = "Updates",
+    version = 2,
+    migrate = UpdatePrefs::upgrade
+)]
+impl UpdatePrefs {
+    /// Version 1 also stored the update channel, which nothing read.
+    fn upgrade(
+        doc: &mut ui::tilo_resource::Doc,
+        from: u32,
+    ) -> Result<(), ui::tilo_resource::ModelError> {
+        if from != 1 {
+            return Err(ui::tilo_resource::ModelError::invalid(format!(
+                "no migration from {from}"
+            )));
+        }
+        if automerge::ReadDoc::get(doc, automerge::ROOT, "channel")?.is_some() {
+            automerge::transaction::Transactable::delete(doc, automerge::ROOT, "channel")?;
+        }
+        Ok(())
+    }
+}
 
 impl Default for UpdatePrefs {
     fn default() -> Self {
         Self {
             auto: true,
-            channel: "Stable".to_string(),
             last_checked: "Never".to_string(),
         }
     }
@@ -1323,7 +1339,6 @@ mod tests {
         assert_eq!(power.blank_minutes, 10);
         assert_eq!(power.lock_minutes, 5);
         let updates = UpdatePrefs::default();
-        assert_eq!(updates.channel, "Stable");
         assert_eq!(updates.last_checked, "Never");
 
         let n = NotificationPrefs::default();
@@ -1459,7 +1474,6 @@ mod tests {
         assert_eq!(round_trip(&power), power);
         let updates = UpdatePrefs {
             auto: false,
-            channel: "Nightly".into(),
             ..UpdatePrefs::default()
         };
         assert_eq!(round_trip(&updates), updates);
