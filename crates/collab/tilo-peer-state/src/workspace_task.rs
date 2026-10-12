@@ -324,36 +324,10 @@ fn dispatch(
         command @ WorkspaceTaskCommand::SetExecutionBudget { .. } => {
             dispatch_budget(tasks, controls, context, command)
         }
-        WorkspaceTaskCommand::Queue {
-            title,
-            assigned_agent,
-            route,
-            resource,
-        } => queue(
-            tasks,
-            controls,
-            context,
-            title,
-            assigned_agent,
-            *route,
-            resource.as_deref().cloned(),
-            None,
-        ),
-        WorkspaceTaskCommand::QueueInstruction {
-            title,
-            instruction,
-            assigned_agent,
-            route,
-        } => queue(
-            tasks,
-            controls,
-            context,
-            title,
-            assigned_agent,
-            *route,
-            None,
-            Some(instruction.as_str()),
-        ),
+        command @ (WorkspaceTaskCommand::Queue { .. }
+        | WorkspaceTaskCommand::QueueInstruction { .. }) => {
+            dispatch_queue(tasks, controls, context, command)
+        }
         command @ (WorkspaceTaskCommand::ApproveRun { .. }
         | WorkspaceTaskCommand::StartRun { .. }) => dispatch_run(tasks, controls, context, command),
         WorkspaceTaskCommand::Direction { task_id, text } => direct(
@@ -425,6 +399,47 @@ fn dispatch(
             task_id,
             (*run_epoch, *after_revision),
         ),
+    }
+}
+
+fn dispatch_queue(
+    tasks: &mut Vec<WorkspaceTask>,
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    command: &WorkspaceTaskCommand,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    match command {
+        WorkspaceTaskCommand::Queue {
+            title,
+            assigned_agent,
+            route,
+            resource,
+        } => queue(
+            tasks,
+            controls,
+            context,
+            title,
+            assigned_agent,
+            *route,
+            resource.as_deref().cloned(),
+            None,
+        ),
+        WorkspaceTaskCommand::QueueInstruction {
+            title,
+            instruction,
+            assigned_agent,
+            route,
+        } => queue(
+            tasks,
+            controls,
+            context,
+            title,
+            assigned_agent,
+            *route,
+            None,
+            Some(instruction.as_str()),
+        ),
+        _ => Err("not a queue command".into()),
     }
 }
 
@@ -550,7 +565,7 @@ fn dispatch_agent_report(
                 WorkspaceTaskExecutionPhase::Executing,
             )?;
             let AdmittedTaskActor::Agent { id, .. } = context.actor else {
-                unreachable!()
+                return Err("only an agent may report public task progress".into());
             };
             task_mut(tasks, task_id)?.audit.push(
                 WorkspaceTaskAuditEvent::new(
@@ -1712,13 +1727,13 @@ mod tests {
             message: "Updated the selected document through its append action.".into(),
         };
         assert!(run(&mut doc, 6, 6, &person(), &progress).is_err());
-        let stale = WorkspaceTaskCommand::PublicProgress {
+        let wrong_epoch = WorkspaceTaskCommand::PublicProgress {
             task_id: task.clone(),
             run_epoch: 2,
             sequence: 1,
             message: "Wrong run".into(),
         };
-        assert!(run(&mut doc, 6, 6, &agent(), &stale).is_err());
+        assert!(run(&mut doc, 6, 6, &agent(), &wrong_epoch).is_err());
         run(&mut doc, 6, 6, &agent(), &progress).unwrap();
         let mut doc = AutoCommit::load(&doc.save()).unwrap();
         assert!(!run(&mut doc, 6, 6, &agent(), &progress).unwrap().changed);

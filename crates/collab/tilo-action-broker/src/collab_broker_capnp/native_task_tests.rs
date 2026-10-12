@@ -649,6 +649,7 @@ async fn ordinary_native_agent_invocation_cannot_escape_task_resource_scope() {
                 .is_err(),
                 "neither route may dispatch outside the task resource scope"
             );
+            drop(f);
         })
         .await;
 }
@@ -699,6 +700,7 @@ async fn ordinary_native_agent_invocation_remains_fenced_after_stop() {
                 .is_err(),
                 "ordinary invocation cannot dispatch after Stop"
             );
+            drop(f);
         })
         .await;
 }

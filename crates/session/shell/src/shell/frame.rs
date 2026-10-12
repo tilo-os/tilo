@@ -6549,7 +6549,7 @@ mod tests {
                 ));
             let mut frame = FrameBuilder::new(viewport);
             frame.node_map.clear();
-            frame.host = Box::new(ShellOverlayHost::with_fixture_content(Box::new(content)));
+            *frame.host = ShellOverlayHost::with_fixture_content(Box::new(content));
             frame.rebuild_layout_tree();
             let mut doc = AutoCommit::new();
             frame.host.sync(&doc, &automerge::ROOT);
@@ -6612,7 +6612,7 @@ mod tests {
             .with_accessible_name("Original editor");
         let mut frame = FrameBuilder::new((800, 600));
         frame.node_map.clear();
-        frame.host = Box::new(ShellOverlayHost::with_fixture_content(Box::new(content)));
+        *frame.host = ShellOverlayHost::with_fixture_content(Box::new(content));
         frame.rebuild_layout_tree();
         let mut doc = AutoCommit::new();
         frame.host.sync(&doc, &automerge::ROOT);
@@ -6803,7 +6803,7 @@ mod tests {
                 // Replacing fixture content retires the old map before any
                 // measurement, focus or draw can dereference its pointers.
                 frame.node_map.clear();
-                frame.host = Box::new(ShellOverlayHost::with_fixture_content(Box::new(content)));
+                *frame.host = ShellOverlayHost::with_fixture_content(Box::new(content));
                 frame.theme = theme.clone();
                 frame.rebuild_layout_tree();
                 let doc = AutoCommit::new();

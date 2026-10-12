@@ -42,6 +42,7 @@ use crate::shell::network::ShellNetwork;
 /// A room's last-published cursor and when it went out, keyed by room —
 /// what [`should_publish_cursor`] rate-limits against.
 type CursorPublishHistory = HashMap<String, (PointerAnchor, Instant)>;
+type CertifiedPeopleInbound = Arc<Mutex<Vec<(String, Vec<ui::collaboration::Collaborator>)>>>;
 type DepartureKey = (u64, String, std::time::SystemTime);
 
 /// Where a person's pointer is, in terms every device in the room shares:
@@ -184,7 +185,7 @@ pub struct PeerPresence {
     /// Complete owner-backed People contexts. Ordinary app-authored Context
     /// fanout is deliberately not an input: it cannot establish membership.
     room_people: Arc<Mutex<HashMap<String, Vec<ui::collaboration::Collaborator>>>>,
-    certified_people_inbound: Arc<Mutex<Vec<(String, Vec<ui::collaboration::Collaborator>)>>>,
+    certified_people_inbound: CertifiedPeopleInbound,
     _certified_people_subscription:
         Option<Arc<tilo_action_broker::collab_broker::CertifiedPeopleSubscription>>,
     projected_people: Mutex<(Option<String>, HashSet<ui::permissions::UserId>)>,
@@ -486,7 +487,7 @@ impl PeerPresence {
         cursor: Arc<Mutex<Option<PointerAnchor>>>,
         typed_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>>,
         room_people: Arc<Mutex<HashMap<String, Vec<ui::collaboration::Collaborator>>>>,
-        certified_people_inbound: Arc<Mutex<Vec<(String, Vec<ui::collaboration::Collaborator>)>>>,
+        certified_people_inbound: CertifiedPeopleInbound,
         certified_people_subscription: Option<
             Arc<tilo_action_broker::collab_broker::CertifiedPeopleSubscription>,
         >,
@@ -584,6 +585,7 @@ impl PeerPresence {
         if let Ok(mut current) = self.room_people.lock() {
             current.insert(room.to_owned(), people);
         }
+        drop(mine);
     }
 
     /// Follow the session's workspaces: after any write to `tree` since the

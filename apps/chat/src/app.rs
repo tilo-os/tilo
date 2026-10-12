@@ -4530,64 +4530,7 @@ impl Widget for ChatApp {
             hit,
             Hit::FocusMain | Hit::FocusThread | Hit::FocusRename | Hit::FocusEdit
         ) {
-            use ui::a11y::Action;
-
-            // `keyboard_target` is the immediate-mode Tab ring. A semantic
-            // editor action moves focus into the actual TextInput instead, so
-            // let that editor be the single focused accessibility child.
-            self.keyboard_target = None;
-
-            match action {
-                Action::Focus | Action::Activate => {
-                    self.on_hit(hit, state);
-                    return true;
-                }
-                Action::SetValue(_) | Action::SetSelection { .. } => match hit {
-                    Hit::FocusMain => {
-                        self.focus = Focus::Main;
-                        if self.direct_agent.is_none() {
-                            let channel = self.active_channel.clone();
-                            self.ensure_composer_draft(state, &channel);
-                        }
-                        self.composer_main.sync(state);
-                        if !self.composer_main.perform_action(action, state, path) {
-                            return false;
-                        }
-                        self.reload(state);
-                    }
-                    Hit::FocusThread => {
-                        if !self.perform_thread_editor_action(action, state, path) {
-                            return false;
-                        }
-                    }
-                    Hit::FocusRename => {
-                        if self.rename.is_none() {
-                            return false;
-                        }
-                        if !ui::Widget::perform_action(
-                            &mut self.rename_input,
-                            action,
-                            &[],
-                            state,
-                            path,
-                        ) {
-                            return false;
-                        }
-                    }
-                    Hit::FocusEdit => {
-                        if self.editing.is_none() {
-                            return false;
-                        }
-                        if !self.edit_input.perform_action(action, state, path) {
-                            return false;
-                        }
-                    }
-                    _ => return false,
-                },
-                _ => return false,
-            }
-            self.set_composer_focus();
-            return true;
+            return self.perform_editor_semantic_action(hit, action, state, path);
         }
         if !matches!(
             action,
@@ -4712,6 +4655,68 @@ impl Widget for ChatApp {
 }
 
 impl ChatApp {
+    fn perform_editor_semantic_action(
+        &mut self,
+        hit: Hit,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> bool {
+        use ui::a11y::Action;
+
+        // `keyboard_target` is the immediate-mode Tab ring. A semantic
+        // editor action moves focus into the actual TextInput instead, so
+        // let that editor be the single focused accessibility child.
+        self.keyboard_target = None;
+
+        match action {
+            Action::Focus | Action::Activate => {
+                self.on_hit(hit, state);
+                return true;
+            }
+            Action::SetValue(_) | Action::SetSelection { .. } => match hit {
+                Hit::FocusMain => {
+                    self.focus = Focus::Main;
+                    if self.direct_agent.is_none() {
+                        let channel = self.active_channel.clone();
+                        self.ensure_composer_draft(state, &channel);
+                    }
+                    self.composer_main.sync(state);
+                    if !self.composer_main.perform_action(action, state, path) {
+                        return false;
+                    }
+                    self.reload(state);
+                }
+                Hit::FocusThread => {
+                    if !self.perform_thread_editor_action(action, state, path) {
+                        return false;
+                    }
+                }
+                Hit::FocusRename => {
+                    if self.rename.is_none() {
+                        return false;
+                    }
+                    if !ui::Widget::perform_action(&mut self.rename_input, action, &[], state, path)
+                    {
+                        return false;
+                    }
+                }
+                Hit::FocusEdit => {
+                    if self.editing.is_none() {
+                        return false;
+                    }
+                    if !self.edit_input.perform_action(action, state, path) {
+                        return false;
+                    }
+                }
+                _ => return false,
+            },
+            _ => return false,
+        }
+        self.set_composer_focus();
+        true
+    }
+
     fn perform_thread_editor_action(
         &mut self,
         action: &ui::a11y::Action,

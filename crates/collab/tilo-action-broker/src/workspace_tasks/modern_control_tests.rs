@@ -200,7 +200,7 @@ fn current_owner_surface_offers_only_controls_the_exact_run_supports() {
     assert!(!ids.contains(&("desktop:task:rules".into(), "direct".into())));
     assert!(ids.contains(&("desktop:task:rules".into(), "stop".into())));
 
-    let mut withdrawn = snapshot.clone();
+    let mut withdrawn = snapshot;
     withdrawn.controls.get_mut("task:model").unwrap().active_run = None;
     let withdrawn = action_ids(&withdrawn);
     assert!(!withdrawn.contains(&("desktop:task:model".into(), "direct".into())));

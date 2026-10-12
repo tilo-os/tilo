@@ -3,6 +3,7 @@ use super::NativeTaskActionRequirement;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
+use tilo_automerge::ApplyIncoming;
 use tilo_peer_state::{
     SeedState, StatePeer, seed_room,
     workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand},
@@ -28,13 +29,33 @@ fn certificate(root: u8, device: u8) -> DeviceCert {
 #[test]
 fn approved_run_cannot_exceed_its_starters_live_action_permission() {
     let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let (mut peer, starter, key, now) = policy_fixture(room);
+    let authority = WorkspaceTaskAuthority::Person {
+        caller: starter.clone(),
+    };
+    let requirement = approve_task(&mut peer, &authority, now);
+    assert_exact_binding(&peer, room, now, &requirement);
+    assert_frozen_starter(&mut peer, room, &starter, &key, now, &requirement);
+    assert_independent_task_grants(&mut peer, room, &key, now, &authority, &requirement);
+    assert_live_starter_revocation(
+        &mut peer,
+        room,
+        &starter,
+        &key,
+        now,
+        &authority,
+        &requirement,
+    );
+}
+
+fn policy_fixture(room: &str) -> (StatePeer, DeviceCert, SigningKey, std::time::SystemTime) {
     let governor = certificate(1, 2);
     let starter = certificate(3, 4);
     let key = SigningKey::from_bytes(&[2; 32]);
     let now = std::time::SystemTime::now();
     let roster = vec![governor.clone(), starter.clone()];
     let mut doc = AutoCommit::new();
-    doc.apply_changes(
+    doc.apply_incoming(
         seed_room(room, &governor, &roster)
             .unwrap()
             .into_iter()
@@ -76,14 +97,20 @@ fn approved_run_cannot_exceed_its_starters_live_action_permission() {
         now,
     )
     .unwrap();
-    let authority = WorkspaceTaskAuthority::Person {
-        caller: starter.clone(),
-    };
+
+    (peer, starter, key, now)
+}
+
+fn approve_task(
+    peer: &mut StatePeer,
+    authority: &WorkspaceTaskAuthority,
+    now: std::time::SystemTime,
+) -> NativeTaskActionRequirement {
     let (_, result) = peer
         .apply_workspace_task_command(
             uuid::Uuid::from_u128(1),
             [1; 32],
-            &authority,
+            authority,
             &WorkspaceTaskCommand::QueueInstruction {
                 title: "Inspect notes".into(),
                 instruction: "Private complete instruction".into(),
@@ -99,7 +126,7 @@ fn approved_run_cannot_exceed_its_starters_live_action_permission() {
     peer.apply_workspace_task_command(
         uuid::Uuid::from_u128(2),
         [2; 32],
-        &authority,
+        authority,
         &WorkspaceTaskCommand::ApproveRun {
             task_id: task_id.clone(),
             agent_id: "scribe".into(),
@@ -109,9 +136,9 @@ fn approved_run_cannot_exceed_its_starters_live_action_permission() {
         now,
     )
     .unwrap();
-    let requirement = NativeTaskActionRequirement {
+    NativeTaskActionRequirement {
         binding: Some(super::NativeTaskBinding {
-            task_id: task_id.clone(),
+            task_id,
             agent_id: "scribe".into(),
             epoch: 1,
             revision: 0,
@@ -125,36 +152,58 @@ fn approved_run_cannot_exceed_its_starters_live_action_permission() {
             field: None,
             privileged: false,
         },
-    };
-    requirement.check(&peer, room, "scribe", now).unwrap();
+    }
+}
+
+fn assert_exact_binding(
+    peer: &StatePeer,
+    room: &str,
+    now: std::time::SystemTime,
+    requirement: &NativeTaskActionRequirement,
+) {
+    requirement.check(peer, room, "scribe", now).unwrap();
     let mut unbound = requirement.clone();
     unbound.binding = None;
-    assert!(unbound.check(&peer, room, "scribe", now).is_err());
+    assert!(unbound.check(peer, room, "scribe", now).is_err());
     let mut stale = requirement.clone();
     stale.binding.as_mut().unwrap().epoch = 2;
-    assert!(stale.check(&peer, room, "scribe", now).is_err());
+    assert!(stale.check(peer, room, "scribe", now).is_err());
     let mut privileged = requirement.clone();
     privileged.need.privileged = true;
-    assert!(privileged.check(&peer, room, "scribe", now).is_err());
-    let node = tilo_actions::action_node(
+    assert!(privileged.check(peer, room, "scribe", now).is_err());
+}
+
+fn action_node(room: &str, requirement: &NativeTaskActionRequirement) -> TreePath {
+    tilo_actions::action_node(
         &TreePath::room(room),
         &requirement.app,
         &requirement.resource_kind,
         &requirement.resource,
         None,
         &requirement.action,
-    );
+    )
+}
+
+fn assert_frozen_starter(
+    peer: &mut StatePeer,
+    room: &str,
+    starter: &DeviceCert,
+    key: &SigningKey,
+    now: std::time::SystemTime,
+    requirement: &NativeTaskActionRequirement,
+) {
+    let node = action_node(room, requirement);
     // A later grant to the starter cannot widen an already running task.
     peer.put_governed_grants(
         &[Grant::new(
             "starter-new-outside",
             Subject::person(hex::encode(starter.user_public_key)),
-            node.clone(),
+            node,
             KindSet::OUTSIDE,
             Answer::Allow,
             Subject::person("governor"),
         )],
-        &key,
+        key,
         now,
     )
     .unwrap();
@@ -162,16 +211,26 @@ fn approved_run_cannot_exceed_its_starters_live_action_permission() {
     widened.need.kind = tilo_action_policy::ActionKind::Outside;
     assert!(
         widened
-            .check(&peer, room, "scribe", now)
+            .check(peer, room, "scribe", now)
             .unwrap_err()
             .contains("frozen")
     );
+}
+
+fn assert_independent_task_grants(
+    peer: &mut StatePeer,
+    room: &str,
+    key: &SigningKey,
+    now: std::time::SystemTime,
+    authority: &WorkspaceTaskAuthority,
+    requirement: &NativeTaskActionRequirement,
+) {
     // A second task for the same agent has an independent grant set.
     let (_, queued) = peer
         .apply_workspace_task_command(
             uuid::Uuid::from_u128(3),
             [3; 32],
-            &authority,
+            authority,
             &WorkspaceTaskCommand::QueueInstruction {
                 title: "Other work".into(),
                 instruction: "Other instruction".into(),
@@ -187,7 +246,7 @@ fn approved_run_cannot_exceed_its_starters_live_action_permission() {
     peer.apply_workspace_task_command(
         uuid::Uuid::from_u128(4),
         [4; 32],
-        &authority,
+        authority,
         &WorkspaceTaskCommand::ApproveRun {
             task_id: other.clone(),
             agent_id: "scribe".into(),
@@ -206,24 +265,35 @@ fn approved_run_cannot_exceed_its_starters_live_action_permission() {
             Answer::Deny,
             Subject::person("governor"),
         )],
-        &key,
+        key,
         now,
     )
     .unwrap();
-    requirement.check(&peer, room, "scribe", now).unwrap();
+    requirement.check(peer, room, "scribe", now).unwrap();
     let mut other_requirement = requirement.clone();
     other_requirement.binding.as_mut().unwrap().task_id = other;
-    assert!(other_requirement.check(&peer, room, "scribe", now).is_err());
+    assert!(other_requirement.check(peer, room, "scribe", now).is_err());
+}
+
+fn assert_live_starter_revocation(
+    peer: &mut StatePeer,
+    room: &str,
+    starter: &DeviceCert,
+    key: &SigningKey,
+    now: std::time::SystemTime,
+    authority: &WorkspaceTaskAuthority,
+    requirement: &NativeTaskActionRequirement,
+) {
     peer.put_governed_grants(
         &[Grant::new(
             "starter-no-append",
             Subject::person(hex::encode(starter.user_public_key)),
-            node,
+            action_node(room, requirement),
             KindSet::UNDOABLE,
             Answer::Deny,
             Subject::person("governor"),
         )],
-        &key,
+        key,
         now,
     )
     .unwrap();
@@ -240,25 +310,25 @@ fn approved_run_cannot_exceed_its_starters_live_action_permission() {
     );
     assert!(
         requirement
-            .check(&peer, room, "scribe", now)
+            .check(peer, room, "scribe", now)
             .unwrap_err()
             .contains("starter")
     );
     for command in [
         WorkspaceTaskCommand::DirectionForRun {
-            task_id: task_id.clone(),
+            task_id: requirement.binding.as_ref().unwrap().task_id.clone(),
             run_epoch: 1,
             after_revision: 0,
             text: "Continue".into(),
         },
         WorkspaceTaskCommand::CancelForRun {
-            task_id,
+            task_id: requirement.binding.as_ref().unwrap().task_id.clone(),
             run_epoch: 1,
             after_revision: 0,
         },
     ] {
         let error = peer
-            .apply_workspace_task_command(uuid::Uuid::new_v4(), [9; 32], &authority, &command, now)
+            .apply_workspace_task_command(uuid::Uuid::new_v4(), [9; 32], authority, &command, now)
             .unwrap_err();
         assert!(error.contains("every execution permission"), "{error}");
     }

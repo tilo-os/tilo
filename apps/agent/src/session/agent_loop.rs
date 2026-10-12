@@ -3469,6 +3469,7 @@ mod tests {
         fixture.session.run_task(&fixture.run).unwrap();
         let bodies = fixture.script.bodies.lock().unwrap();
         assert!(bodies[0].to_string().contains(instruction.trim()));
+        drop(bodies);
     }
 
     #[test]

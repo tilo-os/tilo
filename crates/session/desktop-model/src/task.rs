@@ -537,7 +537,6 @@ mod execution_authority_tests {
         assert!(
             !bound.allows(
                 &room
-                    .clone()
                     .app("notes")
                     .kind("document")
                     .resource("two")

@@ -750,43 +750,7 @@ impl AgentTaskClient {
             return;
         };
         match purpose {
-            Purpose::Conversation {
-                agent,
-                task_id,
-                run_epoch,
-            } => {
-                #[derive(Deserialize)]
-                struct Conversation {
-                    task_id: String,
-                    run_epoch: u64,
-                    turns: Vec<AgentTaskTurn>,
-                }
-                let conversation = output
-                    .value
-                    .and_then(|value| serde_json::from_value::<Conversation>(value).ok());
-                let view = self.views.entry(agent.clone()).or_default();
-                if view.selected.as_ref() != Some(&(task_id.clone(), *run_epoch)) {
-                    return;
-                }
-                if let Some(conversation) = conversation.filter(|read| {
-                    read.task_id == *task_id
-                        && read.run_epoch == *run_epoch
-                        && read.turns.iter().all(|turn| {
-                            turn.task_id == *task_id
-                                && (turn.run_epoch == 0 || turn.run_epoch == *run_epoch)
-                        })
-                }) {
-                    view.turns.retain(|turn| {
-                        turn.task_id != *task_id
-                            || (turn.run_epoch != 0 && turn.run_epoch != *run_epoch)
-                    });
-                    for turn in conversation.turns {
-                        view.retain_turn(turn);
-                    }
-                } else {
-                    self.refuse(purpose);
-                }
-            }
+            Purpose::Conversation { .. } => self.settle_conversation(purpose, output),
             Purpose::Start {
                 agent,
                 task_id,
@@ -880,6 +844,47 @@ impl AgentTaskClient {
                 }
             }
             Purpose::Queue { .. } => self.settle_queue(purpose, &output),
+        }
+    }
+
+    fn settle_conversation(&mut self, purpose: &Purpose, output: tilo_actions::ActionOutput) {
+        #[derive(Deserialize)]
+        struct Conversation {
+            task_id: String,
+            run_epoch: u64,
+            turns: Vec<AgentTaskTurn>,
+        }
+        let Purpose::Conversation {
+            agent,
+            task_id,
+            run_epoch,
+        } = purpose
+        else {
+            return;
+        };
+        let conversation = output
+            .value
+            .and_then(|value| serde_json::from_value::<Conversation>(value).ok());
+        let view = self.views.entry(agent.clone()).or_default();
+        if view.selected.as_ref() != Some(&(task_id.clone(), *run_epoch)) {
+            return;
+        }
+        if let Some(conversation) = conversation.filter(|read| {
+            read.task_id == *task_id
+                && read.run_epoch == *run_epoch
+                && read.turns.iter().all(|turn| {
+                    turn.task_id == *task_id
+                        && (turn.run_epoch == 0 || turn.run_epoch == *run_epoch)
+                })
+        }) {
+            view.turns.retain(|turn| {
+                turn.task_id != *task_id || (turn.run_epoch != 0 && turn.run_epoch != *run_epoch)
+            });
+            for turn in conversation.turns {
+                view.retain_turn(turn);
+            }
+        } else {
+            self.refuse(purpose);
         }
     }
 

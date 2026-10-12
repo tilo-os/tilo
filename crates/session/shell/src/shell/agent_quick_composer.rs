@@ -235,7 +235,7 @@ impl AgentQuickComposer {
             .push(Box::new(
                 TextInput::from_state(&self.draft)
                     .with_id("agent-quick-editor")
-                    .with_placeholder(&t("agent-quick-placeholder"))
+                    .with_placeholder(t("agent-quick-placeholder"))
                     .with_accessible_name(t("agent-quick-editor-name"))
                     .multiline(true)
                     .with_min_lines(3),
@@ -511,7 +511,7 @@ impl AgentQuickComposer {
             .any(|submission| submission.busy && self.owner.as_ref() == Some(&submission.key.0));
         self.enabled.set(
             !busy
-                && self.available[index]
+                && self.available.get(index).copied().unwrap_or(false)
                 && !self.draft.get().trim().is_empty()
                 && (self.shown == ComposerIntent::Queue || self.chosen_task().is_some()),
         );
@@ -825,7 +825,7 @@ mod tests {
             submission: request.submission,
             outcome: ComposerOutcome::DirectionSaved(ComposerTask {
                 revision: 9,
-                ..task.clone()
+                ..task
             }),
         });
         assert_eq!(composer.draft.get(), "Newer draft");

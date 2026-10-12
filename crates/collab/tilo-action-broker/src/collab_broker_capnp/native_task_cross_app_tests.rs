@@ -211,7 +211,7 @@ async fn plan_step<R: Resource>(
 #[tokio::test(flavor = "current_thread")]
 async fn native_cross_app_approval_steering_stop_and_grants() {
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let f = Fixture::new();
             let mut writer =
                 Worker::<Document>::mount(&f, 210, "so.tilo.word-processor", "append-paragraph")
@@ -224,238 +224,295 @@ async fn native_cross_app_approval_steering_stop_and_grants() {
             )
             .await;
             let agent = f.channel(100, true);
-            let queued = f.native.owner.workspace_task_snapshot(room()).unwrap();
-            assert_eq!(queued.tasks[0].status, WorkspaceTaskStatus::Queued);
-            assert!(queued.controls[&f.task].active_run.is_none());
-            assert!(
-                f.state
-                    .dispatch_workspace_task(&room().to_string(), &f.task)
-                    .is_err(),
-                "queue is not conscious approval"
-            );
-            writer.assert_no_delivery().await;
-            settings.assert_no_delivery().await;
-
-            f.approve(); // Authenticated person command, independent of any tool grant.
-            let mut run = delivered(&agent).await;
-            assert_eq!(run.task_id, f.task);
-            assert!(run.instruction().contains("blocking inconsistency"));
-            report(&agent, &run, runtime_collab::TaskRunUpdate::Accepted)
-                .await
-                .unwrap();
-            let started = f.native.owner.workspace_task_snapshot(room()).unwrap();
-            assert!(started.controls[&f.task].execution.is_some());
-
+            let mut run = approve_journey(&f, &agent, &writer, &settings).await;
             // Deterministic planner: one Writer operation, a person direction, then
             // a Settings edit on the revised lease. No model credentials or server.
-            let first_args =
-                serde_json::json!({"text": "Release checklist: preserve compatibility examples."})
-                    .as_object()
-                    .unwrap()
-                    .clone();
+            let first_args = serde_json::json!({
+                "text": "Release checklist: preserve compatibility examples."
+            })
+            .as_object()
+            .unwrap()
+            .clone();
             let edit =
                 Invoke::<DesktopControls>::edit(&DesktopControls::paths().vim_mode.set(true))
                     .unwrap();
-            permission(&f, writer.app, true);
-            // Approval did not grant the other app's mutation: nothing reaches it.
-            assert!(
-                plan_step(
-                    &agent,
-                    &run,
-                    &settings,
-                    uuid::Uuid::from_u128(4100),
-                    &edit.arguments
-                )
-                .await
-                .is_err()
-            );
-            settings.assert_no_delivery().await;
-            let first = uuid::Uuid::from_u128(4101);
-            let accepted = plan_step(&agent, &run, &writer, first, &first_args)
-                .await
-                .unwrap();
-            writer.settle(accepted.0, first, &f.task).await;
-            assert!(matches!(
-                plan_step(&agent, &run, &writer, first, &first_args)
-                    .await
-                    .unwrap()
-                    .1,
-                tilo_actions::InvocationUpdate::Succeeded { .. }
-            ));
-            writer.assert_no_delivery().await;
-
-            let direction =
-                "Keep the compatibility checklist; enable Vim desktop controls for review.";
-            f.person_command(WorkspaceTaskCommand::DirectionForRun {
-                task_id: f.task.clone(),
-                run_epoch: 1,
-                after_revision: 0,
-                text: direction.into(),
-            })
-            .unwrap();
-            let saved = f.native.owner.workspace_task_snapshot(room()).unwrap();
-            assert_eq!(saved.controls[&f.task].directions[0].text, direction);
-            assert!(
-                saved.controls[&f.task].directions[0].applied.is_none(),
-                "Saved must not mean Applied"
-            );
-            let control = observed_control(&agent, &run).await;
-            assert_eq!(control.directions[0].text, direction);
-            assert_eq!(control.applied_revision, 0);
-            permission(&f, settings.app, true);
-            let second = uuid::Uuid::from_u128(4102);
-            assert!(
-                plan_step(&agent, &run, &settings, second, &edit.arguments)
-                    .await
-                    .is_err(),
-                "saved direction fences the old plan"
-            );
-            settings.assert_no_delivery().await;
-            report(
+            writer_journey(
+                &f,
                 &agent,
                 &run,
-                runtime_collab::TaskRunUpdate::DirectionsApplied { revision: 1 },
+                &mut writer,
+                &settings,
+                &first_args,
+                &edit.arguments,
             )
-            .await
-            .unwrap();
-            let applied = f.native.owner.workspace_task_snapshot(room()).unwrap();
-            let ack = applied.controls[&f.task].directions[0]
-                .applied
-                .as_ref()
-                .unwrap();
-            assert_eq!(ack.agent_id, "scribe");
-            assert_eq!(ack.run_epoch, 1);
-            assert_eq!(
-                applied.controls[&f.task]
-                    .active_run
-                    .as_ref()
-                    .unwrap()
-                    .applied_direction_revision,
-                1
-            );
-            let original_id = run.run_id;
-            run.lease = format!("{}:1", run.lease.rsplit_once(':').unwrap().0);
-            let accepted = plan_step(&agent, &run, &settings, second, &edit.arguments)
-                .await
-                .unwrap();
-            settings.settle(accepted.0, second, &f.task).await;
-            assert!(matches!(
-                plan_step(&agent, &run, &settings, second, &edit.arguments)
-                    .await
-                    .unwrap()
-                    .1,
-                tilo_actions::InvocationUpdate::Succeeded { .. }
-            ));
-            assert_eq!(run.run_id, original_id, "steering must not start a new run");
-
-            // Inspect actual app-owned resource content, reopened from CRDT bytes,
-            // not claimed success text, receipts alone, or staged screenshots.
-            let writer_doc = writer.reopened();
-            let mut document = Document::read(&writer_doc).unwrap();
-            Document::load(
-                &mut document,
-                &writer_doc,
-                &tilo_resource::Demand::range(0..64),
+            .await;
+            steering_journey(&f, &agent, &mut run, &mut settings, &edit.arguments).await;
+            assert_reopened_resources(&writer, &settings);
+            stop_journey(
+                &f,
+                &agent,
+                &run,
+                &writer,
+                &settings,
+                &first_args,
+                &edit.arguments,
             )
-            .unwrap();
-            let body = document.text().unwrap();
-            assert!(
-                body.blocks(0..body.body().len()).any(
-                    |block| block.text == "Release checklist: preserve compatibility examples."
-                )
-            );
-            assert!(
-                DesktopControls::read(&settings.reopened())
-                    .unwrap()
-                    .vim_mode
-            );
-
-            // A live explicit denial also fences retained successes, not just new ids.
-            permission(&f, settings.app, false);
-            assert!(
-                plan_step(&agent, &run, &settings, second, &edit.arguments)
-                    .await
-                    .is_err()
-            );
-            assert!(
-                plan_step(
-                    &agent,
-                    &run,
-                    &settings,
-                    uuid::Uuid::from_u128(4103),
-                    &edit.arguments
-                )
-                .await
-                .is_err()
-            );
-            settings.assert_no_delivery().await;
-            let before_writer = std::fs::read(&writer.path).unwrap();
-            let before_settings = std::fs::read(&settings.path).unwrap();
-            f.person_command(WorkspaceTaskCommand::CancelForRun {
-                task_id: f.task.clone(),
-                run_epoch: 1,
-                after_revision: 1,
-            })
-            .unwrap();
-            let mut cancelled = agent.task_run_cancelled_request();
-            cancelled.get().set_run_id(run.run_id);
-            cancelled.get().set_lease(&run.lease);
-            assert!(
-                cancelled
-                    .send()
-                    .promise
-                    .await
-                    .unwrap()
-                    .get()
-                    .unwrap()
-                    .get_cancelled()
-            );
-            assert!(
-                plan_step(
-                    &agent,
-                    &run,
-                    &writer,
-                    uuid::Uuid::from_u128(4104),
-                    &first_args
-                )
-                .await
-                .is_err()
-            );
-            assert!(
-                plan_step(
-                    &agent,
-                    &run,
-                    &settings,
-                    uuid::Uuid::from_u128(4105),
-                    &edit.arguments
-                )
-                .await
-                .is_err()
-            );
-            writer.assert_no_delivery().await;
-            settings.assert_no_delivery().await;
-            assert!(
-                report(
-                    &agent,
-                    &run,
-                    runtime_collab::TaskRunUpdate::Succeeded {
-                        message: "False completion after stop".into()
-                    }
-                )
-                .await
-                .is_err()
-            );
-            assert_eq!(
-                f.native
-                    .owner
-                    .workspace_task_snapshot(room())
-                    .unwrap()
-                    .tasks[0]
-                    .status,
-                WorkspaceTaskStatus::Cancelled
-            );
-            assert_eq!(std::fs::read(&writer.path).unwrap(), before_writer);
-            assert_eq!(std::fs::read(&settings.path).unwrap(), before_settings);
-        })
+            .await;
+            drop(f);
+        }))
         .await;
+}
+
+async fn approve_journey(
+    f: &Fixture,
+    agent: &channel_handle::Client,
+    writer: &Worker<Document>,
+    settings: &Worker<DesktopControls>,
+) -> runtime_collab::TaskRunEnvelope {
+    let queued = f.native.owner.workspace_task_snapshot(room()).unwrap();
+    assert_eq!(queued.tasks[0].status, WorkspaceTaskStatus::Queued);
+    assert!(queued.controls[&f.task].active_run.is_none());
+    assert!(
+        f.state
+            .dispatch_workspace_task(&room().to_string(), &f.task)
+            .is_err(),
+        "queue is not conscious approval"
+    );
+    writer.assert_no_delivery().await;
+    settings.assert_no_delivery().await;
+
+    f.approve(); // Authenticated person command, independent of any tool grant.
+    let run = delivered(agent).await;
+    assert_eq!(run.task_id, f.task);
+    assert!(run.instruction().contains("blocking inconsistency"));
+    report(agent, &run, runtime_collab::TaskRunUpdate::Accepted)
+        .await
+        .unwrap();
+    let started = f.native.owner.workspace_task_snapshot(room()).unwrap();
+    assert!(started.controls[&f.task].execution.is_some());
+    run
+}
+
+async fn writer_journey(
+    f: &Fixture,
+    agent: &channel_handle::Client,
+    run: &runtime_collab::TaskRunEnvelope,
+    writer: &mut Worker<Document>,
+    settings: &Worker<DesktopControls>,
+    first_args: &serde_json::Map<String, serde_json::Value>,
+    settings_args: &serde_json::Map<String, serde_json::Value>,
+) {
+    permission(f, writer.app, true);
+    // Approval did not grant the other app's mutation: nothing reaches it.
+    assert!(
+        plan_step(
+            agent,
+            run,
+            settings,
+            uuid::Uuid::from_u128(4100),
+            settings_args
+        )
+        .await
+        .is_err()
+    );
+    settings.assert_no_delivery().await;
+    let first = uuid::Uuid::from_u128(4101);
+    let accepted = plan_step(agent, run, writer, first, first_args)
+        .await
+        .unwrap();
+    writer.settle(accepted.0, first, &f.task).await;
+    assert!(matches!(
+        plan_step(agent, run, writer, first, first_args)
+            .await
+            .unwrap()
+            .1,
+        tilo_actions::InvocationUpdate::Succeeded { .. }
+    ));
+    writer.assert_no_delivery().await;
+}
+
+async fn steering_journey(
+    f: &Fixture,
+    agent: &channel_handle::Client,
+    run: &mut runtime_collab::TaskRunEnvelope,
+    settings: &mut Worker<DesktopControls>,
+    settings_args: &serde_json::Map<String, serde_json::Value>,
+) {
+    let direction = "Keep the compatibility checklist; enable Vim desktop controls for review.";
+    f.person_command(WorkspaceTaskCommand::DirectionForRun {
+        task_id: f.task.clone(),
+        run_epoch: 1,
+        after_revision: 0,
+        text: direction.into(),
+    })
+    .unwrap();
+    let saved = f.native.owner.workspace_task_snapshot(room()).unwrap();
+    assert_eq!(saved.controls[&f.task].directions[0].text, direction);
+    assert!(
+        saved.controls[&f.task].directions[0].applied.is_none(),
+        "Saved must not mean Applied"
+    );
+    let control = observed_control(agent, run).await;
+    assert_eq!(control.directions[0].text, direction);
+    assert_eq!(control.applied_revision, 0);
+    permission(f, settings.app, true);
+    let second = uuid::Uuid::from_u128(4102);
+    assert!(
+        plan_step(agent, run, settings, second, settings_args)
+            .await
+            .is_err(),
+        "saved direction fences the old plan"
+    );
+    settings.assert_no_delivery().await;
+    report(
+        agent,
+        run,
+        runtime_collab::TaskRunUpdate::DirectionsApplied { revision: 1 },
+    )
+    .await
+    .unwrap();
+    let applied = f.native.owner.workspace_task_snapshot(room()).unwrap();
+    let ack = applied.controls[&f.task].directions[0]
+        .applied
+        .as_ref()
+        .unwrap();
+    assert_eq!(ack.agent_id, "scribe");
+    assert_eq!(ack.run_epoch, 1);
+    assert_eq!(
+        applied.controls[&f.task]
+            .active_run
+            .as_ref()
+            .unwrap()
+            .applied_direction_revision,
+        1
+    );
+    let original_id = run.run_id;
+    run.lease = format!("{}:1", run.lease.rsplit_once(':').unwrap().0);
+    let accepted = plan_step(agent, run, settings, second, settings_args)
+        .await
+        .unwrap();
+    settings.settle(accepted.0, second, &f.task).await;
+    assert!(matches!(
+        plan_step(agent, run, settings, second, settings_args)
+            .await
+            .unwrap()
+            .1,
+        tilo_actions::InvocationUpdate::Succeeded { .. }
+    ));
+    assert_eq!(run.run_id, original_id, "steering must not start a new run");
+}
+
+fn assert_reopened_resources(writer: &Worker<Document>, settings: &Worker<DesktopControls>) {
+    // Inspect actual app-owned resource content, reopened from CRDT bytes,
+    // not claimed success text, receipts alone, or staged screenshots.
+    let writer_doc = writer.reopened();
+    let mut document = Document::read(&writer_doc).unwrap();
+    Document::load(
+        &mut document,
+        &writer_doc,
+        &tilo_resource::Demand::range(0..64),
+    )
+    .unwrap();
+    let body = document.text().unwrap();
+    assert!(
+        body.blocks(0..body.body().len())
+            .any(|block| block.text == "Release checklist: preserve compatibility examples.")
+    );
+    assert!(
+        DesktopControls::read(&settings.reopened())
+            .unwrap()
+            .vim_mode
+    );
+}
+
+async fn stop_journey(
+    f: &Fixture,
+    agent: &channel_handle::Client,
+    run: &runtime_collab::TaskRunEnvelope,
+    writer: &Worker<Document>,
+    settings: &Worker<DesktopControls>,
+    first_args: &serde_json::Map<String, serde_json::Value>,
+    settings_args: &serde_json::Map<String, serde_json::Value>,
+) {
+    let second = uuid::Uuid::from_u128(4102);
+    // A live explicit denial also fences retained successes, not just new ids.
+    permission(f, settings.app, false);
+    assert!(
+        plan_step(agent, run, settings, second, settings_args)
+            .await
+            .is_err()
+    );
+    assert!(
+        plan_step(
+            agent,
+            run,
+            settings,
+            uuid::Uuid::from_u128(4103),
+            settings_args
+        )
+        .await
+        .is_err()
+    );
+    settings.assert_no_delivery().await;
+    let before_writer = std::fs::read(&writer.path).unwrap();
+    let before_settings = std::fs::read(&settings.path).unwrap();
+    f.person_command(WorkspaceTaskCommand::CancelForRun {
+        task_id: f.task.clone(),
+        run_epoch: 1,
+        after_revision: 1,
+    })
+    .unwrap();
+    let mut cancelled = agent.task_run_cancelled_request();
+    cancelled.get().set_run_id(run.run_id);
+    cancelled.get().set_lease(&run.lease);
+    assert!(
+        cancelled
+            .send()
+            .promise
+            .await
+            .unwrap()
+            .get()
+            .unwrap()
+            .get_cancelled()
+    );
+    assert!(
+        plan_step(agent, run, writer, uuid::Uuid::from_u128(4104), first_args)
+            .await
+            .is_err()
+    );
+    assert!(
+        plan_step(
+            agent,
+            run,
+            settings,
+            uuid::Uuid::from_u128(4105),
+            settings_args
+        )
+        .await
+        .is_err()
+    );
+    writer.assert_no_delivery().await;
+    settings.assert_no_delivery().await;
+    assert!(
+        report(
+            agent,
+            run,
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "False completion after stop".into()
+            }
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        f.native
+            .owner
+            .workspace_task_snapshot(room())
+            .unwrap()
+            .tasks[0]
+            .status,
+        WorkspaceTaskStatus::Cancelled
+    );
+    assert_eq!(std::fs::read(&writer.path).unwrap(), before_writer);
+    assert_eq!(std::fs::read(&settings.path).unwrap(), before_settings);
 }
