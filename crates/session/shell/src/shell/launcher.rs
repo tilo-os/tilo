@@ -1724,25 +1724,30 @@ pub fn installed_continuity_contract(package_id: &str) -> InstalledContinuityReq
 /// Returns an error if the cache is stale and re-reading the registry
 /// fails — see [`read_installed_apps`].
 pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
+    installed_apps_snapshot().map(|(_, apps)| apps)
+}
+
+/// Pair records with their cache revision while holding the cache lock.
+fn installed_apps_snapshot() -> Result<(u64, Vec<InstalledApp>), LaunchError> {
     {
         let cache = lock(&APP_CACHE);
         if let Some((apps, Some(at))) = cache.as_ref()
             && at.elapsed() < APP_CACHE_TTL
         {
-            return Ok(apps.clone());
+            return Ok((APP_CACHE_REVISION.load(Ordering::Acquire), apps.clone()));
         }
     }
     let epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
     let apps = read_installed_apps()?;
-    record_app_read(epoch, &apps);
+    let generation = record_app_read(epoch, &apps);
     // Watch after the first memoize so opening the registry to fill the
     // cache cannot look like an install and wipe the snapshot we just wrote.
     ensure_app_cache_watch();
-    Ok(apps)
+    Ok((generation, apps))
 }
 
 /// Store a registry read that started at `read_epoch` as the new baseline.
-fn record_app_read(read_epoch: u64, apps: &[InstalledApp]) {
+fn record_app_read(read_epoch: u64, apps: &[InstalledApp]) -> u64 {
     let mut cache = lock(&APP_CACHE);
     // An invalidation (install, removal, watch event, repointed registry)
     // that raced this read means the read may predate it: keep it only as
@@ -1757,6 +1762,13 @@ fn record_app_read(read_epoch: u64, apps: &[InstalledApp]) {
         APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
     }
     *cache = Some((apps.to_vec(), fresh));
+    let generation = if fresh.is_some() {
+        APP_CACHE_REVISION.load(Ordering::Acquire)
+    } else {
+        0
+    };
+    drop(cache);
+    generation
 }
 
 /// Drop the memoised enumeration. Used after an install/remove and by
@@ -1863,14 +1875,17 @@ fn watch_app_cache_roots(roots: &[PathBuf], ready: &std::sync::mpsc::Sender<()>)
 
 /// Immutable installed-app snapshot revision for retained search projections.
 pub fn gui_apps_snapshot() -> (u64, Vec<InstalledApp>) {
-    // Pair a source generation with the exact projection read under it. If
-    // cache invalidation races this small read, return the observed changed
-    // generation; retained index workers will reject it instead of treating
-    // old records as a current snapshot.
-    let before = APP_CACHE_REVISION.load(Ordering::Acquire);
-    let apps = gui_apps();
-    let after = APP_CACHE_REVISION.load(Ordering::Acquire);
-    (if before == after { before } else { 0 }, apps)
+    // Cache population advances the revision but does not invalidate the
+    // records it just read. Only an invalidation racing the read stamps it
+    // stale; the generation is paired under the cache lock.
+    let before = gui_apps_generation();
+    let (generation, mut apps) = installed_apps_snapshot().unwrap_or_else(|_| {
+        let after = gui_apps_generation();
+        (if before == after { before } else { 0 }, Vec::new())
+    });
+    apps.retain(|app| app.has_gui);
+    apps.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+    (generation, apps)
 }
 
 /// Current installed-app source generation.  Search projections use this
@@ -5931,8 +5946,14 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_APPS_DATA_DIR", tmp.path());
             invalidate_app_cache();
-            let initial = installed_apps().unwrap();
+            let (snapshot_generation, initial_gui) = gui_apps_snapshot();
             let initial_generation = gui_apps_generation();
+            assert_eq!(
+                snapshot_generation, initial_generation,
+                "populating a cold cache must not invalidate its own snapshot"
+            );
+            assert_eq!(initial_gui.len(), 1);
+            let initial = installed_apps().unwrap();
             let expire = || {
                 lock(&APP_CACHE).as_mut().unwrap().1 = None;
             };
@@ -5991,7 +6012,8 @@ mod tests {
             let read_epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
             let raced = read_installed_apps().unwrap();
             expire_watched_app_cache();
-            record_app_read(read_epoch, &raced);
+            let raced_snapshot_generation = record_app_read(read_epoch, &raced);
+            assert_eq!(raced_snapshot_generation, 0, "a raced read stays stale");
             let raced_generation = gui_apps_generation();
             let stale = lock(&APP_CACHE).as_ref().unwrap().1.is_none();
             let reread_epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
