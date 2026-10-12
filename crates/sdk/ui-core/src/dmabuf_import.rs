@@ -523,6 +523,39 @@ fn has_modifier_extension(hal_device: &vulkan::Device) -> bool {
         .contains(&ash::ext::image_drm_format_modifier::NAME)
 }
 
+/// The DRM modifiers `device` can sample for a single-plane dma-buf of
+/// `fourcc`: each one the driver lists for the format and confirms
+/// ([`VulkanImporter::check_modifier`], the check every import repeats at its
+/// real size) can be imported and sampled. Empty when the device is not
+/// Vulkan, lacks `VK_EXT_image_drm_format_modifier`, or has no such format.
+///
+/// A compositor advertises exactly these (beyond the linear layout it reads
+/// on the CPU), so a client can only pick a layout the import will accept.
+pub fn sampleable_modifiers(device: &wgpu::Device, fourcc: u32) -> Vec<u64> {
+    // Safety: the guard only lends this device's Vulkan handles for the call.
+    let Some(guard) = (unsafe { device.as_hal::<vulkan::Api>() }) else {
+        return Vec::new();
+    };
+    let hal_device: &vulkan::Device = &guard;
+    if !has_modifier_extension(hal_device) {
+        return Vec::new();
+    }
+    let Some((PlaneLayout::Packed, specs)) = plane_specs(fourcc, 1, 1) else {
+        return Vec::new();
+    };
+    let [spec] = specs.as_slice() else {
+        return Vec::new();
+    };
+    let importer = VulkanImporter::new(hal_device);
+    let usage = vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC;
+    importer
+        .listed_modifiers(spec.format)
+        .iter()
+        .map(|props| props.drm_format_modifier)
+        .filter(|&modifier| importer.check_modifier(spec, modifier, usage).is_ok())
+        .collect()
+}
+
 /// Import `image` as sampleable `wgpu` textures, aliasing its GPU memory.
 ///
 /// The returned textures own their `VkImage` + imported `VkDeviceMemory` (and
@@ -651,6 +684,29 @@ impl<'a> VulkanImporter<'a> {
         }
     }
 
+    /// The modifiers the driver lists for `format`, with their features.
+    fn listed_modifiers(&self, format: vk::Format) -> Vec<vk::DrmFormatModifierPropertiesEXT> {
+        let phys = self.hal_device.raw_physical_device();
+        let instance = self.hal_device.shared_instance().raw_instance();
+        // Two calls: the count, then the properties.
+        let mut counted = vk::DrmFormatModifierPropertiesListEXT::default();
+        {
+            let mut query = vk::FormatProperties2::default().push_next(&mut counted);
+            unsafe { instance.get_physical_device_format_properties2(phys, format, &mut query) };
+        }
+        let mut props = vec![
+            vk::DrmFormatModifierPropertiesEXT::default();
+            counted.drm_format_modifier_count as usize
+        ];
+        {
+            let mut list = vk::DrmFormatModifierPropertiesListEXT::default()
+                .drm_format_modifier_properties(&mut props);
+            let mut query = vk::FormatProperties2::default().push_next(&mut list);
+            unsafe { instance.get_physical_device_format_properties2(phys, format, &mut query) };
+        }
+        props
+    }
+
     /// Ask the driver whether it can sample `spec`'s format laid out with
     /// `modifier` as one plane, imported from a dma-buf, at this size.
     fn check_modifier(
@@ -662,26 +718,7 @@ impl<'a> VulkanImporter<'a> {
         let phys = self.hal_device.raw_physical_device();
         let instance = self.hal_device.shared_instance().raw_instance();
         let unsupported = ImportError::UnsupportedModifier { modifier };
-        // Two calls: the count, then the properties.
-        let mut counted = vk::DrmFormatModifierPropertiesListEXT::default();
-        {
-            let mut query = vk::FormatProperties2::default().push_next(&mut counted);
-            unsafe {
-                instance.get_physical_device_format_properties2(phys, spec.format, &mut query)
-            };
-        }
-        let mut props = vec![
-            vk::DrmFormatModifierPropertiesEXT::default();
-            counted.drm_format_modifier_count as usize
-        ];
-        {
-            let mut list = vk::DrmFormatModifierPropertiesListEXT::default()
-                .drm_format_modifier_properties(&mut props);
-            let mut query = vk::FormatProperties2::default().push_next(&mut list);
-            unsafe {
-                instance.get_physical_device_format_properties2(phys, spec.format, &mut query)
-            };
-        }
+        let props = self.listed_modifiers(spec.format);
         let Some(found) = props.iter().find(|p| p.drm_format_modifier == modifier) else {
             return Err(unsupported);
         };

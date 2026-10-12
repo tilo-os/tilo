@@ -311,20 +311,16 @@ fn dmabuf_feedback_advertises_the_render_node_and_compositable_formats() {
                 let fourcc = Fourcc::try_from(entry.fourcc).unwrap_or_else(|_| {
                     panic!("advertised an unrecognised FourCC 0x{:08x}", entry.fourcc)
                 });
-                // The importer's own table is the whole composable set: the
-                // advertised list is derived from it, and a buffer in any
-                // advertised format must pass the importer's gate.
+                // A buffer in an advertised layout must be one the compositor
+                // draws: the CPU reads it linear, or the presenting GPU was
+                // confirmed to sample it (the probe the advertised tiled
+                // layouts come from).
+                let modifier = Modifier::from(entry.modifier);
                 assert!(
-                    shell::shell::foreign::composites(fourcc, Modifier::from(entry.modifier)),
+                    shell::shell::foreign::composites(fourcc, modifier)
+                        || shell::shell::gpu_frames::sampleable(fourcc, modifier),
                     "advertised {fourcc:?} with modifier 0x{:x}, which the tile importer \
                      cannot composite; a client that picks it renders into an error tile",
-                    entry.modifier
-                );
-                assert_eq!(
-                    Modifier::from(entry.modifier),
-                    Modifier::Linear,
-                    "advertised modifier 0x{:x} for {fourcc:?}; the CPU importer only handles \
-                     LINEAR, so a client using this would produce unreadable buffers",
                     entry.modifier
                 );
             }
