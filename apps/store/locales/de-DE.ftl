@@ -77,3 +77,6 @@ store-draft-report = Meldung zu { $app_id } begonnen
 store-record-moderation-case = Die Registry hat Fall { $case_id } eröffnet: { $status }
 store-report-note = Das Anliegen einer Meldung beschrieben
 store-reports-reports = Eine Meldung bearbeitet
+
+
+store-source-partial = Einige Paketquellen sind nicht verfügbar. Andere Apps bleiben verfügbar.
