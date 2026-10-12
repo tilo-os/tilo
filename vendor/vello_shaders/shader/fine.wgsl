@@ -1644,8 +1644,11 @@ fn main(
 #endif
             let fg = rgba[i];
             // let fg = base_color * (1.0 - foreground.a) + foreground;
-            // Max with a small epsilon to avoid NaNs
-            let a_inv = 1.0 / max(fg.a, 1e-6);
+            // Max with a small epsilon to avoid NaNs. A pixel whose alpha
+            // stores as 0 stores transparent black: its colour would
+            // otherwise be whatever a sliver of coverage (the area stage's
+            // 1e-6 nudges) divides out to, in a pixel nothing shows.
+            let a_inv = select(1.0 / max(fg.a, 1e-6), 0.0, fg.a * 255.0 < 0.5);
             let rgba_sep = vec4(fg.rgb * a_inv, fg.a);
             textureStore(output, vec2<i32>(coords), rgba_sep);
         }
