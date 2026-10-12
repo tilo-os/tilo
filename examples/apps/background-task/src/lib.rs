@@ -27,10 +27,6 @@ pub const APP_TITLE: &str = "Background Task";
 
 pub mod locales;
 
-fn install_catalog() {
-    locales::install();
-}
-
 use ui::prelude::*;
 
 /// The largest limit accepted.
@@ -133,8 +129,11 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn view(cx: &mut ViewCx<Search>) -> Element {
-        install_catalog();
         #[expect(
             clippy::cast_precision_loss,
             reason = "the limit is at most MAX_LIMIT, far below 2^52"

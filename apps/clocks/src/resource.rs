@@ -79,11 +79,15 @@ impl ResourceApp for ClocksShell {
     type Resource = Clocks;
     const ID: &'static str = "so.tilo.clocks";
     const TITLE: &'static str = "Clocks";
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     const ICON: Option<&'static str> = Some("clocks");
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Clocks>) -> Element {
-        crate::locales::install();
         let controls = Controls {
             actions: cx.actions(),
             dispatcher: cx.dispatcher(),

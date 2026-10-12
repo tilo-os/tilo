@@ -14,14 +14,33 @@ use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 pub struct Toggle {
     semantic_id: String,
     control: BoolControl,
+    /// What the last presented frame painted, and what the frame being drawn
+    /// paints: the switch needs a redraw only when they differ.
+    painted: Option<Painted>,
+    drawing: Option<Painted>,
 }
+
+/// What a switch's paint depends on besides its place and the theme:
+/// checked, hovered, focused and enabled.
+type Painted = (bool, bool, bool, bool);
 
 impl Toggle {
     pub fn new(id: &str, on_toggle_path: &str) -> Self {
         Self {
             semantic_id: id.to_string(),
             control: BoolControl::new(on_toggle_path, Some(crate::widget::humanize_control_id(id))),
+            painted: None,
+            drawing: None,
         }
+    }
+
+    fn painted_now(&self) -> Painted {
+        (
+            self.control.is_checked,
+            self.control.is_hovered,
+            self.control.is_focused,
+            self.control.effectively_enabled(),
+        )
     }
 
     /// Create a true two-way binding to typed process-local boolean state.
@@ -383,6 +402,7 @@ impl Widget for Toggle {
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
+        self.drawing = Some(self.painted_now());
         // One painter for the retained widget and immediate-mode hosts, so
         // the two cannot drift: the pill is centred in the layout target and
         // every state resolves through the same `ToggleFace`.
@@ -407,6 +427,19 @@ impl Widget for Toggle {
 
     fn name(&self) -> &'static str {
         "Toggle"
+    }
+
+    /// A switch repaints when what it paints changed since the frame on
+    /// screen, not on every frame: a settings page of them does not damage
+    /// every switch for a scroll or a keystroke elsewhere.
+    fn needs_redraw(&self) -> bool {
+        self.painted != Some(self.painted_now())
+    }
+
+    fn mark_drawn(&mut self) {
+        if let Some(drawing) = self.drawing.take() {
+            self.painted = Some(drawing);
+        }
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -891,5 +924,52 @@ mod tests {
             assert!(!handled, "a move to {position:?} is not consumed");
         }
         assert!(!t.control.is_hovered);
+    }
+
+    /// A switch is dirty only until the frame showing what it paints is
+    /// drawn, and again once its state changes: an idle switch adds no
+    /// damage to a frame.
+    #[test]
+    fn a_switch_repaints_only_when_what_it_paints_changes() {
+        let theme = Theme::dark();
+        let mut t = Toggle::new("wifi", "wifi");
+        let frame = |t: &mut Toggle| {
+            t.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                &crate::presence::PresenceCtx::empty(),
+            );
+            t.mark_drawn();
+        };
+        assert!(t.needs_redraw(), "never painted");
+        frame(&mut t);
+        assert!(!t.needs_redraw(), "painted and unchanged");
+        let mut damage = Vec::new();
+        t.collect_damage(&mut damage);
+        assert!(damage.is_empty(), "an idle switch adds no damage");
+        for change in [
+            |t: &mut Toggle| t.control.is_hovered = true,
+            |t: &mut Toggle| t.control.is_checked = true,
+            |t: &mut Toggle| t.control.is_focused = true,
+            |t: &mut Toggle| t.control.enabled = false,
+        ] {
+            change(&mut t);
+            assert!(t.needs_redraw(), "a changed switch repaints");
+            frame(&mut t);
+            assert!(!t.needs_redraw(), "and rests once drawn");
+        }
+        // Drawn but not presented (a cache above it reused), nothing is
+        // known to be on screen: the next frame still repaints it.
+        t.control.is_hovered = false;
+        t.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+            &crate::presence::PresenceCtx::empty(),
+        );
+        assert!(t.needs_redraw());
     }
 }

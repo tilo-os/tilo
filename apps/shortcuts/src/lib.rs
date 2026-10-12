@@ -37,10 +37,6 @@ pub const APP_ID: &str = tilo_automation::SHORTCUTS_APP_ID;
 /// The window and launcher title.
 pub const APP_TITLE: &str = "Shortcuts";
 
-fn install_catalog() {
-    locales::install();
-}
-
 /// The app.
 pub struct App;
 
@@ -53,12 +49,16 @@ impl ResourceApp for App {
     type Resource = Workbench;
     const ID: &'static str = APP_ID;
     const TITLE: &'static str = APP_TITLE;
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (1180, 760)
     }
 
     fn view(cx: &mut ViewCx<Workbench>) -> Element {
-        install_catalog();
         view::root(cx)
     }
 

@@ -951,6 +951,13 @@ impl App {
                 regions.extend(moved.into_iter().flatten());
                 return crate::scroll_copy::CopyPlan::default();
             }
+            // What is painted over the widgets (a menu, the palette, a
+            // tooltip) does not move with a scroll: the scrollers repaint.
+            if drawn.painted_over {
+                regions.extend(moved.into_iter().flatten());
+                regions.extend(offers.iter().map(crate::scroll_copy::ScrollOffer::viewport));
+                return crate::scroll_copy::CopyPlan::default();
+            }
             let Some(besides) = moved_besides(&offers) else {
                 regions.extend(moved.into_iter().flatten());
                 regions.extend(offers.iter().map(crate::scroll_copy::ScrollOffer::viewport));
@@ -1099,6 +1106,11 @@ impl SurfaceDamage {
             copying: true,
             ..Self::default()
         }
+    }
+
+    /// Whether this is for a host that copies ([`Self::copying`]).
+    pub fn is_copying(&self) -> bool {
+        self.copying
     }
 
     /// Where the frames since the last take changed, or `None` when they

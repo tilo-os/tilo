@@ -413,7 +413,9 @@ for expected in \
   grep -qxF "$expected" <<<"$layout_after" \
     || die "joining changed the device-trust layout; expected '$expected' in: $layout_after"
 done
-joined="$(vm_b ssh 'find /var/lib/tilo/device/cert.bin /var/lib/tilo/device/certs /var/lib/tilo/user-identity/pubkey.bin -printf "%p %y %G\n"')"
+# find's %g is the group's name (%G would be its number, which never equals
+# a name), as stat's %G above is.
+joined="$(vm_b ssh 'find /var/lib/tilo/device/cert.bin /var/lib/tilo/device/certs /var/lib/tilo/user-identity/pubkey.bin -printf "%p %y %g\n"')"
 printf '%s\n' "$joined" > "$out/b-joined-files.txt"
 grep -q '^/var/lib/tilo/device/certs d ' <<<"$joined" || die "the join wrote no per-identity certificate directory: $joined"
 grep -q '^/var/lib/tilo/device/certs/.* f ' <<<"$joined" || die "the join wrote no per-identity certificate: $joined"
