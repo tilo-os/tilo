@@ -180,7 +180,7 @@ fn an_agent_turns_the_todo_page_into_a_checklist_ticks_items_and_rewords_one() {
     );
 
     // A page can be renamed and found by its new title.
-    app.call_on(&resource, "rename", json!({ "value": "Todo today" }))
+    app.call_on(&resource, "rename", json!({ "title": "Todo today" }))
         .unwrap();
     let found = call(
         &mut app,
