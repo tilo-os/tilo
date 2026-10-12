@@ -936,3 +936,16 @@ fn a_placed_mark_needs_no_shape_and_fit_to_takes_its_own_size_again() {
     .unwrap();
     assert_eq!(art.state().unwrap().width, 1520.0);
 }
+
+/// Fractions written into a shape's units would draw an invisible sliver;
+/// the draw is refused with what to give instead.
+#[test]
+fn a_shape_under_one_unit_is_refused_with_the_way_to_give_fractions() {
+    let mut art = Replica::<ArtworkResource>::new();
+    let marks: Vec<NewMark> = serde_json::from_value(json!([
+        {"id": "panel", "shape": {"kind": "rect", "x": 0.62, "y": 0, "width": 0.38, "height": 941}, "fill": "#0f4c5c"}
+    ]))
+    .unwrap();
+    let refused = apply(&mut art, CanvasAction::Draw(Draw { layer: None, marks })).unwrap_err();
+    assert!(refused.contains("place"), "{refused}");
+}

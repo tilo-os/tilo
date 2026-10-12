@@ -961,6 +961,20 @@ fn placed_shape(art: &Artwork, mark: &NewMark) -> Result<Shape, ActionError> {
                 "a mark needs a shape, or place (with kind rect or ellipse)",
             ));
         }
+        // Fractions written into a shape's units (`"width": 0.38`) draw
+        // something too small to see: say so, rather than draw nothing.
+        let tiny = match &mark.shape {
+            Shape::Rect { width, height, .. } => width.abs() < 1.0 || height.abs() < 1.0,
+            Shape::Ellipse { rx, ry, .. } => rx.abs() < 0.5 || ry.abs() < 0.5,
+            _ => false,
+        };
+        if tiny {
+            return Err(refuse(
+                "the shape is under one unit across: its x, y, width and height are \
+                 units (pixels at scale 1); for fractions of the artwork give place \
+                 [x, y, width, height] instead",
+            ));
+        }
         return Ok(mark.shape.clone());
     };
     if ![fx, fy, fw, fh]
