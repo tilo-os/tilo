@@ -271,10 +271,7 @@ impl Widget for EmbeddedApp {
             self.wants_frame.set(true);
         }
         let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             ..taffy::Style::default()
         };
         let Ok(node) = taffy.new_leaf(style) else {

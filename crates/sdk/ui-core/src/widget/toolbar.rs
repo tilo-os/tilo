@@ -1573,10 +1573,7 @@ impl Widget for Toolbar {
         };
         let style = Style {
             flex_shrink: 1.0,
-            min_size: Size {
-                width: Dimension::length(0.0),
-                height: Dimension::length(0.0),
-            },
+            min_size: Size::from_lengths(0.0, 0.0),
             ..Default::default()
         };
         let node = if self.has_elements() {
@@ -2720,10 +2717,7 @@ mod tests {
             .set_style(
                 node,
                 Style {
-                    size: Size {
-                        width: Dimension::length(f32_of_f64(axis_extent)),
-                        height: Dimension::length(28.0),
-                    },
+                    size: Size::from_lengths(f32_of_f64(axis_extent), 28.0),
                     ..Default::default()
                 },
             )
@@ -2937,10 +2931,7 @@ mod tests {
             tree.set_style(
                 node,
                 Style {
-                    size: Size {
-                        width: Dimension::length(500.0),
-                        height: Dimension::length(40.0),
-                    },
+                    size: Size::from_lengths(500.0, 40.0),
                     ..Default::default()
                 },
             )
@@ -2961,10 +2952,7 @@ mod tests {
             tree.set_style(
                 node,
                 Style {
-                    size: Size {
-                        width: Dimension::length(5.0),
-                        height: Dimension::length(40.0),
-                    },
+                    size: Size::from_lengths(5.0, 40.0),
                     ..Default::default()
                 },
             )

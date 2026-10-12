@@ -991,12 +991,10 @@ impl Widget for ColorPicker {
         // Its preferred size, narrowed to what the parent gives; the height
         // then follows the width it got (`adjust_layout_style`).
         let style = Style {
-            size: Size {
-                width: Dimension::length(crate::num::f32_of_f64(PICKER_WIDTH)),
-                height: Dimension::length(crate::num::f32_of_f64(
-                    self.content_height(PICKER_WIDTH),
-                )),
-            },
+            size: Size::from_lengths(
+                crate::num::f32_of_f64(PICKER_WIDTH),
+                crate::num::f32_of_f64(self.content_height(PICKER_WIDTH)),
+            ),
             max_size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),

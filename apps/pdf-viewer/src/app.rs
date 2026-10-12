@@ -6206,7 +6206,7 @@ mod links_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taffy::{Dimension, Size};
+    use taffy::Size;
     use ui::search::SearchProvider as _;
 
     /// The app's search source as the framework builds it from what the open
@@ -8740,10 +8740,7 @@ mod tests {
                 let root = taffy
                     .new_with_children(
                         Style {
-                            size: Size {
-                                width: Dimension::length(w as f32),
-                                height: Dimension::length(h as f32),
-                            },
+                            size: Size::from_lengths(w as f32, h as f32),
                             ..Default::default()
                         },
                         &[child],
@@ -8831,10 +8828,7 @@ mod tests {
                 let root = taffy
                     .new_with_children(
                         Style {
-                            size: Size {
-                                width: Dimension::length(w as f32),
-                                height: Dimension::length(h as f32),
-                            },
+                            size: Size::from_lengths(w as f32, h as f32),
                             ..Default::default()
                         },
                         &[child],

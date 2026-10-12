@@ -376,10 +376,7 @@ impl Widget for DatePicker {
         }
         let height = self.intrinsic_height(width);
         let style = Style {
-            size: Size {
-                width: Dimension::length(px(width)),
-                height: Dimension::length(px(height)),
-            },
+            size: Size::from_lengths(px(width), px(height)),
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()

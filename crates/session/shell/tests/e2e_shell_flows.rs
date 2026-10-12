@@ -26,7 +26,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
@@ -423,10 +423,7 @@ fn probe_topbar(
     let vp = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(probe_w),
-                    height: Dimension::length(H),
-                },
+                size: Size::from_lengths(probe_w, H),
                 ..Default::default()
             },
             &[node],

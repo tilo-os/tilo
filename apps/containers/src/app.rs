@@ -1665,10 +1665,7 @@ impl Widget for ContainersApp {
         }
         let style = Style {
             display: Display::Flex,
-            size: Size {
-                width: percent(1.0_f32),
-                height: percent(1.0_f32),
-            },
+            size: Size::from_percent(1.0_f32, 1.0_f32),
             ..Default::default()
         };
         taffy.widget_node(style, &children, node_map, self)
