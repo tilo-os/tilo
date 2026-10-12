@@ -50,7 +50,6 @@ impl ChatApp {
         let reference = row.reference.clone().ok_or("Message has no resource")?;
         let provider = row
             .source_provider
-            .clone()
             .ok_or("This older reference has no source record provider")?;
         // Browser peers carry this through JSON numbers; keep it exactly representable.
         let correlation = uuid::Uuid::new_v4().as_u64_pair().0 & ((1_u64 << 53) - 1);
@@ -516,8 +515,7 @@ mod tests {
             .into_iter()
             .find(|channel| channel.id == "c_general")
             .unwrap()
-            .workspace
-            .clone();
+            .workspace;
         app.call_on(
             &crate::testing::item("workspaces", &workspace),
             "create-channel",
@@ -531,8 +529,7 @@ mod tests {
             .into_iter()
             .find(|channel| channel.name == "Reference other conversation")
             .unwrap()
-            .id
-            .clone();
+            .id;
         app.effect_on(
             &crate::testing::item("channels", "c_general"),
             &ChatEffect::OpenChannel {
@@ -564,8 +561,7 @@ mod tests {
             .into_iter()
             .find(|message| message.text == "Original navigation source")
             .unwrap()
-            .id
-            .clone();
+            .id;
         let target = crate::testing::item("messages", &id);
         let effect = ChatEffect::CopyResourceLink {
             message: id.clone(),
