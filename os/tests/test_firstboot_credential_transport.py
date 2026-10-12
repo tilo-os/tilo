@@ -54,6 +54,7 @@ class CredentialTransportTests(unittest.TestCase):
             "useradd": "(root / 'useradd.json').write_text(json.dumps(sys.argv[1:]))",
             "getent": "print('fixtureuser:x:' + str(os.getuid()) + ':' + str(os.getgid()) + '::' + str(root / 'home/fixtureuser') + ':/bin/bash')",
             "chpasswd": "(root / 'chpasswd.json').write_text(json.dumps(sys.argv[1:])); (root / 'password-stdin').write_text(sys.stdin.read()); raise SystemExit(int(os.environ.get('FIXTURE_PASSWORD_FAILURE', '0')))",
+            "chage": "assert sys.argv[1:] == ['-E', '-1', 'fixtureuser']; (root / 'expiry-release').write_text('released')",
             "shred": "Path(sys.argv[-1]).unlink()",
             "chown": "pass",
             "cp": "pass",
@@ -71,6 +72,8 @@ class CredentialTransportTests(unittest.TestCase):
         arguments = json.loads((root / "useradd.json").read_text())
         self.assertNotIn(SYNTHETIC_HASH, arguments, "password hashes must not be process arguments")
         self.assertRegex(arguments[arguments.index("-p") + 1], r"^!tilo-firstboot-[a-f0-9]{32}$")
+        self.assertEqual(arguments[arguments.index('-e') + 1], '1970-01-02')
+        self.assertEqual((root / 'expiry-release').exists(), not fail_password)
         self.assertIn("-M", arguments)
         self.assertNotIn("-m", arguments)
         self.assertEqual("-c" in arguments, full_name)

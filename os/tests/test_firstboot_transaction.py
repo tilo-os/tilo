@@ -47,7 +47,10 @@ def fail(name):
         if stage == 'crash':
             os.kill(os.getppid(), signal.SIGKILL)
         raise SystemExit(1)
+def expired():
+    assert (r / 'expiry').read_text() == '1970-01-02', 'delivery ran unexpired'
 def locked():
+    expired()
     assert (r / 'shadow').read_text().startswith('!'), 'delivery ran unlocked'
 """
         tools = {
@@ -55,8 +58,9 @@ def locked():
             'id': "raise SystemExit(0 if (r / 'shadow').exists() else 1)",
             'stat': "print('0:600:1' if sys.argv[2] == '%u:%a:%h' else Path(sys.argv[-1]).stat().st_size)",
             'getent': "print('fixtureuser:' + ((r / 'shadow').read_text() if sys.argv[1] == 'shadow' else 'x') + ':' + str(os.getuid()) + ':' + str(os.getgid()) + '::' + str(r / 'home/fixtureuser') + ':/bin/bash')",
-            'useradd': "fail('useradd-before'); assert not (r / 'shadow').exists(); (r / 'shadow').write_text(sys.argv[sys.argv.index('-p') + 1]); (r / 'useradd').write_text(json.dumps(sys.argv[1:])); fail('useradd'); fail('crash')",
-            'chpasswd': "value = sys.stdin.read().strip().split(':', 1)[1]; fail('password'); (r / 'shadow').write_text(value)",
+            'useradd': "fail('useradd-before'); assert not (r / 'shadow').exists(); (r / 'expiry').write_text(sys.argv[sys.argv.index('-e') + 1]); expired(); (r / 'shadow').write_text(sys.argv[sys.argv.index('-p') + 1]); (r / 'useradd').write_text(json.dumps(sys.argv[1:])); fail('useradd'); fail('crash')",
+            'chpasswd': "expired(); value = sys.stdin.read().strip().split(':', 1)[1]; fail('password'); (r / 'shadow').write_text(value)",
+            'chage': "assert sys.argv[1] == '-E' and sys.argv[3] == 'fixtureuser'; value = sys.argv[2]; fail('expiry-release' if value == '-1' else 'expiry-retry'); assert value != '-1' or (r / 'shadow').read_text() == '$6$fixture$' + 'A' * 86; (r / 'expiry').write_text(value)",
             'chgrp': "locked(); fail('key-repair')",
             'chmod': "locked(); fail('key-mode')",
             'shred': "Path(sys.argv[-1]).unlink()",
@@ -87,34 +91,43 @@ def locked():
         return result
 
     def test_every_failed_delivery_is_locked_and_retryable(self):
-        for stage in ['useradd', 'crash', 'key-repair', 'key-mode', 'password']:
+        for stage in ['useradd', 'crash', 'key-repair', 'key-mode', 'password', 'expiry-release']:
             with self.subTest(stage=stage):
                 result = self.run_boot(stage)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertTrue(self.credential.exists())
                 self.assertTrue(self.full_name.exists())
-                self.assertTrue((self.root / 'shadow').read_text().startswith('!'))
+                self.assertEqual((self.root / 'expiry').read_text(), '1970-01-02')
+                if stage != 'expiry-release':
+                    self.assertTrue((self.root / 'shadow').read_text().startswith('!'))
+                else:
+                    self.assertEqual((self.root / 'shadow').read_text(), HASH)
                 created = (self.root / 'useradd').read_text()
                 result = self.run_boot()
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual((self.root / 'shadow').read_text(), HASH)
+                self.assertEqual((self.root / 'expiry').read_text(), '-1')
                 self.assertEqual((self.root / 'useradd').read_text(), created)
                 self.assertFalse(self.credential.exists())
                 self.assertFalse((self.root / 'etc/install-user.transaction').exists())
                 # Reset just this completed synthetic transaction for next case.
                 (self.root / 'shadow').unlink()
+                (self.root / 'expiry').unlink()
                 self.credential.write_text('fixtureuser:' + HASH + '\n')
                 self.credential.chmod(0o600)
                 self.full_name.write_text('Fixture User\n')
                 self.full_name.chmod(0o600)
 
-    def test_termination_before_unlock_is_retryable(self):
-        result = self.run_boot('key-repair', terminate=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertTrue((self.root / 'shadow').read_text().startswith('!'))
-        self.assertTrue(self.credential.exists())
+    def test_termination_before_release_is_retryable(self):
+        for stage in ['key-repair', 'password', 'expiry-release']:
+            with self.subTest(stage=stage):
+                result = self.run_boot(stage, terminate=True)
+                self.assertEqual(result.returncode, -15)
+                self.assertEqual((self.root / 'expiry').read_text(), '1970-01-02')
+                self.assertTrue(self.credential.exists())
         result = self.run_boot()
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / 'expiry').read_text(), '-1')
 
     def test_intent_before_account_creation_can_retry(self):
         intent = self.root / 'etc/install-user.transaction'
@@ -126,26 +139,45 @@ def locked():
 
     def test_retry_after_final_unlock_relocks_before_delivery(self):
         self.assertNotEqual(self.run_boot('key-repair').returncode, 0)
-        # Model interruption after chpasswd succeeded but before seed cleanup.
+        # Model interruption after expiry release but before seed cleanup.
         (self.root / 'shadow').write_text(HASH)
+        (self.root / 'expiry').write_text('-1')
         result = self.run_boot('key-repair')
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue((self.root / 'shadow').read_text().startswith('!'))
         self.assertTrue(self.credential.exists())
+        self.assertEqual((self.root / 'expiry').read_text(), '1970-01-02')
+        result = self.run_boot()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / 'expiry').read_text(), '-1')
+
+    def test_retry_expiry_failure_does_not_provision(self):
+        self.assertNotEqual(self.run_boot('key-repair').returncode, 0)
+        (self.root / 'shadow').write_text(HASH)
+        (self.root / 'expiry').write_text('-1')
+        result = self.run_boot('expiry-retry')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.root / 'shadow').read_text(), HASH)
+        self.assertTrue(self.credential.exists())
+        self.assertEqual(self.run_boot().returncode, 0)
 
     def test_unrelated_existing_account_preserves_seed_and_shadow(self):
         (self.root / 'shadow').write_text('!unrelated')
+        (self.root / 'expiry').write_text('-1')
         result = self.run_boot()
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue(self.credential.exists())
         self.assertEqual((self.root / 'shadow').read_text(), '!unrelated')
         self.assertFalse((self.root / 'etc/install-user.transaction').exists())
+        self.assertEqual((self.root / 'expiry').read_text(), '-1')
 
     def test_intent_does_not_adopt_wrong_shadow(self):
         self.assertNotEqual(self.run_boot('key-repair').returncode, 0)
         (self.root / 'shadow').write_text('!unrelated')
+        (self.root / 'expiry').write_text('-1')
         self.assertNotEqual(self.run_boot().returncode, 0)
         self.assertEqual((self.root / 'shadow').read_text(), '!unrelated')
+        self.assertEqual((self.root / 'expiry').read_text(), '-1')
         self.assertTrue(self.credential.exists())
 
     def test_intent_is_durable_before_account_creation(self):
@@ -198,6 +230,7 @@ def locked():
         self.assertTrue((self.root / 'shadow').read_text().startswith('!'))
         self.assertEqual(list(outside.iterdir()), [])
         self.assertTrue(self.credential.exists())
+        self.assertEqual((self.root / 'expiry').read_text(), '1970-01-02')
 
 
 class AtomicFilesTests(unittest.TestCase):
