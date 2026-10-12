@@ -59,14 +59,29 @@ impl Parts {
     }
 }
 
+/// The retained-child lifecycle over the `Parts` at `self.parts`, or at the
+/// path given after `lifecycle:` (every method but identity, layout building
+/// and drawing) or `children:` (those, less `apply_layout`).
 macro_rules! retained_parts {
     ($name:literal) => {
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.parts.apply_layout(taffy, node, origin);
+        retained_parts!(lifecycle: parts);
+        fn name(&self) -> &'static str {
+            $name
         }
-        retained_parts!($name, custom_apply_layout);
     };
     ($name:literal, custom_apply_layout) => {
+        retained_parts!(children: parts);
+        fn name(&self) -> &'static str {
+            $name
+        }
+    };
+    (lifecycle: $($path:ident).+) => {
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            self.$($path).+.apply_layout(taffy, node, origin);
+        }
+        retained_parts!(children: $($path).+);
+    };
+    (children: $($path:ident).+) => {
         fn start_operation(
             &mut self,
             op: &crate::widget::ResourceOperation<'_>,
@@ -81,13 +96,13 @@ macro_rules! retained_parts {
             path: &crate::widget::ModelPath,
         ) -> bool {
             let mut changed = false;
-            for child in &mut self.parts.children {
+            for child in &mut self.$($path).+.children {
                 changed |= child.update(state, path);
             }
             changed
         }
         fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
-            for child in &mut self.parts.children {
+            for child in &mut self.$($path).+.children {
                 child.sync(state, path);
             }
         }
@@ -96,7 +111,8 @@ macro_rules! retained_parts {
             event: &winit::event::WindowEvent,
             ctx: &mut crate::widget::EventCtx<'_>,
         ) {
-            for (child, &node) in self.parts.children.iter_mut().zip(&self.parts.nodes) {
+            let parts = &mut self.$($path).+;
+            for (child, &node) in parts.children.iter_mut().zip(&parts.nodes) {
                 let path = ctx.path;
                 child.handle_event(event, &mut ctx.reborrow(path, node));
                 if *ctx.handled {
@@ -105,47 +121,44 @@ macro_rules! retained_parts {
             }
         }
         fn children(&self) -> Vec<&dyn Widget> {
-            self.parts
+            self.$($path).+
                 .children
                 .iter()
                 .map(|child| child.as_ref())
                 .collect()
         }
         fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-            for child in &self.parts.children {
+            for child in &self.$($path).+.children {
                 visitor(child.as_ref());
             }
         }
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-            self.parts
+            self.$($path).+
                 .children
                 .iter_mut()
                 .map(|child| child.as_mut() as &mut (dyn Widget + '_))
                 .collect()
         }
         fn mark_drawn(&mut self) {
-            for child in &mut self.parts.children {
+            for child in &mut self.$($path).+.children {
                 child.mark_drawn();
             }
         }
         fn take_structure_dirty(&mut self) -> bool {
             let mut dirty = false;
-            for child in &mut self.parts.children {
+            for child in &mut self.$($path).+.children {
                 dirty |= child.take_structure_dirty();
             }
             dirty
         }
         fn wants_pointer_capture(&self) -> bool {
-            self.parts
+            self.$($path).+
                 .children
                 .iter()
                 .any(|child| child.wants_pointer_capture())
         }
         fn get_rect(&self) -> Rect {
-            self.parts.rect
-        }
-        fn name(&self) -> &'static str {
-            $name
+            self.$($path).+.rect
         }
     };
 }

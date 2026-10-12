@@ -21,7 +21,7 @@ use tokio::sync::{Mutex as AsyncMutex, OnceCell};
 
 use crate::content::{self, Manifest};
 use crate::store::ContentStore;
-use crate::syncstate::SyncState;
+use fs_protocol::SyncState;
 
 mod batch;
 mod ranges;

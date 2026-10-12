@@ -1103,9 +1103,9 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
         let inspect = host.temp.path().join("output/inspect.json");
         let targets = host.temp.path().join("output/targets.json");
         let spec = tilo_ui::headless::Spec {
-            dump: Some(dump.clone()),
-            inspect: Some(inspect.clone()),
-            targets: Some(targets.clone()),
+            dump: Some(dump.to_str().unwrap().to_owned()),
+            inspect: Some(inspect.to_str().unwrap().to_owned()),
+            targets: Some(targets.to_str().unwrap().to_owned()),
             ..Default::default()
         };
         assert_eq!(
@@ -1187,7 +1187,7 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
             std::fs::create_dir_all(&output).unwrap();
             let spec = if output_failure {
                 tilo_ui::headless::Spec {
-                    dump: Some(output),
+                    dump: Some(output.to_str().unwrap().to_owned()),
                     ..Default::default()
                 }
             } else {
