@@ -4550,7 +4550,7 @@ mod tests {
                     } else {
                         assert_eq!(
                             invoked.unwrap().address.action,
-                            crate::resource::StoreEffect::package(action, &item).id()
+                            crate::resource::StoreEffect::package(action, item).id()
                         );
                     }
                 }

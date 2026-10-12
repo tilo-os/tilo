@@ -1252,6 +1252,8 @@ search-scope-workspace = Workspace
 search-scope-everywhere = Everywhere
 
 # Where a launched app will open
+search-opens-beside = Opens in rightmost space
+search-opens-here = Opens here, as a tab
 
 # Search providers, as the search settings actions name them
 search-provider-now-playing = Now playing
@@ -1292,7 +1294,7 @@ search-record-in-another-workspace = In another workspace
 search-files-no-app = No app on this desktop opens .{ $ext } documents.
 
 # Search: host apps
-search-host-app-subtitle = Not sandboxed · { $source }
+search-host-app-subtitle = { $source } · unconfined host app · { $id }
 
 # Search: app action jobs and resources
 search-app-job = Action job { $id }
@@ -1559,7 +1561,7 @@ search-apps-open-subtitle = { $target } · { $detail }
 search-apps-shortcut-subtitle = { $target } · Shortcut
 search-apps-shortcut-failed = The shortcut could not be opened. Check its target and try again.
 search-apps-verification-pending = Registry verification pending
-search-apps-store-subtitle = { $trust }
+search-apps-store-subtitle = App Store · { $trust } · { $detail }
 search-apps-view-in-store = View { $app } in App Store
 search-apps-store-failed = Couldn't open App Store for { $app }
 search-apps-opening = Opening { $app }
@@ -2620,3 +2622,4 @@ activity-morning-command-refused = Request refused
 activity-morning-recorded = { $source } · last recorded workspace activity: { $time }
 
 activity-morning-next = Next chosen source
+search-host-app-open = Open { $app }

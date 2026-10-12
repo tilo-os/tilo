@@ -3478,9 +3478,9 @@ fn a_typing_update_in_one_window_is_bounded_by_the_window_and_admitted_sparse() 
     settle(&mut frame, 3);
     type_text(&mut frame, "The quick brown fox ");
     settle(&mut frame, 3);
-    let tile = with_notes_on_screen(&frame, |rect, _| rect);
-    let tile = frame
-        .layout_rect_to_scene(tile)
+    let layout_rect = with_notes_on_screen(&frame, |rect, _| rect);
+    let window_rect = frame
+        .layout_rect_to_scene(layout_rect)
         .expect("the window is on the output");
     let damage = assert_change_repaints_under(&mut frame, label, 100, |frame| {
         type_text(frame, "j");
@@ -3496,11 +3496,11 @@ fn a_typing_update_in_one_window_is_bounded_by_the_window_and_admitted_sparse() 
             f64::from(rect.y + rect.height),
         );
         assert!(
-            region.x0 >= tile.x0 - fringe
-                && region.y0 >= tile.y0 - fringe
-                && region.x1 <= tile.x1 + fringe
-                && region.y1 <= tile.y1 + fringe,
-            "{label}: damage {region:?} leaves the window {tile:?}"
+            region.x0 >= window_rect.x0 - fringe
+                && region.y0 >= window_rect.y0 - fringe
+                && region.x1 <= window_rect.x1 + fringe
+                && region.y1 <= window_rect.y1 + fringe,
+            "{label}: damage {region:?} leaves the window {window_rect:?}"
         );
     }
     // Notes rebuilds its widget tree per key and reports its whole tile, so the damage is the
@@ -3547,7 +3547,7 @@ fn a_blurred_surface_joins_only_the_damage_its_blur_can_see() {
         "only the surface whose blur reaches the caret is repainted, and one on no display is not"
     );
     assert_eq!(
-        frame.with_backdrop_damage(Some(Vec::new()), &[near.clone()]),
+        frame.with_backdrop_damage(Some(Vec::new()), std::slice::from_ref(&near)),
         Some(Vec::new()),
         "an unchanged frame stays unchanged"
     );

@@ -161,7 +161,7 @@ fn block_of(args: &ActionArgs) -> Result<String, String> {
 fn shifted(args: &ActionArgs) -> Result<RichTextAction, String> {
     let levels = args.integer("levels").unwrap_or(1);
     let max = crate::block_markdown::MAX_INDENT;
-    if levels == 0 || !(-max..=max).contains(&levels) {
+    if levels == 0 || levels.unsigned_abs() > max.unsigned_abs() {
         return Err(format!(
             "levels is 1 to {max} to indent or -1 to -{max} to outdent, not {levels}"
         ));

@@ -175,7 +175,7 @@ impl RuntimeRegistry for SystemRuntimeRegistry {
             require_translated_provider(std::fs::read_to_string(manifest).ok().as_deref())?;
         }
         if self.require_payload {
-            require_payload(&image, |path| path.exists())?;
+            require_payload(&image, std::path::Path::exists)?;
         }
         Ok(image)
     }

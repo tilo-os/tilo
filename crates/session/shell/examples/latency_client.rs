@@ -102,7 +102,7 @@ impl Client {
     /// all and commit, as a text surface that redraws its grid would.
     fn draw(&mut self, qh: &QueueHandle<Self>) {
         let (width, height) = (self.width, self.height);
-        let stride = i32::try_from(width * 4).expect("stride");
+        let stride = i32::try_from(width.saturating_mul(4)).expect("stride");
         let (w, h) = (
             i32::try_from(width).expect("w"),
             i32::try_from(height).expect("h"),

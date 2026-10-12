@@ -635,11 +635,11 @@ impl SimulatedVblankPresenter {
         let interval = self.interval.as_nanos().max(1);
         let ticks = since.checked_div(interval).unwrap_or(0).saturating_add(1);
         let nanos = interval.saturating_mul(ticks);
-        self.epoch
-            + Duration::new(
-                u64::try_from(nanos / 1_000_000_000).unwrap_or(u64::MAX),
-                u32::try_from(nanos % 1_000_000_000).unwrap_or(0),
-            )
+        let offset = Duration::new(
+            u64::try_from(nanos / 1_000_000_000).unwrap_or(u64::MAX),
+            u32::try_from(nanos % 1_000_000_000).unwrap_or(0),
+        );
+        self.epoch.checked_add(offset).unwrap_or(at)
     }
 
     fn retirement(flip: &QueuedFlip) -> OwedRetirement {
@@ -655,9 +655,9 @@ impl SimulatedVblankPresenter {
 
     /// Sleep to `until` unless it has passed.
     fn wait_until(until: Instant) {
-        let now = Instant::now();
-        if until > now {
-            std::thread::sleep(until - now);
+        let remaining = until.saturating_duration_since(Instant::now());
+        if !remaining.is_zero() {
+            std::thread::sleep(remaining);
         }
     }
 
@@ -744,8 +744,8 @@ impl Presenter for SimulatedVblankPresenter {
         if self.ready.is_empty()
             && let Some(front) = self.owed.front()
         {
-            let limit = Instant::now() + wait;
-            if front.vblank <= limit {
+            let due_within_wait = front.vblank.saturating_duration_since(Instant::now()) <= wait;
+            if due_within_wait {
                 Self::wait_until(front.vblank);
             }
         }

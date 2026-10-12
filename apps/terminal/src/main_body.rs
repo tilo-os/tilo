@@ -7183,6 +7183,34 @@ struct UshSessionReply {
     protocol: u16,
 }
 
+/// Whether the supervisor's session declaration is well formed and matches
+/// what was asked: a session and relay key of 32 hex digits, an environment
+/// of sane length, the editor capability only where an editor may be offered,
+/// and one descriptor more than the plain pair when it is.
+#[cfg(unix)]
+fn session_reply_is_valid(
+    response: &UshSessionReply,
+    descriptor_count: usize,
+    program: &[String],
+    target: &crate::target::SessionTarget,
+) -> bool {
+    let hex_key = |key: &str| key.len() == 32 && key.bytes().all(|b| b.is_ascii_hexdigit());
+    response.result == "session"
+        && hex_key(&response.session)
+        && !response.environment.is_empty()
+        && response.environment.len() <= 1024
+        && response
+            .relay_session
+            .as_deref()
+            .is_none_or(hex_key)
+        && response
+            .editor_protocol
+            .is_none_or(|version| version == runtime_portal::editor::VERSION)
+        && (response.editor_protocol.is_none() || (program.is_empty() && !target.is_host()))
+        && response.protocol == 2
+        && descriptor_count == if response.editor_protocol.is_some() { 3 } else { 2 }
+}
+
 #[cfg(unix)]
 pub(crate) fn ush_backend_on(
     stream: &std::os::unix::net::UnixStream,
@@ -7250,26 +7278,7 @@ pub(crate) fn ush_backend_on(
     }
     let response: UshSessionReply = serde_json::from_slice(&payload)
         .map_err(|_| OpenError::Failed("Malformed ush session descriptor declaration".into()))?;
-    if response.result != "session"
-        || response.session.len() != 32
-        || !response.session.bytes().all(|b| b.is_ascii_hexdigit())
-        || response.environment.is_empty()
-        || response.environment.len() > 1024
-        || response.relay_session.as_ref().is_some_and(|session| {
-            session.len() != 32 || !session.bytes().all(|b| b.is_ascii_hexdigit())
-        })
-        || response
-            .editor_protocol
-            .is_some_and(|version| version != runtime_portal::editor::VERSION)
-        || (response.editor_protocol.is_some() && (!program.is_empty() || target.is_host()))
-        || response.protocol != 2
-        || descriptors.len()
-            != if response.editor_protocol.is_some() {
-                3
-            } else {
-                2
-            }
-    {
+    if !session_reply_is_valid(&response, descriptors.len(), program, target) {
         return Err(OpenError::Failed(t("terminal-service-invalid-session")));
     }
     let native_editor = if response.editor_protocol.is_some() {

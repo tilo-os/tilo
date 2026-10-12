@@ -27,17 +27,17 @@ struct Holder {
     since: Instant,
 }
 
-/// The `SLOW-TREE-LOCK` line for a wait of `waited` by `waiter`, when it is
+/// The `SLOW-TREE-LOCK` line for a wait of `elapsed` by `waiter`, when it is
 /// long enough to report. `holder` is the writer that held the lock when the
 /// wait began, with how long it had held it; without one the waiter was
 /// queued behind readers.
 fn slow_wait_report(
     kind: &str,
     waiter: &Location<'_>,
-    waited: Duration,
+    elapsed: Duration,
     holder: Option<(&Location<'_>, Duration)>,
 ) -> Option<String> {
-    if waited < SLOW_TREE_WAIT {
+    if elapsed < SLOW_TREE_WAIT {
         return None;
     }
     let held_by = holder.map_or_else(
@@ -45,7 +45,7 @@ fn slow_wait_report(
         |(at, held)| format!("writer {at} (held {held:?} at the start of the wait)"),
     );
     Some(format!(
-        "SLOW-TREE-LOCK {kind} at {waiter} waited={waited:?} held_by={held_by}"
+        "SLOW-TREE-LOCK {kind} at {waiter} waited={elapsed:?} held_by={held_by}"
     ))
 }
 
@@ -255,9 +255,9 @@ impl WorkspaceTreeHandle {
         *self.0.holder.lock()
     }
 
-    fn report_wait(kind: &str, waiter: &Location<'_>, waited: Duration, holder: Option<Holder>) {
+    fn report_wait(kind: &str, waiter: &Location<'_>, elapsed: Duration, holder: Option<Holder>) {
         let holder = holder.map(|holder| (holder.at, holder.since.elapsed()));
-        if let Some(line) = slow_wait_report(kind, waiter, waited, holder) {
+        if let Some(line) = slow_wait_report(kind, waiter, elapsed, holder) {
             eprintln!("{line}");
         }
     }
@@ -399,7 +399,7 @@ mod tests {
             slow_wait_report(
                 "read",
                 waiter,
-                SLOW_TREE_WAIT - Duration::from_millis(1),
+                SLOW_TREE_WAIT.saturating_sub(Duration::from_millis(1)),
                 None
             )
             .is_none(),
@@ -447,13 +447,15 @@ mod tests {
         let _ = handle.write().append_empty_workspace("Granted");
         let first = handle.policy_revision();
         assert!(first > start, "a new workspace is a new policy");
-        handle.write().desktop.workspaces[0].capabilities.push(
-            collab_types::caps::CapOverride::grant(
-                collab_types::caps::Subject::app("so.tilo.revision"),
-                collab_types::caps::Scope::FsPath("/disposable/revision".into()),
-                collab_types::caps::Verb::Read,
-            ),
-        );
+        handle.write().desktop.workspaces[0]
+            .sandbox
+            .push(collab_types::caps::CapOverride::grant(
+                collab_types::Subject::Principal(collab_types::Principal::App(
+                    "so.tilo.revision".into(),
+                )),
+                collab_types::Scope::FsPath("/disposable/revision".into()),
+                collab_types::Access::Read,
+            ));
         assert!(handle.policy_revision() > first, "a grant is a new policy");
     }
 

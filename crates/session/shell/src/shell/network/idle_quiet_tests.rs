@@ -186,7 +186,8 @@ fn bring_loopback_up() {
     );
     // SAFETY: SIOCGIFFLAGS filled the flags member of the union.
     unsafe {
-        request.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
+        request.ifr_ifru.ifru_flags |=
+            libc::c_short::try_from(libc::IFF_UP).expect("IFF_UP fits the flags member");
     }
     // SAFETY: SIOCSIFFLAGS reads the one initialised ifreq it is given.
     let set = unsafe { libc::ioctl(fd, libc::SIOCSIFFLAGS as _, &raw const request) };
@@ -220,7 +221,7 @@ impl AddressRefresher {
     fn refresh(&mut self) {
         const RTM_NEWADDR: u16 = 20;
         const FLAGS: u16 = 0x1 | 0x4 | 0x100 | 0x400; // REQUEST | ACK | REPLACE | CREATE
-        self.sent += 1;
+        self.sent = self.sent.saturating_add(1);
         let lifetime = 100_000_u32.saturating_sub(self.sent);
         let address: [u8; 16] = std::net::Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1).octets();
         let mut message = Vec::with_capacity(84);
@@ -229,7 +230,12 @@ impl AddressRefresher {
         message.extend_from_slice(&FLAGS.to_ne_bytes());
         message.extend_from_slice(&self.sent.to_ne_bytes()); // sequence
         message.extend_from_slice(&0_u32.to_ne_bytes()); // port
-        message.extend_from_slice(&[libc::AF_INET6 as u8, 128, 0, 0]); // ifaddrmsg
+        message.extend_from_slice(&[
+            u8::try_from(libc::AF_INET6).expect("AF_INET6 fits the family byte"),
+            128,
+            0,
+            0,
+        ]); // ifaddrmsg
         message.extend_from_slice(&1_u32.to_ne_bytes()); // lo
         for kind in [2_u16, 1] {
             // IFA_LOCAL, IFA_ADDRESS

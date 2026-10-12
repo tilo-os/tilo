@@ -12,10 +12,10 @@
 //! The heading outline is a projection kept current the same way.
 
 pub mod action;
+pub mod anchor;
 pub mod block_actions;
 pub mod block_edit;
 pub mod block_markdown;
-pub mod anchor;
 pub mod field;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};

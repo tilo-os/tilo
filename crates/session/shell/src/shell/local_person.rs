@@ -157,6 +157,13 @@ mod tests {
         }
     }
 
+    /// A write publishes its own policy on the state writer; let that land
+    /// before the explicit publication so none arrives after it.
+    fn publish_after_saves(tree: &crate::shell::state::WorkspaceTreeHandle) {
+        crate::shell::persist::wait_for_saves();
+        super::super::launcher::action_authority::Export::of(&tree.read()).publish();
+    }
+
     #[test]
     fn native_person_comes_from_protected_identity_and_borrows_live_ordinary_custody() {
         let directory = tempfile::tempdir().unwrap();
@@ -210,30 +217,21 @@ mod tests {
             current.desktop.workspaces[0].set_owner("another-owner");
             current.desktop.workspaces[0].admit(person.clone(), tilo_action_policy::Role::Viewer);
         }
-        // A write publishes its own policy on the state writer; let that
-        // land before this explicit publication so none arrives after it.
-        crate::shell::persist::wait_for_saves();
-        super::super::launcher::action_authority::Export::of(&tree.read()).publish();
+        publish_after_saves(&tree);
         assert!(
             invoke(&caller, request("inspect")).is_ok(),
             "native identity does not elevate a Viewer"
         );
         assert!(invoke(&caller, request("apply")).is_err());
         tree.write().desktop.workspaces[0].admit(person.clone(), tilo_action_policy::Role::Editor);
-        // A write publishes its own policy on the state writer; let that
-        // land before this explicit publication so none arrives after it.
-        crate::shell::persist::wait_for_saves();
-        super::super::launcher::action_authority::Export::of(&tree.read()).publish();
+        publish_after_saves(&tree);
         assert!(
             invoke(&caller, request("edit")).is_ok(),
             "native identity preserves the Editor role"
         );
         assert!(invoke(&caller, request("apply")).is_err());
         tree.write().desktop.workspaces[0].set_owner(&person);
-        // A write publishes its own policy on the state writer; let that
-        // land before this explicit publication so none arrives after it.
-        crate::shell::persist::wait_for_saves();
-        super::super::launcher::action_authority::Export::of(&tree.read()).publish();
+        publish_after_saves(&tree);
         assert!(
             service
                 .certificate(&room.to_string(), "forged-person")
@@ -245,8 +243,7 @@ mod tests {
                 .is_err()
         );
         crate::shell::persist::wait_for_saves();
-        // Hold the state writer so this change is still unpublished: the
-        // save its write submits waits behind this job.
+        // Hold the state writer: this change stays unpublished behind the job.
         let (release, held) = std::sync::mpsc::channel::<()>();
         crate::shell::durable_writer::global().submit(
             directory.path().join("hold-the-writer"),
@@ -262,8 +259,6 @@ mod tests {
         release.send(()).unwrap();
         crate::shell::persist::wait_for_saves();
         tree.write().desktop.workspaces[0].set_owner(person.clone());
-        // A write publishes its own policy on the state writer; let that
-        // land before this explicit publication so none arrives after it.
         crate::shell::persist::wait_for_saves();
         super::super::launcher::action_authority::Export::of(&tree.read()).publish();
         assert!(service.certificate(&room.to_string(), &person).is_ok());

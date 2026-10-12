@@ -1360,7 +1360,9 @@ fn is_action_cx(ty: &Type) -> bool {
 /// content), `available = path` (`fn(&Self, module::Verb) -> Availability`),
 /// `children = path` (`fn(&Self) -> Vec<Derived<Self>>`), `search = path`,
 /// `scopes = path`, `read_content = path` (`fn(&Self, Option<&Id>) ->
-/// Result<serde_json::Value, String>`) and `views = path`.
+/// Result<serde_json::Value, String>`), `read_content_in_doc = path` (the same
+/// read, `fn(&Self, &Doc, Option<&Id>) -> ...`, for one that needs the
+/// document itself) and `views = path`.
 #[proc_macro_attribute]
 pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
     let options = match verbs::resource_options(attr) {

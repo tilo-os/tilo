@@ -59,7 +59,10 @@ fn a_note_written_through_actions_reads_back_through_actions() {
         "the line ends in its block's id: {line}"
     );
     assert_eq!(note["blocks"], 1, "{note}");
-    assert_eq!(note["body"], notes::actions::page_body_id(id));
+    assert_eq!(
+        note["body"],
+        format!("{}/body", notes::actions::page_resource_id(id))
+    );
 
     let missing = app.call("read", json!({ "item": "notes.page:not-a-page" }));
     assert!(missing.is_err(), "an unknown note is refused: {missing:?}");

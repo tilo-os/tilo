@@ -38,13 +38,8 @@ fn call_enveloped(
     let before = replica.heads();
     let encoded = tilo_actions::EncodedAction::encode(RICH_TEXT_ACTION_TYPE, &action)
         .map_err(|error| error.to_string())?;
-    let context = tilo_actions::ActionContext::for_resource(
-        id,
-        RichText::KIND,
-        RichText::KIND,
-        RichText::LABEL,
-    )
-    .with_invoker(tilo_actions::ActionInvoker::actor(writer));
+    let context = tilo_actions::ActionContext::for_resource(id, RichText::KIND, RichText::LABEL)
+        .with_invoker(tilo_actions::ActionInvoker::actor(writer));
     let envelope = tilo_actions::apply_local_with_context(
         replica.doc_mut(),
         &action,
@@ -628,7 +623,7 @@ fn text_is_found_with_the_ids_to_edit_it_by() {
 #[test]
 fn the_declared_actions_are_published_with_typed_described_parameters() {
     let declared = RichText::declarations();
-    for id in block_actions::ANSWERING.iter() {
+    for id in &block_actions::ANSWERING {
         let decl = declared
             .iter()
             .find(|decl| decl.id == *id)
@@ -677,11 +672,12 @@ fn two_collaborators_editing_the_same_page_merge_by_block() {
 
 #[test]
 fn a_viewer_cannot_reach_the_actions_the_editor_takes() {
-    // Every declaration of the block actions needs the right to write.
+    // Every declaration of the block actions changes the document, so each
+    // needs the right to write.
     for decl in block_actions::declarations() {
         assert_eq!(
-            decl.permission,
-            tilo_resource::PermissionRequirement::Write,
+            decl.kind,
+            tilo_actions::contract::ActionKind::Undoable,
             "{} writes",
             decl.id
         );

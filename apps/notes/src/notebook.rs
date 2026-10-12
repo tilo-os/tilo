@@ -140,7 +140,7 @@ pub fn page_of(id: &Id) -> Option<PageId> {
     kind = "notes.notebook",
     label = "Notebook",
     search = crate::search::entries,
-    read_content = Notebook::read_note,
+    read_content_in_doc = Notebook::read_note,
     answer = Notebook::created_page,
     effects = crate::effect::NotesEffect
 )]
@@ -453,6 +453,48 @@ impl Notebook {
         Ok(())
     }
 
+    /// Create note from Markdown
+    ///
+    /// A top-level note titled `title` whose body is the Markdown: headings,
+    /// bullets, `- [ ]` checklists, quotes, code, tables and `[[Note title]]`
+    /// links. A leading `# title` equal to the title is dropped. Answers the
+    /// note's id and resource.
+    #[action(answers)]
+    pub fn create_page(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The note's title")] title: String,
+        #[param("The note's body as Markdown")] markdown: Option<String>,
+    ) -> Result<(), Refusal> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(Refusal::new("give the note a title"));
+        }
+        let markdown =
+            crate::markdown::strip_matching_title_heading(&markdown.unwrap_or_default(), title);
+        check_markdown_import(&markdown).map_err(Refusal::new)?;
+        let id = Id::from(cx.uuid().to_string());
+        let page = Page::titled(title, None);
+        let new = page_of(&id);
+        let blocks = crate::MainPanel::seed_blocks(&markdown, |target| {
+            if target == page.title {
+                return new;
+            }
+            self.pages
+                .iter()
+                .find(|(_, candidate)| candidate.title == target)
+                .and_then(|(id, _)| page_of(id))
+        });
+        self.pages.push(
+            id,
+            Page {
+                body: written(&blocks),
+                ..page
+            },
+        );
+        Ok(())
+    }
+
     /// Import Markdown
     ///
     /// Add Markdown text as a new top-level note titled `title`, with the
@@ -673,11 +715,23 @@ impl Notebook {
     )]
     fn created_page(
         doc: &tilo_resource::Doc,
-        _action: &str,
+        action: &str,
         changes: &[automerge::Patch],
     ) -> Option<serde_json::Value> {
         use tilo_resource::Resource as _;
         let notebook = Notebook::read(doc).ok()?;
+        // A block action of a note's body answers the blocks it touched.
+        if tilo_document::block_actions::ANSWERING.contains(&action) {
+            return notebook.pages.iter().find_map(|(id, _)| {
+                let body = body_object(doc, page_of(id)?)?;
+                let answer =
+                    tilo_document::block_actions::action_result_under(doc, &body, action, changes)?;
+                answer
+                    .as_object()
+                    .is_some_and(|touched| !touched.is_empty())
+                    .then_some(answer)
+            });
+        }
         changes.iter().find_map(|patch| {
             let automerge::PatchAction::PutMap {
                 key,
@@ -700,7 +754,11 @@ impl Notebook {
     /// One note, or the notebook, as a reader reads it: the notebook as its
     /// notes and tags; a note (by its id) as its title and blocks, each with
     /// the id edits of its body name it by.
-    fn read_note(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
+    fn read_note(
+        &self,
+        doc: &tilo_resource::Doc,
+        item: Option<&Id>,
+    ) -> Result<serde_json::Value, String> {
         let note =
             |id: &Id| page_of(id).map_or_else(|| id.to_string(), crate::actions::page_resource_id);
         let Some(item) = item else {
@@ -723,37 +781,19 @@ impl Notebook {
             .pages
             .get(&id)
             .ok_or_else(|| format!("no note `{item}`; read the notebook for the notes it holds"))?;
-        let blocks = page.blocks();
+        let body = page_of(&id)
+            .and_then(|page| body_object(doc, page))
+            .ok_or_else(|| format!("note `{item}` has no body"))?;
+        let read = tilo_document::block_actions::read_under(doc, &body, None)?;
         Ok(serde_json::json!({
             "kind": "notes.page",
             "item": note(&id),
             "title": page.title,
             "parent": page.parent.as_ref().map(note),
-            "text": blocks.iter().map(|block| block.text.as_str()).collect::<Vec<_>>().join("\n"),
-            "blocks": blocks.iter().map(|block| serde_json::json!({
-                "id": block.id,
-                "kind": block_kind(&block.kind),
-                "text": block.text,
-            })).collect::<Vec<_>>(),
+            "body": format!("{}/body", note(&id)),
+            "markdown": read.get("markdown"),
+            "blocks": read.get("blocks"),
         }))
-    }
-}
-
-/// A block's kind as a reader names it.
-fn block_kind(kind: &ui::widget::BlockKind) -> serde_json::Value {
-    use ui::widget::BlockKind;
-    match kind {
-        BlockKind::Paragraph => "paragraph".into(),
-        BlockKind::Quote => "quote".into(),
-        BlockKind::Heading(level) => serde_json::json!({ "heading": level }),
-        BlockKind::Bullet { indent } => serde_json::json!({ "bullet": indent }),
-        BlockKind::Numbered { indent } => serde_json::json!({ "numbered": indent }),
-        BlockKind::Checklist { indent, done } => {
-            serde_json::json!({ "checklist": indent, "done": done })
-        }
-        BlockKind::CodeBlock { lang } => serde_json::json!({ "code": lang }),
-        BlockKind::Table { .. } => "table".into(),
-        BlockKind::Divider => "divider".into(),
     }
 }
 

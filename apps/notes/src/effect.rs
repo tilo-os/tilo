@@ -18,7 +18,7 @@ pub enum NotesEffect {
     /// Find note
     ///
     /// Find the notes whose title holds some text, exact matches first.
-    #[effect(view, returns, permission = "read")]
+    #[effect(view, returns, kind = "read")]
     FindPage {
         #[param("Text of the title, ignoring case")]
         title: String,
@@ -27,7 +27,7 @@ pub enum NotesEffect {
     ///
     /// Find the blocks whose text holds some text, in one note or in every
     /// note, and answer the block ids to edit them by.
-    #[effect(view, returns, permission = "read")]
+    #[effect(view, returns, kind = "read")]
     FindText {
         #[param("The text to find, ignoring case")]
         text: String,

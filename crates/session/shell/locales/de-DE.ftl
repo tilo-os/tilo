@@ -1289,7 +1289,7 @@ search-record-in-another-workspace = In einem anderen Arbeitsbereich
 search-files-no-app = Keine App auf diesem Desktop öffnet .{ $ext }-Dokumente.
 
 # Suche: Host-Apps
-search-host-app-subtitle = Nicht isoliert · { $source }
+search-host-app-subtitle = { $source } · nicht isolierte Host-App · { $id }
 
 # Suche: Aufträge und Ressourcen von App-Aktionen
 search-app-job = Aktionsauftrag { $id }
@@ -1556,7 +1556,7 @@ search-apps-open-subtitle = { $target } · { $detail }
 search-apps-shortcut-subtitle = { $target } · Verknüpfung
 search-apps-shortcut-failed = Die Verknüpfung konnte nicht geöffnet werden. Prüfe ihr Ziel und versuche es erneut.
 search-apps-verification-pending = Prüfung durch die Registry ausstehend
-search-apps-store-subtitle = { $trust }
+search-apps-store-subtitle = App Store · { $trust } · { $detail }
 search-apps-view-in-store = { $app } im App Store ansehen
 search-apps-store-failed = App Store für { $app } konnte nicht geöffnet werden
 search-apps-opening = { $app } wird geöffnet
@@ -2623,3 +2623,6 @@ activity-morning-command-refused = Anfrage abgelehnt
 activity-morning-recorded = { $source } · letzte aufgezeichnete Arbeitsbereichsaktivität: { $time }
 
 activity-morning-next = Nächste ausgewählte Quelle
+search-host-app-open = { $app } öffnen
+search-opens-beside = Öffnet sich ganz rechts
+search-opens-here = Öffnet sich hier als Tab

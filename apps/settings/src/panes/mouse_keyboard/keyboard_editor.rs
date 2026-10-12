@@ -999,7 +999,7 @@ impl MouseKeyboardPane {
             Box::new(
                 TextInput::local()
                     .with_id("input.test-typing")
-                    .with_placeholder(&t("input-test-typing-placeholder")),
+                    .with_placeholder(t("input-test-typing-placeholder")),
             ),
         ));
         card(&t("input-keyboard-title"), rows(items))

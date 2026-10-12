@@ -296,11 +296,13 @@ pub(crate) fn coalesce_damage(
     rects: Vec<vello::FineDamageRect>,
     limit: usize,
 ) -> Vec<vello::FineDamageRect> {
+    let right = |rect: &vello::FineDamageRect| rect.x.saturating_add(rect.width);
+    let bottom = |rect: &vello::FineDamageRect| rect.y.saturating_add(rect.height);
     let contains = |outer: &vello::FineDamageRect, inner: &vello::FineDamageRect| {
         outer.x <= inner.x
             && outer.y <= inner.y
-            && outer.x.saturating_add(outer.width) >= inner.x.saturating_add(inner.width)
-            && outer.y.saturating_add(outer.height) >= inner.y.saturating_add(inner.height)
+            && right(outer) >= right(inner)
+            && bottom(outer) >= bottom(inner)
     };
     let mut kept: Vec<vello::FineDamageRect> = Vec::with_capacity(rects.len());
     for rect in rects {

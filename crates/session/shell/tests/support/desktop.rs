@@ -121,7 +121,11 @@ impl Client {
             },
             Err(_) => "status unreadable".to_owned(),
         };
-        let errors = self.errors.lock().map(|out| out.clone()).unwrap_or_default();
+        let errors = self
+            .errors
+            .lock()
+            .map(|out| out.clone())
+            .unwrap_or_default();
         format!("the client process is {status}; its stderr:\n{errors}")
     }
 
@@ -618,17 +622,33 @@ impl Drop for Desktop {
 /// The password the compositor accepts to unlock (it stands in for PAM).
 pub const UNLOCK_PASSWORD: &str = "correct-horse-battery";
 
+/// Note why the heartbeat monitor gave up: the stall every wait reports.
+fn record_stall(watch: &Watch, reason: String) {
+    if let Ok(mut stall) = watch.stall.lock() {
+        *stall = Some(reason);
+    }
+}
+
+/// The top frames of the main thread's stack, without file locations.
+fn main_stack_top(threads: &[shell::compositor::liveness::ThreadReport]) -> String {
+    let main = threads.first().map_or("", |t| t.backtrace.as_str());
+    let top: Vec<&str> = main
+        .lines()
+        .filter(|l| !l.contains(" at "))
+        .take(14)
+        .collect();
+    top.join("\n")
+}
+
 fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("heartbeat-monitor".into())
         .spawn(move || {
             let Ok(stream) = UnixStream::connect(&liveness) else {
-                if let Ok(mut stall) = watch.stall.lock() {
-                    *stall = Some(format!(
-                        "the liveness socket {} cannot be reached",
-                        liveness.display()
-                    ));
-                }
+                record_stall(
+                    &watch,
+                    format!("the liveness socket {} cannot be reached", liveness.display()),
+                );
                 return;
             };
             let budget = u64::try_from(HEARTBEAT_BUDGET.as_millis()).unwrap_or(500);
@@ -641,8 +661,8 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                 return;
             };
             let mut reader = BufReader::new(stream);
+            let request = format!("{{\"op\":\"heartbeat\",\"budget_ms\":{budget}}}\n");
             while !watch.stop.load(Ordering::Relaxed) {
-                let request = format!("{{\"op\":\"heartbeat\",\"budget_ms\":{budget}}}\n");
                 if writer.write_all(request.as_bytes()).is_err() {
                     return;
                 }
@@ -662,12 +682,10 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                 }) = &answer
                     && *main_thread_cpu_ms >= budget_ms / 4
                 {
-                    let main = threads.first().map_or("", |t| t.backtrace.as_str());
-                    let top: Vec<&str> = main.lines().filter(|l| !l.contains(" at ")).take(14).collect();
                     if let Ok(mut jank) = watch.jank.lock() {
                         jank.push(format!(
                             "main loop busy for over {budget_ms} ms ({main_thread_cpu_ms} ms CPU):\n{}",
-                            top.join("\n")
+                            main_stack_top(threads)
                         ));
                     }
                     // Keep asking: it still working is fine, its turning blocked
@@ -675,8 +693,6 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                     // a spin.
                     let mut waited = HEARTBEAT_BUDGET;
                     while waited < BUSY_LIMIT {
-                        let request =
-                            format!("{{\"op\":\"heartbeat\",\"budget_ms\":{budget}}}\n");
                         if writer.write_all(request.as_bytes()).is_err() {
                             return;
                         }
@@ -688,10 +704,10 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                         if let Ok(Answer::Stalled { threads, .. }) = &answer
                             && let Ok(mut jank) = watch.jank.lock()
                         {
-                            let main = threads.first().map_or("", |t| t.backtrace.as_str());
-                            let top: Vec<&str> =
-                                main.lines().filter(|l| !l.contains(" at ")).take(14).collect();
-                            jank.push(format!("  ... still busy {waited:?} in:\n{}", top.join("\n")));
+                            jank.push(format!(
+                                "  ... still busy {waited:?} in:\n{}",
+                                main_stack_top(threads)
+                            ));
                         }
                         let still_working = matches!(
                             &answer,
@@ -713,21 +729,18 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                         watch.worst_latency_us.fetch_max(micros, Ordering::Relaxed);
                     }
                     Ok(stalled @ Answer::Stalled { .. }) => {
-                        if let Ok(mut stall) = watch.stall.lock() {
-                            *stall = Some(render(&stalled));
-                        }
+                        record_stall(&watch, render(&stalled));
                         return;
                     }
                     Ok(other) => {
-                        if let Ok(mut stall) = watch.stall.lock() {
-                            *stall = Some(format!("unexpected liveness answer: {other:?}"));
-                        }
+                        record_stall(&watch, format!("unexpected liveness answer: {other:?}"));
                         return;
                     }
                     Err(e) => {
-                        if let Ok(mut stall) = watch.stall.lock() {
-                            *stall = Some(format!("unreadable liveness answer ({e}): {line}"));
-                        }
+                        record_stall(
+                            &watch,
+                            format!("unreadable liveness answer ({e}): {line}"),
+                        );
                         return;
                     }
                 }

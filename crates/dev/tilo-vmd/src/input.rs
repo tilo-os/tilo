@@ -264,7 +264,7 @@ impl Encoder {
             .map(|i| {
                 let offset = i
                     .saturating_mul(2)
-                    .saturating_sub(count - 1)
+                    .saturating_sub(count.saturating_sub(1))
                     .saturating_mul(gap)
                     / 2;
                 (centre.0.saturating_add(offset), centre.1)
@@ -317,8 +317,12 @@ impl Encoder {
                         .iter()
                         .map(|(x, y)| {
                             (
-                                x.saturating_add(dx.saturating_mul(step) / steps),
-                                y.saturating_add(dy.saturating_mul(step) / steps),
+                                x.saturating_add(
+                                    dx.saturating_mul(step).checked_div(steps).unwrap_or(0),
+                                ),
+                                y.saturating_add(
+                                    dy.saturating_mul(step).checked_div(steps).unwrap_or(0),
+                                ),
                             )
                         })
                         .collect();

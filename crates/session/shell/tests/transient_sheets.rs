@@ -291,7 +291,9 @@ fn strip_view(state: &shell::compositor::state::State) -> String {
         .flat_map(|ws| ws.strips.iter())
         .map(|strip| strip.window_groups.len())
         .sum();
-    format!("{workspace:?} {strip:?} {group:?} {groups}")
+    let view = format!("{workspace:?} {strip:?} {group:?} {groups}");
+    drop(tree);
+    view
 }
 
 /// What a host-service prompt (gcr-prompter's keyring unlock) sends: no

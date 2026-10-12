@@ -90,7 +90,13 @@ mod tests {
         fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
             Vec::new()
         }
-        fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+        fn launch(
+            &self,
+            _: &str,
+            _: &tilo_desktop_model::Workspace,
+            _: Option<&str>,
+            _: &crate::services::LaunchPlace,
+        ) -> Result<(), String> {
             Err("not under test".into())
         }
         fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {

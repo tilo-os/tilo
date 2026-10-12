@@ -5,7 +5,6 @@
 //! use.
 
 use notes::NotesShell;
-use notes::doc::NotesDoc;
 use serde_json::{Value, json};
 use ui::framework::testing::TestApp;
 
@@ -64,7 +63,7 @@ fn ids(note: &Value) -> Vec<String> {
 fn an_agent_turns_the_todo_page_into_a_checklist_ticks_items_and_rewords_one() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
-    app.call("new-page", json!({ "value": "Groceries" }))
+    app.call("new-note", json!({ "title": "Groceries" }))
         .unwrap();
 
     // A page with a title and a Markdown body.
@@ -202,7 +201,7 @@ fn an_agent_turns_the_todo_page_into_a_checklist_ticks_items_and_rewords_one() {
         "undo takes back the rename and the added item, one step each"
     );
     let titles = app.read_document(|doc| {
-        NotesDoc::list_pages(doc)
+        notes::read::list_pages(doc)
             .into_iter()
             .map(|page| page.title)
             .collect::<Vec<_>>()

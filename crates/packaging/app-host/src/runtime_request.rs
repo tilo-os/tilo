@@ -73,13 +73,13 @@ impl RuntimeRequests {
     #[must_use]
     pub fn with(
         catalog: Arc<Catalog>,
-        installed: Box<dyn Fn(&str) -> bool + Send + Sync>,
+        probe: Box<dyn Fn(&str) -> bool + Send + Sync>,
         installer: Arc<Installer>,
         launcher: Arc<Launcher>,
     ) -> Arc<Self> {
         Arc::new(Self {
             catalog,
-            installed,
+            installed: probe,
             installer,
             launcher,
             jobs: Arc::default(),
@@ -411,10 +411,12 @@ mod tests {
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
+    type Launched = Arc<Mutex<Vec<(String, Option<String>)>>>;
+
     #[test]
     fn a_declaring_app_can_start_a_fresh_instance_of_itself_only_on_a_web_address() {
         let dir = tempfile::tempdir().unwrap();
-        let launched: Arc<Mutex<Vec<(String, Option<String>)>>> = Arc::default();
+        let launched: Launched = Arc::default();
         let record = Arc::clone(&launched);
         let host = RuntimeRequests::with(
             catalog(dir.path()),
