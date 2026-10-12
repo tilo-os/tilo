@@ -2698,6 +2698,7 @@ jobs:
           PUBLISH: ${{ steps.release-mode.outputs.publish }}
           HARDWARE_PROFILE: ${{ needs.plan.outputs.hardware-profile }}
           DEV_GATE: ${{ steps.release-mode.outputs.dev-gate }}
+          DEV_COMPILER_CACHE: ${{ steps.compiler-cache.outputs.mode }}
           DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
           DEV_BASE_PUBLISHED: ${{ steps.dev-image.outputs.ref }}
           DEV_BASE_PUBLISHED_DIGEST: ${{ steps.dev-image.outputs.digest }}
@@ -2800,6 +2801,7 @@ jobs:
               rm -rf -- "$DEV_OUTPUT/direct-boot"
               export TILO_DEV_DIRECT_BUNDLE_DIR="$DEV_OUTPUT/direct-boot"
             fi
+            TILO_DEV_COMPILER_CACHE="$DEV_COMPILER_CACHE" TILO_DEV_RUST_LTO=off \
             TILO_DEV_BASE="$dev_base" TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=1 \
               TILO_CARGO_FRESHNESS=clean TILO_OUTPUT="$DEV_OUTPUT" TILO_DISK="$DEV_OUTPUT/qcow2/disk.qcow2" \
               TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci" TILO_DISK_SIZE=64G \

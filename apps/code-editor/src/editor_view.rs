@@ -3319,7 +3319,6 @@ mod tests {
 
     #[test]
     fn dictation_target_tracks_code_selection_content_and_pending_edits() {
-        use automerge::transaction::Transactable;
         let (mut view, mut doc) = bound_editor("same source");
         view.set_focus(true);
         assert_eq!(view.ime_purpose(), Some(winit::window::ImePurpose::Normal));
@@ -3331,7 +3330,7 @@ mod tests {
         assert_ne!(view.ime_edit_fingerprint(&key), Some(stamp));
         let selected = view.ime_edit_fingerprint(&key).unwrap();
         let object = view.text_obj.clone().unwrap();
-        doc.splice_text(&object, 0, 11, "same change").unwrap();
+        EditorDoc::splice(&mut doc, &object, 0, 11, "same change");
         view.sync(&doc, &automerge::ROOT);
         assert_eq!(view.ime_cursor_rect(), caret);
         assert_ne!(view.ime_edit_fingerprint(&key), Some(selected));

@@ -148,7 +148,10 @@ pub fn open_in_workspace(uri: &str, chrome: &Chrome) -> Result<UriOpened, UriOpe
             .desktop
             .active_workspace()
             .ok_or(UriOpenError::NoWorkspace)?;
-        (workspace.room, workspace.capabilities.clone())
+        (
+            workspace.room,
+            workspace.launch_grants(tilo_clock::unix_now()),
+        )
     };
     // Placement is noted before queueing, as the person asked, so the window
     // lands in the group whose "+" summoned it however late it maps. Queued:

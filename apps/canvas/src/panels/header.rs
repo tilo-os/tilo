@@ -6,19 +6,19 @@ use ui::LocalState;
 use ui::icons::Icon;
 use ui::prelude::*;
 use ui::text_render::FontChoice;
+use ui::tilo_resource::Invoke;
 use ui::widget::EditableLabel;
 use ui::widget::{ButtonRole, ControlSize};
 
 use super::icon_button;
-use crate::actions::{Align, CanvasAction};
+use crate::actions::Align;
 use crate::model::Artwork;
-use crate::resource::ArtworkResource;
 use crate::selection::{Combine, Select, UseSelection};
 use crate::tools::{Sheet, Tools, ViewRequest};
 
 /// The editable artwork title and its current zoom occupy an intrinsically
 /// measured header slot beside the individually measured commands.
-pub fn title(cx: &ViewCx<ArtworkResource>, tools: &Tools, compact: &LocalState<bool>) -> Element {
+pub fn title(cx: &ViewCx<Artwork>, tools: &Tools, compact: &LocalState<bool>) -> Element {
     let zoom_tools = tools.clone();
     let zoom = cx.switch(compact, move |_, compact| {
         if *compact {
@@ -39,9 +39,9 @@ pub fn title(cx: &ViewCx<ArtworkResource>, tools: &Tools, compact: &LocalState<b
                     .with_text_role(TextRole::Heading)
                     .with_id("canvas-title")
                     .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
-                        "canvas-artwork-title",
+                        "canvas-label-artwork-title",
                     )),
-                ArtworkResource::SET_TITLE,
+                Artwork::SET_TITLE,
             ),
         ) as Element
     });
@@ -63,11 +63,7 @@ pub fn title(cx: &ViewCx<ArtworkResource>, tools: &Tools, compact: &LocalState<b
 
 /// Individual shared controls let the shell move each command into More
 /// without laying a wider private row beneath its inspector and History.
-pub fn header(
-    cx: &ViewCx<ArtworkResource>,
-    tools: &Tools,
-    compact: &LocalState<bool>,
-) -> Vec<Element> {
+pub fn header(cx: &ViewCx<Artwork>, tools: &Tools, compact: &LocalState<bool>) -> Vec<Element> {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let mut actions = vec![
         menu(cx, tools),
@@ -75,13 +71,13 @@ pub fn header(
             cx,
             Icon::Undo2,
             &lookup("canvas-undo"),
-            ArtworkResource::UNDO.invoke(),
+            Artwork::UNDO.invoke(),
         )),
         Box::new(icon_button(
             cx,
             Icon::Redo2,
             &lookup("canvas-redo"),
-            ArtworkResource::REDO.invoke(),
+            Artwork::REDO.invoke(),
         )),
     ];
     // Files/export remain in the artwork menu on mobile; adding a picture
@@ -150,7 +146,7 @@ struct StripFacts {
 /// chosen layer to, clear, invert or drop; shapes to combine into one; the
 /// mask being painted, and the way back to its layer. Nothing otherwise.
 /// One row at any width: what does not fit its label keeps its icon.
-pub fn context_bar(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+pub fn context_bar(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let facts = cx.value(|art: &Artwork| StripFacts {
         area: art.selection.is_some(),
         masks: art
@@ -195,10 +191,10 @@ pub fn context_bar(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
 
 /// What a command of the strip does: the artwork's edit it makes, read
 /// when it is chosen (the brush's layer and paint as they are then).
-type Edit = std::sync::Arc<dyn Fn() -> CanvasAction + Send + Sync>;
+type Edit = std::sync::Arc<dyn Fn() -> Invoke<Artwork> + Send + Sync>;
 
 /// How a command's button is bound to its action.
-type Bind = Box<dyn FnOnce(Button, &ViewCx<ArtworkResource>) -> Element>;
+type Bind = Box<dyn FnOnce(Button, &ViewCx<Artwork>) -> Element>;
 
 /// A command of the strip: its icon, its label's string id, and the edit
 /// it makes, through its own action as a button or through the generic
@@ -220,7 +216,7 @@ impl Command {
     fn new(
         icon: Icon,
         id: &str,
-        action: impl ui::tilo_resource::Binds<ArtworkResource, ()>,
+        action: impl ui::tilo_resource::Binds<Artwork, ()>,
         edit: Edit,
     ) -> Self {
         Self {
@@ -246,10 +242,10 @@ impl Command {
             bind: Box::new(move |button, cx| {
                 let dispatch = cx.dispatcher();
                 Box::new(button.on_effect(move || {
-                    dispatch.effect(&crate::resource::ViewOp::FindArea(select()));
+                    dispatch.effect(&crate::resource::ViewOp::FindArea { area: select() });
                 }))
             }),
-            edit: std::sync::Arc::new(|| CanvasAction::Select(Box::default())),
+            edit: std::sync::Arc::new(|| Artwork::SELECT.with(Select::default())),
             iconic: true,
             local: true,
         }
@@ -267,7 +263,7 @@ impl Command {
 
     /// The command's button: its icon and label, or the icon alone with
     /// the label as its tooltip and spoken name.
-    fn button(self, cx: &ViewCx<ArtworkResource>, labelled: bool) -> Element {
+    fn button(self, cx: &ViewCx<Artwork>, labelled: bool) -> Element {
         let label = self.label();
         let button = if labelled {
             Button::new(&self.id, &label)
@@ -303,7 +299,7 @@ fn text_room(text: &str, per_letter: f32) -> f32 {
 /// the commands' order while they fit, every command keeps its icon while
 /// that fits, and the last ones go into a menu when it does not.
 fn strip(
-    cx: &ViewCx<ArtworkResource>,
+    cx: &ViewCx<Artwork>,
     tools: &Tools,
     (area, combine, masked): (bool, bool, Option<&(String, String)>),
     room: u32,
@@ -420,7 +416,7 @@ fn strip(
 
 /// The commands that did not fit, in a menu that makes each one's edit
 /// through the artwork's generic `apply`.
-fn overflow(cx: &ViewCx<ArtworkResource>, commands: Vec<Command>) -> Element {
+fn overflow(cx: &ViewCx<Artwork>, commands: Vec<Command>) -> Element {
     let options: Vec<(String, String)> = commands
         .iter()
         .map(|command| (command.id.clone(), command.label()))
@@ -435,18 +431,21 @@ fn overflow(cx: &ViewCx<ArtworkResource>, commands: Vec<Command>) -> Element {
         .with_id("canvas-strip-more")
         .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-strip-more"));
     menu.set_value_options(options);
-    let apply: ui::tilo_resource::ActionRef<ArtworkResource, CanvasAction> =
+    // The chosen command's edit, as the one member of a group: the menu is
+    // bound to whichever verb the command makes.
+    let group: ui::tilo_resource::ActionRef<Artwork, serde_json::Value> =
         ui::tilo_resource::ActionRef::new(
-            ui::tilo_resource::APPLY,
-            &[ui::tilo_resource::APPLY_PARAM],
+            ui::tilo_resource::GROUP,
+            &[ui::tilo_resource::GROUP_PARAM],
         );
     Box::new(cx.actions().bind(
         menu,
-        apply.map(move |chosen: String| {
-            edits
-                .iter()
-                .find(|(id, _)| *id == chosen)
-                .map_or_else(|| CanvasAction::Select(Box::default()), |(_, edit)| edit())
+        group.map(move |chosen: String| {
+            let edit = edits.iter().find(|(id, _)| *id == chosen).map_or_else(
+                || Artwork::SELECT.with(Select::default()),
+                |(_, edit)| edit(),
+            );
+            serde_json::json!([{ "action": edit.id, "args": edit.arguments }])
         }),
     ))
 }
@@ -471,10 +470,14 @@ fn area_commands(tools: &Tools) -> Vec<Command> {
         Command::new(
             icon,
             &format!("canvas-area-{what}"),
-            ArtworkResource::USE_SELECTION
-                .map(move |()| (what.to_owned(), loaded.layer(), Some(loaded.paint()))),
+            Artwork::USE_SELECTION.map(move |()| UseSelection {
+                what: what.to_owned(),
+                layer: loaded.layer(),
+                colour: Some(loaded.paint()),
+                ..UseSelection::default()
+            }),
             std::sync::Arc::new(move || {
-                CanvasAction::UseSelection(UseSelection {
+                Artwork::USE_SELECTION.with(UseSelection {
                     what: what.to_owned(),
                     layer: reads.layer(),
                     colour: Some(reads.paint()),
@@ -513,23 +516,23 @@ fn area_commands(tools: &Tools) -> Vec<Command> {
         Command::new(
             Icon::Contrast,
             "canvas-area-invert",
-            ArtworkResource::SELECT_INVERT.map(|()| true),
+            Artwork::SELECT_INVERT.map(|()| true),
             std::sync::Arc::new(|| {
-                CanvasAction::Select(Box::new(Select {
+                Artwork::SELECT.with(Select {
                     invert: Some(true),
                     ..Select::default()
-                }))
+                })
             }),
         ),
         Command::new(
             Icon::X,
             "canvas-area-none",
-            ArtworkResource::SELECT_MODE.map(|()| "none".to_owned()),
+            Artwork::SELECT_MODE.map(|()| "none".to_owned()),
             std::sync::Arc::new(|| {
-                CanvasAction::Select(Box::new(Select {
+                Artwork::SELECT.with(Select {
                     mode: Some("none".into()),
                     ..Select::default()
-                }))
+                })
             }),
         ),
     ]
@@ -561,23 +564,23 @@ fn refine(tools: &Tools, icon: Icon, id: &str, change: Refine) -> Command {
             Refine::Grow(pixels) => (Some(reads(pixels)), None),
             Refine::Feather(pixels) => (None, Some(reads(pixels))),
         };
-        CanvasAction::Select(Box::new(Select {
+        Artwork::SELECT.with(Select {
             feather,
             grow,
             ..Select::default()
-        }))
+        })
     });
     match change {
         Refine::Grow(pixels) => Command::new(
             icon,
             id,
-            ArtworkResource::SELECT_GROW.map(move |()| units(pixels)),
+            Artwork::SELECT_GROW.map(move |()| units(pixels)),
             edit,
         ),
         Refine::Feather(pixels) => Command::new(
             icon,
             id,
-            ArtworkResource::SELECT_FEATHER.map(move |()| units(pixels)),
+            Artwork::SELECT_FEATHER.map(move |()| units(pixels)),
             edit,
         ),
     }
@@ -599,9 +602,9 @@ fn combine_commands(tools: &Tools) -> Vec<Command> {
         Command::new(
             icon,
             &format!("canvas-combine-{op}"),
-            ArtworkResource::COMBINE.map(move |()| (picked.with(Clone::clone), op.to_owned())),
+            Artwork::COMBINE_AS.map(move |()| (picked.with(Clone::clone), op.to_owned())),
             std::sync::Arc::new(move || {
-                CanvasAction::Combine(Combine {
+                Artwork::COMBINE.with(Combine {
                     ids: reads.with(Clone::clone),
                     op: op.to_owned(),
                 })
@@ -632,14 +635,18 @@ fn align_commands(tools: &Tools) -> Vec<Command> {
             Command::new(
                 icon,
                 &format!("canvas-align-{edge}"),
-                ArtworkResource::ALIGN.map(move |()| {
+                Artwork::ALIGN.map(move |()| {
                     let ids = picked.with(Clone::clone);
-                    let to = to(&ids);
-                    (ids, edge.to_owned(), to)
+                    Align {
+                        to: to(&ids),
+                        ids,
+                        edge: Some(edge.to_owned()),
+                        distribute: None,
+                    }
                 }),
                 std::sync::Arc::new(move || {
                     let ids = reads.with(Clone::clone);
-                    CanvasAction::Align(Align {
+                    Artwork::ALIGN.with(Align {
                         to: to(&ids),
                         ids,
                         edge: Some(edge.to_owned()),
@@ -662,10 +669,9 @@ fn align_commands(tools: &Tools) -> Vec<Command> {
                 Command::new(
                     icon,
                     &format!("canvas-distribute-{axis}"),
-                    ArtworkResource::DISTRIBUTE
-                        .map(move |()| (picked.with(Clone::clone), axis.to_owned())),
+                    Artwork::DISTRIBUTE.map(move |()| (picked.with(Clone::clone), axis.to_owned())),
                     std::sync::Arc::new(move || {
-                        CanvasAction::Align(Align {
+                        Artwork::ALIGN.with(Align {
                             ids: reads.with(Clone::clone),
                             edge: None,
                             distribute: Some(axis.to_owned()),
@@ -682,7 +688,7 @@ fn align_commands(tools: &Tools) -> Vec<Command> {
 
 /// What the last open, save or export came to, in a caption under the
 /// title: one line, cut short where it would crowd the header.
-fn notice(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+fn notice(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     cx.switch(&tools.notice, |_, notice| {
         let Some(said) = notice else {
             return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
@@ -719,7 +725,7 @@ fn sheet_button(tools: &Tools, id: &str, icon: Icon, which: Sheet) -> Button {
 }
 
 /// The artwork's menu: new, open, save, a copy, export, and the keys.
-fn menu(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+fn menu(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let tools = tools.clone();
     cx.switch(&tools.recents.clone(), move |_, recents| {
         let lookup = ui::i18n::I18nManager::lookup_plain;

@@ -37,12 +37,6 @@ pub struct ActionHost {
     /// [`ActionSpec`](tilo_actions::ActionSpec) build the byte-identical
     /// action.
     last_dispatched: Option<EncodedAction>,
-    /// Compensating document action for outside-consequence undo, computed
-    /// by [`Action::inverse_before`](tilo_actions::Action::inverse_before)
-    /// before the forward action ran. Cleared with [`Self::take_committed`].
-    pending_undo_via: Option<EncodedAction>,
-    /// The forward action paired with [`Self::pending_undo_via`], for redo.
-    pending_redo_via: Option<EncodedAction>,
     ambient_context: Option<ActionContext>,
 }
 
@@ -148,13 +142,18 @@ impl ActionHost {
         A: Action + serde::Serialize,
     {
         let encoded = EncodedAction::encode(type_id, action)?;
-        // Capture the compensating action against the pre-apply document so a
-        // delete can still read the row it removes.
-        let undo_via = action.inverse_encoded(doc).or_else(|| {
-            action
-                .inverse_before(doc)
-                .and_then(|inverse| EncodedAction::encode(type_id, &inverse).ok())
-        });
+        self.dispatch_encoded(doc, action, encoded, context)
+    }
+
+    /// [`Self::try_dispatch_with_context`] past encoding: one compiled copy
+    /// for every action type.
+    fn dispatch_encoded(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &dyn Action,
+        encoded: EncodedAction,
+        context: Option<ActionContext>,
+    ) -> Result<(), tilo_actions::ActionError> {
         let observed_before = crate::bound_dispatch::typed_action_before(doc);
         let before = observed_before.clone().unwrap_or_else(|| doc.get_heads());
         let mut transport = tilo_actions::LocalTransport::new();
@@ -163,8 +162,7 @@ impl ActionHost {
             (Some(context), Some(ambient)) => Some(context.enriched_by(ambient)),
             (None, Some(ambient)) => Some(ambient.clone()),
             (context, None) => context,
-        }
-        .map(|context| context.with_args_from_payload(&encoded.payload));
+        };
         let result = match context {
             Some(context) => tilo_actions::dispatch_by_with_context(
                 doc,
@@ -192,12 +190,6 @@ impl ActionHost {
         }
         if step && self.commit_before.is_none() {
             self.commit_before = Some(before);
-        }
-        // One outside-consequence action per bracket: a later pure CRDT edit
-        // in the same event must not erase a pending compensating undo.
-        if step && undo_via.is_some() && self.pending_undo_via.is_none() {
-            self.pending_undo_via = undo_via;
-            self.pending_redo_via = Some(encoded.clone());
         }
         self.last_dispatched = Some(encoded);
         Ok(())
@@ -252,20 +244,6 @@ impl ActionHost {
     /// [`CommittedActions::take_committed_action`](crate::undo::CommittedActions::take_committed_action).
     pub fn take_committed(&mut self) -> Option<Vec<ChangeHash>> {
         self.commit_before.take()
-    }
-
-    /// Rising-edge pair for outside-consequence undo: `(undo_via, redo_via)`.
-    /// Cleared with the commit bracket so a host records them on the same
-    /// [`UndoEntry`](crate::state::UndoEntry).
-    pub fn take_action_revert(&mut self) -> Option<(EncodedAction, EncodedAction)> {
-        match (self.pending_undo_via.take(), self.pending_redo_via.take()) {
-            (Some(undo), Some(redo)) => Some((undo, redo)),
-            (undo, redo) => {
-                self.pending_undo_via = undo;
-                self.pending_redo_via = redo;
-                None
-            }
-        }
     }
 
     pub fn last_dispatched(&self) -> Option<&EncodedAction> {
@@ -345,14 +323,7 @@ mod tests {
                     key: "score".into(),
                     value: 42,
                 },
-                ActionContext::for_action(
-                    "org.tilo.Test",
-                    "Test",
-                    &Put {
-                        key: "score".into(),
-                        value: 42,
-                    },
-                ),
+                ActionContext::for_app("org.tilo.Test", "Test"),
             );
             let changes = doc.get_changes(&[]);
             assert_eq!(
@@ -443,7 +414,7 @@ mod tests {
                     key: "score".into(),
                     value: 9,
                 },
-                ActionContext::for_resource("Set score", "counter:1", "counter", "Score"),
+                ActionContext::for_resource("counter:1", "counter", "Score"),
             );
             let heads = doc.get_heads();
             let change = doc
@@ -453,7 +424,13 @@ mod tests {
                 .message()
                 .and_then(|message| ActionContext::from_change_message(message))
                 .expect("context embedded in change");
-            assert_eq!(context.summary().as_deref(), Some("Set score · Score"));
+            assert_eq!(
+                context
+                    .resource
+                    .as_ref()
+                    .map(|resource| resource.label.as_str()),
+                Some("Score")
+            );
         }
 
         // Case `ambient_task_context_enriches_explicit_action_context`.
@@ -472,7 +449,7 @@ mod tests {
                     key: "k".into(),
                     value: 1,
                 },
-                ActionContext::for_resource("Set", "counter", "counter", "Counter"),
+                ActionContext::for_resource("counter", "counter", "Counter"),
             );
             let heads = doc.get_heads();
             let change = doc.get_change_by_hash(&heads[0]).unwrap();

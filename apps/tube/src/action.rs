@@ -12,8 +12,10 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use crate::actions::{TubeAction, TubeEffect};
+use crate::actions::TubeEffect;
 use crate::model::{ChannelId, PlaylistId, Route, SearchType, Settings, VideoId};
+use crate::resource::Library;
+use ui::tilo_resource::Edit;
 
 /// Everything a click can request.
 #[derive(Clone, Debug, PartialEq)]
@@ -43,7 +45,7 @@ pub enum Action {
     OpenSearch,
     /// A change to the shared library, submitted as it is through the
     /// framework's door.
-    Edit(TubeAction),
+    Edit(Edit<Library>),
     /// An effect, run through the framework's door, which confirms the ones
     /// that ask for it (clearing the watch history, approving or revoking a
     /// device) first.
@@ -76,11 +78,21 @@ impl Action {
             Self::Share(_) => "Copy share link",
             Self::ToggleSidebar => "Show or hide navigation",
             Self::OpenSearch => "Open search",
-            Self::Edit(TubeAction::SetVideoLiked { .. }) => "Like or unlike video",
-            Self::Edit(TubeAction::SetQueueMembership { .. }) => "Add to or remove from queue",
-            Self::Edit(TubeAction::SetSubscription { .. }) => "Subscribe or unsubscribe",
-            Self::Edit(TubeAction::SetCommentLiked { .. }) => "Like or unlike comment",
-            Self::Edit(TubeAction::SetCommentReply { .. }) => "Reply to comment",
+            Self::Edit(edit) => {
+                let paths = Library::paths();
+                let edits = |field: &[ui::tilo_resource::Segment]| edit.path().starts_with(field);
+                if edits(paths.likes.segments()) {
+                    "Like or unlike video"
+                } else if edits(paths.queue.segments()) {
+                    "Add to or remove from queue"
+                } else if edits(paths.subscriptions.segments()) {
+                    "Subscribe or unsubscribe"
+                } else if edits(paths.comment_likes.segments()) {
+                    "Like or unlike comment"
+                } else {
+                    "Change the library"
+                }
+            }
             Self::Effect(effect) => effect.label(),
             Self::PairDevice => "Pair Grayjay device",
         }
@@ -190,14 +202,14 @@ pub fn drain(bus: &ActionBus) -> Vec<Action> {
 /// Resource invocations raised by controls that report through a closure
 /// (the navigation list, the watch toolbar). The root hands them to the host,
 /// which resolves each against the published resources before it runs.
-pub type Invocations = Rc<RefCell<VecDeque<tilo_actions::ControlInvocation>>>;
+pub type Invocations = Rc<RefCell<VecDeque<ui::tilo_actions::ControlInvocation>>>;
 
 pub fn new_invocations() -> Invocations {
     Rc::new(RefCell::new(VecDeque::new()))
 }
 
 /// Queue an invocation of `binding`, when the control has one.
-pub fn invoke(queue: &Invocations, binding: Option<tilo_actions::ActionBinding<()>>) {
+pub fn invoke(queue: &Invocations, binding: Option<ui::tilo_actions::ActionBinding<()>>) {
     if let Some(invocation) = binding.and_then(|binding| binding.invoke(()).ok()) {
         queue.borrow_mut().push_back(invocation);
     }

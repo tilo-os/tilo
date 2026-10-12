@@ -1,7 +1,21 @@
 //! The keyboard's Fluent catalogue, embedded so a `--shots` render, a unit
 //! test and a live session resolve the same strings.
 
-ui::embedded_catalog!(pub fn, "osk-emoji-key", ["en-US"]);
+use ui::i18n::{ArgValue, EmbeddedCatalog};
+
+pub(crate) static CATALOG: EmbeddedCatalog =
+    EmbeddedCatalog::new("en-US", &[("en-US", include_str!("../locales/en-US.ftl"))])
+        .with_system_locale();
+
+/// Resolve a keyboard string key.
+pub fn t(key: &str) -> String {
+    CATALOG.t(key)
+}
+
+/// Resolve a keyboard string key that interpolates variables.
+pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
+    CATALOG.t_args(key, args)
+}
 
 #[cfg(test)]
 mod tests {

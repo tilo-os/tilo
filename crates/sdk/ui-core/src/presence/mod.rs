@@ -335,6 +335,21 @@ pub enum ParticipantKind {
     #[default]
     Person,
     Agent,
+    /// A Shortcut running steps for a person.
+    Shortcut,
+    /// An application acting under its own identity.
+    App,
+}
+
+impl From<tilo_actions::ActorKind> for ParticipantKind {
+    fn from(kind: tilo_actions::ActorKind) -> Self {
+        match kind {
+            tilo_actions::ActorKind::Person => Self::Person,
+            tilo_actions::ActorKind::Agent => Self::Agent,
+            tilo_actions::ActorKind::Shortcut => Self::Shortcut,
+            tilo_actions::ActorKind::App => Self::App,
+        }
+    }
 }
 
 impl From<bool> for ParticipantKind {
@@ -532,6 +547,9 @@ pub struct PresenceCtx {
     /// use this in addition to colour so an agent cannot be mistaken for a
     /// person when names are hidden, elided, or inaccessible.
     participant_kinds: HashMap<UserId, ParticipantKind>,
+    /// The person each agent, Shortcut or app acts for, as the broker
+    /// admitted it: "Claude, for Ada".
+    acting_for: HashMap<UserId, UserId>,
     /// Short room-level intentions, separate from pointer/caret state. The
     /// origin remains visible so inferred prose is never presented as a quote.
     statuses: HashMap<UserId, crate::live_collaboration::LiveStatus>,
@@ -1073,11 +1091,7 @@ impl PresenceCtx {
     /// Seeded from the collab roster. Overwrites any prior name.
     pub fn set_display_name(&mut self, user: UserId, name: impl Into<String>) {
         let name = name.into();
-        let shown = if self.is_agent(&user) {
-            crate::history_source::agent_display_label(&name)
-        } else {
-            name.clone()
-        };
+        let shown = self.kind_label(&user, &name);
         // Relabel any already-drawn pill too, in case the pointer arrived first.
         for cursor in &mut self.remote_cursors {
             if cursor.user_id == user.0 {
@@ -1112,22 +1126,69 @@ impl PresenceCtx {
             .unwrap_or_default()
     }
 
+    /// Whether `user` is software acting for someone (an agent, a Shortcut,
+    /// an app) rather than a person: drawn with the agent mark.
     pub fn is_agent(&self, user: &UserId) -> bool {
-        self.participant_kind(user) == ParticipantKind::Agent
+        self.participant_kind(user) != ParticipantKind::Person
+    }
+
+    /// Record whom `user` acts for, as the broker admitted it; `None` when
+    /// it acts for nobody in particular.
+    pub fn set_acting_for(&mut self, user: impl AsRef<UserId>, person: Option<UserId>) {
+        let user = user.as_ref().clone();
+        match person {
+            Some(person) => self.acting_for.insert(user.clone(), person),
+            None => self.acting_for.remove(&user),
+        };
+        let shown = self.display_name(&user);
+        for cursor in &mut self.remote_cursors {
+            if cursor.user_id == user.0 {
+                cursor.label.clone_from(&shown);
+            }
+        }
+    }
+
+    /// The person `user` acts for, if it is an agent, a Shortcut or an app
+    /// acting for one.
+    pub fn acting_for(&self, user: &UserId) -> Option<&UserId> {
+        self.acting_for.get(user)
     }
 
     /// The friendly name to show for `user`, falling back to the raw id
-    /// when the roster hasn't announced one. Never blank.
+    /// when the roster hasn't announced one. Never blank. Software acting
+    /// for a person is named with that person ("Claude, for Ada"), else
+    /// with its kind ("Claude · Agent").
     pub fn display_name(&self, user: &UserId) -> String {
         let name = self
             .names
             .get(user)
             .cloned()
             .unwrap_or_else(|| user.0.clone());
-        if self.is_agent(user) {
-            crate::history_source::agent_display_label(&name)
-        } else {
-            name
+        self.kind_label(user, &name)
+    }
+
+    fn kind_label(&self, user: &UserId, name: &str) -> String {
+        let kind = self.participant_kind(user);
+        if kind == ParticipantKind::Person {
+            return name.to_owned();
+        }
+        if let Some(person) = self.acting_for.get(user) {
+            let person = self.names.get(person).unwrap_or(&person.0);
+            return crate::i18n::widget_format(
+                "participant-acting-for",
+                &[("name", name.into()), ("person", person.as_str().into())],
+            );
+        }
+        match kind {
+            ParticipantKind::Shortcut => {
+                crate::i18n::widget_format("participant-shortcut", &[("name", name.into())])
+            }
+            ParticipantKind::App => {
+                crate::i18n::widget_format("participant-app", &[("name", name.into())])
+            }
+            ParticipantKind::Person | ParticipantKind::Agent => {
+                crate::history_source::agent_display_label(name)
+            }
         }
     }
 
@@ -1668,6 +1729,7 @@ impl PresenceCtx {
     pub fn unregister_peer(&mut self, user_id: &str) {
         let uid = UserId(user_id.to_owned());
         self.participant_kinds.remove(&uid);
+        self.acting_for.remove(&uid);
         for list in self.here.values_mut() {
             list.retain(|u| u != &uid);
         }

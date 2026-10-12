@@ -1,0 +1,717 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+fields = []
+kind = "tilo.messages"
+label = "Messages"
+verbs = []
+version = 1
+
+[[resources]]
+kind = "tilo.contacts.identities"
+label = "Contact identities"
+person = true
+version = 1
+
+[[resources.fields]]
+owner = "contact-directory"
+path = "people"
+stored = "collection"
+title = "People"
+type = "Collection<Person>"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.label"
+stored = "value"
+title = "Stable Contacts UUID, also the collection key. Never derived from name"
+type = "String"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.removed"
+stored = "value"
+title = "Removed"
+type = "bool"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.phones"
+stored = "value"
+title = "International phone hints: candidate discovery only, never proof"
+type = "Json<Vec<String>>"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.emails"
+stored = "value"
+title = "Address-book mailboxes, never identity evidence or a sending grant"
+type = "Json<Vec<String>>"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.endpoints"
+stored = "collection"
+title = "Endpoints"
+type = "Collection<Endpoint>"
+
+[[resources.fields]]
+owner = "endpoint"
+path = "people.*.endpoints.*.service"
+stored = "value"
+title = "Service"
+type = "String"
+
+[[resources.fields]]
+owner = "endpoint"
+path = "people.*.endpoints.*.recipient"
+stored = "value"
+title = "Recipient"
+type = "String"
+
+[[resources.fields]]
+owner = "endpoint"
+path = "people.*.endpoints.*.scope"
+stored = "value"
+title = "Provider namespace; empty only for the compatibility endpoint API"
+type = "String"
+
+[[resources.fields]]
+owner = "endpoint"
+path = "people.*.endpoints.*.revision"
+stored = "value"
+title = "Provider identity-key fingerprint or assignment generation"
+type = "String"
+
+[[resources.fields]]
+owner = "endpoint"
+path = "people.*.endpoints.*.removed"
+stored = "value"
+title = "Retained tombstone; the association id must never be reassigned"
+type = "bool"
+
+[[resources.verbs]]
+description = "or reviving an identity that was deleted."
+id = "project-contact"
+kind = "undoable"
+label = "Update the label of a Contacts identity, without merging similar names"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "label"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "recreate it and its endpoints cannot be used for sending."
+id = "remove-contact"
+kind = "undoable"
+label = "Tombstone a removed Contacts identity. Delayed projections cannot"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "An uncertain candidate never becomes an association merely by appearing in a contact search or having a matching name/phone number."
+destructive = true
+id = "confirm-endpoint"
+kind = "undoable"
+label = "Explicitly confirm that this service recipient belongs to this person"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "endpoint"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "service"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "recipient"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "This is an address-book decision, not cryptographic proof or permission."
+destructive = true
+id = "confirm-account"
+kind = "undoable"
+label = "Confirm the exact provider-scoped account and observed identity revision"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "endpoint"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "service"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "scope"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "recipient"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "revision"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+destructive = true
+id = "replace-endpoint"
+kind = "undoable"
+label = "Replace an address after review, clearing unavailable identity evidence"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "previous"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "endpoint"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "service"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "recipient"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+destructive = true
+id = "replace-account"
+kind = "undoable"
+label = "Replace a reviewed association atomically, retaining the old tombstone"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "previous"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "endpoint"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "service"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "scope"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "recipient"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "revision"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "project-phones"
+kind = "undoable"
+label = "Project phone hints from Contacts. These can suggest candidates only"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "phones"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs]]
+id = "project-emails"
+kind = "undoable"
+label = "Project mailbox hints without creating any service association"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "emails"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs]]
+description = "phone and mailbox hints as [`Self::project_contact`], [`Self::project_phones`] and [`Self::project_emails`] would, and each of `removed` tombstoned as [`Self::remove_contact`] would. A large import costs one change instead of three per person."
+id = "project-contacts"
+kind = "undoable"
+label = "Project many Contacts identities as one change: each person's label,"
+
+[[resources.verbs.params]]
+name = "people"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "One Contacts identity as Contacts projects it: its label and the phone and mailbox hints it holds."
+required = [
+    "person",
+    "label",
+    "phones",
+    "emails",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.emails]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.emails.items]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.label]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.person]
+description = "The Contacts UUID."
+type = "string"
+
+[resources.verbs.params.schema.items.properties.phones]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.phones.items]
+type = "string"
+
+[[resources.verbs.params]]
+name = "removed"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs]]
+destructive = true
+id = "forget-endpoint"
+kind = "undoable"
+label = "Remove a reviewed association. No implicit transfer to another person"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "endpoint"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources]]
+kind = "tilo.accounts"
+label = "Accounts"
+person = true
+version = 1
+
+[[resources.fields]]
+owner = "person-accounts"
+path = "accounts"
+stored = "collection"
+title = "Keyed by the account's id, the id its secret is kept under"
+type = "Collection<PersonAccount>"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.type_id"
+stored = "value"
+title = 'The kind of account (`"email"`, `"caldav"`, …)'
+type = "String"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.display_name"
+stored = "value"
+title = 'The name shown for it ("Work — Fastmail")'
+type = "String"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.config"
+stored = "value"
+title = "Type-specific connection settings. Never a secret"
+type = "Json<serde_json::Value>"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.enabled"
+stored = "value"
+title = "Whether the person uses it now"
+type = "bool"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.tint"
+stored = "value"
+title = "Tints the account's avatar so several read as distinct"
+type = "u8"
+
+[[resources.fields]]
+owner = "person-accounts"
+path = "active"
+stored = "value"
+title = "The active account id per type; a type without one uses its first"
+type = "BTreeMap<String, String>"
+
+[[resources.verbs]]
+description = "This changes the Settings account record only; it creates no credential, certificate, room membership or content key. Republishing preserves a person's disabled choice and chosen account name.  # Errors Refuses malformed public metadata or an occupied identity account id."
+id = "publish-browser-identity"
+kind = "undoable"
+label = "Publish this signed-in identity's public browser connection metadata"
+
+[[resources.verbs.params]]
+name = "root"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "origin"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "save-account"
+kind = "undoable"
+label = "Save an account: add it, or replace the one with its id"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "type_id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "config"
+required = true
+
+[resources.verbs.params.schema]
+
+[[resources.verbs.params]]
+name = "enabled"
+required = true
+
+[resources.verbs.params.schema]
+type = "boolean"
+
+[[resources.verbs.params]]
+name = "tint"
+required = true
+
+[resources.verbs.params.schema]
+maximum = 255
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "account. Names are labels; a configured own ACI requires its existing relinking path. This is public metadata, never a credential or grant. # Errors Refuses malformed identities, duplicate scopes or an occupied account ID."
+id = "publish-signal-account"
+kind = "undoable"
+label = "Publish a reviewed new Signal identity without replacing another"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "aci"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "generation"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "modem paths, phone numbers and SIM identifiers stay in private custody. # Errors Refuses malformed identities, duplicate accounts or an invalid name/generation."
+id = "publish-sms-account"
+kind = "undoable"
+label = "Publish a protected native SIM account. The scope is an opaque identity;"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "scope"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "generation"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "profile. The caller retains provider proof and credential authority; this record contains no credential, pairing payload or messaging state. # Errors Refuses invalid self identity, generation, name or an occupied account."
+id = "publish-whatsapp-account"
+kind = "undoable"
+label = "Publish the explicitly reviewed self identity of one native `WhatsApp`"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "jid"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "generation"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Neither workspace membership nor a label authorizes this account. # Errors Refuses malformed identities, duplicate accounts or an invalid name/generation."
+id = "publish-tilo-account"
+kind = "undoable"
+label = "Publish the original personal Tilo sender with an opaque private scope"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "scope"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "generation"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+id = "remove-account"
+kind = "undoable"
+label = "Remove account"
+
+[[resources.verbs.params]]
+name = "account"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "set-active-account"
+kind = "undoable"
+label = "Use an account for its type"
+
+[[resources.verbs.params]]
+name = "account"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"

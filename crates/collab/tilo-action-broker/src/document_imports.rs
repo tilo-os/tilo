@@ -157,7 +157,7 @@ fn import_action(action: &str, label: &str) -> PublishedAction {
             "The typed proposal or decision, as JSON text",
         )],
         contract: tilo_actions::ActionContract {
-            permission: tilo_actions::PermissionRequirement::Write,
+            kind: tilo_actions::ActionKind::Undoable,
             result: tilo_actions::ResultSpec::Json {
                 schema: outcome_schema(),
             },

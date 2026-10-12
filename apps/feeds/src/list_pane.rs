@@ -34,7 +34,7 @@ use crate::model::{Article, Filter, Id, relative_time};
 pub(crate) const EMPTY_LIBRARY_TITLE: &str = "No feeds yet";
 
 /// One article row as last painted.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct RowHit {
     pub(crate) rect: Rect,
     pub(crate) id: Id,
@@ -124,8 +124,8 @@ impl Core {
             Filter::Feed(_) => article.summary.as_str(),
             _ => self
                 .store
-                .feed(article.feed_id)
-                .map_or("", |f| f.title.as_str()),
+                .feed(&article.feed_id)
+                .map_or("", |f| f.item().title.as_str()),
         }
     }
 
@@ -133,7 +133,7 @@ impl Core {
     /// empty library offers its one action, an empty place says what would
     /// fill it.
     pub(crate) fn empty_list(&self) -> Option<EmptyList> {
-        if !self.store.articles_for(self.filter).is_empty() {
+        if !self.store.articles_for(&self.filter).is_empty() {
             return None;
         }
         let library_empty = self.store.feeds.is_empty();
@@ -182,9 +182,9 @@ impl Core {
 
         let ids: Vec<Id> = self
             .store
-            .articles_for(self.filter)
+            .articles_for(&self.filter)
             .iter()
-            .map(|a| a.id)
+            .map(|a| a.id.clone())
             .collect();
         let row_h = ListRowFace::new("Ag")
             .two_line_title()
@@ -205,7 +205,8 @@ impl Core {
         if (std::mem::take(&mut self.list.reveal) || resized)
             && let Some(index) = self
                 .selected
-                .and_then(|sel| ids.iter().position(|id| *id == sel))
+                .as_ref()
+                .and_then(|sel| ids.iter().position(|id| id == sel))
         {
             // The row with the list's inset above and below it.
             let row_top = row_h * index as f64;
@@ -240,8 +241,8 @@ impl Core {
             self.paint_row(
                 &mut PaintCtx::new(scene, t, text, theme),
                 rect,
-                *id,
-                ids.get(i + 1).copied(),
+                id,
+                ids.get(i + 1),
             );
         }
         scene.pop_layer();
@@ -250,8 +251,8 @@ impl Core {
     }
 
     /// One article's row at `rect`; `next` is the article below it.
-    fn paint_row(&mut self, ctx: &mut PaintCtx<'_>, rect: Rect, id: Id, next: Option<Id>) {
-        let Some(article) = self.store.article(id) else {
+    fn paint_row(&mut self, ctx: &mut PaintCtx<'_>, rect: Rect, id: &Id, next: Option<&Id>) {
+        let Some(article) = self.store.article(id).map(|article| article.item()) else {
             return;
         };
         let viewport = self.list.viewport;
@@ -269,7 +270,7 @@ impl Core {
             .secondary(self.row_secondary(article))
             .meta(&time)
             .emphasized(!article.read)
-            .selected(self.selected == Some(id))
+            .selected(self.selected.as_ref() == Some(id))
             .actions(&star)
             .interaction(Interaction {
                 hovered,
@@ -283,13 +284,13 @@ impl Core {
             face
         };
         let face = match next {
-            Some(next) => face.separator(self.selected == Some(next)),
+            Some(next) => face.separator(self.selected.as_ref() == Some(next)),
             None => face,
         };
         face.paint(ctx, rect);
         self.list.rows.push(RowHit {
             rect: rect.intersect(viewport),
-            id,
+            id: id.clone(),
             star: star_rect,
         });
     }
@@ -377,14 +378,14 @@ impl Core {
             // A row answers across the list's whole width, its side insets
             // included.
             .find(|row| (row.rect.y0..row.rect.y1).contains(&self.pointer.y))
-            .copied();
+            .cloned();
         let Some(row) = hit else {
             return false;
         };
         if row.star.is_some_and(|r| r.contains(self.pointer)) {
-            self.toggle_star(row.id, &mut ctx.state);
+            self.toggle_star(&row.id, &mut ctx.state);
         } else {
-            self.select_article(row.id, &mut ctx.state);
+            self.select_article(&row.id, &mut ctx.state);
         }
         true
     }
@@ -395,12 +396,12 @@ impl Core {
             .rows
             .iter()
             .filter_map(|row| {
-                let article = self.store.article(row.id)?;
+                let article = self.store.article(&row.id)?.item();
                 let time = relative_time(article.published, self.now);
                 let face = ListRowFace::new(&article.title)
                     .secondary(self.row_secondary(article))
                     .meta(&time)
-                    .selected(self.selected == Some(row.id));
+                    .selected(self.selected.as_ref() == Some(&row.id));
                 let node = face
                     .accessibility(row.rect, format!("feeds.article:{}", row.id))
                     .with_children(vec![
@@ -421,7 +422,7 @@ impl Core {
 
     fn list_tooltip(&self, point: Point) -> Option<(Rect, String)> {
         let row = self.list.rows.iter().find(|row| row.rect.contains(point))?;
-        let article = self.store.article(row.id)?;
+        let article = self.store.article(&row.id)?.item();
         if let Some(star) = row.star.filter(|r| r.contains(point)) {
             return Some((star, star_label(article).to_string()));
         }

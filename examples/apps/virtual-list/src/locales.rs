@@ -11,3 +11,14 @@ pub fn install() {
         eprintln!("localization catalog: {error}");
     }
 }
+
+/// One constant per message of locales/en-US.ftl, for labels and placeholders.
+pub mod keys {
+    use ui::i18n::LabelKey;
+    pub const LIST_ACCESSIBLE_NAME: LabelKey = LabelKey::new("list-accessible-name");
+    pub const LIST_LAST_OPENED: LabelKey = LabelKey::new("list-last-opened");
+    pub const LIST_LOADING: LabelKey = LabelKey::new("list-loading");
+    pub const LIST_NONE_OPENED: LabelKey = LabelKey::new("list-none-opened");
+    pub const LIST_OPEN: LabelKey = LabelKey::new("list-open");
+    pub const LIST_ROW: LabelKey = LabelKey::new("list-row");
+}

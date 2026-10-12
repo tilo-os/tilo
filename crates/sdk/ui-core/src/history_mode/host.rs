@@ -699,7 +699,7 @@ impl HistoryHost {
                     super::owner::OwnerKind::Component(binding) => {
                         let origin = super::pending_controls::PendingControlOrigin::Component(
                             crate::bound_dispatch::BoundActionTarget {
-                                physical_text: false,
+                                input: crate::bound_dispatch::Input::Discrete,
                                 binding: binding.clone(),
                                 address: crate::bound_dispatch::BoundActionAddress {
                                     instance_id: binding.instance_id,
@@ -1517,7 +1517,7 @@ impl HistoryHost {
                                 .with_spellcheck(false)
                                 .with_autocorrect(false)
                                 .with_id(&format!("{id}-phrase"))
-                                .with_placeholder(&I18nManager::format(
+                                .with_placeholder(I18nManager::format(
                                     "history-mode-type-to-confirm",
                                     &[("phrase", expected.into())],
                                 ))

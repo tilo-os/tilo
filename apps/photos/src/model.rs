@@ -1,18 +1,23 @@
-//! Pure data model: the edit state a photograph carries, and nothing else.
+//! The library's model: what is stored, and the pure queries the window
+//! asks of it.
 //!
-//! Every type here is plain data plus serde. The document maps durable library
-//! records field-by-field (and keeps the open-editor values compact); bytes
-//! never enter Automerge — see [`crate::doc`] for the content-addressed
-//! boundary.
+//! [`PhotoLibrary`] is the record: one [`LibraryPhoto`] per item of a
+//! [`Collection`] and the [`Album`]s that file them. `#[derive(Model)]` is
+//! the whole storage contract; each field merges as its type says (people
+//! and tags per label, a crop and a turn independently). The pixels never
+//! enter the document: a photograph names its bytes by content hash, and
+//! they stay in the app's content store. The record's verbs are in
+//! [`crate::resource`].
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Collection, Id, JsonSchema, Model, Refusal, Set};
 
 /// Bounded, explainable intelligence derived on a device from a photograph.
 ///
 /// This record contains no pixels, embeddings, face geometry, machine-local
 /// file names, or opaque model output.  A local analysis is private until a
 /// user or trusted caller explicitly publishes it through `SetImageAnalysis`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ImageAnalysis {
     /// The text read from the pixels. Line layout is intentionally flattened:
     /// the shared search layer needs words, not page coordinates.
@@ -28,10 +33,6 @@ pub struct ImageAnalysis {
     /// their animals differently from everything else in a scene.
     #[serde(default)]
     pub pets: Vec<String>,
-    /// Non-biometric, user-visible person labels. These are names only when a
-    /// person deliberately supplied a name; recognition never invents one.
-    #[serde(default)]
-    pub people: Vec<String>,
     /// How the result was made. It gives collaborators enough context to
     /// decide whether to trust or refresh it without leaking local paths.
     #[serde(default)]
@@ -47,8 +48,24 @@ pub struct ImageAnalysis {
     pub vision_provenance: Option<AnalysisProvenance>,
 }
 
+/// Text read from a photograph's pixels, and how.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct OcrComponent {
+    pub text: String,
+    pub provenance: AnalysisProvenance,
+}
+
+/// What a photograph shows, as image analysis found it, and how.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct VisionComponent {
+    pub description: String,
+    pub objects: Vec<String>,
+    pub pets: Vec<String>,
+    pub provenance: AnalysisProvenance,
+}
+
 /// The bounded provenance attached to an analysis result.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AnalysisProvenance {
     /// `local-ocr`, `local-vision`, `local-description` (legacy), or `user`.
     #[serde(default = "default_analysis_source")]
@@ -107,7 +124,6 @@ impl ImageAnalysis {
             self.description.as_str(),
             &self.objects.join(" "),
             &self.pets.join(" "),
-            &self.people.join(" "),
         ]
         .into_iter()
         .filter(|value| !value.trim().is_empty())
@@ -123,7 +139,6 @@ impl ImageAnalysis {
             && self.description.is_empty()
             && self.objects.is_empty()
             && self.pets.is_empty()
-            && self.people.is_empty()
     }
 
     /// The vision component that belongs to `content`, if one has been
@@ -164,7 +179,7 @@ impl ImageAnalysis {
 /// document only through `SetPhotoLocation`; clearing it removes the complete
 /// shared record.  The label is a collaborator-visible convenience, not an
 /// authority over the coordinates.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PhotoLocation {
     /// WGS-84 latitude in decimal degrees.
     pub latitude: f64,
@@ -179,7 +194,7 @@ pub struct PhotoLocation {
 }
 
 /// Compact, inspectable provenance for photo location metadata.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct LocationProvenance {
     /// `user`, `map`, `exif`, or `device`.  `map` records a deliberate
     /// placement on Photos' bundled offline reference map. No network-derived source is silently
@@ -204,6 +219,18 @@ impl Default for LocationProvenance {
         Self {
             source: default_location_source(),
             scope: default_location_scope(),
+        }
+    }
+}
+
+/// Null Island, shared by the person: what a place is before it is set.
+impl Default for PhotoLocation {
+    fn default() -> Self {
+        Self {
+            latitude: 0.0,
+            longitude: 0.0,
+            label: None,
+            provenance: LocationProvenance::default(),
         }
     }
 }
@@ -249,42 +276,64 @@ impl PhotoLocation {
     }
 }
 
+/// The most labels of one kind a photograph carries.
+pub const MAX_LABELS: usize = 32;
+/// The longest label, folder or capture value, in characters.
+pub const MAX_LABEL_CHARS: usize = 128;
+/// The longest album name, in characters.
+pub const MAX_NAME_CHARS: usize = 256;
+/// The most photographs one album holds.
+pub const MAX_ALBUM_MEMBERS: usize = 4_096;
+const MAX_ALBUM_ID_CHARS: usize = 160;
+const MAX_RESOURCE_ID_CHARS: usize = 4_096;
+const MAX_ANALYSIS_TEXT_CHARS: usize = crate::analysis::MAX_OCR_CHARS;
+const MAX_ANALYSIS_LABELS: usize = 64;
+const MAX_ANALYSIS_LABEL_CHARS: usize = 128;
+/// A content hash is 64 lowercase hex digits.
+pub(crate) const CONTENT_HEX_LEN: usize = 64;
+
 /// A durable entry in Photos' shared library. Pixel bytes remain in the
 /// content store; this is intentionally only addressable metadata.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+#[model(check = LibraryPhoto::valid)]
 pub struct LibraryPhoto {
+    /// The photograph's stable id, derived from its content.
+    #[model(readonly)]
     pub id: String,
+    /// Name: what the photograph is called, its file's name when it came
+    /// in.
+    #[model(label, readonly)]
+    pub name: String,
+    /// The picture: its name, size and content address.
+    #[model(readonly)]
     pub image: OpenImage,
-    #[serde(default)]
+    /// Favorite
     pub favorite: bool,
-    /// A user-organized folder label. This is deliberately metadata rather
+    /// Folder: a user-organized label. This is deliberately metadata rather
     /// than an on-disk directory: a shared path only has meaning on the
     /// machine that happened to import the picture.
-    #[serde(default)]
     pub folder: Option<String>,
-    /// Named people visible in the photograph.  These are compact labels, not
+    /// People: named people visible in the photograph. Compact labels, not
     /// biometric data or a second copy of the image.
-    #[serde(default)]
-    pub people: Vec<String>,
-    /// Freeform, durable search labels.
-    #[serde(default)]
-    pub tags: Vec<String>,
-    /// Optional user-supplied capture date/time text.  Keeping the original
-    /// string avoids silently changing a collaborator's timezone or precision.
-    #[serde(default)]
+    pub people: Set<String>,
+    /// Tags: freeform, durable search labels.
+    pub tags: Set<String>,
+    /// Capture time, as authored: keeping the original string avoids
+    /// silently changing a collaborator's timezone or precision.
     pub captured_at: Option<String>,
-    /// Optional explicit location. Absence means no location was shared — it
-    /// is not a failed lookup and never triggers a network request.
-    #[serde(default)]
+    /// Place: an explicit location. Absence means no location was shared;
+    /// it is not a failed lookup and never triggers a network request.
     pub location: Option<PhotoLocation>,
-    /// Explicitly shared intelligence. Device-local analysis belongs in the
-    /// caller's ephemeral cache until this compact record is intentionally
-    /// accepted through a canonical action.
-    #[serde(default)]
-    pub analysis: Option<ImageAnalysis>,
-    /// The crop and turn this photograph is shown with. Its own: editing one
-    /// photograph never touches another's.
-    #[serde(default)]
+    /// Recognized text: explicitly shared text recognition. Device-local
+    /// analysis stays in the caller's cache until it is shared deliberately.
+    /// Text and image analysis are kept apart, so finishing one never
+    /// erases the other, whichever device finished first.
+    pub ocr: Option<OcrComponent>,
+    /// What is in it: explicitly shared image analysis, its description,
+    /// objects and pets.
+    pub vision: Option<VisionComponent>,
+    /// Crop and turn: the photograph's own; editing one photograph never
+    /// touches another's.
     pub edits: Edits,
 }
 
@@ -297,16 +346,152 @@ impl LibraryPhoto {
         };
         Self {
             id,
+            name: image.name.clone(),
             image,
-            favorite: false,
-            folder: None,
-            people: Vec::new(),
-            tags: Vec::new(),
-            captured_at: None,
-            location: None,
-            analysis: None,
-            edits: Edits::default(),
+            ..Self::default()
         }
+    }
+
+    /// The photograph's item id in the library.
+    #[must_use]
+    pub fn item(&self) -> Id {
+        Id::from_raw(self.id.clone())
+    }
+
+    /// The shared analysis: its text and image components together.
+    #[must_use]
+    pub fn analysis(&self) -> Option<ImageAnalysis> {
+        if self.ocr.is_none() && self.vision.is_none() {
+            return None;
+        }
+        let mut analysis = ImageAnalysis::default();
+        if let Some(ocr) = &self.ocr {
+            analysis.ocr_text.clone_from(&ocr.text);
+            analysis.ocr_provenance = Some(ocr.provenance.clone());
+        }
+        if let Some(vision) = &self.vision {
+            analysis.description.clone_from(&vision.description);
+            analysis.objects.clone_from(&vision.objects);
+            analysis.pets.clone_from(&vision.pets);
+            analysis.vision_provenance = Some(vision.provenance.clone());
+        }
+        if let Some(provenance) = analysis
+            .vision_provenance
+            .clone()
+            .or_else(|| analysis.ocr_provenance.clone())
+        {
+            analysis.provenance = provenance;
+        }
+        Some(analysis)
+    }
+
+    /// Share `analysis`, or none: its text and image components.
+    pub fn set_analysis(&mut self, analysis: Option<ImageAnalysis>) {
+        let Some(analysis) = analysis else {
+            (self.ocr, self.vision) = (None, None);
+            return;
+        };
+        let ocr = analysis
+            .ocr_provenance
+            .clone()
+            .or_else(|| (!analysis.ocr_text.is_empty()).then(|| analysis.provenance.clone()));
+        self.ocr = ocr.map(|provenance| OcrComponent {
+            text: analysis.ocr_text.clone(),
+            provenance,
+        });
+        let vision = analysis.vision_provenance.clone().or_else(|| {
+            (!analysis.description.is_empty()
+                || !analysis.objects.is_empty()
+                || !analysis.pets.is_empty())
+            .then(|| analysis.provenance.clone())
+        });
+        self.vision = vision.map(|provenance| VisionComponent {
+            description: analysis.description,
+            objects: analysis.objects,
+            pets: analysis.pets,
+            provenance,
+        });
+    }
+
+    /// The people labels, in order.
+    #[must_use]
+    pub fn people(&self) -> Vec<String> {
+        self.people.iter().cloned().collect()
+    }
+
+    /// The tags, in order.
+    #[must_use]
+    pub fn tags(&self) -> Vec<String> {
+        self.tags.iter().cloned().collect()
+    }
+
+    /// What every replica accepts of a photograph a library holds: named by
+    /// what it is, its labels compact, its edits a real crop and turn, and
+    /// shared analysis and places that say where they came from.
+    fn valid(&self) -> Result<(), Refusal> {
+        if self.id != Self::from_image(self.image.clone()).id || !valid_resource_id(&self.id) {
+            return Err(Refusal::new("a photograph is named by its content"));
+        }
+        if !valid_metadata(
+            self.folder.as_deref(),
+            &self.people(),
+            &self.tags(),
+            self.captured_at.as_deref(),
+        ) {
+            return Err(Refusal::new(
+                "photo metadata is short, non-empty labels and a canonical ISO 8601 capture time",
+            ));
+        }
+        if !self.edits.crop.is_valid_selection() || self.edits.rotate_quarters >= 4 {
+            return Err(Refusal::new(
+                "photo edits name a non-empty crop inside the image and a quarter turn from 0 to 3",
+            ));
+        }
+        if self
+            .location
+            .as_ref()
+            .is_some_and(|location| !location.is_valid())
+        {
+            return Err(Refusal::new(
+                "a shared location needs finite WGS-84 coordinates, an explicit shared scope, and safe provenance",
+            ));
+        }
+        if let Some(analysis) = &self.analysis() {
+            if !valid_analysis(analysis) {
+                return Err(Refusal::new(
+                    "image analysis is compact, explicitly shared, and carries safe provenance",
+                ));
+            }
+            if !analysis_content_matches(self, analysis)
+                || (analysis.provenance.source.starts_with("local-")
+                    && !analysis_names_exact_content(self, analysis))
+            {
+                return Err(Refusal::new(
+                    "analysis provenance does not name this photograph's content",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// What an import accepts: a photograph kept in the content store,
+    /// portable and bounded.
+    pub(crate) fn importable(&self) -> Result<(), Refusal> {
+        let dimensions = u64::from(self.image.width).saturating_mul(u64::from(self.image.height));
+        if !valid_name(&self.image.name)
+            || self.image.path.trim().is_empty()
+            || self.image.path.chars().count() > MAX_RESOURCE_ID_CHARS
+            || self.image.path.chars().any(char::is_control)
+            || self.image.width == 0
+            || self.image.height == 0
+            || dimensions > crate::pixels::MAX_DECODED_PIXELS
+            || !self.image.content.as_deref().is_some_and(is_content_hash)
+        {
+            return Err(Refusal::new(
+                "a photograph is content-addressed, portable and bounded",
+            ));
+        }
+        self.valid()
     }
 
     /// A short, deterministic description for resource trees and assistive
@@ -319,10 +504,10 @@ impl LibraryPhoto {
             parts.push(format!("Folder: {folder}"));
         }
         if !self.people.is_empty() {
-            parts.push(format!("People: {}", self.people.join(", ")));
+            parts.push(format!("People: {}", self.people().join(", ")));
         }
         if !self.tags.is_empty() {
-            parts.push(format!("Tags: {}", self.tags.join(", ")));
+            parts.push(format!("Tags: {}", self.tags().join(", ")));
         }
         if let Some(captured_at) = &self.captured_at {
             parts.push(format!("Captured: {}", capture_label(captured_at)));
@@ -330,12 +515,41 @@ impl LibraryPhoto {
         if let Some(location) = &self.location {
             parts.push(format!("Place: {}", location.display_name()));
         }
-        if let Some(analysis) = &self.analysis
-            && !analysis.description.is_empty()
+        if let Some(vision) = &self.vision
+            && !vision.description.is_empty()
         {
-            parts.push(format!("Description: {}", analysis.description));
+            parts.push(format!("Description: {}", vision.description));
         }
         parts.join(". ")
+    }
+
+    /// A short provenance line for a gallery card. The details
+    /// sheet retains every field and its labels; a shelf should let a person
+    /// distinguish photographs before it starts truncating at "People:".
+    #[must_use]
+    pub fn metadata_card_summary(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(folder) = &self.folder {
+            parts.push(folder.clone());
+        }
+        if let Some(person) = self.people.iter().next() {
+            parts.push(person.clone());
+        }
+        if let Some(tag) = self.tags.iter().next() {
+            parts.push(tag.clone());
+        }
+        if let Some(captured_at) = &self.captured_at {
+            parts.push(captured_at.clone());
+        }
+        if let Some(location) = &self.location {
+            parts.push(location.display_name());
+        }
+        if let Some(vision) = &self.vision
+            && !vision.description.is_empty()
+        {
+            parts.push(vision.description.clone());
+        }
+        parts.join(", ")
     }
 
     /// Strip a content-addressed photograph's machine-local source location
@@ -348,41 +562,110 @@ impl LibraryPhoto {
     }
 }
 
-/// A named collection of stable photo ids. Membership is ordered for a calm,
-/// predictable browse order and uses ids rather than path strings so peers
-/// refer to the same content wherever it was staged.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// A named collection of photographs by their stable ids, rather than path
+/// strings, so peers refer to the same content wherever it was staged. It
+/// shows them in the library's own browse order; filing and unfiling a
+/// photograph merges per photograph with a collaborator's.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+#[model(check = Album::valid)]
 pub struct Album {
+    /// The album's stable id, `photos.album:…`.
+    #[model(readonly)]
     pub id: String,
+    /// Name
+    #[model(label)]
     pub name: String,
-    #[serde(default)]
-    pub photo_ids: Vec<String>,
+    /// Photographs
+    pub photo_ids: Set<String>,
 }
 
-/// The complete small metadata namespace Photos replicates.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+impl Album {
+    /// A named, empty album under `id`.
+    #[must_use]
+    pub fn named(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            photo_ids: Set::new(),
+        }
+    }
+
+    /// The album's item id in the library.
+    #[must_use]
+    pub fn item(&self) -> Id {
+        Id::from_raw(self.id.clone())
+    }
+
+    fn valid(&self) -> Result<(), Refusal> {
+        if !valid_album_id(&self.id) || !valid_name(&self.name) || self.name.trim() != self.name {
+            return Err(Refusal::new("an album needs an id and a name"));
+        }
+        if self.photo_ids.len() > MAX_ALBUM_MEMBERS {
+            return Err(Refusal::new("an album holds at most 4096 photographs"));
+        }
+        Ok(())
+    }
+}
+
+/// The library: every photograph, in the order it was imported, and the
+/// albums that file them.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct PhotoLibrary {
-    #[serde(default)]
-    pub photos: Vec<LibraryPhoto>,
-    #[serde(default)]
-    pub albums: Vec<Album>,
+    pub photos: Collection<LibraryPhoto>,
+    pub albums: Collection<Album>,
+}
+
+/// A set of labels: people or tags.
+pub fn labels<S: Into<String>>(labels: impl IntoIterator<Item = S>) -> Set<String> {
+    labels.into_iter().map(Into::into).collect()
 }
 
 impl PhotoLibrary {
+    /// A library holding `photos` and `albums`, in their order.
+    #[must_use]
+    pub fn of(photos: Vec<LibraryPhoto>, albums: Vec<Album>) -> Self {
+        let mut library = Self::default();
+        for photo in photos {
+            library.add_photo(photo);
+        }
+        for album in albums {
+            library.add_album(album);
+        }
+        library
+    }
+
     pub fn photo(&self, id: &str) -> Option<&LibraryPhoto> {
-        self.photos.iter().find(|photo| photo.id == id)
+        self.photos.get(&Id::from_raw(id))
     }
 
     pub fn photo_mut(&mut self, id: &str) -> Option<&mut LibraryPhoto> {
-        self.photos.iter_mut().find(|photo| photo.id == id)
+        self.photos.get_mut(&Id::from_raw(id))
     }
 
     pub fn album(&self, id: &str) -> Option<&Album> {
-        self.albums.iter().find(|album| album.id == id)
+        self.albums.get(&Id::from_raw(id))
     }
 
     pub fn album_mut(&mut self, id: &str) -> Option<&mut Album> {
-        self.albums.iter_mut().find(|album| album.id == id)
+        self.albums.get_mut(&Id::from_raw(id))
+    }
+
+    /// Every photograph, in import order.
+    pub fn all_photos(&self) -> impl DoubleEndedIterator<Item = &LibraryPhoto> + ExactSizeIterator {
+        self.photos.values()
+    }
+
+    /// Every album, in the order they were made.
+    pub fn all_albums(&self) -> impl DoubleEndedIterator<Item = &Album> + ExactSizeIterator {
+        self.albums.values()
+    }
+
+    /// The photographs of `album` still in the library, in the library's
+    /// order: a photograph removed while someone filed it is not shown.
+    pub fn album_photos<'a>(&'a self, album: &'a Album) -> impl Iterator<Item = &'a str> + 'a {
+        self.all_photos()
+            .filter(|photo| album.photo_ids.contains(&photo.id))
+            .map(|photo| photo.id.as_str())
     }
 
     /// Insert exactly once, preserving the existing metadata if a collaborator
@@ -391,26 +674,14 @@ impl PhotoLibrary {
         if self.photo(&photo.id).is_some() {
             false
         } else {
-            self.photos.push(photo);
+            self.photos.push(photo.item(), photo);
             true
         }
     }
 
-    /// The document projection intentionally contains only portable metadata.
-    /// Existing path-only records remain readable for backward compatibility,
-    /// but every content-addressed record written from this version drops its
-    /// origin-machine path.
-    #[must_use]
-    pub fn portable(&self) -> Self {
-        Self {
-            photos: self
-                .photos
-                .iter()
-                .cloned()
-                .map(LibraryPhoto::portable)
-                .collect(),
-            albums: self.albums.clone(),
-        }
+    /// Add `album` after the others.
+    pub fn add_album(&mut self, album: Album) {
+        self.albums.push(album.item(), album);
     }
 }
 
@@ -419,11 +690,15 @@ impl PhotoLibrary {
 /// Normalized rather than pixels so a crop survives the source being replaced
 /// by a different resolution of the same photograph, and so the value means
 /// the same thing to a peer that has not fetched the bytes yet.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Rect01 {
+    #[schema(range(min = 0, max = 1))]
     pub x: f64,
+    #[schema(range(min = 0, max = 1))]
     pub y: f64,
+    #[schema(range(min = 0, max = 1))]
     pub w: f64,
+    #[schema(range(min = 0, max = 1))]
     pub h: f64,
 }
 
@@ -504,13 +779,19 @@ impl Rect01 {
 
 /// What the user has done to a photograph. Ordered `crop` then
 /// `rotate`; see [`crate::pixels`] for why that order is fixed.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+///
+/// The crop and the turn are separate fields: a crop is one coherent
+/// rectangle, while rotation is a separate decision, so the two merge
+/// independently.
+#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Edits {
-    /// Region of the *original* kept, normalized.
+    /// Crop: the region of the *original* kept, normalized.
     pub crop: Rect01,
-    /// Clockwise quarter turns applied after the crop, `0..=3`.
+    /// Turn: clockwise quarter turns applied after the crop, `0..=3`.
     pub rotate_quarters: u8,
 }
+
+tilo_resource::json_model!(Rect01, PhotoLocation, OcrComponent, VisionComponent);
 
 impl Edits {
     /// Whether the photograph is untouched — what the Reset affordance and the
@@ -558,17 +839,15 @@ impl Edits {
 /// pixels are decoded beside the document, never written into the CRDT: an
 /// oversized change is dropped by the sync transport and freezes every peer's
 /// replica at the change before it.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct OpenImage {
-    /// Legacy path or portable display-name hint.
-    ///
-    /// Path-only records written before content staging keep their existing
-    /// fallback path. New content-addressed records write only [`Self::name`]
-    /// here, never an absolute origin path; bytes resolve by [`Self::content`]
-    /// through the content store on every device.
-    pub path: String,
     /// File name, as shown.
     pub name: String,
+    /// Where the picture was opened from, for a picture with no content
+    /// address; a content-addressed picture keeps only its name here, never
+    /// an absolute origin path: its bytes resolve by [`Self::content`]
+    /// through the content store on every device.
+    pub path: String,
     /// Intrinsic pixel size of the *original*, before any edit.
     pub width: u32,
     pub height: u32,
@@ -634,6 +913,34 @@ impl OpenImage {
     }
 }
 
+/// The bytes of the picture `open` names, from wherever this machine has them.
+///
+/// Content first: it is the portable identity every current import writes.
+/// Path-only legacy records retain their old local fallback, but a new shared
+/// record never causes this device to probe another participant's filesystem.
+/// Resolving the hash is what turns "a photograph a collaborator opened" into
+/// pixels here rather than into an empty canvas.
+///
+/// Missing both is not an error to report: content a collaborator imported may
+/// simply not have reached this device's store yet, so the honest answer now is
+/// no picture, and the moment after the bytes land there is one.
+///
+/// Public, and the only answer to this question, because the app is not the
+/// only thing that asks it. Anything acting on the open photograph — the
+/// editor drawing it, a participant with no window rendering the crop it was
+/// asked for — needs the same bytes, and a second copy of "read the path" is
+/// how one of those callers ends up reading a path that is true on another
+/// machine.
+pub fn bytes_of(open: &OpenImage, store: &tilo_content::ContentStore) -> Option<Vec<u8>> {
+    if let Some(content) = &open.content {
+        return crate::pixels::read_bounded(store.open(content)?, crate::pixels::MAX_ENCODED_BYTES);
+    }
+    crate::files::read_native(
+        std::path::Path::new(&open.path),
+        crate::pixels::MAX_ENCODED_BYTES as u64,
+    )
+}
+
 /// A stored capture time as people read it: the ISO separator between the
 /// date and the time becomes a space (`2026-07-12 18:16`). Anything else is
 /// shown as stored.
@@ -645,11 +952,551 @@ pub(crate) fn capture_label(captured_at: &str) -> String {
     ) {
         (Some(day), Some("T"), Some(time))
             if !time.is_empty()
-                && crate::actions::timeline_day_from_capture(captured_at).is_some() =>
+                && crate::derived::timeline_day_from_capture(captured_at).is_some() =>
         {
             format!("{day} {time}")
         }
         _ => captured_at.to_owned(),
+    }
+}
+
+/// Whether `value` names a photograph: not blank, bounded, no control
+/// characters.
+pub(crate) fn valid_resource_id(value: &str) -> bool {
+    !value.trim().is_empty()
+        && value.chars().count() <= MAX_RESOURCE_ID_CHARS
+        && !value.chars().any(char::is_control)
+}
+
+/// Whether `value` is a content hash: 64 lowercase hex digits.
+pub(crate) fn is_content_hash(value: &str) -> bool {
+    value.len() == CONTENT_HEX_LEN
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+pub(crate) fn valid_name(value: &str) -> bool {
+    !value.trim().is_empty()
+        && value.chars().count() <= MAX_NAME_CHARS
+        && !value.chars().any(char::is_control)
+}
+
+pub(crate) fn valid_album_id(value: &str) -> bool {
+    let Some(suffix) = value.strip_prefix("photos.album:") else {
+        return false;
+    };
+    !suffix.is_empty()
+        && value.chars().count() <= MAX_ALBUM_ID_CHARS
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+pub(crate) fn valid_analysis(analysis: &ImageAnalysis) -> bool {
+    fn compact_text(value: &str, max: usize) -> bool {
+        value.chars().count() <= max && !value.chars().any(char::is_control)
+    }
+    fn labels(values: &[String]) -> bool {
+        values.len() <= MAX_ANALYSIS_LABELS
+            && values.iter().all(|value| {
+                !value.trim().is_empty() && compact_text(value, MAX_ANALYSIS_LABEL_CHARS)
+            })
+            && values
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                == values.len()
+    }
+    fn valid_provenance(provenance: &crate::model::AnalysisProvenance) -> bool {
+        matches!(provenance.scope.as_str(), "shared")
+            && matches!(
+                provenance.source.as_str(),
+                "local-ocr" | "local-vision" | "local-description" | "user"
+            )
+            && compact_text(&provenance.engine, 128)
+            && compact_text(&provenance.model_id, 128)
+            && (provenance.model_revision.is_empty()
+                || (matches!(provenance.model_revision.len(), 40 | 64)
+                    && provenance
+                        .model_revision
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit())))
+            && (provenance.source != "local-vision"
+                || (!provenance.model_id.is_empty()
+                    && !provenance.model_revision.is_empty()
+                    && provenance.engine == "tilo-vision"))
+            && compact_text(&provenance.language, 16)
+            && (provenance.content.is_empty()
+                || (provenance.content.len() == CONTENT_HEX_LEN
+                    && provenance
+                        .content
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))))
+    }
+    let valid_ocr = analysis.ocr_text.chars().count() <= MAX_ANALYSIS_TEXT_CHARS
+        && analysis
+            .ocr_text
+            .chars()
+            .all(|character| !character.is_control() || matches!(character, '\n' | '\r' | '\t'));
+    (!analysis.is_empty()
+        || analysis.ocr_provenance.is_some()
+        || analysis.vision_provenance.is_some())
+        && valid_ocr
+        && compact_text(&analysis.description, 1_024)
+        && labels(&analysis.objects)
+        && labels(&analysis.pets)
+        && valid_provenance(&analysis.provenance)
+        && analysis.ocr_provenance.as_ref().is_none_or(|provenance| {
+            valid_provenance(provenance)
+                && matches!(
+                    provenance.source.as_str(),
+                    "local-ocr" | "local-vision" | "user"
+                )
+        })
+        && analysis
+            .vision_provenance
+            .as_ref()
+            .is_none_or(|provenance| {
+                valid_provenance(provenance)
+                    && matches!(
+                        provenance.source.as_str(),
+                        // `local-ocr` is retained only for pre-component
+                        // combined records that were valid in older Photos.
+                        "local-ocr" | "local-vision" | "local-description" | "user"
+                    )
+            })
+}
+
+fn analysis_content_matches(photo: &LibraryPhoto, analysis: &ImageAnalysis) -> bool {
+    [
+        Some(&analysis.provenance),
+        analysis.ocr_provenance.as_ref(),
+        analysis.vision_provenance.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .all(|provenance| {
+        provenance.content.is_empty()
+            || photo.image.content.as_deref() == Some(provenance.content.as_str())
+    })
+}
+
+pub(crate) fn analysis_names_exact_content(photo: &LibraryPhoto, analysis: &ImageAnalysis) -> bool {
+    let Some(content) = photo.image.content.as_deref() else {
+        return false;
+    };
+    [
+        Some(&analysis.provenance),
+        analysis.ocr_provenance.as_ref(),
+        analysis.vision_provenance.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .all(|provenance| provenance.content == content)
+}
+
+pub(crate) fn merge_image_analysis(
+    existing: Option<&ImageAnalysis>,
+    incoming: ImageAnalysis,
+    content: Option<&str>,
+) -> ImageAnalysis {
+    let mut merged = existing.cloned().unwrap_or_default();
+    let component_is_current = |provenance: &crate::model::AnalysisProvenance| {
+        provenance.content.is_empty() || Some(provenance.content.as_str()) == content
+    };
+    let ocr_provenance = merged.ocr_provenance.as_ref().unwrap_or(&merged.provenance);
+    if !merged.ocr_text.is_empty() && !component_is_current(ocr_provenance) {
+        merged.ocr_text.clear();
+        merged.ocr_provenance = None;
+    }
+    let vision_provenance = merged
+        .vision_provenance
+        .as_ref()
+        .unwrap_or(&merged.provenance);
+    if (!merged.description.is_empty() || !merged.objects.is_empty() || !merged.pets.is_empty())
+        && !component_is_current(vision_provenance)
+    {
+        merged.description.clear();
+        merged.objects.clear();
+        merged.pets.clear();
+        merged.vision_provenance = None;
+    }
+    // Hydrate component provenance for pre-component records before changing
+    // anything. This prevents a new OCR result from making an older visual
+    // description look as though OCR produced it (and vice versa).
+    if merged.ocr_provenance.is_none() && !merged.ocr_text.is_empty() {
+        merged.ocr_provenance = Some(merged.provenance.clone());
+    }
+    if merged.vision_provenance.is_none()
+        && (!merged.description.is_empty() || !merged.objects.is_empty() || !merged.pets.is_empty())
+        && matches!(
+            merged.provenance.source.as_str(),
+            "local-vision" | "local-description" | "user"
+        )
+    {
+        merged.vision_provenance = Some(merged.provenance.clone());
+    }
+    match incoming.provenance.source.as_str() {
+        "local-ocr" => {
+            merged.ocr_text = incoming.ocr_text;
+            merged.ocr_provenance = incoming
+                .ocr_provenance
+                .or_else(|| Some(incoming.provenance.clone()));
+        }
+        "local-vision" | "local-description" => {
+            merged.description = incoming.description;
+            merged.objects = incoming.objects;
+            merged.pets = incoming.pets;
+            // A dedicated OCR result wins over incidental vision OCR. Vision
+            // still refreshes OCR produced by an older vision pass, including
+            // clearing text the current model no longer observes.
+            let dedicated_ocr = merged.ocr_provenance.as_ref().is_some_and(|provenance| {
+                matches!(provenance.source.as_str(), "local-ocr" | "user")
+            });
+            if !dedicated_ocr && incoming.provenance.source == "local-vision" {
+                merged.ocr_text = incoming.ocr_text;
+                merged.ocr_provenance = incoming
+                    .ocr_provenance
+                    .or_else(|| (!merged.ocr_text.is_empty()).then(|| incoming.provenance.clone()));
+            }
+            merged.vision_provenance = incoming
+                .vision_provenance
+                .or_else(|| Some(incoming.provenance.clone()));
+        }
+        _ => return incoming,
+    }
+    // Keep the legacy primary field meaningful for older peers while the
+    // component fields retain the complete, non-lossy audit trail.
+    merged.provenance = merged
+        .vision_provenance
+        .clone()
+        .or_else(|| merged.ocr_provenance.clone())
+        .unwrap_or(incoming.provenance);
+    merged
+}
+
+/// Keep user-authored metadata compact enough that a library remains a small
+/// CRDT record, and reject (rather than normalize) malformed remote commands
+/// so every replica either applies exactly the same labels or refuses them.
+pub(crate) fn valid_metadata(
+    folder: Option<&str>,
+    people: &[String],
+    tags: &[String],
+    captured_at: Option<&str>,
+) -> bool {
+    fn text(value: &str) -> bool {
+        !value.trim().is_empty() && value.chars().count() <= 128
+    }
+    fn labels(values: &[String]) -> bool {
+        values.len() <= 32
+            && values.iter().all(|value| text(value))
+            && values
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                == values.len()
+    }
+    folder.is_none_or(text)
+        && captured_at.is_none_or(canonical_capture_at)
+        && labels(people)
+        && labels(tags)
+}
+
+pub(crate) fn unique_strings(values: &[String]) -> bool {
+    let mut seen = std::collections::HashSet::with_capacity(values.len());
+    values.iter().all(|value| seen.insert(value.as_str()))
+}
+
+/// Return the one wire spelling Photos accepts for a capture value.
+///
+/// Date-only values deliberately remain date-only; local date-times remain
+/// local (there is no invented timezone); and offset date-times retain both
+/// their authored UTC offset and their fractional-second precision.  This is
+/// a validation boundary, not a display formatter, so a collaborator cannot
+/// turn an unknown local time into a different instant by merely opening it.
+pub fn canonical_capture_at(value: &str) -> bool {
+    canonical_capture_at_value(value).as_deref() == Some(value)
+}
+
+pub(crate) fn canonical_capture_at_value(value: &str) -> Option<String> {
+    if value.chars().count() > 128 || value.chars().any(char::is_control) || !value.is_ascii() {
+        return None;
+    }
+    // EXIF's `YYYY:MM:DD HH:MM:SS` and a legacy space separator are accepted
+    // once at the action boundary and committed as ISO. All durable values
+    // therefore converge to one form.
+    let mut canonical = value.to_owned();
+    if canonical.as_bytes().get(4) == Some(&b':') && canonical.as_bytes().get(7) == Some(&b':') {
+        canonical.replace_range(4..5, "-");
+        canonical.replace_range(7..8, "-");
+    }
+    if canonical.as_bytes().get(10) == Some(&b' ') {
+        canonical.replace_range(10..11, "T");
+    }
+    if canonical.len() == 10 {
+        return valid_capture_date(&canonical).then_some(canonical);
+    }
+    let (body, offset) = if let Some(body) = canonical.strip_suffix('Z') {
+        (body, Some("Z"))
+    } else if let Some((body, suffix)) = canonical
+        .len()
+        .checked_sub(6)
+        .and_then(|split| canonical.split_at_checked(split))
+        && matches!(suffix.as_bytes().first(), Some(b'+' | b'-'))
+        && suffix.as_bytes().get(3) == Some(&b':')
+    {
+        (body, Some(suffix))
+    } else {
+        (canonical.as_str(), None)
+    };
+    if body.len() < 16
+        || !body.get(..10).is_some_and(valid_capture_date)
+        || body.as_bytes().get(10) != Some(&b'T')
+    {
+        return None;
+    }
+    let (whole_seconds, _fraction) = match body.split_once('.') {
+        Some((whole, fraction))
+            if fraction.len() <= 9
+                && !fraction.is_empty()
+                && fraction.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            (whole, Some(fraction.len()))
+        }
+        Some(_) => return None,
+        None => (body, None),
+    };
+    let minute_precision = whole_seconds.len() == 16;
+    let second_precision = whole_seconds.len() == 19;
+    if !minute_precision && !second_precision {
+        return None;
+    }
+    // An offset identifies an instant, so require seconds in its wire format.
+    if offset.is_some() && !second_precision {
+        return None;
+    }
+    if !valid_capture_time(whole_seconds, second_precision) {
+        return None;
+    }
+    if let Some(offset) = offset
+        && offset != "Z"
+        && !valid_capture_offset(offset)
+    {
+        return None;
+    }
+    let mut result = body.to_owned();
+    if offset == Some("+00:00") || offset == Some("-00:00") || offset == Some("Z") {
+        result.push('Z');
+    } else if let Some(offset) = offset {
+        result.push_str(offset);
+    }
+    Some(result)
+}
+
+fn decimal(value: &[u8]) -> Option<u32> {
+    (!value.is_empty() && value.iter().all(u8::is_ascii_digit))
+        .then(|| std::str::from_utf8(value).ok()?.parse().ok())
+        .flatten()
+}
+
+fn valid_capture_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10 || bytes.get(4) != Some(&b'-') || bytes.get(7) != Some(&b'-') {
+        return false;
+    }
+    let (Some(year), Some(month), Some(day)) = (
+        bytes.get(..4).and_then(decimal),
+        bytes.get(5..7).and_then(decimal),
+        bytes.get(8..).and_then(decimal),
+    ) else {
+        return false;
+    };
+    (1..=12).contains(&month)
+        && (1..=ui::date::days_in_month(i64::from(year), month)).contains(&day)
+}
+
+fn valid_capture_time(value: &str, has_seconds: bool) -> bool {
+    let bytes = value.as_bytes();
+    let needed = if has_seconds { 19 } else { 16 };
+    if bytes.len() != needed
+        || bytes.get(13) != Some(&b':')
+        || (has_seconds && bytes.get(16) != Some(&b':'))
+    {
+        return false;
+    }
+    let hour = bytes.get(11..13).and_then(decimal);
+    let minute = bytes.get(14..16).and_then(decimal);
+    let second = has_seconds
+        .then(|| bytes.get(17..19).and_then(decimal))
+        .flatten();
+    hour.is_some_and(|value| value <= 23)
+        && minute.is_some_and(|value| value <= 59)
+        && (!has_seconds || second.is_some_and(|value| value <= 59))
+}
+
+fn valid_capture_offset(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 6
+        || !matches!(bytes.first(), Some(b'+' | b'-'))
+        || bytes.get(3) != Some(&b':')
+    {
+        return false;
+    }
+    bytes
+        .get(1..3)
+        .and_then(decimal)
+        .is_some_and(|hour| hour <= 23)
+        && bytes
+            .get(4..)
+            .and_then(decimal)
+            .is_some_and(|minute| minute <= 59)
+}
+
+/// A person is a compact user-authored label.  This intentionally has the
+/// same limit and character rules as the `people` metadata array so a review
+/// action can never create a record an ordinary metadata edit would reject.
+pub(crate) fn valid_person_label(value: &str) -> bool {
+    !value.trim().is_empty()
+        && value.trim().chars().count() <= 128
+        && !value.chars().any(char::is_control)
+}
+
+/// An explicit field-level decision in an atomic multi-photo metadata edit.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum MetadataPatch<T> {
+    /// Preserve the value already stored on each addressed photograph.
+    Keep,
+    /// Remove the value (or empty the complete label list).
+    Clear,
+    /// Replace the value with this explicit final value.
+    Set(T),
+}
+
+/// A field-level list decision for people and tags.
+///
+/// `Add` and `Remove` are intentionally separate from `Set`: a batch editor
+/// can add one label to hundreds of photographs without replacing labels a
+/// collaborator added while the sheet was open.  The action still carries the
+/// complete bounded target selection, so a stale selection refuses atomically.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum MetadataLabelsPatch {
+    Keep,
+    Clear,
+    Set(Vec<String>),
+    Add(Vec<String>),
+    Remove(Vec<String>),
+}
+
+/// One save of the details editor over a selection of photographs: per
+/// field, keep what each has, clear it, or set it; people and tags may also
+/// be added to or removed from what each has.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MetadataBatch {
+    pub folder: MetadataPatch<String>,
+    pub people: MetadataLabelsPatch,
+    pub tags: MetadataLabelsPatch,
+    pub captured_at: MetadataPatch<String>,
+    pub location: MetadataPatch<PhotoLocation>,
+}
+
+/// The paths of the photograph `id` in the library.
+#[must_use]
+pub fn photo_paths(id: &str) -> <LibraryPhoto as Model>::Paths<PhotoLibrary> {
+    PhotoLibrary::paths().photos.item(&Id::from_raw(id))
+}
+
+/// The paths of the album `id` in the library.
+#[must_use]
+pub fn album_paths(id: &str) -> <Album as Model>::Paths<PhotoLibrary> {
+    PhotoLibrary::paths().albums.item(&Id::from_raw(id))
+}
+
+impl PhotoLibrary {
+    /// The field edits that save `batch` on the photographs `ids`: each
+    /// label added or removed on its own, so a collaborator's label added
+    /// meanwhile stays.
+    ///
+    /// # Errors
+    /// Refuses a selection that is empty, too large or names a photograph
+    /// that is gone, and a capture time that is not ISO 8601.
+    pub fn metadata_edits(
+        &self,
+        ids: &[String],
+        batch: &MetadataBatch,
+    ) -> Result<Vec<tilo_resource::Edit<Self>>, Refusal> {
+        if ids.is_empty() || ids.len() > crate::resource::MAX_BATCH_PHOTOS || !unique_strings(ids) {
+            return Err(Refusal::new(
+                "a details edit names each photograph once, at most 256",
+            ));
+        }
+        let captured_at = match &batch.captured_at {
+            MetadataPatch::Set(value) => MetadataPatch::Set(
+                canonical_capture_at_value(value)
+                    .ok_or("the capture time is not a valid ISO 8601 value")?,
+            ),
+            other => other.clone(),
+        };
+        let mut edits = Vec::new();
+        for id in ids {
+            let photo = self
+                .photo(id)
+                .ok_or("a selected photograph is no longer in the library")?;
+            let paths = photo_paths(id);
+            match &batch.folder {
+                MetadataPatch::Keep => {}
+                MetadataPatch::Clear => edits.push(paths.folder.set(None)),
+                MetadataPatch::Set(value) => edits.push(paths.folder.set(Some(value.clone()))),
+            }
+            for (now, patch, path) in [
+                (&photo.people, &batch.people, &paths.people),
+                (&photo.tags, &batch.tags, &paths.tags),
+            ] {
+                let next = label_patch(now, patch);
+                edits.extend(
+                    now.iter()
+                        .filter(|label| !next.contains(label))
+                        .map(|label| path.remove(label)),
+                );
+                edits.extend(
+                    next.iter()
+                        .filter(|label| !now.contains(label))
+                        .map(|label| path.insert(label)),
+                );
+            }
+            match &captured_at {
+                MetadataPatch::Keep => {}
+                MetadataPatch::Clear => edits.push(paths.captured_at.set(None)),
+                MetadataPatch::Set(value) => {
+                    edits.push(paths.captured_at.set(Some(value.clone())));
+                }
+            }
+            match &batch.location {
+                MetadataPatch::Keep => {}
+                MetadataPatch::Clear => edits.push(paths.location.set(None)),
+                MetadataPatch::Set(value) => edits.push(paths.location.set(Some(value.clone()))),
+            }
+        }
+        Ok(edits)
+    }
+}
+
+/// The labels `now` becomes under `patch`.
+fn label_patch(now: &Set<String>, patch: &MetadataLabelsPatch) -> Vec<String> {
+    match patch {
+        MetadataLabelsPatch::Keep => now.iter().cloned().collect(),
+        MetadataLabelsPatch::Clear => Vec::new(),
+        MetadataLabelsPatch::Set(values) => values.clone(),
+        MetadataLabelsPatch::Add(values) => now
+            .iter()
+            .cloned()
+            .chain(values.iter().filter(|value| !now.contains(value)).cloned())
+            .collect(),
+        MetadataLabelsPatch::Remove(values) => now
+            .iter()
+            .filter(|value| !values.contains(value))
+            .cloned()
+            .collect(),
     }
 }
 

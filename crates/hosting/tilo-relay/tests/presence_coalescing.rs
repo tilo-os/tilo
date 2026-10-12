@@ -42,7 +42,7 @@
 use std::time::{Duration, SystemTime};
 
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
-use collab_types::{PeerPresence, PeerPresencePayload};
+use collab_types::{CommitNamed as _, PeerPresence, PeerPresencePayload};
 use tilo_delivery_protocol::transport_v2::{
     ALPN_CODED_DELTA_V1, ALPN_COMPACT_STATE_V1, ALPN_PRESENCE_BATCH_V1, EnvelopeV2, SessionReader,
     StateFraming, encode_state,
@@ -464,7 +464,7 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
         let heads = doc.get_heads();
         let end = doc.length(&body);
         doc.splice_text(&body, end, 0, "a").unwrap();
-        doc.commit();
+        doc.commit_edit("fixture", "body");
         let message = owner
             .publish_incremental(
                 APP,

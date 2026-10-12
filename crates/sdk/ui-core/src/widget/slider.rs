@@ -53,6 +53,8 @@ pub struct Slider {
     rect: Rect,
     is_hovered: bool,
     is_dragging: bool,
+    /// The drag under way has invoked the action at least once.
+    gesture: bool,
     is_focused: bool,
     /// The value, in `range` units.
     value: f64,
@@ -116,6 +118,7 @@ impl Slider {
             rect: Rect::ZERO,
             is_hovered: false,
             is_dragging: false,
+            gesture: false,
             is_focused: false,
             value: 0.5,
             range: (0.0, 1.0),
@@ -388,7 +391,18 @@ impl Slider {
         self.value = new_value;
         if let Some(action) = &mut self.action {
             if !(self.settles && self.is_dragging) {
-                let _ = action.emit(self.value);
+                // The values a drag passes through are one gesture: the
+                // first starts it, the rest continue it, so the whole drag
+                // is one undo step and the next drag is a step of its own.
+                let input = if !self.is_dragging {
+                    crate::bound_dispatch::Input::Discrete
+                } else if std::mem::replace(&mut self.gesture, true) {
+                    crate::bound_dispatch::Input::Continuing
+                } else {
+                    crate::bound_dispatch::Input::Starting
+                };
+                let value = self.value;
+                let _ = crate::bound_dispatch::with_input(input, || action.emit(value));
             } else if let Some(binding) = self
                 .binding
                 .as_mut()
@@ -797,6 +811,7 @@ impl Widget for Slider {
                         .contains(self.last_cursor)
                 {
                     self.is_dragging = true;
+                    self.gesture = false;
                     self.drag_from = Some(self.value);
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;

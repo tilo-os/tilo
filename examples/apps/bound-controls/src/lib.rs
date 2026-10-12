@@ -1,13 +1,13 @@
-//! Bound controls: every standard control, bound to a resource field.
+//! Bound controls: every standard control, bound to a field by its path.
 //!
-//! A bound control shows a value read from the resource and invokes an action
-//! with each value the user commits. It keeps no state of its own, so it
-//! follows edits from anywhere (a collaborator, an agent, an undo) with no
-//! notification code. When the action is forbidden, for a viewer, the control
-//! disables itself.
+//! A bound control shows the value at a path of the resource and edits it
+//! there with each value the user commits. It keeps no state of its own, so
+//! it follows edits from anywhere (a collaborator, an agent, an undo) with no
+//! notification code, and disables itself for a viewer.
 //!
 //! `cx.input` and `cx.checkbox` cover text and booleans; `cx.control` binds
-//! any other toolkit control built from a `LocalState`.
+//! any other toolkit control built from a `LocalState`, and `cx.control_map`
+//! one whose value is not the field's own type.
 
 /// The application id.
 pub const APP_ID: &str = "so.tilo.example.bound-controls";
@@ -20,14 +20,17 @@ fn install_catalog() {
     locales::install();
 }
 
+use locales::keys;
 use ui::i18n::I18nManager;
 use ui::prelude::*;
 
 /// The regions a profile can choose.
 pub const REGIONS: [&str; 3] = ["Europe/Berlin", "America/New_York", "Asia/Tokyo"];
 
-/// One field per kind of control.
+/// One field per kind of control. The invariant holds for every way in: a
+/// control, an agent's edit, a script.
 #[derive(Model, Debug, Clone, PartialEq)]
+#[model(check = Preferences::valid)]
 pub struct Preferences {
     /// Collaborative text: concurrent typing merges.
     pub name: String,
@@ -51,58 +54,29 @@ impl Default for Preferences {
     }
 }
 
-/// Validation lives in the action, so it holds for every caller, not only for
-/// the control that happens to limit its range.
+impl Preferences {
+    /// What every change must leave true, whichever field it edits.
+    ///
+    /// # Errors
+    /// Refuses a refresh interval, volume or region out of range.
+    pub fn valid(&self) -> Result<(), Refusal> {
+        if !(1.0..=120.0).contains(&self.refresh_minutes) {
+            return Err(Refusal::new("the refresh interval is 1 to 120 minutes"));
+        }
+        if !(0.0..=1.0).contains(&self.volume) {
+            return Err(Refusal::new("the volume is between 0 and 1"));
+        }
+        if !REGIONS.contains(&self.region.0.as_str()) {
+            return Err(Refusal::new("unknown region"));
+        }
+        Ok(())
+    }
+}
+
+/// Every field is edited at its path; the one verb is what a field edit
+/// cannot say.
 #[resource(kind = "example.preferences", label = "Preferences")]
 impl Preferences {
-    /// Change the display name.
-    #[action]
-    pub fn set_name(&mut self, #[param("Display name")] name: String) {
-        self.name = name;
-    }
-
-    /// Receive updates or not.
-    #[action]
-    pub fn set_updates(&mut self, #[param("Receive updates")] updates: bool) {
-        self.updates = updates;
-    }
-
-    /// Change how often to refresh.
-    #[action]
-    pub fn set_refresh(
-        &mut self,
-        #[param("Refresh interval in minutes, 1 to 120")] minutes: f64,
-    ) -> Result<(), &'static str> {
-        if !(1.0..=120.0).contains(&minutes) {
-            return Err("the refresh interval is 1 to 120 minutes");
-        }
-        self.refresh_minutes = minutes;
-        Ok(())
-    }
-
-    /// Change the volume.
-    #[action]
-    pub fn set_volume(
-        &mut self,
-        #[param("Volume from 0 to 1")] volume: f64,
-    ) -> Result<(), &'static str> {
-        if !(0.0..=1.0).contains(&volume) {
-            return Err("the volume is between 0 and 1");
-        }
-        self.volume = volume;
-        Ok(())
-    }
-
-    /// Change the region.
-    #[action]
-    pub fn set_region(&mut self, #[param("Region")] region: String) -> Result<(), &'static str> {
-        if !REGIONS.contains(&region.as_str()) {
-            return Err("unknown region");
-        }
-        self.region = Atom(region);
-        Ok(())
-    }
-
     /// Restore every preference to its default.
     #[action]
     pub fn reset(&mut self) {
@@ -119,21 +93,17 @@ impl ResourceApp for App {
 
     fn view(cx: &mut ViewCx<Preferences>) -> Element {
         install_catalog();
+        let p = cx.paths();
         // Text and booleans have dedicated bindings.
         let name = cx
-            .input(|prefs| prefs.name.clone(), Preferences::SET_NAME)
+            .input(p.name)
             .with_id("name-input")
-            .with_placeholder("controls-name-placeholder");
+            .with_placeholder(keys::CONTROLS_NAME_PLACEHOLDER);
         let updates = cx
-            .checkbox(
-                "controls-updates-label",
-                |prefs| prefs.updates,
-                Preferences::SET_UPDATES,
-            )
+            .checkbox(keys::CONTROLS_UPDATES_LABEL, p.updates)
             .with_id("updates-checkbox");
         // Everything else goes through `cx.control`: build the control from
-        // the `LocalState` it is given, say what it shows, and which action
-        // its committed values invoke.
+        // the `LocalState` it is given and name the field it edits.
         let refresh = cx
             .control(
                 |value| {
@@ -142,30 +112,27 @@ impl ResourceApp for App {
                         .with_step(5.0)
                         .with_suffix(&I18nManager::lookup_plain("controls-minutes-suffix"))
                 },
-                |prefs| prefs.refresh_minutes,
-                Preferences::SET_REFRESH,
+                p.refresh_minutes,
             )
             .with_id("refresh-input");
         let volume = cx
-            .control(
-                Slider::from_state,
-                |prefs| prefs.volume,
-                Preferences::SET_VOLUME,
-            )
+            .control(Slider::from_state, p.volume)
             .with_id("volume-slider");
+        // The dropdown chooses names; the field holds an `Atom`.
         let region = cx
-            .control(
+            .control_map(
                 |value| {
                     Dropdown::from_state(
                         REGIONS.iter().map(|region| (*region).to_owned()).collect(),
                         value,
                     )
                 },
-                |prefs| prefs.region.0.clone(),
-                Preferences::SET_REGION,
+                p.region,
+                |region| region.0.clone(),
+                Atom,
             )
             .with_id("region-select");
-        let reset = cx.button("controls-reset", Preferences::RESET.invoke());
+        let reset = cx.button(keys::CONTROLS_RESET, Preferences::RESET.invoke());
 
         Box::new(ui::column![
             Text::new("controls-title").with_role(TextRole::Title),

@@ -3,8 +3,8 @@
 //! image file on the window. Each becomes an image block whose bytes the
 //! notebook keeps, a screenshot larger than an asset included.
 
-use notes::actions::new_page_action;
-use notes::doc::NotesDoc;
+use notes::actions::create_page_action;
+use notes::read;
 use notes::{NotesShell, PageId};
 use ui::clipboard::ClipboardImage;
 use ui::framework::testing::TestApp;
@@ -14,7 +14,7 @@ fn note() -> (TestApp<NotesShell>, PageId) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let page = PageId::new_v4();
-    app.invoke(Invoke::apply(&new_page_action(page, None, "a".into(), "First")).unwrap())
+    app.invoke(Invoke::apply(&create_page_action(page, None, "First")).unwrap())
         .unwrap();
     let rect = app.harness().targets()["block_editor"];
     app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);
@@ -39,9 +39,12 @@ fn png(width: u32, height: u32, noisy: bool) -> Vec<u8> {
 
 /// The note's image blocks, with the bytes the notebook keeps for each.
 fn images(app: &TestApp<NotesShell>, page: PageId) -> Vec<(String, Vec<u8>)> {
+    let store = app.content();
     app.read_document(|doc| {
-        let assets = notes::notebook::asset_snapshot(doc).unwrap();
-        NotesDoc::page_block_snapshots(doc, page)
+        let assets = notes::notebook::image_snapshot(&notes::read::notebook(doc), |digest| {
+            store.read(digest)
+        });
+        read::page_block_snapshots(doc, page)
             .into_iter()
             .filter_map(|(_, text)| {
                 let source = text.split("](").nth(1)?.trim_end_matches(')').to_owned();

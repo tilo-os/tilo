@@ -86,3 +86,10 @@ store-runtime-service-unavailable = The app service is unavailable. No runtime o
 store-runtime-offer-mismatch = The signed runtime offer does not match the requested identity.
 store-runtime-offer-ambiguous = More than one repository offers this runtime. Choose one repository before installing.
 store-runtime-unavailable = No enabled repository offers the required runtime for this device.
+
+## History: what each change to the reports did
+
+store-draft-report = Started a report about { $app_id }
+store-record-moderation-case = The registry opened case { $case_id }: { $status }
+store-report-note = Described the concern of a report
+store-reports-reports = Edited a report

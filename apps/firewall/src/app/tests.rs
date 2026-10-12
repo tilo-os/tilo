@@ -23,13 +23,8 @@ fn framed_app(app: FirewallApp, w: f64, h: f64) -> Framed<FirewallApp> {
 /// control below reaches the document through the dispatcher.
 fn hosted() -> TestApp<FirewallShell> {
     let mut app = TestApp::<FirewallShell>::new().unwrap();
-    app.invoke(
-        ui::tilo_resource::Invoke::apply(&FirewallAction::Import {
-            config: crate::sample::sample_config(),
-        })
-        .unwrap(),
-    )
-    .unwrap();
+    app.invoke(Firewall::import_of(&crate::sample::sample_config()))
+        .unwrap();
     app
 }
 
@@ -83,6 +78,7 @@ fn open_another_zone(app: &mut TestApp<FirewallShell>) {
 
 fn public_rules(app: &TestApp<FirewallShell>) -> Vec<Rule> {
     app.state()
+        .config()
         .zone(ZoneKind::Public)
         .map(|zone| zone.rules.clone())
         .unwrap_or_default()
@@ -155,7 +151,7 @@ fn backend_availability_governs_what_is_shown_and_announced() {
     {
         let app = TestApp::<FirewallShell>::capture(None).unwrap();
         assert_eq!(
-            app.state().zones.len(),
+            app.state().config().zones.len(),
             crate::sample::sample_config().zones.len()
         );
     }
@@ -314,18 +310,35 @@ fn switches_round_trip_through_the_document() {
     press(&mut app, "firewall-service-ssh");
     assert!(
         !app.state()
+            .config()
             .zone(ZoneKind::Public)
             .unwrap()
             .has_service("ssh"),
         "ssh is on in the sample and the switch turned it off"
     );
 
-    assert!(!app.state().panic_mode);
+    // Panic mode and stopping the firewall cut traffic: each waits for the
+    // person to confirm what the host asks.
+    assert!(!app.state().config().panic_mode);
     press(&mut app, "firewall-panic");
-    assert!(app.state().panic_mode);
+    assert!(
+        !app.state().config().panic_mode,
+        "panic mode waits for consent"
+    );
+    confirm(&mut app);
+    assert!(app.state().config().panic_mode);
 
     press(&mut app, "firewall-enabled");
-    assert!(!app.state().enabled);
+    assert!(app.state().config().enabled, "stopping waits for consent");
+    confirm(&mut app);
+    assert!(!app.state().config().enabled);
+}
+
+/// Confirm what the host asks, as a person types it.
+fn confirm(app: &mut TestApp<FirewallShell>) {
+    app.harness().type_text("CONFIRM");
+    app.harness().key("Enter");
+    app.settle();
 }
 
 /// Making a zone active changes the document's default zone.
@@ -333,9 +346,9 @@ fn switches_round_trip_through_the_document() {
 fn making_a_zone_active_changes_the_default() {
     let mut app = hosted();
     open_another_zone(&mut app);
-    let before = app.state().default_zone;
+    let before = app.state().config().default_zone;
     press(&mut app, "firewall-make-active");
-    assert_ne!(app.state().default_zone, before);
+    assert_ne!(app.state().config().default_zone, before);
     let frame = app.harness().inspection_json().unwrap();
     assert!(frame.contains("is now the active zone"), "{frame}");
 }

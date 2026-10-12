@@ -1,0 +1,165 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "calculator.document"
+label = "Calculator"
+version = 1
+
+[[resources.fields]]
+owner = "calculator"
+path = "history"
+readonly = true
+stored = "collection"
+title = "History"
+type = "Collection<HistoryEntry>"
+
+[[resources.fields]]
+label = true
+owner = "history-entry"
+path = "history.*.expr"
+stored = "value"
+title = "Calculation"
+type = "String"
+
+[[resources.fields]]
+owner = "history-entry"
+path = "history.*.result"
+stored = "value"
+title = "Result"
+type = "String"
+
+[[resources.fields]]
+owner = "calculator"
+path = "funcs"
+stored = "collection"
+title = "Functions"
+type = "Collection<PlotFn>"
+
+[[resources.fields]]
+label = true
+owner = "plot-fn"
+path = "funcs.*.expr"
+stored = "value"
+title = "Formula"
+type = "String"
+
+[[resources.fields]]
+owner = "plot-fn"
+path = "funcs.*.visible"
+stored = "value"
+title = "Shown"
+type = "bool"
+
+[[resources.fields]]
+owner = "calculator"
+path = "surfaces"
+stored = "collection"
+title = "Surfaces"
+type = "Collection<PlotFn>"
+
+[[resources.fields]]
+label = true
+owner = "plot-fn"
+path = "surfaces.*.expr"
+stored = "value"
+title = "Formula"
+type = "String"
+
+[[resources.fields]]
+owner = "plot-fn"
+path = "surfaces.*.visible"
+stored = "value"
+title = "Shown"
+type = "bool"
+
+[[resources.verbs]]
+description = "newest [`HISTORY_CAP`]."
+id = "commit-history"
+kind = "undoable"
+label = "Add an evaluated calculation to the front of the history, keeping the"
+
+[[resources.verbs.params]]
+name = "expr"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "result"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+destructive = true
+id = "delete-history-entry"
+kind = "undoable"
+label = "Remove one calculation from the history"
+
+[[resources.verbs.params]]
+name = "entry"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+destructive = true
+id = "clear-history"
+kind = "undoable"
+label = "Remove every history entry"
+params = []
+
+[[resources.verbs]]
+id = "add-function"
+kind = "undoable"
+label = "Add a 2D y = f(x) curve"
+
+[[resources.verbs.params]]
+name = "formula"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "add-surface"
+kind = "undoable"
+label = "Add a 3D z = f(x, y) surface"
+
+[[resources.verbs.params]]
+name = "formula"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+destructive = true
+id = "delete-function"
+kind = "undoable"
+label = "Remove a function from the graph"
+
+[[resources.verbs.params]]
+name = "function"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+destructive = true
+id = "delete-surface"
+kind = "undoable"
+label = "Remove a surface from the graph"
+
+[[resources.verbs.params]]
+name = "surface"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"

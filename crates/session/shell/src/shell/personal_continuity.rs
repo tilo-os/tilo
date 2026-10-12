@@ -1331,7 +1331,7 @@ mod tests {
             let group_id = 10;
             let room = room(ROOM_A);
             let mut workspace = Workspace::new(workspace_id, "Reading");
-            workspace.room = room;
+            workspace.set_room(room);
             workspace.strips = vec![Strip {
                 id: strip_id,
                 name: "Main".into(),
@@ -1405,7 +1405,7 @@ mod tests {
             let strip_id = StripId(9);
             let room = room(ROOM_A);
             let mut workspace = Workspace::new(workspace_id, "From another device");
-            workspace.room = room;
+            workspace.set_room(room);
             workspace.strips = vec![Strip {
                 id: strip_id,
                 name: "Available elsewhere".into(),

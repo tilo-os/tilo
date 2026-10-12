@@ -21,9 +21,7 @@ pub mod background;
 pub mod brushes;
 pub mod content;
 pub mod content_geometry;
-pub mod described;
 pub mod detail;
-pub mod doc;
 pub mod document;
 pub mod fonts;
 pub mod gesture;
@@ -50,9 +48,7 @@ pub mod tools;
 pub mod view_ops;
 pub mod wand;
 
-pub use actions::CanvasAction;
 pub use model::Artwork;
-pub use resource::ArtworkResource;
 
 use panels::pane::Group;
 use ui::LocalState;
@@ -62,7 +58,7 @@ use ui::widget::ControlSize;
 pub struct App;
 
 impl ResourceApp for App {
-    type Resource = ArtworkResource;
+    type Resource = Artwork;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
@@ -73,7 +69,7 @@ impl ResourceApp for App {
         }
     }
 
-    fn view(cx: &mut ViewCx<ArtworkResource>) -> Element {
+    fn view(cx: &mut ViewCx<Artwork>) -> Element {
         locales::install();
         let recents = cx.settings::<document::RecentArtworks>();
         let tools = tools::Tools {
@@ -159,7 +155,7 @@ impl ResourceApp for App {
     /// A record made for the file starts as it; opened again, it is as it
     /// was left. A file handed to the window's artwork (no path) replaces
     /// it as one step, Undo away from what was there.
-    fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<ArtworkResource>> {
+    fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Artwork>> {
         let Some(file) = input.file() else {
             return Vec::new();
         };
@@ -176,7 +172,7 @@ impl ResourceApp for App {
             ) else {
                 return Vec::new();
             };
-            CanvasAction::OpenArtwork(actions::OpenArtwork {
+            Artwork::OPEN_ARTWORK.with(actions::OpenArtwork {
                 file: String::from_utf8_lossy(&artwork.to_json()).into_owned(),
             })
         } else {
@@ -185,7 +181,7 @@ impl ResourceApp for App {
                 Err(_) => return Vec::new(),
             }
         };
-        Invoke::apply(&open).into_iter().collect()
+        vec![open]
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -203,16 +199,12 @@ impl ResourceApp for App {
     /// The screenshots paint their samples through the same actions an
     /// agent would; a plain `--shots` shows the empty sheet a new artwork
     /// is.
-    fn scenario(name: Option<&str>) -> Vec<Invoke<ArtworkResource>> {
-        let actions = match name {
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Artwork>> {
+        match name {
             Some("landscape" | "close-up" | "history" | "inspector-narrow") => sample::landscape(),
             Some("selection" | "turned" | "points") => sample::shapes(),
-            _ => return Vec::new(),
-        };
-        actions
-            .iter()
-            .filter_map(|action| Invoke::apply(action).ok())
-            .collect()
+            _ => Vec::new(),
+        }
     }
 
     fn label(art: &Artwork) -> String {
@@ -226,7 +218,7 @@ impl ResourceApp for App {
 
 /// The dialogs over the window: starting a new artwork, exporting it, and
 /// the keyboard shortcuts.
-fn sheets(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools) -> Vec<Element> {
+fn sheets(cx: &ViewCx<Artwork>, tools: &tools::Tools) -> Vec<Element> {
     use tools::{FileRequest, Sheet};
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let close = |tools: &tools::Tools| {
@@ -239,7 +231,7 @@ fn sheets(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools) -> Vec<Element> {
         let tools = tools.clone();
         let (cancel, dismiss) = (close(&tools), close(&tools));
         ui::widget::ModalDialog::new(
-            lookup("canvas-new-artwork"),
+            lookup("canvas-command-new-artwork"),
             body(panels::start::body(cx, &tools)),
         )
         .with_test_id("canvas-new-dialog")
@@ -363,7 +355,7 @@ pub(crate) const RAIL: f32 =
     ui::tokens::Metrics::BASE.min_pointer_target + 2.0 * ui::tokens::Spacing::BASE.s2; // a pointer target and its inset, laid out before a theme is known
 
 /// Recommended tools follow the document; a person can override the suggestion.
-fn rail(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, compact: bool) -> Element {
+fn rail(cx: &ViewCx<Artwork>, tools: &tools::Tools, compact: bool) -> Element {
     let inferred = cx.value(tools::Workspace::of);
     let tools = tools.clone();
     cx.switch(&inferred, move |cx, inferred| {
@@ -388,7 +380,7 @@ fn rail(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, compact: bool) -> El
 
 /// On a phone the artwork keeps the full width and tools sit below it.
 /// Every tool remains the same shared control and local view action.
-fn work_area(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, compact: bool) -> Element {
+fn work_area(cx: &ViewCx<Artwork>, tools: &tools::Tools, compact: bool) -> Element {
     let canvas = cx.surface(surface::CanvasSurface::new(tools.clone()));
     let canvas: Element = Box::new(preview::VersionPreview::new(
         canvas,
@@ -548,7 +540,7 @@ fn workspace_controls(tools: &tools::Tools) -> Element {
 }
 
 /// The inspector above; under it the layers or the history.
-fn sidebar(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, dock: &LocalState<Dock>) -> Element {
+fn sidebar(cx: &ViewCx<Artwork>, tools: &tools::Tools, dock: &LocalState<Dock>) -> Element {
     // A dense tool panel: one `s3` inset on every side.
     let inspector = Column::new()
         .with_intrinsic_height()
@@ -595,7 +587,7 @@ fn sidebar(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, dock: &LocalState
 
 /// The layers and history tabs, and beside the layers adding one.
 fn dock_tabs(
-    cx: &ViewCx<ArtworkResource>,
+    cx: &ViewCx<Artwork>,
     tools: &tools::Tools,
     dock: &LocalState<Dock>,
     open: &LocalState<bool>,
@@ -642,7 +634,7 @@ fn dock_tabs(
 }
 
 /// Folding the dock away to its tabs, or opening it again.
-fn fold(cx: &ViewCx<ArtworkResource>, open: &LocalState<bool>) -> Element {
+fn fold(cx: &ViewCx<Artwork>, open: &LocalState<bool>) -> Element {
     let flip = open.clone();
     cx.switch(open, move |_, shown| {
         let (icon, id) = if *shown {

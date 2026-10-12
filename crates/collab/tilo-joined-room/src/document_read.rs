@@ -67,6 +67,29 @@ fn revision_of(heads: &[automerge::ChangeHash]) -> [u8; 32] {
 }
 
 impl NativeCommittedView {
+    /// Whether a `reader` holding `known` holds the admitted revision of
+    /// `app`'s `record`, answered from the admitted heads without restoring
+    /// the room; `None` when those heads cannot vouch for the record
+    /// (encrypted, incomplete or absent), and only [`Self::read_document`]
+    /// can say.
+    ///
+    /// # Errors
+    /// The reader may not read the record now.
+    pub fn holds_revision(
+        &self,
+        reader: [u8; 32],
+        app: &str,
+        record: &str,
+        known: [u8; 32],
+        now: SystemTime,
+    ) -> Result<Option<bool>, String> {
+        let Some(heads) = self.peer.plaintext_complete_heads(app, record) else {
+            return Ok(None);
+        };
+        self.peer.check_document_read(reader, app, record, now)?;
+        Ok(Some(revision_of(&heads) == known))
+    }
+
     /// Read `app`'s `record` for the device `reader`.
     ///
     /// # Errors

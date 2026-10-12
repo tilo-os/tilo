@@ -105,12 +105,6 @@ pub fn path_of(place: &str, home: Option<&Path>, dirs: &UserDirs) -> Option<Path
     path.is_absolute().then_some(path)
 }
 
-/// Whether `text` is already a stored place rather than a path on this
-/// device.
-pub fn is_place(text: &str) -> bool {
-    text.starts_with(STANDARD_PREFIX) || text.starts_with(HOME_PREFIX)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

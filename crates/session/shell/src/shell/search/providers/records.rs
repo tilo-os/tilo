@@ -425,7 +425,7 @@ mod tests {
         let mut rooms = Vec::new();
         for name in names {
             let mut ws = Workspace::new(WorkspaceId::new(), *name);
-            ws.room = RoomId::new();
+            ws.set_room(RoomId::new());
             rooms.push(ws.room);
             tree.desktop.workspaces.push(ws);
         }

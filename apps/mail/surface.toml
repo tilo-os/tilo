@@ -1,0 +1,3191 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "mail.mailbox"
+label = "Mail"
+version = 1
+
+[[resources.fields]]
+owner = "mail"
+path = "messages"
+stored = "collection"
+title = "What the mailbox knows of each message, under its id"
+type = "Collection<MessageState>"
+
+[[resources.fields]]
+owner = "message-state"
+path = "messages.*.read"
+readonly = true
+stored = "value"
+title = "Read: marked by opening the message, or through the mailbox's"
+type = "bool"
+
+[[resources.fields]]
+owner = "message-state"
+path = "messages.*.starred"
+stored = "value"
+title = "Starred"
+type = "bool"
+
+[[resources.fields]]
+owner = "message-state"
+path = "messages.*.folder"
+stored = "value"
+title = "Folder"
+type = "Folder"
+
+[[resources.fields]]
+owner = "message-state"
+path = "messages.*.labels"
+stored = "value"
+title = "Labels"
+type = "Set<String>"
+
+[[resources.fields]]
+owner = "message-state"
+path = "messages.*.server"
+readonly = true
+stored = "record"
+title = "Where it lives on its mail server and what that server holds; none"
+type = "Option<ServerCopy>"
+
+[[resources.fields]]
+owner = "server-copy"
+path = "messages.*.server.account"
+stored = "value"
+title = "The account it is fetched through"
+type = "String"
+
+[[resources.fields]]
+owner = "server-copy"
+path = "messages.*.server.locator"
+stored = "value"
+title = "Its `Message-ID`, which finds it on the server"
+type = "String"
+
+[[resources.fields]]
+owner = "server-copy"
+path = "messages.*.server.read"
+stored = "value"
+title = "Read there"
+type = "bool"
+
+[[resources.fields]]
+owner = "server-copy"
+path = "messages.*.server.starred"
+stored = "value"
+title = "Starred there"
+type = "bool"
+
+[[resources.fields]]
+owner = "server-copy"
+path = "messages.*.server.folder"
+stored = "value"
+title = "The folder it is in there"
+type = "Folder"
+
+[[resources.fields]]
+owner = "server-copy"
+path = "messages.*.server.removed"
+stored = "value"
+title = "Deleted there for good"
+type = "bool"
+
+[[resources.fields]]
+owner = "message-state"
+path = "messages.*.purged"
+readonly = true
+stored = "value"
+title = "Deleted for good: a delayed fetch never brings it back"
+type = "bool"
+
+[[resources.fields]]
+owner = "mail"
+path = "folders"
+stored = "collection"
+title = "The folders the reader made, under their ids"
+type = "Collection<LocalFolder>"
+
+[[resources.fields]]
+label = true
+owner = "local-folder"
+path = "folders.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "mail"
+path = "draft"
+stored = "record"
+title = "The message being written"
+type = "DraftState"
+
+[[resources.fields]]
+owner = "draft-state"
+path = "draft.sender"
+stored = "value"
+title = "The account it is sent from, when one was chosen for it"
+type = "Option<DraftSender>"
+
+[[resources.fields]]
+owner = "draft-state"
+path = "draft.to"
+stored = "value"
+title = "To"
+type = "String"
+
+[[resources.fields]]
+owner = "draft-state"
+path = "draft.cc"
+stored = "value"
+title = "Cc"
+type = "String"
+
+[[resources.fields]]
+owner = "draft-state"
+path = "draft.bcc"
+stored = "value"
+title = "Bcc"
+type = "String"
+
+[[resources.fields]]
+owner = "draft-state"
+path = "draft.subject"
+stored = "value"
+title = "Subject"
+type = "String"
+
+[[resources.fields]]
+owner = "draft-state"
+path = "draft.body"
+stored = "value"
+title = "The body as plain text: the text alternative it is sent with"
+type = "String"
+
+[[resources.fields]]
+owner = "draft-state"
+path = "draft.html_body"
+stored = "value"
+title = "The body as HTML, when it was written formatted"
+type = "Option<String>"
+
+[[resources.fields]]
+owner = "draft-state"
+path = "draft.calendar_ics"
+stored = "value"
+title = "An iCalendar invitation it carries"
+type = "Option<String>"
+
+[[resources.fields]]
+owner = "draft-state"
+path = "draft.attachments"
+stored = "value"
+title = "Its attachments, by content id"
+type = "Vec<DraftAttachment>"
+
+[[resources.fields]]
+owner = "draft-state"
+path = "draft.rich_body"
+stored = "value"
+title = "The body being written, once it was started"
+type = "Option<RichText>"
+
+[resources.fields.ops]
+description = "Every collaborative, document-mutating operation the word processor exports. Deliberately positional: each variant names the exact block ids and offsets it touches, so `Action::apply` is a pure, replayable write. Ordinary typing, deletion, paragraph splitting, Find & Replace, and agent-authored edits all enter through these same envelopes; caret and selection updates remain local."
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Replace `[at, at+del)` of `block` with `ins` (insert = `del` 0; delete = `ins` empty). The deterministic text primitive."
+required = ["SpliceText"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SpliceText]
+additionalProperties = false
+required = [
+    "region",
+    "block",
+    "at",
+    "del",
+    "ins",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SpliceText.properties.at]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SpliceText.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SpliceText.properties.del]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SpliceText.properties.ins]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SpliceText.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Replace disjoint character ranges together without recreating blocks. Offsets refer to the pre-action document; application runs back to front."
+required = ["ReplaceMatches"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceMatches]
+additionalProperties = false
+required = [
+    "region",
+    "spans",
+    "ins",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceMatches.properties.ins]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplaceMatches.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplaceMatches.properties.spans]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.ReplaceMatches.properties.spans.items]
+additionalProperties = false
+description = "One `(block, [start, end))` range a formatting mark covers. A selection that spans several blocks is carried as one span per touched block."
+required = [
+    "block",
+    "start",
+    "end",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceMatches.properties.spans.items.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplaceMatches.properties.spans.items.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.ReplaceMatches.properties.spans.items.properties.start]
+minimum = 0
+type = "integer"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Replace one selection in document order.  Unlike a sequence of splices and deletes, this preserves the old editor's cross-paragraph merge as a single deterministic, atomic action/undo boundary."
+required = ["ReplaceSelection"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceSelection]
+additionalProperties = false
+required = [
+    "region",
+    "start_block",
+    "start",
+    "end_block",
+    "end",
+    "ins",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceSelection.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.ReplaceSelection.properties.end_block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplaceSelection.properties.ins]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplaceSelection.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplaceSelection.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.ReplaceSelection.properties.start_block]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Apply or clear an inline mark over `spans`. `value` `None` removes the mark; `Some` replaces it (any prior value of the same mark over each span is removed first, so a re-colour/re-size overwrites rather than stacks). `also_clear` names sibling marks to drop over the same spans first (so a super/subscript pair stays mutually exclusive)."
+required = ["SetMark"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetMark]
+additionalProperties = false
+required = [
+    "region",
+    "spans",
+    "name",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.also_clear]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.also_clear.items]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.name]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.spans]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.spans.items]
+additionalProperties = false
+description = "One `(block, [start, end))` range a formatting mark covers. A selection that spans several blocks is carried as one span per touched block."
+required = [
+    "block",
+    "start",
+    "end",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.spans.items.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.spans.items.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.spans.items.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.value]
+description = "A serializable inline-mark value (the character-format payload). `Bool` is a toggle mark (bold/italic/underline/strike/super/sub); `Int` is a size; `Str` is a font family / colour / highlight."
+
+[[resources.fields.ops.oneOf.properties.SetMark.properties.value.oneOf]]
+type = "null"
+
+[[resources.fields.ops.oneOf.properties.SetMark.properties.value.oneOf]]
+
+[[resources.fields.ops.oneOf.properties.SetMark.properties.value.oneOf.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.value.oneOf.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.fields.ops.oneOf.properties.SetMark.properties.value.oneOf.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.value.oneOf.oneOf.properties.Int]
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.SetMark.properties.value.oneOf.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.value.oneOf.oneOf.properties.Str]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Set a paragraph's structural kind (`heading`/`paragraph`/`list-item`/…) on each of `blocks`, plus its `level` / `ordered` attrs when given."
+required = ["SetParagraphStyle"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetParagraphStyle]
+additionalProperties = false
+required = [
+    "blocks",
+    "kind",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetParagraphStyle.properties.blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.SetParagraphStyle.properties.blocks.items]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetParagraphStyle.properties.kind]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetParagraphStyle.properties.level]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.SetParagraphStyle.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.SetParagraphStyle.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Apply a named paragraph style to `blocks`: set the `style` attr, and — for a built-in style — the structural `kind`/`level`/`ordered` too, as one action/undo boundary (not a kind write racing a separate style write)."
+required = ["ApplyNamedStyle"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ApplyNamedStyle]
+additionalProperties = false
+required = [
+    "blocks",
+    "style",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ApplyNamedStyle.properties.blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.ApplyNamedStyle.properties.blocks.items]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ApplyNamedStyle.properties.kind]
+type = [
+    "string",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.ApplyNamedStyle.properties.level]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.ApplyNamedStyle.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.ApplyNamedStyle.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ApplyNamedStyle.properties.style]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Set one block attribute (`align`, `page_break_before`, `indent`, `first_line_indent`, `line_spacing`, `tab_stops`, `style`, image `width`/`height`/`flip_*`/`alt`) to `value` on each of `blocks`. An image's `alt` is its accessible description and is accepted on image blocks only."
+required = ["SetBlockAttr"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr]
+additionalProperties = false
+required = [
+    "region",
+    "blocks",
+    "key",
+    "value",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.blocks.items]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.key]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.value]
+description = "A serializable block-attribute value. Maps onto the scalar an attr stores (`align`/`style`/`tab_stops` are `Str`, `level`/image dims are `Int`, `indent`/`line_spacing` are `Float`, `page_break_before`/flips are `Bool`)."
+
+[[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.value.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.value.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.value.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.value.oneOf.properties.Int]
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.value.oneOf]]
+additionalProperties = false
+required = ["Float"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.value.oneOf.properties.Float]
+type = "number"
+
+[[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.value.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.value.oneOf.properties.Str]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Remove one block attribute from each of `blocks`, restoring its default: a list item that stops being a task (`checked`), a code line that becomes prose (`code`, `lang`, `code_group`), a block back at the outline's top (`nesting`), an image whose description falls back to its caption (`alt`)."
+required = ["ClearBlockAttr"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ClearBlockAttr]
+additionalProperties = false
+required = [
+    "blocks",
+    "key",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ClearBlockAttr.properties.blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.ClearBlockAttr.properties.blocks.items]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ClearBlockAttr.properties.key]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ClearBlockAttr.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Replace all four page margins as one absolute page-setup operation. Keeping the rectangle atomic avoids transient invalid page geometry while still giving history and collaborators a single authored mutation."
+required = ["SetPageMargins"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetPageMargins]
+additionalProperties = false
+required = [
+    "top",
+    "right",
+    "bottom",
+    "left",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetPageMargins.properties.bottom]
+type = "number"
+
+[resources.fields.ops.oneOf.properties.SetPageMargins.properties.left]
+type = "number"
+
+[resources.fields.ops.oneOf.properties.SetPageMargins.properties.right]
+type = "number"
+
+[resources.fields.ops.oneOf.properties.SetPageMargins.properties.top]
+type = "number"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Set one scalar property of one stable named style. Keeping each field in its own envelope lets replicas edit e.g. font and spacing concurrently without replaying an entire stale stylesheet over either change."
+required = ["SetStyleProperty"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetStyleProperty]
+additionalProperties = false
+required = [
+    "style",
+    "key",
+    "value",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.key]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.style]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.value]
+description = "A serializable block-attribute value. Maps onto the scalar an attr stores (`align`/`style`/`tab_stops` are `Str`, `level`/image dims are `Int`, `indent`/`line_spacing` are `Float`, `page_break_before`/flips are `Bool`)."
+
+[[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.value.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.value.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.value.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.value.oneOf.properties.Int]
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.value.oneOf]]
+additionalProperties = false
+required = ["Float"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.value.oneOf.properties.Float]
+type = "number"
+
+[[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.value.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.value.oneOf.properties.Str]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Delete one custom style and atomically move its addressed instances back to the body default. The style id receives a grow-only tombstone."
+required = ["DeleteStyle"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.DeleteStyle]
+additionalProperties = false
+required = [
+    "style",
+    "fallback_blocks",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.DeleteStyle.properties.fallback_blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.DeleteStyle.properties.fallback_blocks.items]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.DeleteStyle.properties.style]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Set an image crop in ten-thousandths of its source rectangle.  Keeping all four edges in one action is important: a crop must never briefly become invalid while a collaborator/replay observes it."
+required = ["SetImageCrop"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetImageCrop]
+additionalProperties = false
+required = [
+    "block",
+    "left",
+    "top",
+    "right",
+    "bottom",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetImageCrop.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetImageCrop.properties.bottom]
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SetImageCrop.properties.left]
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SetImageCrop.properties.right]
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SetImageCrop.properties.top]
+type = "integer"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Resize an image frame while preserving a single replay/undo boundary."
+required = ["SetImageSize"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetImageSize]
+additionalProperties = false
+required = [
+    "block",
+    "width",
+    "height",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetImageSize.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetImageSize.properties.height]
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SetImageSize.properties.width]
+type = "integer"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Move an image between normal flow and a free page-positioned object. Offsets are document pixels relative to the page content origin; `page` is zero-based.  This is deliberately a single canonical operation so a drag cannot publish a half-updated anchor/coordinate pair."
+required = ["SetImagePlacement"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetImagePlacement]
+additionalProperties = false
+required = [
+    "block",
+    "anchor",
+    "wrap",
+    "x",
+    "y",
+    "page",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetImagePlacement.properties.anchor]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetImagePlacement.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetImagePlacement.properties.page]
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SetImagePlacement.properties.wrap]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetImagePlacement.properties.x]
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SetImagePlacement.properties.y]
+type = "integer"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Insert a `rows`×`cols` table after `after`. Cells are consecutive `cell` blocks sharing a freshly-minted `table` id, tagged with `row`/`col`."
+required = ["InsertTable"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertTable]
+additionalProperties = false
+required = [
+    "after",
+    "rows",
+    "cols",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertTable.properties.after]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.InsertTable.properties.cols]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.InsertTable.properties.rows]
+minimum = 0
+type = "integer"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Insert a table after `after` already holding its contents: `cells` is its rows top to bottom, each row's cell texts left to right, and every row has the same number of cells. The first row is the header row (qdoc has no separate header marker: the editor shades row 0 and the exporters write it as the table's head). Laid out exactly as `InsertTable` lays out an empty table, with the table and cell ids minted inside `apply`, so the table and its text are one edit and one undo step."
+required = ["InsertFilledTable"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertFilledTable]
+additionalProperties = false
+required = [
+    "after",
+    "cells",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertFilledTable.properties.after]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.InsertFilledTable.properties.cells]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.InsertFilledTable.properties.cells.items]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.InsertFilledTable.properties.cells.items.items]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Mutate one stable table id using an absolute row/column boundary."
+required = ["EditTable"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EditTable]
+additionalProperties = false
+required = [
+    "table",
+    "edit",
+]
+type = "object"
+
+[[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf]]
+additionalProperties = false
+required = ["InsertRow"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf.properties.InsertRow]
+additionalProperties = false
+required = ["at"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf.properties.InsertRow.properties.at]
+minimum = 0
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf]]
+additionalProperties = false
+required = ["InsertColumn"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf.properties.InsertColumn]
+additionalProperties = false
+required = ["at"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf.properties.InsertColumn.properties.at]
+minimum = 0
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf]]
+additionalProperties = false
+required = ["DeleteRow"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf.properties.DeleteRow]
+additionalProperties = false
+required = ["row"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf.properties.DeleteRow.properties.row]
+minimum = 0
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf]]
+additionalProperties = false
+required = ["DeleteColumn"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf.properties.DeleteColumn]
+additionalProperties = false
+required = ["column"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf.properties.DeleteColumn.properties.column]
+minimum = 0
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf]]
+const = "Delete"
+type = "string"
+
+[resources.fields.ops.oneOf.properties.EditTable.properties.table]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Insert an image at `(block, at)`: the caret block is split so the tail follows the image in a fresh paragraph beneath it. The image is a binary input referenced by its content address (already in the caller's content store), described by its media type, length and optional intrinsic `width`/`height`; the action never carries the bytes."
+required = ["InsertImage"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertImage]
+additionalProperties = false
+required = [
+    "block",
+    "at",
+    "content",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertImage.properties.at]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.InsertImage.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.InsertImage.properties.content]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.InsertImage.properties.height]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.InsertImage.properties.len]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.InsertImage.properties.mime]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.InsertImage.properties.width]
+type = [
+    "integer",
+    "null",
+]
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Insert a manual page break at `(block, at)`: split the block like Enter and mark the new block to start on a fresh page."
+required = ["InsertPageBreak"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertPageBreak]
+additionalProperties = false
+required = [
+    "block",
+    "at",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertPageBreak.properties.at]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.InsertPageBreak.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.InsertPageBreak.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Split one paragraph at an absolute character offset. The new block id is minted by the pinned action actor, so origin and replay produce the same stable child entity. Used by Enter in body/header/footer alike."
+required = ["SplitBlock"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SplitBlock]
+additionalProperties = false
+required = [
+    "region",
+    "block",
+    "at",
+    "kind",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SplitBlock.properties.at]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SplitBlock.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SplitBlock.properties.kind]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SplitBlock.properties.next]
+description = "The block that followed `block` where the split was made, so the new block's place is found without reading the region's order. Stale (a block inserted in between meanwhile) it still places the new block between the two, as a concurrent insert would."
+type = [
+    "string",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.SplitBlock.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.SplitBlock.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Insert one canonical field marker at an absolute text position."
+required = ["InsertField"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertField]
+additionalProperties = false
+required = [
+    "region",
+    "block",
+    "at",
+    "field",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertField.properties.at]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.InsertField.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.InsertField.properties.field]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.InsertField.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Replace the generated TOC using stable heading ids and authored page labels captured from one pagination frame."
+required = ["GenerateToc"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.GenerateToc]
+additionalProperties = false
+required = ["entries"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.GenerateToc.properties.entries]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.GenerateToc.properties.entries.items]
+additionalProperties = false
+required = [
+    "heading",
+    "level",
+    "text",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.GenerateToc.properties.entries.items.properties.heading]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.GenerateToc.properties.entries.items.properties.level]
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.GenerateToc.properties.entries.items.properties.page]
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.GenerateToc.properties.entries.items.properties.text]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Paste a rich or plain multi-paragraph fragment at an absolute selection. Paragraphs and marks are authored payload, while newly-created block ids are minted under the pinned action actor."
+required = ["PasteFragment"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.PasteFragment]
+additionalProperties = false
+required = [
+    "region",
+    "start_block",
+    "start",
+    "end_block",
+    "end",
+    "blocks",
+    "adopt_first_style",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.adopt_first_style]
+type = "boolean"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items]
+additionalProperties = false
+description = "One block of a copied rich fragment — text plus its formatting (marks and paragraph attributes), with mark offsets relative to the block's own text."
+required = [
+    "kind",
+    "text",
+    "marks",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.align]
+type = [
+    "string",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.attrs]
+description = "The block's other attributes (a checklist item's `checked`, a code line's `lang`), set as they are."
+type = "object"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.kind]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.level]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items]
+additionalProperties = false
+description = "One inline formatting span as seen from the read side."
+required = [
+    "start",
+    "end",
+    "name",
+    "value",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.name]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.value]
+description = "The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`; valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`. `Ord` is derived so materialization can canonicalise mark order *including the value*, so replicas that merged concurrent valued marks in different internal orders converge to a byte-identical span list."
+
+[[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Int]
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Str]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.text]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.end_block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.start_block]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Insert a fresh paragraph carrying `text` directly after block `after`. Enter itself is `Self::SplitBlock` (published as `new-paragraph`); this inserts a whole paragraph after a named block in one envelope."
+required = ["InsertParagraph"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertParagraph]
+additionalProperties = false
+required = [
+    "after",
+    "text",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertParagraph.properties.after]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.InsertParagraph.properties.text]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Append `text` as a new paragraph at the end of the body. The target is resolved from the document at apply time (not captured in the payload), so a catalogue captured before other appends still lands at the end. An empty trailing `paragraph` (a fresh document's only line) is filled instead of leaving a blank line above the new text."
+required = ["AppendParagraph"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.AppendParagraph]
+additionalProperties = false
+required = ["text"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.AppendParagraph.properties.text]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Append `text` at the end of the last body block, which must be a text block (paragraph, heading or list item). Resolved at apply time, so repeated invocations append in order. A caret-free writer (an agent streaming text) uses it; an editor with a caret uses `move-caret {to: document-end}` then `type-text`."
+required = ["ContinueParagraph"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ContinueParagraph]
+additionalProperties = false
+required = ["text"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ContinueParagraph.properties.text]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Remove `blocks` (an image, or every cell of a table). Ids are sorted before removal so replicas emit the identical op sequence."
+required = ["RemoveBlocks"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.RemoveBlocks]
+additionalProperties = false
+required = ["blocks"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.RemoveBlocks.properties.blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.RemoveBlocks.properties.blocks.items]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Tombstone `blocks` in a header or footer. Body removal stays `Self::RemoveBlocks`."
+required = ["RemoveRegionBlocks"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.RemoveRegionBlocks]
+additionalProperties = false
+required = [
+    "region",
+    "blocks",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.RemoveRegionBlocks.properties.blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.RemoveRegionBlocks.properties.blocks.items]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.RemoveRegionBlocks.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Insert one empty paragraph when `region` has no blocks. A no-op when the region already has a write target, so a replay does not add another."
+required = ["EnsureRegionBlock"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EnsureRegionBlock]
+additionalProperties = false
+required = ["region"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EnsureRegionBlock.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Move body paragraphs `blocks`, in the order given, to directly after `after`, or to the start of the body when `after` is `None`: a dragged paragraph, or a run of them. Each keeps its id, text and style."
+required = ["MoveBlocks"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.MoveBlocks]
+additionalProperties = false
+required = ["blocks"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.MoveBlocks.properties.after]
+type = [
+    "string",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.MoveBlocks.properties.blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.MoveBlocks.properties.blocks.items]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Replace the whole document body with `markdown` (re-import a template / restore a version): every existing body block is removed, then the Markdown is imported as fresh blocks."
+required = ["ReplaceBody"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceBody]
+additionalProperties = false
+required = ["markdown"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceBody.properties.markdown]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Replace the whole body with `blocks`, formatted as they are: text an app brings with marks Markdown cannot carry (a note's links to other notes, a slide's runs, a copied fragment)."
+required = ["ReplaceClips"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips]
+additionalProperties = false
+required = ["blocks"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items]
+additionalProperties = false
+description = "One block of a copied rich fragment — text plus its formatting (marks and paragraph attributes), with mark offsets relative to the block's own text."
+required = [
+    "kind",
+    "text",
+    "marks",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.align]
+type = [
+    "string",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.attrs]
+description = "The block's other attributes (a checklist item's `checked`, a code line's `lang`), set as they are."
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.kind]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.level]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items]
+additionalProperties = false
+description = "One inline formatting span as seen from the read side."
+required = [
+    "start",
+    "end",
+    "name",
+    "value",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.name]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.value]
+description = "The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`; valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`. `Ord` is derived so materialization can canonicalise mark order *including the value*, so replicas that merged concurrent valued marks in different internal orders converge to a byte-identical span list."
+
+[[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Int]
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Str]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.text]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Replace the body with `bytes` decoded as `format`. A decode failure refuses the action so the open document stays as it was. The document remembers the bytes' content address as the file it was last read from (`FILE_DIGEST`)."
+required = ["ReplaceFormatted"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceFormatted]
+additionalProperties = false
+required = [
+    "format",
+    "bytes",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceFormatted.properties.bytes]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.ReplaceFormatted.properties.bytes.items]
+maximum = 255
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.ReplaceFormatted.properties.format]
+description = "A file format `RichTextAction::ReplaceFormatted` can import."
+enum = [
+    "markdown",
+    "text",
+    "html",
+    "rtf",
+    "docx",
+    "odt",
+]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "The document was written to its file, whose bytes now have content address `digest` (`FILE_DIGEST`): what a later open compares the file with to tell whether it changed elsewhere. Content from outside: it syncs, but no undo takes it back."
+required = ["NoteFileWritten"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.NoteFileWritten]
+additionalProperties = false
+required = ["digest"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.NoteFileWritten.properties.digest]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Accept one tracked change, or every change when `id` is absent."
+required = ["AcceptChanges"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.AcceptChanges]
+additionalProperties = false
+type = "object"
+
+[resources.fields.ops.oneOf.properties.AcceptChanges.properties.id]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Reject one tracked change, or every change when `id` is absent."
+required = ["RejectChanges"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.RejectChanges]
+additionalProperties = false
+type = "object"
+
+[resources.fields.ops.oneOf.properties.RejectChanges.properties.id]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Resolve a comment by removing both its anchor mark and record."
+required = ["ResolveComment"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ResolveComment]
+additionalProperties = false
+required = ["id"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ResolveComment.properties.id]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Insert `text` at `at` and mark it as a tracked insertion by `author`."
+required = ["TrackInsert"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.TrackInsert]
+additionalProperties = false
+required = [
+    "block",
+    "at",
+    "text",
+    "author",
+    "date",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.TrackInsert.properties.at]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.TrackInsert.properties.author]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.TrackInsert.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.TrackInsert.properties.date]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.TrackInsert.properties.text]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Add a durable root comment anchored to one exact body range. The comment and its first body block are minted inside `apply`, so replay gets the same stable CRDT ids as the originating action."
+required = ["AddComment"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.AddComment]
+additionalProperties = false
+required = [
+    "block",
+    "start",
+    "end",
+    "author",
+    "date",
+    "text",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.AddComment.properties.author]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.AddComment.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.AddComment.properties.date]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.AddComment.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.AddComment.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.AddComment.properties.text]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Append a durable reply below an existing comment thread. Parent ids are stable resources; stale/deleted parents refuse atomically. `body`, when given, is the reply as written (paragraphs, their kinds and marks); `text` is its plain text, and the whole reply when `body` is empty."
+required = ["ReplyToComment"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment]
+additionalProperties = false
+required = [
+    "comment",
+    "author",
+    "date",
+    "text",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.author]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items]
+additionalProperties = false
+description = "One block of a copied rich fragment — text plus its formatting (marks and paragraph attributes), with mark offsets relative to the block's own text."
+required = [
+    "kind",
+    "text",
+    "marks",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.align]
+type = [
+    "string",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.attrs]
+description = "The block's other attributes (a checklist item's `checked`, a code line's `lang`), set as they are."
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.kind]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.level]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items]
+additionalProperties = false
+description = "One inline formatting span as seen from the read side."
+required = [
+    "start",
+    "end",
+    "name",
+    "value",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.name]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.value]
+description = "The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`; valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`. `Ord` is derived so materialization can canonicalise mark order *including the value*, so replicas that merged concurrent valued marks in different internal orders converge to a byte-identical span list."
+
+[[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.value.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.value.oneOf.properties.Int]
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.value.oneOf.properties.Str]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.text]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.comment]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.date]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.text]
+type = "string"
+
+[[resources.fields]]
+owner = "mail"
+path = "outbox"
+stored = "value"
+title = "Messages sent and waiting for a device that holds their account"
+type = "Outbox<Outgoing>"
+
+[[resources.fields]]
+owner = "mail"
+path = "server"
+stored = "value"
+title = "What servers still have to be told: flags, moves and deletes the"
+type = "Outbox<ServerUpdate>"
+
+[[resources.verbs]]
+description = "Marks messages read or unread together."
+id = "mark-read"
+kind = "outside"
+label = "Mark messages read"
+
+[[resources.verbs.params]]
+name = "messages"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs.params]]
+name = "read"
+required = true
+
+[resources.verbs.params.schema]
+type = "boolean"
+
+[[resources.verbs]]
+description = "Moves messages to the Archive together."
+id = "archive"
+kind = "outside"
+label = "Archive messages"
+
+[[resources.verbs.params]]
+name = "messages"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs]]
+description = "Moves messages to the Trash together, from where they can still be brought back."
+id = "trash"
+kind = "outside"
+label = "Move messages to Trash"
+
+[[resources.verbs.params]]
+name = "messages"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs]]
+description = "Moves messages to one folder together."
+id = "move-messages"
+kind = "outside"
+label = "Move messages"
+
+[[resources.verbs.params]]
+name = "messages"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs.params]]
+name = "to"
+required = true
+
+[resources.verbs.params.schema]
+description = "The canonical system folders every account has. We keep them as an enum (rather than free-form strings) so routing — archive/delete/move — is total and exhaustively checked by the compiler."
+
+[[resources.verbs.params.schema.oneOf]]
+const = "inbox"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf]]
+const = "starred"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf]]
+const = "sent"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf]]
+const = "drafts"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf]]
+const = "archive"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf]]
+const = "trash"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf]]
+const = "junk"
+description = "Spam / junk."
+type = "string"
+
+[[resources.verbs]]
+description = "Deletes messages already in the Trash for good: all of them, or none when one is no longer there."
+destructive = true
+id = "purge"
+kind = "outside"
+label = "Delete permanently"
+
+[[resources.verbs.params]]
+name = "messages"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs]]
+description = "source reports, and a fetched one records what its server holds. What the mailbox already says wins, except where the server changed since it last reported (another mail client read the message)."
+id = "ingest"
+kind = "outside"
+label = "Messages fetched or found: each joins the mailbox with the flags its"
+
+[[resources.verbs.params]]
+name = "messages"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "A message id plus the flags its source reports, used where the document has none yet. A message fetched from a server also names where it lives there: the account and its `Message-ID`."
+required = ["id"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.account]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.folder]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.locator]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.read]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.starred]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs]]
+id = "server-applied"
+kind = "outside"
+label = "A mail server confirmed it holds what `update` asked of it"
+
+[[resources.verbs.params]]
+name = "update"
+required = true
+
+[resources.verbs.params.schema]
+description = "One change a mail server still has to be told about, as `Mail::server_updates` finds it and the mailbox queues it: the message, where it lives on the server, and what to do there."
+
+[[resources.verbs.params.schema.oneOf]]
+additionalProperties = false
+description = "Set the message's read and starred flags (`UID STORE`)."
+required = ["Flags"]
+type = "object"
+
+[resources.verbs.params.schema.oneOf.properties.Flags]
+additionalProperties = false
+required = [
+    "id",
+    "account",
+    "locator",
+    "folder",
+    "read",
+    "starred",
+]
+type = "object"
+
+[resources.verbs.params.schema.oneOf.properties.Flags.properties.account]
+type = "string"
+
+[resources.verbs.params.schema.oneOf.properties.Flags.properties.folder]
+description = "The canonical system folders every account has. We keep them as an enum (rather than free-form strings) so routing — archive/delete/move — is total and exhaustively checked by the compiler."
+
+[[resources.verbs.params.schema.oneOf.properties.Flags.properties.folder.oneOf]]
+const = "inbox"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Flags.properties.folder.oneOf]]
+const = "starred"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Flags.properties.folder.oneOf]]
+const = "sent"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Flags.properties.folder.oneOf]]
+const = "drafts"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Flags.properties.folder.oneOf]]
+const = "archive"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Flags.properties.folder.oneOf]]
+const = "trash"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Flags.properties.folder.oneOf]]
+const = "junk"
+description = "Spam / junk."
+type = "string"
+
+[resources.verbs.params.schema.oneOf.properties.Flags.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.oneOf.properties.Flags.properties.locator]
+type = "string"
+
+[resources.verbs.params.schema.oneOf.properties.Flags.properties.read]
+type = "boolean"
+
+[resources.verbs.params.schema.oneOf.properties.Flags.properties.starred]
+type = "boolean"
+
+[[resources.verbs.params.schema.oneOf]]
+additionalProperties = false
+description = "Move the message from one server folder to another (`UID MOVE`)."
+required = ["Move"]
+type = "object"
+
+[resources.verbs.params.schema.oneOf.properties.Move]
+additionalProperties = false
+required = [
+    "id",
+    "account",
+    "locator",
+    "from",
+    "to",
+]
+type = "object"
+
+[resources.verbs.params.schema.oneOf.properties.Move.properties.account]
+type = "string"
+
+[resources.verbs.params.schema.oneOf.properties.Move.properties.from]
+description = "The canonical system folders every account has. We keep them as an enum (rather than free-form strings) so routing — archive/delete/move — is total and exhaustively checked by the compiler."
+
+[[resources.verbs.params.schema.oneOf.properties.Move.properties.from.oneOf]]
+const = "inbox"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Move.properties.from.oneOf]]
+const = "starred"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Move.properties.from.oneOf]]
+const = "sent"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Move.properties.from.oneOf]]
+const = "drafts"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Move.properties.from.oneOf]]
+const = "archive"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Move.properties.from.oneOf]]
+const = "trash"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Move.properties.from.oneOf]]
+const = "junk"
+description = "Spam / junk."
+type = "string"
+
+[resources.verbs.params.schema.oneOf.properties.Move.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.oneOf.properties.Move.properties.locator]
+type = "string"
+
+[resources.verbs.params.schema.oneOf.properties.Move.properties.to]
+description = "The canonical system folders every account has. We keep them as an enum (rather than free-form strings) so routing — archive/delete/move — is total and exhaustively checked by the compiler."
+
+[[resources.verbs.params.schema.oneOf.properties.Move.properties.to.oneOf]]
+const = "inbox"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Move.properties.to.oneOf]]
+const = "starred"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Move.properties.to.oneOf]]
+const = "sent"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Move.properties.to.oneOf]]
+const = "drafts"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Move.properties.to.oneOf]]
+const = "archive"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Move.properties.to.oneOf]]
+const = "trash"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Move.properties.to.oneOf]]
+const = "junk"
+description = "Spam / junk."
+type = "string"
+
+[[resources.verbs.params.schema.oneOf]]
+additionalProperties = false
+description = 'Delete the message for good (`UID STORE \Deleted` + `UID EXPUNGE`).'
+required = ["Remove"]
+type = "object"
+
+[resources.verbs.params.schema.oneOf.properties.Remove]
+additionalProperties = false
+required = [
+    "id",
+    "account",
+    "locator",
+    "folder",
+]
+type = "object"
+
+[resources.verbs.params.schema.oneOf.properties.Remove.properties.account]
+type = "string"
+
+[resources.verbs.params.schema.oneOf.properties.Remove.properties.folder]
+description = "The canonical system folders every account has. We keep them as an enum (rather than free-form strings) so routing — archive/delete/move — is total and exhaustively checked by the compiler."
+
+[[resources.verbs.params.schema.oneOf.properties.Remove.properties.folder.oneOf]]
+const = "inbox"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Remove.properties.folder.oneOf]]
+const = "starred"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Remove.properties.folder.oneOf]]
+const = "sent"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Remove.properties.folder.oneOf]]
+const = "drafts"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Remove.properties.folder.oneOf]]
+const = "archive"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Remove.properties.folder.oneOf]]
+const = "trash"
+type = "string"
+
+[[resources.verbs.params.schema.oneOf.properties.Remove.properties.folder.oneOf]]
+const = "junk"
+description = "Spam / junk."
+type = "string"
+
+[resources.verbs.params.schema.oneOf.properties.Remove.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.oneOf.properties.Remove.properties.locator]
+type = "string"
+
+[[resources.verbs]]
+description = "a reopened draft."
+id = "start-draft-body"
+kind = "outside"
+label = "Start the body of the draft afresh: a blank message, a reply's quote,"
+
+[[resources.verbs.params]]
+name = "text"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "html"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Saves the message being written as the draft: who it goes to, what it says and carries, keeping the body being written."
+id = "save-draft"
+kind = "outside"
+label = "Save draft"
+
+[[resources.verbs.params]]
+name = "message"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "A message as written: who it goes to, what it says, what it carries."
+required = [
+    "to",
+    "cc",
+    "bcc",
+    "subject",
+    "body",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.attachments]
+description = "Portable content-addressed attachment references. This is structured metadata, not a machine-local path, so collaborators can materialize the same bytes."
+type = "array"
+
+[resources.verbs.params.schema.properties.attachments.items]
+additionalProperties = false
+description = "Metadata for one staged draft attachment. The content is addressed by a verified content-store identity and materialized only at the send boundary."
+required = [
+    "content_id",
+    "filename",
+    "mime",
+    "size",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.attachments.items.properties.content_id]
+type = "string"
+
+[resources.verbs.params.schema.properties.attachments.items.properties.filename]
+type = "string"
+
+[resources.verbs.params.schema.properties.attachments.items.properties.mime]
+type = "string"
+
+[resources.verbs.params.schema.properties.attachments.items.properties.size]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.bcc]
+type = "string"
+
+[resources.verbs.params.schema.properties.body]
+type = "string"
+
+[resources.verbs.params.schema.properties.calendar_ics]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.cc]
+type = "string"
+
+[resources.verbs.params.schema.properties.html_body]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.sender]
+additionalProperties = false
+description = "Exact sending account reviewed when preparing a Contacts draft."
+required = [
+    "account",
+    "email",
+]
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.sender.properties.account]
+type = "string"
+
+[resources.verbs.params.schema.properties.sender.properties.email]
+type = "string"
+
+[resources.verbs.params.schema.properties.subject]
+type = "string"
+
+[resources.verbs.params.schema.properties.to]
+type = "string"
+
+[[resources.verbs]]
+destructive = true
+id = "discard-draft"
+kind = "outside"
+label = "Discard draft"
+params = []
+
+[[resources.verbs]]
+description = "Puts the message in the outbox; a device that holds the account delivers it. Until then, undo takes it back unsent."
+destructive = true
+id = "send-message"
+kind = "outside"
+label = "Send message"
+
+[[resources.verbs.params]]
+name = "account"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "message"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "A message as written: who it goes to, what it says, what it carries."
+required = [
+    "to",
+    "cc",
+    "bcc",
+    "subject",
+    "body",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.attachments]
+description = "Portable content-addressed attachment references. This is structured metadata, not a machine-local path, so collaborators can materialize the same bytes."
+type = "array"
+
+[resources.verbs.params.schema.properties.attachments.items]
+additionalProperties = false
+description = "Metadata for one staged draft attachment. The content is addressed by a verified content-store identity and materialized only at the send boundary."
+required = [
+    "content_id",
+    "filename",
+    "mime",
+    "size",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.attachments.items.properties.content_id]
+type = "string"
+
+[resources.verbs.params.schema.properties.attachments.items.properties.filename]
+type = "string"
+
+[resources.verbs.params.schema.properties.attachments.items.properties.mime]
+type = "string"
+
+[resources.verbs.params.schema.properties.attachments.items.properties.size]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.bcc]
+type = "string"
+
+[resources.verbs.params.schema.properties.body]
+type = "string"
+
+[resources.verbs.params.schema.properties.calendar_ics]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.cc]
+type = "string"
+
+[resources.verbs.params.schema.properties.html_body]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.sender]
+additionalProperties = false
+description = "Exact sending account reviewed when preparing a Contacts draft."
+required = [
+    "account",
+    "email",
+]
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.sender.properties.account]
+type = "string"
+
+[resources.verbs.params.schema.properties.sender.properties.email]
+type = "string"
+
+[resources.verbs.params.schema.properties.subject]
+type = "string"
+
+[resources.verbs.params.schema.properties.to]
+type = "string"
+
+[[resources.verbs.params]]
+name = "in_reply_to"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Takes a message out of the outbox unsent: one still waiting, or one its server refused."
+id = "cancel-send"
+kind = "outside"
+label = "Cancel sending"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources]]
+kind = "tilo.contacts.identities"
+label = "Contact identities"
+person = true
+version = 1
+
+[[resources.fields]]
+owner = "contact-directory"
+path = "people"
+stored = "collection"
+title = "People"
+type = "Collection<Person>"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.label"
+stored = "value"
+title = "Stable Contacts UUID, also the collection key. Never derived from name"
+type = "String"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.removed"
+stored = "value"
+title = "Removed"
+type = "bool"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.phones"
+stored = "value"
+title = "International phone hints: candidate discovery only, never proof"
+type = "Json<Vec<String>>"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.emails"
+stored = "value"
+title = "Address-book mailboxes, never identity evidence or a sending grant"
+type = "Json<Vec<String>>"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.endpoints"
+stored = "collection"
+title = "Endpoints"
+type = "Collection<Endpoint>"
+
+[[resources.fields]]
+owner = "endpoint"
+path = "people.*.endpoints.*.service"
+stored = "value"
+title = "Service"
+type = "String"
+
+[[resources.fields]]
+owner = "endpoint"
+path = "people.*.endpoints.*.recipient"
+stored = "value"
+title = "Recipient"
+type = "String"
+
+[[resources.fields]]
+owner = "endpoint"
+path = "people.*.endpoints.*.scope"
+stored = "value"
+title = "Provider namespace; empty only for the compatibility endpoint API"
+type = "String"
+
+[[resources.fields]]
+owner = "endpoint"
+path = "people.*.endpoints.*.revision"
+stored = "value"
+title = "Provider identity-key fingerprint or assignment generation"
+type = "String"
+
+[[resources.fields]]
+owner = "endpoint"
+path = "people.*.endpoints.*.removed"
+stored = "value"
+title = "Retained tombstone; the association id must never be reassigned"
+type = "bool"
+
+[[resources.verbs]]
+description = "or reviving an identity that was deleted."
+id = "project-contact"
+kind = "undoable"
+label = "Update the label of a Contacts identity, without merging similar names"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "label"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "recreate it and its endpoints cannot be used for sending."
+id = "remove-contact"
+kind = "undoable"
+label = "Tombstone a removed Contacts identity. Delayed projections cannot"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "An uncertain candidate never becomes an association merely by appearing in a contact search or having a matching name/phone number."
+destructive = true
+id = "confirm-endpoint"
+kind = "undoable"
+label = "Explicitly confirm that this service recipient belongs to this person"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "endpoint"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "service"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "recipient"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "This is an address-book decision, not cryptographic proof or permission."
+destructive = true
+id = "confirm-account"
+kind = "undoable"
+label = "Confirm the exact provider-scoped account and observed identity revision"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "endpoint"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "service"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "scope"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "recipient"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "revision"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+destructive = true
+id = "replace-endpoint"
+kind = "undoable"
+label = "Replace an address after review, clearing unavailable identity evidence"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "previous"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "endpoint"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "service"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "recipient"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+destructive = true
+id = "replace-account"
+kind = "undoable"
+label = "Replace a reviewed association atomically, retaining the old tombstone"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "previous"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "endpoint"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "service"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "scope"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "recipient"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "revision"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "project-phones"
+kind = "undoable"
+label = "Project phone hints from Contacts. These can suggest candidates only"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "phones"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs]]
+id = "project-emails"
+kind = "undoable"
+label = "Project mailbox hints without creating any service association"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "emails"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs]]
+description = "phone and mailbox hints as [`Self::project_contact`], [`Self::project_phones`] and [`Self::project_emails`] would, and each of `removed` tombstoned as [`Self::remove_contact`] would. A large import costs one change instead of three per person."
+id = "project-contacts"
+kind = "undoable"
+label = "Project many Contacts identities as one change: each person's label,"
+
+[[resources.verbs.params]]
+name = "people"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "One Contacts identity as Contacts projects it: its label and the phone and mailbox hints it holds."
+required = [
+    "person",
+    "label",
+    "phones",
+    "emails",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.emails]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.emails.items]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.label]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.person]
+description = "The Contacts UUID."
+type = "string"
+
+[resources.verbs.params.schema.items.properties.phones]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.phones.items]
+type = "string"
+
+[[resources.verbs.params]]
+name = "removed"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs]]
+destructive = true
+id = "forget-endpoint"
+kind = "undoable"
+label = "Remove a reviewed association. No implicit transfer to another person"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "endpoint"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources]]
+kind = "tilo.accounts"
+label = "Accounts"
+person = true
+version = 1
+
+[[resources.fields]]
+owner = "person-accounts"
+path = "accounts"
+stored = "collection"
+title = "Keyed by the account's id, the id its secret is kept under"
+type = "Collection<PersonAccount>"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.type_id"
+stored = "value"
+title = 'The kind of account (`"email"`, `"caldav"`, …)'
+type = "String"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.display_name"
+stored = "value"
+title = 'The name shown for it ("Work — Fastmail")'
+type = "String"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.config"
+stored = "value"
+title = "Type-specific connection settings. Never a secret"
+type = "Json<serde_json::Value>"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.enabled"
+stored = "value"
+title = "Whether the person uses it now"
+type = "bool"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.tint"
+stored = "value"
+title = "Tints the account's avatar so several read as distinct"
+type = "u8"
+
+[[resources.fields]]
+owner = "person-accounts"
+path = "active"
+stored = "value"
+title = "The active account id per type; a type without one uses its first"
+type = "BTreeMap<String, String>"
+
+[[resources.verbs]]
+description = "This changes the Settings account record only; it creates no credential, certificate, room membership or content key. Republishing preserves a person's disabled choice and chosen account name.  # Errors Refuses malformed public metadata or an occupied identity account id."
+id = "publish-browser-identity"
+kind = "undoable"
+label = "Publish this signed-in identity's public browser connection metadata"
+
+[[resources.verbs.params]]
+name = "root"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "origin"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "save-account"
+kind = "undoable"
+label = "Save an account: add it, or replace the one with its id"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "type_id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "config"
+required = true
+
+[resources.verbs.params.schema]
+
+[[resources.verbs.params]]
+name = "enabled"
+required = true
+
+[resources.verbs.params.schema]
+type = "boolean"
+
+[[resources.verbs.params]]
+name = "tint"
+required = true
+
+[resources.verbs.params.schema]
+maximum = 255
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "account. Names are labels; a configured own ACI requires its existing relinking path. This is public metadata, never a credential or grant. # Errors Refuses malformed identities, duplicate scopes or an occupied account ID."
+id = "publish-signal-account"
+kind = "undoable"
+label = "Publish a reviewed new Signal identity without replacing another"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "aci"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "generation"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "modem paths, phone numbers and SIM identifiers stay in private custody. # Errors Refuses malformed identities, duplicate accounts or an invalid name/generation."
+id = "publish-sms-account"
+kind = "undoable"
+label = "Publish a protected native SIM account. The scope is an opaque identity;"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "scope"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "generation"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "profile. The caller retains provider proof and credential authority; this record contains no credential, pairing payload or messaging state. # Errors Refuses invalid self identity, generation, name or an occupied account."
+id = "publish-whatsapp-account"
+kind = "undoable"
+label = "Publish the explicitly reviewed self identity of one native `WhatsApp`"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "jid"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "generation"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Neither workspace membership nor a label authorizes this account. # Errors Refuses malformed identities, duplicate accounts or an invalid name/generation."
+id = "publish-tilo-account"
+kind = "undoable"
+label = "Publish the original personal Tilo sender with an opaque private scope"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "scope"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "generation"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+id = "remove-account"
+kind = "undoable"
+label = "Remove account"
+
+[[resources.verbs.params]]
+name = "account"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "set-active-account"
+kind = "undoable"
+label = "Use an account for its type"
+
+[[resources.verbs.params]]
+name = "account"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"

@@ -110,7 +110,6 @@ impl Relay {
             scope: AgentScope {
                 rooms: vec![room.into()],
                 apps: Vec::new(),
-                may_confirm: false,
             },
             issued_at_ns: 1,
             expires_at_ns,
@@ -522,16 +521,10 @@ fn governance_is_never_relaxed_by_a_later_binding() {
 #[test]
 fn only_owner_and_editor_roles_write() {
     use collab_types::Role;
-    let writers: Vec<Role> = [
-        Role::Owner,
-        Role::Editor,
-        Role::Commenter,
-        Role::Viewer,
-        Role::Denied,
-    ]
-    .into_iter()
-    .filter(|role| role_grants(*role, Verb::Write))
-    .collect();
+    let writers: Vec<Role> = [Role::Owner, Role::Editor, Role::Commenter, Role::Viewer]
+        .into_iter()
+        .filter(|role| role_writes(*role))
+        .collect();
     assert_eq!(writers, vec![Role::Owner, Role::Editor]);
 }
 

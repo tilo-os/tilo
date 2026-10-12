@@ -179,7 +179,7 @@ fn refresh_row(row: &tilo_actions::remote::CatalogueRow, source: &MorningSource)
             action.address.resource == source.resource
                 && action.address.action == "refresh"
                 && action.kind == tilo_actions::OperationKind::Effect
-                && action.contract.permission == tilo_actions::PermissionRequirement::Read
+                && action.contract.kind == tilo_actions::ActionKind::Read
                 && action.contract.confirmation == tilo_actions::ConfirmationPolicy::None
                 && action.input == tilo_actions::InputSpec::None
                 && action.params.iter().all(|parameter| !parameter.required)
@@ -288,6 +288,16 @@ impl NativeMorningSources {
         Some(state.message.clone())
     }
 }
+/// The kind of the resource `id` names: `<kind>/<field>/<item>` is an item
+/// of kind `<kind>.<field>`; `<kind>:<id>` is one of kind `<kind>`.
+fn resource_kind(id: &str) -> String {
+    let mut parts = id.splitn(3, '/');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(kind), Some(field), Some(_)) => format!("{kind}.{field}"),
+        _ => id.split(':').next().unwrap_or(id).to_owned(),
+    }
+}
+
 /// Only an inert editor program. Saving later uses the existing exact-action
 /// grant review and owner-checked shortcut library; this builder grants nothing.
 fn refresh_draft(source: &MorningSource) -> tilo_automation::Shortcut {
@@ -298,16 +308,18 @@ fn refresh_draft(source: &MorningSource) -> tilo_automation::Shortcut {
         steps: vec![tilo_automation::Step::new(
             "refresh",
             tilo_automation::StepKind::Invoke {
-                app_id: source.app.clone(),
+                action: tilo_actions::ActionKey::new(
+                    source.app.clone(),
+                    resource_kind(&source.resource),
+                    "refresh",
+                ),
                 resource: tilo_automation::Selector::Fixed(source.resource.clone()),
-                action: "refresh".into(),
                 args: std::collections::BTreeMap::default(),
             },
         )],
         output: None,
         grant: Vec::new(),
         triggers: Vec::new(),
-        consents: Vec::new(),
         saved_by: None,
     }
 }

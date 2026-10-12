@@ -10,9 +10,9 @@ use std::rc::Rc;
 use ui::local_state::LocalState;
 use ui::widget::{Field, Form, FormSection, TextInput, TextInputKind, Toggle};
 
-use crate::actions::ImagerAction;
 use crate::app::{Command, Commands};
 use crate::model::InstallProfile;
+use crate::resource::Imager;
 
 /// What enrolling does, under its switch.
 const ENROLL_NOTE: &str = "Certifies the new device. The root secret stays on this computer.";
@@ -46,12 +46,16 @@ impl SetupField {
     }
 }
 
-/// The profile action a changed field dispatches; `None` for the host-local
-/// passphrase, which never enters the document.
-pub(crate) fn field_action(field: SetupField, value: String) -> Option<ImagerAction> {
+/// The profile edit a changed field submits; `None` for the host-local
+/// passphrase and key, which never enter the document.
+pub(crate) fn field_edit(
+    field: SetupField,
+    value: String,
+) -> Option<ui::tilo_resource::Edit<Imager>> {
+    let profile = Imager::paths().profile;
     match field {
-        SetupField::WifiSsid => Some(ImagerAction::SetWifiSsid { value }),
-        SetupField::DeviceLabel => Some(ImagerAction::SetDeviceLabel { value }),
+        SetupField::WifiSsid => Some(profile.wifi_ssid.replace(value)),
+        SetupField::DeviceLabel => Some(profile.device_label.replace(value)),
         SetupField::WifiPsk | SetupField::SshKey => None,
     }
 }

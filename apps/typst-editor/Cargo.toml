@@ -27,11 +27,8 @@ tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-typst-engine = { path = "../../crates/runtime/engines/typst", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
-serde.workspace = true
 serde_json.workspace = true
-uuid.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

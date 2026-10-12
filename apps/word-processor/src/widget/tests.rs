@@ -857,22 +857,19 @@ fn tool_actions(wp: &WordProcessorWidget) -> Vec<ToolAction> {
         .collect()
 }
 
-/// The action the edit `id` bound to the window's view builds, as the
-/// palette or an agent would invoke it without arguments.
-fn bound_encoded(
-    wp: &mut WordProcessorWidget,
+/// The edit `effect` makes at the window's own view, as the palette or an
+/// agent invoking it there submits it.
+fn effect_edit(
+    wp: &WordProcessorWidget,
     doc: &AutoCommit,
-    id: &str,
-) -> tilo_actions::EncodedAction {
-    wp.resolve_bound_edits(doc);
-    let edit = wp
-        .bound_edits()
-        .into_iter()
-        .find(|edit| edit.id == id)
-        .unwrap_or_else(|| panic!("edit {id} is bound to the view"));
-    let action = (edit.build)(&tilo_actions::ActionArgs::none(), 0).expect("the edit builds");
-    tilo_actions::EncodedAction::encode(crate::actions::WORD_PROCESSOR_ACTION_TYPE, &action)
-        .unwrap()
+    effect: &crate::effects::WordProcessorEffect,
+) -> crate::actions::RichTextAction {
+    let (actions, _) = effect
+        .edit(&wp.local_edit_view(), doc, wp.inner.content_store())
+        .expect("an edit effect")
+        .expect("the edit builds");
+    assert_eq!(actions.len(), 1, "one edit");
+    actions[0].clone()
 }
 
 /// The toolbar's insert-table matches the palette spec; panel align dispatches the action; find and replace all works; the styles panel toggles off; the link button requests the
@@ -896,7 +893,15 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         wp.refresh_blocks(&state.doc);
 
         // What the palette would dispatch, resolved before the button fires.
-        let from_palette = bound_encoded(&mut wp, &state.doc, "insert-table");
+        let from_palette = effect_edit(
+            &wp,
+            &state.doc,
+            &crate::effects::WordProcessorEffect::InsertTableHere {
+                rows: None,
+                columns: None,
+                at: None,
+            },
+        );
 
         // The toolbar button drives the same operation.
         wp.apply_tool(&mut edits(&mut state.doc), ToolAction::InsertTable);
@@ -905,10 +910,9 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
             .cloned()
             .expect("the toolbar dispatched an action");
 
-        assert_eq!(from_toolbar.type_id, from_palette.type_id);
         assert_eq!(
-            from_toolbar.payload, from_palette.payload,
-            "toolbar affordance and palette spec build the same EncodedAction"
+            from_toolbar, from_palette,
+            "toolbar affordance and palette effect build the same edit"
         );
         // And the affordance really created the table (a 2x2 = four cells).
         wp.refresh_blocks(&state.doc);
@@ -944,10 +948,17 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         );
 
         // It is the same EncodedAction the palette's align-center spec builds.
-        let from_palette = bound_encoded(&mut wp, &state.doc, "align-center");
+        let from_palette = effect_edit(
+            &wp,
+            &state.doc,
+            &crate::effects::WordProcessorEffect::Align {
+                align: "center".into(),
+                at: None,
+            },
+        );
         assert_eq!(
-            dispatched.payload, from_palette.payload,
-            "panel align and palette spec build the same EncodedAction"
+            dispatched, from_palette,
+            "panel align and palette effect build the same edit"
         );
         // The block really carries the centre alignment.
         wp.refresh_blocks(&state.doc);
@@ -1257,7 +1268,7 @@ fn headings_draw_bold_and_unchanged_blocks_reuse_their_layout() {
     {
         use tilo_doc_codecs::{FormatProvider, MarkdownCodec};
         let mut state = crate::initialized_state();
-        let c = tilo_doc::model::init(&mut state.doc, &state.root);
+        let c = crate::model::init(&mut state.doc).unwrap();
         let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
         {
             let mut dm = tilo_doc::DocMut {
@@ -2591,7 +2602,7 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
 
 /// Build a doc directly in `state` from a closure over a `DocMut`.
 fn with_doc(state: &mut ui::State, f: impl FnOnce(&mut tilo_doc::DocMut)) {
-    let c = tilo_doc::model::init(&mut state.doc, &state.root);
+    let c = crate::model::init(&mut state.doc).unwrap();
     let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
     let mut dm = tilo_doc::DocMut {
         doc: &mut state.doc,
@@ -2628,7 +2639,7 @@ fn large_body() -> ui::State {
 /// How the large-body fixture is made: the same edits a person's typing
 /// would produce, block by block.
 fn build_large_body() -> ui::State {
-    let mut state = crate::initialized_state();
+    let mut state = ui::State::new();
     with_doc(&mut state, |dm| {
         let mut after = None;
         for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
@@ -4563,10 +4574,8 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
         wp.model_mut().enter(&mut edits(&mut state.doc));
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "beta");
-        let ids = tilo_doc::model::blocks_in_order(
-            &state.doc,
-            &tilo_doc::model::open(&state.doc, &state.root).unwrap(),
-        );
+        let ids =
+            tilo_doc::model::blocks_in_order(&state.doc, &crate::model::open(&state.doc).unwrap());
         wp.model_mut().set_caret(Caret {
             block: ids[0].clone(),
             offset: 2,
@@ -4579,18 +4588,17 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
 
         wp.insert_text_via_action(&mut edits(&mut state.doc), "X");
 
-        let dispatched = wp.last_dispatched_for_test().expect("action dispatched");
-        let action: crate::actions::RichTextAction =
-            serde_json::from_slice(&dispatched.payload).unwrap();
+        let action = wp
+            .last_dispatched_for_test()
+            .cloned()
+            .expect("action dispatched");
         assert!(matches!(
             action,
             crate::actions::RichTextAction::ReplaceSelection { .. }
         ));
-        let blocks = tilo_doc::model::materialize(
-            &state.doc,
-            &tilo_doc::model::open(&state.doc, &state.root).unwrap(),
-        )
-        .blocks;
+        let blocks =
+            tilo_doc::model::materialize(&state.doc, &crate::model::open(&state.doc).unwrap())
+                .blocks;
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].text, "alXta");
     }
@@ -5011,13 +5019,9 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
         let dispatched = wp
             .last_dispatched_for_test()
             .expect("the suggestion dispatched an action");
-        assert_eq!(
-            dispatched.type_id,
-            crate::actions::WORD_PROCESSOR_ACTION_TYPE
-        );
         assert!(matches!(
-            serde_json::from_slice::<crate::actions::RichTextAction>(&dispatched.payload),
-            Ok(crate::actions::RichTextAction::SpliceText { at: 0, del: 3, ref ins, .. }) if ins == "the"
+            dispatched,
+            crate::actions::RichTextAction::SpliceText { at: 0, del: 3, ins, .. } if ins == "the"
         ));
         // The block text now reads "the end".
         let id = wp.blocks[0].id.clone();
@@ -5082,7 +5086,7 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
 /// constructed `ui::State`.
 fn author_doc_with_footnote(body: &str, ref_idx: usize, note_body: &str) -> ui::State {
     let mut state = crate::initialized_state();
-    let c = tilo_doc::model::init(&mut state.doc, &state.root);
+    let c = crate::model::init(&mut state.doc).unwrap();
     let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
     {
         let mut dm = tilo_doc::DocMut {
@@ -5164,7 +5168,7 @@ fn footnotes_render_in_the_page_area_numbered_in_document_order() {
         // Two footnote references in one paragraph; the FIRST reference (by source
         // position) must be number 1 regardless of the notes' id sort order.
         let mut state = crate::initialized_state();
-        let c = tilo_doc::model::init(&mut state.doc, &state.root);
+        let c = crate::model::init(&mut state.doc).unwrap();
         let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
         let (n_first, n_second);
         {
@@ -5217,7 +5221,7 @@ fn doc_with_paragraph(
     String,
 ) {
     let mut state = crate::initialized_state();
-    let c = tilo_doc::model::init(&mut state.doc, &state.root);
+    let c = crate::model::init(&mut state.doc).unwrap();
     let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
     let bid;
     {
@@ -5245,15 +5249,8 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
     // Phase: comment_range_computes_a_highlight_rect.
     {
         // "hello world" with a comment over the word "world" (chars 6..11).
-        let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
-        {
-            let mut dm = tilo_doc::DocMut {
-                doc: &mut state.doc,
-                c: &c,
-                ids: &mut ids,
-            };
-            dm.add_comment(&bid, 6, 11, "Ada", "Reword this");
-        }
+        let (wp, mut state, _, _, bid) = doc_with_paragraph("hello world");
+        crate::model::comment_by(&mut state.doc, "Ada", &bid, (6, 11), "Reword this");
         state.doc.commit();
         let mut framed = mount(state, wp, 1000, 900);
         let (wp, _) = Framed::split(&mut framed);
@@ -5299,18 +5296,21 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
 
     // Phase: review_reply_affordance_opens_the_durable_thread.
     {
-        let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
-        let comment;
-        {
-            let mut dm = tilo_doc::model::DocMut {
-                doc: &mut state.doc,
-                c: &c,
-                ids: &mut ids,
-            };
-            comment = dm.add_comment(&bid, 0, 5, "Ada", "Could this be clearer?");
-            let reply = dm.add_comment_reply(&comment, "Bea", "2026-09-07", "I will revise it.");
-            assert!(reply.is_some(), "reply attaches to the stable parent id");
-        }
+        let (wp, mut state, c, _, bid) = doc_with_paragraph("hello world");
+        let comment = crate::model::comment_by(
+            &mut state.doc,
+            "Ada",
+            &bid,
+            (0, 5),
+            "Could this be clearer?",
+        );
+        crate::model::reply_by(
+            &mut state.doc,
+            &comment,
+            "Bea",
+            "2026-09-07",
+            "I will revise it.",
+        );
         state.doc.commit();
         let mut framed = mount(state, wp, 1000, 700);
         let (wp, state) = Framed::split(&mut framed);
@@ -5385,15 +5385,8 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
     // Phase: deleting_comment_removes_it_and_clears_the_highlight.
     {
         // "hello world" with a comment over "world" (chars 6..11).
-        let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
-        let cid = {
-            let mut dm = tilo_doc::DocMut {
-                doc: &mut state.doc,
-                c: &c,
-                ids: &mut ids,
-            };
-            dm.add_comment(&bid, 6, 11, "Ada", "Reword this")
-        };
+        let (wp, mut state, c, _, bid) = doc_with_paragraph("hello world");
+        let cid = crate::model::comment_by(&mut state.doc, "Ada", &bid, (6, 11), "Reword this");
         state.doc.commit();
         let mut framed = mount(state, wp, 1000, 900);
         let (wp, state) = Framed::split(&mut framed);
@@ -5659,8 +5652,17 @@ fn tracked_changes_render_and_accept_individually() {
 /// Re-materialize the document straight from the CRDT (the production
 /// snapshot path) so a test asserts on what every reader sees — not on the
 /// widget's cached copy.
+/// The document as the editor draws it: its body, and the comment threads
+/// beside it marked on the text they are about.
 fn snapshot(state: &ui::State, c: &tilo_doc::Containers) -> tilo_doc::snapshot::DocSnapshot {
-    tilo_doc::model::materialize(&state.doc, c)
+    let mut snapshot = tilo_doc::model::materialize(&state.doc, c);
+    snapshot.comments = <crate::model::Document as ui::tilo_resource::Resource>::read(&state.doc)
+        .map(|document| document.comment_views(&state.doc))
+        .unwrap_or_default();
+    for block in &mut snapshot.blocks {
+        super::mark_comments(block, &snapshot.comments);
+    }
+    snapshot
 }
 
 /// Rejecting a tracked deletion keeps the text and drops the mark, and accept all clears every tracked
@@ -5726,6 +5728,8 @@ fn tracked_changes_reject_and_accept_all() {
         );
 
         wp.dispatch_review_action(ReviewAction::AcceptAllChanges, &mut edits(&mut state.doc));
+        // Accept All asks the person first; they agree.
+        confirm_asked(wp, &mut state.doc);
 
         // Every change is gone; accepting the insertion kept "keep" and accepting
         // the deletion removed "gone".
@@ -5768,10 +5772,10 @@ fn review_markup_registers_card_hits_and_toggles_off() {
                 c: &c,
                 ids: &mut ids,
             };
-            cid = dm.add_comment(&bid, 0, 4, "Ada", "look");
             ins_id = dm.insert_change(tilo_doc::ChangeKind::Ins, "Ada", "");
             dm.add_change_mark(tilo_doc::ChangeKind::Ins, &bid, 5, 9, &ins_id);
         }
+        cid = crate::model::comment_by(&mut state.doc, "Ada", &bid, (0, 4), "look");
         state.doc.commit();
         let mut framed = mount(state, wp, 1200, 900);
         let (wp, state) = Framed::split(&mut framed);
@@ -5847,10 +5851,10 @@ fn review_markup_registers_card_hits_and_toggles_off() {
                 c: &c,
                 ids: &mut ids,
             };
-            dm.add_comment(&bid, 0, 5, "Ada", "note");
             let ci = dm.insert_change(tilo_doc::ChangeKind::Ins, "Ada", "");
             dm.add_change_mark(tilo_doc::ChangeKind::Ins, &bid, 6, 11, &ci);
         }
+        crate::model::comment_by(&mut state.doc, "Ada", &bid, (0, 5), "note");
         state.doc.commit();
 
         // Default ON: a comment marker is collected for the right-margin card.
@@ -6269,36 +6273,50 @@ fn hosted_lookup_offers_caret_edits_not_a_second_document() {
         wp.search_rows().is_empty(),
         "nothing found, no search results"
     );
-    let edits: Vec<&str> = wp.bound_edits().iter().map(|edit| edit.id).collect();
+    let effects: Vec<String> =
+        <crate::effects::WordProcessorEffect as ui::tilo_resource::Effect>::specs()
+            .into_iter()
+            .map(|spec| spec.id)
+            .collect();
     for (id, what) in [
         (
             "type-text",
-            "typing is bound to the caret, not only a keypress",
+            "typing is an effect at the caret, not only a keypress",
         ),
         (
             "place-image",
-            "placing an image is bound to the caret, not only a toolbar click",
+            "placing an image is an effect at the caret, not only a toolbar click",
         ),
-        ("insert-table", "inserting a table is bound to the caret"),
+        (
+            "insert-table-here",
+            "inserting a table is an effect at the caret",
+        ),
     ] {
-        assert!(edits.contains(&id), "{what}: {edits:?}");
+        assert!(
+            effects.iter().any(|effect| effect == id),
+            "{what}: {effects:?}"
+        );
     }
 }
 
 #[test]
-fn a_selection_binds_set_hyperlink() {
+fn a_selection_can_be_linked() {
     let (mut state, mut wp) = bound();
     wp.inner.insert_str(&mut edits(&mut state.doc), "hello");
     wp.sync(&state.doc, &state.root);
     wp.inner.caret.offset = 0;
     wp.inner.set_anchor();
     wp.inner.caret.offset = 5;
-    wp.resolve_bound_edits(&state.doc);
+    let link = effect_edit(
+        &wp,
+        &state.doc,
+        &crate::effects::WordProcessorEffect::SetHyperlink {
+            target: "https://example.com".into(),
+        },
+    );
     assert!(
-        wp.bound_edits()
-            .iter()
-            .any(|edit| edit.id == "set-hyperlink"),
-        "a selection binds set-hyperlink to the document"
+        matches!(link, crate::actions::RichTextAction::SetMark { ref name, .. } if name == "link"),
+        "a selection is linked by the effect: {link:?}"
     );
 }
 
@@ -7175,7 +7193,8 @@ fn semantic_text_caret_is_painted_without_a_selection_or_input() {
             sequence: 1,
             actor: tilo_actions::InteractionActor {
                 id: "synthetic-semantic-run".into(),
-                kind: tilo_actions::InteractionActorKind::Agent,
+                kind: tilo_actions::ActorKind::Agent,
+                for_person: None,
             },
             phase: tilo_actions::InteractionPhase::Applying,
             action: tilo_actions::InteractionAction {
@@ -8431,10 +8450,9 @@ fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
             0,
             "Footnote remains associated with its page.",
         );
-        dm.add_comment(&first, 0, 9, "Reviewer", "Keep this comment.");
         let change = dm.insert_change(tilo_doc::ChangeKind::Ins, "Reviewer", "");
         dm.add_change_mark(tilo_doc::ChangeKind::Ins, &first, 12, 20, &change);
-        let mut after = first;
+        let mut after = first.clone();
         for i in 0..24 {
             let id = dm.insert_block(Some(&after), "paragraph");
             dm.splice_text(
@@ -8446,6 +8464,13 @@ fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
             after = id;
         }
     }
+    crate::model::comment_by(
+        &mut state.doc,
+        "Reviewer",
+        &first,
+        (0, 9),
+        "Keep this comment.",
+    );
     let (w, h) = (900, 1100);
     let mut framed = mount(state, wp, w, h);
     let (wp, _) = Framed::split(&mut framed);
@@ -8710,10 +8735,10 @@ fn render_review_shots() {
                 c: &c,
                 ids: &mut ids,
             };
-            doc.add_comment(&bid, 5, 17, "Ada", "This needs a source.");
             let change = doc.insert_change(tilo_doc::ChangeKind::Ins, "Lin", "");
             doc.add_change_mark(tilo_doc::ChangeKind::Ins, &bid, 29, 39, &change);
         }
+        crate::model::comment_by(&mut state.doc, "Ada", &bid, (5, 17), "This needs a source.");
         state.doc.commit();
         let mut framed = mount(state, wp, w, h);
         render_review_png(&mut framed, w, h, &dir, "review-overlay");
@@ -8903,4 +8928,18 @@ fn a_digest_addressed_remote_caret_resolves_to_its_block() {
         1,
     );
     assert!(wp.remote_presence_overlays(&stray).0.is_empty());
+}
+
+/// Apply what `wp` asked the person to confirm, as the door does once they
+/// agree.
+fn confirm_asked(wp: &WordProcessorWidget, doc: &mut automerge::AutoCommit) {
+    let dispatch = wp.dispatch.as_ref().expect("the editor is hosted");
+    let mut document =
+        ui::tilo_resource::Replica::<crate::framework::Document>::from_doc(doc.clone());
+    for action in dispatch.take_asked().expect("what was asked builds") {
+        document
+            .apply_action(&action)
+            .expect("a confirmed change applies");
+    }
+    *doc = document.doc().clone();
 }

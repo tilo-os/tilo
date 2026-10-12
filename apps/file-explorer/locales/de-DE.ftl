@@ -308,7 +308,6 @@ files-share-response-truncated = Antwort des Freigabedienstes wurde abgeschnitte
 files-share-response-invalid = Ungültige Antwort des Freigabedienstes: { $error }
 files-share-refused = Freigabedienst hat die Anfrage abgelehnt ({ $code })
 files-received-refused = Empfangsdienst hat den Link abgelehnt ({ $code })
-files-received-retry-refused = Empfangsdienst konnte die Wiederholung nicht ausführen ({ $code })
 files-received-wrong-response = Empfangsdienst hat die falsche Antwort zurückgegeben
 files-received-encode-failed = Empfangsanfrage konnte nicht kodiert werden
 files-received-request-too-large = Empfangsanfrage überschreitet ihre Grenze
@@ -614,8 +613,16 @@ files-invalid-destination-name = Das Ziel muss ein einzelner Dateiname sein.
 
 files-native-restore-select-one = Wähle einen Eintrag im persönlichen Papierkorb zum Wiederherstellen. Andere Einträge bleiben unverändert.
 
-files-history-paste-files = Dateien einfügen
-files-history-restore-file = Datei wiederherstellen
+## History: what each change to Files did
+
+file-explorer-add-bookmark = { $place } zu den Favoriten hinzugefügt
+file-explorer-remove-bookmark = { $place } aus den Favoriten entfernt
+file-explorer-new-folder = Ordner { $name } erstellt
+file-explorer-rename = { $entry } in { $name } umbenannt
+file-explorer-trash = Dateien in den Papierkorb verschoben
+file-explorer-move = Dateien nach { $to } verschoben
+file-explorer-copy = Dateien nach { $to } kopiert
+file-explorer-revert = Eine Dateiänderung zurückgenommen
 
 files-native-trash-delete-unavailable = Diese Objekte können wiederhergestellt werden. Dauerhaftes Löschen ist hier nicht verfügbar.
 files-user-trash-unavailable = Dein Papierkorb ist in diesem Arbeitsbereich nicht verfügbar.

@@ -492,6 +492,20 @@ struct Cost {
 
 const IPV4_UDP_HEADER: u64 = 28;
 
+/// Wait until no voice datagram arrived for 100 ms: what was sent is in.
+async fn quiet(received: &std::sync::Mutex<(u64, u64)>) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let mut seen = *received.lock().unwrap();
+    loop {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let now = *received.lock().unwrap();
+        if now == seen || std::time::Instant::now() >= deadline {
+            return;
+        }
+        seen = now;
+    }
+}
+
 #[allow(
     clippy::cast_precision_loss,
     reason = "byte counts over seconds, reported as rates"
@@ -512,8 +526,12 @@ async fn measure(
             stats.tx_bytes + IPV4_UDP_HEADER * stats.tx_datagrams
         }
     };
+    // The previous stream's last frames may still be on their way through a
+    // loaded relay: they are not this stream's cost.
+    quiet(received).await;
     let (a0, b0) = (wire(a.wire(), false), wire(b.wire(), true));
     let r0 = *received.lock().unwrap();
+    let started = std::time::Instant::now();
     let mut tick = tokio::time::interval(Duration::from_millis(20));
     let frames = MEASURE.as_millis() as u64 / 20;
     let first = *sequence;
@@ -550,14 +568,19 @@ async fn measure(
             }
         }
     }
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    quiet(received).await;
     let r1 = *received.lock().unwrap();
-    let seconds = MEASURE.as_secs_f64();
+    let (a1, b1) = (wire(a.wire(), false), wire(b.wire(), true));
+    // Rates over the time the counters actually spanned: the frames' 20 ms
+    // ticks, which run late on a loaded machine, and the wait for the last
+    // frames to arrive. Dividing by MEASURE alone charged that extra time's
+    // bytes to two seconds.
+    let seconds = started.elapsed().as_secs_f64();
     Cost {
-        subscriber_wire: (wire(b.wire(), true) - b0) as f64 / seconds,
+        subscriber_wire: (b1 - b0) as f64 / seconds,
         subscriber_objects: (r1.0 - r0.0) as f64 / seconds,
         subscriber_datagrams: (r1.1 - r0.1) as f64 / seconds,
-        publisher_wire: (wire(a.wire(), false) - a0) as f64 / seconds,
+        publisher_wire: (a1 - a0) as f64 / seconds,
     }
 }
 

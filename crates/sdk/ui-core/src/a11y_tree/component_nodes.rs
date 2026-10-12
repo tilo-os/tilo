@@ -384,7 +384,7 @@ pub(super) fn resource_actions(
             bound_actions.insert(
                 (id.clone(), spec.id.clone()),
                 BoundActionTarget {
-                    physical_text: false,
+                    input: crate::bound_dispatch::Input::Discrete,
                     binding: binding.clone(),
                     address: BoundActionAddress {
                         instance_id: binding.instance_id,

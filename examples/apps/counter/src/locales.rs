@@ -11,3 +11,17 @@ pub fn install() {
         eprintln!("localization catalog: {error}");
     }
 }
+
+/// One constant per message of locales/en-US.ftl, for labels and placeholders.
+pub mod keys {
+    use ui::i18n::LabelKey;
+    pub const COUNTER_ADD: LabelKey = LabelKey::new("counter-add");
+    pub const COUNTER_ADD_ONE: LabelKey = LabelKey::new("counter-add-one");
+    pub const COUNTER_ADD_TEN: LabelKey = LabelKey::new("counter-add-ten");
+    pub const COUNTER_COUNTER_COUNT: LabelKey = LabelKey::new("counter-counter-count");
+    pub const COUNTER_HEADING: LabelKey = LabelKey::new("counter-heading");
+    pub const COUNTER_LABEL: LabelKey = LabelKey::new("counter-label");
+    pub const COUNTER_RESET: LabelKey = LabelKey::new("counter-reset");
+    pub const COUNTER_RESET_BUTTON: LabelKey = LabelKey::new("counter-reset-button");
+    pub const COUNTER_SUBTRACT_ONE: LabelKey = LabelKey::new("counter-subtract-one");
+}

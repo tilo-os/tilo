@@ -318,7 +318,6 @@ files-share-response-truncated = Share response was truncated: { $error }
 files-share-response-invalid = Invalid share-service response: { $error }
 files-share-refused = Share service refused the request ({ $code })
 files-received-refused = Received-file service refused the link ({ $code })
-files-received-retry-refused = Received-file service could not retry ({ $code })
 files-received-wrong-response = Received-file service returned the wrong response
 files-received-encode-failed = Could not encode received-file request
 files-received-request-too-large = Received-file request exceeds its bound
@@ -615,8 +614,16 @@ files-invalid-destination-name = The destination must be one file name.
 
 files-native-restore-select-one = Select one home Trash entry to restore. Other items are unchanged.
 
-files-history-paste-files = Paste files
-files-history-restore-file = Restore file
+## History: what each change to Files did
+
+file-explorer-add-bookmark = Added { $place } to Favourites
+file-explorer-remove-bookmark = Removed { $place } from Favourites
+file-explorer-new-folder = Created the folder { $name }
+file-explorer-rename = Renamed { $entry } to { $name }
+file-explorer-trash = Moved files to Trash
+file-explorer-move = Moved files to { $to }
+file-explorer-copy = Copied files to { $to }
+file-explorer-revert = Took back a change to files
 
 files-native-trash-delete-unavailable = These items can be restored. Permanent deletion is unavailable here.
 files-user-trash-unavailable = Your Trash isn’t available in this workspace.

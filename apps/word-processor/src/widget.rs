@@ -649,6 +649,26 @@ impl<T: Clone> Copied<T> {
     }
 }
 
+/// Draw on `view` the comment marks of the threads about its text: one mark
+/// per thread, valued with the thread's id, as the review margin and the
+/// context menu read them.
+fn mark_comments(view: &mut BlockView, comments: &[tilo_doc::CommentView]) {
+    view.marks
+        .retain(|mark| mark.name != tilo_doc::schema::MARK_COMMENT);
+    for comment in comments {
+        if let Some((block, start, end)) = &comment.range
+            && *block == view.id
+        {
+            view.marks.push(tilo_doc::document::MarkSpan {
+                name: tilo_doc::schema::MARK_COMMENT.to_owned(),
+                start: *start,
+                end: *end,
+                value: tilo_doc::document::MarkValue::Str(comment.id.clone()),
+            });
+        }
+    }
+}
+
 /// What the editor last copied out of the document state.
 #[derive(Default)]
 struct CopiedParts {
@@ -657,7 +677,8 @@ struct CopiedParts {
     header: Copied<Vec<BlockView>>,
     footer: Copied<Vec<BlockView>>,
     notes: Copied<Vec<NoteView>>,
-    comments: Copied<Vec<tilo_doc::CommentView>>,
+    /// The comment threads last drawn, with where their text was.
+    comments: Vec<tilo_doc::CommentView>,
     changes: Copied<Vec<tilo_doc::ChangeView>>,
     content: Copied<std::collections::BTreeSet<String>>,
 }
@@ -714,7 +735,7 @@ fn participant_presence_payload(
     doc: &AutoCommit,
 ) -> Option<ui::PresencePayload> {
     let ctx = view.ctx(doc)?;
-    let containers = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+    let containers = crate::model::open(doc).ok()?;
     let obj = tilo_doc::model::region_block_obj(
         doc,
         &containers,
@@ -1268,29 +1289,35 @@ pub struct WordProcessorWidget {
     /// writing it records what it now holds, so a later open can tell a
     /// change made elsewhere.
     record_file: Option<PathBuf>,
-    /// The edits bound to this window's caret and selection, and to each
-    /// participant's, as the document they were resolved against last
-    /// placed them: what [`ResourceSurface::bound_declarations`] publishes.
-    bound: BoundEdits,
+    /// The Find results of this window's view and of each participant's,
+    /// as the document they were resolved against last placed them: what
+    /// [`ResourceSurface::live_rows`] publishes.
+    bound: BoundRows,
+    /// The view an edit effect this window's person invoked leaves them
+    /// with, adopted once the document moved past the version it was built
+    /// against (the edit applied).
+    pending_local: Option<(LocalVersion, crate::actions::participant::ParticipantView)>,
     /// The last action the editor's own affordances dispatched, so a test can
     /// compare it with what the matching published operation builds.
     #[cfg(test)]
-    last_dispatched: Option<tilo_actions::EncodedAction>,
+    last_dispatched: Option<crate::actions::RichTextAction>,
 }
 
-/// What one view offers beside the document: the edits bound to its caret
-/// and selection, and its Find results.
-#[derive(Default, Clone)]
-struct ViewOffer {
-    edits: Vec<ui::tilo_resource::ActionDecl<crate::framework::Document>>,
-    rows: Vec<ui::framework::LiveRow>,
-}
-
-/// What the views a window serves offer, resolved at its last sync.
+/// The Find results the views a window serves offer, resolved at its last
+/// sync.
 #[derive(Default)]
-struct BoundEdits {
-    local: ViewOffer,
-    participants: HashMap<tilo_actions::ParticipantId, ViewOffer>,
+struct BoundRows {
+    local: Vec<ui::framework::LiveRow>,
+    participants: HashMap<tilo_actions::ParticipantId, Vec<ui::framework::LiveRow>>,
+}
+
+/// Committed heads plus the open transaction's size: changes whenever an
+/// edit applied.
+type LocalVersion = (Vec<automerge::ChangeHash>, usize);
+
+fn local_version(doc: &AutoCommit) -> LocalVersion {
+    use automerge::transaction::Transactable;
+    (doc.base_heads(), doc.pending_ops())
 }
 
 /// The host chooser's request for a document to open.
@@ -1521,7 +1548,8 @@ impl WordProcessorWidget {
             staged_scenario: None,
             layout: None,
             record_file: None,
-            bound: BoundEdits::default(),
+            bound: BoundRows::default(),
+            pending_local: None,
             #[cfg(test)]
             last_dispatched: None,
         };
@@ -1558,7 +1586,7 @@ impl WordProcessorWidget {
 
     /// The last action the editor's own affordances dispatched.
     #[cfg(test)]
-    pub(crate) fn last_dispatched_for_test(&self) -> Option<&tilo_actions::EncodedAction> {
+    pub(crate) fn last_dispatched_for_test(&self) -> Option<&crate::actions::RichTextAction> {
         self.last_dispatched.as_ref()
     }
 
@@ -1576,53 +1604,42 @@ impl WordProcessorWidget {
             return;
         }
         if let Some(dispatch) = &self.dispatch {
-            dispatch.apply(&crate::actions::RichTextAction::NoteFileWritten {
-                digest: tilo_content::hash_bytes(bytes),
-            });
+            dispatch.submit(
+                crate::model::Document::NOTE_FILE_WRITTEN.with(tilo_content::hash_bytes(bytes)),
+            );
         }
     }
 
-    /// Resolve the edits bound to this window's view and to each
-    /// participant's against `doc` as it is now. A participant's edit noted
-    /// against this version adopts its next view once the edit applied.
+    /// Resolve the Find results of this window's view and of each
+    /// participant's against `doc` as it is now.
     fn resolve_bound_edits(&mut self, doc: &AutoCommit) {
         if self.read_only() {
-            self.bound = BoundEdits::default();
+            self.bound = BoundRows::default();
             return;
         }
-        let body = self.kept_body();
-        let edits = |ctx: &crate::actions::WpResourceCtx| ViewOffer {
-            edits: crate::actions::bound::declarations(
-                &crate::actions::live_presentation_resources(ctx, doc, body.as_deref()),
-            ),
-            rows: crate::actions::search_rows(ctx, doc),
-        };
         let local = self
             .wp_resource_ctx(doc)
-            .map(|ctx| edits(&ctx))
+            .map(|ctx| crate::actions::search_rows(&ctx, doc))
             .unwrap_or_default();
         let mut participants = HashMap::new();
         let known: Vec<_> = self.participants.participants().cloned().collect();
         for participant in known {
-            let Some(mut ctx) = self
+            let Some(ctx) = self
                 .participant_view_or_default(&participant, doc)
                 .and_then(|view| view.ctx(doc))
             else {
                 continue;
             };
-            ctx.content = self.inner.content_store().clone();
-            self.participants.note_resolution(&participant, doc);
-            participants.insert(participant, edits(&ctx));
+            participants.insert(participant, crate::actions::search_rows(&ctx, doc));
         }
-        self.bound = BoundEdits {
+        self.bound = BoundRows {
             local,
             participants,
         };
     }
 
-    /// What the view of whoever is invoking, or is published for, offers:
-    /// a participant's own, else this window's.
-    fn offer(&self) -> ViewOffer {
+    /// The Find results of the view of whoever is invoking, as rows.
+    pub(crate) fn search_rows(&self) -> Vec<ui::framework::LiveRow> {
         match ui::invocation_scope::current_viewer() {
             Some(participant) => self
                 .bound
@@ -1634,16 +1651,107 @@ impl WordProcessorWidget {
         }
     }
 
-    /// The edits bound to the view of whoever is invoking.
-    pub(crate) fn bound_edits(
-        &self,
-    ) -> Vec<ui::tilo_resource::ActionDecl<crate::framework::Document>> {
-        self.offer().edits
+    /// Adopt the view an edit effect left this window's person with, once
+    /// the edit applied.
+    fn adopt_local_outcome(&mut self, state: &AutoCommit) {
+        let Some((version, _)) = &self.pending_local else {
+            return;
+        };
+        if *version == local_version(state) {
+            return;
+        }
+        if let Some((_, next)) = self.pending_local.take() {
+            let body = self.kept_body();
+            let next = next.settle_in(state, body.as_deref());
+            self.adopt_local_view(&next, state);
+        }
     }
 
-    /// The Find results of the view of whoever is invoking, as rows.
-    pub(crate) fn search_rows(&self) -> Vec<ui::framework::LiveRow> {
-        self.offer().rows
+    /// Make the edit an edit effect names at the invoker's caret: a
+    /// participant's own view when one invoked it, else this window's. The
+    /// edit goes through the door as the invoker's, one undo step.
+    fn answer_edit_effect(
+        &mut self,
+        effect: &WordProcessorEffect,
+        cx: &mut ui::framework::EffectCx<crate::framework::Document, Self>,
+    ) -> Option<ui::framework::EffectAnswer> {
+        let doc = match cx.document() {
+            Some(doc) => doc.clone(),
+            None => return Some(Err("the document is not at hand".into())),
+        };
+        let participant = ui::invocation_scope::current_participant();
+        // Told where to act, it acts there; else at the invoker's caret.
+        let view = match (cx.place(), &participant) {
+            (Some(place), _) => {
+                match crate::actions::participant::ParticipantView::at_place(&doc, place) {
+                    Ok(view) => view,
+                    Err(error) => return Some(Err(error)),
+                }
+            }
+            (None, Some(participant)) => {
+                match self.participant_view_or_default(participant, &doc) {
+                    Some(view) => view,
+                    None => {
+                        return Some(Err("the document has no body to place a caret in".into()));
+                    }
+                }
+            }
+            (None, None) => self.local_edit_view(),
+        };
+        let dispatch = cx.dispatcher();
+        if let WordProcessorEffect::CommentSelection { text, .. } = effect {
+            return Some(
+                crate::actions::editing::comment_range(&view, &doc)
+                    .map(|range| {
+                        dispatch.submit(crate::model::Document::ADD_COMMENT.with(
+                            crate::model::document::AddComment {
+                                block: range.block,
+                                start: range.start,
+                                end: range.end,
+                                text: text.clone(),
+                            },
+                        ));
+                        ui::framework::Effected::done()
+                    })
+                    .map_err(|error| error.to_string()),
+            );
+        }
+        let built = effect.edit(&view, &doc, self.inner.content_store())?;
+        let (envelopes, next) = match built {
+            Ok(outcome) => outcome,
+            Err(error) => return Some(Err(error.to_string())),
+        };
+        if envelopes.is_empty() {
+            return Some(Err("there is nothing to change here".into()));
+        }
+        dispatch.group(|| {
+            for op in &envelopes {
+                dispatch.submit(crate::model::edit(op));
+            }
+        });
+        match participant {
+            Some(participant) => {
+                self.participants.note_resolution(&participant, &doc);
+                note_participant_outcome(&next);
+            }
+            None => self.pending_local = Some((local_version(&doc), next)),
+        }
+        self.lifecycle.dirty = true;
+        // One that answers its caller does so with the blocks its edit
+        // changed, once the door applied it.
+        if answers_later(effect) {
+            return Some(cx.when_landed(|_, landed, _| {
+                // The blocks it changed; the ids it minted are among them.
+                let answer = match landed.answer {
+                    Some(serde_json::Value::Object(mut fields)) => {
+                        fields.remove("changed").unwrap_or_default()
+                    }
+                    other => other.unwrap_or_default(),
+                };
+                Ok(ui::framework::Effected::value(answer))
+            }));
+        }
+        Some(Ok(ui::framework::Effected::done()))
     }
 
     /// Bring the kept state up to date with `state`. Returns whether it
@@ -1659,7 +1767,9 @@ impl WordProcessorWidget {
 
     /// Read the kept state, once there is one.
     fn with_live<T>(&self, read: impl FnOnce(&tilo_document::RichTextState) -> T) -> Option<T> {
-        self.source.as_ref().map(|live| live.with(read))
+        self.source
+            .as_ref()
+            .and_then(|live| live.with(|document| document.text().map(read)))
     }
 
     /// Show the paragraphs `demand` names.
@@ -1796,22 +1906,56 @@ impl WordProcessorWidget {
         state: &mut ui::widget::Edits<'_>,
         action: &crate::actions::RichTextAction,
     ) -> bool {
-        let context = tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", action);
+        let done = self.try_perform_document(state, &crate::model::action(action));
+        #[cfg(test)]
+        if done {
+            self.last_dispatched = Some(action.clone());
+        }
+        done
+    }
+
+    /// Take the document verb `operation` now, as this window's person.
+    fn perform_verb(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        operation: crate::model::DocumentAction,
+    ) -> bool {
+        self.perform_verb_as(state, operation, None)
+    }
+
+    /// Take the document verb `operation` now, as `author` when one is
+    /// named (a scenario staging a collaborator's comment), else as this
+    /// window's person.
+    fn perform_verb_as(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        operation: crate::model::DocumentAction,
+        author: Option<&str>,
+    ) -> bool {
+        // A staged collaborator's verb is theirs in history.
+        let _author = author.map(|author| {
+            ui::invocation_scope::InvokerScope::enter(tilo_actions::ActionInvoker::actor(author))
+        });
+        let action = ui::tilo_resource::Stamped {
+            operation,
+            now_ms: ui::tilo_resource::origin_now_ms(),
+        };
+        self.try_perform_document(state, &action)
+    }
+
+    /// Submit one action of the document now. `false` when the host
+    /// refuses it, so a caller can leave the document and caret as they
+    /// were.
+    fn try_perform_document(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        action: &<crate::model::Document as ui::tilo_resource::Resource>::Action,
+    ) -> bool {
         let Some(dispatch) = self.dispatch.clone() else {
             return false;
         };
-        match dispatch.apply_now_with(state, action, context) {
-            Ok(()) => {
-                #[cfg(test)]
-                {
-                    self.last_dispatched = tilo_actions::EncodedAction::encode(
-                        crate::actions::WORD_PROCESSOR_ACTION_TYPE,
-                        action,
-                    )
-                    .ok();
-                }
-                true
-            }
+        match dispatch.apply_now(state, action) {
+            Ok(()) => true,
             Err(error) => {
                 if self.read_only() {
                     self.toast.show(t("toast-view-only"), ToastKind::Error);
@@ -1855,7 +1999,7 @@ impl WordProcessorWidget {
             .cloned()
             .collect();
         if !removed.is_empty()
-            && let Ok(containers) = tilo_doc::model::open(state, &automerge::ROOT)
+            && let Ok(containers) = crate::model::open(state)
         {
             let snapshot = tilo_doc::model::materialize(state, &containers);
             for style in removed {
@@ -2619,14 +2763,11 @@ impl WordProcessorWidget {
         let Some(dispatch) = self.dispatch.clone() else {
             return Err("this view edits nothing".into());
         };
+        // Each edit is the participant's in history.
+        let _invoker = ui::invocation_scope::InvokerScope::enter(invoker.clone());
         for action in &envelopes {
             dispatch
-                .apply_now_with(
-                    state,
-                    action,
-                    tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", action)
-                        .with_invoker(invoker.clone()),
-                )
+                .apply_now(state, &crate::model::action(action))
                 .map_err(|error| error.to_string())?;
         }
         self.set_participant_view(&participant, &view, state);
@@ -3160,7 +3301,7 @@ impl WordProcessorWidget {
 
     /// The first paragraph with text, and its length in characters.
     fn first_text_block(state: &AutoCommit) -> Option<(String, usize)> {
-        let containers = tilo_doc::model::open(state, &automerge::ROOT).ok()?;
+        let containers = crate::model::open(state).ok()?;
         tilo_doc::model::blocks_in_order(state, &containers)
             .into_iter()
             .find_map(|id| {
@@ -3175,19 +3316,19 @@ impl WordProcessorWidget {
     /// first paragraph, and with `thread` two replies and the thread panel
     /// open: the review a collaborator's document arrives with.
     fn stage_review(&mut self, state: &mut ui::widget::Edits<'_>, thread: bool) {
+        use crate::model::{DocumentAction, document};
         let Some((block, len)) = Self::first_text_block(state) else {
             return;
         };
-        self.perform_edits(
+        self.perform_verb_as(
             state,
-            &crate::actions::add_comment_action(
-                &block,
-                0,
-                len.min(12),
-                "Maya Chen",
-                "",
-                "Could we make this opening more specific?",
-            ),
+            DocumentAction::AddComment(document::AddComment {
+                block: block.clone(),
+                start: 0,
+                end: len.min(12),
+                text: "Could we make this opening more specific?".into(),
+            }),
+            Some("Maya Chen"),
         );
         self.perform_edits(
             state,
@@ -3202,28 +3343,29 @@ impl WordProcessorWidget {
         if !thread {
             return;
         }
-        let comments = |state: &AutoCommit| {
-            tilo_doc::model::open(state, &automerge::ROOT)
-                .map(|containers| tilo_doc::model::materialize(state, &containers).comments)
+        let threads = |state: &AutoCommit| {
+            <crate::model::Document as ui::tilo_resource::Resource>::read(state)
+                .map(|document| document.comment_views(state))
                 .unwrap_or_default()
         };
-        let Some(comment) = comments(state).into_iter().next().map(|comment| comment.id) else {
+        let Some(comment) = threads(state).into_iter().next().map(|comment| comment.id) else {
             return;
         };
-        for (author, date, text) in [
-            ("Jonas Weber", "2026-09-06", "I can revise the opening."),
-            (
-                "Maya Chen",
-                "2026-09-07",
-                "Thanks — please keep the decision clear.",
-            ),
+        for (author, text) in [
+            ("Jonas Weber", "I can revise the opening."),
+            ("Maya Chen", "Thanks — please keep the decision clear."),
         ] {
-            self.perform_edits(
+            self.perform_verb_as(
                 state,
-                &crate::actions::reply_to_comment_action(&comment, author, date, text),
+                DocumentAction::ReplyToComment(document::ReplyToComment {
+                    comment: ui::tilo_resource::Id::from_raw(comment.clone()),
+                    text: text.into(),
+                    body: None,
+                }),
+                Some(author),
             );
         }
-        if let Some(view) = comments(state).into_iter().find(|item| item.id == comment) {
+        if let Some(view) = threads(state).into_iter().find(|item| item.id == comment) {
             self.stage_comment_thread_for_shot(view);
         }
     }
@@ -3253,14 +3395,12 @@ impl WordProcessorWidget {
                 crate::actions::ImageInput::of(hash, SHOT_PNG),
             ),
         );
-        let image = tilo_doc::model::open(state, &automerge::ROOT)
-            .ok()
-            .and_then(|containers| {
-                tilo_doc::model::materialize(state, &containers)
-                    .blocks
-                    .into_iter()
-                    .find(|block| block.kind == "image")
-            });
+        let image = crate::model::open(state).ok().and_then(|containers| {
+            tilo_doc::model::materialize(state, &containers)
+                .blocks
+                .into_iter()
+                .find(|block| block.kind == "image")
+        });
         let Some(image) = image else {
             return;
         };
@@ -3460,9 +3600,11 @@ impl WordProcessorWidget {
         format: WpFormat,
     ) -> Result<(), String> {
         self.lifecycle.dirty = true;
-        if let Some(c) = self.inner.containers.as_ref() {
-            let dr = tilo_doc::DocRef { doc: state, c };
-            match format.export(dr, self.inner.content_store()) {
+        if self.inner.containers.is_some() {
+            // The file keeps the comment threads in its text, as file
+            // formats do.
+            let file = crate::model::export_copy(state)?;
+            match format.export(file.as_ref(), self.inner.content_store()) {
                 Ok(bytes) => {
                     tilo_files::native::atomic::write_preserving_target(path, &bytes).map_err(
                         |e| {
@@ -3701,7 +3843,10 @@ impl WordProcessorWidget {
         let blocks = &mut self.blocks;
         let mut parts = PartsUpdate::default();
         if let Some(live) = self.source.clone() {
-            live.with(|doc| {
+            live.with(|document| {
+                let Some(doc) = document.text() else {
+                    return;
+                };
                 // Paragraphs: keep a view whose paragraph is unchanged (same
                 // shared value), copy the rest.
                 let mut kept: HashMap<String, (std::rc::Rc<BlockView>, BlockView)> = if preview {
@@ -3715,11 +3860,16 @@ impl WordProcessorWidget {
                 };
                 let mut sources = Vec::with_capacity(end.saturating_sub(start));
                 let mut views = Vec::with_capacity(end.saturating_sub(start));
+                // Comment threads live beside the text: where each one's text
+                // is now is read from its anchor, and drawn as the comment
+                // mark on the paragraphs shown.
+                let comments = document.comment_views(state);
                 for source in doc.blocks(start..end) {
-                    let view = match kept.remove(&source.id) {
+                    let mut view = match kept.remove(&source.id) {
                         Some((old, view)) if std::rc::Rc::ptr_eq(&old, source) => view,
                         _ => BlockView::clone(source),
                     };
+                    mark_comments(&mut view, &comments);
                     sources.push(std::rc::Rc::clone(source));
                     views.push(view);
                 }
@@ -3729,11 +3879,12 @@ impl WordProcessorWidget {
                 parts.footer = copied.footer.take_if_new(doc.footer());
                 parts.notes = copied.notes.take_if_new(doc.notes());
                 parts.content = copied.content.see(doc.content());
-                let comments = copied.comments.take_if_new(doc.comments());
+                let comments_moved = copied.comments != comments;
                 let changes = copied.changes.take_if_new(doc.changes());
-                if comments.is_some() || changes.is_some() {
+                if comments_moved || changes.is_some() {
+                    copied.comments.clone_from(&comments);
                     parts.review = Some((
-                        comments.unwrap_or_else(|| doc.comments().as_ref().clone()),
+                        comments,
                         changes.unwrap_or_else(|| doc.changes().as_ref().clone()),
                     ));
                 }
@@ -9814,7 +9965,7 @@ impl WordProcessorWidget {
         }
         // Ctrl+O opens a document in place of the current one.
         if s.eq_ignore_ascii_case("o") {
-            self.invoke_effect(&WordProcessorEffect::Open { path: None });
+            self.invoke_effect(&WordProcessorEffect::OpenDocument { path: None });
             *handled = true;
             return;
         }
@@ -9911,6 +10062,15 @@ impl WordProcessorWidget {
     }
 }
 
+/// Whether `effect` answers its caller once its edit applied.
+fn answers_later(effect: &WordProcessorEffect) -> bool {
+    use ui::tilo_resource::Effect as _;
+    let id = effect.id();
+    WordProcessorEffect::declarations()
+        .iter()
+        .any(|declaration| declaration.id == id && declaration.is_job())
+}
+
 impl WordProcessorWidget {
     /// Apply a synchronous command or view operation. Returns `Ok(false)`
     /// when `type_id` is not this widget's.
@@ -9930,6 +10090,9 @@ impl WordProcessorWidget {
         cx: &mut ui::framework::EffectCx<crate::framework::Document, Self>,
     ) -> ui::framework::EffectAnswer {
         use ui::framework::Effected;
+        if let Some(answer) = self.answer_edit_effect(&effect, cx) {
+            return answer;
+        }
         if let Some(movement) = effect.view_operation()? {
             let doc = cx.document().ok_or("the document is not at hand")?.clone();
             // A delivered invocation by a participant (an agent task) moves
@@ -9942,10 +10105,10 @@ impl WordProcessorWidget {
             return Ok(Effected::done());
         }
         match effect {
-            WordProcessorEffect::Open { path: Some(path) } => {
+            WordProcessorEffect::OpenDocument { path: Some(path) } => {
                 self.open_in_place(cx, std::path::Path::new(&path))?;
             }
-            WordProcessorEffect::Open { path: None } => {
+            WordProcessorEffect::OpenDocument { path: None } => {
                 return Ok(
                     cx.choose_path(open_request(), |editor, path, cx| match path {
                         Some(path) => {
@@ -10007,7 +10170,11 @@ impl WordProcessorWidget {
             .map_err(|error| format!("could not open {}: {error}", path.display()))?;
         let format = WpFormat::from_path(path);
         let action = crate::import_action(&bytes, format, self.inner.content_store())?;
-        cx.apply(&action);
+        let dispatch = cx.dispatcher();
+        dispatch.group(|| {
+            dispatch.submit(crate::model::edit(&action));
+            dispatch.submit(crate::model::Document::ADOPT_COMMENTS.invoke());
+        });
         self.set_file(path.to_path_buf(), format);
         self.scroll_y = 0.0;
         // The whole body changes; per-block caches keyed by id/text go stale.
@@ -10179,6 +10346,7 @@ impl Widget for WordProcessorWidget {
         // participant's own applied edit hands over its next view.
         let now = ui::time::now();
         self.participants.adopt_outcomes(state, now);
+        self.adopt_local_outcome(state);
         self.participants.rebase(state);
         self.participants.expire(now);
         self.resolve_bound_edits(state);
@@ -12542,14 +12710,14 @@ impl WordProcessorWidget {
         if draft.is_empty() {
             return;
         }
-        let action = crate::actions::RichTextAction::ReplyToComment {
-            comment,
-            author: t("review-you"),
-            date: String::new(),
-            text: draft.plain_text().trim().to_owned(),
-            body: draft.clip_blocks(),
-        };
-        self.perform_action(state, &action);
+        self.perform_verb(
+            state,
+            crate::model::DocumentAction::ReplyToComment(crate::model::document::ReplyToComment {
+                comment: ui::tilo_resource::Id::from_raw(comment),
+                text: draft.plain_text().trim().to_owned(),
+                body: Some(draft.clip_blocks()),
+            }),
+        );
         self.thread_reply.widget_mut().source_mut().clear();
         self.thread_reply.widget_mut().present_now();
         self.refresh_blocks(state);
@@ -12626,28 +12794,27 @@ impl WordProcessorWidget {
     /// or resolve (delete) a comment. Refreshes the materialized blocks +
     /// comments/changes so the acted-on item disappears, and flags an undo point.
     fn dispatch_review_action(&mut self, action: ReviewAction, state: &mut ui::widget::Edits<'_>) {
-        let typed = match action {
-            ReviewAction::AcceptChange(id) => {
-                crate::actions::RichTextAction::AcceptChanges { id: Some(id) }
+        use crate::model::{DocumentAction, document};
+        let verb = match action {
+            ReviewAction::AcceptChange(change) => {
+                DocumentAction::AcceptChange(document::AcceptChange { change })
             }
-            ReviewAction::RejectChange(id) => {
-                crate::actions::RichTextAction::RejectChanges { id: Some(id) }
+            ReviewAction::RejectChange(change) => {
+                DocumentAction::RejectChange(document::RejectChange { change })
             }
-            ReviewAction::AcceptAllChanges => {
-                crate::actions::RichTextAction::AcceptChanges { id: None }
-            }
-            ReviewAction::RejectAllChanges => {
-                crate::actions::RichTextAction::RejectChanges { id: None }
-            }
-            ReviewAction::ResolveComment(id) => {
-                crate::actions::RichTextAction::ResolveComment { id }
+            ReviewAction::AcceptAllChanges => DocumentAction::AcceptAllChanges(().into()),
+            ReviewAction::RejectAllChanges => DocumentAction::RejectAllChanges(().into()),
+            ReviewAction::ResolveComment(comment) => {
+                DocumentAction::ResolveComment(document::ResolveComment {
+                    comment: ui::tilo_resource::Id::from_raw(comment),
+                })
             }
             ReviewAction::OpenCommentThread(id) => {
                 self.open_comment_thread(&id);
                 return;
             }
         };
-        self.perform_action(state, &typed);
+        self.perform_verb(state, verb);
         self.refresh_blocks(state);
         // Accepting/rejecting can change body text (an accepted deletion removes
         // glyphs, a rejected insertion removes them); the spell cache is keyed by

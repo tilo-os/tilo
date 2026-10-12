@@ -10,15 +10,13 @@
 //! and replaces the parts of the view that depend on it ([`Swap`] slots), so
 //! the controls around them keep their focus.
 //!
-//! The method, the URL and the body of the request are collaborative text in
-//! the document and their controls bind to it directly; the rest of the
-//! request is the draft this person is composing until they save it.
+//! The request in the builder is part of the shared record: its controls
+//! bind to their fields' paths, and saving copies it into a collection.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ObjId};
 use ui::LocalState;
 use ui::tokens::Spacing;
 use ui::widget::resizable_split::SplitOrientation;
@@ -27,18 +25,19 @@ use ui::widget::{
 };
 use winit::event::WindowEvent;
 
-use crate::actions::{self, ApiTesterAction, ApiTesterEffect, RowSection};
-use crate::commands::{AuthField, Cmd, FormMode, FormTarget, RowEdit, Sink, Table};
+use crate::actions::ApiTesterEffect;
+use crate::commands::{Cmd, FormMode, FormTarget, RowEdit, Sink, Table};
 use crate::dialog::{self, Fields};
 use crate::http::{self, Outgoing};
 use crate::kv::{KvChange, KvQueue};
 use crate::model::{
-    Auth, BodyMode, Collection, Environment, HistoryEntry, HttpMethod, KeyValue, Request,
+    Auth, BodyMode, Collection, Environment, HistoryEntry, HttpMethod, Id, KeyValue, Request,
     RequestTab, ResponseData, ResponseView,
 };
+use crate::record::{Credentials, Variable};
 use crate::request::{self, BlankRows};
-use crate::resource::{ApiTester, Workspace};
-use ui::framework::{Actions, Dispatcher, EffectAnswer, EffectCx, Effected, SurfaceCx};
+use crate::resource::{Workspace, workspace as verbs};
+use ui::framework::{Actions, Dispatcher, EffectAnswer, EffectCx, Effected, Submit, SurfaceCx};
 use ui::secrets::SecretStore;
 const CREDENTIAL: &str = "request-credential";
 const SECRET_VARIABLE: &str = "variable-value";
@@ -51,13 +50,17 @@ use crate::vars;
 const NO_ENV: &str = "No environment";
 
 /// What the environment picker offers besides the environments themselves,
-/// and the sheet each opens. The first needs no active environment.
-const ENVIRONMENT_COMMANDS: [(&str, FormMode); 5] = [
-    ("New environment\u{2026}", FormMode::NewEnvironment),
-    ("Rename environment\u{2026}", FormMode::RenameEnvironment),
-    ("Add variable\u{2026}", FormMode::NewVariable),
-    ("Delete variable\u{2026}", FormMode::DeleteVariable),
-    ("Delete environment\u{2026}", FormMode::DeleteEnvironment),
+/// and the sheet each opens; deleting the environment opens none, the host
+/// asks. The first needs no active environment.
+const ENVIRONMENT_COMMANDS: [(&str, Option<FormMode>); 5] = [
+    ("New environment\u{2026}", Some(FormMode::NewEnvironment)),
+    (
+        "Rename environment\u{2026}",
+        Some(FormMode::RenameEnvironment),
+    ),
+    ("Add variable\u{2026}", Some(FormMode::NewVariable)),
+    ("Delete variable\u{2026}", Some(FormMode::DeleteVariable)),
+    ("Delete environment\u{2026}", None),
 ];
 
 /// A pane of the split: `slot` with room between it and the divider, which
@@ -118,6 +121,7 @@ fn no_dialog() -> Element {
 struct Stale {
     sidebar: bool,
     header: bool,
+    url_bar: bool,
     environments: bool,
     request: bool,
     tab_panel: bool,
@@ -130,6 +134,7 @@ struct Stale {
 /// The slots of the view the app replaces in place.
 struct Slots {
     sidebar: sidebar::NavHandle,
+    url_bar: SwapHandle,
     request: SwapHandle,
     tab_panel: Option<SwapHandle>,
     panel_inner: Option<SwapHandle>,
@@ -157,7 +162,7 @@ struct OpenForm {
 struct BuiltModel {
     collections: Vec<Collection>,
     environments: Vec<Environment>,
-    active_env: Option<uuid::Uuid>,
+    active_env: Option<Id>,
     request: Request,
     history: Vec<HistoryEntry>,
 }
@@ -175,9 +180,11 @@ pub struct ApiTesterApp {
     // --- Model ---
     collections: Vec<Collection>,
     environments: Vec<Environment>,
-    active_env: Option<uuid::Uuid>,
+    active_env: Option<Id>,
     request: Request,
     history: Vec<HistoryEntry>,
+    /// The record as last presented.
+    workspace: Rc<Workspace>,
     response: Option<ResponseData>,
     sending: bool,
     error: Option<String>,
@@ -201,14 +208,12 @@ pub struct ApiTesterApp {
     /// Commands pushed by widget callbacks, applied after event routing.
     sink: Sink,
 
-    /// Framework-owned action dispatch: every collaborative doc mutation (create
-    /// / rename / delete a collection or saved request, add / edit / delete an
-    /// environment or variable, select the active environment) is encoded and
-    /// applied through this host, which brackets the undo boundary and remembers
-    /// the last action — the same path a Ctrl+K palette dispatch takes.
-    dispatcher: Option<Dispatcher<ApiTester>>,
+    /// Where every change of the shared record goes: field edits and verbs,
+    /// submitted as one undo step each through the host, the same path the
+    /// palette and agents take.
+    dispatcher: Option<Dispatcher<Workspace>>,
     secrets: Option<SecretStore>,
-    credentials: HashMap<uuid::Uuid, String>,
+    credentials: HashMap<Id, String>,
     read_only: bool,
     adopted: bool,
     /// Mounted on a record another participant created: its content is
@@ -233,10 +238,10 @@ impl ApiTesterApp {
     fn build(demo: bool) -> Self {
         Self::build_with_actions(demo, None)
     }
-    pub(crate) fn new_with_actions(actions: &Actions<ApiTester>) -> Self {
+    pub(crate) fn new_with_actions(actions: &Actions<Workspace>) -> Self {
         Self::build_with_actions(false, Some(actions.clone()))
     }
-    fn build_with_actions(demo: bool, actions: Option<Actions<ApiTester>>) -> Self {
+    fn build_with_actions(demo: bool, actions: Option<Actions<Workspace>>) -> Self {
         crate::locales::install();
         let model = Self::build_model(demo);
         let sink = Sink::default();
@@ -253,11 +258,11 @@ impl ApiTesterApp {
             Self::response_slot(response.as_ref(), &sink);
         let (dialog_slot, dialog) = Swap::new(no_dialog());
         let env_state = LocalState::new(
-            Self::environment_name(&model.environments, model.active_env).to_owned(),
+            Self::environment_name(&model.environments, model.active_env.as_ref()).to_owned(),
         );
         let (env_slot, environments) = Swap::new(Self::environment_picker(
             &model.environments,
-            model.active_env,
+            model.active_env.as_ref(),
             &env_state,
             &sink,
         ));
@@ -270,14 +275,15 @@ impl ApiTesterApp {
             &sink,
         );
 
-        let content = Self::content(request_slot, response_slot, dialog_slot, &env_vars, &sink);
-        let reset = sink.reset_area.clone();
-        let reset_area = ui::widget::Button::icon_only(
-            "api.reset-request-area",
-            ui::icons::Icon::RotateCcw,
-            "Reset request area",
-        )
-        .on_view(move || reset.set(true));
+        let (url_slot, url_bar) = Swap::new(request::url_bar(&sink));
+        let content = Self::content(
+            url_slot,
+            request_slot,
+            response_slot,
+            dialog_slot,
+            &env_vars,
+            &sink,
+        );
         let nav = NavShell::new()
             .with_id("api.shell")
             .sidebar(sidebar::frame(Box::new(env_slot), Box::new(lists_slot)))
@@ -289,7 +295,7 @@ impl ApiTesterApp {
                     Box::new(ui::search::search_button(
                         ui::search::SearchRequest::this_app(),
                     )),
-                    Box::new(reset_area),
+                    Box::new(Self::reset_area(&sink)),
                 ],
             );
 
@@ -300,6 +306,7 @@ impl ApiTesterApp {
             active_env: model.active_env,
             request: model.request,
             history: model.history,
+            workspace: Rc::default(),
             response,
             sending: false,
             error: None,
@@ -313,6 +320,7 @@ impl ApiTesterApp {
             pose: None,
             slots: Slots {
                 sidebar: sidebar_lists,
+                url_bar,
                 request,
                 tab_panel: Some(builtin.slot),
                 panel_inner: builtin.inner,
@@ -335,9 +343,22 @@ impl ApiTesterApp {
         app
     }
 
+    /// The header control that gives the request and the response their
+    /// first sizes again.
+    fn reset_area(sink: &Sink) -> ui::widget::Button {
+        let reset = sink.reset_area.clone();
+        ui::widget::Button::icon_only(
+            "api.reset-request-area",
+            ui::icons::Icon::RotateCcw,
+            "Reset request area",
+        )
+        .on_view(move || reset.set(true))
+    }
+
     /// The content column: the URL bar over the request and the response,
     /// which a divider splits, with the sheet's slot above them.
     fn content(
+        url_bar: Swap,
         request: Swap,
         response: Swap,
         dialog: Swap,
@@ -361,8 +382,11 @@ impl ApiTesterApp {
                     // content-sized request leaves room for the response.
                     Column::new()
                         .with_rhythm(ui::tokens::Rhythm::Tight)
-                        .push(request::url_bar(sink))
-                        .push(request::variable_hint(Rc::clone(env_vars)))
+                        .push(Box::new(url_bar))
+                        .push(request::variable_hint(
+                            Rc::clone(env_vars),
+                            Rc::clone(&sink.url),
+                        ))
                         .push(Box::new(
                             Column::new()
                                 .with_no_padding()
@@ -405,7 +429,7 @@ impl ApiTesterApp {
         } else {
             Vec::new()
         };
-        let active_env = environments.first().map(|e| e.id);
+        let active_env = environments.first().map(|e| e.id.clone());
         let request = if demo {
             crate::seed::active_request()
         } else {
@@ -507,10 +531,8 @@ impl ApiTesterApp {
             "save-request" => FormMode::SaveRequest,
             "rename-collection" => FormMode::RenameCollection,
             "rename-request" => FormMode::RenameRequest,
-            "delete-request" => FormMode::DeleteRequest,
             "new-environment" => FormMode::NewEnvironment,
             "rename-environment" => FormMode::RenameEnvironment,
-            "delete-environment" => FormMode::DeleteEnvironment,
             "new-variable" => FormMode::NewVariable,
             "delete-variable" => FormMode::DeleteVariable,
             _ => return None,
@@ -534,10 +556,8 @@ impl ApiTesterApp {
         "form-save-request",
         "form-rename-collection",
         "form-rename-request",
-        "form-delete-request",
         "form-new-environment",
         "form-rename-environment",
-        "form-delete-environment",
         "form-new-variable",
         "form-delete-variable",
     ];
@@ -547,10 +567,10 @@ impl ApiTesterApp {
     // -----------------------------------------------------------------------
 
     /// The name the picker shows for `active`.
-    fn environment_name(environments: &[Environment], active: Option<uuid::Uuid>) -> &str {
+    fn environment_name<'a>(environments: &'a [Environment], active: Option<&Id>) -> &'a str {
         environments
             .iter()
-            .find(|environment| Some(environment.id) == active)
+            .find(|environment| Some(&environment.id) == active)
             .map_or(NO_ENV, |environment| environment.name.as_str())
     }
 
@@ -558,7 +578,7 @@ impl ApiTesterApp {
     /// commands that manage them.
     fn environment_picker(
         environments: &[Environment],
-        active: Option<uuid::Uuid>,
+        active: Option<&Id>,
         state: &LocalState<String>,
         sink: &Sink,
     ) -> Element {
@@ -595,10 +615,13 @@ impl ApiTesterApp {
         if std::mem::take(&mut self.stale.header) {
             self.nav.set_content_title(self.request.name.clone());
         }
+        if std::mem::take(&mut self.stale.url_bar) {
+            self.slots.url_bar.set(request::url_bar(&self.sink));
+        }
         if std::mem::take(&mut self.stale.environments) {
             self.slots.environments.set(Self::environment_picker(
                 &self.environments,
-                self.active_env,
+                self.active_env.as_ref(),
                 &self.env_state,
                 &self.sink,
             ));
@@ -678,7 +701,8 @@ impl ApiTesterApp {
     fn env_vars(&self) -> HashMap<String, String> {
         match self
             .active_env
-            .and_then(|id| self.environments.iter().find(|e| e.id == id))
+            .as_ref()
+            .and_then(|id| self.environments.iter().find(|e| &e.id == id))
         {
             Some(env) => {
                 let variables: Vec<_> = env
@@ -728,16 +752,17 @@ impl ApiTesterApp {
         }
     }
 
-    /// Load a saved request from a collection into the builder and the
-    /// document.
-    fn load_request(&mut self, _state: &AutoCommit, _path: &ObjId, ci: usize, ri: usize) {
-        if let Some(request) = self
+    /// Open a saved request from a collection in the builder.
+    fn load_request(&mut self, ci: usize, ri: usize) {
+        if let Some((collection, request)) = self
             .collections
             .get(ci)
-            .and_then(|c| c.requests.get(ri))
-            .cloned()
+            .and_then(|c| Some((c.id.clone(), c.requests.get(ri)?.id.clone())))
         {
-            self.submit(&ApiTesterAction::OpenRequest { request });
+            self.submit(Workspace::OPEN_REQUEST.with(verbs::OpenRequest {
+                collection,
+                request,
+            }));
         }
         self.dismiss_drawer();
     }
@@ -759,32 +784,13 @@ impl ApiTesterApp {
         self.refresh_env_vars();
     }
 
-    /// Submit a canonical action; the resource host publishes its authoritative result.
-    fn perform(&self, _state: &AutoCommit, _path: &ObjId, action: &ApiTesterAction) {
-        self.submit(action);
-    }
-
-    /// Where the saved request `id` sits in the collections.
-    fn position_of(&self, id: uuid::Uuid) -> Option<(usize, usize)> {
-        self.collections
-            .iter()
-            .enumerate()
-            .find_map(|(ci, collection)| {
-                collection
-                    .requests
-                    .iter()
-                    .position(|request| request.id == id)
-                    .map(|ri| (ci, ri))
-            })
-    }
-
     // -----------------------------------------------------------------------
     // Commands
     // -----------------------------------------------------------------------
 
     /// Drain the command sink and apply each command, persisting when a
     /// command changes shared state. Returns `true` if anything was applied.
-    fn drain_commands(&mut self, state: &AutoCommit, path: &ObjId) -> bool {
+    fn drain_commands(&mut self) -> bool {
         let cmds: Vec<Cmd> = self.sink.borrow_mut().drain(..).collect();
         if cmds.is_empty() {
             return false;
@@ -812,25 +818,26 @@ impl ApiTesterApp {
                         && mode != self.request.body_mode
                     {
                         self.request.body_mode = mode;
-                        self.submit(&ApiTesterAction::SetBodyMode { mode });
+                        self.submit(Workspace::paths().request.body_mode.set(mode));
                         self.stale.body_inner = true;
                     }
                 }
                 Cmd::SetAuthKind(i) => self.set_auth_kind(i),
-                Cmd::LoadRequest(ci, ri) => self.load_request(state, path, ci, ri),
-                Cmd::ReplayHistory(hi) => self.replay_history(state, path, hi),
+                Cmd::LoadRequest(ci, ri) => self.load_request(ci, ri),
+                Cmd::ReplayHistory(hi) => self.replay_history(hi),
                 Cmd::Edit { table, row, edit } => self.edit_rows(table, &row, &edit),
-                Cmd::PickEnvironment(choice) => self.pick_environment(state, path, &choice),
+                Cmd::PickEnvironment(choice) => self.pick_environment(&choice),
                 Cmd::OpenForm(mode, target) => self.open_form(mode, target),
+                Cmd::DeleteRequest(target) => self.delete_request(target),
                 Cmd::CancelForm => self.close_form(),
-                Cmd::SubmitForm => self.submit_form(state, path),
+                Cmd::SubmitForm => self.submit_form(),
             }
         }
         self.dirty = true;
         true
     }
 
-    fn replay_history(&mut self, _state: &AutoCommit, _path: &ObjId, index: usize) {
+    fn replay_history(&mut self, index: usize) {
         if let Some(entry) = self.history.get(index).cloned() {
             // History keeps what was sent, not the rest of the request: it
             // opens as a new request.
@@ -841,9 +848,7 @@ impl ApiTesterApp {
             self.selected = None;
             self.error = None;
             self.active_tab = RequestTab::Params;
-            self.submit(&ApiTesterAction::OpenRequest {
-                request: self.request.clone(),
-            });
+            self.submit(Workspace::OPEN_SENT.with(entry.id));
             self.stale.request = true;
             self.stale.header = true;
             self.stale.sidebar = true;
@@ -867,35 +872,22 @@ impl ApiTesterApp {
             },
         };
         if self.request.auth.label() != next.label() {
+            let before = Credentials::of(&self.request.auth);
             self.request.auth = next;
-            self.submit(&ApiTesterAction::SetAuth {
-                auth: self.request.auth.without_secret(),
-            });
-            self.stale.auth_inner = true;
-        }
-    }
-
-    fn edit_auth(&mut self, field: AuthField, text: String) {
-        let secret = matches!(
-            field,
-            AuthField::Token | AuthField::Password | AuthField::Value
-        );
-        match (&mut self.request.auth, field) {
-            (Auth::Bearer { token }, AuthField::Token) => token.clone_from(&text),
-            (Auth::Basic { username, .. }, AuthField::Username) => username.clone_from(&text),
-            (Auth::Basic { password, .. }, AuthField::Password) => password.clone_from(&text),
-            (Auth::ApiKey { header, .. }, AuthField::Header) => header.clone_from(&text),
-            (Auth::ApiKey { value, .. }, AuthField::Value) => value.clone_from(&text),
-            _ => return,
-        }
-        if secret {
+            let after = Credentials::of(&self.request.auth);
             if let Some(dispatcher) = &self.dispatcher {
-                dispatcher.effect(&ApiTesterEffect::SetCredential { secret: text });
+                let edits = Workspace::paths()
+                    .request
+                    .auth
+                    .path()
+                    .edits(&before, &after);
+                dispatcher.group(|| {
+                    for edit in edits {
+                        dispatcher.submit(edit);
+                    }
+                });
             }
-        } else {
-            self.submit(&ApiTesterAction::SetAuth {
-                auth: self.request.auth.without_secret(),
-            });
+            self.stale.auth_inner = true;
         }
     }
 
@@ -913,10 +905,7 @@ impl ApiTesterApp {
         if row == self.blanks.of(table) {
             return;
         }
-        self.submit(&ApiTesterAction::RemoveRow {
-            section: row_section(table),
-            row_id: row.to_owned(),
-        });
+        self.submit(table.rows().remove(&Id::from_raw(row)));
         self.rows_mut(table).retain(|pair| pair.id != row);
         if let Some((shown, queue)) = &self.table
             && *shown == table
@@ -930,21 +919,24 @@ impl ApiTesterApp {
     // Sheets
     // -----------------------------------------------------------------------
 
-    fn current_collection_id(&self) -> Option<uuid::Uuid> {
+    fn current_collection_id(&self) -> Option<Id> {
         self.selected
             .and_then(|(index, _)| self.collections.get(index))
             .or_else(|| self.collections.first())
-            .map(|collection| collection.id)
+            .map(|collection| collection.id.clone())
     }
 
-    fn collection_named(&self, id: uuid::Uuid) -> Option<&Collection> {
-        self.collections.iter().find(|c| c.id == id)
+    fn collection_named(&self, id: &Id) -> Option<&Collection> {
+        self.collections.iter().find(|c| &c.id == id)
     }
 
-    fn selected_request(&self) -> Option<(uuid::Uuid, uuid::Uuid)> {
+    fn selected_request(&self) -> Option<(Id, Id)> {
         let (ci, ri) = self.selected?;
         let collection = self.collections.get(ci)?;
-        Some((collection.id, collection.requests.get(ri)?.id))
+        Some((
+            collection.id.clone(),
+            collection.requests.get(ri)?.id.clone(),
+        ))
     }
 
     /// The collection and request a sheet acts on: the row it was opened
@@ -954,7 +946,7 @@ impl ApiTesterApp {
         FormTarget {
             collection: target
                 .collection
-                .or_else(|| selected.map(|(collection, _)| collection))
+                .or_else(|| selected.as_ref().map(|(collection, _)| collection.clone()))
                 .or_else(|| self.current_collection_id()),
             request: target
                 .request
@@ -962,56 +954,38 @@ impl ApiTesterApp {
         }
     }
 
-    fn request_in(&self, target: FormTarget) -> Option<&Request> {
-        self.collection_named(target.collection?)?
+    fn request_in(&self, target: &FormTarget) -> Option<&Request> {
+        self.collection_named(target.collection.as_ref()?)?
             .requests
             .iter()
-            .find(|request| Some(request.id) == target.request)
+            .find(|request| Some(&request.id) == target.request.as_ref())
     }
 
     fn active_environment(&self) -> Option<&Environment> {
         self.environments
             .iter()
-            .find(|environment| Some(environment.id) == self.active_env)
+            .find(|environment| Some(&environment.id) == self.active_env.as_ref())
     }
 
     fn open_form(&mut self, mode: FormMode, target: FormTarget) {
         let target = self.resolve_target(target);
-        let (initial, subject) = match mode {
-            FormMode::RenameCollection => {
-                let name = target
-                    .collection
-                    .and_then(|id| self.collection_named(id))
-                    .map_or(String::new(), |c| c.name.clone());
-                (name.clone(), name)
-            }
-            FormMode::RenameRequest => {
-                let name = self
-                    .request_in(target)
-                    .map_or(String::new(), |r| r.name.clone());
-                (name.clone(), name)
-            }
-            FormMode::DeleteRequest => (
-                String::new(),
-                self.request_in(target)
-                    .map_or(String::new(), |r| r.name.clone()),
-            ),
-            FormMode::RenameEnvironment => {
-                let name = self
-                    .active_environment()
-                    .map_or(String::new(), |e| e.name.clone());
-                (name.clone(), name)
-            }
-            FormMode::DeleteEnvironment => (
-                String::new(),
-                self.active_environment()
-                    .map_or(String::new(), |e| e.name.clone()),
-            ),
-            FormMode::SaveRequest => (self.request.name.clone(), String::new()),
+        let initial = match mode {
+            FormMode::RenameCollection => target
+                .collection
+                .as_ref()
+                .and_then(|id| self.collection_named(id))
+                .map_or(String::new(), |c| c.name.clone()),
+            FormMode::RenameRequest => self
+                .request_in(&target)
+                .map_or(String::new(), |r| r.name.clone()),
+            FormMode::RenameEnvironment => self
+                .active_environment()
+                .map_or(String::new(), |e| e.name.clone()),
+            FormMode::SaveRequest => self.request.name.clone(),
             FormMode::NewCollection
             | FormMode::NewEnvironment
             | FormMode::NewVariable
-            | FormMode::DeleteVariable => (String::new(), String::new()),
+            | FormMode::DeleteVariable => String::new(),
         };
         self.nav.show(ui::widget::NavPane::Content);
         // In drawer mode, choosing a sidebar command must uncover the
@@ -1020,7 +994,7 @@ impl ApiTesterApp {
         let fields = Fields::new(&initial);
         self.slots
             .dialog
-            .set(dialog::build(mode, &subject, &fields, &self.sink));
+            .set(dialog::build(mode, &fields, &self.sink));
         self.form = Some(OpenForm {
             mode,
             target,
@@ -1036,11 +1010,35 @@ impl ApiTesterApp {
         self.dirty = true;
     }
 
+    /// Delete the saved request `target` names (the one in the builder when
+    /// none): the host asks the person to confirm.
+    fn delete_request(&mut self, target: FormTarget) {
+        let target = self.resolve_target(target);
+        if let (Some(collection), Some(request)) = (target.collection, target.request) {
+            self.submit(Workspace::DELETE_REQUEST.with(verbs::DeleteRequest {
+                collection,
+                request,
+            }));
+        }
+        self.dirty = true;
+    }
+
+    /// Delete the active environment: the host asks the person to confirm.
+    fn delete_environment(&mut self) {
+        if let Some(id) = self.active_env.clone() {
+            self.submit(Workspace::DELETE_ENVIRONMENT.with(id));
+        }
+        self.dirty = true;
+    }
+
     fn open_request_menu_action(&mut self, action: &str) -> Result<(), String> {
         let mode = match action {
             "Save request…" => FormMode::SaveRequest,
             "Rename request…" => FormMode::RenameRequest,
-            "Delete request…" => FormMode::DeleteRequest,
+            "Delete request…" => {
+                self.delete_request(FormTarget::default());
+                return Ok(());
+            }
             _ => return Err(format!("unknown request action `{action}`")),
         };
         self.open_form(mode, FormTarget::default());
@@ -1060,9 +1058,9 @@ impl ApiTesterApp {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "one exhaustive form-to-canonical-action mapping makes contextual management easy to audit"
+        reason = "one exhaustive form-to-verb mapping makes contextual management easy to audit"
     )]
-    fn submit_form(&mut self, state: &AutoCommit, path: &ObjId) {
+    fn submit_form(&mut self) {
         let Some(form) = self.form.take() else {
             return;
         };
@@ -1073,6 +1071,7 @@ impl ApiTesterApp {
             fields,
         } = form;
         let name = fields.name.get().trim().to_string();
+        let paths = Workspace::paths();
         match mode {
             FormMode::NewCollection => {
                 let name = if name.is_empty() {
@@ -1080,35 +1079,25 @@ impl ApiTesterApp {
                 } else {
                     name
                 };
-                self.perform(
-                    state,
-                    path,
-                    &actions::create_collection_action(uuid::Uuid::new_v4(), &name),
-                );
+                self.submit(Workspace::NEW_COLLECTION.with(name));
             }
             FormMode::RenameCollection => {
                 if let Some(id) = target.collection.filter(|_| !name.is_empty()) {
-                    self.perform(state, path, &actions::rename_collection_action(id, &name));
+                    self.submit(paths.collections.item(&id).name.replace(name));
                 }
             }
             FormMode::SaveRequest => {
-                if let Some(collection_id) = target.collection {
-                    let mut request = self.request.clone();
-                    request.name = if name.is_empty() {
-                        "Saved request".into()
+                if let Some(collection) = target.collection {
+                    let name = if name.is_empty() {
+                        "Saved request".to_owned()
                     } else {
                         name
                     };
-                    request.url.clone_from(&self.request.url);
-                    request.body_text.clone_from(&self.request.body_text);
-                    request.method = self.request.method;
-                    self.request = request.clone();
-                    self.perform(
-                        state,
-                        path,
-                        &actions::save_request_action(collection_id, request),
-                    );
-                    self.selected = self.position_of(self.request.id);
+                    self.request.name.clone_from(&name);
+                    self.submit(Workspace::SAVE_REQUEST.with(verbs::SaveRequest {
+                        collection,
+                        name: Some(name),
+                    }));
                     self.stale.header = true;
                     self.stale.sidebar = true;
                 }
@@ -1121,19 +1110,14 @@ impl ApiTesterApp {
                         self.request.name.clone_from(&name);
                         self.stale.header = true;
                     }
-                    self.perform(
-                        state,
-                        path,
-                        &actions::rename_request_action(collection, request, &name),
-                    );
-                }
-            }
-            FormMode::DeleteRequest => {
-                if let (Some(collection), Some(request)) = (target.collection, target.request) {
-                    self.perform(
-                        state,
-                        path,
-                        &actions::delete_request_action(collection, request),
+                    self.submit(
+                        paths
+                            .collections
+                            .item(&collection)
+                            .requests
+                            .item(&request)
+                            .name
+                            .replace(name),
                     );
                 }
             }
@@ -1143,59 +1127,29 @@ impl ApiTesterApp {
                 } else {
                     name
                 };
-                self.perform(
-                    state,
-                    path,
-                    &actions::create_environment_action(uuid::Uuid::new_v4(), &name),
-                );
+                self.submit(Workspace::NEW_ENVIRONMENT.with(name));
             }
             FormMode::RenameEnvironment => {
-                if let Some(id) = self.active_env.filter(|_| !name.is_empty()) {
-                    self.perform(state, path, &actions::rename_environment_action(id, &name));
+                if let Some(id) = self.active_env.clone().filter(|_| !name.is_empty()) {
+                    self.submit(paths.environments.item(&id).name.replace(name));
                 }
             }
-            FormMode::DeleteEnvironment => {
-                if let Some(id) = self.active_env {
-                    self.perform(state, path, &actions::delete_environment_action(id));
-                }
-            }
-            FormMode::NewVariable => {
-                let key = fields.key.get().trim().to_string();
-                let value = fields.value.get().trim().to_string();
-                if let Some(env_id) = self.active_env.filter(|_| !key.is_empty()) {
-                    let stable_id = self
-                        .environments
-                        .iter()
-                        .find(|env| env.id == env_id)
-                        .and_then(|env| env.variables.iter().find(|row| row.key == key))
-                        .map_or_else(|| uuid::Uuid::new_v4().to_string(), |row| row.id.clone());
-                    let secret = fields.secret.get();
-                    if secret
-                        && let Err(error) = self.keep_secret(SECRET_VARIABLE, &stable_id, &value)
-                    {
-                        self.error =
-                            Some(format!("Couldn't keep the value on this device: {error}"));
-                        self.stale.response = true;
-                        return;
-                    }
-                    self.submit(&actions::set_variable_action(
-                        env_id, stable_id, &key, &value, secret,
-                    ));
-                }
-            }
+            FormMode::NewVariable => self.set_variable(&fields),
             FormMode::DeleteVariable => {
                 let key = fields.key.get().trim().to_string();
-                if let Some(env_id) = self.active_env.filter(|_| !key.is_empty())
+                if let Some(env_id) = self.active_env.clone().filter(|_| !key.is_empty())
                     && let Some(variable) = self
                         .environments
                         .iter()
                         .find(|env| env.id == env_id)
                         .and_then(|env| env.variables.iter().find(|row| row.key == key))
                 {
-                    self.perform(
-                        state,
-                        path,
-                        &actions::delete_variable_action(env_id, &variable.id),
+                    self.submit(
+                        paths
+                            .environments
+                            .item(&env_id)
+                            .variables
+                            .remove(&Id::from_raw(variable.id.clone())),
                     );
                 }
             }
@@ -1203,18 +1157,81 @@ impl ApiTesterApp {
         self.dirty = true;
     }
 
+    /// Add the variable the form names to the active environment, or give
+    /// the one of that key its new value. A secret's value is kept on this
+    /// device.
+    fn set_variable(&mut self, fields: &Fields) {
+        let key = fields.key.get().trim().to_string();
+        let value = fields.value.get().trim().to_string();
+        let Some(env_id) = self.active_env.clone().filter(|_| !key.is_empty()) else {
+            return;
+        };
+        let existing = self
+            .environments
+            .iter()
+            .find(|env| env.id == env_id)
+            .and_then(|env| env.variables.iter().find(|row| row.key == key))
+            .cloned();
+        let secret = existing
+            .as_ref()
+            .map_or_else(|| fields.secret.get(), |variable| variable.secret);
+        let Some(variable) = existing else {
+            // The window names the new variable, so a secret's value is kept
+            // under its id before the variable is added.
+            let id = crate::model::fresh_id();
+            if secret && let Err(error) = self.keep_secret(SECRET_VARIABLE, id.as_str(), &value) {
+                self.error = Some(format!("Couldn't keep the value on this device: {error}"));
+                self.stale.response = true;
+                return;
+            }
+            let variables = Workspace::paths().environments.item(&env_id).variables;
+            let at = self
+                .environments
+                .iter()
+                .find(|env| env.id == env_id)
+                .map_or(0, |env| env.variables.len());
+            self.submit(variables.insert_as(
+                &id,
+                at,
+                &Variable {
+                    key,
+                    value: if secret { String::new() } else { value },
+                    enabled: true,
+                    secret,
+                },
+            ));
+            return;
+        };
+        if secret {
+            if let Err(error) = self.keep_secret(SECRET_VARIABLE, &variable.id, &value) {
+                self.error = Some(format!("Couldn't keep the value on this device: {error}"));
+                self.stale.response = true;
+            }
+            return;
+        }
+        self.submit(
+            Workspace::paths()
+                .environments
+                .item(&env_id)
+                .variables
+                .item(&Id::from_raw(variable.id))
+                .value
+                .replace(value),
+        );
+    }
+
     /// The person chose from the environment picker: an environment, or one
-    /// of the commands that manage them. Selecting the active environment is
-    /// collaborative workspace state persisted in the shared document, so it
-    /// is routed through the action host, the same
-    /// [`SetActiveEnvironment`](ApiTesterAction::SetActiveEnvironment) a
-    /// Ctrl+K palette dispatch would apply.
-    fn pick_environment(&mut self, state: &AutoCommit, path: &ObjId, choice: &str) {
+    /// of the commands that manage them. Which environment is active is
+    /// shared, so a choice is a field edit of the record.
+    fn pick_environment(&mut self, choice: &str) {
         if let Some((_, mode)) = ENVIRONMENT_COMMANDS
             .iter()
             .find(|(label, _)| *label == choice)
         {
-            self.open_form(*mode, FormTarget::default());
+            match mode {
+                Some(mode) => self.open_form(*mode, FormTarget::default()),
+                None => self.delete_environment(),
+            }
         } else {
             let next = if choice == NO_ENV {
                 Some(None)
@@ -1222,12 +1239,12 @@ impl ApiTesterApp {
                 self.environments
                     .iter()
                     .find(|e| e.name == choice)
-                    .map(|e| Some(e.id))
+                    .map(|e| Some(e.id.clone()))
             };
             if let Some(next) = next
                 && next != self.active_env
             {
-                self.perform(state, path, &actions::set_active_environment_action(next));
+                self.submit(Workspace::paths().active_environment.set(next));
             }
         }
         // A command is not a value the picker keeps.
@@ -1238,7 +1255,7 @@ impl ApiTesterApp {
     /// it changed (a pick, a rename, a deletion, the palette).
     fn show_active_environment(&self) {
         self.env_state
-            .set(Self::environment_name(&self.environments, self.active_env).to_owned());
+            .set(Self::environment_name(&self.environments, self.active_env.as_ref()).to_owned());
     }
 
     // Method selection uses the typed request dispatcher.
@@ -1319,7 +1336,7 @@ impl ui::widget::Decorator for ApiTesterApp {
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
         self.nav.settle(edits, path);
-        self.drain_commands(edits.doc(), path);
+        self.drain_commands();
         self.refresh_views();
     }
     fn name(&self) -> &'static str {
@@ -1356,20 +1373,23 @@ impl ApiTesterApp {
 }
 
 impl ApiTesterApp {
-    fn credential(&mut self, id: uuid::Uuid) -> String {
-        if let Some(known) = self.credentials.get(&id) {
+    fn credential(&mut self, id: &Id) -> String {
+        if let Some(known) = self.credentials.get(id) {
             return known.clone();
         }
-        let found = self.secret(CREDENTIAL, &id.to_string()).unwrap_or_default();
-        self.credentials.insert(id, found.clone());
+        let found = self.secret(CREDENTIAL, id.as_str()).unwrap_or_default();
+        self.credentials.insert(id.clone(), found.clone());
         found
     }
 }
 
 impl ApiTesterApp {
-    fn submit(&self, action: &ApiTesterAction) {
+    /// Submit a field edit or a verb of the shared record: the host checks
+    /// the participant may, applies it as one undo step and presents the
+    /// changed workspace.
+    fn submit(&self, submit: impl Submit<Workspace>) {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(action);
+            dispatcher.submit(submit);
         }
     }
 }
@@ -1378,19 +1398,9 @@ impl ApiTesterApp {
     pub(crate) fn answer_effect(
         &mut self,
         effect: ApiTesterEffect,
-        cx: &mut EffectCx<ApiTester, Self>,
+        cx: &mut EffectCx<Workspace, Self>,
     ) -> EffectAnswer {
         match effect {
-            ApiTesterEffect::EditAuthField { field, value } => {
-                let field = match field.as_str() {
-                    "username" => AuthField::Username,
-                    "header" => AuthField::Header,
-                    _ => return Err("no such authentication metadata field".into()),
-                };
-                self.edit_auth(field, value);
-                self.dirty = true;
-                Ok(Effected::done())
-            }
             ApiTesterEffect::PickEnvironment { choice } => {
                 self.sink.borrow_mut().push(Cmd::PickEnvironment(choice));
                 self.dirty = true;
@@ -1402,27 +1412,23 @@ impl ApiTesterApp {
                 self.start_send(method, out, cx)
             }
             ApiTesterEffect::SendSaved { request } => {
-                let Some(saved) = self
-                    .collections
-                    .iter()
-                    .flat_map(|collection| &collection.requests)
-                    .find(|saved| saved.id.to_string() == request)
-                    .cloned()
-                else {
+                let request = Id::from_raw(request);
+                let Some((collection, saved)) = self.workspace.saved(&request) else {
                     return Err("saved request no longer exists".to_string());
                 };
-                cx.apply(&ApiTesterAction::OpenRequest {
-                    request: saved.clone(),
-                });
-                let mut outgoing = saved;
-                let credential = self.credential(outgoing.id);
+                let mut outgoing = saved.shown(&request);
+                cx.submit(Workspace::OPEN_REQUEST.with(verbs::OpenRequest {
+                    collection: collection.clone(),
+                    request,
+                }));
+                let credential = self.credential(&outgoing.id);
                 outgoing.auth = outgoing.auth.with_secret(&credential);
                 let out = http::build_outgoing(&outgoing, &self.env_vars());
                 self.start_send(outgoing.method, out, cx)
             }
             ApiTesterEffect::SetCredential { secret } => {
-                let id = self.request.id;
-                self.keep_secret(CREDENTIAL, &id.to_string(), &secret)?;
+                let id = self.request.id.clone();
+                self.keep_secret(CREDENTIAL, id.as_str(), &secret)?;
                 self.credentials.insert(id, secret.clone());
                 self.request.auth = self.request.auth.with_secret(&secret);
                 self.dirty = true;
@@ -1464,7 +1470,7 @@ impl ApiTesterApp {
         &mut self,
         method: HttpMethod,
         out: Outgoing,
-        cx: &mut EffectCx<ApiTester, Self>,
+        cx: &mut EffectCx<Workspace, Self>,
     ) -> EffectAnswer {
         if self.sending {
             return Err("another API request is already running".into());
@@ -1480,16 +1486,12 @@ impl ApiTesterApp {
                 app.dirty = true;
                 match sent {
                     Ok(response) => {
-                        cx.apply(&ApiTesterAction::RecordHistory {
-                            entry: HistoryEntry {
-                                id: uuid::Uuid::new_v4(),
-                                method,
-                                url,
-                                status: response.status,
-                                duration_ms: response.duration_ms,
-                                when: "just now".into(),
-                            },
-                        });
+                        cx.submit(Workspace::RECORD_SENT.with(verbs::RecordSent {
+                            method: method.as_str().to_owned(),
+                            url,
+                            status: response.status,
+                            duration_ms: response.duration_ms,
+                        }));
                         app.response = Some(response);
                         app.response_view = ResponseView::Pretty;
                         app.stale.response = true;
@@ -1516,13 +1518,17 @@ impl ApiTesterApp {
 }
 
 impl ApiTesterApp {
-    pub(crate) fn present_workspace(&mut self, state: &Workspace) {
-        let workspace_changed = self.collections != state.collections
-            || self.environments != state.environments
-            || self.active_env != state.active_env
-            || self.history != state.history;
-        let mut request = state.request.clone();
-        request.auth = request.auth.with_secret(&self.credential(request.id));
+    pub(crate) fn present_workspace(&mut self, state: &Rc<Workspace>) {
+        self.workspace = Rc::clone(state);
+        let collections = state.collections_shown();
+        let environments = state.environments_shown();
+        let history = state.history_shown();
+        let workspace_changed = self.collections != collections
+            || self.environments != environments
+            || self.active_env != state.active_environment
+            || self.history != history;
+        let mut request = state.request_shown();
+        request.auth = request.auth.with_secret(&self.credential(&request.id));
         let replaced = self.request.id != request.id;
         let body_changed = self.request.body_mode != request.body_mode;
         let auth_changed =
@@ -1530,11 +1536,12 @@ impl ApiTesterApp {
         let rows_changed = self.request.params != request.params
             || self.request.headers != request.headers
             || self.request.form != request.form;
-        self.collections.clone_from(&state.collections);
-        self.environments.clone_from(&state.environments);
-        self.active_env = state.active_env;
-        self.history.clone_from(&state.history);
+        self.collections = collections;
+        self.environments = environments;
+        self.active_env.clone_from(&state.active_environment);
+        self.history = history;
         self.sink.method.set(request.method.as_str().to_owned());
+        self.sink.url.borrow_mut().clone_from(&request.url);
         self.request = request;
         // Canonical row-field actions turn the trailing blank into a durable
         // row. Its next presentation must expose a new blank identity.
@@ -1567,7 +1574,7 @@ impl ApiTesterApp {
         self.stale.header = true;
         self.adopted = true;
     }
-    pub(crate) fn attach_surface(&mut self, cx: &SurfaceCx<ApiTester>) {
+    pub(crate) fn attach_surface(&mut self, cx: &SurfaceCx<Workspace>) {
         let dispatcher = cx.dispatcher();
         self.read_only = dispatcher.read_only();
         *self.sink.dispatcher.borrow_mut() = Some(dispatcher.clone());
@@ -1575,6 +1582,9 @@ impl ApiTesterApp {
         self.dispatcher = Some(dispatcher);
         self.secrets = Some(cx.secrets());
         self.credentials.clear();
+        // The text controls edit at their paths through the dispatcher now.
+        self.stale.url_bar = true;
+        self.stale.request = true;
     }
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         self.response = (scenario != Some("empty")).then(http::sample_response);
@@ -1586,13 +1596,5 @@ impl ApiTesterApp {
             }
         }
         self.stale.response = true;
-    }
-}
-
-fn row_section(table: Table) -> RowSection {
-    match table {
-        Table::Params => RowSection::Params,
-        Table::Headers => RowSection::Headers,
-        Table::Form => RowSection::Form,
     }
 }

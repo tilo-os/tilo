@@ -141,6 +141,8 @@ pub struct DistributionDefaults {
     pub policy: DistributionPolicy,
 }
 
+tilo_resource::json_model!(DistributionDefaults);
+
 impl Default for DistributionDefaults {
     fn default() -> Self {
         Self {
