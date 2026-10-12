@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 import urllib.error
 import urllib.request
 
@@ -32,6 +33,29 @@ def verify(response, size, digest):
         raise ValueError("immutable package receipt mismatch")
 
 
+def upload(path, url, token):
+    # curl's upload path is also used by the protected app releases. It reports
+    # an HTTP rejection while a large body is in flight; urllib's file-backed
+    # PUT surfaced the failed request only as a socket reset.
+    # Pass the credential on stdin, never in argv or a diagnostic.
+    if any(char in token for char in '\r\n"\\'):
+        raise ValueError("invalid package publication credential")
+    command = [
+        "curl", "--fail", "--silent", "--show-error", "--proto", "=https",
+        "--tlsv1.2", "--connect-timeout", "15", "--max-time", "300",
+        "--header", "Content-Type: application/octet-stream",
+        "--upload-file", str(path), "--output", os.devnull,
+        "--write-out", "%{http_code}", "--config", "-", url,
+    ]
+    result = subprocess.run(
+        command, input=f'header = "Authorization: token {token}"\n',
+        text=True, capture_output=True, check=False,
+    )
+    status = result.stdout.strip()
+    if result.returncode or status not in ("200", "201", "204"):
+        raise ValueError(f"package publication failed (curl {result.returncode}, HTTP {status})")
+
+
 def publish(path, url, size, digest, token):
     # Both source staging and this publisher must enforce the same origin.
     if not url.startswith("https://code.tilo.so/api/packages/tilo/generic/whisper-"):
@@ -49,17 +73,7 @@ def publish(path, url, size, digest, token):
             raise ValueError(f"package read failed with HTTP {error.code}") from None
         if not token:
             raise ValueError("existing package publication credential unavailable")
-        with path.open("rb") as stream:
-            request = urllib.request.Request(url, data=stream, method="PUT", headers={
-                "Authorization": f"token {token}", "Content-Length": str(size),
-                "Content-Type": "application/octet-stream",
-            })
-            try:
-                with opener.open(request, timeout=300) as response:
-                    if response.status not in (200, 201, 204):
-                        raise ValueError("unexpected package publication response")
-            except urllib.error.HTTPError as error:
-                raise ValueError(f"package publication failed with HTTP {error.code}") from None
+        upload(path, url, token)
     # A receipt conflict must fail; never overwrite an existing object.
     with opener.open(url, timeout=180) as response:
         verify(response, size, digest)

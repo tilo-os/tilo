@@ -718,6 +718,14 @@ impl PresenceCtx {
         self.self_participant = Some((id, name.into()));
     }
 
+    /// Clear the room-certified spelling of this session after a complete
+    /// roster replacement no longer contains an exact self row. Local
+    /// process identities remain in `own`; this only withdraws the room's
+    /// authenticated answer.
+    pub(crate) fn clear_self_participant(&mut self) {
+        self.self_participant = None;
+    }
+
     /// Which participant in the room this session is, if the room has said.
     pub fn self_id(&self) -> Option<&UserId> {
         self.self_participant.as_ref().map(|(id, _)| id)
