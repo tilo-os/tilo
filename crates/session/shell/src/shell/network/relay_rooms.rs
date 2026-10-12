@@ -590,9 +590,9 @@ mod tests {
         let service = iroh::SecretKey::from_bytes(&[0x22; 32]).public();
         let device = iroh::SecretKey::from_bytes(&[0x33; 32]).public();
         let registered_topics = [
-            12552341473564032145_u64,
-            7702587935360457883,
-            4296909156967491521,
+            12_552_341_473_564_032_145_u64,
+            7_702_587_935_360_457_883,
+            4_296_909_156_967_491_521,
         ];
         assert!(!registered_topics.contains(&room_topic_id(room)));
         assert!(registered_topics.contains(&super::super::personal_continuity_topic_id(&user)));
