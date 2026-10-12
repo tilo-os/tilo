@@ -575,6 +575,23 @@ impl AppActionBroker {
             .unwrap_or_default()
     }
 
+    /// Current certified checkout of an attested local native task. This is
+    /// inert provenance for the owner state door, never an invocation grant.
+    #[must_use]
+    pub fn native_checkout(
+        &self,
+        app: &str,
+        room: &str,
+        instance: u64,
+        pid: u32,
+        start: u64,
+    ) -> Option<crate::collab_broker_capnp::ActionDirectoryRoot> {
+        self.state
+            .while_live(|state| Ok(state.native_checkout(app, room, instance, pid, start)))
+            .ok()
+            .flatten()
+    }
+
     /// Fetch one deterministic, bounded page of inert directory routes.
     /// Callers that expose root navigation retain `next_after_peer`; routine
     /// palette queries use the first page without rebuilding the registry.
