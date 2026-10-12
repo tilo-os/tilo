@@ -3806,6 +3806,10 @@ impl Widget for BrowserWidget {
         self.sync_frame(state, path);
         self.settle_replies();
     }
+    fn composition_follows_allocation(&self) -> bool {
+        true
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

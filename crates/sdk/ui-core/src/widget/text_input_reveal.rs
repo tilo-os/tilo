@@ -123,6 +123,10 @@ impl RevealToggle {
 }
 
 impl Widget for RevealToggle {
+    fn composition_follows_allocation(&self) -> bool {
+        true
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
