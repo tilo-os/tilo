@@ -1621,20 +1621,93 @@ fn apart_map(apart: &[(usize, usize, u8)], size: (u32, u32)) -> String {
 /// `width` wide, are more than one step apart.
 #[cfg(target_os = "linux")]
 fn pixels_apart(a: &[u8], b: &[u8], width: u32) -> Vec<(usize, usize, u8)> {
+    const BLOCK_BYTES: usize = 1024;
     assert_eq!(a.len(), b.len(), "both targets have one size");
-    a.chunks_exact(4)
-        .zip(b.chunks_exact(4))
-        .enumerate()
-        .filter_map(|(index, (a, b))| {
+    // Equal blocks have zero channel distance. Avoid the unoptimized
+    // per-channel iterator work for those pixels without changing the oracle.
+    let mut apart = Vec::new();
+    for (block, (a, b)) in a.chunks(BLOCK_BYTES).zip(b.chunks(BLOCK_BYTES)).enumerate() {
+        if a == b {
+            continue;
+        }
+        for (pixel, (a, b)) in a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate() {
             let step = a
                 .iter()
                 .zip(b)
                 .map(|(x, y)| x.abs_diff(*y))
                 .max()
                 .unwrap_or(0);
-            (step > 1).then_some((index % width as usize, index / width as usize, step))
-        })
-        .collect()
+            if step > 1 {
+                let index = block * (BLOCK_BYTES / 4) + pixel;
+                apart.push((index % width as usize, index / width as usize, step));
+            }
+        }
+    }
+    apart
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn pixel_oracle_detects_the_entire_real_render_change_across_blocks() {
+    let size = (128, 128);
+    let mut target = gpu_target(size);
+    target.set_base_color(Color::TRANSPARENT);
+    let before = render_whole(&mut target, &Scene::new(), 1, "empty control");
+    let after = render_whole(&mut target, &rect_scene(), 2, "changed control");
+    assert!(pixels_apart(&before, &before, size.0).is_empty());
+    let apart = pixels_apart(&before, &after, size.0);
+    let positions = apart.iter().map(|&(x, y, _)| (x, y)).collect::<Vec<_>>();
+    let expected = (20..120)
+        .flat_map(|y| (10..100).map(move |x| (x, y)))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        positions, expected,
+        "every changed rendered pixel is observed"
+    );
+    assert!(
+        apart.iter().all(|&(_, _, step)| step == 255),
+        "opaque scene pixels change alpha by 255"
+    );
+    for alpha in [1_u8, 2] {
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Theme::dark()
+                .tokens
+                .colors
+                .surfaces
+                .scrim
+                .with_alpha(f32::from(alpha) / 255.0),
+            None,
+            &Rect::new(10.0, 20.0, 100.0, 120.0),
+        );
+        let shown = render_whole(&mut target, &scene, u64::from(alpha) + 2, "alpha control");
+        let distance = shown
+            .iter()
+            .zip(&before)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        assert_eq!(
+            distance, alpha,
+            "the real render pins the RGBA channel distance"
+        );
+        let apart = pixels_apart(&before, &shown, size.0);
+        if alpha == 1 {
+            assert!(
+                apart.is_empty(),
+                "one channel step retains the existing tolerance"
+            );
+        } else {
+            let positions = apart.iter().map(|&(x, y, _)| (x, y)).collect::<Vec<_>>();
+            assert_eq!(
+                positions, expected,
+                "two channel steps expose every changed pixel"
+            );
+            assert!(apart.iter().all(|&(_, _, step)| step == alpha));
+        }
+    }
 }
 
 /// How many pixels of the band copies of `work` differ by more than one
