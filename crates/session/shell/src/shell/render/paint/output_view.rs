@@ -455,6 +455,9 @@ impl VelloDrmBridge {
             return false;
         }
         *retained.revision = Some(damage.revision);
+        if view.covers_whole_scene(self.target.size) {
+            self.target.layers_kept(previous, damage.revision);
+        }
         true
     }
 

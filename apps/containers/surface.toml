@@ -1,0 +1,64 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "containers.engine"
+label = "Containers"
+version = 1
+
+[[resources.fields]]
+owner = "containers"
+path = "draft"
+stored = "record"
+title = "New container"
+type = "CreateDraft"
+
+[[resources.fields]]
+owner = "create-draft"
+path = "draft.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "create-draft"
+path = "draft.image"
+stored = "value"
+title = "Image"
+type = "String"
+
+[[resources.fields]]
+owner = "create-draft"
+path = "draft.ports"
+stored = "value"
+title = "Ports"
+type = "String"
+
+[[resources.fields]]
+owner = "create-draft"
+path = "draft.env"
+stored = "value"
+title = "Environment"
+type = "String"
+
+[[resources.fields]]
+owner = "create-draft"
+path = "draft.volumes"
+stored = "value"
+title = "Volumes"
+type = "String"
+
+[[resources.fields]]
+owner = "create-draft"
+path = "draft.command"
+stored = "value"
+title = "Command"
+type = "String"
+
+[[resources.verbs]]
+description = "Empty every field of the new-container draft."
+id = "clear-create"
+kind = "undoable"
+label = "Clear new container"
+params = []

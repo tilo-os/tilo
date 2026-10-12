@@ -1,9 +1,9 @@
 //! Original invocation custody, minted only by dispatch and an actual private worker.
 use super::{
-    Actor, AdmittedJoinIdentity, Arc, CapDecision, CapnpBrokerState, CrdtRoute,
-    PrivateWorkerRegistration, PublishedAction, PublishedInput, ResourceRef, Verb,
-    VerifiedActionCaller, Weak,
+    AdmittedJoinIdentity, Arc, CapnpBrokerState, CrdtRoute, PrivateWorkerRegistration,
+    PublishedAction, PublishedInput, VerifiedActionCaller, Weak,
 };
+use tilo_action_policy::roles;
 use ui::invocation_scope::{
     PublishedInvocationAuthorizer, PublishedInvocationLease, PublishedInvocationRequest,
     PublishedInvocationSpec,
@@ -34,6 +34,9 @@ pub(super) struct OriginalInvocationData {
     route: CrdtRoute,
     spec: PublishedInvocationSpec,
     resource_identity: Option<tilo_actions::ResourceSemanticIdentity>,
+    /// The kind of the resource the action is published on: where it sits
+    /// in the tree the grants decide over.
+    resource_kind: String,
     caller: InvocationCaller,
     time: crate::peer_actions::PolicyTime,
     execution: Option<tilo_actions::remote::ExecutionLease>,
@@ -47,11 +50,12 @@ impl OriginalInvocationData {
         mutates: bool,
     ) -> Result<tilo_user_identity::DeviceCert, String> {
         if self.route != worker.route
-            || !self.spec.contract.permission.covers(if mutates {
-                tilo_actions::PermissionRequirement::Admin
-            } else {
-                tilo_actions::PermissionRequirement::Read
-            })
+            || self.spec.contract.kind
+                < if mutates {
+                    tilo_actions::ActionKind::Outside
+                } else {
+                    tilo_actions::ActionKind::Read
+                }
         {
             return Err("The original invocation does not admit display administration.".into());
         }
@@ -131,6 +135,9 @@ impl OriginalInvocationData {
     pub(super) fn clipboard_resource(&self) -> &str {
         &self.request.address.resource
     }
+    pub(super) fn clipboard_resource_kind(&self) -> &str {
+        &self.resource_kind
+    }
 
     pub(super) fn revalidate_clipboard_origin(
         &self,
@@ -157,8 +164,8 @@ impl OriginalInvocationData {
         }
         Ok(())
     }
-    pub(super) fn permits_clipboard(&self, needed: tilo_actions::PermissionRequirement) -> bool {
-        self.spec.contract.permission.covers(needed)
+    pub(super) fn permits_clipboard(&self, needed: tilo_actions::ActionKind) -> bool {
+        self.spec.contract.kind >= needed
             && self
                 .execution
                 .as_ref()
@@ -225,26 +232,18 @@ impl OriginalInvocationData {
             );
         }
         let seconds = now / 1_000_000_000;
-        let verb = super::permission_verb(self.spec.contract.permission);
         state
             .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
             .decide_in_room(&self.route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("original invocation workspace unavailable")?;
-                let actor = person.policy_in(workspace, seconds);
-                if verb.is_some_and(|verb| {
-                    workspace.decide_at(
-                        &actor,
-                        &ResourceRef::Action {
-                            app: self.route.app_id.clone(),
-                            resource: self.request.address.resource.clone(),
-                            action: self.request.address.action.clone(),
-                        },
-                        verb,
-                        seconds,
-                    ) != CapDecision::Allow
-                }) {
+                if !person.may_in(
+                    workspace,
+                    &self.node(workspace),
+                    self.spec.contract.kind,
+                    seconds,
+                ) {
                     return Err("original invocation caller is no longer authorized");
                 }
                 Ok(())
@@ -276,13 +275,21 @@ impl OriginalInvocationData {
         self.current_person_certificate(state)
     }
 
+    /// Where the original action sits in `workspace`'s tree.
+    fn node(&self, workspace: &tilo_desktop_model::Workspace) -> tilo_action_policy::TreePath {
+        tilo_actions::action_node(
+            &workspace.node(),
+            &self.route.app_id,
+            &self.resource_kind,
+            &self.request.address.resource,
+            self.spec.contract.field.as_deref(),
+            &self.request.address.action,
+        )
+    }
+
     pub(super) fn permits_launch_in(&self, room: &str) -> bool {
         self.route.cluster_id == room
-            && self
-                .spec
-                .contract
-                .permission
-                .covers(tilo_actions::PermissionRequirement::Write)
+            && self.spec.contract.kind >= tilo_actions::ActionKind::Undoable
             && self
                 .execution
                 .as_ref()
@@ -327,13 +334,12 @@ impl OriginalInvocationData {
             .ok_or("workspace authority unavailable")?
             .decide_in_room(room, |workspace| {
                 let workspace = workspace.ok_or("original launch workspace unavailable")?;
-                if workspace.decide_at(
-                    &actor.policy_in(workspace, seconds),
-                    &ResourceRef::Workspace,
-                    Verb::Admin,
+                if !actor.may_in(
+                    workspace,
+                    &roles::governance_action(&workspace.policy.room, roles::governance::GRANT),
+                    roles::GOVERNANCE_KIND,
                     seconds,
-                ) != CapDecision::Allow
-                {
+                ) {
                     return Err("original launch caller cannot delegate application authorship");
                 }
                 Ok(())
@@ -377,6 +383,7 @@ impl OriginalInvocationData {
             route,
             spec,
             resource_identity: offered.semantic_identity.clone(),
+            resource_kind: offered.resource_kind.clone(),
             caller: caller?,
             time: time?,
             execution,
@@ -591,7 +598,7 @@ impl OriginalInvocation {
             || data.spec.kind != tilo_actions::OperationKind::Effect
             || data.spec.contract.execution
                 != (tilo_actions::ExecutionMode::Background { cancellable: true })
-            || data.spec.contract.permission != tilo_actions::PermissionRequirement::Write
+            || data.spec.contract.kind != tilo_actions::ActionKind::Undoable
         {
             return Err("approved check target action or contract mismatch".into());
         }
@@ -675,17 +682,25 @@ impl OriginalInvocation {
         person: Option<super::BrokerActor>,
         workspace: &tilo_desktop_model::Workspace,
         seconds: u64,
-    ) -> Result<Actor, String> {
+    ) -> Result<super::BrokerActor, String> {
         if let Some(person) = person {
-            return Ok(person.policy_in(workspace, seconds));
+            return Ok(person);
         }
         let agent = self
             .agent_id()
             .ok_or("original invocation caller unavailable")?;
-        workspace
-            .role_of_agent_at(agent, seconds)
-            .ok_or("original agent membership expired")?;
-        Ok(Actor::agent(agent).in_room(self.data.route.cluster_id.clone()))
+        let actor = super::BrokerActor::agent(format!("agent:{agent}"));
+        // An agent a person delegated acts for them, never beyond them.
+        let actor = match self.certificate() {
+            Ok(certificate) => {
+                actor.for_person(super::principal_id_for_root(certificate.user_public_key))
+            }
+            Err(_) => actor,
+        };
+        if !actor.reads_in(workspace, seconds) {
+            return Err("original agent membership expired".into());
+        }
+        Ok(actor)
     }
     pub(super) fn check_lifecycle(&self) -> Result<(), String> {
         self.check_custody()?;
@@ -738,22 +753,15 @@ impl OriginalInvocation {
         let person = self.original_person(&state)?;
         drop(state);
         let seconds = self.data.time.now_ns().map_err(|error| error.to_string())? / 1_000_000_000;
-        let verb = super::permission_verb(self.data.spec.contract.permission);
         membership.decide_in_room(&self.data.route.cluster_id, |workspace| {
             let workspace = workspace.ok_or("original invocation workspace unavailable")?;
             let actor = self.original_actor(person, workspace, seconds)?;
-            if verb.is_some_and(|verb| {
-                workspace.decide_at(
-                    &actor,
-                    &ResourceRef::Action {
-                        app: self.data.route.app_id.clone(),
-                        resource: self.data.request.address.resource.clone(),
-                        action: self.data.request.address.action.clone(),
-                    },
-                    verb,
-                    seconds,
-                ) != CapDecision::Allow
-            }) {
+            if !actor.may_in(
+                workspace,
+                &self.data.node(workspace),
+                self.data.spec.contract.kind,
+                seconds,
+            ) {
                 return Err("original invocation caller is no longer authorized".to_string());
             }
             Ok(())

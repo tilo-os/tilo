@@ -260,7 +260,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
                             shell::shell::state::Scope::FsPath(format!(
                                 "/var/workspace/doc-{i}.md"
                             )),
-                            shell::shell::state::Verb::Write,
+                            shell::shell::state::Access::Write,
                         ),
                     )
                     .expect("the owner may grant");
@@ -491,22 +491,25 @@ fn render_host_to_scene(host: &mut shell::shell::overlay_host::ShellOverlayHost)
 /// the correct fail-closed default) — useless as a membership fixture.
 #[must_use]
 fn tree_with_seeded_roster() -> WorkspaceTree {
-    use shell::shell::state::{CapOverride, Subject, Verb};
+    use tilo_action_policy::{Change, Role};
     let mut tree = WorkspaceTree::bootstrap_demo();
     let owner = shell::shell::state::local_user_id();
     tree.adopt_ownerless_workspaces(&owner);
     if let Some(ws) = tree.desktop.active_workspace_mut() {
-        let room = ws.id.raw().to_string();
-        for (person, verb) in [
-            ("ada", Verb::Write),
-            ("bo", Verb::Read),
-            ("cy", Verb::Comment),
-            ("dee", Verb::Read),
-            ("eli", Verb::Write),
+        for (person, role) in [
+            ("ada", Role::Editor),
+            ("bo", Role::Viewer),
+            ("cy", Role::Commenter),
+            ("dee", Role::Viewer),
+            ("eli", Role::Editor),
         ] {
-            ws.grant_as(
+            ws.govern_as_at(
                 &owner,
-                CapOverride::membership(Subject::person(person), room.clone(), verb),
+                Change::AddMember {
+                    person: person.into(),
+                    role,
+                },
+                tilo_clock::unix_now(),
             )
             .expect("the owner may write a membership");
         }
@@ -1498,7 +1501,7 @@ mod helper_tests {
 /// the member and listed-only-empty cases are pinned; don't relax either.
 #[test]
 fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
-    use shell::shell::state::{CapOverride, Collaborator, Principal, Subject, Verb};
+    use shell::shell::state::Collaborator;
     let room_people = |ws: &shell::shell::state::Workspace, tree: &WorkspaceTree| {
         let me = shell::shell::state::local_user_id();
         tilo_desktop::overview::room_people(
@@ -1513,8 +1516,8 @@ fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
     // anywhere.
     let mut listed_only = WorkspaceTree::bootstrap_demo();
     for ws in &mut listed_only.desktop.workspaces {
-        ws.owner = None;
-        ws.capabilities.clear();
+        ws.policy.owner = None;
+        ws.policy.members.clear();
         ws.collaborators = vec![
             Collaborator {
                 id: "ada".into(),
@@ -1542,12 +1545,7 @@ fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
     }
 
     let mut with_member = listed_only.clone();
-    let room = with_member.desktop.workspaces[0].id.raw().to_string();
-    with_member.desktop.workspaces[0].grant_capability(CapOverride::membership(
-        Subject::Principal(Principal::Person("ada".into())),
-        room,
-        Verb::Write,
-    ));
+    with_member.desktop.workspaces[0].admit("ada", tilo_action_policy::Role::Editor);
 
     let faces = room_people(&with_member.desktop.workspaces[0], &with_member);
     assert_eq!(

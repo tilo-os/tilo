@@ -1017,7 +1017,7 @@ impl SigningIdentity {
         &mut self,
         payload: Vec<u8>,
         artifact: collab_types::ArtifactId,
-        op_class: collab_types::OpClass,
+        kind: collab_types::OpKind,
     ) -> Result<collab_types::SignedOp, SignedSendError> {
         let timestamp = crate::time::wall();
         let sequence = self
@@ -1029,7 +1029,7 @@ impl SigningIdentity {
             artifact,
             self.public_key,
             self.attestation_id,
-            op_class,
+            kind,
             timestamp,
             sequence,
         );
@@ -1418,10 +1418,10 @@ impl CollaborationManager {
         &mut self,
         payload: Vec<u8>,
         artifact: collab_types::ArtifactId,
-        op_class: collab_types::OpClass,
+        kind: collab_types::OpKind,
     ) -> Result<(), SignedSendError> {
         let identity = self.identity.as_mut().ok_or(SignedSendError::NoIdentity)?;
-        let envelope = identity.sign_op(payload, artifact, op_class)?;
+        let envelope = identity.sign_op(payload, artifact, kind)?;
         self.send(CollabRequest::SignedOperation {
             envelope: Box::new(envelope),
         });

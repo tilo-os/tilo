@@ -37,7 +37,7 @@ use super::root::ResourceRoot;
 
 type Stage = Box<dyn FnMut(Option<&str>)>;
 type StageList = Vec<(Weak<()>, Stage)>;
-type Opener = Box<dyn FnMut(&str)>;
+type Opener = Box<dyn FnMut(&str) -> Result<(), String>>;
 type OpenerList = Vec<(Weak<()>, Opener)>;
 
 /// The view-state callbacks of one app's views — how each stages a
@@ -110,10 +110,22 @@ impl Stages {
             .any(|(alive, _)| alive.strong_count() > 0)
     }
 
-    /// Show the item at `anchor` in every view that opens items. Returns
-    /// whether any did.
-    pub(crate) fn open(&self, anchor: &str) -> bool {
-        run_live(&self.openers, |open| open(anchor))
+    /// Show the item at `anchor` in every view that opens items.
+    ///
+    /// # Errors
+    /// Returns why not, when no view opens items or every one refused it.
+    pub(crate) fn open(&self, anchor: &str) -> Result<(), String> {
+        let mut opened = false;
+        let mut refusal = None;
+        let ran = run_live(&self.openers, |open| match open(anchor) {
+            Ok(()) => opened = true,
+            Err(reason) => refusal = Some(reason),
+        });
+        match (ran, opened, refusal) {
+            (false, ..) => Err("this app does not open items".into()),
+            (true, true, _) | (true, false, None) => Ok(()),
+            (true, false, Some(reason)) => Err(reason),
+        }
     }
 }
 
@@ -128,95 +140,122 @@ pub fn stage<A: ResourceApp>(
     harness: &mut FrameHarness,
     scenario: Option<&str>,
 ) -> Result<(), LaunchError> {
-    let staged = Staged {
-        title: A::TITLE,
-        kind: <A::Resource as Resource>::KIND,
-        actions: A::scenario(scenario)
-            .into_iter()
-            .map(|invoke| (invoke.id, invoke.arguments))
-            .collect(),
-        input: A::scenario_input,
-    };
-    staged.stage(harness, scenario)
+    let actions = A::scenario(scenario)
+        .into_iter()
+        .map(|invoke| match invoke.refusal() {
+            Some(refusal) => Err(refusal.to_owned()),
+            None => Ok((invoke.id, invoke.arguments)),
+        })
+        .collect();
+    stage_with(
+        harness,
+        scenario,
+        &Staging {
+            title: A::TITLE,
+            kind: <A::Resource as Resource>::KIND,
+            stage_root,
+            input: A::scenario_input,
+        },
+        actions,
+    )
 }
 
-/// What [`stage`] stages of an app, without its type: the app's title and
-/// resource kind, the scenario's actions and its input.
-struct Staged {
+/// The collaborators the root the harness hosts shows once its views
+/// staged `scenario`; `None` when it hosts no root.
+fn stage_root(harness: &mut FrameHarness, scenario: Option<&str>) -> Option<Collaborators> {
+    harness.with_widget_mut(|root: &mut ResourceRoot| root.stage(scenario))
+}
+
+/// The collaborators a staged capture shows, as the presence frames their
+/// windows would send.
+type Collaborators = Vec<(
+    String,
+    ui_core::presence::PresenceKey,
+    ui_core::PresencePayload,
+)>;
+
+/// A scenario action's id and arguments.
+type ScenarioAction = (&'static str, serde_json::Map<String, serde_json::Value>);
+
+/// What staging reads of an app besides its scenario's actions.
+struct Staging {
     title: &'static str,
     kind: &'static str,
-    actions: Vec<(&'static str, serde_json::Map<String, serde_json::Value>)>,
+    stage_root: fn(&mut FrameHarness, Option<&str>) -> Option<Collaborators>,
     input: fn(Option<&str>, &mut FrameHarness) -> Result<(), String>,
 }
 
-impl Staged {
-    /// [`stage`] of this app.
-    fn stage(self, harness: &mut FrameHarness, scenario: Option<&str>) -> Result<(), LaunchError> {
-        let root = harness
-            .component_instance_id()
-            .ok_or_else(|| LaunchError::Operation(format!("{} is not hosted here", self.title)))?;
-        // A scenario's actions are the app's own fixture, declared in code, not a
-        // request from a person or an agent: they are applied as confirmed, so a
-        // scenario that replaces a whole project stages without a prompt.
-        for (id, arguments) in &self.actions {
-            let address = BoundActionAddress {
-                instance_id: root,
-                address: tilo_actions::ActionAddress::new(self.kind, *id),
-            };
-            harness
-                .invoke_bound_action_confirmed(&address, arguments)
-                .map_err(|error| LaunchError::Operation(error.to_string()))?;
-        }
-        harness.relayout();
-        let collaborators = harness
-            .with_widget_mut(|root: &mut ResourceRoot| root.stage(scenario))
-            .ok_or_else(|| LaunchError::Operation(format!("{} is not hosted here", self.title)))?;
-        if !collaborators.is_empty() {
-            harness.update_presence(|presence| {
-                for (name, key, payload) in collaborators {
-                    let user = ui_core::permissions::UserId(name.clone());
-                    presence.set_display_name(user, name.clone());
-                    presence.apply_remote_presence(name, key, payload);
-                }
-                true
-            });
-        }
-        // The surfaces stage on this sync; the input meets the staged scene.
-        harness.relayout();
-        (self.input)(scenario, harness).map_err(|error| {
-            LaunchError::Operation(format!(
-                "{} scenario {:?} input failed: {error}",
-                self.title,
-                scenario.unwrap_or("default")
-            ))
-        })?;
-        // Project acknowledged scenario edits before awaiting asynchronous
-        // rendering. Transient save feedback belongs to the captured scene;
-        // its lifetime is separate from unfinished placeholder work.
+/// [`stage`], once the scenario's actions are built: each its id and
+/// arguments, or why it does not bind.
+fn stage_with(
+    harness: &mut FrameHarness,
+    scenario: Option<&str>,
+    app: &Staging,
+    actions: Vec<Result<ScenarioAction, String>>,
+) -> Result<(), LaunchError> {
+    let title = app.title;
+    let root = harness
+        .component_instance_id()
+        .ok_or_else(|| LaunchError::Operation(format!("{title} is not hosted here")))?;
+    // A scenario's actions are the app's own fixture, declared in code, not a
+    // request from a person or an agent: they are applied as confirmed, so a
+    // scenario that replaces a whole project stages without a prompt.
+    for action in actions {
+        let (id, arguments) = action.map_err(LaunchError::Operation)?;
+        let address = BoundActionAddress {
+            instance_id: root,
+            address: tilo_actions::ActionAddress::new(app.kind, id),
+        };
         harness
-            .flush_component_records()
-            .map_err(LaunchError::Operation)?;
-        harness
-            .wait_for_visuals(SETTLE)
-            .map_err(|error| match scenario {
-                Some(name) => LaunchError::Operation(format!(
-                    "{} scenario {name:?} did not settle: {error}",
-                    self.title
-                )),
-                None => LaunchError::Operation(format!("{} did not settle: {error}", self.title)),
-            })?;
-        // The scenario's edits are saved before the frame is taken, as they would
-        // be by the time anyone looked: a capture shows the record saved, not a
-        // write still in flight.
-        harness
-            .flush_component_records()
-            .map_err(LaunchError::Operation)?;
-        harness.relayout();
-        // Navigation replacement has coherent first-frame geometry. Capture the
-        // acknowledged production frame after its visual work above completes;
-        // a live progress spinner intentionally never reaches animation idle.
-        Ok(())
+            .invoke_bound_action_confirmed(&address, &arguments)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
     }
+    harness.relayout();
+    let collaborators = (app.stage_root)(harness, scenario)
+        .ok_or_else(|| LaunchError::Operation(format!("{title} is not hosted here")))?;
+    if !collaborators.is_empty() {
+        harness.update_presence(|presence| {
+            for (name, key, payload) in collaborators {
+                let user = ui_core::permissions::UserId(name.clone());
+                presence.set_display_name(user, name.clone());
+                presence.apply_remote_presence(name, key, payload);
+            }
+            true
+        });
+    }
+    // The surfaces stage on this sync; the input meets the staged scene.
+    harness.relayout();
+    (app.input)(scenario, harness).map_err(|error| {
+        LaunchError::Operation(format!(
+            "{title} scenario {:?} input failed: {error}",
+            scenario.unwrap_or("default")
+        ))
+    })?;
+    // Project acknowledged scenario edits before awaiting asynchronous
+    // rendering. Transient save feedback belongs to the captured scene;
+    // its lifetime is separate from unfinished placeholder work.
+    harness
+        .flush_component_records()
+        .map_err(LaunchError::Operation)?;
+    harness
+        .wait_for_visuals(SETTLE)
+        .map_err(|error| match scenario {
+            Some(name) => {
+                LaunchError::Operation(format!("{title} scenario {name:?} did not settle: {error}"))
+            }
+            None => LaunchError::Operation(format!("{title} did not settle: {error}")),
+        })?;
+    // The scenario's edits are saved before the frame is taken, as they would
+    // be by the time anyone looked: a capture shows the record saved, not a
+    // write still in flight.
+    harness
+        .flush_component_records()
+        .map_err(LaunchError::Operation)?;
+    harness.relayout();
+    // Navigation replacement has coherent first-frame geometry. Capture the
+    // acknowledged production frame after its visual work above completes;
+    // a live progress spinner intentionally never reaches animation idle.
+    Ok(())
 }
 
 /// How long a capture waits for its surfaces' asynchronous work (a page

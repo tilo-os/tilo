@@ -7,14 +7,16 @@ use crate::cached_document::CachedDocument;
 use crate::verified_certificate::VerifiedCertificate;
 use crate::{NeighbourMsg, document, room};
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
-use collab_types::caps::{Actor, CapDecision, Principal, ResourceRef, decide_capability};
-use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+use collab_types::caps::Principal;
 use collab_types::{
-    ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpClass, Role, SignedOp,
+    ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpKind, Role, SignedOp,
 };
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
+use tilo_action_policy::{
+    ActionKind, Answer, Authority, Grant, GrantId, KindSet, RoomPolicy, Subject, TreePath,
+};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::{Duration, SystemTime};
 mod backend;
@@ -64,6 +66,72 @@ fn now_secs(now: SystemTime) -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+/// A current member's authority in the room: who they are, their role, the
+/// room's policy as admitted, and whether their device is held to the
+/// foreign-device bound.
+#[derive(Clone, Debug)]
+pub struct MemberAuthority {
+    pub role: Role,
+    pub person: String,
+    pub policy: RoomPolicy,
+    pub foreign: bool,
+    /// The delegation bounding a delegated agent's device: its person's
+    /// grants, never above an Editor's.
+    pub agent: Option<tilo_action_policy::Bound>,
+}
+impl MemberAuthority {
+    /// The member's standing in the room, held to the foreign-device bound
+    /// on a foreign device: what a receiver decides their ops with.
+    #[must_use]
+    pub fn standing(self) -> tilo_action_policy::Standing {
+        let mut standing = tilo_action_policy::Standing::person(self.policy, self.person);
+        if self.foreign {
+            standing = standing.on_foreign_device();
+        }
+        if let Some(agent) = self.agent {
+            standing = standing.with_bound(agent);
+        }
+        standing
+    }
+
+    /// The member's authority, held to `foreign_bound` on a foreign device.
+    #[must_use]
+    pub fn authority<'a>(&'a self, foreign_bound: &'a [Grant]) -> Authority<'a> {
+        let authority = self
+            .policy
+            .person_on_device(&self.person, self.foreign, foreign_bound);
+        match &self.agent {
+            Some(agent) => authority.bounded_by(agent.party(&self.policy.grants)),
+            None => authority,
+        }
+    }
+    /// Whether the member may perform an action of `kind` at `node` at `now`.
+    #[must_use]
+    pub fn allows(&self, node: &TreePath, kind: ActionKind, now: SystemTime) -> bool {
+        let bound = tilo_action_policy::roles::foreign_device_bound();
+        self.authority(&bound)
+            .decide(node, kind, &tilo_action_policy::Context::at_time(now))
+            .answer
+            == Answer::Allow
+    }
+}
+/// Whether `agent` is admitted to the room: it holds a live grant on the room
+/// itself.
+pub(crate) fn agent_is_member(policy: &RoomPolicy, agent: &str, now: SystemTime) -> bool {
+    let cx = tilo_action_policy::Context::at_time(now);
+    let room = policy.node();
+    policy.grants.iter().any(|grant| {
+        matches!(&grant.subject, Subject::Agent(held) if held == agent)
+            && grant.node == room
+            && grant.answer != Answer::Deny
+            && grant.is_live(&cx)
+    })
+}
+/// The id of the grant that makes a member an administrator.
+fn administrator_grant_id(user_public_key: [u8; 32]) -> String {
+    format!("room-admin-v1:{}", hex::encode(user_public_key))
+}
+/// The decision context of a policy question asked at `now`.
 pub fn peer_handle(key: &[u8; 32]) -> u64 {
     let mut hasher = fnv::FnvHasher::default();
     std::hash::Hasher::write(&mut hasher, key);
@@ -246,6 +314,77 @@ const MAX_SEALED_BYTES: usize = 16 * 1024 * 1024;
 #[derive(Clone)]
 pub struct StatePeer {
     core: PeerCore<LegacyNative>,
+    /// The app surfaces received changes are decided against by their
+    /// claims; without a source, a change is decided as an edit of its
+    /// record. Set by the host, never persisted.
+    surfaces: collab_types::Surfaces,
+    /// The app surface each app's changes this peer signs are decided
+    /// against, by app id: what the host launched the app with.
+    app_surfaces: AppSurfaces,
+}
+
+fn defaults() -> &'static std::sync::Mutex<(collab_types::Surfaces, AppSurfaces)> {
+    static DEFAULTS: std::sync::OnceLock<std::sync::Mutex<(collab_types::Surfaces, AppSurfaces)>> =
+        std::sync::OnceLock::new();
+    DEFAULTS.get_or_init(std::sync::Mutex::default)
+}
+
+fn process_default() -> (collab_types::Surfaces, AppSurfaces) {
+    defaults()
+        .lock()
+        .map(|defaults| defaults.clone())
+        .unwrap_or_default()
+}
+
+/// The app surfaces this process decides received changes against
+/// ([`decide_with_surfaces`]).
+#[must_use]
+pub fn default_surfaces() -> collab_types::Surfaces {
+    process_default().0
+}
+
+/// Decide the changes every peer of this process receives against the app
+/// surfaces `surfaces` finds, and name in the changes it signs the surface
+/// `of` returns for each app: what a host sets once, before it opens or
+/// restores its rooms. A peer made before keeps what it had.
+pub fn decide_with_surfaces(
+    surfaces: collab_types::Surfaces,
+    of: impl Fn(&str) -> Option<[u8; 32]> + Send + Sync + 'static,
+) {
+    collab_types::Surfaces::set_process(surfaces.clone());
+    if let Ok(mut defaults) = defaults().lock() {
+        *defaults = (surfaces, AppSurfaces(Some(std::sync::Arc::new(of))));
+    }
+}
+
+/// The surface hash of an app's package, by app id.
+#[derive(Clone, Default)]
+struct AppSurfaces(Option<std::sync::Arc<SurfaceOf>>);
+
+type SurfaceOf = dyn Fn(&str) -> Option<[u8; 32]> + Send + Sync;
+
+/// The kind a record document's identity names (`tilo:record.kind`).
+/// The record as this peer holds it, when it has units beside itself to
+/// tell a change's writes apart by.
+fn held_units(doc: &crate::cached_document::CachedDocument) -> Option<AutoCommit> {
+    collab_types::units::has_units(&**doc).then(|| AutoCommit::clone(doc))
+}
+
+/// The surface a record document's identity names (`tilo:record.surface`).
+fn record_surface(doc: &impl automerge::ReadDoc) -> Option<[u8; 32]> {
+    let (_, meta) = doc.get(automerge::ROOT, "tilo:record").ok()??;
+    match doc.get(&meta, "surface").ok()?? {
+        (automerge::Value::Scalar(hash), _) => hex::decode(hash.as_str()?).ok()?.try_into().ok(),
+        _ => None,
+    }
+}
+
+fn record_kind(doc: &impl automerge::ReadDoc) -> Option<String> {
+    let (_, meta) = doc.get(automerge::ROOT, "tilo:record").ok()??;
+    match doc.get(&meta, "kind").ok()?? {
+        (automerge::Value::Scalar(kind), _) => kind.as_str().map(str::to_owned),
+        _ => None,
+    }
 }
 
 fn check_governed_snapshot(
@@ -306,6 +445,8 @@ impl StatePeer {
                 native_cut_publisher: None,
                 _retention: (),
             },
+            surfaces: process_default().0,
+            app_surfaces: process_default().1,
         })
     }
     /// Add a root-certified viewer to existing governed history. Only the pinned
@@ -597,13 +738,30 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.set_member_verb(user_public_key, member_verb(role), key, now)
+        self.set_member(user_public_key, role.into(), false, key, now)
     }
 
-    fn set_member_verb(
+    /// Make a governed collaborator an administrator of the workspace: an
+    /// editor granted every governance action of the room (never its
+    /// governance key). [`Self::set_member_role`] demotes them again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::set_member_role`].
+    pub fn set_member_administrator(
         &mut self,
         user_public_key: [u8; 32],
-        verb: Verb,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.set_member(user_public_key, Role::Editor, true, key, now)
+    }
+
+    fn set_member(
+        &mut self,
+        user_public_key: [u8; 32],
+        role: Role,
+        administrator: bool,
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
@@ -624,43 +782,53 @@ impl StatePeer {
         }) {
             return Err("member is absent from governed admission history".into());
         }
-        let before_role = room::role_of(
-            policy.owner.as_deref(),
-            &policy.caps,
-            &hex::encode(user_public_key),
-            now_secs(now),
-        );
+        let person = hex::encode(user_public_key);
+        let admin_id = administrator_grant_id(user_public_key);
+        let before_role = policy.members.get(&person).copied();
+        let before_admin = policy
+            .grants
+            .iter()
+            .any(|grant| grant.id.as_str() == admin_id);
         let before = doc.get_heads();
-        let caps = doc
-            .get(ROOT, "capabilities")
-            .map_err(err)?
-            .ok_or("governed capabilities missing")?
-            .1;
+        let members = governed_map(&doc, "members")?;
+        let grants = governed_map(&doc, "grants")?;
         doc.set_actor(automerge::ActorId::from(
             key.verifying_key().to_bytes().to_vec(),
         ));
-        put_member_verb(&mut doc, &caps, user_public_key, verb)?;
+        put_member(&mut doc, &members, user_public_key, role)?;
+        if administrator {
+            let grant = Grant::new(
+                admin_id.clone(),
+                Subject::Person(person),
+                tilo_action_policy::roles::room_resource(&self.core.room),
+                KindSet::ALL,
+                Answer::Allow,
+                Subject::Person(hex::encode(self.core.authority.user_public_key)),
+            );
+            doc.put(
+                &grants,
+                admin_id.as_str(),
+                automerge::ScalarValue::Bytes(serde_json::to_vec(&grant).map_err(err)?),
+            )
+            .map_err(err)?;
+        } else if doc.get(&grants, admin_id.as_str()).map_err(err)?.is_some() {
+            doc.delete(&grants, admin_id.as_str()).map_err(err)?;
+        }
         doc.commit();
         let changed = self.apply_governance_doc(doc, &before, key, now)?;
-        let after_role = match verb {
-            Verb::Admin => Role::Owner,
-            Verb::Write => Role::Editor,
-            Verb::Comment => Role::Commenter,
-            Verb::Read | Verb::Invite => Role::Viewer,
-        };
-        Ok(changed && before_role != Some(after_role))
+        Ok(changed && (before_role != Some(role) || before_admin != administrator))
     }
 
-    /// Remove workspace capabilities the governance writer decided to take
-    /// back, by id. Memberships are removed through member governance.
+    /// Remove grants the governance writer decided to take back, by id.
+    /// Memberships are removed through member governance.
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not the governance writer, an id names a
-    /// membership, or governance cannot be updated.
-    pub fn remove_governed_capabilities(
+    /// Returns an error if `key` is not the governance writer or governance
+    /// cannot be updated.
+    pub fn remove_governed_grants(
         &mut self,
-        ids: &[String],
+        ids: &[GrantId],
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
@@ -671,36 +839,29 @@ impl StatePeer {
             .clone()
             .ok_or("room governance missing")?;
         let before = doc.get_heads();
-        let caps = doc
-            .get(ROOT, "capabilities")
-            .map_err(err)?
-            .ok_or("governed capabilities missing")?
-            .1;
+        let grants = governed_map(&doc, "grants")?;
         doc.set_actor(automerge::ActorId::from(
             key.verifying_key().to_bytes().to_vec(),
         ));
         for id in ids {
-            if id.starts_with("room-member-v1:") {
-                return Err(format!("capability {id:?} is a membership"));
-            }
-            if doc.get(&caps, id.as_str()).map_err(err)?.is_some() {
-                doc.delete(&caps, id.as_str()).map_err(err)?;
+            if doc.get(&grants, id.as_str()).map_err(err)?.is_some() {
+                doc.delete(&grants, id.as_str()).map_err(err)?;
             }
         }
         doc.commit();
         self.apply_governance_doc(doc, &before, key, now)
     }
 
-    /// Write workspace capabilities the governance writer decided, such as
-    /// those an assigned permission profile expands to, keyed by their ids.
+    /// Write grants the governance writer decided, such as those an assigned
+    /// grant set expands to, keyed by their ids.
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not the governance writer, a capability
-    /// has no id or would replace a membership, or governance cannot be updated.
-    pub fn put_governed_capabilities(
+    /// Returns an error if `key` is not the governance writer, a grant has no
+    /// id or names another room, or governance cannot be updated.
+    pub fn put_governed_grants(
         &mut self,
-        capabilities: &[CapOverride],
+        grants: &[Grant],
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
@@ -711,23 +872,63 @@ impl StatePeer {
             .clone()
             .ok_or("room governance missing")?;
         let before = doc.get_heads();
-        let caps = doc
-            .get(ROOT, "capabilities")
-            .map_err(err)?
-            .ok_or("governed capabilities missing")?
-            .1;
+        let map = governed_map(&doc, "grants")?;
         doc.set_actor(automerge::ActorId::from(
             key.verifying_key().to_bytes().to_vec(),
         ));
-        for capability in capabilities {
-            if capability.id.trim().is_empty() || capability.id.starts_with("room-member-v1:") {
+        for grant in grants {
+            if grant.id.as_str().trim().is_empty()
+                || grant.node.room_id() != Some(self.core.room.as_str())
+            {
                 return Err(format!(
-                    "capability {:?} cannot be written as workspace policy",
-                    capability.id
+                    "grant {:?} cannot be written as workspace policy",
+                    grant.id
                 ));
             }
             doc.put(
-                &caps,
+                &map,
+                grant.id.as_str(),
+                automerge::ScalarValue::Bytes(serde_json::to_vec(grant).map_err(err)?),
+            )
+            .map_err(err)?;
+        }
+        doc.commit();
+        self.apply_governance_doc(doc, &before, key, now)
+    }
+
+    /// Write sandbox capabilities the governance writer decided for apps in
+    /// the room, keyed by their ids.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer, a capability
+    /// has no id, or governance cannot be updated.
+    pub fn put_governed_sandbox(
+        &mut self,
+        capabilities: &[collab_types::caps::CapOverride],
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.require_governance_writer(key, now)?;
+        let mut doc = self
+            .core
+            .room_doc
+            .clone()
+            .ok_or("room governance missing")?;
+        let before = doc.get_heads();
+        doc.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        let map = match doc.get(ROOT, "sandbox").map_err(err)? {
+            Some((_, map)) => map,
+            None => doc.put_object(ROOT, "sandbox", ObjType::Map).map_err(err)?,
+        };
+        for capability in capabilities {
+            if capability.id.trim().is_empty() {
+                return Err("a sandbox capability needs an id".into());
+            }
+            doc.put(
+                &map,
                 capability.id.as_str(),
                 automerge::ScalarValue::Bytes(serde_json::to_vec(capability).map_err(err)?),
             )
@@ -758,43 +959,74 @@ impl StatePeer {
             .room_doc
             .clone()
             .ok_or("room governance missing")?;
-        let (_, capabilities) = doc
-            .get(ROOT, "capabilities")
-            .map_err(err)?
-            .ok_or("governed capabilities missing")?;
         let person = hex::encode(user_public_key);
-        let matching = doc
-            .keys(&capabilities)
-            .filter(|id| {
-                doc.get(&capabilities, id)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|(value, _)| {
-                        let automerge::Value::Scalar(value) = value else {
-                            return false;
-                        };
-                        let automerge::ScalarValue::Bytes(bytes) = value.as_ref() else {
-                            return false;
-                        };
-                        serde_json::from_slice::<CapOverride>(bytes).is_ok_and(|cap| {
-                            subject_is_person(&cap.subject, user_public_key, &person)
-                                && matches!(cap.scope, Scope::Room(_) | Scope::Workspace)
-                        })
-                    })
-            })
+        let members = governed_map(&doc, "members")?;
+        let grants = governed_map(&doc, "grants")?;
+        let personal = doc
+            .policy()
+            .grants
+            .iter()
+            .filter(|grant| grant.subject == Subject::Person(person.clone()))
+            .map(|grant| grant.id.as_str().to_owned())
             .collect::<Vec<_>>();
-        if matching.is_empty() {
+        let member = doc.get(&members, person.as_str()).map_err(err)?.is_some();
+        if !member && personal.is_empty() {
             return Ok(false);
         }
         let before = doc.get_heads();
         doc.set_actor(automerge::ActorId::from(
             key.verifying_key().to_bytes().to_vec(),
         ));
-        for id in matching {
-            doc.delete(&capabilities, id).map_err(err)?;
+        if member {
+            doc.delete(&members, person.as_str()).map_err(err)?;
+        }
+        for id in personal {
+            doc.delete(&grants, id.as_str()).map_err(err)?;
         }
         doc.commit();
         self.apply_governance_doc(doc, &before, key, now)
+    }
+
+    /// The sandbox capabilities the room's governance grants its apps.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if room governance is missing or a capability is
+    /// malformed.
+    pub fn governed_sandbox(&self) -> Result<Vec<collab_types::caps::CapOverride>, String> {
+        let doc = self
+            .core
+            .room_doc
+            .as_ref()
+            .ok_or("room governance missing")?;
+        room::governance_of(Some(doc))
+            .sandbox
+            .values()
+            .map(|bytes| serde_json::from_slice(bytes).map_err(err))
+            .collect()
+    }
+
+    /// The standing of every governed member device at `now`: what a relay
+    /// that does not hold the room's governance decides their changes
+    /// with, each held to its foreign-device bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the room's governance is missing or malformed.
+    pub fn governed_standings(
+        &self,
+        now: SystemTime,
+    ) -> Result<std::collections::BTreeMap<[u8; 32], tilo_action_policy::Standing>, String> {
+        let access = self.governed_access(now)?;
+        Ok(access
+            .member_devices
+            .into_iter()
+            .filter_map(|device| {
+                self.permissions(device, now)
+                    .ok()
+                    .map(|member| (device, member.standing()))
+            })
+            .collect())
     }
 
     /// Current governed access derived from the admitted room document.
@@ -809,6 +1041,7 @@ impl StatePeer {
             .as_ref()
             .ok_or("room governance missing")?
             .policy();
+        let room_policy = policy.room_policy(&self.core.room);
         let mut member_devices = Vec::new();
         let mut member_user_roots = Vec::new();
         for bytes in policy.identities.values() {
@@ -824,14 +1057,7 @@ impl StatePeer {
                 continue;
             }
             let person = hex::encode(cert.user_public_key);
-            if room::role_of(
-                policy.owner.as_deref(),
-                &policy.caps,
-                &person,
-                now_secs(now),
-            )
-            .is_some_and(|role| role != Role::Denied)
-            {
+            if room_policy.active_role(&person).is_some() {
                 member_devices.push(cert.device_public_key);
                 member_user_roots.push(cert.user_public_key);
             }
@@ -859,6 +1085,7 @@ impl StatePeer {
             .as_ref()
             .ok_or("room governance missing")?;
         let policy = doc.policy();
+        let room_policy = policy.room_policy(&self.core.room);
         let names = room::governance_of(Some(doc)).peers;
         let mut rows: BTreeMap<[u8; 32], GovernedMember> = BTreeMap::new();
         for (id, bytes) in &policy.identities {
@@ -872,14 +1099,13 @@ impl StatePeer {
             };
             let root = identity.device_cert.user_public_key;
             let person = hex::encode(root);
-            let role = room::role_of(
-                policy.owner.as_deref(),
-                &policy.caps,
-                &person,
-                now_secs(now),
-            );
-            let administrator = role == Some(Role::Owner);
-            let active_role = if administrator {
+            let role = room_policy.active_role(&person);
+            let administrator = role == Some(Role::Owner)
+                || room_policy
+                    .grants
+                    .iter()
+                    .any(|grant| grant.id.as_str() == administrator_grant_id(root));
+            let active_role = if role == Some(Role::Owner) {
                 Some(crate::join::MemberRole::Editor)
             } else {
                 role.and_then(member_role_from_role)
@@ -943,8 +1169,8 @@ impl StatePeer {
             return Err("membership certificate is absent from governed state".into());
         }
         self.certificate(&device_cert.device_public_key, now)?;
-        let role = match self.permissions(device_cert.device_public_key, now) {
-            Ok((role, _, _)) => role,
+        match self.permissions(device_cert.device_public_key, now) {
+            Ok(_) => {}
             Err(error)
                 if error.contains("no room membership")
                     && self.has_governed_admission(device_cert) =>
@@ -952,9 +1178,6 @@ impl StatePeer {
                 return Err("member has been removed".into());
             }
             Err(error) => return Err(error),
-        };
-        if matches!(role, Role::Denied) {
-            return Err("member has been removed".into());
         }
         crate::join::MembershipChallenge::new(
             &self.core.room,
@@ -1096,36 +1319,35 @@ impl StatePeer {
     pub fn room(&self) -> &str {
         &self.core.room
     }
-    /// The room role, capability overrides and owner of the device `source`.
+    /// The current authority of the device `source`: its person, role, the
+    /// room's policy and whether it is held to the foreign-device bound.
     ///
     /// # Errors
     ///
-    /// Returns an error if `source` has no current certified identity or governance is
-    /// missing.
+    /// Returns an error if `source` has no current certified identity, is not a
+    /// current member, or governance is missing.
     pub fn permissions(
         &self,
         source: [u8; 32],
         now: SystemTime,
-    ) -> Result<(Role, Vec<collab_types::caps::CapOverride>, String), String> {
-        let role = self.role(&source, now)?;
+    ) -> Result<MemberAuthority, String> {
+        let (role, agent) = backend::member::legacy(&self.core, &source, now).map_err(err)?;
         let cert = self.certificate(&source, now)?;
-        let mut caps = self
+        let policy = self
             .core
             .room_doc
             .as_ref()
             .ok_or("room missing")?
             .policy()
-            .caps
-            .clone();
+            .room_policy(&self.core.room);
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
-        backend::member::restrict_foreign_device(
-            cert,
-            &self.core.authority,
-            person.id(),
-            &mut caps,
-            now,
-        );
-        Ok((role, caps, person.id().to_owned()))
+        Ok(MemberAuthority {
+            role,
+            person: person.id().to_owned(),
+            policy,
+            foreign: backend::member::foreign(cert, &self.core.authority),
+            agent,
+        })
     }
     /// Committed, admitted room only. Callers cannot mutate the admission owner.
     pub fn admitted_room(&self) -> Option<&AutoCommit> {
@@ -1145,9 +1367,15 @@ impl StatePeer {
         record: &str,
         now: SystemTime,
     ) -> Result<(), String> {
-        let (role, caps, person) = self.permissions(device, now)?;
-        if !backend::access::document_read(role, &caps, &person, &self.core.room, app, record, now)
-        {
+        let member = self.permissions(device, now)?;
+        let bound = tilo_action_policy::roles::foreign_device_bound();
+        if !backend::access::document_read(
+            &member.authority(&bound),
+            &self.core.room,
+            app,
+            record,
+            now,
+        ) {
             return Err(format!("record read forbidden: {app}/{record}"));
         }
         Ok(())
@@ -1333,6 +1561,41 @@ impl StatePeer {
             .map(|entry| entry.doc.base_heads())
     }
 
+    /// Whether `record`'s governed checkpoint is still arriving: the room
+    /// already carries its coverage, but the checkpoint body it names has
+    /// not been admitted, so the document's accepted checkpoint is an older
+    /// one. A restoring read refuses this room until the body arrives; it is
+    /// a cut in flight, not a damaged replica.
+    #[must_use]
+    pub fn checkpoint_pending(&self, app: &str, record: &str) -> bool {
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let Some(document) = self.core.documents.get(&route) else {
+            return false;
+        };
+        let snapshot = document
+            .covered_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.0.bytes.as_slice());
+        let room = self
+            .core
+            .room_doc
+            .as_deref()
+            .map(crate::room::read::LegacyRead);
+        matches!(
+            crate::coverage::read::governed_snapshot_matches(
+                room.as_ref(),
+                app,
+                record,
+                snapshot,
+                &crate::coverage::read::LegacyCoverage,
+            ),
+            Err(crate::coverage::read::CoverageMatchError::NoMatch)
+        )
+    }
+
     /// Heads of a plaintext, causally complete document. Missing, encrypted,
     /// and incomplete routes return `None` so a caller falls through to a
     /// restoring read and keeps that refusal.
@@ -1363,49 +1626,70 @@ impl StatePeer {
         self.core.certificate_typed(source, now).map_err(err)
     }
     fn role(&self, source: &[u8; 32], now: SystemTime) -> Result<Role, String> {
-        backend::member::legacy(&self.core, source, now).map_err(err)
+        backend::member::legacy(&self.core, source, now)
+            .map(|(role, _)| role)
+            .map_err(err)
     }
+    /// Name, in every op this peer signs for an app, the surface `of`
+    /// returns for it: the content hash of the app's `surface.toml`.
+    pub fn name_app_surfaces(
+        &mut self,
+        of: impl Fn(&str) -> Option<[u8; 32]> + Send + Sync + 'static,
+    ) {
+        self.app_surfaces = AppSurfaces(Some(std::sync::Arc::new(of)));
+    }
+
+    /// Decide received changes by their claims against the app surfaces
+    /// `surfaces` finds.
+    pub fn set_surfaces(&mut self, surfaces: collab_types::Surfaces) {
+        self.surfaces = surfaces;
+    }
+
+    /// The authority of `source` for the change `envelope` makes on `record`
+    /// of `app_id`, refused when the change is not granted; `None` while
+    /// the app surface it is decided against is not here.
     fn authorize_document(
         &self,
         source: &[u8; 32],
         app_id: &str,
+        record: &str,
         envelope: &SignedOp,
         authorization_time: SystemTime,
-    ) -> Result<Role, String> {
-        let role = self.role(source, authorization_time)?;
-        let cert = self.certificate(source, authorization_time)?;
-        // Decoded once per governance document state, not per message.
-        let mut caps = (self.core.room_doc.as_ref().ok_or("missing governance")?)
-            .policy()
-            .caps
-            .clone();
-        let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
-        backend::member::restrict_foreign_device(
-            cert,
-            &self.core.authority,
-            person.id(),
-            &mut caps,
-            authorization_time,
-        );
-        let actor = Actor::person(Some(role), person.id())
-            .with_principal(Principal::App(app_id.to_owned()))
-            .in_room(self.core.room.clone());
-        let resource = ResourceRef::Artifact {
-            app: Some(app_id.to_owned()),
-            kind: ArtifactKind::Note,
-            instance: envelope.artifact,
+    ) -> Result<Option<MemberAuthority>, String> {
+        let member = self.permissions(*source, authorization_time)?;
+        let route = Route {
+            app: app_id.into(),
+            record: record.into(),
         };
-        if decide_capability(
-            &actor,
-            &resource,
-            collab_types::caps::verb_for_opclass(envelope.op_class),
-            &caps,
-            Some(now_secs(authorization_time)),
-        ) != CapDecision::Allow
-        {
-            return Err("document capability forbidden".into());
+        // The record as this peer holds it, read only when changes are
+        // decided against app surfaces: which of the app's resources it is,
+        // and which units a change writes.
+        let document = self
+            .surfaces
+            .enforced()
+            .then(|| self.core.documents.get(&route))
+            .flatten();
+        let kind = document.and_then(|document| record_kind(&*document.doc));
+        let pinned = document.and_then(|document| record_surface(&*document.doc));
+        let held = document.and_then(|document| held_units(&document.doc));
+        let decided = collab_types::decide_op_pinned(
+            envelope,
+            &collab_types::Record {
+                room: &self.core.room,
+                app: app_id,
+                record,
+            },
+            kind.as_deref(),
+            held,
+            pinned,
+            &self.surfaces,
+            &|node, kind| member.allows(node, kind, authorization_time),
+        );
+        match decided {
+            Ok(collab_types::Receipt::Admit) => Ok(Some(member)),
+            Ok(collab_types::Receipt::Hold) => Ok(None),
+            Err(refusal) => Err(format!("document change forbidden: {refusal}")),
         }
-        Ok(role)
     }
 
     /// Select native schema v5 only as part of an outer owner's reviewed rollout.
@@ -1528,7 +1812,12 @@ impl StatePeer {
         if room != self.core.room || op.author.as_bytes() != &source {
             return Err("transport author or document room mismatch".into());
         }
-        self.authorize_document(&source, app, op, now)?;
+        if self
+            .authorize_document(&source, app, record, op, now)?
+            .is_none()
+        {
+            return Err("document change held: its app surface is not here yet".into());
+        }
         collab_types::validate_whole_document_payload_route(app, room, record, op).map_err(err)?;
         collab_types::verify_op(op).map_err(err)?;
         let admission = DocumentAdmission::from_op(room, app, record, op)?;
@@ -1673,16 +1962,14 @@ impl StatePeer {
                 if received != self.core.room {
                     return Err("room topic mismatch".into());
                 }
-                let person = self.certificate(&source, now)?.user_public_key;
+                let cert = self.certificate(&source, now)?;
+                let person = cert.user_public_key;
+                let foreign = backend::member::foreign(cert, &self.core.authority);
                 // Bootstrap: the invite's authority device supplies the first
                 // governance before any roster exists to resolve it against.
-                let role = if self.core.room_doc.is_some()
-                    || source != self.core.authority.device_public_key
-                {
-                    Some(self.role(&source, now)?)
-                } else {
-                    None
-                };
+                if self.core.room_doc.is_some() || source != self.core.authority.device_public_key {
+                    self.role(&source, now)?;
+                }
                 let pinned = hex::encode(self.core.authority.device_public_key);
                 let from = hex::encode(source);
                 // The one room admission the shell's workspace tree runs too.
@@ -1692,7 +1979,7 @@ impl StatePeer {
                         room: &self.core.room,
                         source: room::Writer {
                             key: &from,
-                            standing: room::Standing::Member { person, role },
+                            standing: room::Standing::Member { person, foreign },
                         },
                         authority: room::AuthorityPin::Device(&pinned),
                         contents: room::ContentOwnership::Registry,
@@ -1978,7 +2265,22 @@ impl StatePeer {
         } else {
             now
         };
-        let role = self.authorize_document(&source, &app_id, &envelope, authorization_time)?;
+        let Some(member) =
+            self.authorize_document(&source, &app_id, &record_id, &envelope, authorization_time)?
+        else {
+            return self.defer(
+                source,
+                NeighbourMsg::AppDocument {
+                    peer,
+                    app_id,
+                    cluster_id,
+                    record_id,
+                    envelope,
+                },
+                retained_replay,
+                MissingPrerequisite::AppSurface,
+            );
+        };
         let payload = collab_types::validate_whole_document_payload_route(
             &app_id,
             &cluster_id,
@@ -2012,10 +2314,19 @@ impl StatePeer {
             .channel
             .artifact_apps
             .insert(envelope.artifact, app_id);
+        candidate
+            .channel
+            .artifact_records
+            .insert(envelope.artifact, route.record.clone());
+        candidate.channel.room.clone_from(&self.core.room);
         let mut validated_channel = candidate.channel.clone();
+        validated_channel.grants.clone_from(&member.policy.grants);
+        validated_channel.surfaces.clone_from(&self.surfaces);
+        let foreign_bound = tilo_action_policy::roles::foreign_device_bound();
+        let author = member.authority(&foreign_bound);
         match collab_types::validate_admitted_inbound_op(
             &envelope,
-            role,
+            &author,
             &mut validated_channel,
             authorization_time,
             if historical_validation {
@@ -2051,7 +2362,7 @@ impl StatePeer {
             }
             Err(error) => return Err(err(error).into()),
         }
-        if envelope.op_class == OpClass::Compaction
+        if envelope.kind == OpKind::Compaction
             && !matches!(
                 payload,
                 collab_types::WholeDocumentPayload::Encrypted { .. }
@@ -2283,7 +2594,7 @@ impl StatePeer {
     ) -> Result<AdmissionReport, AdmissionError> {
         let admitted =
             DocumentAdmission::from_op(&self.core.room, &route.app, &route.record, &envelope)?;
-        let history = if envelope.op_class == OpClass::Compaction {
+        let history = if envelope.kind == OpKind::Compaction {
             sealed_compaction::supersede(
                 &candidate.sealed,
                 &candidate.channel.last_seq_per_author,
@@ -2533,10 +2844,11 @@ impl StatePeer {
             collab_types::document_artifact_id(app, &self.core.room, record),
             author,
             collab_types::document_attestation_id(app, &self.core.room, record),
-            OpClass::Splice,
+            OpKind::Change,
             now,
             seq,
-        );
+        )
+        .with_surface(self.app_surfaces.0.as_ref().and_then(|of| of(app)));
         collab_types::sign_op(&mut op, key).map_err(err)?;
         let message = NeighbourMsg::AppDocument {
             peer: peer_handle(author.as_bytes()),
@@ -3279,6 +3591,8 @@ impl StatePeer {
                 native_cut_publisher: None,
                 _retention: (),
             },
+            surfaces: process_default().0,
+            app_surfaces: process_default().1,
         };
         backend::validate_pending(&peer.core.pending, peer.core.pending_bytes).map_err(err)?;
         peer.core.revocations = backend::restore_revocation_union(
@@ -3405,83 +3719,33 @@ fn member_role_from_role(role: Role) -> Option<crate::join::MemberRole> {
         Role::Viewer => Some(crate::join::MemberRole::Viewer),
         Role::Commenter => Some(crate::join::MemberRole::Commenter),
         Role::Editor => Some(crate::join::MemberRole::Editor),
-        Role::Owner | Role::Denied => None,
+        Role::Owner => None,
     }
 }
 
-fn member_verb(role: crate::join::MemberRole) -> Verb {
-    match role {
-        crate::join::MemberRole::Viewer => Verb::Read,
-        crate::join::MemberRole::Commenter => Verb::Comment,
-        crate::join::MemberRole::Editor => Verb::Write,
-    }
+/// The map at `key` of a governed room document.
+fn governed_map(doc: &AutoCommit, key: &str) -> Result<automerge::ObjId, String> {
+    doc.get(ROOT, key)
+        .map_err(err)?
+        .map(|(_, id)| id)
+        .ok_or_else(|| format!("governed {key} missing"))
 }
 
-fn member_capability_id(user_public_key: [u8; 32]) -> String {
-    format!("room-member-v1:{}", hex::encode(user_public_key))
-}
-
-pub(crate) fn put_member_capability(
+/// Record `user_public_key`'s role in the room's `members` map.
+pub(crate) fn put_member(
     doc: &mut AutoCommit,
-    capabilities: &automerge::ObjId,
+    members: &automerge::ObjId,
     user_public_key: [u8; 32],
-    role: crate::join::MemberRole,
+    role: Role,
 ) -> Result<(), String> {
-    put_member_verb(doc, capabilities, user_public_key, member_verb(role))
-}
-
-fn put_member_verb(
-    doc: &mut AutoCommit,
-    capabilities: &automerge::ObjId,
-    user_public_key: [u8; 32],
-    verb: Verb,
-) -> Result<(), String> {
-    let id = member_capability_id(user_public_key);
-    let person = hex::encode(user_public_key);
-    let shadowing = doc
-        .keys(capabilities)
-        .filter(|key| {
-            doc.get(capabilities, key)
-                .ok()
-                .flatten()
-                .is_some_and(|(value, _)| {
-                    let automerge::Value::Scalar(value) = value else {
-                        return false;
-                    };
-                    let automerge::ScalarValue::Bytes(bytes) = value.as_ref() else {
-                        return false;
-                    };
-                    serde_json::from_slice::<CapOverride>(bytes).is_ok_and(|cap| {
-                        subject_is_person(&cap.subject, user_public_key, &person)
-                            && matches!(cap.scope, Scope::Room(_) | Scope::Workspace)
-                    })
-                })
-        })
-        .collect::<Vec<_>>();
-    for key in shadowing {
-        doc.delete(capabilities, key).map_err(err)?;
-    }
-    let cap = CapOverride::grant(
-        Subject::User(Ed25519PublicKey::from_bytes(user_public_key)),
-        Scope::Workspace,
-        verb,
-    )
-    .with_id(id.clone());
     doc.put(
-        capabilities,
-        id,
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&cap).map_err(err)?),
+        members,
+        hex::encode(user_public_key),
+        automerge::ScalarValue::Bytes(serde_json::to_vec(&role).map_err(err)?),
     )
     .map_err(err)
 }
 
-fn subject_is_person(subject: &Subject, root: [u8; 32], canonical: &str) -> bool {
-    match subject {
-        Subject::User(key) => key.as_bytes() == &root,
-        Subject::Principal(Principal::Person(person)) => person == canonical,
-        _ => false,
-    }
-}
 /// The same native room CRDT keys projected by `WorkspaceTree::sync_room_doc`.
 ///
 /// # Errors
@@ -3501,8 +3765,18 @@ pub fn seed_room(
         .map_err(err)?;
     let owner = Principal::person_from_key(Ed25519PublicKey::from_bytes(authority.user_public_key));
     doc.put(ROOT, "owner", owner.id()).map_err(err)?;
-    doc.put_object(ROOT, "capabilities", ObjType::Map)
+    doc.put_object(ROOT, "members", ObjType::Map).map_err(err)?;
+    let grants = doc.put_object(ROOT, "grants", ObjType::Map).map_err(err)?;
+    for grant in
+        tilo_action_policy::roles::room_role_grants(room, &Subject::Person(owner.id().to_owned()))
+    {
+        doc.put(
+            &grants,
+            grant.id.as_str(),
+            automerge::ScalarValue::Bytes(serde_json::to_vec(&grant).map_err(err)?),
+        )
         .map_err(err)?;
+    }
     doc.put_object(ROOT, "invitation_receipts_v1", ObjType::Map)
         .map_err(err)?;
     let names = doc.put_object(ROOT, "peers", ObjType::Map).map_err(err)?;

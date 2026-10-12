@@ -11,6 +11,7 @@ use whatsapp_rust::types::durability_hook::{InboundDurabilityHook, InboundMessag
 pub struct WhatsappInboxHook {
     owner: Owner,
     bound: OnceLock<Weak<ExternalBroker>>,
+    groups: OnceLock<Weak<crate::supervisor::AccountSupervisor>>,
 }
 impl WhatsappInboxHook {
     /// # Errors
@@ -27,7 +28,16 @@ impl WhatsappInboxHook {
         Ok(Self {
             owner,
             bound: OnceLock::new(),
+            groups: OnceLock::new(),
         })
+    }
+    pub(crate) fn bind_groups(
+        &self,
+        supervisor: &Arc<crate::supervisor::AccountSupervisor>,
+    ) -> Result<(), SendError> {
+        self.groups
+            .set(Arc::downgrade(supervisor))
+            .map_err(|_| SendError::AlreadyReserved)
     }
     /// Bind once to this exact account and SDK, on the supervisor's worker.
     /// The supervisor must keep its Arc alive while receiving and retain current
@@ -70,6 +80,23 @@ impl InboundDurabilityHook for WhatsappInboxHook {
         let broker = self.bound.get().and_then(Weak::upgrade).ok_or_else(|| {
             whatsapp_rust::anyhow::anyhow!("private inbox supervisor unavailable")
         })?;
+        if batch.iter().any(|event| event.info.source.is_group) {
+            let supervisor = self.groups.get().and_then(Weak::upgrade).ok_or_else(|| {
+                whatsapp_rust::anyhow::anyhow!("private group supervisor unavailable")
+            })?;
+            let host = supervisor
+                .whatsapp_group_host(&tilo_messaging::ServiceAccount::new(
+                    "whatsapp",
+                    &self.owner.account,
+                ))
+                .ok_or_else(|| {
+                    whatsapp_rust::anyhow::anyhow!("private group authority unavailable")
+                })?;
+            host.receive(client, batch).await.map_err(|_| {
+                whatsapp_rust::anyhow::anyhow!("private group inbox admission unavailable")
+            })?;
+            return Ok(());
+        }
         broker
             .observe_whatsapp_batch(client, batch.to_vec())
             .await

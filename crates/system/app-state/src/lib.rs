@@ -433,16 +433,6 @@ impl DocStore {
         Ok(opened)
     }
 
-    /// The package-global document path under the standalone state root.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `package_id` is invalid.
-    pub fn legacy_package_document_path(package_id: &str) -> Result<PathBuf, StoreError> {
-        validate_package_id(package_id)?;
-        Ok(cli::standalone_state_dir(package_id).join(DOCUMENT_FILE))
-    }
-
     /// The existing room-scoped package-primary directory, with explicit custody.
     ///
     /// # Errors

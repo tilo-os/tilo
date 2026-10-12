@@ -82,7 +82,7 @@
 //!   parent carries in one of its own actions (`EditBody { page, edit }`).
 //!   The parent publishes it from `children` with
 //!   [`publish_child`](tilo_resource::publish_child); a view or surface
-//!   edits it through [`ViewCx::child`] / [`SurfaceCx::child`], a
+//!   edits it through [`RecordEnv::child`], a
 //!   [`Dispatcher`] of the child type that wraps each edit into the
 //!   parent's action. The child is addressed, permissioned, undone (by its
 //!   own coalescing) and named in history like a root, and applies as the
@@ -111,18 +111,18 @@
 //!   control), or which of its effects, for a launch that shows something
 //!   (a link to one item) rather than editing
 //!   ([`Invoke::effect`](tilo_resource::Invoke::effect)); the view reads the
-//!   same launch ([`ViewCx::launch`]) to show what those actions made.
+//!   same launch ([`RecordEnv::launch`]) to show what those actions made.
 //!   [`ResourceApp::OPENS`] names the media types it is handed and
 //!   [`ResourceApp::ARGUMENTS`] how many arguments it takes. A handed file's
 //!   bytes are kept in the launch's content store ([`LaunchInput::content`]),
 //!   which the actions name by hash, so the record never carries the file.
 //!   The app's own Open is the same launch in the window it runs in
-//!   ([`ViewCx::open_here`], [`SurfaceCx::opener`]): the window shows the
+//!   ([`RecordEnv::open_here`], [`SurfaceCx::opener`]): the window shows the
 //!   record that launch names in place of its own, so a document has one
 //!   record however it was opened.
 //!   An app that offers private windows ([`ResourceApp::PRIVATE_WINDOWS`],
 //!   `--private`) runs one on a profile thrown away with the process,
-//!   attached to no runtime, and its view knows ([`ViewCx::is_private`]).
+//!   attached to no runtime, and its view knows ([`RecordEnv::is_private`]).
 //!   A command the binary runs instead of a window (`--emit-photos DIR`) is a
 //!   [`Command`] in [`ResourceApp::commands`]; a helper the binary also is
 //!   (a privileged writer started with its own command line) is a
@@ -135,28 +135,28 @@
 //!   The app's own options — how the window runs rather than what it opens,
 //!   such as the layout an on-screen keyboard starts in — are
 //!   [`ResourceApp::OPTIONS`] and [`ResourceApp::FLAGS`], read with
-//!   [`ViewCx::launch_option`] / [`SurfaceCx::launch_option`].
+//!   [`RecordEnv::launch_option`].
 //! * **A system surface** — the session's on-screen keyboard — declares its
 //!   window's role in [`ResourceApp::BEHAVIOUR`]
 //!   ([`WindowRole::InputSurface`](ui_core::application::WindowRole)): the
 //!   window announces the app's id to the compositor and no headless drive
 //!   operates it. The connections it serves the session through (an input
 //!   method, a virtual keyboard) are the surface's own, opened in a live run
-//!   ([`SurfaceCx::mode`]) and woken through [`SurfaceCx::waker`].
+//!   ([`RecordEnv::mode`]) and woken through [`SurfaceCx::waker`].
 //! * **Mounted in another process** — the shell hosting a terminal tab in
 //!   its own — the app is the same component, on a record the host opens
 //!   for it, publishing into the host's palette and agent door. What only
 //!   the host can provide (the session's process supervisor) it lends
 //!   ([`HostContext::lend`](ui_core::application::HostContext::lend)); the
-//!   view takes it with [`ViewCx::take_lent`] and otherwise uses its own.
-//! * **Who is editing** is [`ViewCx::me`] / [`SurfaceCx::me`] for the reader
+//!   view takes it with [`RecordEnv::take_lent`] and otherwise uses its own.
+//! * **Who is editing** is [`RecordEnv::me`] for the reader
 //!   of a view, and [`ActionCx::author`](tilo_resource::ActionCx::author)
 //!   inside an action: the same id, pinned with the action so every replica
 //!   reads it. The resource state stays the same for everyone; a view
 //!   compares the authors it records with `me`, and an action signs what it
 //!   writes with its author rather than carrying one in its payload. What a
 //!   view shows for an id is the name the host's roster has for it
-//!   ([`ViewCx::people`], [`SurfaceCx::people`]): the document keeps ids,
+//!   ([`RecordEnv::people`]): the document keeps ids,
 //!   so a name that changes or arrives late reads right everywhere.
 //! * **A brand-new record** starts with the resource's
 //!   [`initialize`](tilo_resource::Resource::initialize), its genesis: the
@@ -178,10 +178,10 @@
 //!   [`Scope`](crate::storage::Scope) says how far they travel: `Personal`
 //!   roams across the person's own devices, `DeviceLocal` never leaves this
 //!   one, `Shared` reads a per-user section every app follows (`locale`,
-//!   `text_assistance`). [`ViewCx::settings`] and [`SurfaceCx::settings`]
+//!   `text_assistance`). [`RecordEnv::settings`]
 //!   hand out a [`Setting`] kept current while the view lives; a write from
 //!   another window or device reaches it on the next frame. Files and
-//!   secrets come from the same context ([`ViewCx::storage`],
+//!   secrets come from the same context ([`RecordEnv::storage`],
 //!   [`SurfaceCx::secrets`], [`SurfaceCx::files`]); a secret that belongs to
 //!   one document item (a profile's password) is
 //!   `secrets().item(purpose, id)`, so the document names the item and the
@@ -189,8 +189,7 @@
 //! * **The person's own data** — what they watched, the words they taught
 //!   the keyboard, where they stopped reading: data that grows, has history
 //!   and is undone, but belongs to the person rather than the room — is a
-//!   resource kept in the person's own room ([`ViewCx::person`],
-//!   [`SurfaceCx::person`]). The [`PersonRecord`] is one record per kind on
+//!   resource kept in the person's own room ([`RecordEnv::person`]). The [`PersonRecord`] is one record per kind on
 //!   all of the person's devices, edited with the resource's actions,
 //!   attributed, in its history and undone per step, and synced to the
 //!   person's devices only — never to a collaborator, whatever room the app
@@ -245,8 +244,7 @@
 //!   ([`ResourceApp::FILE_HISTORY`]) and its surface names the file
 //!   ([`SurfaceCx::file_history`]); History offers it beside the resource's.
 //! * **Run mode.** A view is built for a window someone uses, a past version
-//!   in History, or a screenshot ([`RunMode`], from [`ViewCx::mode`] and
-//!   [`SurfaceCx::mode`]). Only a live view starts work that reaches outside
+//!   in History, or a screenshot ([`RunMode`], from [`RecordEnv::mode`]). Only a live view starts work that reaches outside
 //!   the process (a mail engine, a socket, a journal reader, a hardware
 //!   probe): History rebuilds the view for every version it previews, and a
 //!   screenshot must come out the same on every machine.
@@ -280,16 +278,16 @@
 //!   a document action a content widget publishes through its own
 //!   `PublishesResources` is dropped (a debug build stops at it).
 //! * **A participant without a window** — an agent, a service, a script —
-//!   holds a replica of a record and edits it through the same door as a
-//!   person: a [`Participant`] of the record's kind (each app's kind is
-//!   [`resource_kind`]), checked against its permissions, attributed to it
-//!   and recorded in history with the task it belongs to.
+//!   acts through the app's own view mounted over the record and never
+//!   drawn ([`AttachedView`]): the same door as a person, checked against
+//!   its permissions, attributed to it (an agent acting for its person) and
+//!   recorded in history with the task it belongs to.
 //! * **Screenshot scenarios** (`--shots --scenario NAME`, every one with
 //!   `--shots-dir DIR`, each at [`ResourceApp::shot_viewport`]) are prepared
 //!   in three parts. What the resource does not hold is the scenario's
 //!   [`Fixture`] ([`ResourceApp::fixture`]), prepared before the view is
-//!   built: typed stand-ins for live sources that views read with
-//!   [`ViewCx::fixture`] and surfaces with [`SurfaceCx::fixture`], scratch
+//!   built: typed stand-ins for live sources that views and surfaces read
+//!   with [`RecordEnv::fixture`], scratch
 //!   files, content-store blobs, versions other people wrote at other times,
 //!   and collaborators shown where they are. The resource is staged with
 //!   actions ([`ResourceApp::scenario`]), and view state where it lives,
@@ -303,6 +301,7 @@
 //!   frame `--shots` writes in a test.
 
 mod app;
+mod attached;
 mod controls;
 // In-place reload swaps native code into a running process; a browser build
 // has neither the thin shared library nor the host that loads it.
@@ -312,17 +311,21 @@ pub mod dev_reload;
 mod dispatch;
 mod each;
 mod effect;
+mod env;
+mod form;
 pub mod history;
 mod kinds;
 mod launch;
 mod live;
-mod participant;
 mod people;
 mod person;
 mod preview;
+mod reactive;
+mod record;
 mod root;
 mod rows;
 mod scenario;
+mod section;
 mod settings;
 mod stage;
 mod surface;
@@ -338,22 +341,26 @@ pub use app::definition_launch_spec;
 pub use app::launch_spec;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use app::run;
-pub use app::{FileHistory, ResourceApp, SeedCx, definition, run_helper};
+pub use app::{FileHistory, ResourceApp, SURFACE_FLAG, SeedCx, definition, run_helper};
+pub use attached::{AttachedView, OpenView};
 pub use controls::{ActionControl, Actions};
 pub use delivery::HostDelivery;
-pub use dispatch::{DispatchGroup, Dispatcher, Refused};
+pub use dispatch::{DispatchGroup, Dispatcher, Landed, Refused, Submit};
 pub use each::Each;
 pub use effect::{
     ChosenFile, DocumentVersion, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected,
     JobProgress, Jobs, Progress, Projection,
 };
+pub use env::RecordEnv;
+pub use form::{Form, FormSubmit};
 pub use kinds::{hosted_kinds, resource_kind, seed_record, seed_record_in_room};
 pub use launch::{Command, Helper, LaunchInput, OpenHere};
 pub use live::Live;
-pub use participant::Participant;
 pub use people::People;
 pub use person::PersonRecord;
 pub use preview::PastVersion;
+pub use record::{OtherRecord, Records};
+pub use root::{reserved_action_ids, with_surface};
 pub use rows::LiveRow;
 pub use scenario::{Fixture, RunMode};
 pub use settings::Setting;
@@ -361,7 +368,7 @@ pub use stage::{stage, time_frames};
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
-pub use view::{EffectsHandle, ViewCx};
+pub use view::{Bindable, EffectsHandle, ViewCx};
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]

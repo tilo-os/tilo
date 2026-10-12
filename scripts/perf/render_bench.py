@@ -94,11 +94,17 @@ PAN_CASES = (("4k", "pan.4k.w6", "4k, 6 windows, layered presenter"),
 STRIP_MOVE_CASES = (("4k", "strip-move.4k.w6", "4k, 6 windows, layered presenter"),
                     ("4k_s150", "strip-move.4k.s150.w6", "4k at 150 %, 6 windows, layered presenter"),
                     ("4k_s200", "strip-move.4k.s200.w6", "4k at 200 %, 6 windows, layered presenter"))
+# A pan's first frame from rest (the first pan's and a second pan's, once the
+# presenter warmed its layers at rest) is recorded apart from the pan frames.
 PAN_RECORDS = tuple(record for suffix, stem, case in PAN_CASES
                     for record in ((f"render.shell.pan_us.{suffix}", "us", f"{stem}.layered.frame-us", case),
                                    (f"render.shell.pan_pixels.{suffix}", "pixels", f"{stem}.layered.pixels", case),
                                    (f"render.shell.pan_scene_us.{suffix}", "us", f"{stem}.layered.scene-us",
-                                    case))) + tuple(
+                                    case),
+                                   (f"render.shell.pan_start_us.{suffix}", "us", f"{stem}.layered.start-us",
+                                    case),
+                                   (f"render.shell.pan_start_pixels.{suffix}", "pixels",
+                                    f"{stem}.layered.start-pixels", case))) + tuple(
     record for suffix, stem, case in STRIP_MOVE_CASES
     for record in ((f"render.shell.strip_move_us.{suffix}", "us", f"{stem}.layered.frame-us", case),
                    (f"render.shell.strip_move_pixels.{suffix}", "pixels", f"{stem}.layered.pixels", case)))

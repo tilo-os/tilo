@@ -573,16 +573,6 @@ impl ui::widget::Widget for CaretProbe {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
-    fn draw(
-        &mut self,
-        _: &mut ui::vello::Scene,
-        _: ui::kurbo::Affine,
-        _: &mut ui::TextRenderer,
-        _: &ui::Theme,
-        _: &ui::presence::PresenceCtx,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "CaretProbe"
     }

@@ -24,8 +24,7 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    Item, card_with_action, error_caption, note, row, rows, setting_row, setting_row_described,
-    value_row,
+    Item, card_with_action, error_caption, note, row, rows, setting_row_described, value_row,
 };
 
 fn token(path: &str) -> String {
@@ -719,17 +718,16 @@ impl BluetoothModel {
         }
         if d.paired {
             let path = d.path.clone();
-            block.push(setting_row(
-                &t("settings-bluetooth-trust"),
-                Box::new(
-                    self.cx.bind(
-                        Toggle::from_state(&LocalState::new(d.trusted))
-                            .with_id(&format!("settings.bluetooth.trusted.{}", token(&d.path))),
+            block.push(
+                self.cx
+                    .row(t("settings-bluetooth-trust"))
+                    .id(format!("settings.bluetooth.trusted.{}", token(&d.path)))
+                    .toggle_effect(
+                        &LocalState::new(d.trusted),
                         effect(BluetoothEffect::SET_DEVICE_TRUSTED)
                             .map(move |trusted: bool| (path.clone(), trusted)),
                     ),
-                ),
-            ));
+            );
             block.push(note(&t("settings-bluetooth-trust-caption")));
             let alias = self.aliases.get(&d.path).cloned().unwrap_or_default();
             // A name field has no label of its own: a free row, not a labelled one.

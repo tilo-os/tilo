@@ -751,15 +751,15 @@ fn pointer_and_keyboard_send_use_the_live_request() {
         // The token is a secret variable: its value is kept on this device.
         let state = app.state();
         let token = state
-            .environments
-            .iter()
-            .find(|environment| Some(environment.id) == state.active_env)
+            .active_environment
+            .as_ref()
+            .and_then(|active| state.environments.get(active))
             .and_then(|environment| {
                 environment
                     .variables
                     .iter()
-                    .find(|variable| variable.key == "token")
-                    .map(|variable| variable.id.clone())
+                    .find(|(_, variable)| variable.key == "token")
+                    .map(|(id, _)| id.as_str().to_owned())
             })
             .expect("the active environment has a token");
         app.effect(&ApiTesterEffect::SetSecretValue {

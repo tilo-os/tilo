@@ -30,6 +30,8 @@ mod reachability_tests;
 mod record_content;
 pub use record_content::InboundRecordContent;
 #[cfg(test)]
+mod agent_question_tests;
+#[cfg(test)]
 mod node_member_tests;
 mod relay_rooms;
 mod room_gate;
@@ -800,14 +802,23 @@ fn workspace_person_roots(identity: &HostIdentity) -> Vec<[u8; 32]> {
     roots
 }
 
-/// The role a device of the person acts with in their own room: its owner,
-/// unless it is a foreign device, which the foreign-device cap holds below
-/// governing even there.
-fn person_room_role(foreign: bool) -> collab_types::Role {
+/// The standing a device of the person acts with in their own room
+/// `cluster_id`: its owner, held to the foreign-device bound on a device that
+/// is not theirs.
+fn person_room_standing(
+    cluster_id: &str,
+    user_pubkey: &[u8; 32],
+    foreign: bool,
+) -> tilo_action_policy::Standing {
+    let person = hex::encode(user_pubkey);
+    let standing = tilo_action_policy::Standing::person(
+        tilo_action_policy::RoomPolicy::new(cluster_id, person.clone()),
+        person,
+    );
     if foreign {
-        collab_types::foreign_device::foreign_device_role(collab_types::Role::Owner, &[], 0)
+        standing.on_foreign_device()
     } else {
-        collab_types::Role::Owner
+        standing
     }
 }
 
@@ -1395,6 +1406,10 @@ pub struct InboundAppPresence {
     /// this one is load-bearing: it becomes the `user_id` the
     /// receiving app attributes the caret and its colour to.
     pub peer: u64,
+    /// The person the publisher's admitted identity certifies (hex of their
+    /// user root), when the transport authenticated one: the only person an
+    /// agent, Shortcut or app in its presence may be said to act for.
+    pub person: Option<String>,
     pub app_id: String,
     pub cluster_id: String,
     pub presence: collab_types::PeerPresence,
@@ -1408,9 +1423,9 @@ pub struct InboundDocument {
     pub app_id: String,
     pub cluster_id: String,
     pub record_id: String,
-    /// Live workspace role established from the authenticated peer's user
-    /// certificate before this entry was queued.
-    pub role: collab_types::Role,
+    /// The author's standing in the room, established from the
+    /// authenticated peer's user certificate before this entry was queued.
+    pub author: tilo_action_policy::Standing,
     /// A workspace host replayed it from retained, host-ordered history, so
     /// its age says nothing about freshness.
     pub replayed: bool,
@@ -2887,12 +2902,17 @@ impl ShellNetwork {
             return;
         }
         self.remember_person_artifact(envelope.artifact);
+        let author = person_room_standing(
+            &cluster_id,
+            &sender.user_pubkey,
+            sender.capabilities.foreign,
+        );
         self.handle_document_message(
             crate::network::behaviour::peer_liveness_handle(&peer),
             app_id,
             cluster_id,
             record_id,
-            person_room_role(sender.capabilities.foreign),
+            author,
             false,
             envelope,
         );
@@ -2932,15 +2952,22 @@ impl ShellNetwork {
             return;
         };
         // The person's own records come back from their always-on hosts as
-        // their owner wrote them.
-        let role = if self.is_local_person_room(&cluster_id) {
-            collab_types::Role::Owner
+        // their owner wrote them; in a shared room, as an editor's op.
+        let Some(room) = RoomId::parse(&cluster_id) else {
+            return;
+        };
+        let person = crate::shell::state::local_user_id_for_room(&room);
+        let author = if self.is_local_person_room(&cluster_id) {
+            tilo_action_policy::Standing::person(
+                tilo_action_policy::RoomPolicy::new(cluster_id.clone(), person.clone()),
+                person,
+            )
         } else if self.is_in_room(&cluster_id) {
-            collab_types::Role::Editor
+            editor_standing(&cluster_id, person)
         } else {
             return;
         };
-        self.handle_document_message(peer, app_id, cluster_id, record_id, role, true, *envelope);
+        self.handle_document_message(peer, app_id, cluster_id, record_id, author, true, *envelope);
     }
 
     /// Queue a received signed document for the broker's drainer.
@@ -2950,7 +2977,7 @@ impl ShellNetwork {
         app_id: String,
         cluster_id: String,
         record_id: String,
-        role: collab_types::Role,
+        author: tilo_action_policy::Standing,
         replayed: bool,
         envelope: collab_types::SignedOp,
     ) {
@@ -2960,7 +2987,7 @@ impl ShellNetwork {
                 app_id,
                 cluster_id,
                 record_id,
-                role,
+                author,
                 replayed,
                 envelope: Box::new(envelope),
             });
@@ -3134,6 +3161,7 @@ impl ShellNetwork {
         for presence in inbound.updates {
             self.handle_typed_app_presence_message(
                 peer,
+                None,
                 inbound.app_id.clone(),
                 cluster_id.clone(),
                 presence,
@@ -3170,6 +3198,7 @@ impl ShellNetwork {
     pub fn handle_typed_app_presence_message(
         &self,
         peer: u64,
+        person: Option<String>,
         app_id: String,
         cluster_id: String,
         presence: collab_types::PeerPresence,
@@ -3177,6 +3206,7 @@ impl ShellNetwork {
         if let Ok(mut buf) = self.inbound_app_presence.lock() {
             buf.push(InboundAppPresence {
                 peer,
+                person,
                 app_id,
                 cluster_id,
                 presence,
@@ -5071,6 +5101,13 @@ impl ShellNetwork {
         sent
     }
 
+    /// Whether any of the person's other devices has a current route here.
+    pub(crate) fn has_personal_routes(&self) -> bool {
+        self.authenticated_personal_routes
+            .lock()
+            .is_ok_and(|routes| !routes.is_empty())
+    }
+
     pub(crate) fn current_personal_route(
         &self,
         device: &crate::shell::personal_continuity::DeviceId,
@@ -6574,6 +6611,7 @@ impl ShellNetwork {
             if let Some(presence) = crate::shell::collab_presence::to_peer(&key, &payload) {
                 self.handle_typed_app_presence_message(
                     host_peer,
+                    None,
                     String::new(),
                     room.to_string(),
                     presence,
@@ -6705,6 +6743,7 @@ impl ShellNetwork {
             {
                 self.dispatch_app_presence_v2(
                     *publisher,
+                    self.certified_person(&peer),
                     app_id.clone(),
                     cluster_id.clone(),
                     presence.clone(),
@@ -6786,9 +6825,9 @@ impl ShellNetwork {
             self.redeem_invited_identity(ws, *invite_id, &peer, &identity.device_cert);
         }
         if self.require_peer_identity && !governed_action {
-            let required = Self::required_room_verb(&msg);
+            let required = Self::required_room_action(&msg);
             let pinned_authority_may_bootstrap = matches!(&msg, NeighbourMsg::SyncResp { .. });
-            if !required.is_some_and(|required| {
+            if !required.as_ref().is_some_and(|required| {
                 self.peer_room_allows(&origin, ws, required, pinned_authority_may_bootstrap)
             }) {
                 tracing::warn!(
@@ -6842,17 +6881,17 @@ impl ShellNetwork {
                     );
                     return;
                 };
-                let role = if self.require_peer_identity {
-                    self.peer_document_role(&origin, &cluster_id, &app_id, &record_id, &envelope)
+                let author = if self.require_peer_identity {
+                    self.peer_document_author(&origin, &cluster_id, &app_id, &record_id, &envelope)
                 } else {
-                    Some(collab_types::Role::Editor)
+                    Some(unauthenticated_editor(&cluster_id, peer_hash))
                 };
                 if peer_hash != self.local_peer_hash
                     && self.is_in_room(&cluster_id)
-                    && let Some(role) = role
+                    && let Some(author) = author
                 {
                     self.handle_document_message(
-                        peer_hash, app_id, cluster_id, record_id, role, replayed, *envelope,
+                        peer_hash, app_id, cluster_id, record_id, author, replayed, *envelope,
                     );
                 }
             }
@@ -6864,6 +6903,7 @@ impl ShellNetwork {
                 colour,
             } => self.dispatch_app_presence_v2(
                 peer_hash,
+                self.certified_person(&peer),
                 app_id,
                 cluster_id,
                 presence,
@@ -7167,14 +7207,14 @@ impl ShellNetwork {
     }
 
     /// Authenticate the transport device as a person and then authorize that
-    /// person against the room capability model. Device authentication alone
+    /// person against the room's policy. Device authentication alone
     /// is deliberately insufficient: any valid Tilo identity can possess a
     /// certificate without being a member of this workspace.
     fn peer_room_allows(
         &self,
         origin: &crate::shell::state::PeerOrigin,
         workspace_topic: u64,
-        required: crate::shell::state::Verb,
+        required: &room_gate::RoomAction,
         pinned_authority_may_bootstrap: bool,
     ) -> bool {
         let Some(identity) = self.peer_identities.get(origin) else {
@@ -7218,11 +7258,13 @@ impl ShellNetwork {
                 .iter()
                 .find(|workspace| workspace.room == room)
                 .is_some_and(|workspace| {
-                    workspace.allows(
-                        &workspace.actor_for_person(&person),
-                        &crate::shell::state::ResourceRef::Workspace,
-                        required,
-                    )
+                    let (node, kind) = required;
+                    workspace.answer_at(
+                        &person,
+                        &workspace.node().join(node),
+                        *kind,
+                        tilo_clock::unix_now(),
+                    ) == tilo_action_policy::Answer::Allow
                 })
         };
         drop(tree);
@@ -7234,6 +7276,7 @@ impl ShellNetwork {
     fn dispatch_app_presence_v2(
         &self,
         peer_hash: u64,
+        person: Option<String>,
         app_id: String,
         cluster_id: String,
         presence: collab_types::PeerPresence,
@@ -7241,8 +7284,16 @@ impl ShellNetwork {
     ) {
         if peer_hash != self.local_peer_hash && self.is_in_room(&cluster_id) {
             self.note_peer_colour(peer_hash, colour);
-            self.handle_typed_app_presence_message(peer_hash, app_id, cluster_id, presence);
+            self.handle_typed_app_presence_message(peer_hash, person, app_id, cluster_id, presence);
         }
+    }
+
+    /// The person `peer`'s admitted identity certifies, as a policy
+    /// principal id (hex of their user root).
+    fn certified_person(&self, peer: &iroh::EndpointId) -> Option<String> {
+        self.peer_identities
+            .get(&crate::shell::state::PeerOrigin::peer(peer))
+            .map(|identity| hex::encode(identity.user_pubkey))
     }
 
     /// `ScrollbackRequest`: skip self-echoes, otherwise queue for the
@@ -7470,28 +7521,24 @@ impl ShellNetwork {
         };
         let mut tree = replica.tree.write();
         let local = crate::shell::state::local_user_id_for_room(&room);
-        let (granted, owner) = {
-            let Some(workspace) = tree
-                .desktop
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.room == room)
-            else {
-                return;
-            };
-            let room_scope = workspace.room.to_string();
-            let granted = workspace
-                .grant_as(
-                    &local,
-                    crate::shell::state::CapOverride::membership(
-                        crate::shell::state::Subject::person(person.clone()),
-                        room_scope,
-                        admission.role.verb(),
-                    ),
-                )
-                .is_some();
-            (granted, workspace.owner.clone())
+        let Some(workspace_id) = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .map(|workspace| workspace.id)
+        else {
+            return;
         };
+        let owner = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == workspace_id)
+            .and_then(|workspace| workspace.owner().cloned());
+        let granted = tree
+            .admit_in_workspace(workspace_id, &local, &person, admission.role.role())
+            .is_some();
         if !granted {
             tracing::warn!(
                 room = %room,
@@ -7534,59 +7581,73 @@ impl ShellNetwork {
         );
     }
 
-    /// Authenticate a signed document envelope against the transport device,
-    /// exact document route, and current workspace policy. Replay and
-    /// signature-state checks remain in the broker drainer, which owns the
-    /// channel log.
-    fn peer_document_role(
+    /// The room policy this device holds for `room`, if it hosts the room.
+    fn room_policy(&self, room: RoomId) -> Option<tilo_action_policy::RoomPolicy> {
+        let replica = self.replica.lock().ok()?;
+        let tree_handle = replica.tree.clone();
+        drop(replica);
+        let tree = tree_handle.read();
+        let policy = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .map(|workspace| workspace.policy.clone());
+        drop(tree);
+        policy
+    }
+
+    /// Authenticate a signed document envelope against the transport device
+    /// and exact document route: the author's standing in the room, a member
+    /// of it, held to the foreign-device bound on a device that is not
+    /// theirs. What the envelope may change is the broker drainer's to
+    /// decide, which owns the channel log and decides it by the action the
+    /// op performs.
+    fn peer_document_author(
         &self,
         origin: &crate::shell::state::PeerOrigin,
         cluster_id: &str,
         app_id: &str,
         record_id: &str,
         envelope: &collab_types::SignedOp,
-    ) -> Option<collab_types::Role> {
+    ) -> Option<tilo_action_policy::Standing> {
         let identity = self.peer_identities.get(origin)?;
         if *envelope.author.as_bytes() != identity.device_pubkey {
             return None;
         }
-        let person = collab_types::caps::Principal::person_from_key(
-            collab_types::Ed25519PublicKey::from_bytes(identity.user_pubkey),
-        )
-        .id()
-        .to_string();
-        let room = RoomId::parse(cluster_id)?;
-        let replica = self.replica.lock().ok()?;
-        let tree_handle = replica.tree.clone();
-        drop(replica);
-        let tree = tree_handle.read();
-        let workspace = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room == room)?;
-        let role = workspace.role_of(&person)?;
         if collab_types::validate_document_payload_route(app_id, cluster_id, record_id, envelope)
             .is_err()
         {
             return None;
         }
-        let artifact = envelope.artifact;
-        let actor = collab_types::Actor::person(Some(role), person)
-            .with_principal(collab_types::Principal::App(app_id.to_string()))
-            .in_room(cluster_id.to_string());
-        let resource = collab_types::ResourceRef::Artifact {
-            app: Some(app_id.to_string()),
-            kind: collab_types::ArtifactKind::Note,
-            instance: artifact,
-        };
-        let required = collab_types::caps::verb_for_opclass(envelope.op_class);
-        let allowed =
-            collab_types::role_permits(role, collab_types::ArtifactKind::Note, envelope.op_class)
-                && workspace.allows(&actor, &resource, required);
-        drop(tree);
-        allowed.then_some(role)
+        let person = hex::encode(identity.user_pubkey);
+        let policy = self.room_policy(RoomId::parse(cluster_id)?)?;
+        policy.role_of(&person)?;
+        let standing = tilo_action_policy::Standing::person(policy, person);
+        Some(if identity.capabilities.foreign {
+            standing.on_foreign_device()
+        } else {
+            standing
+        })
     }
+}
+
+/// The standing of a peer this device did not authenticate, in a network
+/// that does not require it: an editor of `cluster_id`.
+fn unauthenticated_editor(cluster_id: &str, peer: u64) -> tilo_action_policy::Standing {
+    editor_standing(cluster_id, format!("peer:{peer:016x}"))
+}
+
+/// `person` as an editor of `cluster_id`, and nothing more.
+fn editor_standing(cluster_id: &str, person: String) -> tilo_action_policy::Standing {
+    let mut policy = tilo_action_policy::RoomPolicy::unowned(
+        cluster_id,
+        &tilo_action_policy::Subject::Role(tilo_action_policy::Role::Owner),
+    );
+    policy
+        .members
+        .insert(person.clone(), tilo_action_policy::Role::Editor);
+    tilo_action_policy::Standing::person(policy, person)
 }
 
 fn selected_device_cert(
@@ -8524,7 +8585,7 @@ mod tests {
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == room)
-            .and_then(|workspace| workspace.owner.clone());
+            .and_then(|workspace| workspace.owner().cloned());
         assert_eq!(
             owner.as_deref(),
             Some(crate::shell::state::local_user_id().as_str())
@@ -9118,7 +9179,7 @@ mod tests {
         let mut workspace =
             crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId::new(), name);
         let room = RoomId::new();
-        workspace.room = room;
+        workspace.set_room(room);
         workspace.set_owner(person.to_string());
         tree.desktop.active = workspace.id;
         tree.desktop.workspaces.push(workspace);
@@ -9205,7 +9266,7 @@ mod tests {
                 .find(|workspace| workspace.room == research)
                 .expect("the laptop's workspace is on the board");
             assert_eq!(joined.name, "Research");
-            assert_eq!(joined.owner.as_deref(), Some(person.as_str()));
+            assert_eq!(joined.owner().map(String::as_str), Some(person.as_str()));
             assert_eq!(
                 tree.desktop.room_of(tree.desktop.active),
                 Some(board_home),
@@ -10816,7 +10877,7 @@ mod tests {
             .workspaces
             .first_mut()
             .expect("bootstrap workspace");
-        source_workspace.room = room;
+        source_workspace.set_room(room);
         source_workspace.strips[0].window_groups.push(WindowGroup {
             id: crate::shell::state::next_id(),
             tabs: vec![
@@ -11451,16 +11512,19 @@ mod tests {
                 Some(41),
             );
             assert_eq!(
-                ShellNetwork::required_room_verb(&NeighbourMsg::RemoteInput {
+                ShellNetwork::required_room_action(&NeighbourMsg::RemoteInput {
                     peer: 42,
                     surface: 7,
                     event: Vec::new(),
                 }),
-                Some(crate::shell::state::Verb::Write),
+                Some((
+                    tilo_action_policy::TreePath::root(),
+                    tilo_action_policy::ActionKind::Undoable
+                )),
             );
             // Retired: never admitted as room traffic, not even on read.
             assert_eq!(
-                ShellNetwork::required_room_verb(&NeighbourMsg::PermissionRequest {
+                ShellNetwork::required_room_action(&NeighbourMsg::PermissionRequest {
                     peer: 42,
                     capability: "remote-input".into(),
                 }),
@@ -11669,6 +11733,41 @@ mod tests {
             clippy::too_many_lines,
             reason = "one invite is redeemed, exercised and revoked end to end"
         )]
+        /// Whether the author `net` authenticated for `envelope` may make
+        /// the change it carries, decided the way the broker decides it.
+        fn document_allowed(
+            net: &ShellNetwork,
+            origin: &crate::shell::state::PeerOrigin,
+            cluster_id: &str,
+            app_id: &str,
+            record_id: &str,
+            envelope: &collab_types::SignedOp,
+        ) -> bool {
+            net.peer_document_author(origin, cluster_id, app_id, record_id, envelope)
+                .is_some_and(|author| {
+                    let allows = |node: &tilo_action_policy::TreePath, kind| {
+                        author.answer(
+                            node,
+                            kind,
+                            &tilo_desktop_model::context_at(tilo_clock::unix_now()),
+                        ) == tilo_action_policy::Answer::Allow
+                    };
+                    collab_types::decide_op(
+                        envelope,
+                        &collab_types::Record {
+                            room: cluster_id,
+                            app: app_id,
+                            record: record_id,
+                        },
+                        None,
+                        None,
+                        &collab_types::Surfaces::process(),
+                        &allows,
+                    )
+                    .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit)
+                })
+        }
+
         fn exact_invite_redeems_as_editor_and_revocation_removes_trust() {
             use tilo_user_identity::{
                 DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason,
@@ -11695,7 +11794,7 @@ mod tests {
             let room = RoomId::new();
             let mut workspace =
                 crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(17), "Shared");
-            workspace.room = room;
+            workspace.set_room(room);
             workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
             let mut tree = WorkspaceTree::default();
             tree.desktop.workspaces.push(workspace);
@@ -11777,7 +11876,10 @@ mod tests {
                 !net.peer_room_allows(
                     &origin,
                     room_topic_id(room),
-                    crate::shell::state::Verb::Read,
+                    &(
+                        tilo_action_policy::TreePath::root(),
+                        tilo_action_policy::ActionKind::Read
+                    ),
                     false,
                 ),
                 "identity authentication alone must not consume an outstanding invite",
@@ -11801,7 +11903,10 @@ mod tests {
                 !net.peer_room_allows(
                     &origin,
                     room_topic_id(room),
-                    crate::shell::state::Verb::Read,
+                    &(
+                        tilo_action_policy::TreePath::root(),
+                        tilo_action_policy::ActionKind::Read
+                    ),
                     false,
                 ),
                 "a different invite hash must not grant room membership",
@@ -11892,58 +11997,45 @@ mod tests {
                     &route.cluster_id,
                     &route.record_id,
                 ),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 std::time::SystemTime::now(),
                 1,
             );
             collab_types::sign_op(&mut envelope, &signing).expect("signed mutation");
-            assert_eq!(
-                net.peer_document_role(
-                    &origin,
-                    &route.cluster_id,
-                    &route.app_id,
-                    &route.record_id,
-                    &envelope,
-                ),
-                Some(collab_types::Role::Editor),
-            );
-            assert_eq!(
-                net.peer_document_role(
-                    &origin,
-                    &route.cluster_id,
-                    &route.app_id,
-                    "foreign-record",
-                    &envelope,
-                ),
-                None,
-            );
+            assert!(document_allowed(
+                &net,
+                &origin,
+                &route.cluster_id,
+                &route.app_id,
+                &route.record_id,
+                &envelope,
+            ),);
+            assert!(!document_allowed(
+                &net,
+                &origin,
+                &route.cluster_id,
+                &route.app_id,
+                "foreign-record",
+                &envelope,
+            ),);
             assert!(net.peer_room_allows(
                 &origin,
                 room_topic_id(room),
-                crate::shell::state::Verb::Read,
+                &(
+                    tilo_action_policy::TreePath::root(),
+                    tilo_action_policy::ActionKind::Read
+                ),
                 false,
             ));
             assert!(net.peer_room_allows(
                 &origin,
                 room_topic_id(room),
-                crate::shell::state::Verb::Write,
+                &(
+                    tilo_action_policy::TreePath::root(),
+                    tilo_action_policy::ActionKind::Undoable
+                ),
                 false,
             ));
-
-            let mut moved = envelope.clone();
-            moved.op_class = collab_types::OpClass::Move;
-            collab_types::sign_op(&mut moved, &signing).expect("signed move");
-            assert_eq!(
-                net.peer_document_role(
-                    &origin,
-                    &route.cluster_id,
-                    &route.app_id,
-                    &route.record_id,
-                    &moved,
-                ),
-                Some(collab_types::Role::Editor),
-                "document authorization must use the declared action class, not hard-code text splice",
-            );
 
             let replica = net.replica.lock().expect("replica");
             let mut tree = replica.tree.write();
@@ -11953,44 +12045,64 @@ mod tests {
                 .iter_mut()
                 .find(|workspace| workspace.room == room)
                 .expect("workspace");
-            workspace.capabilities.retain(|capability| {
-                !matches!(
-                    &capability.subject,
-                    collab_types::Subject::Principal(collab_types::Principal::Person(member))
-                        if member == &person
-                )
-            });
-            workspace.grant_capability(collab_types::CapOverride::membership(
-                collab_types::Subject::person(person.clone()),
-                room.to_string(),
-                collab_types::Verb::Comment,
-            ));
+            workspace.dismiss(&person);
+            workspace.admit(person.clone(), tilo_action_policy::Role::Commenter);
             drop(tree);
             drop(replica);
-            let mut comment = envelope.clone();
-            comment.op_class = collab_types::OpClass::Comment;
-            collab_types::sign_op(&mut comment, &signing).expect("signed comment");
-            assert_eq!(
-                net.peer_document_role(
-                    &origin,
-                    &route.cluster_id,
-                    &route.app_id,
-                    &route.record_id,
-                    &comment,
-                ),
-                Some(collab_types::Role::Commenter),
-            );
-            assert_eq!(
-                net.peer_document_role(
+            assert!(
+                !document_allowed(
+                    &net,
                     &origin,
                     &route.cluster_id,
                     &route.app_id,
                     &route.record_id,
                     &envelope,
                 ),
-                None,
                 "a commenter must not smuggle a splice through the generic document route",
             );
+            // Decided against the app's surface, the commenter's comment is
+            // theirs to make.
+            let surface: &str = "[[resources]]\nkind = \"notes.page\"\nlabel = \"Page\"\nversion = 1\n\n[[resources.verbs]]\nid = \"comment\"\nkind = \"undoable\"\nlabel = \"Comment\"\nfield = \"comments\"\nparams = []\n";
+            let hash = *blake3::hash(surface.as_bytes()).as_bytes();
+            let hex = hex::encode(hash);
+            collab_types::Surfaces::set_process(collab_types::Surfaces::from_source(
+                std::sync::Arc::new(collab_types::surface::ContentSurfaces::new(
+                    move |_, wanted| (wanted == hex).then(|| surface.as_bytes().to_vec()),
+                )),
+            ));
+            let mut comment = envelope.clone().with_surface(Some(hash));
+            {
+                use automerge::transaction::Transactable as _;
+                let mut doc = automerge::AutoCommit::new();
+                doc.put(automerge::ROOT, "comment", "looks good").unwrap();
+                let context = tilo_actions::ActionContext {
+                    what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
+                        tilo_actions::ActionKey::new(&route.app_id, "notes.page", "comment"),
+                        [],
+                    ))),
+                    ..tilo_actions::ActionContext::for_resource(
+                        &route.record_id,
+                        "notes.page",
+                        "Page",
+                    )
+                };
+                doc.commit_with(
+                    automerge::transaction::CommitOptions::default()
+                        .with_message(context.change_message().unwrap()),
+                );
+                comment.payload = collab_types::DocumentMutation::Incremental(doc.save_after(&[]))
+                    .encode()
+                    .unwrap();
+            }
+            collab_types::sign_op(&mut comment, &signing).expect("signed comment");
+            assert!(document_allowed(
+                &net,
+                &origin,
+                &route.cluster_id,
+                &route.app_id,
+                &route.record_id,
+                &comment,
+            ));
 
             let replica = net.replica.lock().expect("replica");
             let mut tree = replica.tree.write();
@@ -12000,33 +12112,30 @@ mod tests {
                 .iter_mut()
                 .find(|workspace| workspace.room == room)
                 .expect("workspace");
-            workspace.capabilities.retain(|capability| {
-                !matches!(
-                    &capability.subject,
-                    collab_types::Subject::Principal(collab_types::Principal::Person(member))
-                        if member == &person
-                )
-            });
+            workspace.dismiss(&person);
             drop(tree);
             drop(replica);
             assert!(
                 !net.peer_room_allows(
                     &origin,
                     room_topic_id(room),
-                    crate::shell::state::Verb::Read,
+                    &(
+                        tilo_action_policy::TreePath::root(),
+                        tilo_action_policy::ActionKind::Read
+                    ),
                     false,
                 ),
                 "removal blocks every new room frame even while the device stays authenticated"
             );
-            assert_eq!(
-                net.peer_document_role(
+            assert!(
+                !document_allowed(
+                    &net,
                     &origin,
                     &route.cluster_id,
                     &route.app_id,
                     &route.record_id,
-                    &comment,
+                    &envelope,
                 ),
-                None,
                 "an operation signed while online is still refused if it arrives after removal",
             );
             let replica = net.replica.lock().expect("replica");
@@ -12037,11 +12146,7 @@ mod tests {
                 .iter_mut()
                 .find(|workspace| workspace.room == room)
                 .expect("workspace");
-            workspace.grant_capability(collab_types::CapOverride::membership(
-                collab_types::Subject::person(person),
-                room.to_string(),
-                collab_types::Verb::Write,
-            ));
+            workspace.admit(person, tilo_action_policy::Role::Editor);
             drop(tree);
             drop(replica);
 
@@ -12061,15 +12166,15 @@ mod tests {
                 &[revoked],
             );
             assert!(net.peer_identities.get(&origin).is_none());
-            assert_eq!(
-                net.peer_document_role(
+            assert!(
+                !document_allowed(
+                    &net,
                     &origin,
                     &route.cluster_id,
                     &route.app_id,
                     &route.record_id,
                     &envelope,
                 ),
-                None,
                 "revocation removes document authority as well as app access",
             );
         }
@@ -12099,7 +12204,7 @@ mod tests {
                 crate::shell::state::WorkspaceId(81),
                 "Read only",
             );
-            workspace.room = room;
+            workspace.set_room(room);
             workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
             let mut tree = WorkspaceTree::default();
             tree.desktop.workspaces.push(workspace);
@@ -12150,14 +12255,20 @@ mod tests {
             assert!(net.peer_room_allows(
                 &origin,
                 room_topic_id(room),
-                crate::shell::state::Verb::Read,
+                &(
+                    tilo_action_policy::TreePath::root(),
+                    tilo_action_policy::ActionKind::Read
+                ),
                 false,
             ));
             assert!(
                 !net.peer_room_allows(
                     &origin,
                     room_topic_id(room),
-                    crate::shell::state::Verb::Write,
+                    &(
+                        tilo_action_policy::TreePath::root(),
+                        tilo_action_policy::ActionKind::Undoable
+                    ),
                     false,
                 ),
                 "a viewer may request/read room state but must not publish room mutations"
@@ -12311,7 +12422,10 @@ mod tests {
                 !net.peer_room_allows(
                     &origin,
                     room_topic_id(room),
-                    crate::shell::state::Verb::Write,
+                    &(
+                        tilo_action_policy::TreePath::root(),
+                        tilo_action_policy::ActionKind::Undoable
+                    ),
                     false,
                 ),
                 "before governance arrives the inviter is not yet in the local roster"
@@ -12319,7 +12433,10 @@ mod tests {
             assert!(net.peer_room_allows(
                 &origin,
                 room_topic_id(room),
-                crate::shell::state::Verb::Write,
+                &(
+                    tilo_action_policy::TreePath::root(),
+                    tilo_action_policy::ActionKind::Undoable
+                ),
                 true,
             ));
 
@@ -12329,7 +12446,10 @@ mod tests {
                 !net.peer_room_allows(
                     &stranger,
                     room_topic_id(room),
-                    crate::shell::state::Verb::Write,
+                    &(
+                        tilo_action_policy::TreePath::root(),
+                        tilo_action_policy::ActionKind::Undoable
+                    ),
                     true,
                 ),
                 "bootstrap authority is pinned to one authenticated transport peer"
@@ -12868,7 +12988,7 @@ mod tests {
             collab_types::document_artifact_id(app_id, cluster_id, record_id),
             collab_types::Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             collab_types::document_attestation_id(app_id, cluster_id, record_id),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
         );
@@ -12904,7 +13024,7 @@ mod tests {
             collab_types::document_artifact_id("so.tilo.tube", &cluster, record_id),
             collab_types::Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             collab_types::document_attestation_id("so.tilo.tube", &cluster, record_id),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
         );
@@ -13036,7 +13156,10 @@ mod tests {
         };
         assert_eq!(document.cluster_id, cluster);
         assert_eq!(document.record_id, record, "the app sees its own record id");
-        assert_eq!(document.role, collab_types::Role::Owner);
+        assert_eq!(
+            document.author.policy.role_of(&document.author.person),
+            Some(collab_types::Role::Owner)
+        );
         assert!(!document.replayed);
     }
 
@@ -13167,7 +13290,7 @@ mod tests {
             .iter_mut()
             .find(|workspace| workspace.id == held)
             .expect("workspace")
-            .room = person_room;
+            .set_room(person_room);
         let (mut net, mut sent) = shell_network_for_test(tree.shared(), 0xE8);
         net.personal_continuity_user = Some(user);
         authenticated_personal_peer_on_topic(
@@ -13394,7 +13517,10 @@ mod tests {
         };
         assert_eq!(document.cluster_id, cluster);
         assert_eq!(document.record_id, record);
-        assert_eq!(document.role, collab_types::Role::Owner);
+        assert_eq!(
+            document.author.policy.role_of(&document.author.person),
+            Some(collab_types::Role::Owner)
+        );
     }
 
     /// A person record larger than one frame travels as the segments its
@@ -13426,7 +13552,7 @@ mod tests {
                         laptop_signing.verifying_key().to_bytes(),
                     ),
                     collab_types::document_attestation_id("so.tilo.tube", &cluster, "history"),
-                    collab_types::OpClass::Splice,
+                    collab_types::OpKind::Change,
                     std::time::SystemTime::now(),
                     u64::try_from(seq).unwrap() + 1,
                 );
@@ -13636,7 +13762,12 @@ mod tests {
         let [document] = queued.as_slice() else {
             panic!("the foreign device's write reaches the broker queue once");
         };
-        assert_eq!(document.role, collab_types::Role::Editor);
+        assert!(
+            document
+                .author
+                .is_bounded_by(&tilo_action_policy::Subject::ForeignDevice),
+            "the write is held to the foreign-device bound"
+        );
     }
 
     /// History of a person-room record kept by an earlier session is
@@ -13656,7 +13787,7 @@ mod tests {
                 collab_types::document_artifact_id("so.tilo.tube", &cluster, "history"),
                 collab_types::Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
                 collab_types::document_attestation_id("so.tilo.tube", &cluster, "history"),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 std::time::SystemTime::now(),
                 1,
                 collab_types::EncryptionMetadata::content_key(
@@ -13886,7 +14017,7 @@ mod tests {
                     collab_types::document_artifact_id("so.tilo.writer", &room, &record_id),
                     collab_types::Ed25519PublicKey::from_bytes([1; 32]),
                     collab_types::document_attestation_id("so.tilo.writer", &room, &record_id),
-                    collab_types::OpClass::Splice,
+                    collab_types::OpKind::Change,
                     std::time::SystemTime::UNIX_EPOCH,
                     1,
                 );
@@ -14075,7 +14206,13 @@ mod tests {
             assert_eq!(delivered.len(), 1);
             assert!(delivered[0].replayed);
             assert_eq!(delivered[0].peer, own);
-            assert_eq!(delivered[0].role, collab_types::Role::Editor);
+            assert_eq!(
+                delivered[0]
+                    .author
+                    .policy
+                    .role_of(&delivered[0].author.person),
+                Some(collab_types::Role::Editor)
+            );
         }
 
         file_backed_records_never_put_a_path_on_the_wire();
@@ -14212,7 +14349,7 @@ mod tests {
     }
 
     fn make_envelope(seq: u64) -> collab_types::SignedOp {
-        use collab_types::{ArtifactId, AttestationId, Ed25519PublicKey, OpClass, SignedOp};
+        use collab_types::{ArtifactId, AttestationId, Ed25519PublicKey, OpKind, SignedOp};
         use std::time::SystemTime;
         SignedOp::new_unsigned(
             collab_types::DocumentMutation::Incremental(vec![0xAA, 0xBB])
@@ -14221,7 +14358,7 @@ mod tests {
             ArtifactId::new(),
             Ed25519PublicKey::from_bytes([1u8; 32]),
             AttestationId::new(),
-            OpClass::Splice,
+            OpKind::Change,
             SystemTime::UNIX_EPOCH,
             seq,
         )
@@ -14281,7 +14418,7 @@ mod tests {
                 "notes".to_string(),
                 "cluster-7".to_string(),
                 "uuid:9f".to_string(),
-                collab_types::Role::Editor,
+                unauthenticated_editor("cluster-7", 99),
                 false,
                 envelope.clone(),
             );
@@ -14291,7 +14428,10 @@ mod tests {
             assert_eq!(buf[0].app_id, "notes");
             assert_eq!(buf[0].cluster_id, "cluster-7");
             assert_eq!(buf[0].record_id, "uuid:9f");
-            assert_eq!(buf[0].role, collab_types::Role::Editor);
+            assert_eq!(
+                buf[0].author.policy.role_of(&buf[0].author.person),
+                Some(collab_types::Role::Editor)
+            );
             assert_eq!(*buf[0].envelope, envelope);
         }
 
@@ -14517,11 +14657,7 @@ mod tests {
         );
         workspace.set_owner(owner.to_string());
         let room = workspace.room;
-        workspace.grant_capability(collab_types::CapOverride::membership(
-            collab_types::Subject::person(member.to_string()),
-            room.to_string(),
-            collab_types::Verb::Write,
-        ));
+        workspace.admit(member.to_string(), tilo_action_policy::Role::Editor);
         (workspace, room)
     }
 

@@ -1,0 +1,688 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "api-tester.workspace"
+label = "API workspace"
+version = 1
+
+[[resources.fields]]
+owner = "workspace"
+path = "collections"
+stored = "collection"
+title = "Collections"
+type = "Collection<SavedCollection>"
+
+[[resources.fields]]
+label = true
+owner = "saved-collection"
+path = "collections.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "saved-collection"
+path = "collections.*.requests"
+stored = "collection"
+title = "Requests"
+type = "Collection<RequestRecord>"
+
+[[resources.fields]]
+label = true
+owner = "request-record"
+path = "collections.*.requests.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "request-record"
+path = "collections.*.requests.*.method"
+stored = "value"
+title = "Method"
+type = "HttpMethod"
+
+[[resources.fields]]
+owner = "request-record"
+path = "collections.*.requests.*.url"
+stored = "value"
+title = "URL"
+type = "String"
+
+[[resources.fields]]
+owner = "request-record"
+path = "collections.*.requests.*.params"
+stored = "collection"
+title = "Query parameters"
+type = "Collection<Row>"
+
+[[resources.fields]]
+owner = "row"
+path = "collections.*.requests.*.params.*.key"
+stored = "value"
+title = "Key"
+type = "String"
+
+[[resources.fields]]
+owner = "row"
+path = "collections.*.requests.*.params.*.value"
+stored = "value"
+title = "Value"
+type = "String"
+
+[[resources.fields]]
+owner = "row"
+path = "collections.*.requests.*.params.*.enabled"
+stored = "value"
+title = "Included: an excluded row stays listed but is not sent"
+type = "bool"
+
+[[resources.fields]]
+owner = "request-record"
+path = "collections.*.requests.*.headers"
+stored = "collection"
+title = "Headers"
+type = "Collection<Row>"
+
+[[resources.fields]]
+owner = "row"
+path = "collections.*.requests.*.headers.*.key"
+stored = "value"
+title = "Key"
+type = "String"
+
+[[resources.fields]]
+owner = "row"
+path = "collections.*.requests.*.headers.*.value"
+stored = "value"
+title = "Value"
+type = "String"
+
+[[resources.fields]]
+owner = "row"
+path = "collections.*.requests.*.headers.*.enabled"
+stored = "value"
+title = "Included: an excluded row stays listed but is not sent"
+type = "bool"
+
+[[resources.fields]]
+owner = "request-record"
+path = "collections.*.requests.*.auth"
+stored = "record"
+title = "Authentication"
+type = "Credentials"
+
+[[resources.fields]]
+owner = "credentials"
+path = "collections.*.requests.*.auth.scheme"
+stored = "value"
+title = "Scheme"
+type = "AuthScheme"
+
+[[resources.fields]]
+owner = "credentials"
+path = "collections.*.requests.*.auth.username"
+stored = "value"
+title = "User name, for basic authentication"
+type = "String"
+
+[[resources.fields]]
+owner = "credentials"
+path = "collections.*.requests.*.auth.header"
+stored = "value"
+title = "Key header, for an API key"
+type = "String"
+
+[[resources.fields]]
+owner = "request-record"
+path = "collections.*.requests.*.body_mode"
+stored = "value"
+title = "Body encoding"
+type = "BodyMode"
+
+[[resources.fields]]
+owner = "request-record"
+path = "collections.*.requests.*.body"
+stored = "value"
+title = "Body: the raw or JSON text"
+type = "String"
+
+[[resources.fields]]
+owner = "request-record"
+path = "collections.*.requests.*.form"
+stored = "collection"
+title = "Form fields, sent when the body is a form"
+type = "Collection<Row>"
+
+[[resources.fields]]
+owner = "row"
+path = "collections.*.requests.*.form.*.key"
+stored = "value"
+title = "Key"
+type = "String"
+
+[[resources.fields]]
+owner = "row"
+path = "collections.*.requests.*.form.*.value"
+stored = "value"
+title = "Value"
+type = "String"
+
+[[resources.fields]]
+owner = "row"
+path = "collections.*.requests.*.form.*.enabled"
+stored = "value"
+title = "Included: an excluded row stays listed but is not sent"
+type = "bool"
+
+[[resources.fields]]
+owner = "workspace"
+path = "environments"
+stored = "collection"
+title = "Environments"
+type = "Collection<Environment>"
+
+[[resources.fields]]
+label = true
+owner = "environment"
+path = "environments.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "environment"
+path = "environments.*.variables"
+stored = "collection"
+title = "Variables"
+type = "Collection<Variable>"
+
+[[resources.fields]]
+label = true
+owner = "variable"
+path = "environments.*.variables.*.key"
+stored = "value"
+title = "Key"
+type = "String"
+
+[[resources.fields]]
+owner = "variable"
+path = "environments.*.variables.*.value"
+stored = "value"
+title = "Value, empty for a secret variable, whose value stays on each device"
+type = "String"
+
+[[resources.fields]]
+owner = "variable"
+path = "environments.*.variables.*.enabled"
+stored = "value"
+title = "Included"
+type = "bool"
+
+[[resources.fields]]
+owner = "variable"
+path = "environments.*.variables.*.secret"
+readonly = true
+stored = "value"
+title = "Whether the value is a credential kept on each device. Set when the"
+type = "bool"
+
+[[resources.fields]]
+owner = "workspace"
+path = "active_environment"
+stored = "value"
+title = "Active environment: whose variables resolve into what is sent"
+type = "Option<Id>"
+
+[[resources.fields]]
+owner = "workspace"
+path = "request"
+stored = "record"
+title = "The request in the builder"
+type = "RequestRecord"
+
+[[resources.fields]]
+label = true
+owner = "request-record"
+path = "request.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "request-record"
+path = "request.method"
+stored = "value"
+title = "Method"
+type = "HttpMethod"
+
+[[resources.fields]]
+owner = "request-record"
+path = "request.url"
+stored = "value"
+title = "URL"
+type = "String"
+
+[[resources.fields]]
+owner = "request-record"
+path = "request.params"
+stored = "collection"
+title = "Query parameters"
+type = "Collection<Row>"
+
+[[resources.fields]]
+owner = "row"
+path = "request.params.*.key"
+stored = "value"
+title = "Key"
+type = "String"
+
+[[resources.fields]]
+owner = "row"
+path = "request.params.*.value"
+stored = "value"
+title = "Value"
+type = "String"
+
+[[resources.fields]]
+owner = "row"
+path = "request.params.*.enabled"
+stored = "value"
+title = "Included: an excluded row stays listed but is not sent"
+type = "bool"
+
+[[resources.fields]]
+owner = "request-record"
+path = "request.headers"
+stored = "collection"
+title = "Headers"
+type = "Collection<Row>"
+
+[[resources.fields]]
+owner = "row"
+path = "request.headers.*.key"
+stored = "value"
+title = "Key"
+type = "String"
+
+[[resources.fields]]
+owner = "row"
+path = "request.headers.*.value"
+stored = "value"
+title = "Value"
+type = "String"
+
+[[resources.fields]]
+owner = "row"
+path = "request.headers.*.enabled"
+stored = "value"
+title = "Included: an excluded row stays listed but is not sent"
+type = "bool"
+
+[[resources.fields]]
+owner = "request-record"
+path = "request.auth"
+stored = "record"
+title = "Authentication"
+type = "Credentials"
+
+[[resources.fields]]
+owner = "credentials"
+path = "request.auth.scheme"
+stored = "value"
+title = "Scheme"
+type = "AuthScheme"
+
+[[resources.fields]]
+owner = "credentials"
+path = "request.auth.username"
+stored = "value"
+title = "User name, for basic authentication"
+type = "String"
+
+[[resources.fields]]
+owner = "credentials"
+path = "request.auth.header"
+stored = "value"
+title = "Key header, for an API key"
+type = "String"
+
+[[resources.fields]]
+owner = "request-record"
+path = "request.body_mode"
+stored = "value"
+title = "Body encoding"
+type = "BodyMode"
+
+[[resources.fields]]
+owner = "request-record"
+path = "request.body"
+stored = "value"
+title = "Body: the raw or JSON text"
+type = "String"
+
+[[resources.fields]]
+owner = "request-record"
+path = "request.form"
+stored = "collection"
+title = "Form fields, sent when the body is a form"
+type = "Collection<Row>"
+
+[[resources.fields]]
+owner = "row"
+path = "request.form.*.key"
+stored = "value"
+title = "Key"
+type = "String"
+
+[[resources.fields]]
+owner = "row"
+path = "request.form.*.value"
+stored = "value"
+title = "Value"
+type = "String"
+
+[[resources.fields]]
+owner = "row"
+path = "request.form.*.enabled"
+stored = "value"
+title = "Included: an excluded row stays listed but is not sent"
+type = "bool"
+
+[[resources.fields]]
+owner = "workspace"
+path = "opened"
+readonly = true
+stored = "value"
+title = "The saved request the builder holds (or holds a copy of): its"
+type = "Atom"
+
+[[resources.fields]]
+owner = "workspace"
+path = "history"
+readonly = true
+stored = "collection"
+title = "What was sent, newest first. Only sending adds to it"
+type = "Collection<Sent>"
+
+[[resources.fields]]
+label = true
+owner = "sent"
+path = "history.*.route"
+stored = "value"
+title = "Route: the method and the URL without credentials, query values or"
+type = "Atom"
+
+[[resources.fields]]
+owner = "sent"
+path = "history.*.method"
+stored = "value"
+title = "Method"
+type = "HttpMethod"
+
+[[resources.fields]]
+owner = "sent"
+path = "history.*.url"
+stored = "value"
+title = "URL as it was sent"
+type = "Atom"
+
+[[resources.fields]]
+owner = "sent"
+path = "history.*.status"
+stored = "value"
+title = "Status"
+type = "u16"
+
+[[resources.fields]]
+owner = "sent"
+path = "history.*.duration_ms"
+stored = "value"
+title = "Round-trip time in milliseconds"
+type = "u64"
+
+[[resources.fields]]
+owner = "sent"
+path = "history.*.at_ms"
+stored = "value"
+title = "When it completed, in milliseconds since the Unix epoch"
+type = "i64"
+
+[[resources.verbs]]
+id = "new-request"
+kind = "undoable"
+label = "Start a new request in the builder"
+params = []
+
+[[resources.verbs]]
+id = "new-collection"
+kind = "undoable"
+label = "Create a collection"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+destructive = true
+id = "delete-collection"
+kind = "undoable"
+label = "Delete a collection and the requests it holds"
+
+[[resources.verbs.params]]
+name = "collection"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "add-request"
+kind = "undoable"
+label = "Add a new request to a collection"
+
+[[resources.verbs.params]]
+name = "collection"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "A request the builder opened from that collection is saved over; otherwise it is added, and the builder holds the saved request."
+id = "save-request"
+kind = "undoable"
+label = "Save the request in the builder to a collection"
+
+[[resources.verbs.params]]
+name = "collection"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "name"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+id = "open-request"
+kind = "undoable"
+label = "Open a saved request in the builder"
+
+[[resources.verbs.params]]
+name = "collection"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "request"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+destructive = true
+id = "delete-request"
+kind = "undoable"
+label = "Delete a saved request"
+
+[[resources.verbs.params]]
+name = "collection"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "request"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "new-environment"
+kind = "undoable"
+label = "Create an environment"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+destructive = true
+id = "delete-environment"
+kind = "undoable"
+label = "Delete an environment and its variables"
+
+[[resources.verbs.params]]
+name = "environment"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "use-environment"
+kind = "undoable"
+label = "Use an environment's variables in what is sent"
+
+[[resources.verbs.params]]
+name = "environment"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "A secret variable's value is set on each device, never here."
+id = "add-variable"
+kind = "undoable"
+label = "Add a variable to an environment"
+
+[[resources.verbs.params]]
+name = "environment"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "key"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "value"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "secret"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs]]
+id = "open-sent"
+kind = "undoable"
+label = "Open a sent request again in the builder, as a new request"
+
+[[resources.verbs.params]]
+name = "sent"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "record-sent"
+kind = "undoable"
+label = "Record a request that was sent"
+
+[[resources.verbs.params]]
+name = "method"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "url"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "status"
+required = true
+
+[resources.verbs.params.schema]
+maximum = 65535
+minimum = 0
+type = "integer"
+
+[[resources.verbs.params]]
+name = "duration_ms"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"

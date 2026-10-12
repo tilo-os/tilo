@@ -5,9 +5,10 @@
 //! runs until the person admits it, here, in trusted chrome: "Claude Code in
 //! Alacritty wants to work in Home as an agent". Admitting it makes the
 //! client an *agent member* of that workspace — the same membership
-//! Settings → Agents shows and revokes — and serves it as that agent. An
-//! agent holds no role: every surface it may use is a grant the person
-//! reviews, and removing it revokes catalogue and authority at once.
+//! Settings → Agents shows and revokes — and serves it as that agent. Its
+//! authority is the room policy's agent preset grants (observer unless the
+//! person picks another), never a human role, and removing it revokes
+//! catalogue and authority at once.
 //!
 //! The client chooses neither the principal nor the workspace. The agent is
 //! the one the person picks (an existing member by name, or a new one named
@@ -26,7 +27,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use tilo_desktop::workspace_settings::AgentAuthorityPreset;
+use tilo_action_policy::roles::AgentPreset;
 use tilo_runtime::session_door::Consent;
 
 use crate::portal::PromptOutcome;
@@ -96,7 +97,7 @@ pub struct DoorRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemberChoice {
     pub agent: String,
-    pub preset: Option<AgentAuthorityPreset>,
+    pub preset: Option<AgentPreset>,
 }
 
 /// The person's answer to an agent admission.
@@ -190,9 +191,9 @@ fn canonical_agent(raw: &str) -> Result<String, String> {
     Ok(agent)
 }
 
-/// Make `agent` a member of the workspace in `room` with `preset`, unless it
-/// already is one, through the ordinary grant path (the room document,
-/// every member, disk). Refused when the person does not administer it.
+/// Make `agent` a member of the workspace in `room` with `preset`'s grants,
+/// unless it already is one, through the ordinary governance path (the room
+/// document, every member, disk). Refused when the person does not administer it.
 ///
 /// # Errors
 /// Names why the agent could not be added.
@@ -200,9 +201,8 @@ pub fn ensure_agent_member(
     state: &ChromeState,
     room: &str,
     agent: &str,
-    preset: AgentAuthorityPreset,
+    preset: AgentPreset,
 ) -> Result<(), String> {
-    use crate::shell::state::{CapOverride, Subject};
     let workspace = {
         let tree = state.tree();
         tree.desktop
@@ -213,7 +213,7 @@ pub fn ensure_agent_member(
                 (
                     workspace.id,
                     workspace
-                        .role_of_agent_at(agent, tilo_clock::unix_now())
+                        .agent_role_at(agent, tilo_clock::unix_now())
                         .is_some(),
                 )
             })
@@ -225,17 +225,20 @@ pub fn ensure_agent_member(
         return Ok(());
     }
     let user = state.active_local_user();
-    let cap = CapOverride::membership(
-        Subject::agent(agent.to_owned()),
-        room,
-        preset.admission_verb(),
-    )
-    .with_id(format!("agent-member:{agent}:{}", preset.id()));
+    let changes = preset
+        .grants(
+            room,
+            agent,
+            &tilo_action_policy::Subject::Person(user.clone()),
+        )
+        .into_iter()
+        .map(tilo_action_policy::Change::Grant)
+        .collect();
     state
         .tree_mut()
-        .grant_in_workspace(workspace_id, &user, cap)
+        .govern_in_workspace(workspace_id, &user, changes)
         .map(drop)
-        .ok_or_else(|| {
+        .map_err(|_| {
             t_args(
                 "agent-door-not-administrator",
                 &[("agent", agent.to_owned().into())],
@@ -366,7 +369,7 @@ impl AgentDoorConsent {
         let workspace = state.tree().desktop.active_workspace().map(|workspace| {
             let member = remembered
                 .as_deref()
-                .is_some_and(|agent| workspace.role_of_agent_at(agent, now).is_some());
+                .is_some_and(|agent| workspace.agent_role_at(agent, now).is_some());
             (workspace.room.to_string(), workspace.name.clone(), member)
         });
         let Some((room, workspace, remembered_member)) = workspace else {
@@ -416,7 +419,7 @@ impl AgentDoorConsent {
             state,
             &waiting.room,
             &agent,
-            preset.unwrap_or(AgentAuthorityPreset::Observer),
+            preset.unwrap_or(AgentPreset::Observer),
         ) {
             return Consent::Refuse(reason);
         }

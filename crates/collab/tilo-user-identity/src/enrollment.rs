@@ -73,7 +73,7 @@ pub struct EnrollmentToken {
     pub issuer_device_public_key: [u8; 32],
     /// Ed25519 signature over
     /// `blake3(ENROLLMENT_PREIMAGE_TAG || postcard(view))`.
-    #[serde(with = "crate::cert::serde_bytes_64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 

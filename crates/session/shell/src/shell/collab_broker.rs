@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use collab_types::ArtifactId;
 #[cfg(test)]
 use collab_types::{
-    DocumentMutation, OpClass, ValidationError, document_artifact_id, document_attestation_id,
+    DocumentMutation, OpKind, ValidationError, document_artifact_id, document_attestation_id,
 };
 use ui::collaboration::CollabEvent;
 
@@ -565,6 +565,20 @@ impl DrainQueues {
                 labels,
                 announced,
             );
+            // Who acted is what the sender's certified identity supports.
+            let (user_id, payload) = match payload {
+                ui::collaboration::PresencePayload::Interaction(update) => {
+                    let actor = update.actor.from_peer(&user_id, entry.person.as_deref());
+                    let sequence = update.sequence;
+                    (
+                        actor.id.clone(),
+                        ui::collaboration::PresencePayload::Interaction(Box::new(
+                            update.normalized_by_broker(actor, sequence),
+                        )),
+                    )
+                }
+                payload => (user_id, payload),
+            };
             let route = CrdtRoute::cluster(entry.cluster_id.clone());
             let event = CollabEvent::RemotePresenceUpdate {
                 user_id,
@@ -595,7 +609,7 @@ impl DrainQueues {
                 app_id: entry.app_id,
                 cluster_id: entry.cluster_id,
                 record_id: entry.record_id,
-                role: entry.role,
+                author: entry.author,
                 replayed: entry.replayed,
                 envelope: *entry.envelope,
             };
@@ -1393,7 +1407,7 @@ mod tests {
                 document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
                 author,
                 document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-                OpClass::Splice,
+                OpKind::Change,
                 std::time::SystemTime::now(),
                 1,
             );
@@ -1433,7 +1447,7 @@ mod tests {
                 document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
                 author,
                 document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-                OpClass::Splice,
+                OpKind::Change,
                 std::time::SystemTime::now(),
                 1,
                 collab_types::EncryptionMetadata::mls_application(9, expected_channel),

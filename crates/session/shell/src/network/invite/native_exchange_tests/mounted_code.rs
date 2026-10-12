@@ -9,6 +9,8 @@ use sha2::{Digest as _, Sha256};
 mod acknowledgement_recovery;
 #[path = "mounted_code/blocked_read.rs"]
 mod blocked_read;
+#[path = "mounted_code/idle_reads.rs"]
+mod idle_reads;
 #[path = "mounted_code/read_recovery.rs"]
 mod read_recovery;
 
@@ -18,6 +20,15 @@ mod read_recovery;
 async fn native_mounted_code_resource_edit_reaches_another_mounted_app() {
     trace_publication_hops();
     Box::pin(super::actual_exchange(false, true, Some(Journey::Document))).await;
+}
+
+/// A verb that queues work for the device running the project's terminal
+/// (`run`) is a document job: it reaches the mounted app that owns the
+/// document, applies there and is answered when what it queued settles.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_mounted_code_run_is_applied_and_settles() {
+    trace_publication_hops();
+    Box::pin(super::actual_exchange(false, true, Some(Journey::Run))).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -55,7 +66,9 @@ pub(super) enum Journey {
     BlockedRead,
     BlockedUiRefresh,
     ReadRecovery,
+    Run,
     AcknowledgementRecovery,
+    IdleReads,
 }
 
 pub(super) struct Context<'a> {
@@ -151,16 +164,22 @@ struct Mounted {
     network: Arc<ShellNetwork>,
     actor: tokio::task::JoinHandle<()>,
     acknowledgement_gate: Option<Arc<acknowledgement_recovery::Gate>>,
+    idle_reads: Option<Arc<idle_reads::Counter>>,
 }
 
 impl Mounted {
-    async fn new(device: &Device, profile: &std::path::Path) -> Self {
-        Self::new_with_acknowledgement_gate(device, profile, None).await
-    }
     async fn new_with_acknowledgement_gate(
         device: &Device,
         profile: &std::path::Path,
         acknowledgement_gate: Option<Arc<acknowledgement_recovery::Gate>>,
+    ) -> Self {
+        Self::new_observed(device, profile, acknowledgement_gate, None).await
+    }
+    async fn new_observed(
+        device: &Device,
+        profile: &std::path::Path,
+        acknowledgement_gate: Option<Arc<acknowledgement_recovery::Gate>>,
+        idle_reads: Option<Arc<idle_reads::Counter>>,
     ) -> Self {
         let (commands, actor) = Actor::spawn_reporting_addrs(
             device.endpoint.clone(),
@@ -203,13 +222,15 @@ impl Mounted {
             &network,
             acknowledgement_gate
                 .as_ref()
-                .map(acknowledgement_recovery::Gate::wrapper),
+                .map(acknowledgement_recovery::Gate::wrapper)
+                .or_else(|| idle_reads.as_ref().map(idle_reads::Counter::wrapper)),
         );
         Self {
             code,
             network,
             actor,
             acknowledgement_gate,
+            idle_reads,
         }
     }
 
@@ -222,13 +243,18 @@ impl Mounted {
     }
 
     fn invoke(&mut self, action: &str, argument: Option<&str>) {
+        self.invoke_where(action, argument, |id| id.contains(FILE));
+    }
+
+    /// Invoke `action` on the first published node whose id `on` accepts.
+    fn invoke_where(&mut self, action: &str, argument: Option<&str>, on: impl Fn(&str) -> bool) {
         self.frame();
         let node = self
             .code
             .app
             .semantic_tree()
             .iter()
-            .find(|node| node.id.0.contains(FILE) && node.action(action).is_some())
+            .find(|node| on(&node.id.0) && node.action(action).is_some())
             .expect("the original mounted Code resource must export this action")
             .id
             .clone();
@@ -259,6 +285,7 @@ impl Mounted {
             network,
             actor,
             acknowledgement_gate: _,
+            idle_reads: _,
         } = self;
         drop(code);
         async move {
@@ -272,6 +299,36 @@ impl Mounted {
             actor.abort();
             let _ = actor.await;
         }
+    }
+}
+
+/// What the journey does once both roots show the file: its own read,
+/// recovery or run, else an edit both devices converge on.
+#[expect(
+    clippy::future_not_send,
+    reason = "mounted UI roots use Rc and run on this test runtime thread"
+)]
+async fn finish_journey(
+    context: &Context<'_>,
+    authority: &ActualAuthority,
+    first: &Device,
+    owner: &NativeWorkspaceOwner,
+    refreshes: &mut RefreshConsumer,
+    mounted: &mut [Mounted],
+) {
+    if matches!(
+        context.journey,
+        Journey::BlockedRead | Journey::BlockedUiRefresh
+    ) {
+        blocked_read::run(first, &mut mounted[0]).await;
+    } else if matches!(context.journey, Journey::ReadRecovery) {
+        read_recovery::run(first, &mut mounted[0]).await;
+    } else if matches!(context.journey, Journey::Run) {
+        run_and_settle(&mut mounted[0]).await;
+    } else if matches!(context.journey, Journey::IdleReads) {
+        idle_reads::run(&mounted[0]).await;
+    } else {
+        edit_and_converge(context, authority, owner, refreshes, mounted).await;
     }
 }
 
@@ -301,9 +358,11 @@ pub(super) async fn run(
     };
     eprintln!("mounted journey: mounting both original Code roots");
     let mut mounted = vec![
-        Mounted::new(
+        Mounted::new_observed(
             &first,
             &context.directory.path().join("mounted-first-profile"),
+            None,
+            matches!(context.journey, Journey::IdleReads).then(idle_reads::Counter::new),
         )
         .await,
         Mounted::new_with_acknowledgement_gate(
@@ -324,8 +383,12 @@ pub(super) async fn run(
     let mut refreshes =
         RefreshConsumer::start(requests, authority.clone(), context.publisher.clone());
     publish(&authority, context.publisher);
+    // Showing the file is the editor's own effect, which the effect broker
+    // signs a receipt for; the framework's `open` is a view and signs none.
+    let show =
+        tilo_resource::Effect::id(&code_editor::CodeEditorEffect::ShowFile { file: FILE.into() });
     for app in &mut mounted {
-        app.invoke("open", None);
+        app.invoke(show, None);
     }
     if matches!(context.journey, Journey::BlockedUiRefresh) {
         refreshes.block_ui_after_request().await;
@@ -341,23 +404,15 @@ pub(super) async fn run(
     )
     .await;
     inspect_while_ui_caller_is_blocked(&context, &authority);
-    if matches!(
-        context.journey,
-        Journey::BlockedRead | Journey::BlockedUiRefresh
-    ) {
-        blocked_read::run(&first, &mut mounted[0]).await;
-    } else if matches!(context.journey, Journey::ReadRecovery) {
-        read_recovery::run(&first, &mut mounted[0]).await;
-    } else {
-        edit_and_converge(
-            &context,
-            &authority,
-            &receipts.owner,
-            &mut refreshes,
-            &mut mounted,
-        )
-        .await;
-    }
+    finish_journey(
+        &context,
+        &authority,
+        &first,
+        &receipts.owner,
+        &mut refreshes,
+        &mut mounted,
+    )
+    .await;
     let private_routes = mounted
         .iter_mut()
         .map(|app| app.code.app.controlled_private_continuity_route_for_test())
@@ -716,6 +771,102 @@ fn committed_snapshot(owner: &NativeWorkspaceOwner) -> Option<serde_json::Value>
                         "heads": document.get_heads().iter().map(ToString::to_string).collect::<Vec<_>>(),
                     })
                 }))
+            },
+        )
+        .unwrap()
+}
+
+/// The project's terminal claims a pane, `run` queues a command line for it
+/// through the mounted app's door, and the native owner commits the queued
+/// request: the routed document job reached the app that owns the document
+/// and applied there. The terminal running in that pane then answers the
+/// run, and the request settles with its answer.
+#[expect(
+    clippy::future_not_send,
+    reason = "mounted UI roots use Rc and run on this test runtime thread"
+)]
+async fn run_and_settle(mounted: &mut Mounted) {
+    const PANE: &str = "5d4f0a52-6a3e-4c1e-9d5b-2f1d6c0b7e11";
+    mounted.invoke_where("claim-pane", Some(PANE), |_| true);
+    mounted.invoke_where("run", Some("echo settled"), |_| true);
+    let runs = mounted
+        .code
+        .app
+        .with_component_root(|root| {
+            tilo_app::framework::with_surface::<code_editor::Project, code_editor::CodeApp, _>(
+                root.as_any_mut()?,
+                |code| code.terminal_runs(),
+            )
+        })
+        .flatten()
+        .expect("the mounted Code app");
+    // This device's terminal runs the session in the claimed pane.
+    runs.set_pane(PANE);
+    let asked = tilo_test_env::within("the mounted app applies the routed run", async {
+        loop {
+            mounted.frame();
+            if let Some(asked) = runs.take().pop() {
+                break asked;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert_eq!(asked.command, "echo settled");
+    tilo_test_env::within("the native owner commits the queued run", async {
+        loop {
+            mounted.frame();
+            if runs_of(&mounted.network.native_owner().unwrap()) == (1, 0) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    asked.reply.finish(Ok(tilo_actions::ActionOutput {
+        value: serde_json::to_value(terminal::resource::RunAnswer {
+            run: Some(asked.request.clone()),
+            exit: Some(0),
+        })
+        .ok(),
+        resources: Vec::new(),
+    }));
+    tilo_test_env::within("the run settles with its answer", async {
+        loop {
+            mounted.frame();
+            if runs_of(&mounted.network.native_owner().unwrap()) == (1, 1) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+}
+
+/// How many command lines the committed project has queued for its terminal,
+/// and how many of them settled.
+fn runs_of(owner: &NativeWorkspaceOwner) -> (usize, usize) {
+    owner
+        .with_current(
+            RoomId::parse(tilo_joined_room::testing::ROOM).unwrap(),
+            |view| {
+                Ok(view
+                    .peer()
+                    .document(APP, cold_code::RECORD)
+                    .map_or((0, 0), |bytes| {
+                        let document = automerge::AutoCommit::load(&bytes).unwrap();
+                        <code_editor::Project as tilo_resource::Resource>::read(&document).map_or(
+                            (0, 0),
+                            |project| {
+                                let requests = &project.terminal_requests;
+                                let settled = requests
+                                    .entries()
+                                    .filter(|(id, _)| requests.outcome(id).is_some())
+                                    .count();
+                                (requests.entries().len(), settled)
+                            },
+                        )
+                    }))
             },
         )
         .unwrap()

@@ -5,6 +5,7 @@
 )]
 use super::*;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 
 /// The parent exchange test's state directory, device identity, endpoint,
@@ -54,7 +55,7 @@ pub(super) async fn restart_after_offline_snapshot(
             let heads = doc.get_heads();
             doc.put(ROOT, "real-clock-offline-edit", "retained across restart")
                 .unwrap();
-            doc.commit();
+            doc.commit_edit("fixture", "real-clock-offline-edit");
             let expected = doc.get_heads();
             let mut message = view.peer().clone().publish_incremental(
                 "so.tilo.chat",

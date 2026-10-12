@@ -870,7 +870,7 @@ async fn publish_authority(acl: PathBuf) -> Result<()> {
         }
         Err(error) => return Err(error).context("read workspace governor key"),
     };
-    let capabilities = serde_json::from_slice(
+    let capabilities: collab_types::FsAuthority = serde_json::from_slice(
         &std::fs::read(&acl).with_context(|| format!("read capability list {}", acl.display()))?,
     )?;
     let (workspace, socket) = fs::workspace_authority::find_local_authority().await?;
@@ -1329,7 +1329,7 @@ fn export_home_peer(
         .with_context(|| format!("read capability list {}", acl.display()))?;
     let _: serde_json::Value =
         serde_json::from_str(&capability_json).context("capability list is not valid JSON")?;
-    let capabilities = serde_json::from_str(&capability_json)?;
+    let capabilities: collab_types::FsAuthority = serde_json::from_str(&capability_json)?;
     let paths = identity_paths();
     let governor = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
         .context("read workspace governor key")?;
@@ -1891,9 +1891,10 @@ async fn serve(
             .filter(|_| remote_ticket.is_none())
             .zip(share_issuer.as_ref())
             .map(|(path, signer)| -> Result<_> {
-                let capabilities = serde_json::from_slice(&std::fs::read(path)?)
-                    .context("parse workspace authority bootstrap capabilities")?;
-                Ok((capabilities, signer))
+                let authority: collab_types::FsAuthority =
+                    serde_json::from_slice(&std::fs::read(path)?)
+                        .context("parse workspace authority bootstrap capabilities")?;
+                Ok((authority.capabilities, signer))
             })
             .transpose()?;
         records.workspace_authority = workspace_startup::owner_authority(
@@ -4284,7 +4285,7 @@ mod tests {
             let err = resolve_acl(&args, NODE_KEY)
                 .expect_err("a malformed capability list must abort the mount");
             assert!(
-                format!("{err:#}").contains("JSON array of capabilities"),
+                format!("{err:#}").contains("not the governor's file authority"),
                 "expected a parse failure, got: {err:#}"
             );
         }
@@ -4307,7 +4308,9 @@ mod tests {
         }
         // Phase `the_capability_file_round_trips_and_is_enforced`.
         {
-            use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};
+            use collab_types::{
+                Access as CapAccess, CapOverride, Ed25519PublicKey, Effect, Scope, Subject,
+            };
             use fs::Access;
 
             let who = [0x0A; 32];
@@ -4315,11 +4318,15 @@ mod tests {
                 Subject::User(Ed25519PublicKey(who)),
                 Scope::FsPath("/w/docs".into()),
                 Effect::Grant,
-                Verb::Read,
+                CapAccess::Read,
             )];
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");
-            std::fs::write(&path, serde_json::to_vec(&caps).unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&collab_types::FsAuthority::from(caps)).unwrap(),
+            )
+            .unwrap();
 
             let args = acl_args_from(&[
                 "--acl",

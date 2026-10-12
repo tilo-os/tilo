@@ -27,9 +27,12 @@ tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # Directory watch behind `watch_settings`; only long-lived readers opt in.
 notify = { workspace = true, optional = true }
+# The sections' types as models, so an app edits them by path.
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
 
 [features]
 watch = ["dep:notify"]
+model = ["dep:tilo-resource"]
 
 [dev-dependencies]
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }

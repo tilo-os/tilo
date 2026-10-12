@@ -148,10 +148,7 @@ fn legacy_subject_and_refine_calls_explain_the_job_door_without_editing() {
         .iter()
         .find(|action| action.id == "find-area")
         .unwrap();
-    assert_eq!(
-        find.contract.permission,
-        ui::tilo_actions::PermissionRequirement::Write
-    );
+    assert_eq!(find.contract.kind, ui::tilo_actions::ActionKind::Undoable);
     assert_eq!(
         find.contract.execution,
         ui::tilo_actions::ExecutionMode::Background { cancellable: false }
@@ -218,10 +215,12 @@ fn an_accepted_edge_job_allows_its_participants_published_inspect() {
     let mut app = TestApp::<App>::new().unwrap();
     open_disc(&mut app);
     call(&mut app, "select", json!({"ellipse": [34, 34, 132, 132]}));
-    let effect = canvas::resource::ViewOp::FindArea(canvas::resource::FindArea {
-        refine: Some(8.0),
-        ..Default::default()
-    });
+    let effect = canvas::resource::ViewOp::FindArea {
+        area: canvas::resource::FindArea {
+            refine: Some(8.0),
+            ..Default::default()
+        },
+    };
     let invocation = app.start_effect(&effect).unwrap();
     assert!(
         !app.harness()
@@ -240,9 +239,9 @@ fn an_accepted_edge_job_allows_its_participants_published_inspect() {
         Err(ui::tilo_actions::DoorError::Unavailable { code, .. }) if code == "private_view"
     ));
     let output = app
-        .effect(&canvas::resource::ViewOp::Inspect(
-            canvas::resource::Inspect::default(),
-        ))
+        .effect(&canvas::resource::ViewOp::Inspect {
+            inspect: canvas::resource::Inspect::default(),
+        })
         .unwrap();
     let inspected = output.value.unwrap();
     let marks = inspected["marks_bottom_first"]
@@ -273,10 +272,12 @@ fn a_host_cancelled_edge_job_does_not_leave_the_finder_busy() {
     call(&mut app, "select", json!({"ellipse": [34, 34, 132, 132]}));
     let before = app.state();
     let versions = app.versions();
-    let effect = canvas::resource::ViewOp::FindArea(canvas::resource::FindArea {
-        refine: Some(8.0),
-        ..Default::default()
-    });
+    let effect = canvas::resource::ViewOp::FindArea {
+        area: canvas::resource::FindArea {
+            refine: Some(8.0),
+            ..Default::default()
+        },
+    };
     let invocation = app.start_effect(&effect).unwrap();
     // Host retirement can cancel a job even when its public contract does
     // not offer a user Cancel command. No cancellation is a success receipt.
@@ -298,17 +299,17 @@ fn an_edge_job_refuses_to_overwrite_an_edit_made_while_it_runs() {
     open_disc(&mut app);
     call(&mut app, "select", json!({"ellipse": [34, 34, 132, 132]}));
     let invocation = app
-        .start_effect(&canvas::resource::ViewOp::FindArea(
-            canvas::resource::FindArea {
+        .start_effect(&canvas::resource::ViewOp::FindArea {
+            area: canvas::resource::FindArea {
                 refine: Some(8.0),
                 ..Default::default()
             },
-        ))
+        })
         .unwrap();
     call(&mut app, "select", json!({"rect": [0, 0, 10, 10]}));
     let edited = app.state();
     app.harness()
-        .wait_until(ui::time::Duration::from_secs(10), |harness| {
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
             harness
                 .job_updates(invocation)
                 .iter()
@@ -330,14 +331,16 @@ fn an_edge_job_cannot_apply_after_the_person_becomes_a_viewer() {
     open_disc(&mut app);
     call(&mut app, "select", json!({"ellipse": [34, 34, 132, 132]}));
     let before = app.state();
-    let effect = canvas::resource::ViewOp::FindArea(canvas::resource::FindArea {
-        refine: Some(8.0),
-        ..Default::default()
-    });
+    let effect = canvas::resource::ViewOp::FindArea {
+        area: canvas::resource::FindArea {
+            refine: Some(8.0),
+            ..Default::default()
+        },
+    };
     let invocation = app.start_effect(&effect).unwrap();
     app.set_role(ui::Role::Viewer);
     app.harness()
-        .wait_until(ui::time::Duration::from_secs(10), |harness| {
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
             harness
                 .job_updates(invocation)
                 .iter()
@@ -448,12 +451,12 @@ fn selecting_a_subject_without_its_model_says_where_to_set_it_up() {
     let renderer = Rc::new(RefCell::new(Renderer::default()));
     shown(&app, &renderer);
     let error = app
-        .effect(&canvas::resource::ViewOp::FindArea(
-            canvas::resource::FindArea {
+        .effect(&canvas::resource::ViewOp::FindArea {
+            area: canvas::resource::FindArea {
                 subject: Some(true),
                 ..Default::default()
             },
-        ))
+        })
         .unwrap_err()
         .to_string();
     assert!(
@@ -469,24 +472,24 @@ fn refining_needs_something_selected_and_a_reach_in_range() {
     let renderer = Rc::new(RefCell::new(Renderer::default()));
     shown(&app, &renderer);
     let error = app
-        .effect(&canvas::resource::ViewOp::FindArea(
-            canvas::resource::FindArea {
+        .effect(&canvas::resource::ViewOp::FindArea {
+            area: canvas::resource::FindArea {
                 refine: Some(4.0),
                 ..Default::default()
             },
-        ))
+        })
         .unwrap_err()
         .to_string();
     assert!(error.contains("nothing is selected"), "{error}");
     call(&mut app, "select", json!({"rect": [10, 10, 50, 50]}));
     shown(&app, &renderer);
     let error = app
-        .effect(&canvas::resource::ViewOp::FindArea(
-            canvas::resource::FindArea {
+        .effect(&canvas::resource::ViewOp::FindArea {
+            area: canvas::resource::FindArea {
                 refine: Some(1000.0),
                 ..Default::default()
             },
-        ))
+        })
         .unwrap_err()
         .to_string();
     assert!(error.contains("refine is 0 to"), "{error}");
@@ -605,12 +608,13 @@ fn finder_completion_uses_a_selection_contract_the_broker_can_admit() {
         select.contract.advertised_confirmation(),
         ui::tilo_actions::ConfirmationPolicy::None
     );
-    let invoke = canvas::ArtworkResource::SELECT_FOUND.with((
-        Some("M 4 4 L 12 4 L 12 12 L 4 12 Z".into()),
-        None,
-        None,
-        None,
-    ));
+    let invoke = canvas::Artwork::SELECT.with(canvas::selection::Select {
+        d: Some("M 4 4 L 12 4 L 12 12 L 4 12 Z".into()),
+        matte: None,
+        mode: None,
+        feather: None,
+        ..Default::default()
+    });
     app.invoke(invoke).unwrap();
     assert!(
         app.state()

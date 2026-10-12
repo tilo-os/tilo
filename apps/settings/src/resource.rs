@@ -15,7 +15,7 @@ use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
     ResourceSurface, SurfaceCx, ViewCx,
 };
-use ui::tilo_resource::{Doc, Invoke, ModelError, NoAction, Resource};
+use ui::tilo_resource::{self, Invoke, Model, resource};
 use ui::widget::Element;
 
 use crate::categories::Category;
@@ -25,24 +25,17 @@ use crate::panes::agent_models::AgentModelsEffect;
 use crate::settings_app::SettingsApp;
 
 /// The Settings resource: the door its effects and live rows are published
-/// on.
-pub struct Settings;
+/// on. It holds nothing (see the module docs).
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Settings {}
 
-impl Resource for Settings {
-    const KIND: &'static str = "settings.root";
-    const LABEL: &'static str = "Settings";
-    const ACTION_TYPE: &'static str = "settings.action";
+#[resource(kind = "settings.root", label = "Settings", search = Settings::panes)]
+impl Settings {}
 
-    type State = ();
-    type Action = NoAction;
-
-    fn read(_doc: &Doc) -> Result<(), ModelError> {
-        Ok(())
-    }
-
+impl Settings {
     /// Every pane, found by its name, summary and the words people use for
     /// it.
-    fn search(_state: &()) -> Vec<ui::tilo_resource::SearchEntry> {
+    fn panes(_: &Self) -> Vec<ui::tilo_resource::SearchEntry> {
         crate::search::pane_entries()
     }
 }
@@ -119,6 +112,8 @@ impl ResourceApp for SettingsShell {
                 SettingsApp::with_config_root(path.parent().unwrap_or(path.as_path()))
             }
         };
+        // A pane search hit, or an agent's `open`, shows the pane it names.
+        cx.on_open(app.opener());
         cx.surface(app)
     }
 
@@ -145,13 +140,37 @@ impl ResourceApp for SettingsShell {
         crate::scenarios::viewport(scenario)
     }
 
+    /// Every section of the person's settings Settings edits: each is a
+    /// record of the person's own, published with its field edits, so the
+    /// palette, agents and assistive technology change it by path.
+    fn records(records: &mut ui::framework::Records<'_>) {
+        records
+            .settings::<crate::prefs::AppearancePrefs>()
+            .settings::<crate::prefs::AccessibilityPrefs>()
+            .settings::<crate::prefs::InputPrefs>()
+            .settings::<ui::text_assistance::TextAssistancePrefs>()
+            .settings::<crate::prefs::PowerPrefs>()
+            .settings::<crate::prefs::UpdatePrefs>()
+            .settings::<crate::prefs::NotificationPrefs>()
+            .settings::<crate::prefs::AudioPrefs>()
+            .settings::<crate::prefs::DisplayPrefs>()
+            .settings::<tilo_locale::Locale>()
+            .settings::<crate::continuity::ContinuityPrivacy>()
+            .settings::<crate::panes::keyboard_shortcuts::DesktopControls>()
+            .settings::<crate::panes::agent_models::AgentProviders>()
+            .settings::<crate::panes::personal_apps::DefaultApps>()
+            .settings::<crate::panes::display::shared_displays::SharedDisplayPrefs>()
+            .settings::<crate::panes::display::shared_displays::AutomaticDisplayPrefs>()
+            .settings::<crate::panes::mouse_keyboard::keyboard_editor::OskSourceSettings>();
+    }
+
     fn fixture(fixture: &mut Fixture<Settings>) {
         crate::scenarios::prepare(fixture);
     }
 }
 
 impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
-    fn present(&mut self, _state: &Rc<()>) {}
+    fn present(&mut self, _state: &Rc<Settings>) {}
 
     fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
         self.displays().take_host_intent()

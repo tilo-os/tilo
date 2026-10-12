@@ -78,7 +78,7 @@ fn short_scaled_windows_keep_project_choices_and_brush_controls_reachable() {
         app.harness().click_named("nav-shell-inspector").unwrap();
         assert!(
             app.harness()
-                .settle_for_capture(std::time::Duration::from_secs(2))
+                .settle_for_capture(tilo_test_env::hang_bound())
         );
         let canvas = app.harness().targets()["canvas"];
         assert!(
@@ -156,7 +156,7 @@ fn the_layer_footer_can_be_scrolled_into_a_short_window_and_edited() {
 fn open_inspector(app: &mut TestApp<App>) {
     let settled = app
         .harness()
-        .settle_for_capture(std::time::Duration::from_secs(2));
+        .settle_for_capture(tilo_test_env::hang_bound());
     assert!(
         settled,
         "unsettled frame requests: {:?}",
@@ -167,7 +167,7 @@ fn open_inspector(app: &mut TestApp<App>) {
     }
     let settled = app
         .harness()
-        .settle_for_capture(std::time::Duration::from_secs(2));
+        .settle_for_capture(tilo_test_env::hang_bound());
     assert!(
         settled,
         "unsettled frame requests: {:?}",

@@ -382,7 +382,7 @@ impl ScreenReader {
     }
 
     /// Speak at the rate and in the voice the person chose in Settings.
-    pub fn configure(&mut self, settings: &settings_store::accessibility::ScreenReaderSettings) {
+    pub fn configure(&mut self, settings: &settings_store::screen_reader::ScreenReaderSettings) {
         self.set_rate(settings.rate);
         if let Some(voice) = settings.voice.engine_voice() {
             self.set_voice(voice);
@@ -1155,25 +1155,11 @@ mod tests {
                 .collect();
             taffy.widget_node(taffy::Style::default(), &kids, node_map, self)
         }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: taffy::NodeId, _o: vello::kurbo::Point) {
-        }
-        fn draw(
-            &mut self,
-            _s: &mut vello::Scene,
-            _t: vello::kurbo::Affine,
-            _tr: &mut crate::text_render::TextRenderer,
-            _th: &Theme,
-            _p: &crate::presence::PresenceCtx,
-        ) {
-        }
         fn children(&self) -> Vec<&dyn Widget> {
             self.kids.iter().map(Box::as_ref).collect()
         }
         fn name(&self) -> &'static str {
             "tw"
-        }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
         }
         fn accessibility(&self) -> Option<AccessNode> {
             self.access.clone()

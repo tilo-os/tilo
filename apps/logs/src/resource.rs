@@ -14,15 +14,17 @@ use crate::app::LogsApp;
 use crate::journal::{JournalLoadError, sample_entries};
 use crate::model::{Filter, LogEntry, Priority};
 
-/// The shared journal filter.
+/// The shared journal filter. Each part is edited at its path
+/// (`Logs::paths().severity.set(Priority::Err)`); a unit and a boot are
+/// picked whole, so they are written whole, while the search merges as text.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Logs {
     /// The least severe priority shown.
     pub severity: Priority,
     /// Exact unit, or empty for every unit.
-    pub unit: String,
+    pub unit: Atom,
     /// Exact boot id, or empty for every boot.
-    pub boot: String,
+    pub boot: Atom,
     /// Text to find in messages, units or identifiers.
     pub search: String,
 }
@@ -32,8 +34,8 @@ impl Logs {
     pub fn filter(&self) -> Filter {
         Filter {
             min_priority: self.severity.level(),
-            unit: self.unit.clone(),
-            boot: self.boot.clone(),
+            unit: self.unit.0.clone(),
+            boot: self.boot.0.clone(),
             search: self.search.clone(),
         }
     }
@@ -41,36 +43,6 @@ impl Logs {
 
 #[resource(kind = "logs.journal", label = "System journal")]
 impl Logs {
-    /// Set the severity threshold (0 emergencies only; 7 everything).
-    #[action(label = "Set severity threshold")]
-    pub fn set_severity(&mut self, #[param("Severity threshold from 0 to 7")] priority: i64) {
-        self.severity = Priority::from_level(priority.clamp(0, 7));
-    }
-
-    /// Show only the entries of one unit.
-    #[action(label = "Filter by unit")]
-    pub fn set_unit(&mut self, #[param("Exact unit, or omit to show all")] unit: Option<String>) {
-        self.unit = unit.unwrap_or_default();
-    }
-
-    /// Show only the entries of one boot.
-    #[action(label = "Filter by boot")]
-    pub fn set_boot(
-        &mut self,
-        #[param("Exact boot id, or omit to show all")] boot: Option<String>,
-    ) {
-        self.boot = boot.unwrap_or_default();
-    }
-
-    /// Show only the entries containing some text.
-    #[action(label = "Search journal")]
-    pub fn set_search(
-        &mut self,
-        #[param("Text to find in messages, units, or identifiers")] query: Option<String>,
-    ) {
-        self.search = query.unwrap_or_default();
-    }
-
     /// Clear every journal filter.
     #[action]
     pub fn clear_filters(&mut self) {
@@ -98,6 +70,7 @@ impl ResourceApp for LogsShell {
     const ICON: Option<&'static str> = Some("logs");
 
     fn view(cx: &mut ViewCx<Logs>) -> Element {
+        crate::locales::install();
         cx.surface(LogsApp::new())
     }
 
@@ -130,7 +103,9 @@ impl ResourceApp for LogsShell {
 
     fn scenario(name: Option<&str>) -> Vec<Invoke<Logs>> {
         match name {
-            Some("filter-errors") => vec![Logs::SET_SEVERITY.with(Priority::Err.level())],
+            Some("filter-errors") => Invoke::edit(&Logs::paths().severity.set(Priority::Err))
+                .into_iter()
+                .collect(),
             _ => Vec::new(),
         }
     }

@@ -158,8 +158,9 @@ to the channels of the records it opens. The
 roster row carries the delegation (`tilo-peer-state`, `state/agent_members.rs`),
 and every member applies one rule to it: the agent acts only while the
 delegation verifies against the certificate's root, names the device and
-the room, is unexpired and has not been withdrawn, at its person's role but
-never above Editor. Its changes are signed by its own key, so history
+the room, is unexpired and has not been withdrawn, with its person's grants
+bounded by its delegation, the Editor preset ([permissions.md](permissions.md)
+§4): never above an Editor, and never on the room's governance. Its changes are signed by its own key, so history
 attributes them to the agent, not to the host. A grant that is withdrawn,
 narrowed or ends is withdrawn on every room's roster
 (`rooms/agent_members.rs`), which takes the agent off every channel of the

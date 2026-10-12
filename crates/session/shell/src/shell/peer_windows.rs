@@ -5,16 +5,14 @@
 //! [`TileContent::PeerWindow`] tab arriving in the room document is news
 //! that the room has one open, and the honest local answer is to open
 //! one too — with the app id and peer name it carries, checked against
-//! the room owner's `Write` grant on `ResourceRef::App(id)` via
+//! whether the room's policy lets its owner change the app,
 //! `admits`, and launched through [`crate::shell::launcher`], binding
 //! into the existing tab. `PeerWindow::note` labels the card and marks
 //! the decision made, so a refusal or launch is not re-run on every sync.
 
 use crate::shell::launcher;
 use crate::shell::state::WorkspaceAuthority as _;
-use crate::shell::state::{
-    GroupId, ResourceRef, RoomId, StripId, TabId, TileContent, Verb, Workspace, WorkspaceTree,
-};
+use crate::shell::state::{GroupId, RoomId, StripId, TabId, TileContent, Workspace, WorkspaceTree};
 use crate::shell::tab_binding::Placement;
 use tilo_desktop_model::MissingApp;
 
@@ -266,7 +264,7 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
         // A same-identity continuation can discover the room before its
         // signed membership document arrives. Keep it pending so the next
         // reconciliation pass opens it as soon as authority is available.
-        if !item.local && workspace.owner.is_none() {
+        if !item.local && workspace.owner().is_none() {
             continue;
         }
         // A governed room's window opens the record its owner created for
@@ -394,7 +392,7 @@ fn install_for(tree: &mut WorkspaceTree, tab: TabId) -> bool {
     if let Err(refusal) = admits(ws, &item.app_id) {
         return set_state(tree, tab, refusal, None);
     }
-    let (room, capabilities) = (ws.room, ws.capabilities.clone());
+    let (room, capabilities) = (ws.room, ws.launch_grants(tilo_clock::unix_now()));
     // Placement and any continued record are staged before the install
     // starts, so the window that finally maps lands in this tab.
     stage_continuation_for_tab(tree, &item);
@@ -865,11 +863,14 @@ fn release_brought_over(tree: &mut WorkspaceTree) -> bool {
 /// Whether `ws`'s room authorises starting `app_id` here. See the module
 /// docs for why this is asked of the room's owner and with this verb.
 fn admits(ws: &Workspace, app_id: &str) -> Result<(), String> {
-    let Some(owner) = ws.owner.clone() else {
+    let Some(owner) = ws.owner().cloned() else {
         return Err("This workspace has no owner yet".to_string());
     };
-    let actor = ws.actor_for_person(&owner);
-    if ws.allows(&actor, &ResourceRef::App(app_id.to_string()), Verb::Write) {
+    if ws.person_allowed(
+        &owner,
+        &tilo_action_policy::TreePath::root().app(app_id),
+        tilo_action_policy::ActionKind::Undoable,
+    ) {
         return Ok(());
     }
     Err("This workspace does not permit opening it here".to_string())
@@ -1004,15 +1005,15 @@ pub(crate) fn opened_locally_in_workspace(
 mod tests {
     use super::*;
     use crate::shell::state::{
-        CapOverride, Effect, Principal, Scope, Strip, StripId, Tab, TileContent, WindowGroup,
-        WindowWidth, Workspace, WorkspaceId, WorkspaceTree, next_id,
+        Access, ResourceRef, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+        WorkspaceId, WorkspaceTree, next_id,
     };
 
     const APP: &str = "so.tilo.word-processor";
 
     fn room_owned_by(owner: &str) -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::from(next_id()), "shared");
-        ws.owner = Some(owner.to_string());
+        ws.set_owner(owner.to_string());
         ws
     }
 
@@ -1468,7 +1469,7 @@ mod tests {
         ws.allows(
             &ws.actor_for_app(app),
             &ResourceRef::FsPath(path.to_string_lossy().into_owned()),
-            Verb::Read,
+            Access::Read,
         )
     }
 
@@ -1580,7 +1581,7 @@ mod tests {
         fn a_refused_file_manager_is_granted_nothing() {
             let home = tilo_paths::home().expect("the test machine has a home directory");
             let mut ws = room_owned_by("ada");
-            ws.owner = None;
+            ws.policy.owner = None;
             let (mut tree, _tab) = tree_with_peer_window_for(ws, FILES);
 
             let _ = examine(&mut tree);
@@ -1703,37 +1704,14 @@ mod tests {
         /// on a peer's say-so.
         fn a_room_with_no_owner_admits_nothing() {
             let mut ws = room_owned_by("ada");
-            ws.owner = None;
+            ws.policy.owner = None;
             let refusal = admits(&ws, APP).expect_err("an ownerless room must authorise nothing");
             assert_eq!(refusal, "This workspace has no owner yet");
         }
 
-        /// Goes *through* the capability model rather than around it —
-        /// asserted against `Workspace::decide`, the same call every other
-        /// enforcement point bottoms out in.
-        fn a_restriction_on_the_app_stops_it_opening_here() {
-            let mut ws = room_owned_by("ada");
-            let _ = ws.grant_capability(CapOverride {
-                effect: Effect::Restrict,
-                ..CapOverride::grant(
-                    crate::shell::state::Subject::Principal(Principal::Person("ada".into())),
-                    Scope::App(APP.to_string()),
-                    Verb::Read,
-                )
-            });
-            let refusal = admits(&ws, APP).expect_err("a restricted app must not be opened here");
-            assert!(
-                refusal.contains("does not permit"),
-                "the card has to say why; got {refusal:?}"
-            );
-            // The restriction is about this app, not about the room: another
-            // app in the same room is still admitted.
-            assert_eq!(admits(&ws, "so.tilo.terminal"), Ok(()));
-        }
-
         fn an_ownerless_window_stays_pending_until_room_authority_arrives() {
             let mut ws = room_owned_by("ada");
-            ws.owner = None;
+            ws.policy.owner = None;
             let (mut tree, tab) = tree_with_peer_window(ws);
             assert!(
                 !examine(&mut tree),
@@ -1757,7 +1735,6 @@ mod tests {
 
         a_room_with_an_owner_admits_its_apps();
         a_room_with_no_owner_admits_nothing();
-        a_restriction_on_the_app_stops_it_opening_here();
         an_ownerless_window_stays_pending_until_room_authority_arrives();
     }
 

@@ -90,6 +90,34 @@ impl ParamType {
 /// not an assertion: binding does not check it.
 pub const RESOURCE_KIND_ANNOTATION: &str = "resource_kind";
 
+/// Schema annotation marking a parameter as a place inside the resource the
+/// action is on (an item, a caret in it, a range of it); see
+/// [`ActionParam::as_place`].
+pub const PLACE_ANNOTATION: &str = "place";
+
+/// Schema annotation marking a text parameter as the address of content
+/// another action produced (a content hash), not words a caller can say;
+/// see [`ActionParam::as_content`].
+pub const CONTENT_ANNOTATION: &str = "content";
+
+/// The schema of a place inside a resource ([`ActionParam::as_place`]).
+#[must_use]
+pub fn place_schema() -> serde_json::Value {
+    let offset = || serde_json::json!({ "type": "integer", "minimum": 0 });
+    serde_json::json!({
+        "type": "object",
+        PLACE_ANNOTATION: true,
+        "properties": {
+            "item": { "type": "string", "minLength": 1 },
+            "at": offset(),
+            "start": offset(),
+            "end": offset(),
+        },
+        "required": ["item"],
+        "additionalProperties": false,
+    })
+}
+
 /// One typed parameter an action declares.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionParam {
@@ -98,6 +126,7 @@ pub struct ActionParam {
     /// Whether an invocation must supply it. An optional parameter's default
     /// belongs to the action and is stated in `description` — the surface does
     /// not invent one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub required: bool,
     pub description: Str,
     /// When non-empty, the only values this parameter accepts.
@@ -115,7 +144,7 @@ pub struct ActionParam {
     pub schema: Option<std::sync::Arc<serde_json::Value>>,
     /// Explicitly permits JSON null. Optional means omitted; nullable means
     /// present with no value, and callers need to distinguish the two.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub nullable: bool,
 }
 
@@ -235,6 +264,86 @@ impl ActionParam {
             .get(RESOURCE_KIND_ANNOTATION)?
             .as_str()
             .filter(|kind| !kind.is_empty())
+    }
+
+    /// Make this a place inside the resource the action is on: an object
+    /// naming one of its items (`{"item": id}`), a caret in it
+    /// (`{"item": id, "at": n}`) or a range of it
+    /// (`{"item": id, "start": n, "end": n}`). Marked with the
+    /// [`PLACE_ANNOTATION`], so a palette or an agent offers the resource's
+    /// items rather than free text. An action given one acts there instead
+    /// of at the invoker's caret.
+    #[must_use]
+    pub fn as_place(mut self) -> Self {
+        self.ty = ParamType::Object;
+        self.schema = Some(std::sync::Arc::new(place_schema()));
+        self
+    }
+
+    /// [`Self::as_place`], its items being those of the collection `field`
+    /// (a document's paragraphs, `blocks`): the item resources published as
+    /// `<resource>/<field>/<item>`.
+    #[must_use]
+    pub fn as_place_in(mut self, field: &str) -> Self {
+        let mut schema = place_schema();
+        if let Some(object) = schema.as_object_mut() {
+            object.insert(
+                PLACE_ANNOTATION.into(),
+                serde_json::Value::String(field.into()),
+            );
+        }
+        self.ty = ParamType::Object;
+        self.schema = Some(std::sync::Arc::new(schema));
+        self
+    }
+
+    /// Make this text parameter the address of content another action
+    /// produced: a caller chains it from that action's result, never from
+    /// words (marked with the [`CONTENT_ANNOTATION`]).
+    #[must_use]
+    pub fn as_content(mut self) -> Self {
+        self.ty = ParamType::Text;
+        self.schema = Some(std::sync::Arc::new(serde_json::json!({
+            "type": "string",
+            CONTENT_ANNOTATION: true,
+        })));
+        self
+    }
+
+    /// Whether this parameter takes content another action produced
+    /// ([`Self::as_content`]).
+    #[must_use]
+    pub fn is_content(&self) -> bool {
+        self.ty == ParamType::Text
+            && self
+                .schema
+                .as_ref()
+                .and_then(|schema| schema.get(CONTENT_ANNOTATION))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+    }
+
+    /// Whether this parameter is a place inside the resource
+    /// ([`Self::as_place`]).
+    #[must_use]
+    pub fn is_place(&self) -> bool {
+        self.ty == ParamType::Object
+            && self
+                .schema
+                .as_ref()
+                .and_then(|schema| schema.get(PLACE_ANNOTATION))
+                .is_some_and(|place| place.as_bool() == Some(true) || place.is_string())
+    }
+
+    /// The collection whose items this place parameter names, when it says
+    /// ([`Self::as_place_in`]).
+    #[must_use]
+    pub fn place_field(&self) -> Option<&str> {
+        self.schema
+            .as_ref()?
+            .get(PLACE_ANNOTATION)?
+            .as_str()
+            .filter(|field| !field.is_empty())
     }
 
     #[must_use]
@@ -1071,8 +1180,18 @@ fn validate_schema_array(
         {
             return Err("must contain unique items".into());
         }
+        // `prefixItems` checks the leading items one schema each; `items`
+        // the ones after them (JSON Schema 2020-12).
+        let prefix = schema
+            .get("prefixItems")
+            .and_then(serde_json::Value::as_array)
+            .map_or(&[][..], Vec::as_slice);
+        for (index, (item, item_schema)) in items.iter().zip(prefix).enumerate() {
+            validate_schema(item, item_schema)
+                .map_err(|reason| format!("item {index} {reason}"))?;
+        }
         if let Some(item_schema) = schema.get("items") {
-            for (index, item) in items.iter().enumerate() {
+            for (index, item) in items.iter().enumerate().skip(prefix.len()) {
                 validate_schema(item, item_schema)
                     .map_err(|reason| format!("item {index} {reason}"))?;
             }
@@ -1119,6 +1238,7 @@ const SCHEMA_ASSERTIONS: &[&str] = &[
     "maxItems",
     "uniqueItems",
     "items",
+    "prefixItems",
     "required",
     "properties",
     "additionalProperties",
@@ -1135,6 +1255,9 @@ const SCHEMA_ANNOTATIONS: &[&str] = &[
     "deprecated",
     "readOnly",
     "writeOnly",
+    RESOURCE_KIND_ANNOTATION,
+    PLACE_ANNOTATION,
+    CONTENT_ANNOTATION,
 ];
 
 /// Validate the assertion vocabulary itself before a surface is published.
@@ -1241,6 +1364,15 @@ fn validate_schema_definition_collections(
     }
     if let Some(items) = object.get("items") {
         validate_schema_definition(items).map_err(|reason| format!("items {reason}"))?;
+    }
+    if let Some(prefix) = object.get("prefixItems") {
+        let prefix = prefix
+            .as_array()
+            .ok_or_else(|| "schema `prefixItems` must be an array".to_string())?;
+        for (index, item) in prefix.iter().enumerate() {
+            validate_schema_definition(item)
+                .map_err(|reason| format!("prefixItems {index} {reason}"))?;
+        }
     }
     if let Some(alternatives) = object.get("oneOf") {
         let alternatives = alternatives
@@ -1406,7 +1538,7 @@ mod rich_schema_tests {
         ));
         let expected = serde_json::json!({
             "name":"count", "ty":"integer", "required":true,
-            "description":"Count", "schema":schema, "nullable":false
+            "description":"Count", "schema":schema
         });
         assert_eq!(serde_json::to_value(&clone).unwrap(), expected);
         let decoded: ActionParam = serde_json::from_value(expected).unwrap();
@@ -1456,6 +1588,21 @@ mod rich_schema_tests {
                 .get(RESOURCE_KIND_ANNOTATION),
             None
         );
+    }
+
+    #[test]
+    fn prefix_items_check_the_leading_items_and_items_the_rest() {
+        let schema = json!({
+            "type": "array",
+            "prefixItems": [{"const": "a"}, {"type": "string"}],
+            "items": {"type": "integer"},
+        });
+        assert!(validate_schema_definition(&schema).is_ok());
+        assert!(validate_schema(&json!(["a", "x", 1, 2]), &schema).is_ok());
+        assert!(validate_schema(&json!(["b", "x"]), &schema).is_err());
+        assert!(validate_schema(&json!(["a", 1]), &schema).is_err());
+        assert!(validate_schema(&json!(["a", "x", "y"]), &schema).is_err());
+        assert!(validate_schema_definition(&json!({"prefixItems": {}})).is_err());
     }
 
     #[test]

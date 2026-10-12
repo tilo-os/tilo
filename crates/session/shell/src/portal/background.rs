@@ -73,13 +73,6 @@ pub trait BackgroundService: Send + Sync {
 }
 
 #[derive(Clone)]
-#[cfg_attr(
-    not(target_os = "linux"),
-    expect(
-        dead_code,
-        reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-    )
-)]
 pub struct BackgroundServiceHandle(Arc<dyn BackgroundService>);
 impl BackgroundServiceHandle {
     pub fn new(service: Arc<dyn BackgroundService>) -> Self {
@@ -282,21 +275,7 @@ pub struct BackgroundBackend {
     #[cfg(target_os = "linux")]
     ctx: PortalContext,
     apps: Arc<Mutex<HashMap<String, AppState>>>,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     service: BackgroundServiceHandle,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     lifecycle: PortalLifecycle,
 }
 

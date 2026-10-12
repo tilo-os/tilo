@@ -1,6 +1,7 @@
 //! A keyed list of rows that follows a collection in the resource, with each
 //! row's item actions in its context menu.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
@@ -19,11 +20,9 @@ use ui_core::winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use ui_core::winit::keyboard::{Key, NamedKey};
 use ui_core::{Theme, taffy};
 
-use tilo_resource::Membership;
-
 use super::dispatch::Dispatcher;
 use super::live::Live;
-use super::view::Updaters;
+use super::reactive::{Gate, Updaters};
 
 /// One entry of a row's context menu: an action published on the row's item.
 struct MenuEntry {
@@ -45,41 +44,28 @@ struct RowMenu {
 
 /// One item of the list: its id and where it sits, and its row once built.
 /// Most items of a long list are never shown, and never build a row.
-struct Row<R: Resource> {
+struct Row {
     id: Id,
     /// Height measured the last time the row was laid out at the list's
     /// current width. Rows not measured yet take the measured average.
     height: Option<f64>,
     /// The row's view, from the first time it was mounted for as long as
     /// its item exists.
-    view: Option<Box<RowView<R>>>,
+    view: Option<Box<RowView>>,
 }
 
-/// A built row: its widgets and what keeps them in step with its item.
-struct RowView<R: Resource> {
+/// A built row: its widgets and the gate its readers run behind.
+struct RowView {
     /// Dropping it retires every binding the row registered.
     _alive: Rc<()>,
-    /// What keeps the row's bound controls in step with its item. They run
-    /// while the row is mounted, and catch up when it mounts again.
-    followers: Updaters<R>,
-    /// The live revision the followers last ran at.
-    followed: u64,
+    /// Whether the row's readers run: while it is mounted.
+    gate: Gate,
     widget: Element,
     /// Layout node while the row is mounted.
     node: Option<NodeId>,
 }
 
-/// Shows `visit` the ids of the items, in order, without copying them, and
-/// the collection's [`Membership`]: the same one means the same ids.
-pub(crate) type Ids<R> = Box<
-    dyn Fn(
-        &<R as Resource>::State,
-        &mut dyn FnMut(Option<Membership>, &mut dyn ExactSizeIterator<Item = &Id>),
-    ),
->;
-type BuildRow<R> = Box<dyn Fn(&Id, &Rc<()>, &Updaters<R>) -> Element>;
-
-impl<R: Resource> Row<R> {
+impl Row {
     fn node(&self) -> Option<NodeId> {
         self.view.as_ref().and_then(|view| view.node)
     }
@@ -89,27 +75,16 @@ impl<R: Resource> Row<R> {
     }
 }
 
-impl<R: Resource> RowView<R> {
-    /// Bring the row's bound controls up to `state` at `revision`, when
-    /// they are behind it.
-    fn follow(&mut self, state: &R::State, revision: u64) {
-        if self.followed != revision {
-            self.followed = revision;
-            self.followers.run(state);
-        }
-    }
-}
-
 /// Which rows a list builds.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Builds {
-    /// No row was built yet, so it is not known whether rows read their
-    /// local state from outside.
+    /// No row was built yet, so it is not known whether rows are read from
+    /// outside.
     Unknown,
     /// The rows it mounts, each the first time.
     OnMount,
-    /// Every row: one reads its local state from outside the row, so all
-    /// of them may.
+    /// Every row: one is read from outside the row (an edit bound into the
+    /// published tree, an effect it answers), so all of them may be.
     Every,
 }
 
@@ -135,6 +110,9 @@ impl Pushed {
     }
 }
 
+type Ids<R> = Box<dyn Fn(&<R as Resource>::State) -> Vec<Id>>;
+type BuildRow = Box<dyn Fn(&Id, &Rc<()>, &Gate) -> Element>;
+
 /// Height assumed for a row before any row was measured.
 const ESTIMATED_ROW_HEIGHT: f64 = 32.0;
 /// Rows mounted before the first layout says what the list shows.
@@ -150,26 +128,21 @@ const MAX_REMOUNTS_PER_FRAME: u8 = 3;
 /// [`ViewCx::each`](super::ViewCx::each).
 ///
 /// A row is built the first time it is mounted, and then stays built — its
-/// bindings, followers and local state live as long as its item — so
-/// opening a list of any length builds the rows it shows, and only removed
-/// items drop rows. Inside a scroll view only the rows near what the view
-/// shows are *mounted*: laid out, synced, drawn and given events. The list
-/// places its rows at measured offsets (estimated for rows never
+/// bindings, readers and local state live as long as its item — so opening
+/// a list of any length builds the rows it shows, and only removed items
+/// drop rows. Inside a scroll view only the rows near what the view shows
+/// are *mounted*: laid out, synced, drawn and given events. The
+/// list places its rows at measured offsets (estimated for rows never
 /// mounted), so it keeps its whole height and a scroll position keeps its
 /// meaning. Adding or removing an item away from the shown rows changes the
 /// list's geometry, not the window's widget tree. The row holding focus
 /// stays mounted with its neighbours wherever the view is scrolled, so Tab
 /// and the arrow keys always find the next row, as does a row holding the
-/// pointer.
-///
-/// A change to the resource brings the bound controls of the mounted rows
-/// up to date; a row out of view catches up as it mounts, so it shows its
-/// item as it is then. A change costs the rows shown, not the rows held.
-/// A row whose local state something else reads — an edit it binds into
-/// the published tree, an effect it answers — keeps following while out of
-/// view. Such a row is published whether or not anyone looked at it, so a
-/// list whose rows do that builds every row, as soon as one of them shows
-/// it does (the first row is built with the list to find out).
+/// pointer. A row whose local state something else reads (an edit it binds
+/// into the published tree, an effect it answers) is published whether or
+/// not anyone looked at it, so a list whose rows do that builds every row
+/// as soon as one shows it does (the first row is built with the list to
+/// find out).
 ///
 /// Agents and assistive technology reach every item regardless: the items
 /// are published from the resource, not from the rows, and the list's
@@ -179,13 +152,15 @@ pub struct Each<R: Resource> {
     dispatch: Dispatcher<R>,
     menu: RowMenu,
     ids: Ids<R>,
-    build: BuildRow<R>,
-    rows: Vec<Row<R>>,
-    built: u64,
-    /// The membership of the collection `rows` follows, when it has one.
-    membership: Option<Membership>,
+    build: BuildRow,
+    rows: Vec<Row>,
     builds: Builds,
     pushed: Pushed,
+    /// Set when the collection's membership may have changed since the rows
+    /// were last reconciled with it.
+    stale: Rc<Cell<bool>>,
+    /// The view's readers, which run a row's missed changes as it mounts.
+    updaters: Updaters<R>,
     /// Indices into `rows` of the mounted rows, ascending.
     mounted: Vec<usize>,
     /// Top of each row in list coordinates, and the list's whole height.
@@ -218,17 +193,19 @@ impl<R: Resource> Each<R> {
         live: Live<R>,
         dispatch: Dispatcher<R>,
         ids: Ids<R>,
-        build: BuildRow<R>,
+        stale: Rc<Cell<bool>>,
+        updaters: Updaters<R>,
+        build: BuildRow,
     ) -> Self {
         let mut each = Self {
-            built: live.revision(),
+            stale,
+            updaters,
             live,
             dispatch,
             menu: RowMenu::default(),
             ids,
             build,
             rows: Vec::new(),
-            membership: None,
             builds: Builds::Unknown,
             pushed: Pushed::default(),
             mounted: Vec::new(),
@@ -251,38 +228,19 @@ impl<R: Resource> Each<R> {
     }
 
     fn reconcile(&mut self) {
-        let rows = &self.rows;
-        let known = self.membership;
-        let (membership, ids) = self.live.with(|state| {
-            // Most changes leave the items as they were. The same
-            // membership says so outright; else compare in place, and copy
-            // the ids only when they differ.
-            let mut membership = None;
-            let mut unchanged = false;
-            (self.ids)(state, &mut |current_membership, current| {
-                membership = current_membership;
-                unchanged = (membership.is_some() && membership == known)
-                    || (current.len() == rows.len()
-                        && current.zip(rows).all(|(id, row)| *id == row.id));
-            });
-            if unchanged {
-                return (membership, None);
-            }
-            let mut ids = Vec::new();
-            (self.ids)(state, &mut |_, current| ids = current.cloned().collect());
-            (membership, Some(ids))
-        });
-        self.membership = membership;
-        let Some(ids) = ids else {
+        let ids = self.live.with(|state| (self.ids)(state));
+        let unchanged = ids.len() == self.rows.len()
+            && ids.iter().zip(&self.rows).all(|(id, row)| *id == row.id);
+        if unchanged {
             return;
-        };
+        }
         let was_mounted: Vec<Id> = self
             .mounted
             .iter()
             .filter_map(|&index| self.rows.get(index))
             .map(|row| row.id.clone())
             .collect();
-        let mut old: HashMap<Id, Row<R>> = self
+        let mut old: HashMap<Id, Row> = self
             .rows
             .drain(..)
             .map(|row| (row.id.clone(), row))
@@ -316,8 +274,8 @@ impl<R: Resource> Each<R> {
         if self.builds == Builds::Every {
             self.build_all();
         } else if self.builds == Builds::Unknown && !self.rows.is_empty() {
-            // Whether rows read their local state from outside, which
-            // makes every row's view part of the published tree.
+            // Whether rows are read from outside, which makes every row's
+            // view part of the published tree.
             self.ensure_built(0);
         }
         self.recount();
@@ -326,10 +284,8 @@ impl<R: Resource> Each<R> {
     }
 
     /// Build the row at `index` if it is not built yet, from the state as
-    /// it is now. A row that reads its local state from outside makes the
-    /// list build every row.
+    /// it is now. A row read from outside makes the list build every row.
     fn ensure_built(&mut self, index: usize) {
-        let revision = self.live.revision();
         let Some(row) = self.rows.get_mut(index) else {
             return;
         };
@@ -337,14 +293,13 @@ impl<R: Resource> Each<R> {
             return;
         }
         let alive = Rc::new(());
-        let followers = Updaters::new();
-        let mut widget = (self.build)(&row.id, &alive, &followers);
+        let gate = Gate::mounted();
+        let mut widget = (self.build)(&row.id, &alive, &gate);
         self.pushed.apply(widget.as_mut());
-        let reads_unmounted = followers.read_unmounted();
+        let reads_unmounted = gate.reads_unmounted();
         row.view = Some(Box::new(RowView {
             _alive: alive,
-            followers,
-            followed: revision,
+            gate,
             widget,
             node: None,
         }));
@@ -359,30 +314,6 @@ impl<R: Resource> Each<R> {
     fn build_all(&mut self) {
         for index in 0..self.rows.len() {
             self.ensure_built(index);
-        }
-    }
-
-    /// Bring the bound controls of the mounted rows up to the live state,
-    /// and of every row whose local state something outside it reads. The
-    /// others catch up when they mount ([`Widget::build_layout`]), so a
-    /// change costs the rows shown, not the rows held.
-    fn follow_rows(&mut self) {
-        let revision = self.live.revision();
-        let state = self.live.get();
-        if self.builds == Builds::Every {
-            for view in self.rows.iter_mut().filter_map(|row| row.view.as_mut()) {
-                if view.node.is_some() || view.followers.read_unmounted() {
-                    view.follow(&state, revision);
-                }
-            }
-            return;
-        }
-        // Only a list that builds every row holds rows that follow while
-        // unmounted.
-        for &index in &self.mounted {
-            if let Some(view) = self.rows.get_mut(index).and_then(|row| row.view.as_mut()) {
-                view.follow(&state, revision);
-            }
         }
     }
 
@@ -537,14 +468,14 @@ impl<R: Resource> Each<R> {
     }
 
     /// The mounted rows, each with its item's id. A mounted row is built.
-    fn mounted(&self) -> impl Iterator<Item = (&Id, &RowView<R>)> {
+    fn mounted(&self) -> impl Iterator<Item = (&Id, &RowView)> {
         self.mounted.iter().filter_map(|&index| {
             let row = self.rows.get(index)?;
             Some((&row.id, row.view.as_deref()?))
         })
     }
 
-    fn for_each_mounted(&mut self, mut visit: impl FnMut(&mut RowView<R>)) {
+    fn for_each_mounted(&mut self, mut visit: impl FnMut(&mut RowView)) {
         for &index in &self.mounted {
             if let Some(view) = self.rows.get_mut(index).and_then(|row| row.view.as_mut()) {
                 visit(view);
@@ -709,14 +640,12 @@ fn px(value: f64) -> f32 {
 
 impl<R: Resource> Widget for Each<R> {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        if self.live.revision() != self.built {
-            self.built = self.live.revision();
+        if self.stale.replace(false) {
             self.reconcile();
-            self.follow_rows();
         }
         // A row synced again when it is next mounted: that rebuild syncs
         // the whole tree.
-        self.for_each_mounted(|view| view.widget.sync(state, path));
+        self.for_each_mounted(|row| row.widget.sync(state, path));
     }
 
     // The per-frame update pass drives retained models; every mounted row
@@ -724,7 +653,7 @@ impl<R: Resource> Widget for Each<R> {
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.remounts = 0;
         let mut changed = false;
-        self.for_each_mounted(|view| changed |= view.widget.update(state, path));
+        self.for_each_mounted(|row| changed |= row.widget.update(state, path));
         changed
     }
 
@@ -773,16 +702,25 @@ impl<R: Resource> Widget for Each<R> {
         for &index in &window {
             self.ensure_built(index);
         }
-        let revision = self.live.revision();
-        let state = self.live.get();
+        // Rows leaving the window stop following changes; rows entering it
+        // catch up with the changes they missed before they are laid out.
+        for (index, row) in self.rows.iter().enumerate() {
+            let Some(view) = row.view.as_ref() else {
+                continue;
+            };
+            let shown = window.binary_search(&index).is_ok();
+            view.gate.set_mounted(shown);
+            if shown {
+                self.live
+                    .with(|state| self.updaters.catch_up(&view.gate, state));
+            }
+        }
         let mut nodes = Vec::with_capacity(window.len());
         for &index in &window {
             let top = px(self.tops.get(index).copied().unwrap_or_default());
             let Some(row) = self.rows.get_mut(index).and_then(|row| row.view.as_mut()) else {
                 continue;
             };
-            // A row coming into view shows its item as it is now.
-            row.follow(&state, revision);
             // A row out of the tree kept no structure of its own to report:
             // it is built fresh here.
             let _ = row.widget.take_structure_dirty();
@@ -972,8 +910,8 @@ impl<R: Resource> Widget for Each<R> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.for_each_mounted(|view| {
-            view.widget
+        self.for_each_mounted(|row| {
+            row.widget
                 .draw_overlay(scene, transform, text, theme, presence);
         });
         if self.menu.menu.is_open() {
@@ -988,9 +926,9 @@ impl<R: Resource> Widget for Each<R> {
             return Some(address);
         }
         let mut request = None;
-        self.for_each_mounted(|view| {
+        self.for_each_mounted(|row| {
             if request.is_none() {
-                request = view.widget.take_action_palette_request();
+                request = row.widget.take_action_palette_request();
             }
         });
         request
@@ -998,13 +936,13 @@ impl<R: Resource> Widget for Each<R> {
 
     fn take_search_request(&mut self) -> bool {
         let mut requested = false;
-        self.for_each_mounted(|view| requested |= view.widget.take_search_request());
+        self.for_each_mounted(|row| requested |= row.widget.take_search_request());
         requested
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         let mut dirty = std::mem::take(&mut self.structure).rebuilds();
-        self.for_each_mounted(|view| dirty |= view.widget.take_structure_dirty());
+        self.for_each_mounted(|row| dirty |= row.widget.take_structure_dirty());
         dirty
     }
 
@@ -1059,13 +997,13 @@ impl<R: Resource> Widget for Each<R> {
         let mut children: Vec<&mut (dyn Widget + '_)> =
             Vec::with_capacity(self.mounted.len().saturating_add(1));
         // `mounted` is ascending: split each mounted row off the rest.
-        let mut rest: &mut [Row<R>] = &mut self.rows;
+        let mut rest: &mut [Row] = &mut self.rows;
         let mut start = 0_usize;
         for &index in &self.mounted {
             let Some((row, tail)) = index.checked_sub(start).and_then(|offset| {
                 std::mem::take(&mut rest)
                     .get_mut(offset..)
-                    .and_then(<[Row<R>]>::split_first_mut)
+                    .and_then(<[Row]>::split_first_mut)
             }) else {
                 break;
             };

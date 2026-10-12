@@ -1,124 +1,44 @@
-//! Containers as a [`tilo_resource::Resource`]: the new-container draft is
-//! the document; the podman engine's containers, images, volumes and
-//! distroboxes are live rows the surface publishes; moving around the app is
-//! the surface's own, offered to every caller as effects.
+//! Containers as a resource: the new-container draft is the record
+//! ([`Containers`]), each field edited at its path; the podman engine's
+//! containers, images, volumes and distroboxes are live rows the surface
+//! publishes; moving around the app is the surface's own, offered to every
+//! caller as effects.
 
 use std::rc::Rc;
 
-use serde::{Deserialize, Serialize};
 use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, Fixture, LiveRow, ResourceApp,
-    ResourceSurface, RunMode, SurfaceCx, ViewCx,
+    EffectAnswer, EffectCx, EffectStatus, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface,
+    RunMode, SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::{Action, ActionError, Resource as PublishedResource};
-use ui::tilo_resource::{
-    self, ActionDecl, Doc, Effect, Invoke, ModelError, PlainText, Resource, TextEdit,
-    child_resource_id, publish_child,
-};
+use ui::i18n::EmbeddedCatalog;
+use ui::tilo_resource::{self, Effect, Invoke, Model, resource};
 use ui::widget::Element;
 
 use crate::app::ContainersApp;
-use crate::doc::{CreateDoc, CreateDraft, CreateField};
+use crate::draft::{CreateDraft, CreateField};
 use crate::model::{DetailTab, Engine, Section};
 
-/// An edit of the new-container draft.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ContainersAction {
-    /// Edit one field of the draft.
-    EditCreate { field: CreateField, edit: TextEdit },
-    /// Empty the draft, once a container was created from it.
-    ClearCreate,
-}
+/// Containers' Fluent catalogs, source locale first.
+pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
 
-impl Action for ContainersAction {
-    fn apply(&self, doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
-        match self {
-            Self::EditCreate { field, edit } => {
-                let text = CreateDoc::field_obj_mut(doc, *field)?;
-                edit.apply_under(doc, &text)
-            }
-            Self::ClearCreate => {
-                for field in CreateField::ALL {
-                    if let Some(text) = CreateDoc::field_obj(doc, field) {
-                        TextEdit::ReplaceText {
-                            text: String::new(),
-                        }
-                        .apply_under(doc, &text)?;
-                    }
-                }
-                Ok(())
-            }
-        }
-    }
-}
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
 
-/// What the document holds: the new-container draft.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ContainersState {
+/// What the record holds: the new-container draft.
+#[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Containers {
+    /// New container
     pub draft: CreateDraft,
 }
 
-/// The containers engine resource.
-pub struct Containers;
-
-impl Resource for Containers {
-    const KIND: &'static str = "containers.engine";
-    const LABEL: &'static str = "Containers";
-    const ACTION_TYPE: &'static str = "containers.action";
-
-    type State = ContainersState;
-    type Action = ContainersAction;
-
-    fn read(doc: &Doc) -> Result<ContainersState, ModelError> {
-        Ok(ContainersState {
-            draft: CreateDoc::read(doc),
-        })
+#[resource(kind = "containers.engine", label = "Containers")]
+impl Containers {
+    /// Clear new container
+    ///
+    /// Empty every field of the new-container draft.
+    #[action]
+    pub fn clear_create(&mut self) {
+        self.draft = CreateDraft::default();
     }
-
-    /// Every replica types into the same draft texts.
-    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
-        CreateDoc::initialize(doc).map_err(|error| ModelError::invalid(error.to_string()))
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        vec![
-            ActionDecl::new("clear-create", "Clear new container", vec![], |_, _| {
-                Ok(ContainersAction::ClearCreate)
-            })
-            .describe("Empty every field of the new-container draft."),
-        ]
-    }
-
-    /// Each field of the draft is a plain text of its own, so the palette,
-    /// agents and scripts fill the form in like someone typing.
-    fn children(state: &ContainersState) -> Vec<PublishedResource> {
-        CreateField::ALL
-            .into_iter()
-            .map(|field| {
-                publish_child::<PlainText, Self>(
-                    &create_field_id(field),
-                    &format!("New container {}", field.title()),
-                    Some(&state.draft.get(field).to_owned()),
-                    move |edit| ContainersAction::EditCreate { field, edit },
-                )
-            })
-            .collect()
-    }
-}
-
-/// The id a draft field is published under, as a plain-text child.
-pub(crate) fn create_field_id(field: CreateField) -> String {
-    child_resource_id::<Containers>(&format!("create-{}", field.key()))
-}
-
-/// Edits of one draft field through the resource's dispatcher.
-pub(crate) fn create_field_dispatcher(
-    dispatcher: &Dispatcher<Containers>,
-    field: CreateField,
-) -> Dispatcher<PlainText> {
-    dispatcher.child::<PlainText>(&create_field_id(field), move |edit| {
-        ContainersAction::EditCreate { field, edit }
-    })
 }
 
 /// Moving around the app, for every caller: what the rail, the list and the
@@ -128,25 +48,25 @@ pub(crate) fn create_field_dispatcher(
 #[effect(operation = "containers.view")]
 pub enum ContainersEffect {
     /// Show section.
-    #[effect(view, permission = "read")]
+    #[effect(view, kind = "read")]
     SetSection {
         #[param("containers | images | volumes | distrobox")]
         section: String,
     },
     /// Select container.
-    #[effect(view, permission = "read")]
+    #[effect(view, kind = "read")]
     SelectContainer {
         #[param("Container id, or omit to clear the selection")]
         id: Option<String>,
     },
     /// Set detail tab.
-    #[effect(view, permission = "read")]
+    #[effect(view, kind = "read")]
     SetTab {
         #[param("logs | stats | inspect | terminal")]
         tab: String,
     },
     /// Create container.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Create,
     /// Open logs.
     #[effect(view, row)]
@@ -155,43 +75,43 @@ pub enum ContainersEffect {
         container: String,
     },
     /// Start.
-    #[effect(row, idempotent, privileged, permission = "admin")]
+    #[effect(row, idempotent, privileged)]
     Start {
         #[param("Container id")]
         container: String,
     },
     /// Stop.
-    #[effect(row, idempotent, privileged, permission = "admin")]
+    #[effect(row, idempotent, privileged)]
     Stop {
         #[param("Container id")]
         container: String,
     },
     /// Restart.
-    #[effect(row, privileged, permission = "admin")]
+    #[effect(row, privileged)]
     Restart {
         #[param("Container id")]
         container: String,
     },
     /// Pause.
-    #[effect(row, idempotent, privileged, permission = "admin")]
+    #[effect(row, idempotent, privileged)]
     Pause {
         #[param("Container id")]
         container: String,
     },
     /// Resume.
-    #[effect(row, idempotent, privileged, permission = "admin")]
+    #[effect(row, idempotent, privileged)]
     Unpause {
         #[param("Container id")]
         container: String,
     },
     /// Remove.
-    #[effect(row, destructive, permission = "admin")]
+    #[effect(row, destructive)]
     RemoveContainer {
         #[param("Container id")]
         container: String,
     },
     /// Open shell.
-    #[effect(row, privileged, permission = "admin")]
+    #[effect(row, privileged)]
     Shell {
         #[param("Container id")]
         container: String,
@@ -203,7 +123,7 @@ pub enum ContainersEffect {
         image: String,
     },
     /// Remove image.
-    #[effect(row, destructive, permission = "admin")]
+    #[effect(row, destructive)]
     RemoveImage {
         #[param("Image reference")]
         image: String,
@@ -215,7 +135,7 @@ pub enum ContainersEffect {
         volume: String,
     },
     /// Remove volume.
-    #[effect(row, destructive, permission = "admin")]
+    #[effect(row, destructive)]
     RemoveVolume {
         #[param("Volume name")]
         volume: String,
@@ -227,7 +147,7 @@ pub enum ContainersEffect {
         distrobox: String,
     },
     /// Enter distrobox.
-    #[effect(row, privileged, permission = "admin")]
+    #[effect(row, privileged)]
     EnterDistrobox {
         #[param("Distrobox name")]
         distrobox: String,
@@ -280,8 +200,15 @@ impl ResourceApp for ContainersShell {
     const TITLE: &'static str = "Containers";
     const ICON: Option<&'static str> = Some("containers");
 
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&CATALOG)
+    }
+
     fn view(cx: &mut ViewCx<Containers>) -> Element {
-        cx.surface(ContainersApp::new())
+        let app = ContainersApp::new();
+        // A search hit, or an agent's `open`, shows the row it names.
+        cx.on_open(app.opener());
+        cx.surface(app)
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -315,19 +242,13 @@ impl ResourceApp for ContainersShell {
             (CreateField::Volumes, "site:/usr/share/nginx/html"),
         ]
         .into_iter()
-        .filter_map(|(field, text)| {
-            Invoke::apply(&ContainersAction::EditCreate {
-                field,
-                edit: TextEdit::ReplaceText { text: text.into() },
-            })
-            .ok()
-        })
+        .filter_map(|(field, text)| Invoke::edit(&field.path().replace(text)).ok())
         .collect()
     }
 }
 
 impl ResourceSurface<Containers, ContainersEffect> for ContainersApp {
-    fn present(&mut self, state: &Rc<ContainersState>) {
+    fn present(&mut self, state: &Rc<Containers>) {
         self.present_draft(&state.draft);
     }
 
@@ -431,13 +352,6 @@ impl ContainersApp {
     }
 }
 
-/// The resource as the palette, agents and scripts see it with `state`,
-/// before any surface adds its rows.
-#[cfg(test)]
-fn published(state: &ContainersState) -> PublishedResource {
-    tilo_resource::publish::<Containers>(Containers::KIND, Containers::LABEL, state)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,68 +365,60 @@ mod tests {
     #[test]
     fn the_draft_is_edited_by_splices_and_cleared_whole() {
         let mut replica = Replica::<Containers>::new();
+        let image = CreateField::Image.path();
         replica
-            .apply(
-                Invoke::apply(&ContainersAction::EditCreate {
-                    field: CreateField::Image,
-                    edit: TextEdit::ReplaceText {
-                        text: "nginx".into(),
-                    },
-                })
-                .unwrap(),
-            )
+            .apply(Invoke::edit(&image.replace("nginx")).unwrap())
             .unwrap();
         replica
-            .apply(
-                Invoke::apply(&ContainersAction::EditCreate {
-                    field: CreateField::Image,
-                    edit: TextEdit::Splice {
-                        at: 5,
-                        delete: 0,
-                        insert: ":1".into(),
-                    },
-                })
-                .unwrap(),
-            )
+            .apply(Invoke::edit(&image.splice(5, 0, ":1")).unwrap())
             .unwrap();
         assert_eq!(
             replica.state().unwrap().draft.get(CreateField::Image),
             "nginx:1"
         );
 
-        replica
-            .apply(Invoke::apply(&ContainersAction::ClearCreate).unwrap())
-            .unwrap();
+        replica.apply(Containers::CLEAR_CREATE.with(())).unwrap();
         assert!(replica.state().unwrap().draft.is_empty());
+    }
+
+    /// Two people typing in the form at once converge per character.
+    #[test]
+    fn concurrent_typing_converges() {
+        let mut ours = Replica::<Containers>::new();
+        let image = CreateField::Image.path();
+        ours.apply(Invoke::edit(&image.replace("nginx")).unwrap())
+            .unwrap();
+        let mut theirs = ours.fork();
+        ours.apply(Invoke::edit(&image.splice(5, 0, ":1")).unwrap())
+            .unwrap();
+        theirs
+            .apply(Invoke::edit(&image.splice(0, 0, "docker.io/")).unwrap())
+            .unwrap();
+        theirs
+            .apply(Invoke::edit(&CreateField::Name.path().replace("web")).unwrap())
+            .unwrap();
+        ours.sync_with(&mut theirs).unwrap();
+        assert_eq!(ours.state().unwrap(), theirs.state().unwrap());
+        let merged = ours.state().unwrap().draft;
+        assert_eq!(merged.get(CreateField::Image), "docker.io/nginx:1");
+        assert_eq!(merged.get(CreateField::Name), "web");
     }
 
     #[test]
     fn the_published_resource_offers_the_draft_and_no_view_state() {
-        let state = ContainersState {
-            draft: CreateDraft::with(&[(CreateField::Image, "nginx")]),
-        };
-        let published = published(&state);
-        assert_eq!(published.kind, Containers::KIND);
-        assert!(
-            published
-                .actions
-                .iter()
-                .any(|action| action.id == "clear-create"),
-            "clearing the draft is an action"
+        let mut replica = Replica::<Containers>::new();
+        replica
+            .apply(Invoke::edit(&CreateField::Image.path().replace("nginx")).unwrap())
+            .unwrap();
+        let published = replica.published().unwrap();
+        assert_eq!(
+            published.kind,
+            <Containers as tilo_resource::Resource>::KIND
         );
-        for field in CreateField::ALL {
-            let child = published
-                .children
-                .iter()
-                .find(|child| child.id.as_str() == create_field_id(field))
-                .unwrap_or_else(|| panic!("the {} field is a child", field.key()));
+        for id in ["clear-create", "field-edit"] {
             assert!(
-                child
-                    .actions
-                    .iter()
-                    .any(|action| action.id == "replace-text"),
-                "{} is filled in like a text",
-                field.key()
+                published.actions.iter().any(|action| action.id == id),
+                "{id} is offered"
             );
         }
         for gone in ["set-section", "select-container", "set-tab"] {
@@ -523,25 +429,71 @@ mod tests {
         }
     }
 
-    /// An agent fills the form in through the published draft fields and
-    /// clears it with the declared action; undo takes the clear back.
+    /// An agent fills the form in with field edits and clears it with the
+    /// verb, one call each; undo takes the clear back.
     #[test]
     fn agents_fill_the_draft_and_undo_takes_a_clear_back() {
         let mut app = TestApp::<ContainersShell>::capture(None).unwrap();
-        app.invoke_child::<PlainText>(
-            &create_field_id(CreateField::Image),
-            Invoke::<PlainText>::apply(&TextEdit::ReplaceText {
-                text: "quay.io/example/app:2".into(),
-            })
-            .unwrap(),
-        )
-        .unwrap();
+        let edit = CreateField::Image.path().replace("quay.io/example/app:2");
+        app.call("field-edit", serde_json::json!({ "edit": edit }))
+            .unwrap();
         assert_eq!(draft(&app, CreateField::Image), "quay.io/example/app:2");
 
         app.call("clear-create", serde_json::json!({})).unwrap();
         assert!(app.state().draft.is_empty());
         assert!(app.undo());
         assert_eq!(draft(&app, CreateField::Image), "quay.io/example/app:2");
+    }
+
+    /// What an agent writes into the form is history the person reads as
+    /// the app's own sentences.
+    #[test]
+    fn history_entries_render_as_the_apps_sentences() {
+        use ui::tilo_actions::{ActionInvoker, ActorKind};
+
+        let mut app = TestApp::<ContainersShell>::capture(None).unwrap();
+        let agent = ActionInvoker::actor("agent:claude")
+            .with_kind(ActorKind::Agent)
+            .acting_for("ada");
+        let kind = <Containers as tilo_resource::Resource>::KIND;
+        for edit in [
+            CreateField::Image.path().replace("nginx:alpine"),
+            CreateField::Ports.path().replace("8080:80"),
+        ] {
+            app.call_by(
+                agent.clone(),
+                kind,
+                "field-edit",
+                serde_json::json!({ "edit": edit }),
+            )
+            .unwrap();
+        }
+        app.call_by(agent, kind, "clear-create", serde_json::json!({}))
+            .unwrap();
+        let entries: Vec<_> = app
+            .history()
+            .into_iter()
+            .filter(|entry| {
+                entry
+                    .invoker
+                    .as_ref()
+                    .is_some_and(|invoker| invoker.actor == "agent:claude")
+            })
+            .collect();
+        let sentences = app.sentences(&entries);
+        assert_eq!(
+            sentences,
+            [
+                "Chose the image of the new container",
+                "Changed the ports of the new container",
+                "Cleared the new container",
+            ]
+        );
+        let invoker = entries[0].invoker.as_ref().unwrap();
+        assert_eq!(
+            (invoker.kind, invoker.on_behalf_of.as_deref()),
+            (ActorKind::Agent, Some("ada"))
+        );
     }
 
     /// Every screenshot is the framework's capture of the sample engine,

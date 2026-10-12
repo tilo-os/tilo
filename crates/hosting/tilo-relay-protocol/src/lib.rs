@@ -55,7 +55,6 @@ pub mod process_lease;
 pub mod retention;
 pub mod room_operator;
 pub mod rooms;
-mod sig64;
 pub mod transport;
 pub mod voice;
 pub mod web;

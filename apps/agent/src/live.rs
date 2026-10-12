@@ -498,22 +498,18 @@ impl PlanStream {
     }
 }
 
-/// Contract tag prefix by which an app declares that a Text parameter may be
-/// delivered in parts: `tilo.incremental-text:<param>:<next>` means the first
-/// part goes through the declaring action and each later part through action
-/// `<next>` on the same resource with `<param>` set to that part (Writer's
-/// `INCREMENTAL_TEXT_TAG`). The agent keys chunking on this and nothing else.
-pub const INCREMENTAL_TEXT_TAG: &str = "tilo.incremental-text:";
-
-/// The `(param, next action)` a contract's tags declare, if any.
-pub fn incremental_text(tags: &[String]) -> Option<(&str, &str)> {
-    tags.iter().find_map(|tag| {
-        let (param, next) = tag.strip_prefix(INCREMENTAL_TEXT_TAG)?.split_once(':')?;
-        (!param.is_empty() && !next.is_empty() && !next.contains(':')).then_some((param, next))
-    })
+/// Text the agent may write in parts: the parameter that carries it and the
+/// action each later part goes through, on the same resource.
+///
+/// TODO: not implemented yet: the agent will act through apps' published
+/// surfaces via the broker, where an app declares which of its writing
+/// operations continue by typing at the caret.
+#[must_use]
+pub fn continuation(_descriptor: &tilo_actions::ActionDescriptor) -> Option<(String, String)> {
+    None
 }
 
-/// A declared incremental text longer than this is written with a live
+/// Text in parts ([`continuation`]) longer than this is written with a live
 /// preview of the text still to land.
 pub const CHUNK_MIN_TEXT: usize = 60;
 /// The largest chunk target the adaptive doubling of streamed chunks reaches.
@@ -712,33 +708,6 @@ mod tests {
         assert!(
             chunks.last().unwrap().len() >= CHUNK_TARGET / 3,
             "{chunks:?}"
-        );
-    }
-
-    #[test]
-    fn incremental_text_is_read_only_from_the_declared_tag() {
-        let tags = |list: &[&str]| list.iter().map(|tag| (*tag).to_owned()).collect::<Vec<_>>();
-        assert_eq!(
-            incremental_text(&tags(&[
-                "other",
-                "tilo.incremental-text:text:continue-paragraph"
-            ])),
-            Some(("text", "continue-paragraph"))
-        );
-        for bad in [
-            "tilo.incremental-text:",
-            "tilo.incremental-text:text",
-            "tilo.incremental-text::next",
-            "tilo.incremental-text:text:",
-            "tilo.incremental-text:a:b:c",
-            "incremental-text:text:next",
-        ] {
-            assert_eq!(incremental_text(&tags(&[bad])), None, "{bad}");
-        }
-        assert_eq!(
-            INCREMENTAL_TEXT_TAG,
-            word_processor::actions::INCREMENTAL_TEXT_TAG,
-            "the agent reads the tag Writer declares"
         );
     }
 

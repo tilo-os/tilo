@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
 
-use settings_store::accessibility::AccessibilitySettings;
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd};
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device as InputDevice,
@@ -48,7 +47,9 @@ use super::gestures::GestureAction;
 use super::gestures::{GestureConfig, GestureTracker};
 use super::hotplug::{self, ConnectedOutput, LiveOutput};
 use super::input_config;
-use super::input_config::{DeviceCaps, InputSettings, KeyboardSettings};
+use super::input_config::{
+    AccessibilityInputSettings, DeviceCaps, InputSettings, KeyboardSettings,
+};
 use super::output_signal::{HdrRequest, OutputSignalStatus};
 use super::outputs::{ConnectorInfo, DrmOutputKey, OutputRegistry};
 use super::scale::resolve_scale;
@@ -237,7 +238,7 @@ pub struct DrmDispatchState {
     pub commands: Option<Sender<ScanoutCommand>>,
     /// The persisted pointer/keyboard preferences, applied to every libinput device as it appears.
     pub input: InputSettings,
-    pub accessibility: AccessibilitySettings,
+    pub accessibility: AccessibilityInputSettings,
     /// Slow-keys presses are accepted only after being held for the delay.
     pub slow_pending: HashMap<xkb::Keycode, std::time::Instant>,
     /// Sticky modifiers stay logically down through the next non-modifier.
@@ -1139,7 +1140,7 @@ impl DrmDispatchState {
         cards: BTreeMap<u64, CardHandle>,
         seat: LibSeatSession,
         input: InputSettings,
-        accessibility: AccessibilitySettings,
+        accessibility: AccessibilityInputSettings,
         scale_override: Option<f64>,
         commands_tx: Sender<ScanoutCommand>,
         keyboard: Option<KeyboardXkb>,
@@ -1198,9 +1199,7 @@ impl DrmDispatchState {
             tablets: TabletRuntime::load(),
             keyboard,
             keyboard_device: None,
-            keyboard_config: settings_store::hardware::RichInputConfig::from_section(
-                &settings_store::load_section("input"),
-            ),
+            keyboard_config: settings_store::hardware::RichInputConfig::load(),
             keyboard_cache: BTreeMap::new(),
             keyboard_identities: BTreeMap::new(),
             keyboard_key_owners: BTreeMap::new(),
@@ -4182,8 +4181,8 @@ impl DrmRuntime {
 
         // The persisted preferences, read once here so the same values drive libinput device config, gesture direction and the per-output scale override.
         let input = InputSettings::load();
-        let accessibility = AccessibilitySettings::load();
-        let scale_override = load_display_scale_override();
+        let accessibility = AccessibilityInputSettings::load();
+        let scale_override = settings_store::display_scale::load_user_scale();
         tracing::info!(
             tap_to_click = input.tap_to_click,
             natural_scroll = input.natural_scroll_for(true),
@@ -4309,9 +4308,7 @@ impl DrmRuntime {
 
     /// Switch the physical keyboard to input source `index` at once.
     pub fn set_keyboard_source(&mut self, index: usize) {
-        self.dispatch.keyboard_config = settings_store::hardware::RichInputConfig::from_section(
-            &settings_store::load_section("input"),
-        );
+        self.dispatch.keyboard_config = settings_store::hardware::RichInputConfig::load();
         self.dispatch.keyboard_cache.clear();
         let scope = self
             .dispatch
@@ -4328,9 +4325,7 @@ impl DrmRuntime {
     /// New devices receive these settings when they appear.
     pub fn reload_input_settings(&mut self) {
         let input = InputSettings::load();
-        self.dispatch.keyboard_config = settings_store::hardware::RichInputConfig::from_section(
-            &settings_store::load_section("input"),
-        );
+        self.dispatch.keyboard_config = settings_store::hardware::RichInputConfig::load();
         self.dispatch.keyboard_cache.clear();
         let scope = self
             .dispatch
@@ -4341,7 +4336,7 @@ impl DrmRuntime {
             &settings_store::keyboard_sources::effective(&self.dispatch.keyboard_config, scope),
         );
         let previous_cursor_size = self.dispatch.accessibility.effective_cursor_size();
-        let accessibility = AccessibilitySettings::load();
+        let accessibility = AccessibilityInputSettings::load();
         self.dispatch.input = input;
         self.dispatch.key_repeat.cancel();
         if let Some(keyboard) = self
@@ -4461,7 +4456,7 @@ impl DrmDispatchState {
     /// keyboard dispatch for seconds on a DP-MST dock. What is connected
     /// changes only through a udev edge, which re-probes.
     pub fn reload_display_settings(&mut self) {
-        let scale_override = load_display_scale_override();
+        let scale_override = settings_store::display_scale::load_user_scale();
         if scale_override != self.scale_override {
             self.scale_override = scale_override;
             self.relayout_outputs();
@@ -4903,15 +4898,6 @@ fn device_caps(device: &smithay::reexports::input::Device) -> DeviceCaps {
         is_tablet_pad: device
             .has_capability(smithay::reexports::input::DeviceCapability::TabletPad),
     }
-}
-
-/// The `display.scale` the user has set, or `None`. Distinguishing
-/// "unset" from "set to 1.0" is the point: unset derives the scale from the panel, 1.0 means the user chose 100% on a `HiDPI` panel.
-fn load_display_scale_override() -> Option<f64> {
-    settings_store::load_section("display")
-        .get("scale")
-        .and_then(serde_json::Value::as_f64)
-        .filter(|s| (0.5..=3.0).contains(s))
 }
 
 /// Touch slot as a plain integer for the backend event. libinput reports `-1` for single-touch devices with no slot concept — all one finger, so slot 0 is honest.
@@ -7462,7 +7448,7 @@ mod tests {
 
     #[test]
     fn physical_key_timestamp_survives_translation_but_not_synthetic_repeat() {
-        let mut state = keyboard_dispatch(AccessibilitySettings::default());
+        let mut state = keyboard_dispatch(AccessibilityInputSettings::default());
         let a = xkb::Keycode::new(38);
         let origin = 123_456_789_000;
         state.handle_keyboard_key(a, true, Some(origin));
@@ -7500,7 +7486,7 @@ mod tests {
         );
     }
 
-    fn keyboard_dispatch(accessibility: AccessibilitySettings) -> DrmDispatchState {
+    fn keyboard_dispatch(accessibility: AccessibilityInputSettings) -> DrmDispatchState {
         let (mut state, _rx) = dispatch_with_channel();
         state.keyboard = Some(
             KeyboardXkb::from_settings(&KeyboardSettings::default())
@@ -7513,7 +7499,7 @@ mod tests {
     #[test]
     fn keyboard_assignments_switch_before_first_key_and_retire_old_modifiers() {
         use settings_store::keyboard_sources::KeyboardProfile;
-        let mut state = keyboard_dispatch(AccessibilitySettings::default());
+        let mut state = keyboard_dispatch(AccessibilityInputSettings::default());
         state.keyboard_config.keyboard_assignments.insert(
             "german".into(),
             KeyboardProfile {
@@ -7560,7 +7546,7 @@ mod tests {
 
     #[test]
     fn keyboard_assignments_share_keys_until_both_devices_release() {
-        let mut state = keyboard_dispatch(AccessibilitySettings::default());
+        let mut state = keyboard_dispatch(AccessibilityInputSettings::default());
         let key = xkb::Keycode::new(38);
         state.handle_keyboard_device_key("first", key, true, None);
         state.handle_keyboard_device_key("second", key, true, None);
@@ -7574,7 +7560,7 @@ mod tests {
 
     #[test]
     fn keyboard_assignments_unplug_releases_only_the_vanished_devices_keys() {
-        let mut state = keyboard_dispatch(AccessibilitySettings::default());
+        let mut state = keyboard_dispatch(AccessibilityInputSettings::default());
         let key = xkb::Keycode::new(38);
         let shift = xkb::Keycode::new(50);
         state.handle_keyboard_device_key("first", shift, true, None);
@@ -7604,7 +7590,7 @@ mod tests {
 
     #[test]
     fn bounce_keys_swallow_a_rebound_press_and_flash_when_asked() {
-        let mut state = keyboard_dispatch(AccessibilitySettings {
+        let mut state = keyboard_dispatch(AccessibilityInputSettings {
             bounce_keys: true,
             bounce_keys_alert: true,
             ..Default::default()
@@ -7632,7 +7618,7 @@ mod tests {
 
     #[test]
     fn mouse_keys_turn_the_keypad_into_clicks_instead_of_typing() {
-        let mut state = keyboard_dispatch(AccessibilitySettings {
+        let mut state = keyboard_dispatch(AccessibilityInputSettings {
             mouse_keys: true,
             ..Default::default()
         });
@@ -7671,7 +7657,7 @@ mod tests {
 
     #[test]
     fn switching_mouse_keys_off_mid_drag_releases_the_button() {
-        let mut state = keyboard_dispatch(AccessibilitySettings {
+        let mut state = keyboard_dispatch(AccessibilityInputSettings {
             mouse_keys: true,
             ..Default::default()
         });

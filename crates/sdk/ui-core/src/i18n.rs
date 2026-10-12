@@ -47,6 +47,72 @@ impl From<std::borrow::Cow<'_, str>> for ArgValue {
     }
 }
 
+/// The Fluent message a label, placeholder or button shows: looked up in
+/// the active locale when drawn, shown verbatim when no catalog has it.
+///
+/// `tilo-app` generates one constant per message of an app's
+/// `locales/en-US.ftl` in its locale registry (`locales::keys::NOTES_ADD`),
+/// so a misspelt key in an app that uses them does not compile. A plain
+/// string converts too, for text that is not a catalog message.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LabelKey(std::borrow::Cow<'static, str>);
+
+impl LabelKey {
+    /// The message `key`.
+    #[must_use]
+    pub const fn new(key: &'static str) -> Self {
+        Self(std::borrow::Cow::Borrowed(key))
+    }
+
+    /// The message id.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for LabelKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for LabelKey {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&LabelKey> for LabelKey {
+    fn from(key: &LabelKey) -> Self {
+        key.clone()
+    }
+}
+
+impl From<&str> for LabelKey {
+    fn from(key: &str) -> Self {
+        Self(std::borrow::Cow::Owned(key.to_owned()))
+    }
+}
+
+impl From<String> for LabelKey {
+    fn from(key: String) -> Self {
+        Self(std::borrow::Cow::Owned(key))
+    }
+}
+
+impl From<&String> for LabelKey {
+    fn from(key: &String) -> Self {
+        Self(std::borrow::Cow::Owned(key.clone()))
+    }
+}
+
+impl From<LabelKey> for String {
+    fn from(key: LabelKey) -> Self {
+        key.0.into_owned()
+    }
+}
+
 /// Widening conversions into `f64` — exact for every value of `$t`.
 macro_rules! arg_from_number_lossless {
     ($($t:ty),*) => {$(
@@ -304,7 +370,6 @@ static WIDGET_CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
         ("en-US", include_str!("../locales/en-US.ftl")),
         ("de-DE", include_str!("../locales/de-DE.ftl")),
     ],
-    "close-title",
 )
 .with_system_locale();
 
@@ -700,38 +765,42 @@ enum FreshLocale {
 pub struct EmbeddedCatalog {
     source_locale: &'static str,
     catalogs: &'static [(&'static str, &'static str)],
-    probe_key: &'static str,
     fresh_locale: FreshLocale,
     pinned_locale: Option<&'static str>,
 }
 
 thread_local! {
-    /// The embedded catalogues this thread has loaded, by probe key, with the
-    /// manager they were loaded into. A manager installed since then starts
-    /// without them, so they load again.
-    static EMBEDDED_LOADED: std::cell::RefCell<Vec<(&'static str, u64)>> =
+    /// The embedded catalogues this thread has loaded, by the address of
+    /// their sources, with the manager they were loaded into. A manager
+    /// installed since then starts without them, so they load again.
+    static EMBEDDED_LOADED: std::cell::RefCell<Vec<(usize, u64)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
 impl EmbeddedCatalog {
     /// Catalogues keyed by locale, one of which is `source_locale`.
-    /// `probe_key` is a message the source catalogue always defines; it tells
-    /// a host that already holds these catalogues from one that has none.
     ///
     /// A thread with no manager gets one selecting `source_locale`.
     #[must_use]
     pub const fn new(
         source_locale: &'static str,
         catalogs: &'static [(&'static str, &'static str)],
-        probe_key: &'static str,
     ) -> Self {
         Self {
             source_locale,
             catalogs,
-            probe_key,
             fresh_locale: FreshLocale::Source,
             pinned_locale: None,
         }
+    }
+
+    /// The Fluent source of the source locale's catalogue.
+    #[must_use]
+    pub fn source(&self) -> Option<&'static str> {
+        self.catalogs
+            .iter()
+            .find(|(locale, _)| *locale == self.source_locale)
+            .map(|(_, source)| *source)
     }
 
     /// A thread with no manager gets one selecting the user's locale from the
@@ -758,16 +827,21 @@ impl EmbeddedCatalog {
     /// looks wrong, which is why string sites go through [`Self::t`].
     pub fn ensure(&self) {
         let manager = manager_id();
+        let key = self.catalogs.as_ptr().addr();
         let loaded = EMBEDDED_LOADED.with(|loaded| {
             loaded
                 .borrow()
                 .iter()
-                .any(|&(probe, id)| probe == self.probe_key && Some(id) == manager)
+                .any(|&(loaded, id)| loaded == key && Some(id) == manager)
         });
         if loaded {
             return;
         }
-        if !self.add_to_live_manager() {
+        if manager.is_some() {
+            for (locale, source) in self.catalogs {
+                I18nManager::add_resource(locale, (*source).to_owned());
+            }
+        } else {
             self.install_fresh();
         }
         if let Some(locale) = self.pinned_locale {
@@ -776,24 +850,10 @@ impl EmbeddedCatalog {
         if let Some(id) = manager_id() {
             EMBEDDED_LOADED.with(|loaded| {
                 let mut loaded = loaded.borrow_mut();
-                loaded.retain(|&(probe, _)| probe != self.probe_key);
-                loaded.push((self.probe_key, id));
+                loaded.retain(|&(loaded, _)| loaded != key);
+                loaded.push((key, id));
             });
         }
-    }
-
-    /// Add every catalogue to the manager already live on this thread.
-    /// Returns `false` when there is no manager to add to.
-    ///
-    /// Adding a new resource bumps the catalogue revision, which is the cheap
-    /// tell. When it does not move — no manager, or a host that pre-installed
-    /// these very catalogues — the probe key decides: only a manager holds it.
-    fn add_to_live_manager(&self) -> bool {
-        let before = I18nManager::revision();
-        for (locale, source) in self.catalogs {
-            I18nManager::add_resource(locale, (*source).to_owned());
-        }
-        I18nManager::revision() != before || I18nManager::has_message(self.probe_key)
     }
 
     fn install_fresh(&self) {
@@ -851,13 +911,13 @@ impl EmbeddedCatalog {
 /// the crate, `en-US` as the source, the user's locale when no host chose one,
 /// and source copy pinned in the crate's own tests.
 ///
-/// `embedded_catalog!(pub(crate) static STORE_CATALOG, "probe-key", ["en-US", "de-DE"])`
-/// defines just the static; `embedded_catalog!(pub fn, "probe-key", ["en-US"])`
+/// `embedded_catalog!(pub(crate) static STORE_CATALOG, ["en-US", "de-DE"])`
+/// defines just the static; `embedded_catalog!(pub fn, ["en-US"])`
 /// defines `static CATALOG` and the `t` / `t_args` lookups the crate's copy
 /// goes through.
 #[macro_export]
 macro_rules! embedded_catalog {
-    ($vis:vis static $name:ident, $probe:literal, [$($locale:literal),+ $(,)?]) => {
+    ($vis:vis static $name:ident, [$($locale:literal),+ $(,)?]) => {
         $vis static $name: $crate::i18n::EmbeddedCatalog = {
             let catalog = $crate::i18n::EmbeddedCatalog::new(
                 "en-US",
@@ -865,7 +925,6 @@ macro_rules! embedded_catalog {
                     $locale,
                     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/locales/", $locale, ".ftl")),
                 )),+],
-                $probe,
             )
             .with_system_locale();
             #[cfg(test)]
@@ -873,8 +932,8 @@ macro_rules! embedded_catalog {
             catalog
         };
     };
-    ($vis:vis fn, $probe:literal, [$($locale:literal),+ $(,)?]) => {
-        $crate::embedded_catalog!(static CATALOG, $probe, [$($locale),+]);
+    ($vis:vis fn, [$($locale:literal),+ $(,)?]) => {
+        $crate::embedded_catalog!(static CATALOG, [$($locale),+]);
 
         #[allow(dead_code, reason = "a crate may resolve only plain or only interpolated copy")]
         $vis fn t(key: &str) -> String {
@@ -1152,7 +1211,6 @@ mod tests {
             "en-US",
             "embedded-probe = Probe\nembedded-greeting = Hello { $name }",
         )],
-        "embedded-probe",
     );
 
     #[test]
@@ -1163,7 +1221,6 @@ mod tests {
                 ("en-US", "pinned-probe = Pinned"),
                 ("de", "pinned-probe = Festgelegt"),
             ],
-            "pinned-probe",
         )
         .with_pinned_locale("en-US");
 
@@ -1270,10 +1327,14 @@ mod tests {
             "relative-ago-years",
             "participant-agent",
             "participant-unknown-agent",
+            "participant-shortcut",
+            "participant-app",
+            "participant-acting-for",
         ] {
             let mut args = FluentArgs::new();
             args.set("count", FluentValue::from(2));
             args.set("name", FluentValue::from("scribe"));
+            args.set("person", FluentValue::from("Ada"));
             for (locale, bundle) in [("en-US", &en), ("de-DE", &de)] {
                 let (value, clean) = format_from_bundle(bundle, key, Some(&args))
                     .unwrap_or_else(|| panic!("{locale}.ftl lacks {key}"));

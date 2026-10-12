@@ -11,3 +11,23 @@ pub fn install() {
         eprintln!("localization catalog: {error}");
     }
 }
+
+/// One constant per message of locales/en-US.ftl, for labels and placeholders.
+pub mod keys {
+    use ui::i18n::LabelKey;
+    pub const TREE_ACCESSIBLE_NAME: LabelKey = LabelKey::new("tree-accessible-name");
+    pub const TREE_JOURNAL: LabelKey = LabelKey::new("tree-journal");
+    pub const TREE_MEETINGS: LabelKey = LabelKey::new("tree-meetings");
+    pub const TREE_NAVIGATION_HEADING: LabelKey = LabelKey::new("tree-navigation-heading");
+    pub const TREE_NOTEBOOK: LabelKey = LabelKey::new("tree-notebook");
+    pub const TREE_NOTES_LABEL: LabelKey = LabelKey::new("tree-notes-label");
+    pub const TREE_NOTES_PLACEHOLDER: LabelKey = LabelKey::new("tree-notes-placeholder");
+    pub const TREE_PERSONAL: LabelKey = LabelKey::new("tree-personal");
+    pub const TREE_PREVIEW_HEADING: LabelKey = LabelKey::new("tree-preview-heading");
+    pub const TREE_PROJECTS: LabelKey = LabelKey::new("tree-projects");
+    pub const TREE_SHARE: LabelKey = LabelKey::new("tree-share");
+    pub const TREE_TITLE_LABEL: LabelKey = LabelKey::new("tree-title-label");
+    pub const TREE_TITLE_PLACEHOLDER: LabelKey = LabelKey::new("tree-title-placeholder");
+    pub const TREE_UNKNOWN: LabelKey = LabelKey::new("tree-unknown");
+    pub const TREE_WORK: LabelKey = LabelKey::new("tree-work");
+}

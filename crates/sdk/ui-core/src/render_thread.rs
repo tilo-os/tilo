@@ -27,6 +27,8 @@
 )]
 
 mod cpu_raster;
+#[cfg(test)]
+mod deferred_pipelines_tests;
 mod native_gpu_trace;
 
 use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -106,6 +108,13 @@ pub enum RenderRequest {
 static SURFACE_LOSS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// Record why the drawing surface was lost; the first reason is the cause.
+/// Whether a window on this adapter rasterizes its frames on the CPU
+/// (`cpu_raster`) and uploads the pixels, instead of running vello's compute
+/// pipelines on an emulated GPU. Vello then draws only backdrop blurs.
+pub(crate) fn rasterizes_on_cpu(adapter: &vello::wgpu::AdapterInfo) -> bool {
+    adapter.device_type == vello::wgpu::DeviceType::Cpu
+}
+
 fn note_surface_loss(reason: String) {
     let mut slot = SURFACE_LOSS
         .lock()
@@ -386,12 +395,9 @@ pub(crate) fn spawn_render_thread_for_window(
                 geometric_capacity,
                 ..DamageCache::default()
             };
-            let mut cpu_raster = (render_cx.devices[surface.dev_id]
-                .adapter
-                .get_info()
-                .device_type
-                == vello::wgpu::DeviceType::Cpu)
-                .then(cpu_raster::CpuCanvas::new);
+            let mut cpu_raster =
+                rasterizes_on_cpu(&render_cx.devices[surface.dev_id].adapter.get_info())
+                    .then(cpu_raster::CpuCanvas::new);
             if cpu_raster.is_some() {
                 tracing::info!("tilo-ui: CPU fine rasterization selected for software adapter");
             }
@@ -634,6 +640,14 @@ pub(crate) fn spawn_render_thread_for_window(
                 if target_valid && !first_present_recorded {
                     first_present_recorded = true;
                     tilo_startup_metrics::mark("first-frame-presented");
+                    // The pipelines the renderer deferred past this frame;
+                    // then the app's pipeline cache holds all it compiled.
+                    if let Some(device) = render_cx.devices.get(surface.dev_id) {
+                        renderer.start_deferred_pipelines(
+                            &device.device,
+                            crate::pipeline_cache::persist_unsaved,
+                        );
+                    }
                     tilo_startup_metrics::dump();
                     if let Some(line) = tilo_startup_metrics::summary_line(&startup_app_name()) {
                         crate::diag!("{line}");

@@ -1,0 +1,2594 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "canvas.artwork"
+label = "Artwork"
+version = 1
+
+[[resources.fields]]
+label = true
+owner = "artwork"
+path = "title"
+stored = "value"
+title = "Title"
+type = "String"
+
+[[resources.fields]]
+owner = "artwork"
+path = "width"
+stored = "value"
+title = "Width"
+type = "f64"
+
+[[resources.fields]]
+owner = "artwork"
+path = "height"
+stored = "value"
+title = "Height"
+type = "f64"
+
+[[resources.fields]]
+owner = "artwork"
+path = "ground"
+stored = "value"
+title = "Ground"
+type = "Ground"
+
+[[resources.fields]]
+owner = "artwork"
+path = "layers"
+stored = "keyed"
+title = "Bottom to top"
+type = "Keyed<Layer>"
+
+[[resources.fields]]
+owner = "layer"
+path = "layers.*.id"
+readonly = true
+stored = "value"
+title = "Id"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "layer"
+path = "layers.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "layer"
+path = "layers.*.group"
+stored = "value"
+title = "Organisational folder; empty for an ungrouped layer. It does not"
+type = "String"
+
+[[resources.fields]]
+owner = "layer"
+path = "layers.*.order"
+readonly = true
+stored = "value"
+title = "Fractional position among layers; later is on top"
+type = "String"
+
+[[resources.fields]]
+owner = "layer"
+path = "layers.*.medium"
+stored = "value"
+title = "The medium preset that paints this layer's marks, or empty for plain"
+type = "String"
+
+[[resources.fields]]
+owner = "layer"
+path = "layers.*.opacity"
+stored = "value"
+title = "Opacity"
+type = "f64"
+
+[[resources.fields]]
+owner = "layer"
+path = "layers.*.visible"
+stored = "value"
+title = "Visible"
+type = "bool"
+
+[[resources.fields]]
+owner = "layer"
+path = "layers.*.texture"
+stored = "value"
+title = "`0..=1`: how much of the ground's tooth shows through the layer's"
+type = "f64"
+
+[[resources.fields]]
+owner = "layer"
+path = "layers.*.locked"
+stored = "value"
+title = "Held still: the pointer passes through its marks to those beneath"
+type = "bool"
+
+[[resources.fields]]
+owner = "layer"
+path = "layers.*.adjust"
+stored = "value"
+title = "Colour and tone adjustments of everything on the layer"
+type = "Option<Adjust>"
+
+[[resources.fields]]
+owner = "layer"
+path = "layers.*.mask_of"
+readonly = true
+stored = "value"
+title = "The layer this layer masks, or empty for an ordinary layer. A mask's"
+type = "String"
+
+[[resources.fields]]
+owner = "layer"
+path = "layers.*.base"
+stored = "value"
+title = "A mask's grey before any mark, `0..=1`: 1 shows all of its layer,"
+type = "f64"
+
+[[resources.fields]]
+owner = "layer"
+path = "layers.*.invert"
+stored = "value"
+title = "A mask that hides where it is light and shows where it is dark"
+type = "bool"
+
+[[resources.fields]]
+owner = "layer"
+path = "layers.*.clip"
+stored = "value"
+title = "Clipped to the layer below: it shows only where that layer has paint"
+type = "bool"
+
+[[resources.fields]]
+owner = "layer"
+path = "layers.*.unlinked"
+stored = "value"
+title = "A mask that stays put when its layer's marks move. Linked, it moves"
+type = "bool"
+
+[[resources.fields]]
+owner = "artwork"
+path = "marks"
+stored = "keyed"
+title = "Bottom to top within each layer, layers bottom to top (see"
+type = "Keyed<Mark>"
+
+[[resources.fields]]
+owner = "mark"
+path = "marks.*.id"
+readonly = true
+stored = "value"
+title = "Id"
+type = "String"
+
+[[resources.fields]]
+owner = "mark"
+path = "marks.*.layer"
+stored = "value"
+title = "Layer"
+type = "String"
+
+[[resources.fields]]
+owner = "mark"
+path = "marks.*.order"
+readonly = true
+stored = "value"
+title = "Fractional position within its layer; later is on top"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "mark"
+path = "marks.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "mark"
+path = "marks.*.shape"
+stored = "value"
+title = "Shape"
+type = "Shape"
+
+[[resources.fields]]
+owner = "mark"
+path = "marks.*.style"
+stored = "value"
+title = "Style"
+type = "Style"
+
+[[resources.fields]]
+owner = "mark"
+path = "marks.*.transform"
+stored = "value"
+title = "An affine transform `[a, b, c, d, e, f]` applied to the geometry"
+type = "Option<[f64; 6]>"
+
+[[resources.fields]]
+owner = "mark"
+path = "marks.*.group"
+stored = "value"
+title = "The group the mark belongs to, or empty"
+type = "String"
+
+[[resources.fields]]
+owner = "mark"
+path = "marks.*.clip"
+stored = "value"
+title = "The mark whose shape this mark is cut to, or empty"
+type = "String"
+
+[[resources.fields]]
+owner = "mark"
+path = "marks.*.area"
+readonly = true
+stored = "value"
+title = "SVG path data of the area the mark is kept inside (the selection's"
+type = "String"
+
+[[resources.fields]]
+owner = "artwork"
+path = "media"
+stored = "value"
+title = "Media presets saved in this artwork, by id"
+type = "BTreeMap<String, crate::media::MediumSpec>"
+
+[[resources.fields]]
+owner = "artwork"
+path = "reference"
+stored = "value"
+title = "Reference"
+type = "Option<Reference>"
+
+[[resources.fields]]
+owner = "artwork"
+path = "selection"
+stored = "value"
+title = "Selection"
+type = "Option<Selection>"
+
+[[resources.verbs]]
+description = "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (pressure sets darkness; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). Answers the new ids. One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with `dab_length`, angle -90) grass; hatch shades the area its points enclose. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last."
+id = "paint"
+kind = "undoable"
+label = "Paint strokes"
+
+[[resources.verbs.params]]
+name = "layer"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "strokes"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "One brush stroke."
+required = [
+    "points",
+    "size",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.angle]
+description = "With `dabs`, the way they point in degrees (-90 is up; along the path when absent); with `hatch`, the lines' (default 45)."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.brush]
+description = "Plain layers: `pen` (crisp ink, pressure sets width), `pencil` (grainy, pressure sets darkness), `marker` (flat, overlaps darken), `airbrush` (soft spray that builds up), `charcoal` (picks up the ground's tooth), `calligraphy` (broad nib at `angle`, default 45). Any layer: `eraser` clears paint beneath it on its layer. A round ink brush when absent. Plain layers: `pixel` and `pixel-eraser` paint or clear whole square cells, ignoring pressure and taper."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.clip]
+description = "Keep the paint inside this mark's shape, as a painter cuts in against an edge: texture a rock or a crown within its silhouette. Or `selection` (its area now), or an area's SVG path data."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.colour]
+description = "`#rrggbb[aa]` or `pigment:<name>`; an eraser takes none."
+type = "string"
+
+[resources.verbs.params.schema.items.properties.dab_length]
+description = "With `dabs`: how long each is, in units (about `size` when absent); much longer than `size`, each is a flick lifting to a point (grass)."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.dabs]
+description = "Instead of one line, this many short dabs (1-600) of `size` scattered along the points: foliage, flowers, broken light."
+maximum = 4294967295
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.forks]
+description = "A limb that lifts to a point and forks this many times (1-6) into ever thinner twigs: a branch or a bare tree in one stroke."
+maximum = 4294967295
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.hatch]
+description = "Instead of one line, lines this many units apart across the area the points enclose: shading in one stroke; another at a second angle cross-hatches."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.id]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.name]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.opacity]
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.params]
+description = """Medium overrides on a painted layer (`{"load": 0.2}` for dry brush); on a plain layer the brush's flow, hardness, spacing, smoothing and taper, each 0..=1."""
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.points]
+description = "`[[x, y], …]` or `[[x, y, pressure], …]`, pressure `0..=1`; the stroke is smoothed through them, so a few points make a curve."
+type = "array"
+
+[resources.verbs.params.schema.items.properties.points.items]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.points.items.items]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.scatter]
+description = "With `dabs`: how far they stray either side of the path, in units (default twice `size`)."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.size]
+description = "Brush width in units."
+type = "number"
+
+[resources.verbs.params.schema.items.properties.spread]
+description = "With `forks`: how widely the twigs splay, in degrees (default 35)."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.wet]
+description = "Paint into what is still wet: blends in oil, bleeds in watercolour."
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "group"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text, stroke or image (src: a file path, content address or data: URI; a unit per pixel unless sized), each with fill, gradient, stroke and opacity. Answers the new ids; or give your own. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes."
+id = "draw"
+kind = "undoable"
+label = "Draw shapes"
+
+[[resources.verbs.params]]
+name = "layer"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "marks"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "One shape to draw."
+required = ["shape"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.angle]
+description = "Painted layers: the brushwork's direction in degrees."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.blend]
+description = "`normal`, `multiply`, `screen`, `overlay`, `darken`, `lighten`, `color-dodge`, `color-burn`, `hard-light`, `soft-light`, `difference`, `exclusion`, `hue`, `saturation`, `color` or `luminosity`."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.brush]
+description = "A stroke's brush preset, as `paint` takes it."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.brush_size]
+description = "Painted layers: the brush size a filled shape is laid in with."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.cap]
+description = "`butt`, `round` or `square`."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.clip]
+description = "Cut to this mark's or group's shape (opacity 0 hides it), to `selection` (its area now) or to an area's SVG path data."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.dash]
+description = "Outline dashes `[on, off, …]`."
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.dash.items]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.feather]
+description = "Soften the edge outward over this many units."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.fill]
+description = "`#rrggbb[aa]` or `pigment:<name>`."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.gradient]
+additionalProperties = false
+description = "Instead of `fill`; on an oil layer the brush is remixed along it."
+required = [
+    "kind",
+    "from",
+    "to",
+    "stops",
+]
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.gradient.properties.focal]
+description = "Radial only: where the light sits inside the circle, off its centre."
+maxItems = 2
+minItems = 2
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.gradient.properties.focal.items]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.gradient.properties.from]
+maxItems = 2
+minItems = 2
+type = "array"
+
+[resources.verbs.params.schema.items.properties.gradient.properties.from.items]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.gradient.properties.kind]
+description = "`linear` (from → to) or `radial` (centre `from`, radius to `to`)."
+type = "string"
+
+[resources.verbs.params.schema.items.properties.gradient.properties.stops]
+description = """Colour stops: `[[0, "#ffd27a"], [1, "#e0603a"]]`; a stop's alpha (`#ffd27a00`) fades the paint out, for a glow or mist."""
+type = "array"
+
+[resources.verbs.params.schema.items.properties.gradient.properties.stops.items]
+maxItems = 2
+minItems = 2
+type = "array"
+
+[resources.verbs.params.schema.items.properties.gradient.properties.to]
+maxItems = 2
+minItems = 2
+type = "array"
+
+[resources.verbs.params.schema.items.properties.gradient.properties.to.items]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.grain]
+description = "`0..=1` film grain."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.group]
+description = "A group id: edits naming it change the members as one; `a/b` nests group b in a."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.id]
+description = "An id to address the mark by later (`sun`, `hill-2`); one is made when absent."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.inner_shadow]
+description = "As shadow, inside the mark from its edge; light colour = highlight."
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.join]
+description = "`miter`, `round` or `bevel`."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.name]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.opacity]
+description = "`0..=1`."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.params]
+description = 'Painted layers: medium parameter overrides (`{"load": 0.3}`).'
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.pixelated]
+description = "Images: preserve hard pixel edges when enlarged."
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.shadow]
+additionalProperties = false
+description = "A soft shadow cast by a mark."
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.shadow.properties.blur]
+description = "Softness in units; 0 is hard."
+type = "number"
+
+[resources.verbs.params.schema.items.properties.shadow.properties.colour]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.shadow.properties.offset]
+description = "`[dx, dy]` in units."
+maxItems = 2
+minItems = 2
+type = "array"
+
+[resources.verbs.params.schema.items.properties.shadow.properties.offset.items]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.shape]
+description = 'The geometry: `{"kind": "rect", "x": 0, "y": 0, "width": 10, "height": 10}`, `ellipse` (cx, cy, rx, ry), `polygon`/`line` (points), `path` (d: SVG path data), `text` (x, y, text, size) or `stroke` (points, size).'
+
+[[resources.verbs.params.schema.items.properties.shape.oneOf]]
+additionalProperties = false
+description = "An axis-aligned rectangle; `radius` rounds its corners."
+required = [
+    "kind",
+    "x",
+    "y",
+    "width",
+    "height",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.height]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.kind]
+const = "rect"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.radius]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.width]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.x]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.y]
+type = "number"
+
+[[resources.verbs.params.schema.items.properties.shape.oneOf]]
+additionalProperties = false
+description = "An ellipse around its centre."
+required = [
+    "kind",
+    "cx",
+    "cy",
+    "rx",
+    "ry",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.cx]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.cy]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.kind]
+const = "ellipse"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.rx]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.ry]
+type = "number"
+
+[[resources.verbs.params.schema.items.properties.shape.oneOf]]
+additionalProperties = false
+description = "A closed polygon through `points` (`[[x, y], …]`)."
+required = [
+    "kind",
+    "points",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.kind]
+const = "polygon"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.points]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.points.items]
+maxItems = 2
+minItems = 2
+type = "array"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.points.items.items]
+type = "number"
+
+[[resources.verbs.params.schema.items.properties.shape.oneOf]]
+additionalProperties = false
+description = "An open polyline through `points`, drawn with the stroke colour."
+required = [
+    "kind",
+    "points",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.kind]
+const = "line"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.points]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.points.items]
+maxItems = 2
+minItems = 2
+type = "array"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.points.items.items]
+type = "number"
+
+[[resources.verbs.params.schema.items.properties.shape.oneOf]]
+additionalProperties = false
+description = "SVG path data (`M 10 10 C 20 0, 40 0, 50 10 Z`)."
+required = [
+    "kind",
+    "d",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.d]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.kind]
+const = "path"
+type = "string"
+
+[[resources.verbs.params.schema.items.properties.shape.oneOf]]
+additionalProperties = false
+description = 'Text, first baseline at `y`; `\n` breaks lines.'
+required = [
+    "kind",
+    "x",
+    "y",
+    "text",
+    "size",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.align]
+description = "`start`, `center` or `end` at `x`."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.font]
+description = "`sans`, `serif`, `mono` or a family `media` lists under fonts."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.italic]
+type = "boolean"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.kind]
+const = "text"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.line_height]
+description = "Times size (1.2)."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.path]
+description = "SVG path data the baseline follows instead of starting at x, y; align sets the words at its start, middle or end."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.size]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.text]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.tracking]
+description = "Letter spacing in thousandths of the size: 80 opens up capitals, negative tightens."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.weight]
+description = "100 to 900; 400 regular, 700 bold, any value between."
+maximum = 65535
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.width]
+description = "Wrap width."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.x]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.y]
+type = "number"
+
+[[resources.verbs.params.schema.items.properties.shape.oneOf]]
+additionalProperties = false
+description = "A brush stroke as `paint` lays one: a smooth curve through `points` (`[x, y]` or `[x, y, pressure]`), `size` wide; forks, dabs and hatch as there."
+required = [
+    "kind",
+    "points",
+    "size",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.dab_length]
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.dabs]
+maximum = 4294967295
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.forks]
+maximum = 4294967295
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.hatch]
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.kind]
+const = "stroke"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.points]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.points.items]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.points.items.items]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.scatter]
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.size]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.spread]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params.schema.items.properties.shape.oneOf]]
+additionalProperties = false
+description = "A PNG, JPEG or WebP in the frame `x, y, width, height`."
+required = [
+    "kind",
+    "src",
+    "x",
+    "y",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.crop]
+description = "Fractions `[x, y, w, h]` of the picture shown."
+maxItems = 4
+minItems = 4
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.crop.items]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.height]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.kind]
+const = "image"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.src]
+description = "File path, content address or `data:` URI."
+type = "string"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.straighten]
+description = "Degrees turned inside the frame."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.width]
+description = "Units; absent: a unit per pixel, or the other side's aspect."
+type = "number"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.x]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.shape.oneOf.properties.y]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.stroke]
+description = "Outline colour."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.stroke_width]
+description = "Outline width in units."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.transform]
+description = "An affine `[a, b, c, d, e, f]` on the geometry, as `inspect` shows."
+maxItems = 6
+minItems = 6
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.transform.items]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.wet]
+description = "Painted layers: paint into what is still wet."
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Change marks by id: colours, opacity, name, `move_by` [dx,dy], scale, rotate and flip about their centre, or move them to another layer. Strokes: re-brush (brush, size, params), smooth, simplify, extend, split at a point, merge. Pictures: crop, straighten, adjust (exposure, white balance, …; look to judge)."
+id = "edit-marks"
+kind = "undoable"
+label = "Edit marks"
+
+[[resources.verbs.params]]
+name = "pixelated"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "ids"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs.params]]
+name = "name"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "shape"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "object",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "dash"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+type = "number"
+
+[[resources.verbs.params]]
+name = "cap"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "join"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "blend"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "shadow"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "object",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "inner_shadow"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "object",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "grain"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "feather"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "group"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "clip"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "fill"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "gradient"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "object",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "stroke"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "stroke_width"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "opacity"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "brush"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "size"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "brush_size"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "angle"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "wet"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "params"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "object",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "move_by"
+required = false
+
+[resources.verbs.params.schema]
+maxItems = 2
+minItems = 2
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+type = "number"
+
+[[resources.verbs.params]]
+name = "scale"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "rotate"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "layer"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "transform"
+required = false
+
+[resources.verbs.params.schema]
+maxItems = 6
+minItems = 6
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+type = "number"
+
+[[resources.verbs.params]]
+name = "flip"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "crop"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+type = "number"
+
+[[resources.verbs.params]]
+name = "straighten"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "adjust"
+required = false
+
+[resources.verbs.params.schema]
+additionalProperties = false
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.blur]
+description = "Radius in units, 0-200 (pictures and paint)."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.contrast]
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.curve]
+description = "Tone curve `[[in, out], …]`, 0-1; `[[0.05, 0], [0.95, 1]]` sets black and white points."
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.curve.items]
+maxItems = 2
+minItems = 2
+type = "array"
+
+[resources.verbs.params.schema.properties.curve.items.items]
+type = "number"
+
+[resources.verbs.params.schema.properties.exposure]
+description = "Stops, -5 to 5. Others -1 to 1 unless noted."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.grayscale]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.highlights]
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.hue]
+description = "Degrees, -180 to 180."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.invert]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.saturation]
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.shadows]
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.sharpen]
+description = "0-1."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.temperature]
+description = "Warmer +."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.tint]
+description = "Magenta +."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.vibrance]
+description = "Saturation sparing strong colours."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.vignette]
+description = "Edges darker +, lighter -."
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "smooth"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "simplify"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "extend"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+type = "array"
+
+[resources.verbs.params.schema.items.items]
+type = "number"
+
+[[resources.verbs.params]]
+name = "split"
+required = false
+
+[resources.verbs.params.schema]
+maxItems = 2
+minItems = 2
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+type = "number"
+
+[[resources.verbs.params]]
+name = "merge"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Remove marks by id, every mark of a layer, or the strokes a path along crosses."
+id = "remove-marks"
+kind = "undoable"
+label = "Remove marks"
+
+[[resources.verbs.params]]
+name = "ids"
+required = false
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs.params]]
+name = "layer"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "along"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+maxItems = 2
+minItems = 2
+type = "array"
+
+[resources.verbs.params.schema.items.items]
+type = "number"
+
+[[resources.verbs]]
+description = "Bring marks to the front or back of their layer, one step forward or backward, or directly above or below another mark or group."
+id = "arrange"
+kind = "undoable"
+label = "Arrange marks"
+
+[[resources.verbs.params]]
+name = "ids"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs.params]]
+name = "to"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "of"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Add a layer on top (or above another). Give it a medium (see media) to paint in oil or watercolour; without one it holds crisp vector art."
+id = "add-layer"
+kind = "undoable"
+label = "Add layer"
+
+[[resources.verbs.params]]
+name = "id"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "medium"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "opacity"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "above"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "texture"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Rename or place a layer in an organisational folder (group; empty removes it), change its medium, opacity, visibility, lock or adjustments (grading all its marks), or move it to the front, back, forward or backward."
+id = "edit-layer"
+kind = "undoable"
+label = "Edit layer"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "name"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "group"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "medium"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "opacity"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "visible"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "locked"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "to"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "texture"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "adjust"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "object",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "mask"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "invert"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "clip"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Remove a layer and every mark on it."
+id = "remove-layer"
+kind = "undoable"
+label = "Remove layer"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen, panel) and colour; or crop the artwork to a region or to what a mark shows (fit)."
+id = "set-artwork"
+kind = "undoable"
+label = "Set artwork"
+
+[[resources.verbs.params]]
+name = "title"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "width"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "height"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "texture"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "ground_colour"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "crop"
+required = false
+
+[resources.verbs.params.schema]
+maxItems = 4
+minItems = 4
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+type = "number"
+
+[[resources.verbs.params]]
+name = "fit"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Save a medium preset in the artwork: an engine (oil or watercolour) with parameters, a ground and a pigment palette. Layers can then use its id."
+id = "save-medium"
+kind = "undoable"
+label = "Save medium"
+
+[[resources.verbs.params]]
+name = "medium"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+required = [
+    "id",
+    "label",
+    "engine",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.description]
+type = "string"
+
+[resources.verbs.params.schema.properties.engine]
+description = "`oil` or `watercolour`."
+type = "string"
+
+[resources.verbs.params.schema.properties.ground]
+description = "The ground this medium suits: `smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel`."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.id]
+description = "Lowercase id, letters, digits and `-`."
+type = "string"
+
+[resources.verbs.params.schema.properties.label]
+type = "string"
+
+[resources.verbs.params.schema.properties.palette]
+type = "array"
+
+[resources.verbs.params.schema.properties.palette.items]
+additionalProperties = false
+description = "A pigment in a medium's palette, used as `pigment:<name>`."
+required = [
+    "name",
+    "colour",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.palette.items.properties.colour]
+description = "Masstone colour, `#rrggbb`."
+type = "string"
+
+[resources.verbs.params.schema.properties.palette.items.properties.granulation]
+description = "Watercolour: how much it settles into the paper's tooth, `0..=1`."
+type = "number"
+
+[resources.verbs.params.schema.properties.palette.items.properties.name]
+description = "Lowercase words joined by `-`, such as `burnt-sienna`."
+type = "string"
+
+[resources.verbs.params.schema.properties.palette.items.properties.strength]
+description = "How strongly it tints, around `1`."
+type = "number"
+
+[resources.verbs.params.schema.properties.params]
+description = "Engine parameters by id; `media` lists each engine's parameters and ranges."
+type = "object"
+
+[[resources.verbs]]
+description = "Remove a medium saved in this artwork."
+id = "remove-medium"
+kind = "undoable"
+label = "Remove medium"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "Align marks or groups to an edge or centre line, and/or distribute them with equal gaps, within their own extent, the artwork or another mark."
+id = "align"
+kind = "undoable"
+label = "Align marks"
+
+[[resources.verbs.params]]
+name = "ids"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs.params]]
+name = "edge"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "distribute"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "to"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Set the reference picture to recreate or trace: shown over the artwork at its opacity, seen by look (reference: false hides it) and compare; never exported."
+id = "set-reference"
+kind = "undoable"
+label = "Set reference"
+
+[[resources.verbs.params]]
+name = "image"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "frame"
+required = false
+
+[resources.verbs.params.schema]
+maxItems = 4
+minItems = 4
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+type = "number"
+
+[[resources.verbs.params]]
+name = "opacity"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "visible"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "remove"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Import an SVG (markup, file path or content address) as one draw of path and text marks in a group: fills, gradients, outlines, opacity, blends and clip paths."
+id = "import-svg"
+kind = "undoable"
+label = "Import SVG"
+
+[[resources.verbs.params]]
+name = "svg"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "layer"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "group"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "fit"
+required = false
+
+[resources.verbs.params.schema]
+maxItems = 4
+minItems = 4
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+type = "number"
+
+[[resources.verbs]]
+description = "Open a PNG, JPEG or WebP as a new artwork the size of the picture (a unit per pixel), the picture its first mark, `picture`. Replaces what the artwork held (undo brings it back)."
+id = "open-picture"
+kind = "undoable"
+label = "Open picture"
+
+[[resources.verbs.params]]
+name = "path"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "title"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Start a blank artwork (one undo away). size: screen, a4, letter, square, poster, icon (landscape turns it). start: paper, white, watercolour, oil, panel, dark."
+id = "new-artwork"
+kind = "undoable"
+label = "New artwork"
+
+[[resources.verbs.params]]
+name = "title"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "size"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "landscape"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "width"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "height"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "start"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "texture"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "ground_colour"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "medium"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Replace the artwork with a saved .artwork file (path, content address or JSON), one undo away."
+id = "open-artwork"
+kind = "undoable"
+label = "Open artwork"
+
+[[resources.verbs.params]]
+name = "file"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = 'Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. For subject or edge refinement invoke find-area (a background job). Then use-selection, or clip: "selection" in paint or draw. Bucket fill: select at, use-selection fill. Cut-out: subject, use-selection mask. look outlines it'
+id = "select"
+kind = "undoable"
+label = "Select area"
+
+[[resources.verbs.params]]
+name = "rect"
+required = false
+
+[resources.verbs.params.schema]
+maxItems = 4
+minItems = 4
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+type = "number"
+
+[[resources.verbs.params]]
+name = "ellipse"
+required = false
+
+[resources.verbs.params.schema]
+maxItems = 4
+minItems = 4
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+type = "number"
+
+[[resources.verbs.params]]
+name = "points"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+maxItems = 2
+minItems = 2
+type = "array"
+
+[resources.verbs.params.schema.items.items]
+type = "number"
+
+[[resources.verbs.params]]
+name = "d"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "marks"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs.params]]
+name = "at"
+required = false
+
+[resources.verbs.params.schema]
+maxItems = 2
+minItems = 2
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+type = "number"
+
+[[resources.verbs.params]]
+name = "subject"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "refine"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "matte"
+required = false
+
+[resources.verbs.params.schema]
+additionalProperties = false
+required = [
+    "src",
+    "rect",
+]
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.rect]
+description = "`[x, y, w, h]`."
+maxItems = 4
+minItems = 4
+type = "array"
+
+[resources.verbs.params.schema.properties.rect.items]
+type = "number"
+
+[resources.verbs.params.schema.properties.src]
+type = "string"
+
+[[resources.verbs.params]]
+name = "colour"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "tolerance"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "layer"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "mode"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "feather"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "grow"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "invert"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Fill or stroke the selection as a mark on a layer, mask the layer to it, or clear it from the layer (by its mask, a layer of grey marks)."
+id = "use-selection"
+kind = "undoable"
+label = "Use selection"
+
+[[resources.verbs.params]]
+name = "do"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "layer"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "colour"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "width"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "number",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "id"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "defringe"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "cleaned"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+maxItems = 2
+minItems = 2
+type = "array"
+
+[resources.verbs.params.schema.items.items]
+type = "string"
+
+[[resources.verbs]]
+description = "Combine shapes into one path mark, in the bottom one's place and style."
+id = "combine"
+kind = "undoable"
+label = "Combine shapes"
+
+[[resources.verbs.params]]
+name = "ids"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs.params]]
+name = "op"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"

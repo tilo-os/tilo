@@ -141,6 +141,8 @@ pub(crate) enum Request {
     Sort(SortKey),
     Filter(String),
     Select(u32),
+    /// Show the process row with this id (a search hit, an agent's `open`).
+    Open(String),
     /// Enter or a double click on a row.
     Activate(u32),
     SetExpanded(u32, bool),
@@ -426,15 +428,9 @@ fn view_toolbar(options: ListOptions, shared: &Shared) -> Toolbar {
         Toolbar::new(Orientation::Horizontal).push_toggle("Tree view", options.tree, move || {
             tree.borrow_mut().push(Request::TreeMode(!options.tree));
         });
-    let tree_mode = !options.tree;
     let binding = shared.borrow().actions.as_ref().and_then(|actions| {
-        actions.binding(
-            ui::tilo_resource::ActionRef::<crate::resource::Monitor, bool>::new(
-                "set-tree-mode",
-                &["tree"],
-            )
-            .map(move |()| tree_mode),
-        )
+        let flat = crate::resource::Monitor::paths().flat.set(options.tree);
+        actions.invocation(ui::tilo_resource::Invoke::edit(&flat).ok()?)
     });
     toolbar = match binding {
         Some(binding) => toolbar.with_action(binding),
@@ -476,17 +472,6 @@ fn empty_state(kind: Placeholder) -> EmptyState {
         Placeholder::NoMatches => {
             EmptyState::new("No processes match the filter").with_action("Clear filter")
         }
-    }
-}
-
-/// `node` grown or shrunk along a band's main axis.
-fn flexed(taffy: &mut TaffyTree<()>, node: NodeId, grow: f32) {
-    if let Ok(mut style) = taffy.style(node).cloned() {
-        style.flex_grow = grow;
-        style.flex_shrink = 1.0;
-        style.flex_basis = length(0.0_f32);
-        style.size.width = Dimension::auto();
-        let _ = taffy.set_style(node, style);
     }
 }
 
@@ -771,7 +756,7 @@ impl ProcessesPane {
         let (direction, align) = if compact {
             (taffy::FlexDirection::Column, taffy::AlignItems::Stretch)
         } else {
-            flexed(taffy, field, 1.0);
+            ui::widget::share_row(taffy, field, 1.0);
             (taffy::FlexDirection::Row, taffy::AlignItems::Center)
         };
         let band = taffy.parent_node(

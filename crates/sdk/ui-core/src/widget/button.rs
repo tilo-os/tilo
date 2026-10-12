@@ -251,10 +251,9 @@ impl Button {
         } else {
             self.label.clone()
         };
-        let mut spec =
+        let spec =
             tilo_actions::ActionSpec::operation("invoke", label.clone(), kind, TYPE_ID, &self.id)
                 .expect("a control id is always JSON serializable");
-        spec.contract.discovery = tilo_actions::DiscoveryScope::Launchable;
         let resource =
             tilo_actions::Resource::new(resource_id, "tilo.control", label).with_action(spec);
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "invoke")

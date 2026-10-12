@@ -795,7 +795,7 @@ pub fn snapshot_with(
                 id: w.id.0.to_string(),
                 label: w.name.clone(),
                 room: w.room.to_string(),
-                owner: w.owner.clone(),
+                owner: w.owner().cloned(),
                 strips: w
                     .strips
                     .iter()

@@ -230,7 +230,13 @@ impl Provider {
             score: 0,
             params,
             contract: Some(tilo_actions::ActionContract {
-                permission: tilo_actions::PermissionRequirement::Admin,
+                // Setting up the device's identity reaches outside any
+                // document; only the local owner sees it (search visibility).
+                kind: if operation == "inspect" {
+                    tilo_actions::ActionKind::Read
+                } else {
+                    tilo_actions::ActionKind::Outside
+                },
                 retry: tilo_actions::RetryPolicy::AtMostOnce,
                 result: tilo_actions::ResultSpec::Json {
                     schema: serde_json::json!({"type":"object"}),
