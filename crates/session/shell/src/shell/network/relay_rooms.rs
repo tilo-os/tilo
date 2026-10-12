@@ -3,8 +3,8 @@
 //! invitation, admits whoever redeems one and publishes the room's
 //! governance; this device holds the room like any member does.
 use super::{
-    NetCmd, PendingInvitation, ShellNetwork, persist_pending_invitations,
-    registered_home_peer_addrs, room_topic_id,
+    NetCmd, PendingInvitation, RegisteredHomePeer, ShellNetwork, persist_pending_invitations,
+    registered_home_peer_addrs, relay_topics_for_home_peers, room_topic_id,
 };
 use crate::network::invite::InviteRole;
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
@@ -25,6 +25,16 @@ const ADMIN_TIMEOUT: Duration = Duration::from_secs(15);
 const OWN_INVITATION_SECONDS: u64 = 600;
 /// The longest room name a relay accepts.
 const ROOM_NAME_CHARS: usize = 80;
+
+fn home_for_workspace(user: [u8; 32], room: RoomId) -> Result<Option<RegisteredHomePeer>, String> {
+    // A fresh local workspace has never been registered on the relay. Its
+    // person's continuity topic locates the enrolled home before Create;
+    // the authenticated room commands still govern admission.
+    let topics = relay_topics_for_home_peers([room], Some(user));
+    Ok(registered_home_peer_addrs(Some(user), &topics)?
+        .into_iter()
+        .next())
+}
 
 /// Set where the session holds every workspace that a configured host of
 /// its person governs (a company node's own session, which nobody sits at):
@@ -365,12 +375,7 @@ impl ShellNetwork {
         } else {
             name
         };
-        let Some(home) = registered_home_peer_addrs(
-            Some(certificate.user_public_key),
-            &std::collections::BTreeSet::from([room_topic_id(room)]),
-        )?
-        .into_iter()
-        .next() else {
+        let Some(home) = home_for_workspace(certificate.user_public_key, room)? else {
             return Ok(None);
         };
         let RoomReply::Room(summary) = self.room_admin(
@@ -571,6 +576,53 @@ impl ShellNetwork {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn fresh_workspace_finds_its_enrolled_home_on_the_person_topic() {
+        let temp = tempfile::tempdir().expect("temp");
+        let registry = temp.path().join("home-peers.json");
+        let user = super::super::decode_lower_hex_32(
+            "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241",
+        )
+        .expect("public person key");
+        let room = RoomId::parse("3291bed4-ee10-492a-877c-dbe6b8027a94").expect("fresh workspace");
+        let service = iroh::SecretKey::from_bytes(&[0x22; 32]).public();
+        let device = iroh::SecretKey::from_bytes(&[0x33; 32]).public();
+        let registered_topics = [
+            12_552_341_473_564_032_145_u64,
+            7_702_587_935_360_457_883,
+            4_296_909_156_967_491_521,
+        ];
+        assert!(!registered_topics.contains(&room_topic_id(room)));
+        assert!(registered_topics.contains(&super::super::personal_continuity_topic_id(&user)));
+        std::fs::write(
+            &registry,
+            serde_json::to_vec(&serde_json::json!([{
+                "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
+                "device_node_id": hex::encode(device.as_bytes()),
+                "relay_service_node_id": hex::encode(service.as_bytes()),
+                "label": "Enrolled home",
+                "user_public_key": hex::encode(user),
+                "relay_workspace_ids": registered_topics,
+            }]))
+            .expect("registry"),
+        )
+        .expect("write registry");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
+        let home = home_for_workspace(user, room)
+            .expect("lookup")
+            .expect("enrolled home exists before the room is created");
+        assert_eq!(home.addr.id, service);
+        assert_eq!(home.expectation.user_public_key, user);
+        assert_eq!(home.expectation.device_public_key, *device.as_bytes());
+        assert!(
+            home_for_workspace([0x44; 32], room)
+                .expect("other person")
+                .is_none()
+        );
+    }
 
     #[test]
     fn invitation_roles_map_to_the_room_roles_the_relay_grants() {
