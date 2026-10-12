@@ -29,6 +29,8 @@ mod canonical_route;
 mod committed_document;
 mod durable_local_invocation;
 mod file_clipboard;
+#[cfg(test)]
+mod history_agents_tests;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
 mod invoker;
@@ -1362,6 +1364,8 @@ enum ContextEnvelope {
     SnapshotRequested,
     /// An encoded `ui::collaboration::handoff::HandoffRequest`.
     Handoff(Vec<u8>),
+    /// The room's delegated agents the session verified, for history.
+    HistoryAgents(Vec<ui::history_source::RosterAgent>),
 }
 
 /// One inert operation published by a live application connection: the one
@@ -3046,6 +3050,8 @@ struct ContextSub {
     native: Option<NativeContext>,
     /// Shares the original receiver; membership refresh belongs to its document row.
     private_alias: bool,
+    /// The room's verified agents this receiver was last told.
+    history_agents: Vec<ui::history_source::RosterAgent>,
 }
 
 #[derive(Clone)]
@@ -6696,6 +6702,7 @@ impl CapnpBrokerState {
                 );
             }
             CollabEvent::ScrollbackBatch { .. }
+            | CollabEvent::HistoryAgents { .. }
             | CollabEvent::DocumentSnapshotRequested { .. }
             | CollabEvent::ChannelAccess { .. }
             | CollabEvent::CommittedDocument { .. }
@@ -6928,6 +6935,11 @@ impl CapnpBrokerState {
                 permissions: Vec::new(),
             });
         }
+        // Who the app's history names for changes an agent's own key signed.
+        let history_agents = self.history_agents_of(channel_id);
+        if !history_agents.is_empty() {
+            let _ = tx.send(ContextEnvelope::HistoryAgents(history_agents.clone()));
+        }
         let certified = native.is_some();
         if let Ok(mut m) = self.channels.lock() {
             m.entry(channel_id.to_owned())
@@ -6938,6 +6950,7 @@ impl CapnpBrokerState {
                     tx,
                     native,
                     private_alias: false,
+                    history_agents,
                 });
         }
         if certified {
@@ -6964,6 +6977,7 @@ impl CapnpBrokerState {
                     tx: subscriber.tx.clone(),
                     native: subscriber.native.clone(),
                     private_alias: true,
+                    history_agents: subscriber.history_agents.clone(),
                 });
             if let Some(subscriber) = subscriber {
                 let context = &mut channels.entry(alias.to_owned()).or_default().context;
@@ -7081,6 +7095,66 @@ impl CapnpBrokerState {
         }))
     }
 
+    /// The delegated agents of the room `channel` belongs to whose person's
+    /// root signed the delegation for exactly that device, as the host's
+    /// authority verified them. Presentation only: history names who wrote
+    /// from it, and nothing is admitted by it.
+    fn history_agents_of(&self, channel: &str) -> Vec<ui::history_source::RosterAgent> {
+        let room = CrdtRoute::from_channel_key(channel).cluster_id;
+        self.membership
+            .as_ref()
+            .map(|membership| membership.history_agents(&room))
+            .unwrap_or_default()
+    }
+
+    /// Tell every context receiver whose room's verified agents changed
+    /// since it was last told. The authority is read before the channel
+    /// lock is taken, once per room.
+    fn refresh_history_agents(&self) {
+        let Ok(channels) = self.channels.lock() else {
+            return;
+        };
+        let rooms = channels
+            .iter()
+            .filter(|(_, subscribers)| !subscribers.context.is_empty())
+            .map(|(channel, _)| CrdtRoute::from_channel_key(channel).cluster_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        drop(channels);
+        let Some(membership) = self.membership.as_ref() else {
+            return;
+        };
+        let agents = rooms
+            .into_iter()
+            .map(|room| {
+                let agents = membership.history_agents(&room);
+                (room, agents)
+            })
+            .collect::<HashMap<_, _>>();
+        let Ok(mut channels) = self.channels.lock() else {
+            return;
+        };
+        for (channel, subscribers) in channels.iter_mut() {
+            let room = CrdtRoute::from_channel_key(channel).cluster_id;
+            let Some(current) = agents.get(&room) else {
+                continue;
+            };
+            subscribers.context.retain_mut(|subscriber| {
+                if subscriber.history_agents == *current {
+                    return true;
+                }
+                if subscriber
+                    .tx
+                    .send(ContextEnvelope::HistoryAgents(current.clone()))
+                    .is_err()
+                {
+                    return false;
+                }
+                subscriber.history_agents.clone_from(current);
+                true
+            });
+        }
+    }
+
     fn refresh_workspace_context_services(&self) -> Result<(), String> {
         fn same_roster(
             left: &[ui::collaboration::Collaborator],
@@ -7175,6 +7249,9 @@ impl CapnpBrokerState {
     /// the next re-check must come on the one-second clock instead of on an
     /// announcement: an input nothing announces, or a check that failed.
     fn refresh_policy_surfaces(self: &Arc<Self>) -> bool {
+        // A room's verified agents change with its governance, which every
+        // host announces; apps' history follows on the same turn.
+        self.refresh_history_agents();
         if self.services.workspace_memberships.is_none() || self.membership.is_none() {
             // No membership surface, and no native context subscriber can
             // be admitted: nothing here changes with policy.
@@ -11737,6 +11814,10 @@ impl context_stream::Server for ContextStreamServer {
                     ctx.set_handoff(&message);
                     return Ok(());
                 }
+                ContextEnvelope::HistoryAgents(agents) => {
+                    encode_history_agents(&mut ctx, &agents)?;
+                    return Ok(());
+                }
             };
             let collab_count = u32::try_from(collaborators.len()).map_err(|_| {
                 capnp::Error::failed("context: too many collaborators to encode".into())
@@ -11768,6 +11849,29 @@ impl context_stream::Server for ContextStreamServer {
             Ok(())
         })
     }
+}
+
+/// Write a session-local frame naming a room's verified agents: clients
+/// leave the roster untouched and replace the room's agents with these.
+fn encode_history_agents(
+    ctx: &mut runtime_collab::raw::channel_context::Builder<'_>,
+    agents: &[ui::history_source::RosterAgent],
+) -> Result<(), capnp::Error> {
+    let count = u32::try_from(agents.len())
+        .map_err(|_| capnp::Error::failed("context: too many history agents to encode".into()))?;
+    ctx.set_history_agents_changed(true);
+    let mut rows = ctx.reborrow().init_history_agents(count);
+    for (index, agent) in (0..count).zip(agents) {
+        let mut row = rows.reborrow().get(index);
+        row.set_device(&agent.device);
+        row.set_person(&agent.person);
+        row.set_person_name(&agent.person_name);
+        row.set_agent_id(&agent.agent_id);
+        row.set_label(&agent.label);
+        let [red, green, blue] = agent.color;
+        row.set_color(u32::from_be_bytes([0, red, green, blue]));
+    }
+    Ok(())
 }
 
 // Listener wiring
