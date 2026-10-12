@@ -68,6 +68,7 @@ impl NativeDocumentReads for Service {
             }
             Owner::At(revision) => NativeDocumentRead::Captured {
                 revision,
+                heads: Vec::new(),
                 body: Box::new(Bytes(vec![1])),
             },
             Owner::Pending => NativeDocumentRead::Pending,

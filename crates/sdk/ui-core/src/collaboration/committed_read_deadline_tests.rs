@@ -317,6 +317,12 @@ impl ReadyReader {
     /// one does; without, it refuses it as an older one does and the reader
     /// polls.
     fn start(awaits: bool) -> Self {
+        Self::start_configured(awaits, None)
+    }
+
+    /// [`Self::start`], with a broker that answers `OpenChanges` with
+    /// `changes` (and refuses it without).
+    fn start_configured(awaits: bool, changes: Option<FixtureChanges>) -> Self {
         use automerge::transaction::Transactable as _;
         let awaits = awaits.then(|| Arc::new(tokio::sync::Notify::new()));
         let mut graph = automerge::AutoCommit::new();
@@ -327,6 +333,7 @@ impl ReadyReader {
                 committed_history_fixture: Some(graph.save()),
                 committed_private_binding: Some(7),
                 committed_awaits: awaits.clone(),
+                committed_changes: changes,
                 ..Captures::default()
             })),
             op_backlog: vec![],

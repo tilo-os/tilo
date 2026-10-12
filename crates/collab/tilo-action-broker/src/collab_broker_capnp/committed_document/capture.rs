@@ -1,5 +1,7 @@
 //! Byte custody for immutable native reads. Reservations precede capture work.
-use runtime_collab::committed_document::{CHUNK_BYTES, MAX_DOCUMENT_BYTES};
+use runtime_collab::committed_document::{
+    CHANGES_FIRST_BYTES, CHUNK_BYTES, MAX_CHANGES_BASE, MAX_DOCUMENT_BYTES,
+};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -40,6 +42,12 @@ pub(super) struct Capture {
     _reservation: Reservation,
     pub(super) id: u64,
     pub(super) revision: [u8; 32],
+    /// The heads `revision` names, when the owner said; what a later read
+    /// on this channel may hand out the changes since.
+    heads: Vec<[u8; 32]>,
+    /// Set for changes rather than a whole document: the heads they apply
+    /// to. The first piece is then a `Changes` reply.
+    base: Option<Vec<[u8; 32]>>,
     next: usize,
     token: [u8; 16],
     deadline: std::time::Instant,
@@ -62,6 +70,8 @@ impl Capture {
             _reservation: reservation,
             id,
             revision,
+            heads: Vec::new(),
+            base: None,
             next: 0,
             token: [0; 16],
             deadline: now
@@ -69,6 +79,30 @@ impl Capture {
                 .unwrap_or(now),
             expired: false,
         })
+    }
+    /// The heads `revision` names, for a later changes read on this channel.
+    pub(super) fn naming(mut self, heads: Vec<[u8; 32]>) -> Self {
+        self.heads = heads;
+        self
+    }
+    /// These bytes are the changes since the document with heads `base`.
+    pub(super) fn changes_since(mut self, base: Vec<[u8; 32]>) -> Result<Self, String> {
+        if base.is_empty() || base.len() > MAX_CHANGES_BASE {
+            return Err("invalid native document changes base".into());
+        }
+        self.base = Some(base);
+        Ok(self)
+    }
+    /// The revision, with its heads, this capture hands out once its last
+    /// piece is acknowledged; `None` when the owner did not name its heads
+    /// or they are too many to start changes from.
+    pub(super) fn delivers(&self) -> Option<super::HeldRevision> {
+        (self.finished() && !self.heads.is_empty() && self.heads.len() <= MAX_CHANGES_BASE).then(
+            || super::HeldRevision {
+                revision: self.revision,
+                heads: self.heads.clone(),
+            },
+        )
     }
     pub(super) fn chunk(
         &mut self,
@@ -86,7 +120,12 @@ impl Capture {
         if self.next >= total {
             return Err("committed document capture finished".into());
         }
-        let end = total.min(self.next.saturating_add(CHUNK_BYTES));
+        let first = self.next == 0;
+        let piece = match &self.base {
+            Some(_) if first => CHANGES_FIRST_BYTES,
+            _ => CHUNK_BYTES,
+        };
+        let end = total.min(self.next.saturating_add(piece));
         let bytes = self
             .body
             .bytes()
@@ -97,6 +136,16 @@ impl Capture {
             u32::try_from(total).map_err(|_| "committed document exceeds the wire limit")?;
         self.next = end;
         self.token = uuid::Uuid::new_v4().into_bytes();
+        if let Some(base) = self.base.as_ref().filter(|_| first) {
+            return Ok(runtime_collab::committed_document::Reply::Changes {
+                capture: self.id,
+                revision: self.revision,
+                base: base.clone(),
+                total,
+                bytes,
+                token: self.token,
+            });
+        }
         Ok(runtime_collab::committed_document::Reply::Chunk {
             capture: self.id,
             revision: self.revision,
@@ -186,6 +235,69 @@ mod tests {
         assert!(budget.reserve().is_ok());
         drop(second);
     }
+    #[test]
+    fn changes_start_with_a_bounded_changes_piece_and_continue_in_chunks() {
+        use runtime_collab::committed_document::Reply;
+        let budget = Arc::new(Budget::default());
+        let original = (0..CHUNK_BYTES + 99)
+            .map(|index| u8::try_from(index % 251).unwrap())
+            .collect::<Vec<_>>();
+        let mut capture = Capture::new(
+            Box::new(Bytes(original.clone())),
+            budget.reserve().unwrap(),
+            3,
+            [6; 32],
+        )
+        .unwrap()
+        .naming(vec![[1; 32]])
+        .changes_since(vec![[2; 32]])
+        .unwrap();
+        assert!(capture.delivers().is_none(), "nothing is handed out unread");
+        let Reply::Changes {
+            capture: id,
+            base,
+            bytes,
+            token,
+            total,
+            ..
+        } = capture.chunk(0, [0; 16]).unwrap()
+        else {
+            panic!("the first piece of changes names its base");
+        };
+        assert_eq!(
+            (id, base, total as usize),
+            (3, vec![[2; 32]], original.len())
+        );
+        assert_eq!(bytes.len(), CHANGES_FIRST_BYTES);
+        let mut output = bytes;
+        let mut continuation = token;
+        while output.len() < original.len() {
+            let Reply::Chunk { bytes, token, .. } =
+                capture.chunk(output.len() as u32, continuation).unwrap()
+            else {
+                panic!("changes continue in chunks");
+            };
+            output.extend(bytes);
+            continuation = token;
+        }
+        assert_eq!(output, original);
+        let held = capture
+            .delivers()
+            .expect("an entirely read capture hands out its revision");
+        assert_eq!((held.revision, held.heads), ([6; 32], vec![[1; 32]]));
+        assert!(
+            Capture::new(
+                Box::new(Bytes(vec![1])),
+                budget.reserve().unwrap(),
+                4,
+                [6; 32]
+            )
+            .unwrap()
+            .changes_since(Vec::new())
+            .is_err()
+        );
+    }
+
     #[test]
     fn committed_capture_is_ordered_bounded_and_keeps_exact_bytes() {
         let budget = Arc::new(Budget::default());

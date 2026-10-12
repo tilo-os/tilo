@@ -3,7 +3,7 @@ use super::*;
 use automerge::AutoCommit;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tilo_action_broker::services::{
-    NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
+    HeldRevision, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -22,6 +22,9 @@ pub(super) struct Gate {
     expected: Mutex<Option<String>>,
     after_capture: AtomicBool,
     observed: AtomicUsize,
+    /// Each record's document as its readers were last handed it, whole or
+    /// as changes, so a read of only the changes shows its body too.
+    replicas: Mutex<std::collections::BTreeMap<String, AutoCommit>>,
 }
 impl Gate {
     pub(super) fn new(owner: &NativeWorkspaceOwner) -> Arc<Self> {
@@ -30,6 +33,7 @@ impl Gate {
             expected: Mutex::new(None),
             after_capture: AtomicBool::new(false),
             observed: AtomicUsize::new(0),
+            replicas: Mutex::default(),
         })
     }
     pub(super) fn arm(&self, expected: &str) {
@@ -46,14 +50,27 @@ impl Gate {
             })
         })
     }
-    fn captured(&self, read: &NativeDocumentRead) {
-        let NativeDocumentRead::Captured { body, .. } = read else {
-            return;
+    fn captured(&self, record: &str, read: &NativeDocumentRead) {
+        let mut replicas = self.replicas.lock().unwrap();
+        let replica = match read {
+            NativeDocumentRead::Captured { body, .. } => {
+                replicas.insert(record.into(), AutoCommit::load(body.bytes()).unwrap());
+                &replicas[record]
+            }
+            NativeDocumentRead::Changes { body, .. } => {
+                let replica = replicas
+                    .get_mut(record)
+                    .expect("changes follow a whole read of the same record");
+                replica.load_incremental(body.bytes()).unwrap();
+                &*replica
+            }
+            NativeDocumentRead::Unchanged(_) | NativeDocumentRead::Pending => return,
         };
         let mut expected = self.expected.lock().unwrap();
-        if expected.as_ref().is_some_and(|expected| {
-            cold_code::body(&AutoCommit::load(body.bytes()).unwrap()) == *expected
-        }) {
+        if expected
+            .as_ref()
+            .is_some_and(|expected| cold_code::body(replica) == *expected)
+        {
             *expected = None;
             self.after_capture.store(true, Ordering::Release);
         }
@@ -110,7 +127,17 @@ impl NativeDocumentReads for Reads {
         maximum: usize,
     ) -> Result<NativeDocumentRead, String> {
         let read = self.inner.capture(context, revision, maximum)?;
-        self.gate.captured(&read);
+        self.gate.captured(&context.route().record_id, &read);
+        Ok(read)
+    }
+    fn capture_since(
+        &self,
+        context: &NativeDocumentReadContext,
+        held: &HeldRevision,
+        maximum: usize,
+    ) -> Result<NativeDocumentRead, String> {
+        let read = self.inner.capture_since(context, held, maximum)?;
+        self.gate.captured(&context.route().record_id, &read);
         Ok(read)
     }
     fn unchanged(

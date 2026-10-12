@@ -22,6 +22,9 @@ pub struct NativeDocumentReadContext {
 #[path = "committed_document/await_tests.rs"]
 mod await_tests;
 #[cfg(test)]
+#[path = "committed_document/changes_tests.rs"]
+mod changes_tests;
+#[cfg(test)]
 #[path = "committed_document/initialization_tests.rs"]
 mod initialization_tests;
 impl NativeDocumentReadContext {
@@ -64,6 +67,16 @@ impl NativeDocumentReadContext {
         (self.revalidate)()
     }
 }
+/// A revision a committed read on this channel handed out (its last piece
+/// acknowledged), with the heads it names: what a later read may answer
+/// with only the changes since.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldRevision {
+    pub revision: [u8; 32],
+    /// Sorted, at most [`runtime_collab::committed_document::MAX_CHANGES_BASE`].
+    pub heads: Vec<[u8; 32]>,
+}
+
 /// Data only. Its provider retains the actual bounded native save's lifetime.
 pub enum NativeDocumentRead {
     Unchanged([u8; 32]),
@@ -74,6 +87,17 @@ pub enum NativeDocumentRead {
     Pending,
     Captured {
         revision: [u8; 32],
+        /// The sorted heads `revision` names; empty when the owner does not
+        /// say, and later reads on the channel are then whole.
+        heads: Vec<[u8; 32]>,
+        body: Box<dyn DocumentBytes>,
+    },
+    /// Only the changes from the held revision with heads `base` to
+    /// `revision` (with `heads`): Automerge change bytes.
+    Changes {
+        revision: [u8; 32],
+        heads: Vec<[u8; 32]>,
+        base: Vec<[u8; 32]>,
         body: Box<dyn DocumentBytes>,
     },
 }
@@ -124,6 +148,25 @@ pub trait NativeDocumentReads: Send + Sync {
         known_revision: Option<[u8; 32]>,
         maximum: usize,
     ) -> Result<NativeDocumentRead, String>;
+    /// What [`Self::capture`] answers for a caller holding `held`, except
+    /// that a changed document may be answered with only the changes since
+    /// ([`NativeDocumentRead::Changes`], whose `base` is `held.heads`). The
+    /// same checks as `capture`, refusing exactly what it refuses; every
+    /// case it cannot answer with changes it answers as `capture` does. The
+    /// default always does.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the document cannot be captured within `maximum` bytes,
+    /// or the caller may not read it now.
+    fn capture_since(
+        &self,
+        context: &NativeDocumentReadContext,
+        held: &HeldRevision,
+        maximum: usize,
+    ) -> Result<NativeDocumentRead, String> {
+        self.capture(context, Some(held.revision), maximum)
+    }
     /// Whether a caller holding `known_revision` (or nothing, after
     /// `Unavailable`) still holds what [`Self::capture`] would answer,
     /// decided without capturing. `None` when only a capture can say; the
@@ -234,6 +277,9 @@ pub(super) struct Slot {
     closed: bool,
     wait: Option<HeldWait>,
     waits: u64,
+    /// The last revision this channel handed out whole or as changes (its
+    /// last piece acknowledged), when its owner named the heads.
+    delivered: Option<HeldRevision>,
 }
 impl Slot {
     /// Close the channel once an unacknowledged capture outlived its
@@ -252,6 +298,50 @@ impl Slot {
             return Err("committed read channel expired".into());
         }
         Ok(())
+    }
+    /// The revision this channel handed out, when it is `known`: changes
+    /// start only from what this channel itself handed out.
+    fn held(&self, known: [u8; 32]) -> Option<HeldRevision> {
+        self.delivered.clone().filter(|held| held.revision == known)
+    }
+    /// The next piece of the active capture, re-checking custody and the
+    /// owner's authorization before it is handed out.
+    fn next(&mut self, capture: u64, offset: u32, token: [u8; 16]) -> Result<Reply, String> {
+        let active = self
+            .active
+            .as_mut()
+            .ok_or("committed read capture unavailable")?;
+        if active.capture.id != capture {
+            return Err("committed read capture mismatch".into());
+        }
+        active.context.revalidate()?;
+        active.service.authorize(&active.context)?;
+        active.capture.chunk(offset, token)
+    }
+    /// Acknowledge (or abandon) the active capture with its latest token.
+    /// An entirely read capture becomes what this channel handed out.
+    fn acknowledge(&mut self, capture: u64, token: [u8; 16]) -> Result<Reply, String> {
+        if !self.active.as_ref().is_some_and(|active| {
+            active.capture.id == capture && active.capture.acknowledges(token)
+        }) {
+            return Err("committed read acknowledgement mismatch".into());
+        }
+        let finished = self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.capture.finished());
+        if let Some(initialization) = self.initialization.as_mut() {
+            initialization.acknowledged |= finished && initialization.capture_id == capture;
+        }
+        if let Some(held) = self
+            .active
+            .as_ref()
+            .and_then(|active| active.capture.delivers())
+        {
+            self.delivered = Some(held);
+        }
+        self.active = None;
+        Ok(Reply::Cancelled)
     }
     /// End a held `Await`: the caller asked something newer.
     fn supersede_wait(&mut self) {
@@ -458,48 +548,29 @@ impl CapnpChannelHandle {
                     .ok_or("application creation receipt unavailable")?
                     .commit(*token, *revision, kind, document)
             }
-            Request::Cancel { capture, token } => {
-                if !slot.active.as_ref().is_some_and(|active| {
-                    active.capture.id == *capture && active.capture.acknowledges(*token)
-                }) {
-                    return Err("committed read acknowledgement mismatch".into());
-                }
-                let finished = slot
-                    .active
-                    .as_ref()
-                    .is_some_and(|active| active.capture.finished());
-                if let Some(initialization) = slot.initialization.as_mut() {
-                    initialization.acknowledged |=
-                        finished && initialization.capture_id == *capture;
-                }
-                slot.active = None;
-                Ok(Reply::Cancelled)
-            }
+            Request::Cancel { capture, token } => slot.acknowledge(*capture, *token),
             Request::Open { known_revision } => {
-                self.open_committed_document(&mut slot, *known_revision)
+                self.open_committed_document(&mut slot, *known_revision, None)
+            }
+            Request::OpenChanges { known_revision } => {
+                let held = slot.held(*known_revision);
+                self.open_committed_document(&mut slot, Some(*known_revision), held)
             }
             Request::Next {
                 capture,
                 offset,
                 token,
-            } => {
-                let active = slot
-                    .active
-                    .as_mut()
-                    .ok_or("committed read capture unavailable")?;
-                if active.capture.id != *capture {
-                    return Err("committed read capture mismatch".into());
-                }
-                active.context.revalidate()?;
-                active.service.authorize(&active.context)?;
-                active.capture.chunk(*offset, *token)
-            }
+            } => slot.next(*capture, *offset, *token),
         }
     }
+    /// An Open for `known_revision`. With `held` (the revision this channel
+    /// handed out, equal to `known_revision`) the owner may answer with only
+    /// the changes since; every check is the same either way.
     fn open_committed_document(
         &self,
         slot: &mut Slot,
         known_revision: Option<[u8; 32]>,
+        held: Option<HeldRevision>,
     ) -> Result<Reply, String> {
         if slot.active.is_some() {
             return Err("committed read requires previous response acknowledgement".into());
@@ -507,38 +578,98 @@ impl CapnpChannelHandle {
         let Some(service) = self.state.services.committed_documents.clone() else {
             return Ok(Reply::Unavailable);
         };
-        let context = self.document_read_context()?;
-        let created = context.prepare_application(service.as_ref())?;
-        service.authorize(&context)?;
-        let reservation = self.state.committed_read_budget.reserve()?;
-        let read = service.capture(&context, known_revision, MAX_DOCUMENT_BYTES)?;
-        context.revalidate()?;
-        service.authorize(&context)?;
-        match read {
-            NativeDocumentRead::Unchanged(revision) => Ok(Reply::Unchanged { revision }),
-            // A record created by this Open is answered with its capture or
-            // not at all; only an existing record may be read again later.
-            NativeDocumentRead::Pending if created.is_none() => Ok(Reply::Unavailable),
-            NativeDocumentRead::Pending => Err("created record capture unavailable".into()),
-            NativeDocumentRead::Captured { revision, body } => {
-                let id = self
-                    .state
-                    .committed_read_id
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
-                    .map_err(|_| "committed read ids exhausted")?;
-                let mut capture = capture::Capture::new(body, reservation, id, revision)?;
-                let reply =
-                    slot.creation_reply(capture.chunk(0, [0; 16])?, created, &context, &service)?;
-                slot.active = Some(Active {
-                    capture,
-                    context,
-                    service,
-                });
-                self.arm_capture_deadline(id);
-                Ok(reply)
-            }
+        let reading = Reading {
+            context: self.document_read_context()?,
+            service,
+            budget: &self.state.committed_read_budget,
+            ids: &self.state.committed_read_id,
+        };
+        let (reply, capture) = open_read(slot, reading, known_revision, held)?;
+        if let Some(id) = capture {
+            self.arm_capture_deadline(id);
         }
+        Ok(reply)
     }
+}
+
+/// What an Open reads with: the channel's checked custody and admission
+/// (`context`), its document owner, the shared byte budget and capture ids.
+struct Reading<'a> {
+    context: NativeDocumentReadContext,
+    service: Arc<dyn NativeDocumentReads>,
+    budget: &'a Arc<Budget>,
+    ids: &'a std::sync::atomic::AtomicU64,
+}
+
+/// An Open's answer for `known_revision`, and the id of the capture it
+/// started, whose deadline the caller arms. With `held` the owner may answer
+/// with only the changes since; every check is the same either way: the
+/// owner's authorization, the read under the byte budget, then custody and
+/// authorization again.
+fn open_read(
+    slot: &mut Slot,
+    reading: Reading<'_>,
+    known_revision: Option<[u8; 32]>,
+    held: Option<HeldRevision>,
+) -> Result<(Reply, Option<u64>), String> {
+    let Reading {
+        context,
+        service,
+        budget,
+        ids,
+    } = reading;
+    if slot.active.is_some() {
+        return Err("committed read requires previous response acknowledgement".into());
+    }
+    let created = context.prepare_application(service.as_ref())?;
+    service.authorize(&context)?;
+    let reservation = budget.reserve()?;
+    let read = match &held {
+        Some(held) => service.capture_since(&context, held, MAX_DOCUMENT_BYTES)?,
+        None => service.capture(&context, known_revision, MAX_DOCUMENT_BYTES)?,
+    };
+    context.revalidate()?;
+    service.authorize(&context)?;
+    let (revision, body, heads, base) = match read {
+        NativeDocumentRead::Unchanged(revision) => {
+            return Ok((Reply::Unchanged { revision }, None));
+        }
+        // A record created by this Open is answered with its capture or
+        // not at all; only an existing record may be read again later.
+        NativeDocumentRead::Pending if created.is_none() => return Ok((Reply::Unavailable, None)),
+        NativeDocumentRead::Pending => return Err("created record capture unavailable".into()),
+        NativeDocumentRead::Captured {
+            revision,
+            heads,
+            body,
+        } => (revision, body, heads, None),
+        // Changes start only from the revision this channel handed out.
+        NativeDocumentRead::Changes {
+            revision,
+            heads,
+            base,
+            body,
+        } if created.is_none() && held.as_ref().is_some_and(|held| held.heads == base) => {
+            (revision, body, heads, Some(base))
+        }
+        NativeDocumentRead::Changes { .. } => {
+            return Err("native document changes from a revision never handed out".into());
+        }
+    };
+    let id = ids
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+        .map_err(|_| "committed read ids exhausted")?;
+    let mut capture = capture::Capture::new(body, reservation, id, revision)?.naming(heads);
+    if let Some(base) = base {
+        capture = capture.changes_since(base)?;
+    }
+    let reply = slot.creation_reply(capture.chunk(0, [0; 16])?, created, &context, &service)?;
+    slot.active = Some(Active {
+        capture,
+        context,
+        service,
+    });
+    Ok((reply, Some(id)))
 }
 
 /// Whether an Open for `known_revision` would answer exactly what the caller
@@ -585,7 +716,7 @@ fn captured_unchanged(
         {
             NativeDocumentRead::Unchanged(revision) => Some(revision) == known_revision,
             NativeDocumentRead::Pending => known_revision.is_none(),
-            NativeDocumentRead::Captured { .. } => false,
+            NativeDocumentRead::Captured { .. } | NativeDocumentRead::Changes { .. } => false,
         },
     )
 }

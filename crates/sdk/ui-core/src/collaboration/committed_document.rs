@@ -236,8 +236,16 @@ impl Reads {
         true
     }
     pub(super) fn initial(&self, key: &str) -> Option<CommittedDocument> {
+        // Only a whole document can seed an owner; staged changes apply
+        // only to the owner that holds their base.
         if let Some(read) = self.1.lock().ok().and_then(|rows| rows.get(key).cloned()) {
-            return Some(read);
+            if read.base.is_none() {
+                return Some(read);
+            }
+            // An owner being built needs the whole document: the reader
+            // drops these changes and reads it whole.
+            read.refuse();
+            return None;
         }
         if self.publishable(key) && self.required(key) {
             if let Ok(mut refresh) = self.2.lock() {
@@ -258,7 +266,9 @@ impl Reads {
             .lock()
             .ok()?
             .get(key)
-            .filter(|read| read.is_current() && !read.merged.load(Ordering::Acquire))
+            .filter(|read| {
+                read.is_current() && read.base.is_none() && !read.merged.load(Ordering::Acquire)
+            })
             .cloned()
     }
     fn stage(
@@ -358,6 +368,12 @@ pub struct CommittedDocument {
     creation: Option<runtime_collab::committed_document::CreationReceipt>,
     revision: [u8; 32],
     initialized: Arc<AtomicBool>,
+    /// Set when these are only the changes since the revision with these
+    /// heads: they apply only to an owner document holding every one.
+    base: Option<Arc<[automerge::ChangeHash]>>,
+    /// The owner could not apply the changes (it lacks their base): the
+    /// reader then reads the document whole.
+    refused: Arc<AtomicBool>,
 }
 impl std::fmt::Debug for CommittedDocument {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -415,12 +431,34 @@ impl CommittedDocument {
             .bytes
             .lock()
             .map_err(|_| "committed history capture poisoned")?;
-        let mutation = collab_types::DocumentMutation::Snapshot(std::mem::take(&mut *bytes));
+        let taken = std::mem::take(&mut *bytes);
+        let mutation = if self.base.is_some() {
+            collab_types::DocumentMutation::Incremental(taken)
+        } else {
+            collab_types::DocumentMutation::Snapshot(taken)
+        };
         let result = apply(&mutation);
-        if let collab_types::DocumentMutation::Snapshot(restored) = mutation {
-            *bytes = restored;
-        }
+        let (collab_types::DocumentMutation::Snapshot(restored)
+        | collab_types::DocumentMutation::Incremental(restored)) = mutation;
+        *bytes = restored;
         Ok(result)
+    }
+    /// Whether these bytes apply to `document`: always for a whole
+    /// document; for changes, only when it holds every head of their base,
+    /// since Automerge would otherwise hold them back unapplied and the
+    /// reader would confirm a document the owner does not show.
+    pub(crate) fn applies_to(&self, document: &impl automerge::ReadDoc) -> bool {
+        self.base
+            .as_ref()
+            .is_none_or(|base| document.get_missing_deps(base).is_empty())
+    }
+    /// The owner cannot apply these changes: the reader drops them and reads
+    /// the document whole. Never for a whole document.
+    pub(crate) fn refuse(&self) {
+        if self.base.is_some() {
+            self.refused.store(true, Ordering::Release);
+            self.merge_wake.notify_one();
+        }
     }
     pub(crate) fn is_current(&self) -> bool {
         self.valid.load(Ordering::Acquire)
@@ -442,19 +480,29 @@ struct Assembly {
     revision: [u8; 32],
     total: usize,
     bytes: Vec<u8>,
+    /// The heads changes start from; `None` for a whole document.
+    base: Option<Vec<[u8; 32]>>,
 }
 impl Assembly {
     fn start(reply: Reply) -> Result<Self, String> {
-        let Reply::Chunk {
-            capture,
-            revision,
-            total,
-            offset,
-            bytes,
-            token,
-        } = reply
-        else {
-            return Err("committed document initial chunk missing".into());
+        let (capture, revision, total, offset, bytes, token, base) = match reply {
+            Reply::Chunk {
+                capture,
+                revision,
+                total,
+                offset,
+                bytes,
+                token,
+            } => (capture, revision, total, offset, bytes, token, None),
+            Reply::Changes {
+                capture,
+                revision,
+                base,
+                total,
+                bytes,
+                token,
+            } if !base.is_empty() => (capture, revision, total, 0, bytes, token, Some(base)),
+            _ => return Err("committed document initial chunk missing".into()),
         };
         if offset != 0
             || total == 0
@@ -469,6 +517,7 @@ impl Assembly {
             revision,
             total: total as usize,
             bytes: Vec::new(),
+            base,
         };
         result
             .bytes
@@ -968,6 +1017,8 @@ mod tests {
             creation: None,
             revision: [0; 32],
             initialized: Arc::new(AtomicBool::new(false)),
+            base: None,
+            refused: Arc::new(AtomicBool::new(false)),
         };
         reads.stage("route", &ready, read.clone()).unwrap();
         assert!(reads.unapplied("route").is_some());
@@ -1123,6 +1174,12 @@ async fn capture_using(
             token,
             total,
             ..
+        }
+        | Reply::Changes {
+            capture,
+            token,
+            total,
+            ..
         } => (*capture, *token, *total as usize),
         _ => return Err("committed initial capture missing".into()),
     };
@@ -1207,6 +1264,10 @@ async fn capture_using(
             creation,
             revision: assembly.revision,
             initialized: Arc::new(AtomicBool::new(false)),
+            base: assembly
+                .base
+                .map(|base| base.into_iter().map(automerge::ChangeHash).collect()),
+            refused: Arc::new(AtomicBool::new(false)),
         },
         assembly.revision,
     ))
@@ -1345,11 +1406,12 @@ async fn until_stale(
     }
 }
 
-/// Wait until the owner merged `read` ([`CommittedDocument::applied`]), or
-/// `live` says the route is gone. The owner's component factory waits for
+/// Wait until the owner merged `read` ([`CommittedDocument::applied`]) or
+/// refused its changes ([`CommittedDocument::refuse`]), or `live` says the
+/// route is gone. The owner's component factory waits for
 /// the confirming read that follows, so the merge ends this wait at once.
 async fn until_merged(read: &CommittedDocument, live: impl Fn() -> bool) {
-    while !read.merged.load(Ordering::Acquire) && live() {
+    while !read.merged.load(Ordering::Acquire) && !read.refused.load(Ordering::Acquire) && live() {
         let _ = tokio::time::timeout(MERGE_RECHECK, read.merge_wake.notified()).await;
     }
 }
@@ -1402,6 +1464,9 @@ pub(super) async fn install(
         // after a refused Await says it does not, and the reader polls.
         let mut awaits = true;
         let mut probing = false;
+        // Whether the broker answers `OpenChanges`; an older one refuses it
+        // and the reader reads whole, as it always did.
+        let mut changes_supported = true;
         let mut last_open;
         'read: loop {
             if !inbound.state.is_healthy() || !inbound.state.document_reads.current(&key, &ready) {
@@ -1448,24 +1513,49 @@ pub(super) async fn install(
                     .state
                     .document_reads
                     .clear_stage(&key, &staged.merged);
+                if staged.refused.load(Ordering::Acquire) && !staged.merged.load(Ordering::Acquire)
+                {
+                    // The owner lacks the changes' base (or a new owner
+                    // needs the whole document): read it whole.
+                    revision = None;
+                }
             }
             let refresh = inbound.state.document_reads.refresh_requested(&key);
             if refresh {
                 set_read_ready(&inbound, &ready, false);
             }
             last_open = crate::time::now();
-            let result = tokio::time::timeout(
-                Duration::from_secs(2),
-                channel.committed_document(&Request::Open {
-                    known_revision: if refresh { None } else { revision },
-                }),
-            )
-            .await;
+            let known = if refresh { None } else { revision };
+            let changes = known.filter(|_| changes_supported);
+            let request = changes.map_or(
+                Request::Open {
+                    known_revision: known,
+                },
+                |known_revision| Request::OpenChanges { known_revision },
+            );
+            let mut result =
+                tokio::time::timeout(Duration::from_secs(2), channel.committed_document(&request))
+                    .await;
+            if changes.is_some() && matches!(result, Ok(Err(_))) {
+                // An older broker refuses a request it does not know. The
+                // Open it stands for decides, now and on this route from
+                // here on; a refusal is that Open's refusal.
+                changes_supported = false;
+                result = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    channel.committed_document(&Request::Open {
+                        known_revision: known,
+                    }),
+                )
+                .await;
+            }
+            let changes = changes.filter(|_| changes_supported);
             if std::mem::take(&mut probing)
                 && matches!(
                     result,
                     Ok(Ok(Reply::Unchanged { .. }
                         | Reply::Chunk { .. }
+                        | Reply::Changes { .. }
                         | Reply::Unavailable))
                 )
             {
@@ -1477,7 +1567,10 @@ pub(super) async fn install(
                     renewed = false;
                     false
                 }
-                Ok(Ok(reply @ Reply::Chunk { .. })) => {
+                Ok(Ok(reply))
+                    if matches!(reply, Reply::Chunk { .. })
+                        || (changes.is_some() && matches!(reply, Reply::Changes { .. })) =>
+                {
                     set_read_ready(&inbound, &ready, false);
                     match read_capture(&channel, reply).await {
                         Ok((read, next)) => {
