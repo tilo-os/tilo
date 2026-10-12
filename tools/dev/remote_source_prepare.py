@@ -2,21 +2,16 @@
 """Prepare a bounded source-only mirror for the native import experiment.
 
 Preparation is local and read-only against the application owner's worktree.
-The explicit --build option sends only the reviewed mirror to existing rcargo.
+Only a reviewed mirror should be sent by a separately configured remote build tool.
 """
 import argparse
 import fcntl
 import hashlib
 import json
-import os
 from pathlib import Path
 import shutil
-import re
 import stat
 import subprocess
-import sys
-import time
-import tomllib
 
 ROOT_FILES = {'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'rustfmt.toml', 'clippy.toml'}
 ROOTS = {'apps', 'crates', 'examples', 'vendor', '.cargo'}
@@ -71,12 +66,12 @@ def prepare(source, mirror, receipt):
     source = source.resolve()
     if mirror.resolve().is_relative_to(source) or source.is_relative_to(mirror.resolve()):
         raise ValueError("source owner worktree and build mirror must be disjoint")
-    if mirror.exists() and not (mirror / '.rcargo-source-owner').exists():
+    if mirror.exists() and not (mirror / '.source-build-owner').exists():
         raise ValueError('refuse an unowned mirror')
     if shutil.disk_usage(mirror.parent).free < 3 * MAX_BYTES:
         raise ValueError("insufficient disk headroom for bounded source mirror")
     mirror.mkdir(parents=True, exist_ok=True)
-    (mirror / '.rcargo-source-owner').touch()
+    (mirror / '.source-build-owner').touch()
     files, size = source_files(source)
     manifest = {}
     for name, before in files:
@@ -104,57 +99,17 @@ def prepare(source, mirror, receipt):
     previous.write_text(json.dumps(manifest, sort_keys=True))
     if not (mirror / '.git').exists():
         subprocess.run(['git', 'init', '-q', str(mirror)], check=True)
-    (mirror / '.git/info/exclude').write_text('target/\n.rcargo-source-owner\n.source-manifest.json\n')
+    (mirror / '.git/info/exclude').write_text('target/\n.source-build-owner\n.source-manifest.json\n')
     # No builder identity/credentials, receipts or imported data live in the mirror.
     actual = subprocess.check_output(['git', '-C', str(mirror), 'ls-files', '-z', '-co', '--exclude-standard']).decode().split('\0')
     if set(actual) - {''} != set(manifest):
         raise ValueError('mirror contains unexpected upload paths; refuse source egress')
     result = {'source': str(source), 'mirror': str(mirror), 'files': len(files), 'bytes': size,
               'snapshot_sha256': hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest(),
-              'command': ['rcargo', '--no-fallback', 'build', '--locked', '-p', 'good-morning', '--bins'],
               'source_only': True, 'imported_payloads_uploaded': False, 'build_executed': False}
     receipt.write_text(json.dumps(result, indent=2) + '\n')
     return result
 
-
-def build(mirror, receipt, result, config):
-    cfg = tomllib.loads(config.read_text())
-    builder = cfg['builder']
-    # Deliberately omit instance ID/security group: an unreachable host cannot
-    # trigger rcargo's AWS start/firewall recovery. No credential values copied.
-    safe = {key: builder[key] for key in ('host', 'user', 'sccache_bucket', 'sccache_region', 'sccache_prefix') if key in builder}
-    if not safe.get('host'):
-        raise ValueError('configured existing builder host is required')
-    scoped = receipt.parent / 'host-only-rcargo.toml'
-    scoped.write_text('[builder]\n' + ''.join(key + ' = ' + json.dumps(value) + '\n' for key, value in safe.items()) + '\n[defaults]\nfetch_all_binaries = false\n')
-    env = {**os.environ, 'RCARGO_CONFIG': str(scoped), 'RCARGO_FALLBACK': '0', 'RCARGO_TIMINGS': '1', 'RCARGO_TRANSPORT': 'ssh'}
-    # Use an already specified immutable build image; never resolve/start one here.
-    image = env.get('RCARGO_IMAGE', '')
-    if not re.fullmatch(r'registry\.tilo\.so/tilo/tilo-builder@sha256:[0-9a-f]{64}', image):
-        raise ValueError('set RCARGO_IMAGE to the verified immutable native builder image')
-    env.pop('CARGO_TARGET_DIR', None)
-    started = time.monotonic()
-    process = subprocess.Popen(result['command'], cwd=mirror, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    phases, written = {}, 0
-    with receipt.with_suffix('.log').open('wb') as log:
-        for chunk in iter(lambda: process.stdout.readline(65536), b''):
-            if written < 4 * 1024 * 1024:
-                retained = chunk[:4 * 1024 * 1024 - written]
-                log.write(retained)
-                written += len(retained)
-            sys.stdout.buffer.write(chunk)
-            sys.stdout.buffer.flush()
-            match = re.search(rb'rcargo: timing ([a-z_.]+) ([0-9.]+)ms', chunk)
-            if match:
-                phases[match[1].decode()] = float(match[2]) / 1000
-    process.wait()
-    result['phases_seconds'] = phases
-    result['log_bytes_retained'] = written
-    result['log_at_budget'] = written == 4 * 1024 * 1024
-    result.update(build_executed=True, elapsed_seconds=round(time.monotonic()-started, 3), exit_code=process.returncode,
-                  builder={'host': safe['host'], 'user': safe.get('user', 'fedora')}, image=image)
-    receipt.write_text(json.dumps(result, indent=2) + '\n')
-    return process.returncode
 
 
 def main():
@@ -162,8 +117,6 @@ def main():
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--mirror', type=Path, required=True)
     parser.add_argument('--receipt', type=Path, required=True)
-    parser.add_argument('--build', action='store_true')
-    parser.add_argument('--config', type=Path, default=Path.home()/'.config/rcargo/config.toml')
     args = parser.parse_args()
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
     if args.receipt.resolve().is_relative_to(args.mirror.resolve()):
@@ -172,8 +125,6 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         result = prepare(args.source, args.mirror, args.receipt)
         print(json.dumps(result))
-        if args.build:
-            return build(args.mirror, args.receipt, result, args.config)
     return 0
 
 

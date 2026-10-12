@@ -58,7 +58,7 @@ NON_COMPILING_DOCS = {
     "AGENTS.md",
     "DEVELOPMENT.md",
     "docs/ci-performance.md",
-    "tools/dev/rcargo-source-build.md",
+    "tools/dev/remote-source-prepare.md",
     "docs/ci-emergency-relief.md",
     "docs/headless-testing.md",
 }
@@ -80,7 +80,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/recorded_test_time.json": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_test_time.py": "tools/tests/test_ci_recorded_test_time.py",
     "tools/rust_feedback.py": "tools/tests/test_rust_feedback.py",
-    "tools/dev/rcargo_source_build.py": "tools/tests/test_rcargo_source_build.py",
+    "tools/dev/remote_source_prepare.py": "tools/tests/test_remote_source_prepare.py",
     "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
     "tools/ci/nextest_report.py": "tools/tests/test_nextest_report.py",
     "tools/ci/run_scoped_tests.py": "tools/tests/test_ci_scoped_tests.py",
