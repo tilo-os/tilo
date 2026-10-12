@@ -160,11 +160,15 @@ mod tests {
             .ok_or_else(|| io::Error::other("object identity unavailable"))
     }
     fn scratch() -> io::Result<std::path::PathBuf> {
+        // macOS reads the clock in whole microseconds, so tests starting
+        // together also need a per-process sequence number to stay apart.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "tilo-retained-{}-{}",
+            "tilo-retained-{}-{}-{}",
             std::process::id(),
             tilo_clock::try_unix_now_ns()
-                .ok_or_else(|| io::Error::other("system clock is before the Unix epoch"))?
+                .ok_or_else(|| io::Error::other("system clock is before the Unix epoch"))?,
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir(&path)?;
         Ok(path)
