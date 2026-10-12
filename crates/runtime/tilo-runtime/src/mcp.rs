@@ -1037,41 +1037,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             },
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({"tools":self.tools()})),
-            "tools/call" => {
-                #[derive(Deserialize)]
-                #[serde(deny_unknown_fields)]
-                struct Call {
-                    name: String,
-                    #[serde(default = "empty_object")]
-                    arguments: Value,
-                }
-                match parse::<Call>(params) {
-                    Ok(call)
-                        if self.computer.is_some()
-                            && matches!(call.name.as_str(), "computer" | "computer_batch") =>
-                    {
-                        Ok(self.computer(&call.name, call.arguments).await)
-                    }
-                    Ok(call)
-                        if self.surface == Surface::Agent
-                            && agent::tool_definitions().iter().any(|definition| {
-                                definition["name"].as_str() == Some(call.name.as_str())
-                            }) =>
-                    {
-                        Ok(self.agent_call(&call.name, call.arguments).await)
-                    }
-                    Ok(call)
-                        if self.surface == Surface::Classic
-                            && tool_definitions().iter().any(|definition| {
-                                definition["name"].as_str() == Some(call.name.as_str())
-                            }) =>
-                    {
-                        Ok(tool_result(self.call(&call.name, call.arguments).await))
-                    }
-                    Ok(_) => return Some(error(&id, -32602, "Unknown tool")),
-                    Err(e) => Err(e),
-                }
-            }
+            "tools/call" => self.call_tool(params).await,
             "resources/list" => self.resources(params).await,
             "resources/read" => self.read_resource(params).await,
             _ => return Some(error(&id, -32601, "Method not found")),
@@ -1080,6 +1046,43 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Ok(value) => json!({"jsonrpc":"2.0","id":id,"result":value}),
             Err(e) => error(&id, -32602, &e),
         })
+    }
+    /// `tools/call`: the tool `params` names, on the surface this session
+    /// serves. An unknown tool is an invalid-params error like a malformed call.
+    async fn call_tool(&self, params: Value) -> Result<Value, String> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Call {
+            name: String,
+            #[serde(default = "empty_object")]
+            arguments: Value,
+        }
+        match parse::<Call>(params) {
+            Ok(call)
+                if self.computer.is_some()
+                    && matches!(call.name.as_str(), "computer" | "computer_batch") =>
+            {
+                Ok(self.computer(&call.name, call.arguments).await)
+            }
+            Ok(call)
+                if self.surface == Surface::Agent
+                    && agent::tool_definitions().iter().any(|definition| {
+                        definition["name"].as_str() == Some(call.name.as_str())
+                    }) =>
+            {
+                Ok(self.agent_call(&call.name, call.arguments).await)
+            }
+            Ok(call)
+                if self.surface == Surface::Classic
+                    && tool_definitions().iter().any(|definition| {
+                        definition["name"].as_str() == Some(call.name.as_str())
+                    }) =>
+            {
+                Ok(tool_result(self.call(&call.name, call.arguments).await))
+            }
+            Ok(_) => Err("Unknown tool".into()),
+            Err(e) => Err(e),
+        }
     }
     /// The turn a request of this session works in: at most [`MAX_WORKING`]
     /// work at once, and at most [`MAX_ADMITTED`] work or wait, beyond which
