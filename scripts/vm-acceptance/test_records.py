@@ -281,6 +281,19 @@ class SoftwareRaster(unittest.TestCase):
         [problem] = resources._budget_problems(self.window(1), self.BUDGETS, "idle")
         self.assertTrue(problem.startswith("compositor CPU 1.7% > 1.0% (tilo-gpu-driver×2 1.4%"), problem)
 
+    def test_idle_frames_over_budget_name_why_and_whose(self):
+        painted = [{"painted": 1, "paint_reasons": "revision", "paint_clients": ""},
+                   {"painted": 1, "paint_reasons": "apps", "paint_clients": "so.tilo.file-explorer"},
+                   {"painted": 1, "paint_reasons": "apps", "paint_clients": "so.tilo.file-explorer"}]
+        m = {**self.window(3), "painted_by": resources.painters(painted)}
+        [problem] = resources._budget_problems(m, self.BUDGETS, "idle", software=True)
+        self.assertEqual(problem, "3 frames painted while idle > 2 "
+                                  "(apps by so.tilo.file-explorer 2, revision 1)")
+
+    def test_frames_from_an_older_trace_are_counted_unattributed(self):
+        self.assertEqual(resources.painters([{"painted": 1}, {"painted": 1, "paint_reasons": ""}]),
+                         {"no reason": 1, "unattributed": 1})
+
     def test_a_rasteriser_busy_with_no_frame_painted_fails(self):
         [problem] = resources._budget_problems(self.window(0), self.BUDGETS, "idle", software=True)
         self.assertEqual(problem, "software rasteriser CPU 1.4% with no frame painted > 0.1%")
