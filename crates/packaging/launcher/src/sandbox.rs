@@ -1,4 +1,4 @@
-//! Bubblewrap argv construction from a [`MinimalManifest`].
+//! Bubblewrap argv construction from a [`ManifestView`].
 //!
 //! Pure function: given a manifest, payload root, optional runtime root,
 //! and resolved service fds, returns the argv for `bwrap`. No I/O — fd
@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::capabilities::CapabilityPlan;
-use crate::manifest::{MinimalManifest, PortalPolicy};
+use crate::manifest::ManifestView;
 
 /// In-sandbox mount root for the package payload.
 pub fn payload_mount_for(package_id: &str) -> PathBuf {
@@ -24,6 +24,10 @@ pub fn runtime_mount_for(version: &str) -> PathBuf {
 pub fn runtime_library_path(version: &str) -> PathBuf {
     runtime_mount_for(version).join("lib")
 }
+
+/// The selected signed SDK's catalog, private to this application's namespace.
+/// The toolkit checks its compiled manifest and each font's pinned bytes.
+pub const RUNTIME_FONT_CATALOG_PATH: &str = "/run/tilo-fonts";
 
 /// Canonical absolute ELF interpreter paths re-exposed from the runtime
 /// bundle. Ordinary shared libraries are found through the bundle's
@@ -296,6 +300,18 @@ pub fn push_gpu_selection(
     }
 }
 
+/// The loader pin of a GPU-less machine (`gpu::SoftwarePin`): its manifests
+/// read-only and the variables that name them. No device is bound beyond
+/// the system profile's.
+pub fn push_software_pin(argv: &mut Vec<String>, pin: &crate::gpu::SoftwarePin) {
+    for file in pin.manifest_files() {
+        push_bind(argv, "--ro-bind-try", &file, &file);
+    }
+    for (key, value) in pin.env() {
+        argv.extend(["--setenv".to_string(), key.to_string(), value]);
+    }
+}
+
 /// Bind the trusted session seed read-only, independently of DRM access.
 pub fn push_pipeline_seed(argv: &mut Vec<String>, seed: &Path) {
     push_bind(
@@ -332,7 +348,7 @@ pub fn push_gpu_landlock_rules(argv: &mut Vec<String>, selection: &crate::gpu::G
 /// sources rather than a constant, since [`push_gpu_selection`]'s
 /// narrowing needs something actually mounted regardless of a future
 /// profile change.
-pub fn grants_drm(_manifest: &MinimalManifest, capabilities: &CapabilityPlan) -> bool {
+pub fn grants_drm(_manifest: &ManifestView, capabilities: &CapabilityPlan) -> bool {
     let from_profile = crate::profile::SYSTEM_DEVICE_PATHS
         .iter()
         .any(|entry| is_drm_path(Path::new(entry)));
@@ -388,7 +404,7 @@ pub fn push_action_authority_bind(argv: &mut Vec<String>, host_path: &Path) {
 /// renders exactly the sandbox the manifest alone describes, the whole
 /// enforcement story for a revoked or never-granted permission.
 pub fn build_bwrap_argv(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     payload_root: &Path,
     runtime: Option<(&Path, &str)>,
     service_binds: &[ServiceBind],
@@ -410,6 +426,24 @@ pub fn build_bwrap_argv(
         entry,
         capabilities,
     )
+}
+
+/// The surface the package ships (`surface.toml` at its payload root), by
+/// its path in the sandbox and its hash: the app reads it from there, checks
+/// the hash and names it in every change it signs. A package without one
+/// names none, and its changes wait wherever surfaces decide them.
+fn push_surface(argv: &mut Vec<String>, payload_root: &Path, payload_mount: &Path) {
+    let Ok(bytes) = std::fs::read(payload_root.join("surface.toml")) else {
+        return;
+    };
+    argv.extend([
+        "--setenv".to_string(),
+        "TILO_SURFACE".to_string(),
+        payload_mount.join("surface.toml").display().to_string(),
+        "--setenv".to_string(),
+        "TILO_SURFACE_HASH".to_string(),
+        blake3::hash(&bytes).to_hex().to_string(),
+    ]);
 }
 
 fn push_continuity_environment(argv: &mut Vec<String>) {
@@ -490,7 +524,7 @@ fn is_plain_absolute_path(value: &str) -> bool {
         })
 }
 
-fn push_app_metadata(argv: &mut Vec<String>, manifest: &MinimalManifest, payload_mount: &Path) {
+fn push_app_metadata(argv: &mut Vec<String>, manifest: &ManifestView, payload_mount: &Path) {
     if let Some(name) = manifest
         .name
         .as_deref()
@@ -529,12 +563,51 @@ pub fn push_optional_runtime(argv: &mut Vec<String>, root: &Path, version: &str)
     mount
 }
 
+/// `GStreamer` relocates its default plugin lookup beside `libgstreamer`. The
+/// signed SDK carries that library, while platform decoder plugins already
+/// live in the fixed read-only system library profile. Name that boundary
+/// explicitly; never inherit a session's writable plugin search paths.
+const SYSTEM_GSTREAMER_PLUGINS: &[&str] = &[
+    "/usr/lib64/gstreamer-1.0",
+    "/usr/lib/gstreamer-1.0",
+    "/usr/lib/x86_64-linux-gnu/gstreamer-1.0",
+    "/usr/lib/aarch64-linux-gnu/gstreamer-1.0",
+];
+
+fn push_gstreamer_plugins(argv: &mut Vec<String>, root: &Path, mount: &Path) {
+    if !root.join("lib/libgstreamer-1.0.so.0").is_file() {
+        return;
+    }
+    let bundled = mount.join("lib/gstreamer-1.0");
+    let mut paths = vec![bundled.display().to_string()];
+    paths.extend(
+        SYSTEM_GSTREAMER_PLUGINS
+            .iter()
+            .map(|path| (*path).to_owned()),
+    );
+    argv.extend([
+        "--setenv".into(),
+        "GST_PLUGIN_SYSTEM_PATH_1_0".into(),
+        paths.join(":"),
+    ]);
+}
+
 fn push_runtime_bundle(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
     let Some((runtime_root, runtime_version)) = runtime else {
         return;
     };
     let runtime_mount = runtime_mount_for(runtime_version);
     push_bind(argv, "--ro-bind", runtime_root, &runtime_mount);
+    push_gstreamer_plugins(argv, runtime_root, &runtime_mount);
+    let fonts = runtime_root.join("lib/fonts");
+    if fonts.is_dir() {
+        push_bind(
+            argv,
+            "--ro-bind",
+            &fonts,
+            Path::new(RUNTIME_FONT_CATALOG_PATH),
+        );
+    }
     argv.extend([
         "--setenv".to_string(),
         "LD_LIBRARY_PATH".to_string(),
@@ -556,7 +629,7 @@ fn push_runtime_bundle(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
 
 /// `build_bwrap_argv` variant for `run-installed`'s CLI entrypoint.
 pub fn build_bwrap_argv_for_entry(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     payload_root: &Path,
     runtime: Option<(&Path, &str)>,
     service_binds: &[ServiceBind],
@@ -587,6 +660,7 @@ pub fn build_bwrap_argv_for_entry(
     argv.push("--setenv".to_string());
     argv.push("TILO_PACKAGE_ID".to_string());
     argv.push(manifest.package_id.clone());
+    push_surface(&mut argv, payload_root, &payload_mount);
 
     // Same-identity continuation is launcher-authored metadata. bwrap clears
     // the parent environment, so forward only the compact identifiers/payload
@@ -694,7 +768,7 @@ pub fn build_bwrap_argv_for_entry(
 /// alternative is an empty namespace with no gate (silently offline)
 /// or a gate plus `--share-net` (a hole beside the filter).
 pub fn egress_decision(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     capabilities: &CapabilityPlan,
 ) -> crate::netgate::EgressDecision {
     let decision = crate::netgate::EgressDecision::resolve(
@@ -706,10 +780,11 @@ pub fn egress_decision(
     // must come from the same answer, or the app gets an empty namespace
     // with nothing to reach through it.
     if matches!(decision, crate::netgate::EgressDecision::Filtered(_))
-        && crate::dev_env::dev_override(crate::dev_env::NET_GATE_ENV).is_some_and(|v| v == "off")
+        && package_store::dev_env::dev_override(crate::dev_env::NET_GATE_ENV)
+            .is_some_and(|v| v == "off")
     {
         tracing::warn!(
-            hosts = ?decision.policy().map(super::netgate::EgressPolicy::hosts),
+            hosts = ?decision.policy().map(super::netgate::EgressPolicy::describe),
             "{}=off: launching with UNRESTRICTED outbound network access even though this app \
              was granted specific hosts. Per-host filtering is NOT enforced for this launch.",
             crate::run::NET_GATE_ENV,
@@ -810,7 +885,7 @@ pub fn push_user_home(argv: &mut Vec<String>, capabilities: &CapabilityPlan) -> 
 /// Apps keep their own `XDG_DATA_HOME`; this hint lets shared host controls
 /// identify user resources such as Trash without granting another path.
 pub fn push_user_data(argv: &mut Vec<String>, capabilities: &CapabilityPlan) -> Option<PathBuf> {
-    let data = xdg_paths::data_dir().filter(|path| path.is_absolute())?;
+    let data = tilo_paths::data_dir().filter(|path| path.is_absolute())?;
     if !capabilities
         .ro_paths
         .iter()
@@ -871,18 +946,6 @@ fn push_bind(argv: &mut Vec<String>, kind: &str, src: &Path, dst: &Path) {
     argv.push(dst.display().to_string());
 }
 
-/// If the manifest declared at least one portal as `ViaHost`, return the
-/// current `$DBUS_SESSION_BUS_ADDRESS` — else `None`.
-pub fn host_dbus_bus_address_if_needed(
-    portals: &std::collections::BTreeMap<String, PortalPolicy>,
-) -> Option<String> {
-    let wants_bus = portals.values().any(|p| matches!(p, PortalPolicy::ViaHost));
-    if !wants_bus {
-        return None;
-    }
-    std::env::var("DBUS_SESSION_BUS_ADDRESS").ok()
-}
-
 /// Extract the `unix:path=<path>` from a D-Bus bus address, or `None`
 /// otherwise. Abstract sockets can't be bind-mounted, so callers
 /// surface that as "portal unavailable".
@@ -906,6 +969,7 @@ pub fn parse_unix_path_bus_address(addr: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::manifest::Entrypoint;
+    use crate::manifest::PortalPolicy;
     use std::collections::BTreeMap;
 
     #[test]
@@ -994,8 +1058,8 @@ mod tests {
         }
     }
 
-    fn mk_manifest(net_mode: &str) -> MinimalManifest {
-        MinimalManifest {
+    fn mk_manifest(net_mode: &str) -> ManifestView {
+        ManifestView {
             package_id: "com.example.notes".to_string(),
             name: Some("Notes".to_string()),
             localized_names: BTreeMap::default(),
@@ -1031,6 +1095,60 @@ mod tests {
         }
     }
 
+    #[test]
+    fn selected_runtime_fonts_are_private_readonly_and_follow_the_selected_sdk() {
+        let directory = tempfile::tempdir().unwrap();
+        for version in ["held", "new"] {
+            let root = directory.path().join(version);
+            let fonts = root.join("lib/fonts");
+            std::fs::create_dir_all(&fonts).unwrap();
+            std::fs::write(fonts.join("manifest.toml"), version).unwrap();
+            let mut argv = vec!["--unshare-all".to_string()];
+            push_runtime_bundle(&mut argv, Some((&root, version)));
+            crate::profile::push_system_profile(&mut argv, false);
+            // Execute the production mount plan without starting an app or
+            // compositor. The catalog mount needs no directory on the host.
+            argv.extend([
+                "--ro-bind".into(),
+                "/usr/bin/cat".into(),
+                "/usr/bin/cat".into(),
+                "/usr/bin/cat".into(),
+                format!("{RUNTIME_FONT_CATALOG_PATH}/manifest.toml"),
+            ]);
+            let output = std::process::Command::new("bwrap")
+                .args(&argv)
+                .output()
+                .expect("execute actual private runtime mount");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(output.stdout, version.as_bytes());
+            let mut write_argv = argv[..argv.len() - 2].to_vec();
+            write_argv.extend([
+                "--ro-bind".into(),
+                "/usr/bin/touch".into(),
+                "/usr/bin/touch".into(),
+                "/usr/bin/touch".into(),
+                format!("{RUNTIME_FONT_CATALOG_PATH}/new-file"),
+            ]);
+            let write = std::process::Command::new("bwrap")
+                .args(write_argv)
+                .output()
+                .unwrap();
+            assert!(!write.status.success(), "SDK fonts must remain read-only");
+            assert!(!fonts.join("new-file").exists());
+            assert_eq!(
+                std::fs::read(fonts.join("manifest.toml")).unwrap(),
+                version.as_bytes()
+            );
+        }
+        let mut legacy = Vec::new();
+        push_runtime_bundle(&mut legacy, Some((directory.path(), "legacy")));
+        assert!(!legacy.iter().any(|arg| arg == RUNTIME_FONT_CATALOG_PATH));
+    }
+
     /// Build argv for `mk_manifest`'s package id with `policy`, exercising
     /// the real `build_bwrap_argv` → `hardening::for_package` path.
     fn argv_with_hardening_policy(policy: &str) -> Vec<String> {
@@ -1048,6 +1166,43 @@ mod tests {
             None,
             &CapabilityPlan::empty(),
         )
+    }
+
+    #[test]
+    fn runtime_gstreamer_plugin_paths_are_fixed_and_already_readable() {
+        let runtime = tempfile::tempdir().unwrap();
+        std::fs::create_dir(runtime.path().join("lib")).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("GST_PLUGIN_SYSTEM_PATH_1_0", "/home/private/plugins");
+        let manifest = mk_manifest("off");
+        let argv_for = || {
+            build_bwrap_argv(
+                &manifest,
+                Path::new("/host/pkg"),
+                Some((runtime.path(), "selected")),
+                &[],
+                None,
+                &CapabilityPlan::empty(),
+            )
+        };
+        assert_eq!(
+            setenv_value(&argv_for(), "GST_PLUGIN_SYSTEM_PATH_1_0"),
+            None
+        );
+        std::fs::write(runtime.path().join("lib/libgstreamer-1.0.so.0"), b"fixture").unwrap();
+        let argv = argv_for();
+        let paths = setenv_value(&argv, "GST_PLUGIN_SYSTEM_PATH_1_0").unwrap();
+        assert!(paths.starts_with("/run/tilo-runtime/selected/lib/gstreamer-1.0:"));
+        assert!(!paths.contains("/home/private"));
+        for path in SYSTEM_GSTREAMER_PLUGINS {
+            assert!(paths.split(':').any(|candidate| candidate == *path));
+            assert!(
+                crate::profile::SYSTEM_READ_PATHS
+                    .iter()
+                    .any(|parent| Path::new(path).starts_with(parent))
+            );
+        }
+        assert!(!argv.iter().any(|arg| arg == "--share-net"));
     }
 
     #[test]
@@ -1161,6 +1316,47 @@ mod tests {
                 .expect("payload host path in argv");
             assert_eq!(argv[pos - 1], "--ro-bind");
             assert_eq!(argv[pos + 1], "/var/tilo-apps/com.example.notes");
+        }
+        // Phase `argv_names_the_surface_the_package_ships`.
+        {
+            let m = mk_manifest("off");
+            let payload = tempfile::tempdir().unwrap();
+            let named = |argv: &[String], key: &str| {
+                argv.windows(3)
+                    .find(|w| w[0] == "--setenv" && w[1] == key)
+                    .map(|w| w[2].clone())
+            };
+            let without = build_bwrap_argv(
+                &m,
+                payload.path(),
+                None,
+                &[],
+                None,
+                &CapabilityPlan::empty(),
+            );
+            assert_eq!(
+                named(&without, "TILO_SURFACE"),
+                None,
+                "a package without a surface names none"
+            );
+            std::fs::write(payload.path().join("surface.toml"), b"[[resources]]\n").unwrap();
+            let with = build_bwrap_argv(
+                &m,
+                payload.path(),
+                None,
+                &[],
+                None,
+                &CapabilityPlan::empty(),
+            );
+            assert_eq!(
+                named(&with, "TILO_SURFACE").as_deref(),
+                Some("/var/tilo-apps/com.example.notes/surface.toml"),
+                "the file in the sandbox's payload"
+            );
+            assert_eq!(
+                named(&with, "TILO_SURFACE_HASH"),
+                Some(blake3::hash(b"[[resources]]\n").to_hex().to_string())
+            );
         }
         // Phase `argv_reads_come_from_the_system_profile_not_the_manifest`.
         // The reads a launch gets are the system profile's; a manifest naming
@@ -2055,7 +2251,7 @@ mod tests {
     // Capability enforcement: assert on the production argv itself — a path
     // missing from it is a path the app cannot reach, whatever the UI says.
 
-    use collab_types::caps::{CapOverride, Expiry, Scope, Subject, Verb};
+    use collab_types::caps::{Access, CapOverride, Expiry, Scope, Subject};
 
     /// Deterministic stand-in for the host's device nodes, so a camera
     /// assertion doesn't depend on the test machine owning one.
@@ -2094,7 +2290,7 @@ mod tests {
             .collect()
     }
 
-    fn fs_grant(app: &str, path: &str, verb: Verb) -> CapOverride {
+    fn fs_grant(app: &str, path: &str, verb: Access) -> CapOverride {
         CapOverride::grant(Subject::app(app), Scope::FsPath(path.to_string()), verb)
     }
 
@@ -2159,7 +2355,7 @@ mod tests {
             let caps = vec![fs_grant(
                 "so.tilo.books",
                 "/var/workspace/books",
-                Verb::Read,
+                Access::Read,
             )];
             let argv = argv_with_caps("so.tilo.books", &caps, 1_000);
             assert!(
@@ -2188,7 +2384,7 @@ mod tests {
             let caps = vec![fs_grant(
                 "so.tilo.books",
                 "/var/workspace/books",
-                Verb::Write,
+                Access::Write,
             )];
             let argv = argv_with_caps("so.tilo.books", &caps, 1_000);
             assert!(
@@ -2219,7 +2415,7 @@ mod tests {
             let caps = vec![CapOverride::grant(
                 Subject::app("so.tilo.meet"),
                 Scope::Device("camera".to_string()),
-                Verb::Read,
+                Access::Read,
             )];
             let with = argv_with_caps("so.tilo.meet", &caps, 1_000);
             assert!(
@@ -2232,16 +2428,16 @@ mod tests {
         // Phase `a_capability_for_another_app_never_reaches_this_apps_argv`.
         {
             let caps = vec![
-                fs_grant("so.tilo.other", "/var/workspace/secrets", Verb::Write),
+                fs_grant("so.tilo.other", "/var/workspace/secrets", Access::Write),
                 CapOverride::grant(
                     Subject::app("so.tilo.other"),
                     Scope::Device("camera".to_string()),
-                    Verb::Read,
+                    Access::Read,
                 ),
                 CapOverride::grant(
                     Subject::app("so.tilo.other"),
                     Scope::NetHost("*".to_string()),
-                    Verb::Write,
+                    Access::Write,
                 ),
             ];
             let argv = argv_with_caps("so.tilo.books", &caps, 1_000);
@@ -2268,7 +2464,7 @@ mod tests {
             // The argv builder reads the session environment.
             let _env = tilo_test_env::lock();
             let caps = vec![
-                fs_grant("so.tilo.books", "/var/workspace/books", Verb::Write)
+                fs_grant("so.tilo.books", "/var/workspace/books", Access::Write)
                     .expiring(Expiry::AtUnix(500)),
             ];
             let expired = argv_with_caps("so.tilo.books", &caps, 1_000);
@@ -2308,7 +2504,7 @@ mod tests {
             let caps = vec![CapOverride::grant(
                 Subject::app("so.tilo.mail"),
                 Scope::NetHost("*".to_string()),
-                Verb::Write,
+                Access::Write,
             )];
             let granted = argv_with_caps("so.tilo.mail", &caps, 1_000);
             assert!(
@@ -2325,7 +2521,7 @@ mod tests {
             let caps = vec![CapOverride::grant(
                 Subject::app("so.tilo.mail"),
                 Scope::NetHost("github.com".to_string()),
-                Verb::Write,
+                Access::Write,
             )];
             let argv = argv_with_caps("so.tilo.mail", &caps, 1_000);
 

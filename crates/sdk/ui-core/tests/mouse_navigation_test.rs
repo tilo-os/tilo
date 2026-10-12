@@ -8,13 +8,13 @@
 )]
 
 use tilo_ui::State;
-use tilo_ui::headless::Driver;
+use tilo_ui::headless::FrameHarness;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::Router;
 use tilo_ui::widget::Text;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-fn side_button(driver: &mut Driver, button: MouseButton, state: ElementState) {
+fn side_button(driver: &mut FrameHarness, button: MouseButton, state: ElementState) {
     driver.send(&WindowEvent::MouseInput {
         device_id: winit::event::DeviceId::dummy(),
         state,
@@ -31,7 +31,7 @@ fn back_and_forward_buttons_walk_a_router_history() {
     })
     .unwrap();
     let handle = router.handle();
-    let mut driver = Driver::new(State::new(), Box::new(router), (400, 300));
+    let mut driver = FrameHarness::new(State::new(), Box::new(router), (400, 300));
     handle.push("settings").unwrap();
     driver.relayout();
     assert!(driver.targets().contains_key("settings"));

@@ -1,5 +1,5 @@
 //! Files supplies actual mounted-file custody and a pure immutable preview.
-use collab_types::files::{
+use fs_protocol::files::{
     CHECKED_HISTORY_RESTORE_XATTR, CHECKED_HISTORY_RESULT_XATTR_PREFIX,
     CHECKED_HISTORY_REVIEW_XATTR, CheckedHistoryOutcomeV1, CheckedHistoryRequestV1,
     CheckedHistoryResponseV1, CheckedHistoryReviewResponseV1, FileHistoryReadErrorV1,
@@ -62,7 +62,7 @@ impl FileHistoryTransport for MountedFileHistory {
     fn preview(
         &self,
         scope: FileHistoryReadScopeV1,
-        version: collab_types::FileVersionId,
+        version: fs_protocol::FileVersionId,
     ) -> Result<Vec<u8>, FileHistoryReadErrorV1> {
         let bytes = self
             .get(
@@ -73,7 +73,7 @@ impl FileHistoryTransport for MountedFileHistory {
                 .xattr_name(),
             )
             .map_err(|error| read_error(&error))?;
-        if bytes.len() > collab_types::MAX_HISTORY_PREVIEW_BYTES {
+        if bytes.len() > fs_protocol::MAX_HISTORY_PREVIEW_BYTES {
             return Err(FileHistoryReadErrorV1::TooLarge);
         }
         Ok(bytes)
@@ -162,21 +162,24 @@ fn read_error(error: &std::io::Error) -> FileHistoryReadErrorV1 {
         _ => FileHistoryReadErrorV1::Unavailable,
     }
 }
-/// Builds a history target bound to the mounted file at `path`.
+/// Builds a history target bound to the mounted file at `path`, whose
+/// versions `authors` names (people, and agents on their behalf).
 ///
 /// # Errors
 ///
 /// Returns the I/O error from opening `path` (see [`MountedFileHistory::open`]).
 pub fn target(
     path: &Path,
-    record: collab_types::FileRecordId,
+    record: fs_protocol::FileRecordId,
     label: String,
+    authors: ui::history_source::AuthorDirectory,
 ) -> std::io::Result<FileHistoryTarget> {
     Ok(FileHistoryTarget {
         binding: uuid::Uuid::new_v4(),
         record,
         label,
         transport: Arc::new(MountedFileHistory::open(path)?),
+        authors,
     })
 }
 
@@ -283,16 +286,17 @@ impl ui::history_mode::HistoryPreview for FilePreview {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
-    use collab_types::files::CheckedHistoryOperationV1;
+    use fs_protocol::files::CheckedHistoryOperationV1;
     use host_fs::attributes as xattr;
     fn scope() -> FileHistoryReadScopeV1 {
         FileHistoryReadScopeV1 {
             workspace_id: uuid::Uuid::from_u128(1),
             mount_lifetime: uuid::Uuid::from_u128(2),
-            record_id: collab_types::FileRecordId(uuid::Uuid::from_u128(3)),
+            record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(3)),
             frontier: [4; 32],
         }
     }
@@ -316,7 +320,7 @@ mod tests {
                     frontier: scope.frontier,
                 },
                 operation: CheckedHistoryOperationV1::Restore {
-                    version_id: collab_types::FileVersionId(uuid::Uuid::from_u128(6)),
+                    version_id: fs_protocol::FileVersionId(uuid::Uuid::from_u128(6)),
                 },
             };
             let response = CheckedHistoryResponseV1 {
@@ -349,7 +353,7 @@ mod tests {
                 CheckedHistoryOutcomeV1::Unavailable
             );
             assert!(
-                xattr::get(&path, crate::model::HISTORY_CONTROL_XATTR)
+                xattr::get(&path, fs_protocol::HISTORY_CONTROL_XATTR)
                     .unwrap()
                     .is_none()
             );
@@ -360,7 +364,7 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("record");
             std::fs::write(&path, b"current bytes").unwrap();
-            let version = collab_types::FileVersionId(uuid::Uuid::from_u128(9));
+            let version = fs_protocol::FileVersionId(uuid::Uuid::from_u128(9));
             let name = FileHistoryReadQueryV1::Preview {
                 frontier: scope().frontier,
                 version_id: version,

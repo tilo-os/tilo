@@ -279,7 +279,7 @@ impl IdentityPaths {
     pub fn ensure_directories(&self) -> io::Result<()> {
         if let Some(parent) = self.user_pubkey.parent() {
             #[cfg(windows)]
-            private_fs::directory(parent)?;
+            tilo_files::native::private::directory(parent)?;
             #[cfg(not(windows))]
             fs::create_dir_all(parent)?;
         }
@@ -289,7 +289,7 @@ impl IdentityPaths {
             .filter(|_| self.device_key_custody == DeviceKeyCustody::File)
         {
             #[cfg(windows)]
-            private_fs::directory(parent)?;
+            tilo_files::native::private::directory(parent)?;
             #[cfg(not(windows))]
             fs::create_dir_all(parent)?;
         }
@@ -501,7 +501,7 @@ fn signing_key_from_file(
     // component. A leaf-only O_NOFOLLOW check still permits an exchanged
     // parent directory to redirect an otherwise trusted key path.
     #[cfg(windows)]
-    let file = private_fs::read(path)?;
+    let file = tilo_files::native::private::read(path)?;
     #[cfg(not(windows))]
     let file = open_regular_without_symlinks(path).map_err(|error| {
         PersistError::Io(io::Error::new(
@@ -593,7 +593,7 @@ pub fn write_signing_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
     let seed = Zeroizing::new(sk.to_bytes());
     #[cfg(windows)]
-    return private_fs::write_atomic(path, seed.as_ref());
+    return tilo_files::native::private::write_atomic(path, seed.as_ref());
     #[cfg(not(windows))]
     tilo_files::native::atomic::write_with_mode(path, seed.as_ref(), 0o600)
 }
@@ -677,7 +677,7 @@ pub fn write_device_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
     let seed = Zeroizing::new(sk.to_bytes());
     #[cfg(windows)]
-    return private_fs::write_atomic(path, seed.as_ref());
+    return tilo_files::native::private::write_atomic(path, seed.as_ref());
     #[cfg(not(windows))]
     tilo_files::native::atomic::write_with_mode(path, seed.as_ref(), DEVICE_KEY_MODE)
 }
@@ -898,7 +898,10 @@ fn publish_identity_bytes_no_clobber(
 fn publish_device_key_no_clobber(path: &Path, key: &SigningKey) -> Result<bool, PersistError> {
     protect_secret_process()?;
     let seed = Zeroizing::new(key.to_bytes());
-    Ok(private_fs::create_atomic(path, seed.as_ref())?)
+    Ok(tilo_files::native::private::create_atomic(
+        path,
+        seed.as_ref(),
+    )?)
 }
 
 /// Create a private, complete temporary candidate beside the final device-key
@@ -1026,8 +1029,9 @@ pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistEr
 /// `sign` is the person's existing root capability. It receives the device
 /// certificate digest and returns the signature. This function never receives
 /// or writes the root secret. It writes the person's public key, a freshly
-/// generated device key, and the signed certificate under `paths`. An existing
-/// device key is left untouched.
+/// generated device key, and the signed certificate under `paths`, both as the
+/// default and the identity-specific certificate used for authorization. An
+/// existing device key is left untouched.
 ///
 /// # Errors
 ///
@@ -1088,6 +1092,7 @@ pub fn provision_joined_device(
             "target already has a device identity",
         )));
     }
+    write_device_cert(&paths.device_cert_for_user(&cert.user_public_key), &cert)?;
     write_device_cert(&paths.device_cert, &cert)?;
     if paths.user_privkey.exists() {
         return Err(PersistError::Io(io::Error::new(
@@ -1262,6 +1267,10 @@ mod tests {
         assert!(!cert.capabilities.can_admit_devices);
         verify_device_cert_at(&cert, 1_000).unwrap();
         assert_eq!(read_device_cert(&paths.device_cert).unwrap(), cert);
+        assert_eq!(
+            read_device_cert(&paths.device_cert_for_user(&cert.user_public_key)).unwrap(),
+            cert
+        );
         assert_eq!(
             read_device_key(&paths.device_privkey)
                 .unwrap()

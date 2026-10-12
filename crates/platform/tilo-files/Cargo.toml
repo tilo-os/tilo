@@ -18,6 +18,7 @@ path = "src/lib.rs"
 # crate; everything else is std, the two platform leaves it speaks in, and the
 # system calls std does not expose.
 [dependencies]
+tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
 tilo-paths = { version = "0.1.0", path = "../tilo-paths" }
 tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }

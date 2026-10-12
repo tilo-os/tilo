@@ -1,6 +1,5 @@
 use super::{Job, MAX_RESULTS, State};
 use crate::shell::native_workspace_owner::NativeWorkspaceOwner;
-use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::SystemTime;
 use tilo_desktop::activity::{TaskReviewCommand, TaskReviewRequest, TaskReviewSnapshot};
@@ -126,18 +125,11 @@ impl Worker {
             if view.device().device_public_key != certificate.device_public_key {
                 return Err("selected identity differs from this enrolled workspace device".into());
             }
-            let (role, caps, person) = view
+            let member = view
                 .peer()
                 .permissions(certificate.device_public_key, now)?;
-            let actor = Actor::person(Some(role), person.clone()).in_room(room.to_owned());
-            if decide_capability(
-                &actor,
-                &ResourceRef::Workspace,
-                Verb::Read,
-                &caps,
-                Some(seconds),
-            ) != CapDecision::Allow
-            {
+            let room_node = member.policy.node();
+            if !member.allows(&room_node, tilo_action_policy::ActionKind::Read, now) {
                 return Err("task review read permission is unavailable".into());
             }
             let snapshot = tilo_peer_state::workspace_task::snapshot(
@@ -149,14 +141,8 @@ impl Worker {
                 room: room.to_owned(),
                 generation: view.generation(),
                 sampled_at_secs: i64::try_from(seconds).unwrap_or(i64::MAX),
-                actor: person,
-                writable: decide_capability(
-                    &actor,
-                    &ResourceRef::Workspace,
-                    Verb::Write,
-                    &caps,
-                    Some(seconds),
-                ) == CapDecision::Allow,
+                writable: member.allows(&room_node, tilo_action_policy::ActionKind::Undoable, now),
+                actor: member.person,
                 tasks: snapshot.tasks,
                 controls: snapshot.controls,
             }))
@@ -189,6 +175,17 @@ impl Worker {
             return Err("selected person changed; review before changing this task".into());
         }
         let command = match &request.command {
+            TaskReviewCommand::Approve {
+                task_id,
+                agent_id,
+                run_epoch,
+                after_revision,
+            } => WorkspaceTaskCommand::ApproveRun {
+                task_id: task_id.clone(),
+                agent_id: agent_id.clone(),
+                expected_run_epoch: *run_epoch,
+                after_revision: *after_revision,
+            },
             TaskReviewCommand::Inspect { .. } => {
                 return Err("inspection does not mutate task state".into());
             }

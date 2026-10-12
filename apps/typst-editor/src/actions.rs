@@ -2,11 +2,11 @@
 //! file shown (effects of the compiler and the filesystem), and zoom and
 //! arrange the preview (views). None of them changes the workspace document;
 //! an open or a save that does records what it changed through the
-//! workspace's actions ([`crate::resource::TypstAction`]). Live Problems
+//! workspace's verbs ([`crate::resource::Workspace`]). Live Problems
 //! rows and preview pages are published beneath the workspace by the
 //! surface.
 
-use tilo_actions::Resource;
+use ui::tilo_actions::Resource;
 use ui::tilo_resource::{self, Effect};
 
 /// Bound how many live diagnostic / preview-page rows the palette materialises.
@@ -29,7 +29,7 @@ pub enum TypstEffect {
     },
     /// Open Typst file.
     #[effect(job, cancellable, destructive)]
-    Open {
+    OpenFile {
         #[param("Path of the file; omit to choose one")]
         path: Option<String>,
     },
@@ -75,18 +75,6 @@ pub enum TypstEffect {
 pub struct TypstResourceCtx<'a> {
     pub diagnostics: &'a [crate::compile::Diagnostic],
     pub page_count: usize,
-}
-
-/// `resource`, a live entity of the surface, as the row it publishes.
-pub fn live_row(resource: Resource) -> ui::framework::LiveRow {
-    let mut row = ui::framework::LiveRow::new(resource.id.as_str(), resource.kind, resource.label);
-    for action in resource.actions {
-        row = row.operation(action);
-    }
-    for child in resource.children {
-        row = row.row(live_row(child));
-    }
-    row
 }
 
 fn truncate_label(text: &str, max_chars: usize) -> String {
@@ -169,17 +157,17 @@ mod tests {
     #[test]
     fn file_effects_take_a_path_and_keep_job_confirmation_contracts() {
         let specs = TypstEffect::specs();
-        for id in ["open", "save", "export-pdf"] {
+        for id in ["open-file", "save", "export-pdf"] {
             let spec = specs.iter().find(|spec| spec.id == id).unwrap();
             assert_eq!(spec.params()[0].name, "path");
             assert!(matches!(
                 spec.contract.execution,
-                tilo_actions::ExecutionMode::Background { cancellable: true }
+                ui::tilo_actions::ExecutionMode::Background { cancellable: true }
             ));
-            assert_eq!(spec.contract.result, tilo_actions::ResultSpec::Job);
+            assert_eq!(spec.contract.result, ui::tilo_actions::ResultSpec::Job);
             assert!(!matches!(
                 spec.contract.confirmation,
-                tilo_actions::ConfirmationPolicy::None
+                ui::tilo_actions::ConfirmationPolicy::None
             ));
         }
         let save = TypstEffect::decode(
@@ -199,7 +187,7 @@ mod tests {
             let spec = specs.iter().find(|spec| spec.id == id).unwrap();
             assert_eq!(
                 spec.contract.risk,
-                tilo_actions::RiskLevel::None,
+                ui::tilo_actions::RiskLevel::None,
                 "{id} is a view"
             );
         }

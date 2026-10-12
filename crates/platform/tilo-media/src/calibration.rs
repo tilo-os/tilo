@@ -174,12 +174,6 @@ impl LogSweep {
         &self.signal
     }
 
-    /// The filter whose convolution with [`Self::signal`] is a band-limited
-    /// unit impulse at index `signal().len() - 1`.
-    pub fn inverse_filter(&self) -> &[f32] {
-        &self.inverse
-    }
-
     /// The impulse response contained in `capture`, starting `pre` samples
     /// before the whole sample at or before the scheduled play time, which
     /// lies `play_offset` samples into the capture. Also returns the fraction

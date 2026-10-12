@@ -1,0 +1,28 @@
+{
+  "phase": "fixed",
+  "exit_code": 0,
+  "executed_tests": 165,
+  "added_regression_tests": 30,
+  "failed_tests": [],
+  "existing_test_failures": [],
+  "previous_suite_failures": [],
+  "added_assertion_failures": [],
+  "baseline_source": "previous merged source patch185bd544fb0dd8fa; native14/16passed with two unchanged commit failures",
+  "ordinary_controls": [
+    "InputMethodControllerTest.CompositionMutationOrdinaryCancel",
+    "InputMethodControllerTest.CompositionMutationStyleStillAllowsCommit"
+  ],
+  "qualification_checks": "PASS",
+  "binary_sha256": "b5ab8fe00c14a8c342b42f415381c73d7fbc100f5e9ab88d35e42a940e5728e3",
+  "test_source_sha256": "b0193fc7586e77ed8758fc2be0205bdc17ba7c1587597f0cca11df32de01438f",
+  "summary_sha256": "5c6e63dacc221b60cba46f85383e9bf30ab785ca64b24f67ea8d8816adc63e8d",
+  "qualification_only_compatibility_patch_sha256": "63e73b3c7a5c57cf7a934068fa22e3622cb5609f5621f134585e7696569e2c3c",
+  "qualification_only_chromium_trace_restore_patch_sha256": "1c497db1198237a4375480ebd5bf695334e98d60b98689238fc2001920019e2e",
+  "filter": "InputMethodControllerTest.*",
+  "private_network_namespace": true,
+  "uid": 65534,
+  "PID_namespace": "exclusive supervisor container",
+  "proc_mount": "read-only binding of that same private namespace",
+  "retry_limit": 0,
+  "batch_limit": 1
+}

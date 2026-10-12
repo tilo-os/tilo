@@ -4,7 +4,7 @@
 //! serializes a complete valid package back. Untrusted bytes enter only through
 //! the bounded/hardened `SheetPackage` reader (zip-bomb + XXE defence).
 
-use crate::format::{CodecError, Confidence};
+use crate::format::CodecError;
 use crate::sheet_common::{
     ParsedSheet, ParsedWorkbook, SheetPackage, SheetProvider, attr_local, end_local_name,
     local_name,
@@ -26,18 +26,6 @@ const NS_REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/rela
 pub struct XlsxCodec;
 
 impl SheetProvider for XlsxCodec {
-    fn schema_id(&self) -> &str {
-        tilo_doc::sheet::schema::SHEET_SCHEMA_ID
-    }
-
-    fn detect(&self, head: &[u8]) -> Confidence {
-        if head.starts_with(b"PK") {
-            Confidence::Low
-        } else {
-            Confidence::None
-        }
-    }
-
     fn import(&self, bytes: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
         Self::parse(bytes)?.apply(wb, "xlsx");
         Ok(())
@@ -85,7 +73,10 @@ impl XlsxCodec {
             parsed.sheets.push(sheet);
         }
         if let Some(core) = pkg.get("docProps/core.xml") {
-            parsed.properties = parse_core_props(core);
+            parsed.properties = crate::office_props::element_props(
+                core,
+                crate::office_props::ooxml::core_prop_for_element,
+            );
         }
         // Preserve styles + theme so cell `s=` refs resolve and unmodeled parts survive; regenerated structural parts are not.
         for (name, bytes) in &pkg.parts {
@@ -459,50 +450,6 @@ fn push_cell(
     ));
 }
 
-fn parse_core_props(xml: &[u8]) -> BTreeMap<String, String> {
-    let mut props = BTreeMap::new();
-    let Ok(s) = std::str::from_utf8(xml) else {
-        return props;
-    };
-    let mut reader = Reader::from_str(s);
-    let mut cur: Option<&'static str> = None;
-    let mut buf = String::new();
-    while let Ok(ev) = reader.read_event() {
-        match ev {
-            Event::Start(e) => {
-                cur = match local_name(&e) {
-                    b"title" => Some("title"),
-                    b"creator" => Some("author"),
-                    b"created" => Some("created"),
-                    b"modified" => Some("modified"),
-                    _ => None,
-                };
-                buf.clear();
-            }
-            Event::Text(t) => {
-                if cur.is_some()
-                    && let Ok(txt) = t.xml10_content()
-                {
-                    buf.push_str(&txt);
-                }
-            }
-            Event::GeneralRef(r) if cur.is_some() => {
-                buf.extend(crate::resolve_general_ref(&r));
-            }
-            Event::End(_) => {
-                if let Some(key) = cur.take()
-                    && !buf.is_empty()
-                {
-                    props.insert(key.to_string(), buf.clone());
-                }
-            }
-            Event::Eof => break,
-            _ => {}
-        }
-    }
-    props
-}
-
 fn content_types_xml(nsheets: usize, has_theme: bool) -> String {
     let mut overrides = String::new();
     overrides.push_str(r#"<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>"#);
@@ -837,30 +784,11 @@ fn minimal_styles_xml() -> String {
 }
 
 fn core_props_xml(props: &BTreeMap<String, String>) -> String {
-    let mut fields = String::new();
-    if let Some(v) = props.get("title") {
-        let _ = write!(fields, "<dc:title>{}</dc:title>", escape_attr_quotes(v));
-    }
-    if let Some(v) = props.get("author") {
-        let _ = write!(fields, "<dc:creator>{}</dc:creator>", escape_attr_quotes(v));
-    }
-    if let Some(v) = props.get("created") {
-        let _ = write!(
-            fields,
-            r#"<dcterms:created xsi:type="dcterms:W3CDTF">{}</dcterms:created>"#,
-            escape_attr_quotes(v)
-        );
-    }
-    if let Some(v) = props.get("modified") {
-        let _ = write!(
-            fields,
-            r#"<dcterms:modified xsi:type="dcterms:W3CDTF">{}</dcterms:modified>"#,
-            escape_attr_quotes(v)
-        );
-    }
+    let fields = crate::office_props::ooxml::core_modeled_children(|key| props.get(key).cloned());
+    let ns = crate::office_props::ooxml::CORE_NS;
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">{fields}</cp:coreProperties>"#
+<cp:coreProperties {ns}>{fields}</cp:coreProperties>"#
     )
 }
 

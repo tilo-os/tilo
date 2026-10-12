@@ -118,23 +118,21 @@ impl Widget for ResponsiveRoot {
             .iter_mut()
             .map(|child| child.build_layout(taffy, theme, map))
             .collect();
-        let node = taffy.parent_node(
-            taffy::Style {
-                flex_direction: taffy::FlexDirection::Column,
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::length(if self.editing {
-                        400.0
-                    } else if self.oscillate.get() && self.rect.height() == 100.0 {
-                        101.0
-                    } else {
-                        100.0
-                    }),
-                },
-                ..Default::default()
+        let style = taffy::Style {
+            flex_direction: taffy::FlexDirection::Column,
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::length(if self.editing {
+                    400.0
+                } else if self.oscillate.get() && self.rect.height() == 100.0 {
+                    101.0
+                } else {
+                    100.0
+                }),
             },
-            &self.nodes,
-        );
+            ..Default::default()
+        };
+        let node = taffy.parent_node(style, &self.nodes);
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }

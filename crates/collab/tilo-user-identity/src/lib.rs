@@ -76,11 +76,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -101,6 +97,8 @@ mod keychain;
 pub mod machine_mesh;
 #[cfg(target_os = "linux")]
 pub mod nofollow;
+#[cfg(target_os = "linux")]
+pub mod peer_migration;
 // Identity files need an owner-checked filesystem; the browser keeps its
 // device key in host custody instead.
 #[cfg(not(target_arch = "wasm32"))]
@@ -108,6 +106,8 @@ pub mod persist;
 pub mod projection;
 pub mod revocation;
 pub mod root_envelope;
+#[cfg(unix)]
+pub mod update_lock;
 
 pub use approval::{
     APPROVAL_REQUEST_TAG, APPROVAL_RESPONSE_TAG, APPROVAL_SCHEMA_VERSION, ApprovalError,
@@ -151,11 +151,12 @@ pub use persist::{
     joined_device_is_ready, load_or_create_device_key, provision_joined_device,
 };
 pub use projection::{
-    GovernedDeviceIdentityV2, GovernedHumanIdentityV1, GovernedHumanIdentityV2,
-    MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES, MAX_TRUSTED_IDENTITY_PROJECTION_BYTES,
-    MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES, MAX_TRUSTED_IDENTITY_PROJECTION_HUMANS,
-    TRUSTED_IDENTITY_PROJECTION_V1_VERSION, TRUSTED_IDENTITY_PROJECTION_VERSION,
-    TrustedIdentityProjectionError, TrustedIdentityProjectionV1, TrustedIdentityProjectionV2,
+    GovernedAgentIdentityV2, GovernedDeviceIdentityV2, GovernedHumanIdentityV1,
+    GovernedHumanIdentityV2, MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES,
+    MAX_TRUSTED_IDENTITY_PROJECTION_BYTES, MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES,
+    MAX_TRUSTED_IDENTITY_PROJECTION_HUMANS, TRUSTED_IDENTITY_PROJECTION_V1_VERSION,
+    TRUSTED_IDENTITY_PROJECTION_VERSION, TrustedIdentityProjectionError,
+    TrustedIdentityProjectionV1, TrustedIdentityProjectionV2,
 };
 pub use revocation::{
     REVOCATION_PREIMAGE_TAG, RevocationEntry, RevocationError, RevocationList, RevocationReason,

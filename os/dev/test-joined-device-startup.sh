@@ -42,6 +42,7 @@ done
 case "$display" in gl|2d) ;; *) echo '--display must be gl or 2d' >&2; exit 2 ;; esac
 [ -f "$base" ] || { printf 'disk not found: %s\n' "$base" >&2; exit 1; }
 base="$(cd "$(dirname "$base")" && pwd)/$(basename "$base")"
+command -v jq >/dev/null || { echo 'jq is required' >&2; exit 1; }
 
 export TILO_USER="${TILO_USER:-quickuser}"
 export TILO_PASS="${TILO_PASS:-tilo}"
@@ -69,6 +70,10 @@ collect() {
   # alone says why a session ended right after login.
   "$vm" ssh 'cat "$HOME"/.local/state/tilo/session-logs/*.log' \
     > "$out/compositor-session.log" 2>&1 || true
+  # A compositor killed by a signal leaves no stack in its own log; the
+  # kernel names the faulting thread and module.
+  "$vm" ssh 'journalctl -k -b --no-pager -o short-monotonic -n 400' \
+    > "$out/kernel-journal.txt" 2>&1 || true
   "$vm" ssh "ls -la $identity_dir /var/lib/tilo /var/lib/tilo/device /var/lib/tilo/device/certs \
     /var/lib/tilo/device-private /var/lib/tilo/user-identity; id" \
     > "$out/identity-layout.txt" 2>&1 || true
@@ -139,7 +144,24 @@ cert_before="$("$vm" ssh 'sha256sum /var/lib/tilo/device/cert.bin')" \
   || die "joining left the device certificate unreadable to the person"
 "$vm" ssh 'set -- /var/lib/tilo/device/certs/*.bin && [ -e "$1" ] && cat -- "$@" >/dev/null' \
   || die "joining left the per-identity certificates unreadable to the person"
-"$vm" ssh "ls -la $identity_dir /var/lib/tilo/device /var/lib/tilo/device-private /var/lib/tilo/user-identity" \
+# install-cert publishes the person-scoped direct peers as that account,
+# even though the device-trust commit runs as root. This fresh disk has just
+# one identity and device; its list must bind that device to this person.
+identity="$("$vm" ssh 'od -An -v -tx1 /var/lib/tilo/user-identity/pubkey.bin' | tr -d ' \n')"
+[[ $identity =~ ^[0-9a-f]{64}$ ]] || die "joining left no identity public key"
+device="$("$vm" ssh 'tilo-enroll device-key' | jq -r .device_public_key)"
+[[ $device =~ ^[0-9a-f]{64}$ ]] || die "joining left no device public key"
+person_peers="/var/lib/tilo/peers/$identity"
+[ "$("$vm" ssh "stat -c '%a %U %G' $person_peers")" = "2750 $TILO_USER tilo-identity" ] \
+  || die "joining left the person peers directory with incorrect ownership or mode"
+[ "$("$vm" ssh "stat -c '%a %U %G' $person_peers/personal-device-peers.json")" = "640 $TILO_USER tilo-identity" ] \
+  || die "joining left the person peers list with incorrect ownership or mode"
+"$vm" ssh "cat $person_peers/personal-device-peers.json" > "$out/joined-personal-devices.json" \
+  || die "joining left the person peers list unreadable to the person"
+jq -e --arg identity "$identity" --arg device "$device" \
+  '. == [{identity: $identity, device: $device}]' "$out/joined-personal-devices.json" >/dev/null \
+  || die "joining did not record this device under this person's identity"
+"$vm" ssh "ls -la $identity_dir /var/lib/tilo/device /var/lib/tilo/device-private /var/lib/tilo/user-identity $person_peers" \
   > "$out/joined-layout.txt" 2>&1 || true
 
 # --- sign in ----------------------------------------------------------------------
@@ -177,6 +199,11 @@ identity_manifest="cd $identity_dir && find . -printf '%p %y %m %i %s %T@\n' | L
   || die "could not record the identity directory"
 "$vm" ssh '/usr/libexec/tilo/installed-atspi-apps.sh open Notes' > "$out/notes-open.txt" 2>&1 || {
   cat "$out/notes-open.txt" >&2
+  # A desktop that died under the launch leaves no app to find on the bus;
+  # say that, with the status the session wrapper recorded, rather than
+  # blame the app.
+  session_end="$("$vm" ssh 'grep -a "^tilo-flight-record-v1 end=" "$HOME/.local/state/tilo/session-logs/latest.log"' 2>/dev/null || true)"
+  [ -z "$session_end" ] || die "the desktop session ended while Notes opened: $session_end"
   die "Notes did not open on the joined device"
 }
 "$vm" ssh "$identity_manifest" > "$out/identity-after-notes.txt" \

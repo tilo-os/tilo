@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use launcher::capabilities::CapabilityPlan;
-use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox, read_manifest};
+use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox, ServiceReq, read_manifest};
 use launcher::run::{RunError, RunOptions, run, run_with, run_with_captured};
 use launcher::services::EXIT_REQUIRED_SERVICE_MISSING;
 use tilo_test_env::{ScopedEnv, TestHome};
@@ -40,9 +40,13 @@ fn runtime_dir_env(dir: &Path) -> ScopedEnv {
 // `with_glibc_binds` is gone: those loader paths are in the launcher's
 // system read profile now, so every app gets them without declaring.
 
-fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> MinimalManifest {
+fn service_req(raw: &str) -> ServiceReq {
+    ServiceReq::parse("", raw).expect("valid service requirement")
+}
+
+fn hello_manifest(payload_root: &Path, services: BTreeMap<String, ServiceReq>) -> ManifestView {
     let _ = payload_root;
-    MinimalManifest {
+    ManifestView {
         package_id: "com.example.hello".to_string(),
         name: None,
         localized_names: BTreeMap::default(),
@@ -134,11 +138,21 @@ fn manifest_errors_fail_before_exec_and_manifests_round_trip() {
         std::fs::write(
             &path,
             r#"
-    package_id = "com.example.demo"
+    [package]
+    id = "com.example.demo"
     version = "1.2.3"
+    kind = "app"
+
+    [publisher]
+    identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 
     [entrypoint]
     bin = "bin/demo"
+
+    [sandbox]
+    namespaces = []
+    seccomp = "tilo-default"
+    landlock = "strict"
 
     [sandbox.net]
     mode = "off"
@@ -151,8 +165,10 @@ fn manifest_errors_fail_before_exec_and_manifests_round_trip() {
         .unwrap();
         let m = read_manifest(&path).expect("parse");
         assert_eq!(m.package_id, "com.example.demo");
+        assert_eq!(m.version, "1.2.3");
         assert_eq!(m.entrypoint.bin, "bin/demo");
-        assert_eq!(m.sandbox.services.get("collab").unwrap(), "required@1");
+        let collab = &m.sandbox.services["collab"];
+        assert!(collab.is_required() && collab.version == 1);
     }
 }
 
@@ -169,7 +185,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
         let _env = runtime_dir_env(dir.path());
 
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "required@1".to_string());
+        svcs.insert("collab".to_string(), service_req("required@1"));
         let m = hello_manifest(dir.path(), svcs);
         let opts = RunOptions {
             no_services: false,
@@ -188,7 +204,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
         // step succeeds; the spawn step is exercised by the live tests.
         let _dir = tempfile::tempdir().unwrap();
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "required@1".to_string());
+        svcs.insert("collab".to_string(), service_req("required@1"));
         let resolved =
             launcher::services::resolve_service_binds(&svcs, true).expect("no-services infallible");
         assert!(resolved.is_empty());
@@ -199,7 +215,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
         let payload = hello_payload();
         let data = tempfile::tempdir().unwrap();
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "required@1".to_string());
+        svcs.insert("collab".to_string(), service_req("required@1"));
         let m = hello_manifest(payload, svcs);
         let opts = RunOptions {
             no_services: true,
@@ -222,7 +238,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
         let payload = hello_payload();
 
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "optional@1".to_string());
+        svcs.insert("collab".to_string(), service_req("optional@1"));
         let m = hello_manifest(payload, svcs);
         let opts = RunOptions {
             no_services: false,
@@ -427,7 +443,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         let home = runtime_home();
         let (bundle_dir, _identity) = install_signed_bundle(home.data(), "smoke-1.0.0");
 
-        let mut m = MinimalManifest {
+        let mut m = ManifestView {
             package_id: "com.example.hello".to_string(),
             name: None,
             localized_names: BTreeMap::default(),
@@ -551,7 +567,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         assert!(bundle_dir.join("lib/libstd-abc123.so").exists());
         assert!(bundle_dir.join("lib/libruntime_dylib.so").exists());
 
-        let m = MinimalManifest {
+        let m = ManifestView {
             package_id: "so.tilo.thin".to_string(),
             name: None,
             localized_names: BTreeMap::default(),
@@ -1001,7 +1017,7 @@ fn capability_files_on_disk_become_binds_or_nothing() {
     // exact pair `run_with` uses: `resolve_capabilities` reads it,
     // `build_bwrap_argv` renders the result.
     {
-        use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+        use collab_types::caps::{Access, CapOverride, Scope, Subject};
 
         let dir = tempfile::tempdir().unwrap();
         let caps_file = dir.path().join("caps.json");
@@ -1009,17 +1025,25 @@ fn capability_files_on_disk_become_binds_or_nothing() {
             CapOverride::grant(
                 Subject::app("com.example.hello"),
                 Scope::FsPath("/var/workspace/books".to_string()),
-                Verb::Read,
+                Access::Read,
             ),
             // Addressed to a different app: must not survive the crossing,
             // even though it sits in the same file.
             CapOverride::grant(
                 Subject::app("com.example.other"),
                 Scope::FsPath("/var/workspace/secrets".to_string()),
-                Verb::Write,
+                Access::Write,
             ),
         ];
-        std::fs::write(&caps_file, serde_json::to_vec(&caps).unwrap()).unwrap();
+        std::fs::write(
+            &caps_file,
+            serde_json::to_vec(&collab_types::caps::LaunchGrants {
+                authors: Vec::new(),
+                sandbox: caps,
+            })
+            .unwrap(),
+        )
+        .unwrap();
 
         let m = hello_manifest(dir.path(), BTreeMap::new());
         let opts = RunOptions {

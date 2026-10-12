@@ -164,8 +164,12 @@ impl SystemSoundEvent {
     clippy::struct_excessive_bools,
     reason = "one independent, serialised on/off choice per event"
 )]
+#[cfg_attr(
+    feature = "model",
+    derive(tilo_resource::Model, tilo_resource::JsonSchema)
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct SystemSoundEvents {
     pub notification: bool,
     pub message: bool,
@@ -176,6 +180,8 @@ pub struct SystemSoundEvents {
     pub low_battery: bool,
     pub error: bool,
 }
+
+crate::read_through_json_value!(SystemSoundEvents);
 
 impl Default for SystemSoundEvents {
     fn default() -> Self {
@@ -223,8 +229,12 @@ impl SystemSoundEvents {
 }
 
 /// The "System sounds" preference.
+#[cfg_attr(
+    feature = "model",
+    derive(tilo_resource::Model, tilo_resource::JsonSchema)
+)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct SystemSoundPrefs {
     /// Master switch.
     pub enabled: bool,
@@ -234,6 +244,8 @@ pub struct SystemSoundPrefs {
     pub theme: Option<String>,
     pub events: SystemSoundEvents,
 }
+
+crate::read_through_json_value!(SystemSoundPrefs);
 
 impl Default for SystemSoundPrefs {
     fn default() -> Self {

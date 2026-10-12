@@ -14,6 +14,9 @@
 //!   starting a flow that cannot finish.
 //! - **Remove** is explicitly confirmed, then transactionally clears the
 //!   canonical metadata, sealed credential, and local sync-health record.
+//! - **Sync now**, **Pause sync** and **Resume sync** reach a file account's
+//!   mount through the cloud account service (`cloud_control`), offered
+//!   exactly while the service lists the account as mounted.
 //!
 //! ## Live vs. sample
 //!
@@ -27,12 +30,13 @@
 
 use std::rc::Rc;
 
+use accounts::email::AccountConfig;
 use tracing::warn;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget};
 
-use crate::accounts::{AccountConfig, AccountDirectory, AccountKind, AccountRoot, AccountView};
+use crate::accounts::{AccountDirectory, AccountKind, AccountRoot, AccountView};
 use crate::effects::SettingsEffect;
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
@@ -44,8 +48,13 @@ use crate::widgets::{
     value_row,
 };
 
+mod cloud_control;
 mod cloud_signin;
+mod import_review;
+mod thunderbird_import;
+pub(crate) use cloud_control::CloudMounts;
 pub use cloud_signin::{BrowserOpener, PortalOpener};
+use runtime_fs::cloud::CloudRequest;
 #[cfg(test)]
 mod signin_tests;
 
@@ -53,6 +62,29 @@ mod signin_tests;
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AccountsEffect {
+    /// Discover only ordinary account metadata from a granted prefs.js path.
+    #[effect(job, returns, device_only, kind = "read")]
+    DiscoverThunderbirdAccounts { prefs: String },
+    /// Choose ordinary Thunderbird prefs through the existing file portal.
+    #[effect(job, returns, device_only, kind = "read")]
+    ChooseThunderbirdMetadata,
+    /// Read the current metadata review and its exact revision; no secrets.
+    #[effect(returns, kind = "read")]
+    InspectThunderbirdImport,
+    /// Select a reviewed identity and an explicit supported sign-in method.
+    #[effect(view)]
+    SelectThunderbirdAccount {
+        source: String,
+        authentication: String,
+        selected: bool,
+        revision: u64,
+    },
+    /// Import only selected configuration as pending sign-in metadata.
+    #[effect(returns, device_only, idempotent)]
+    CommitThunderbirdImport { revision: u64 },
+    /// Discard the metadata review and fence unfinished discovery callbacks.
+    #[effect(view)]
+    CancelThunderbirdImport,
     /// Show or hide public metadata in the browser identity picker.
     #[effect(row, device_only, idempotent)]
     SetBrowserIdentityEnabled { account: String, enabled: bool },
@@ -108,6 +140,25 @@ pub enum AccountsEffect {
         #[param("The account's id")]
         account: String,
     },
+    /// Sync a mounted file account now; one that could not start is tried
+    /// again.
+    #[effect(row, job, device_only, idempotent, label = "Sync now")]
+    SyncNow {
+        #[param("The account's id")]
+        account: String,
+    },
+    /// Pause a mounted file account's background sync and uploads.
+    #[effect(row, job, device_only, idempotent, label = "Pause sync")]
+    PauseSync {
+        #[param("The account's id")]
+        account: String,
+    },
+    /// Resume a paused file account's sync.
+    #[effect(row, job, device_only, idempotent, label = "Resume sync")]
+    ResumeSync {
+        #[param("The account's id")]
+        account: String,
+    },
 }
 
 /// Answer `effect` on the area's model; a connection check runs on a
@@ -118,6 +169,10 @@ pub(crate) fn answer(
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
     match effect {
+        AccountsEffect::DiscoverThunderbirdAccounts { prefs } => {
+            return thunderbird_import::discover(app, prefs, cx);
+        }
+        AccountsEffect::ChooseThunderbirdMetadata => return thunderbird_import::choose(app, cx),
         AccountsEffect::PublishBrowserIdentity { origin } => {
             app.publish_browser_identity(origin)?;
             return Ok(Effected::done());
@@ -135,6 +190,35 @@ pub(crate) fn answer(
     let shared = app.accounts().model();
     let mut model = shared.borrow_mut();
     match effect {
+        AccountsEffect::DiscoverThunderbirdAccounts { .. }
+        | AccountsEffect::ChooseThunderbirdMetadata => {
+            return Err(t("accounts-import-read-failed"));
+        }
+        AccountsEffect::InspectThunderbirdImport => {
+            return model.import_review.inspect().map(Effected::value);
+        }
+        AccountsEffect::SelectThunderbirdAccount {
+            source,
+            authentication,
+            selected,
+            revision,
+        } => {
+            model
+                .import_review
+                .select(&source, &authentication, selected, revision)?;
+            model.changed = true;
+        }
+        AccountsEffect::CommitThunderbirdImport { revision } => {
+            let root = model.account_root.clone();
+            let result = model.import_review.commit(&root, revision)?;
+            model.reload();
+            model.changed = true;
+            return Ok(Effected::value(result));
+        }
+        AccountsEffect::CancelThunderbirdImport => {
+            model.import_review.cancel()?;
+            model.changed = true;
+        }
         AccountsEffect::PublishBrowserIdentity { .. }
         | AccountsEffect::SetBrowserIdentityEnabled { .. }
         | AccountsEffect::RemoveBrowserIdentity { .. } => {
@@ -158,6 +242,15 @@ pub(crate) fn answer(
             model.command(AccountViewCommand::CancelReauthentication);
         }
         AccountsEffect::RemoveAccount { account } => model.remove(&account)?,
+        AccountsEffect::SyncNow { account } => {
+            return cloud(model, CloudRequest::SyncNow { account }, cx);
+        }
+        AccountsEffect::PauseSync { account } => {
+            return cloud(model, CloudRequest::Pause { account }, cx);
+        }
+        AccountsEffect::ResumeSync { account } => {
+            return cloud(model, CloudRequest::Resume { account }, cx);
+        }
         AccountsEffect::TestAccount { account } => {
             let check = model.connection_check(&account)?;
             drop(model);
@@ -176,12 +269,62 @@ fn complete_account_check(outcome: Result<String, String>) -> EffectAnswer {
     outcome.map(Effected::value)
 }
 
+/// Send `request` to the cloud account service on a worker; the pane asks
+/// the service for its mounts again once it answered.
+fn cloud(
+    model: std::cell::RefMut<'_, AccountsPane>,
+    request: CloudRequest,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    let send = model.cloud.request(request)?;
+    drop(model);
+    Ok(cx.thread(
+        move |_| send(),
+        |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+            app.accounts().model().borrow_mut().cloud.invalidate();
+            outcome.map(|()| Effected::done())
+        },
+    ))
+}
+
 /// What the External Accounts area keeps for the window: the model, read
 /// when first needed.
 pub struct AccountsArea {
     cx: PaneCx,
     model: std::cell::OnceCell<Shared<AccountsPane>>,
     account_root: Option<AccountRoot>,
+    /// The credential vault, its custody and the sync statuses, opened off
+    /// the UI thread after the window's first frame ([`Self::start_read`]).
+    read: crate::device_read::DeviceRead<AccountsRead>,
+}
+
+/// What the External Accounts area opens of the device: the credential
+/// vault (a Secret Service round trip for its custody and key), the
+/// custodian (an HTTP client for iCloud sign-in) and the accounts' sync
+/// statuses. Opened off the UI thread; the person's directory, which a
+/// host's record may hold, is read on the UI thread
+/// ([`AccountsPane::from_read`]).
+pub(crate) struct AccountsRead {
+    statuses: accounts::AccountSyncStatusStore,
+    vault: accounts::SecretVault,
+    custodian: account_custody::Custodian,
+}
+
+impl AccountsRead {
+    /// Open the stores under `root`.
+    fn of(root: &AccountRoot) -> Self {
+        Self {
+            statuses: root.statuses(),
+            vault: root.vault(),
+            custodian: root.custodian(),
+        }
+    }
+
+    /// Open the stores under the config root `explicit`, or the user's: the
+    /// same stores as the root's, whose person's record none of them read.
+    fn under(explicit: Option<std::path::PathBuf>) -> Self {
+        Self::of(&explicit.map_or_else(AccountRoot::live, AccountRoot::at))
+    }
 }
 
 impl AccountsArea {
@@ -190,7 +333,27 @@ impl AccountsArea {
             cx: cx.clone(),
             model: std::cell::OnceCell::new(),
             account_root: None,
+            read: crate::device_read::DeviceRead::default(),
         }
+    }
+
+    /// Open the vault, the custodian and the statuses off the UI thread;
+    /// `false` when they have been opened or are being opened, or for a
+    /// screenshot, which opens none of them.
+    pub(crate) fn start_read(&self) -> bool {
+        if self.is_open() || self.cx.scene().is_some() {
+            return false;
+        }
+        let explicit = self
+            .account_root
+            .as_ref()
+            .and_then(|root| root.explicit().map(std::path::Path::to_path_buf));
+        self.read.start(move || AccountsRead::under(explicit))
+    }
+
+    /// Whether the read [`Self::start_read`] started has ended.
+    pub(crate) fn read_finished(&self) -> bool {
+        self.read.is_finished()
     }
 
     pub(crate) fn with_account_root(mut self, root: AccountRoot) -> Self {
@@ -209,9 +372,17 @@ impl AccountsArea {
                     || self.account_root.clone().unwrap_or_else(AccountRoot::live),
                     AccountRoot::at,
                 );
+            let read = self.read.take();
             let mut model = if scene.is_some() {
                 AccountsPane::from_dir_in(root, crate::accounts::sample_directory(), false)
+            } else if let Some(read) = read
+                && !root.mutation_pending()
+            {
+                let dir = AccountDirectory::load_in(&root);
+                AccountsPane::from_read(root, dir, read)
             } else {
+                // Opened here: nothing was read, or an interrupted mutation
+                // is recovered first, which may rewrite the vault read.
                 AccountsPane::in_root(root)
             };
             if let Some(kind) = scene.and_then(|scene| scene.account_form) {
@@ -224,8 +395,19 @@ impl AccountsArea {
     /// Take in finished checks and sign-in steps, if the model exists.
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get() {
-            let _ = model.borrow_mut().poll();
+            let mut pane = model.borrow_mut();
+            // Background completion must leave the visible PaneView's rebuild
+            // demand intact; that view consumes it during its own sync.
+            let changed = pane.poll();
+            pane.changed |= changed;
         }
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
     }
 
     /// One row per account, offering what can be done to it.
@@ -250,6 +432,20 @@ impl AccountsArea {
                         account: id.clone(),
                     }));
                 }
+                if let Some(mount) = model.cloud.mount(&id) {
+                    row = row.operation(offer(AccountsEffect::SyncNow {
+                        account: id.clone(),
+                    }));
+                    row = row.operation(offer(if mount.paused {
+                        AccountsEffect::ResumeSync {
+                            account: id.clone(),
+                        }
+                    } else {
+                        AccountsEffect::PauseSync {
+                            account: id.clone(),
+                        }
+                    }));
+                }
                 row.operation(offer(AccountsEffect::SignInAgain {
                     account: id.clone(),
                 }))
@@ -259,6 +455,7 @@ impl AccountsArea {
                 .operation(offer(AccountsEffect::RemoveAccount { account: id }))
             })
             .collect();
+        published.extend(model.thunderbird_import_rows());
         for account in model
             .account_root
             .store()
@@ -421,6 +618,9 @@ pub struct AccountsPane {
     sign_in: Option<cloud_signin::SignInFlow>,
     custodian: account_custody::Custodian,
     opener: std::sync::Arc<dyn BrowserOpener>,
+    /// The file accounts the cloud service has mounted.
+    cloud: CloudMounts,
+    import_review: import_review::ImportReview,
     changed: bool,
 }
 
@@ -433,15 +633,25 @@ impl AccountsPane {
 
     /// The live pane over the account stores under `account_root`.
     pub fn in_root(account_root: AccountRoot) -> Self {
+        // Loading the directory first recovers an interrupted mutation,
+        // which may rewrite the vault the read then opens.
+        let dir = AccountDirectory::load_in(&account_root);
+        let read = AccountsRead::of(&account_root);
+        Self::from_read(account_root, dir, read)
+    }
+
+    /// The live pane over the account stores under `account_root`, showing
+    /// `dir` and holding what `read` opened.
+    fn from_read(account_root: AccountRoot, dir: AccountDirectory, read: AccountsRead) -> Self {
         // The live pane shows the *real* stores — empty until the user adds an
         // account. It never substitutes illustrative sample accounts: showing
         // fabricated `ada@example.com` rows would present made-up data on an
         // empty state. The deterministic `--shots`/tests use
         // `from_dir(sample_directory(), true)` for a rich still instead.
         Self {
-            dir: AccountDirectory::load_in(&account_root),
-            sync_statuses: account_root.statuses(),
-            vault: account_root.vault(),
+            dir,
+            sync_statuses: read.statuses,
+            vault: read.vault,
             is_sample: false,
             form_kind: None,
             form_error: None,
@@ -459,9 +669,11 @@ impl AccountsPane {
             form_candidate: None,
             reauth_probe: None,
             reauth_candidate: None,
+            import_review: import_review::ImportReview::default(),
             sign_in: None,
-            custodian: account_root.custodian(),
+            custodian: read.custodian,
             opener: std::sync::Arc::new(PortalOpener),
+            cloud: CloudMounts::live(),
             changed: false,
             cx: None,
             account_root,
@@ -499,14 +711,24 @@ impl AccountsPane {
             form_candidate: None,
             reauth_probe: None,
             reauth_candidate: None,
+            import_review: import_review::ImportReview::default(),
             sign_in: None,
             custodian: account_root.custodian(),
             opener: std::sync::Arc::new(PortalOpener),
+            cloud: CloudMounts::at(None),
             changed: false,
             cx: None,
             account_root,
             seen_accounts: None,
         }
+    }
+
+    /// Know the cloud service's mounts from `cloud` (tests).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_cloud_mounts(mut self, cloud: CloudMounts) -> Self {
+        self.cloud = cloud;
+        self
     }
 
     pub fn is_sample(&self) -> bool {
@@ -820,6 +1042,19 @@ impl AccountsPane {
                 .unwrap_or_default();
             self.form_server.set(server.into());
         }
+        if shared
+            .get(&accounts::AccountId::from(view.id.clone()))
+            .is_some_and(|account| {
+                account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
+                    && account
+                        .config_as::<AccountConfig>()
+                        .is_some_and(|config| config.auth == accounts::email::AuthMethod::OAuth)
+            })
+        {
+            self.import_review.status = Some(t("accounts-import-oauth-step"));
+            self.changed = true;
+            return;
+        }
         self.form_kind = Some(kind);
         self.form_account_id = Some(view.id);
         self.form_error = None;
@@ -867,6 +1102,20 @@ impl AccountsPane {
             .store()
             .get(&accounts::AccountId::from(id.clone()))
             .cloned();
+        if let Some(account) = stored.as_ref()
+            && account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
+        {
+            if account
+                .config_as::<AccountConfig>()
+                .is_some_and(|config| config.auth == accounts::email::AuthMethod::OAuth)
+            {
+                self.import_review.status = Some(t("accounts-import-oauth-step"));
+                self.changed = true;
+            } else {
+                self.open_edit(&id);
+            }
+            return;
+        }
         if let Some(account) = stored
             && let Some(kind) = AccountKind::from_type_id(account.type_id.as_str())
             && kind.signs_in()
@@ -926,6 +1175,7 @@ impl AccountsPane {
         }
         panel.push(self.browser_identity_card());
         panel.push(self.mail_card());
+        panel.push(self.thunderbird_import_card());
         panel.push(self.kind_card(AccountKind::CalDav));
         panel.push(self.kind_card(AccountKind::WebDav));
         panel.push(self.kind_card(AccountKind::Nextcloud));
@@ -1042,11 +1292,24 @@ impl AccountsPane {
     fn account_row(&self, view: &AccountView) -> El {
         let id = accounts::AccountId::from(view.id.clone());
         let runtime = self.sync_statuses.get(&id);
-        let (status, status_tone) = account_status(
-            self.is_sample,
-            view.enabled,
-            runtime.map(|status| status.health),
-        );
+        let mount = self.cloud.mount(&view.id);
+        let pending = self
+            .dir
+            .mail
+            .accounts
+            .iter()
+            .any(|account| account.id == view.id && account.config.import_pending);
+        let (status, status_tone) = if pending {
+            (t("accounts-status-reauth"), StatusTone::Warning)
+        } else if mount.is_some_and(|mount| mount.paused) {
+            (t("accounts-status-paused"), StatusTone::Neutral)
+        } else {
+            account_status(
+                self.is_sample,
+                view.enabled,
+                runtime.map(|status| status.health),
+            )
+        };
 
         // Keep identity and health together; maintenance actions get their own
         // row so narrow layouts remain legible and touch targets never crush
@@ -1149,8 +1412,46 @@ impl AccountsPane {
             column = column
                 .push(Box::new(primary_actions))
                 .push(Box::new(secondary_actions));
+            if let Some(mount) = mount {
+                column = column.push(Box::new(self.sync_actions(&view.id, mount.paused)));
+            }
         }
         Box::new(column)
+    }
+
+    /// Sync now, and pause or resume, for a mounted file account.
+    fn sync_actions(&self, id: &str, paused: bool) -> Row {
+        let (toggle_id, toggle_label, toggle) = if paused {
+            (
+                format!("settings.accounts.resume-sync.{id}"),
+                t("accounts-resume-sync"),
+                AccountsEffect::ResumeSync {
+                    account: id.to_owned(),
+                },
+            )
+        } else {
+            (
+                format!("settings.accounts.pause-sync.{id}"),
+                t("accounts-pause-sync"),
+                AccountsEffect::PauseSync {
+                    account: id.to_owned(),
+                },
+            )
+        };
+        Row::new()
+            .push(Box::new(self.bound(
+                Button::new(
+                    &format!("settings.accounts.sync-now.{id}"),
+                    &t("accounts-sync-now"),
+                ),
+                AccountsEffect::SyncNow {
+                    account: id.to_owned(),
+                },
+            )))
+            .push(Box::new(
+                self.bound(Button::new(&toggle_id, &toggle_label), toggle),
+            ))
+            .push(Box::new(Spacer::new()))
     }
 
     /// The inline add-email form: fields bound to CRDT keys plus Save/Cancel.
@@ -1392,7 +1693,13 @@ impl AccountsPane {
         );
         let expected_type = Self::account_type(kind);
         let mut stored = match (existing_id, shared.get(&id)) {
-            (Some(_), Some(stored)) if stored.type_id.as_str() == expected_type => stored.clone(),
+            (Some(_), Some(stored))
+                if stored.type_id.as_str() == expected_type
+                    || (kind == AccountKind::Mail
+                        && stored.type_id.as_str() == accounts::thunderbird::PENDING_TYPE) =>
+            {
+                stored.clone()
+            }
             (Some(_), Some(_)) => {
                 return Err("account type changed; refresh Settings and try again".into());
             }
@@ -1400,6 +1707,22 @@ impl AccountsPane {
             (None, Some(_)) => return Err("this account is already configured".into()),
             (None, None) => accounts::Account::new(id.clone(), expected_type),
         };
+        if stored.type_id.as_str() == accounts::thunderbird::PENDING_TYPE {
+            let config = stored
+                .config_as::<AccountConfig>()
+                .ok_or_else(|| t("accounts-import-malformed"))?;
+            if config.auth == accounts::email::AuthMethod::OAuth {
+                return Err(t("accounts-import-oauth-step"));
+            }
+            if password.trim().is_empty() {
+                return Err(t("accounts-import-password-step"));
+            }
+            stored.type_id = "email".into();
+            merge_config(
+                &mut stored.config,
+                serde_json::json!({"import_pending": false}),
+            );
+        }
         stored.display_name = name.trim().to_string();
         match kind {
             AccountKind::Mail if existing_id.is_none() => {
@@ -1575,6 +1898,8 @@ impl AccountsPane {
         let original_store = account_root.store();
         if let Some(account) = original_store.get(&account_id)
             && account.type_id.as_str() != expected_type
+            && !(kind == AccountKind::Mail
+                && account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE)
         {
             return Err(
                 "account type changed before removal; refresh Settings and try again".into(),
@@ -1912,6 +2237,9 @@ impl AccountsPane {
         self.poll_form_probe();
         self.poll_sign_in();
         self.poll_reauth_probe();
+        if !self.is_sample && self.cloud.poll() {
+            self.changed = true;
+        }
         std::mem::take(&mut self.changed)
     }
 }
@@ -1940,9 +2268,7 @@ impl PaneModel for AccountsPane {
 }
 
 fn relative_sync_time(unix: i64) -> String {
-    let now = ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs() as i64);
+    let now = ui::time::unix_now_i64();
     let age = now.saturating_sub(unix).max(0);
     match age {
         0..=59 => t("accounts-just-now"),
@@ -2018,6 +2344,7 @@ fn finish_or_recover(account_root: &AccountRoot, operation: &str) -> Result<(), 
 mod tests {
     use super::*;
     use crate::accounts::sample_directory;
+    use crate::host::testing::{count_named, labels_of};
     use std::collections::HashMap;
     use taffy::{NodeId, TaffyTree};
     use ui::Theme;
@@ -2112,25 +2439,6 @@ mod tests {
         }
     }
 
-    fn count_named(w: &dyn Widget, name: &str) -> usize {
-        let mut n = usize::from(w.name() == name);
-        for c in w.children() {
-            n += count_named(c, name);
-        }
-        n
-    }
-
-    fn button_labels(w: &dyn Widget, labels: &mut Vec<String>) {
-        if w.name() == "Button"
-            && let Some(label) = w.accessibility().and_then(|node| node.name)
-        {
-            labels.push(label);
-        }
-        for c in w.children() {
-            button_labels(c, labels);
-        }
-    }
-
     fn access_nodes(w: &dyn Widget, nodes: &mut Vec<ui::a11y::AccessNode>) {
         if let Some(node) = w.accessibility() {
             nodes.push(node);
@@ -2155,15 +2463,37 @@ mod tests {
         // Case `sample_directory_renders_read_only_without_remove_buttons`.
         {
             // The sample is illustration: one live Add button per provider kind,
-            // and no Remove buttons. A scratch root keeps whatever the runner's
+            // metadata import, and no Remove buttons. A scratch root keeps whatever the runner's
             // own account stores hold (a browser identity, say) out of the count.
             let (_scratch, root) = scratch_root();
             let pane = AccountsPane::from_dir_in(root, sample_directory(), true);
             let composed = lay_out(&pane);
             assert_eq!(
                 count_named(composed.as_ref(), "Button"),
+                AccountKind::ALL.len() + 1,
+                "every provider kind can be added and metadata imported over the sample"
+            );
+            let mut labels = Vec::new();
+            labels_of(composed.as_ref(), "Button", &mut labels);
+            assert_eq!(
+                labels
+                    .iter()
+                    .filter(|label| **label == t("accounts-add"))
+                    .count(),
                 AccountKind::ALL.len(),
-                "every provider kind can be added over the sample"
+                "one Add action per provider kind"
+            );
+            assert_eq!(
+                labels
+                    .iter()
+                    .filter(|label| **label == t("accounts-import-choose"))
+                    .count(),
+                1,
+                "one metadata import action"
+            );
+            assert!(
+                labels.iter().all(|label| *label != t("accounts-remove")),
+                "sample accounts cannot be removed"
             );
         }
 
@@ -2175,10 +2505,11 @@ mod tests {
             let (_scratch, root) = scratch_root();
             let pane = AccountsPane::from_dir_in(root, dir, false);
             let composed = lay_out(&pane);
-            // One Add per kind + four maintenance actions on each of four accounts.
+            // One Add per kind, metadata import, and four maintenance actions
+            // on each of four accounts.
             assert_eq!(
                 count_named(composed.as_ref(), "Button"),
-                AccountKind::ALL.len() + 16
+                AccountKind::ALL.len() + 1 + 16
             );
         }
 
@@ -2191,7 +2522,7 @@ mod tests {
             let pane = AccountsPane::from_dir_in(root, sample_directory(), false);
             let composed = lay_out(&pane);
             let mut labels = Vec::new();
-            button_labels(composed.as_ref(), &mut labels);
+            labels_of(composed.as_ref(), "Button", &mut labels);
             assert_eq!(
                 labels
                     .iter()
@@ -2515,5 +2846,145 @@ mod tests {
                 "rejected candidate must never replace the stored credential"
             );
         }
+    }
+
+    /// Sync now and pause or resume ride on exactly the accounts the cloud
+    /// service lists as mounted, and the window offers the same controls.
+    #[test]
+    fn account_actions_include_sync_now_for_mounted_accounts() {
+        use runtime_fs::cloud::{CloudCapabilities, CloudMount, MountHealth};
+        let mount = |account: &str, paused: bool| CloudMount {
+            account: account.into(),
+            mount_point: std::path::PathBuf::from("/home/ada/Remote").join(account),
+            health: Some(MountHealth::Healthy),
+            paused,
+            capabilities: CloudCapabilities::default(),
+        };
+        for paused in [false, true] {
+            let (_scratch, root) = scratch_root();
+            // Sample accounts take fresh ids each time: read them back.
+            let pane = AccountsPane::from_dir_in(root.clone(), sample_directory(), false);
+            let files = pane.directory().views_of(AccountKind::Nextcloud)[0]
+                .id
+                .clone();
+            let mail = pane.directory().views_of(AccountKind::Mail)[0].id.clone();
+            let pane = pane.with_cloud_mounts(CloudMounts::known(vec![mount(&files, paused)]));
+            let composed = lay_out(&pane);
+            let mut labels = Vec::new();
+            labels_of(composed.as_ref(), "Button", &mut labels);
+            let profile = tempfile::tempdir().unwrap();
+            let cx = PaneCx::in_file(profile.path().join("settings.json"));
+            let area = AccountsArea::new(&cx).with_account_root(root);
+            let _ = area.model.set(Rc::new(std::cell::RefCell::new(pane)));
+            let actions = |account: &str| -> Vec<String> {
+                let row = format!("settings.account:{account}");
+                area.rows()
+                    .into_iter()
+                    .find(|published| published.id() == row)
+                    .map(|published| {
+                        published
+                            .into_resource()
+                            .actions
+                            .into_iter()
+                            .map(|spec| spec.id)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let mounted = actions(&files);
+            assert!(mounted.contains(&"sync-now".to_owned()), "{mounted:?}");
+            let (offered, withheld) = if paused {
+                ("resume-sync", "pause-sync")
+            } else {
+                ("pause-sync", "resume-sync")
+            };
+            assert!(mounted.contains(&offered.to_owned()), "{mounted:?}");
+            assert!(!mounted.contains(&withheld.to_owned()), "{mounted:?}");
+            let unmounted = actions(&mail);
+            assert!(
+                unmounted.contains(&"test-account".to_owned()),
+                "{unmounted:?}"
+            );
+            assert!(
+                unmounted
+                    .iter()
+                    .all(|id| !matches!(id.as_str(), "sync-now" | "pause-sync" | "resume-sync")),
+                "an account the service has not mounted offers no sync control: {unmounted:?}"
+            );
+            assert_eq!(
+                labels
+                    .iter()
+                    .filter(|label| label.as_str() == "Sync now")
+                    .count(),
+                1,
+                "{labels:?}"
+            );
+            let toggle = if paused { "Resume sync" } else { "Pause sync" };
+            assert_eq!(
+                labels
+                    .iter()
+                    .filter(|label| label.as_str() == toggle)
+                    .count(),
+                1,
+                "{labels:?}"
+            );
+        }
+    }
+
+    /// Wait for a background read to end, as the warm-up's wake would.
+    fn until_finished(finished: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !finished() {
+            assert!(std::time::Instant::now() < deadline, "the read ends");
+            std::thread::yield_now();
+        }
+    }
+
+    /// The warm-up opens the vault off the UI thread once; the model holds
+    /// what it opened, so a saved credential is there.
+    #[test]
+    fn the_area_builds_its_model_from_the_read_it_started() {
+        let (dir, root) = scratch_root();
+        let id = accounts::AccountId::from("warm@example.test");
+        let mut store = accounts::AccountStore::new();
+        store.upsert(accounts::Account::new(id.clone(), "email"));
+        root.save_store(&store).expect("the store is saved");
+        let mut vault = root.vault();
+        vault.put(&id, &accounts::Secret::password("test-only-password"));
+        vault.try_save().expect("the vault is saved");
+        let cx = PaneCx::in_file(dir.path().join("settings.json"));
+        let area = AccountsArea::new(&cx).with_account_root(root.clone());
+        assert!(area.start_read(), "the first read starts");
+        assert!(!area.start_read(), "one read at a time");
+        assert!(!area.is_open(), "a running read publishes nothing yet");
+        until_finished(|| area.read_finished());
+        let model = area.model().borrow();
+        assert!(area.is_open());
+        assert!(vault.get(&id).is_some(), "the credential was saved");
+        assert_eq!(
+            model.vault.get(&id),
+            vault.get(&id),
+            "the vault read is held"
+        );
+        assert_eq!(
+            model.directory(),
+            AccountsPane::in_root(root).directory(),
+            "the directory is the one reading in place shows"
+        );
+        drop(model);
+        assert!(!area.start_read(), "a built model is not read again");
+    }
+
+    /// A mutation whose intent is on disk is recovered before the vault is
+    /// opened, so a vault read before it is not used.
+    #[test]
+    fn a_pending_mutation_is_seen() {
+        let (_dir, root) = scratch_root();
+        assert!(!root.mutation_pending());
+        let config = root.path().expect("an explicit root");
+        let accounts_dir = accounts::accounts_dir_in(&config);
+        std::fs::create_dir_all(&accounts_dir).expect("the accounts directory");
+        std::fs::write(accounts_dir.join("mutation-journal.json"), b"{}").expect("an intent");
+        assert!(root.mutation_pending());
     }
 }

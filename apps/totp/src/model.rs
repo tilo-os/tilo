@@ -7,10 +7,11 @@
 //! vault remains the source of bearer keys and live code generation.
 //!
 //! This module is pure logic — no IO, no rendering, no crypto. Code
-//! generation lives in [`crate::totp`]; CRDT persistence in
-//! [`crate::doc`].
+//! generation lives in [`crate::totp`]. What is shared is the [`Totp`]
+//! record: each account's secret-free metadata, in list order.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Collection, Id, Model, Refusal};
 use uuid::Uuid;
 use vello::peniko::Color;
 
@@ -24,7 +25,7 @@ pub type AccountId = Uuid;
 
 /// HMAC hash used by the TOTP construction. Mirrors the `algorithm`
 /// parameter of an `otpauth://` URI.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Model, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Algorithm {
     #[default]
     Sha1,
@@ -61,6 +62,89 @@ impl Algorithm {
             Algorithm::Sha256 => 1,
             Algorithm::Sha512 => 2,
         }
+    }
+}
+
+/// One account as the document shares it: everything but its secret, which
+/// stays in each device's secret store. Its item id is the account's uuid,
+/// and its position in [`Totp::accounts`] is its place in the list.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+#[model(check = StoredAccount::valid)]
+pub struct StoredAccount {
+    /// Issuer
+    #[model(label)]
+    pub issuer: String,
+    /// Account name
+    pub label: String,
+    /// Algorithm
+    pub algorithm: Algorithm,
+    /// Digits
+    pub digits: u8,
+    /// Period in seconds
+    pub period: u32,
+    /// Colour
+    pub color: u8,
+}
+
+impl StoredAccount {
+    /// The shared part of `account`.
+    pub fn of(account: &Account) -> Self {
+        Self {
+            issuer: account.issuer.clone(),
+            label: account.label.clone(),
+            algorithm: account.algorithm,
+            digits: account.digits,
+            period: account.period,
+            color: account.color,
+        }
+    }
+
+    /// Codes an authenticator can compute: 4 to 10 digits, every 5 to 300
+    /// seconds.
+    fn valid(&self) -> Result<(), Refusal> {
+        if !(4..=10).contains(&self.digits) {
+            return Err(Refusal::new("a code has 4 to 10 digits"));
+        }
+        if !(5..=300).contains(&self.period) {
+            return Err(Refusal::new("a code changes every 5 to 300 seconds"));
+        }
+        Ok(())
+    }
+}
+
+/// The accounts a person keeps, in list order. Adding one is the
+/// collection's insert under the account's uuid; its fields are edited at
+/// their paths; moving and deleting are the vault's verbs.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+pub struct Totp {
+    pub accounts: Collection<StoredAccount>,
+}
+
+impl Totp {
+    /// The item id of the account with uuid `id`.
+    pub fn item(id: AccountId) -> Id {
+        Id::from_raw(id.to_string())
+    }
+
+    /// The accounts the record holds, in order, without secrets.
+    pub fn list(&self) -> Vec<Account> {
+        self.accounts
+            .iter()
+            .enumerate()
+            .filter_map(|(order, (id, stored))| {
+                Some(Account {
+                    id: id.as_str().parse().ok()?,
+                    issuer: stored.issuer.clone(),
+                    label: stored.label.clone(),
+                    secret: String::new(),
+                    algorithm: stored.algorithm,
+                    digits: stored.digits,
+                    period: stored.period,
+                    color: stored.color,
+                    order: u32::try_from(order).unwrap_or(u32::MAX),
+                })
+            })
+            .collect()
     }
 }
 

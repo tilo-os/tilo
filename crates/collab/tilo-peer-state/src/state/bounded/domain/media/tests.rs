@@ -1,5 +1,4 @@
 use super::*;
-use crate::BoundedStatePeer;
 use crate::NeighbourMsg;
 use crate::PeerLimits;
 use crate::SeedDocument;
@@ -7,6 +6,7 @@ use crate::SeedState;
 use crate::StatePeer;
 use crate::TransportOrigin;
 use crate::room::media::{self as policy, read::PolicyValue};
+use crate::state::backend::restore::tests::restore_bounded;
 use automerge::{ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::RevocationList;
@@ -15,22 +15,10 @@ fn fixture() -> (StatePeer, SystemTime) {
     let (peer, _, now) = backend::restore::tests::media_fixture();
     (peer, now)
 }
-fn restore(peer: &StatePeer, now: SystemTime) -> BoundedStatePeer {
-    BoundedStatePeer::restore(
-        &peer.durable().unwrap(),
-        peer.room(),
-        peer.authority(),
-        &[],
-        &RevocationList::new(),
-        now,
-        &PeerLimits::default(),
-    )
-    .unwrap()
-}
 #[test]
 fn cached_call_matches_actual_signed_complete_policy_and_current_member() {
     let (peer, now) = fixture();
-    let native = restore(&peer, now);
+    let native = restore_bounded(&peer, now, &PeerLimits::default());
     let read = native.read();
     let policy = peer.validated_media_policy().unwrap().unwrap();
     let call_id = hex::encode([7; 32]);
@@ -54,7 +42,7 @@ fn cached_call_matches_actual_signed_complete_policy_and_current_member() {
 #[test]
 fn cached_call_reuses_restored_readiness_without_rechecking_bindings() {
     let (peer, now) = fixture();
-    let native = restore(&peer, now);
+    let native = restore_bounded(&peer, now, &PeerLimits::default());
     let read = native.read();
     let call_id = hex::encode([7; 32]);
     let bindings_before = backend::media::binding_checks();
@@ -134,7 +122,7 @@ fn cache_preserves_disabled_missing_encrypted_and_independent_revocation_cases()
             }
         }
         assert!(peer.validated_media_policy().ok().flatten().is_none());
-        let native = restore(&peer, now);
+        let native = restore_bounded(&peer, now, &PeerLimits::default());
         assert!(
             native
                 .read()
@@ -169,7 +157,7 @@ fn actual_published_denial_and_ended_call_match_legacy_epoch_and_directions() {
             }
         });
         let legacy = peer.validated_media_policy().unwrap().unwrap();
-        let native = restore(&peer, now);
+        let native = restore_bounded(&peer, now, &PeerLimits::default());
         let view = native.read();
         let actual = view
             .media_call(
@@ -190,7 +178,7 @@ fn actual_published_denial_and_ended_call_match_legacy_epoch_and_directions() {
 #[test]
 fn cache_basis_capacity_failure_is_not_downgraded_to_unavailable() {
     let (peer, now) = fixture();
-    let mut native = restore(&peer, now);
+    let mut native = restore_bounded(&peer, now, &PeerLimits::default());
     let backend::media::Cache::Ready(held) =
         std::mem::replace(&mut native.media, backend::media::Cache::Disabled)
     else {
@@ -282,7 +270,7 @@ fn expiring_fixture(host_expires: bool) -> (StatePeer, [u8; 32], SystemTime) {
 fn cached_call_rechecks_real_expiring_host_and_participant() {
     for host_expires in [false, true] {
         let (peer, participant, now) = expiring_fixture(host_expires);
-        let native = restore(&peer, now);
+        let native = restore_bounded(&peer, now, &PeerLimits::default());
         let read = native.read();
         let call_id = hex::encode([7; 32]);
         assert!(

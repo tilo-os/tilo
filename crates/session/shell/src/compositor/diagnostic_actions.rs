@@ -10,6 +10,15 @@ use crate::shell::test_control::{Command, Response};
 
 const PROVIDER: &str = "session-diagnostics";
 
+pub(super) fn owner_required(command: &Command) -> Option<Response> {
+    matches!(command, Command::ActionsInvoke { provider, .. } if provider == PROVIDER).then(|| {
+        Response::Err {
+            code: "not_permitted".into(),
+            message: crate::shell::i18n::t("session-diagnostics-owner-required"),
+        }
+    })
+}
+
 fn resources() -> Vec<Resource> {
     let mut configure = ActionSpec::typed_operation(
         "configure",
@@ -32,14 +41,18 @@ fn resources() -> Vec<Resource> {
             payload: b"configure".to_vec(),
         },
     );
-    configure.contract.permission = tilo_actions::PermissionRequirement::Admin;
+    configure.contract.kind = tilo_actions::ActionKind::Outside;
     let mut inspect = ActionSpec::typed_operation(
         "inspect",
         crate::shell::i18n::t("session-diagnostics-inspect"),
         "",
         OperationKind::View,
         "session-diagnostics/v1",
-        vec![],
+        vec![ActionParam::optional_owned(
+            "app_id",
+            ParamType::Text,
+            crate::shell::i18n::t("session-diagnostics-app-filter"),
+        )],
         |_| EncodedAction {
             type_id: "session-diagnostics/v1".into(),
             payload: b"inspect".to_vec(),
@@ -50,7 +63,7 @@ fn resources() -> Vec<Resource> {
     };
     configure.contract.result = result.clone();
     inspect.contract.result = result;
-    inspect.contract.permission = tilo_actions::PermissionRequirement::Read;
+    inspect.contract.kind = tilo_actions::ActionKind::Read;
     vec![
         Resource::new(
             PROVIDER,
@@ -62,10 +75,18 @@ fn resources() -> Vec<Resource> {
     ]
 }
 
+/// Add the diagnostics rows to a listing's last page, so a caller following
+/// `next_cursor` sees them once.
 pub(super) fn append_catalogue(response: &mut Response, query: &str) {
     let Response::Answer(answer) = response else {
         return;
     };
+    if answer
+        .get("next_cursor")
+        .is_some_and(|cursor| !cursor.is_null())
+    {
+        return;
+    }
     let rows = console_control::enumerate(PROVIDER, &resources(), query);
     let Some(actions) = answer
         .get_mut("actions")
@@ -73,21 +94,30 @@ pub(super) fn append_catalogue(response: &mut Response, query: &str) {
     else {
         return;
     };
-    if let Some(rows) = rows.get("actions").and_then(serde_json::Value::as_array) {
-        actions.extend(rows.iter().cloned());
-    }
+    let added = rows
+        .get("actions")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, |rows| {
+            actions.extend(rows.iter().cloned());
+            rows.len()
+        });
     let count = actions.len();
     answer["count"] = json!(count);
+    if let Some(total) = answer.get("total").and_then(serde_json::Value::as_u64) {
+        answer["total"] = json!(total.saturating_add(u64::try_from(added).unwrap_or(u64::MAX)));
+    }
 }
 
 /// Native control calls this only after admin peer authentication, without
 /// Agent scope, while unlocked. No environment or privilege is stored in CRDT.
 pub(super) fn dispatch(command: &Command) -> Option<Response> {
+    // Answered at once, so there is nothing for `wait_ms` to wait for.
     let Command::ActionsInvoke {
         provider,
         id,
         args,
         device: None,
+        wait_ms: _,
     } = command
     else {
         return None;
@@ -120,9 +150,33 @@ pub(super) fn dispatch(command: &Command) -> Option<Response> {
         session.configure_diagnostics(Options(flags));
     }
     let flags = session.diagnostic_options();
-    Some(Response::Answer(
-        json!({"applies_to":"subsequent_launches","diagnostics":flags.value(),"live_input_delivery":flags.0[0],"current_gpu_renderer":"unchanged"}),
-    ))
+    let mut answer = serde_json::Map::from_iter([
+        ("applies_to".into(), json!("subsequent_launches")),
+        ("diagnostics".into(), flags.value()),
+        ("live_input_delivery".into(), json!(flags.0[0])),
+        ("current_gpu_renderer".into(), json!("unchanged")),
+    ]);
+    if admitted.encoded.payload == b"inspect" {
+        let mut history = session
+            .launch_history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .value();
+        if let Some(app) = args.get("app_id").and_then(serde_json::Value::as_str)
+            && let Some(attempts) = history
+                .get_mut("attempts")
+                .and_then(serde_json::Value::as_array_mut)
+        {
+            attempts.retain(|attempt| {
+                attempt
+                    .get("package_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(app)
+            });
+        }
+        answer.insert("launch_history".into(), history);
+    }
+    Some(Response::Answer(serde_json::Value::Object(answer)))
 }
 
 #[cfg(test)]
@@ -135,7 +189,7 @@ mod tests {
         assert!(session.diagnostics.lock().unwrap().is_none());
         let mut command = Command::ActionsInvoke {
             provider: PROVIDER.into(), id: "configure@session-diagnostics".into(),
-            args: json!({"presentation":true,"gpu_stages":true,"gpu_timestamps":true,"gpu_dispatch_timestamps":false}).as_object().unwrap().clone(), device: None,
+            args: json!({"presentation":true,"gpu_stages":true,"gpu_timestamps":true,"gpu_dispatch_timestamps":false}).as_object().unwrap().clone(), device: None, wait_ms: None,
         };
         assert!(
             matches!(dispatch(&command), Some(Response::Answer(value)) if value["diagnostics"]["presentation"] == true)
@@ -172,9 +226,29 @@ mod tests {
             id: "inspect@session-diagnostics".into(),
             args: serde_json::Map::new(),
             device: None,
+            wait_ms: None,
         };
         assert!(
             matches!(dispatch(&read), Some(Response::Answer(value)) if value["applies_to"] == "subsequent_launches" && value["diagnostics"] == options.value())
         );
+        crate::shell::launcher::set_pending_placement(
+            "dev.tilo.diagnostic-app",
+            crate::shell::tab_binding::Placement::IntoTab(77),
+        );
+        let Some(Response::Answer(value)) = dispatch(&read) else {
+            panic!("owner inspect receipt");
+        };
+        assert_eq!(value["launch_history"]["attempts"][0]["saved_tab"], 77);
+        assert_eq!(
+            value["launch_history"]["stderr_policy"],
+            "fully_redacted_fixed_reason_only"
+        );
+        assert!(
+            value["launch_history"]["attempts"][0]["requested_epoch_ns"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        crate::shell::launcher::clear_pending_placements();
     }
 }

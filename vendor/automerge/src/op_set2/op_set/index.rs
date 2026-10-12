@@ -193,7 +193,13 @@ impl IndexBuilder {
         self.widths
             .push(op.width(SequenceType::Text, self.text_encoding) as u64);
 
-        let count = self.counters.remove(&op.id);
+        // Tilo patch (TILO-PATCH.md): only counters' increments land here;
+        // skip hashing every op's id while there are none.
+        let count = if self.counters.is_empty() {
+            None
+        } else {
+            self.counters.remove(&op.id)
+        };
 
         if let Some(i) = op.get_increment_value() {
             for (succ_idx, op_idx) in count.into_iter().flatten() {

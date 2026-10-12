@@ -1,5 +1,4 @@
 snippets-body-placeholder = Snippet body
-snippets-edit-body = Edit body
 snippets-count = { $count ->
     [one] { $count } snippet
    *[other] { $count } snippets
@@ -29,7 +28,7 @@ snippets-tag-named = Tag { $name }
 ## List and snippet
 
 snippets-untitled = Untitled snippet
-snippets-new-snippet = New snippet
+snippets-new = New snippet
 snippets-empty-library = No snippets yet
 snippets-empty-favorites = No favorites yet
 snippets-empty-most-used = Nothing copied yet
@@ -44,8 +43,8 @@ snippets-favorite = Favorite
 snippets-add-favorite = Add to favorites
 snippets-remove-favorite = Remove from favorites
 snippets-more-actions = More actions
-snippets-duplicate = Duplicate
-snippets-delete = Delete
+snippets-menu-duplicate = Duplicate
+snippets-menu-delete = Delete
 snippets-copy-title = { $title } (copy)
 
 ## Confirmations
@@ -62,22 +61,38 @@ snippets-expand-value = Value
 snippets-expand-preview = Preview
 snippets-cancel = Cancel
 
-## Actions
+## History: what each change did, by field and by verb
 
-snippets-action-open = Open snippet
-snippets-action-reveal-tag = Reveal tagged snippets
-snippets-action-reveal-folder = Reveal the snippets in this folder
-snippets-action-rename = Rename
-snippets-action-title = Title
-snippets-action-title-hint = New title…
-snippets-action-new-hint = Snippet title…
-snippets-action-set-language = Set language
-snippets-action-language-hint = rust, shell, python, sql…
-snippets-action-move = Move to folder
-snippets-action-folder-hint = Folder name (blank for all snippets)
-snippets-action-set-tags = Set tags
-snippets-action-tags-hint = comma, separated, tags
-snippets-action-describe = Edit description
-snippets-action-description = Description
-snippets-action-description-hint = Describe this snippet…
-snippets-action-delete = Delete snippet
+snippets-snippet-title = Renamed { $item }
+snippets-snippet-body = Edited the body of { $item }
+snippets-snippet-description = Edited the description of { $item }
+snippets-snippet-favorite = { $new ->
+    [true] Starred { $item }
+   *[false] Unstarred { $item }
+}
+snippets-snippet-folder = Moved { $item } to the folder { $new }
+snippets-snippet-language = Set the language of { $item } to { $new ->
+    [text] plain text
+    [shell] Shell
+    [rust] Rust
+    [sql] SQL
+    [git] Git
+    [python] Python
+    [javascript] JavaScript
+    [json] JSON
+    [yaml] YAML
+    [markdown] Markdown
+    [html] HTML
+    [css] CSS
+    [toml] TOML
+    [dockerfile] Dockerfile
+   *[other] { $new }
+}
+snippets-snippet-tags = Changed the tags of { $item }
+snippets-new-snippet = Created { $title }
+snippets-duplicate = Duplicated { $item }
+snippets-delete = Deleted { $item }
+snippets-record-use = Copied { $item }
+snippets-rename-folder = Renamed the folder { $folder } to { $to }
+snippets-rename-tag = Renamed the tag { $tag } to { $to }
+snippets-remove-tag = Removed the tag { $tag } from every snippet

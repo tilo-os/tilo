@@ -37,6 +37,7 @@ use cloud_source::{
     Change, ChangeFeed, CloudSource, Cursor, Error, Item, ItemId, ItemKind, Notify, Revision,
     UploadTarget,
 };
+use runtime_fs::cloud::{CloudCapabilities, FileReply, FileRequest, FileRevision, MountHealth};
 use serde::{Deserialize, Serialize};
 
 use crate::store::area::{AreaKey, Residency, hash_file};
@@ -99,50 +100,21 @@ const READAHEAD_MAX: u64 = 16 << 20;
 /// Prefix of ids of items created locally and not uploaded yet. NUL never
 /// occurs in a provider id or a file name.
 const LOCAL_PREFIX: &str = "\u{0}local:";
+/// Provider requests (revisions, restores, share links) one volume runs at
+/// once; more are refused rather than queued behind a slow provider.
+pub const MAX_REQUESTS: u64 = 4;
 /// Default [`VolumeConfig::idle_poll_max`].
 pub const DEFAULT_IDLE_POLL_MAX: Duration = Duration::from_secs(600);
 /// Largest jitter applied to an idle poll wait, in thousandths (±10 %).
 const IDLE_JITTER_PERMILLE: i32 = 100;
 
-/// Account health as the volume sees it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Health {
-    Syncing,
-    Healthy,
-    Offline,
-    NeedsAuthentication,
-    Error,
-}
-
-impl Health {
-    fn of(error: &Error) -> Self {
-        match error {
-            Error::Offline | Error::RateLimited { .. } | Error::Io(_) => Self::Offline,
-            Error::Unauthorized => Self::NeedsAuthentication,
-            Error::Status(status) if *status >= 500 => Self::Offline,
-            _ => Self::Error,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Syncing => "syncing",
-            Self::Healthy => "healthy",
-            Self::Offline => "offline",
-            Self::NeedsAuthentication => "needs-authentication",
-            Self::Error => "error",
-        }
-    }
-
-    pub fn parse(text: &str) -> Option<Self> {
-        Some(match text {
-            "syncing" => Self::Syncing,
-            "healthy" => Self::Healthy,
-            "offline" => Self::Offline,
-            "needs-authentication" => Self::NeedsAuthentication,
-            "error" => Self::Error,
-            _ => return None,
-        })
+/// The health a provider failure leaves an account in.
+fn health_of(error: &Error) -> MountHealth {
+    match error {
+        Error::Offline | Error::RateLimited { .. } | Error::Io(_) => MountHealth::Offline,
+        Error::Unauthorized => MountHealth::NeedsAuthentication,
+        Error::Status(status) if *status >= 500 => MountHealth::Offline,
+        _ => MountHealth::Error,
     }
 }
 
@@ -385,9 +357,9 @@ pub struct CloudVolume {
     flights: Mutex<HashMap<RevKey, Arc<Mutex<()>>>>,
     /// Serialises outbox execution.
     uploading: Mutex<()>,
-    health: Mutex<Option<Health>>,
+    health: Mutex<Option<MountHealth>>,
     quota: Mutex<Option<cloud_source::Quota>>,
-    on_health: Box<dyn Fn(Health) + Send + Sync>,
+    on_health: Box<dyn Fn(MountHealth) + Send + Sync>,
     wake: Condvar,
     /// Bumped whenever a local change is queued.
     queued: Mutex<u64>,
@@ -396,6 +368,14 @@ pub struct CloudVolume {
     activity: AtomicU64,
     /// The sync loop is in an idle wait and wants to be woken by activity.
     idling: AtomicBool,
+    /// Someone asked for a sync now: the sync loop ends its wait, forgets
+    /// its failure back-off and runs a pass.
+    sync_requested: AtomicBool,
+    /// Background sync and uploads wait until resumed. Reads still fetch
+    /// on demand and local edits still queue.
+    paused: AtomicBool,
+    /// Provider requests (revisions, restores, share links) running now.
+    requests: AtomicU64,
     stop: AtomicBool,
 }
 
@@ -405,7 +385,7 @@ impl CloudVolume {
     pub fn open(
         source: Arc<dyn CloudSource>,
         config: VolumeConfig,
-        on_health: Box<dyn Fn(Health) + Send + Sync>,
+        on_health: Box<dyn Fn(MountHealth) + Send + Sync>,
     ) -> io::Result<Arc<Self>> {
         let staging = config.dir.join("staging");
         fs::create_dir_all(&staging)?;
@@ -467,6 +447,9 @@ impl CloudVolume {
             queued: Mutex::new(0),
             activity: AtomicU64::new(0),
             idling: AtomicBool::new(false),
+            sync_requested: AtomicBool::new(false),
+            paused: AtomicBool::new(false),
+            requests: AtomicU64::new(0),
             stop: AtomicBool::new(false),
         }))
     }
@@ -481,7 +464,7 @@ impl CloudVolume {
         &self.source
     }
 
-    fn report(&self, health: Health) {
+    fn report(&self, health: MountHealth) {
         let changed = {
             let mut current = self
                 .health
@@ -504,7 +487,7 @@ impl CloudVolume {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    pub fn health(&self) -> Option<Health> {
+    pub fn health(&self) -> Option<MountHealth> {
         *self
             .health
             .lock()
@@ -706,6 +689,101 @@ impl CloudVolume {
         Ok(ino)
     }
 
+    // ---- provider operations on one file ---------------------------------
+
+    /// The provider id of the item at `path`, which the server must already
+    /// know: an item created here and not yet uploaded has no provider
+    /// history or link.
+    fn remote_id(&self, path: &str) -> Result<ItemId, Error> {
+        let ino = self.resolve(path).map_err(|_| Error::NotFound)?;
+        let id = self.inner().id(ino).map_err(|_| Error::NotFound)?;
+        if is_local(&id) {
+            return Err(Error::NotFound);
+        }
+        Ok(id)
+    }
+
+    /// The provider's revisions of the file at `path`.
+    pub fn revisions_at(&self, path: &str) -> Result<Vec<cloud_source::RevisionInfo>, Error> {
+        if !self.source.capabilities().revisions {
+            return Err(Error::Unsupported("revisions"));
+        }
+        let id = self.remote_id(path)?;
+        self.source.revisions(&id)
+    }
+
+    /// Make `revision` the current version of the file at `path`. Refused
+    /// while a local edit of the file waits to upload, which the restore
+    /// would otherwise race.
+    pub fn restore_revision_at(&self, path: &str, revision: &str) -> Result<(), Error> {
+        if !self.source.capabilities().revisions {
+            return Err(Error::Unsupported("revisions"));
+        }
+        let id = self.remote_id(path)?;
+        if self.inner().pending(&id) {
+            return Err(Error::Conflict { current: None });
+        }
+        let restored = self
+            .source
+            .restore_revision(&id, &Revision::new(revision))?;
+        if self.apply_upsert(restored) {
+            self.save_tree()?;
+        }
+        Ok(())
+    }
+
+    /// A share link for the file at `path`.
+    pub fn share_link_at(&self, path: &str) -> Result<String, Error> {
+        if !self.source.capabilities().share_links {
+            return Err(Error::Unsupported("share links"));
+        }
+        let id = self.remote_id(path)?;
+        self.source.share_link(&id)
+    }
+
+    /// What the provider offers beyond files and folders.
+    pub fn control_capabilities(&self) -> CloudCapabilities {
+        let capabilities = self.source.capabilities();
+        CloudCapabilities {
+            revisions: capabilities.revisions,
+            share_links: capabilities.share_links,
+        }
+    }
+
+    /// Answer a file request. Blocking (a provider round trip): call it
+    /// off the FUSE threads and the control pipe. The error is the
+    /// provider's, which carries no credential.
+    pub fn answer(&self, request: &FileRequest) -> Result<FileReply, String> {
+        let result = match request {
+            FileRequest::Revisions { path } => self.revisions_at(path).map(|revisions| {
+                FileReply::Revisions(revisions.into_iter().map(file_revision).collect())
+            }),
+            FileRequest::RestoreRevision { path, revision } => self
+                .restore_revision_at(path, revision)
+                .map(|()| FileReply::Restored),
+            FileRequest::ShareLink { path } => self.share_link_at(path).map(FileReply::Link),
+        };
+        result.map_err(|error| error.to_string())
+    }
+
+    /// Take a provider-request slot; `false` when [`MAX_REQUESTS`] already
+    /// run. Give it back with [`Self::finish_request`].
+    pub fn begin_request(&self) -> bool {
+        self.requests
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |running| {
+                (running < MAX_REQUESTS).then_some(running.saturating_add(1))
+            })
+            .is_ok()
+    }
+
+    pub fn finish_request(&self) {
+        let _ = self
+            .requests
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |running| {
+                Some(running.saturating_sub(1))
+            });
+    }
+
     // ---- reads ---------------------------------------------------------
 
     fn flight(&self, key: &RevKey) -> Arc<Mutex<()>> {
@@ -761,7 +839,7 @@ impl CloudVolume {
                 }
                 Err(error) => {
                     if !matches!(error, Error::Conflict { .. }) {
-                        self.report(Health::of(&error));
+                        self.report(health_of(&error));
                     }
                     // What was asked for may still be resident even if the
                     // read-ahead failed.
@@ -1284,7 +1362,7 @@ impl CloudVolume {
                 return Ok(done);
             };
             if let Err(error) = self.execute(&op) {
-                self.report(Health::of(&error));
+                self.report(health_of(&error));
                 return Err(error);
             }
             {
@@ -1415,7 +1493,7 @@ impl CloudVolume {
                 let _ = content.adopt_file(&key, staged, Retention::Cached);
             }
         }
-        self.report(Health::Healthy);
+        self.report(MountHealth::Healthy);
     }
 
     /// Upload the local content next to the remote version under the
@@ -1675,8 +1753,8 @@ impl CloudVolume {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = quota;
         }
         match &result {
-            Ok(_) => self.report(Health::Healthy),
-            Err(error) => self.report(Health::of(error)),
+            Ok(_) => self.report(MountHealth::Healthy),
+            Err(error) => self.report(health_of(error)),
         }
         self.save_tree()?;
         self.flush_content()?;
@@ -1820,7 +1898,7 @@ impl CloudVolume {
         self.idling.store(true, Ordering::SeqCst);
         let active = loop {
             let active = self.activity.load(Ordering::SeqCst) != seen;
-            if self.stop.load(Ordering::SeqCst) {
+            if self.stop.load(Ordering::SeqCst) || self.sync_requested.load(Ordering::SeqCst) {
                 break active;
             }
             let limit = if active {
@@ -1861,7 +1939,7 @@ impl CloudVolume {
         *seen = *queued;
     }
 
-    /// Wait up to `timeout` or until stopped.
+    /// Wait up to `timeout`, until stopped or until a sync is asked for.
     fn wait_stop(&self, timeout: Duration) {
         let queued = self
             .queued
@@ -1869,8 +1947,50 @@ impl CloudVolume {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _ = self
             .wake
-            .wait_timeout_while(queued, timeout, |_| !self.stop.load(Ordering::SeqCst))
+            .wait_timeout_while(queued, timeout, |_| {
+                !self.stop.load(Ordering::SeqCst) && !self.sync_requested.load(Ordering::SeqCst)
+            })
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+
+    /// Wait while paused (or until stopped).
+    fn wait_resumed(&self) {
+        let queued = self
+            .queued
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _ = self
+            .wake
+            .wait_timeout_while(queued, Duration::from_secs(3600), |_| {
+                self.paused.load(Ordering::SeqCst) && !self.stop.load(Ordering::SeqCst)
+            })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+
+    /// Sync now: end the sync loop's wait, forget its failure back-off and
+    /// run a pass; queued uploads are tried again too. A paused volume
+    /// stays paused. A change-notification wait already in flight (a
+    /// healthy push provider, at most 90 s) ends first: such a provider
+    /// reports remote changes as they happen anyway.
+    pub fn sync_now(&self) {
+        self.sync_requested.store(true, Ordering::SeqCst);
+        self.kick();
+    }
+
+    /// Pause background sync and uploads until [`Self::resume`]. A pass
+    /// already running finishes.
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::SeqCst);
+    }
+
+    /// Resume after [`Self::pause`] and sync now.
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::SeqCst);
+        self.sync_now();
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
     }
 
     /// Run sync and write-back on background threads until
@@ -1888,6 +2008,14 @@ impl CloudVolume {
         let mut backoff = self.poll_interval;
         let mut idle_passes = 0_u32;
         while !self.stop.load(Ordering::SeqCst) {
+            if self.is_paused() {
+                self.wait_resumed();
+                continue;
+            }
+            if self.sync_requested.swap(false, Ordering::SeqCst) {
+                backoff = self.poll_interval;
+                idle_passes = 0;
+            }
             let seen = self.activity.load(Ordering::SeqCst);
             let changed = match self.sync_pass() {
                 Ok(changed) => {
@@ -1923,7 +2051,8 @@ impl CloudVolume {
                 if self.wait_idle(wait, seen) {
                     idle_passes = 0;
                 }
-            } else if capabilities.notify == Notify::None || self.health() != Some(Health::Healthy)
+            } else if capabilities.notify == Notify::None
+                || self.health() != Some(MountHealth::Healthy)
             {
                 self.wait_stop(backoff);
             } else {
@@ -1943,6 +2072,10 @@ impl CloudVolume {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         while !self.stop.load(Ordering::SeqCst) {
+            if self.is_paused() {
+                self.wait_resumed();
+                continue;
+            }
             match self.upload_pending() {
                 Ok(_) => {
                     backoff = Duration::from_secs(2);
@@ -1969,6 +2102,18 @@ impl CloudVolume {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
+    }
+}
+
+fn file_revision(info: cloud_source::RevisionInfo) -> FileRevision {
+    FileRevision {
+        revision: info.revision.0,
+        modified_unix: info
+            .modified
+            .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .and_then(|since| i64::try_from(since.as_secs()).ok()),
+        size: info.size,
+        author: info.author,
     }
 }
 

@@ -61,6 +61,45 @@ fn persisted_state_preserves_ids_defaults_and_record_binding() {
 }
 
 #[test]
+fn legacy_ownership_evidence_does_not_prevent_restoring_the_desktop() {
+    let original = persisted_tree();
+    let mut raw = serde_json::to_value(&original).unwrap();
+    // Frozen root-signed v1 records from the old desktop contract. Keep the
+    // layout and policy independent: loading evidence must not replay it.
+    let evidence: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/legacy_ownership_transfers.json")).unwrap();
+    for (field, value) in evidence.as_object().unwrap() {
+        raw["workspaces"][0][field] = value.clone();
+    }
+    let loaded: DesktopTree = serde_json::from_slice(&serde_json::to_vec(&raw).unwrap()).unwrap();
+    assert_eq!(loaded.active, original.active);
+    assert_eq!(loaded.workspaces.len(), 2);
+    assert_eq!(loaded.workspaces[0].name, "Research");
+    assert_eq!(
+        loaded.workspaces[0].strips[0].window_groups[0].active_tab,
+        9_007_199_254_741_001
+    );
+    assert_eq!(loaded.workspaces[0].policy, original.workspaces[0].policy);
+    let restored = serde_json::to_value(&loaded).unwrap();
+    for (field, value) in evidence.as_object().unwrap() {
+        assert_eq!(&restored["workspaces"][0][field], value, "retained {field}");
+    }
+    let restarted: DesktopTree = serde_json::from_value(restored).unwrap();
+    assert_eq!(
+        restarted.workspaces[0].pending_ownership_transfer,
+        loaded.workspaces[0].pending_ownership_transfer
+    );
+    assert_eq!(
+        restarted.workspaces[0].ownership_transfer_audit,
+        loaded.workspaces[0].ownership_transfer_audit
+    );
+    assert_eq!(
+        restarted.workspaces[0].ownership_transfer_cancellations,
+        loaded.workspaces[0].ownership_transfer_cancellations
+    );
+}
+
+#[test]
 fn peer_local_selection_does_not_change_another_desktop_or_topology() {
     let mut one = persisted_tree();
     let two = one.clone();

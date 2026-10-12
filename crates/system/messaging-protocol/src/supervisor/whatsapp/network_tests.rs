@@ -1,8 +1,45 @@
 use super::*;
+
+#[test]
+fn installed_sdk_refuses_the_zero_signed_local_peer_certificate() {
+    use whatsapp_rust::wacore::handshake::{HandshakeError, HandshakeUtils};
+    use whatsapp_rust::waproto::{
+        buffa::{Message, MessageField},
+        whatsapp::{
+            CertChain, cert_chain::NoiseCertificate, cert_chain::noise_certificate::Details,
+        },
+    };
+    let static_key = [0x42; 32];
+    let certificate = |serial, issuer_serial, key: Vec<u8>| NoiseCertificate {
+        details: Some(
+            Details {
+                serial: Some(serial),
+                issuer_serial: Some(issuer_serial),
+                key: Some(key),
+                not_before: Some(1_700_000_000),
+                not_after: Some(1_900_000_000),
+            }
+            .encode_to_vec(),
+        ),
+        signature: Some(vec![0; 64]),
+    };
+    let chain = CertChain {
+        intermediate: MessageField::some(certificate(1, 0, vec![0x33; 32])),
+        leaf: MessageField::some(certificate(2, 1, static_key.to_vec())),
+    };
+    let result = HandshakeUtils::verify_server_cert(&chain.encode_to_vec(), &static_key);
+    assert!(
+        matches!(result, Err(HandshakeError::CertVerification(ref reason))
+            if reason == "intermediate signature failed XEdDSA verify"),
+        "the installed SDK must verify service certificate signatures: {result:?}"
+    );
+}
+
+use crate::supervisor::whatsapp::WhatsappBootstrap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tilo_messaging::SendError;
 
-struct Gate(AtomicBool);
+pub(in super::super) struct Gate(pub(in super::super) AtomicBool);
 impl AccountAuthority for Gate {
     fn check(&self) -> Result<(), SendError> {
         if self.0.load(Ordering::SeqCst) {
@@ -31,7 +68,7 @@ impl Transport for Pipe {
         self.closes.fetch_add(1, Ordering::SeqCst);
     }
 }
-struct Provider {
+pub(in super::super) struct Provider {
     gate: Arc<Gate>,
     pipe: Arc<Pipe>,
     exchanges: AtomicUsize,
@@ -67,7 +104,10 @@ impl TransportFactory for Provider {
         Ok((self.pipe.clone(), receiver))
     }
 }
-fn fixture(revoke_on_call: bool, revoke_on_write: bool) -> (Arc<Gate>, Arc<Provider>, Network) {
+pub(in super::super) fn fixture(
+    revoke_on_call: bool,
+    revoke_on_write: bool,
+) -> (Arc<Gate>, Arc<Provider>, Network) {
     let gate = Arc::new(Gate(AtomicBool::new(true)));
     let pipe = Arc::new(Pipe {
         gate: gate.clone(),
@@ -88,6 +128,50 @@ fn fixture(revoke_on_call: bool, revoke_on_write: bool) -> (Arc<Gate>, Arc<Provi
     }
     .guarded(gate.clone());
     (gate, provider, network)
+}
+
+#[tokio::test]
+async fn native_profile_bootstrap_refuses_revocation_before_sdk_custody_or_network() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("sdk");
+    let owner = crate::journal::Owner {
+        principal: "11".repeat(32),
+        device: "profile-device".into(),
+        service: crate::Service::Whatsapp,
+        account: "profile-account".into(),
+        linking_generation: 1,
+    };
+    let (gate, provider, network) = fixture(false, false);
+    gate.0.store(false, Ordering::SeqCst);
+    assert!(
+        WhatsappBootstrap::open_profile(
+            &root,
+            owner.clone(),
+            secret_vault::VaultKey::from_bytes([23; 32]),
+            network,
+            gate,
+        )
+        .await
+        .is_err()
+    );
+    assert!(!root.exists());
+    assert_eq!(provider.exchanges.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.creates.load(Ordering::SeqCst), 0);
+    let (gate, provider, network) = fixture(false, false);
+    let bootstrap = WhatsappBootstrap::open_profile(
+        &root,
+        owner,
+        secret_vault::VaultKey::from_bytes([23; 32]),
+        network,
+        gate,
+    )
+    .await
+    .unwrap();
+    assert!(!bootstrap.client().is_logged_in());
+    assert!(!bootstrap.client().is_connected());
+    assert!(root.join("state.enc").is_file());
+    assert_eq!(provider.exchanges.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.creates.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

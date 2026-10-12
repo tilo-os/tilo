@@ -249,7 +249,7 @@ fn build_content_types(
             for img in &images.images {
                 let probe = format!(r#"Extension="{}""#, img.ext);
                 if !s.contains(&probe) {
-                    let (_, media) = image_ext_and_media(&img.bytes);
+                    let (_, media) = crate::office_image_part(&img.bytes);
                     let def = format!(
                         r#"<Default Extension="{}" ContentType="{}"/>"#,
                         img.ext, media
@@ -945,35 +945,27 @@ fn run_props(marks: &[&tilo_doc::document::MarkSpan]) -> String {
     s
 }
 
-/// Emit run content, turning `\t` → `<w:tab/>` and `\n` → `<w:br/>`.
-fn run_content(text: &str) -> String {
-    let mut out = String::new();
-    let mut buf = String::new();
-    let flush = |out: &mut String, buf: &mut String| {
-        if !buf.is_empty() {
-            out.push_str(r#"<w:t xml:space="preserve">"#);
-            for c in buf.chars() {
+/// Emit run content as `text_elem` text (`w:t`, or `w:delText` for a deleted
+/// run as OOXML requires), turning `\t` → `<w:tab/>` and `\n` → `<w:br/>`.
+fn push_run_content(out: &mut String, text: &str, text_elem: &str) {
+    let mut rest = text;
+    loop {
+        let (chunk, tail) = rest.split_at(rest.find(['\t', '\n']).unwrap_or(rest.len()));
+        if !chunk.is_empty() {
+            let _ = write!(out, r#"<{text_elem} xml:space="preserve">"#);
+            for c in chunk.chars() {
                 push_text(out, c);
             }
-            out.push_str("</w:t>");
-            buf.clear();
+            let _ = write!(out, "</{text_elem}>");
         }
-    };
-    for c in text.chars() {
-        match c {
-            '\t' => {
-                flush(&mut out, &mut buf);
-                out.push_str("<w:tab/>");
-            }
-            '\n' => {
-                flush(&mut out, &mut buf);
-                out.push_str("<w:br/>");
-            }
-            _ => buf.push(c),
+        let mut tail = tail.chars();
+        match tail.next() {
+            Some('\t') => out.push_str("<w:tab/>"),
+            Some(_) => out.push_str("<w:br/>"),
+            None => break,
         }
+        rest = tail.as_str();
     }
-    flush(&mut out, &mut buf);
-    out
 }
 
 /// The footnote/endnote reference run, carrying the FootnoteReference/EndnoteReference character style so Word superscripts it.
@@ -1018,37 +1010,6 @@ fn change_open_tag(change: &tilo_doc::snapshot::ChangeView, docx_id: i64) -> Str
         r#"<{elem} w:id="{docx_id}" w:author="{}"{date}>"#,
         escape_attr(&change.author)
     )
-}
-
-/// Emit a *deleted* run's content as `<w:delText>` (OOXML requires it, not `w:t`); `\t`/`\n` still map as usual.
-fn del_run_content(text: &str) -> String {
-    let mut out = String::new();
-    let mut buf = String::new();
-    let flush = |out: &mut String, buf: &mut String| {
-        if !buf.is_empty() {
-            out.push_str(r#"<w:delText xml:space="preserve">"#);
-            for c in buf.chars() {
-                push_text(out, c);
-            }
-            out.push_str("</w:delText>");
-            buf.clear();
-        }
-    };
-    for c in text.chars() {
-        match c {
-            '\t' => {
-                flush(&mut out, &mut buf);
-                out.push_str("<w:tab/>");
-            }
-            '\n' => {
-                flush(&mut out, &mut buf);
-                out.push_str("<w:br/>");
-            }
-            _ => buf.push(c),
-        }
-    }
-    flush(&mut out, &mut buf);
-    out
 }
 
 /// The id-lookup tables `render_runs` needs to resolve marks into DOCX-side numeric/ref ids;
@@ -1205,11 +1166,7 @@ fn push_run(out: &mut String, text: &str, rpr: &str, is_del: bool) {
     if !rpr.is_empty() {
         let _ = write!(out, "<w:rPr>{rpr}</w:rPr>");
     }
-    if is_del {
-        out.push_str(&del_run_content(text));
-    } else {
-        out.push_str(&run_content(text));
-    }
+    push_run_content(out, text, if is_del { "w:delText" } else { "w:t" });
     out.push_str("</w:r>");
 }
 
@@ -1239,21 +1196,6 @@ fn spacing_xml(b: &BlockView) -> String {
         }
         _ => String::new(),
     }
-}
-
-fn cell_table(b: &BlockView) -> Option<String> {
-    match b.attrs.get("table") {
-        Some(AttrVal::Str(s)) => Some(s.clone()),
-        _ => None,
-    }
-}
-
-fn cell_rc(b: &BlockView) -> (usize, usize) {
-    let g = |k: &str| match b.attrs.get(k) {
-        Some(AttrVal::Int(n)) => usize::try_from(*n).unwrap_or(0),
-        _ => 0,
-    };
-    (g("row"), g("col"))
 }
 
 /// Map the model's numbering format onto `w:numFmt w:val` (inverse of `styles::map_num_format`).
@@ -1288,16 +1230,11 @@ struct Numbering {
 
 /// What a list item numbers: `(ordered, format, start)`.
 fn list_key(b: &BlockView) -> (bool, String, i64) {
-    let ordered = matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true)));
-    let fmt = match b.attrs.get("num_format") {
-        Some(AttrVal::Str(s)) => s.clone(),
-        _ => "decimal".to_string(),
-    };
-    let start = match b.attrs.get("num_start") {
-        Some(AttrVal::Int(n)) => *n,
-        _ => 1,
-    };
-    (ordered, fmt, start)
+    (
+        b.flag("ordered"),
+        b.str_attr("num_format").unwrap_or("decimal").to_owned(),
+        b.int_attr("num_start").unwrap_or(1),
+    )
 }
 
 /// The largest numeric value of the attribute `key` (`w:numId=`) in `xml`.
@@ -1493,7 +1430,7 @@ impl ImageExport {
         let mut out = Vec::new();
         for img in &self.images {
             if seen.insert(img.ext) {
-                let (_, media) = image_ext_and_media(&img.bytes);
+                let (_, media) = crate::office_image_part(&img.bytes);
                 out.push(format!(
                     r#"<Default Extension="{}" ContentType="{}"/>"#,
                     img.ext, media
@@ -1521,7 +1458,7 @@ impl ImageExport {
     /// package carries through (a text box's picture, say) under a name of the `imageN` kind.
     fn add(&mut self, bytes: &[u8]) -> String {
         let n = self.images.len().saturating_add(1);
-        let (ext, _) = image_ext_and_media(bytes);
+        let (ext, _) = crate::office_image_part(bytes);
         let rel_id = format!("rIdImg{n}");
         let hash = tilo_content::hash_bytes(bytes);
         let short = hash.get(..16).unwrap_or(&hash);
@@ -1534,31 +1471,6 @@ impl ImageExport {
             bytes: bytes.to_vec(),
         });
         rel_id
-    }
-}
-
-/// Sniff an image's extension + media type from its magic bytes.
-fn image_ext_and_media(bytes: &[u8]) -> (&'static str, &'static str) {
-    tilo_doc::export::detect_image_media(bytes)
-        .filter(|media| matches!(media.extension, "png" | "jpg" | "gif"))
-        .map_or(("bin", "application/octet-stream"), |media| {
-            (media.extension, media.mime)
-        })
-}
-
-/// The model `anchor` value of an image block (default `inline`).
-fn image_anchor(b: &BlockView) -> &str {
-    match b.attrs.get("anchor") {
-        Some(AttrVal::Str(s)) => s.as_str(),
-        _ => "inline",
-    }
-}
-
-/// The model `wrap` value of an image block (default `none`).
-fn image_wrap(b: &BlockView) -> &str {
-    match b.attrs.get("wrap") {
-        Some(AttrVal::Str(s)) => s.as_str(),
-        _ => "none",
     }
 }
 
@@ -1601,7 +1513,7 @@ fn image_drawing_xml(b: &BlockView, snap: &Resolved<'_>, imgs: &mut ImageExport)
     let graphic = format!(
         r#"<wp:docPr id="{docpr_id}" name="{name}"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="{docpr_id}" name="{name}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="{rel_id}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>"#
     );
-    let anchor = image_anchor(b);
+    let anchor = b.str_attr("anchor").unwrap_or("inline");
     if anchor == "inline" {
         Some(format!(
             r#"<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{cx}" cy="{cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>{graphic}</wp:inline></w:drawing></w:r>"#
@@ -1614,7 +1526,7 @@ fn image_drawing_xml(b: &BlockView, snap: &Resolved<'_>, imgs: &mut ImageExport)
         } else {
             "paragraph"
         };
-        let wrap = match image_wrap(b) {
+        let wrap = match b.str_attr("wrap").unwrap_or("none") {
             "left" => r#"<wp:wrapSquare wrapText="left"/>"#.to_string(),
             "right" => r#"<wp:wrapSquare wrapText="right"/>"#.to_string(),
             "both" => r#"<wp:wrapSquare wrapText="bothSides"/>"#.to_string(),
@@ -1638,13 +1550,13 @@ fn render_table_block(body: &mut String, snap: &Resolved<'_>, i: usize, ids: &Ru
     let Some(b) = snap.blocks.get(i) else {
         return i.saturating_add(1);
     };
-    let tid = cell_table(b).unwrap_or_default();
+    let tid = b.str_attr("table").unwrap_or_default();
     let start = i;
     let mut i = i;
     while snap
         .blocks
         .get(i)
-        .is_some_and(|blk| cell_table(blk).as_deref() == Some(tid.as_str()))
+        .is_some_and(|blk| blk.str_attr("table") == Some(tid))
     {
         i = i.saturating_add(1);
     }
@@ -1657,8 +1569,8 @@ fn render_table_block(body: &mut String, snap: &Resolved<'_>, i: usize, ids: &Ru
     let mut continued: BTreeMap<(usize, usize), &BlockView> = BTreeMap::new();
     let (mut nrows, mut ncols) = (0usize, 0usize);
     for cell in cells {
-        let (r, c) = cell_rc(cell);
-        let (cols, rows) = (cell_span(cell, "colspan"), cell_span(cell, "rowspan"));
+        let (r, c) = cell.cell_position();
+        let (cols, rows) = (cell.cell_span("colspan"), cell.cell_span("rowspan"));
         at.entry((r, c)).or_insert(cell);
         for dr in 1..rows {
             continued.insert((r.saturating_add(dr), c), cell);
@@ -1672,7 +1584,9 @@ fn render_table_block(body: &mut String, snap: &Resolved<'_>, i: usize, ids: &Ru
     let mut row_props: BTreeMap<usize, &str> = BTreeMap::new();
     for cell in cells {
         if let Some(AttrVal::Str(xml)) = cell.attrs.get(super::paragraph::ATTR_TRPR) {
-            row_props.entry(cell_rc(cell).0).or_insert(xml.as_str());
+            row_props
+                .entry(cell.cell_position().0)
+                .or_insert(xml.as_str());
         }
     }
     for r in 0..nrows {
@@ -1686,18 +1600,18 @@ fn render_table_block(body: &mut String, snap: &Resolved<'_>, i: usize, ids: &Ru
             // A vertical merge's continuation cells look like its first one.
             let cell = own.or_else(|| continued.get(&(r, c)).copied());
             let (span, merge, inner) = if let Some(cl) = own {
-                let merge = if cell_span(cl, "rowspan") > 1 {
+                let merge = if cl.cell_span("rowspan") > 1 {
                     r#"<w:vMerge w:val="restart"/>"#
                 } else {
                     ""
                 };
                 (
-                    cell_span(cl, "colspan"),
+                    cl.cell_span("colspan"),
                     merge,
                     render_runs(&cl.text, &cl.marks, ids),
                 )
             } else if let Some(first) = cell {
-                (cell_span(first, "colspan"), "<w:vMerge/>", String::new())
+                (first.cell_span("colspan"), "<w:vMerge/>", String::new())
             } else {
                 (1, "", String::new())
             };
@@ -1753,14 +1667,6 @@ fn push_table_props(body: &mut String, first: Option<&BlockView>, ncols: usize) 
     body.push_str("</w:tblGrid>");
 }
 
-/// A cell's `colspan`/`rowspan` (1 when absent).
-fn cell_span(b: &BlockView, key: &str) -> usize {
-    match b.attrs.get(key) {
-        Some(AttrVal::Int(n)) if *n > 1 => usize::try_from(*n).unwrap_or(1).min(1024),
-        _ => 1,
-    }
-}
-
 /// Renders one block (or, for `cell`, a whole contiguous table run) into `body`, returning the
 /// index of the next unprocessed block.
 fn render_block(
@@ -1777,10 +1683,7 @@ fn render_block(
     };
     match b.kind.as_str() {
         "heading" => {
-            let level = match b.attrs.get("level") {
-                Some(AttrVal::Int(n)) => (*n).clamp(1, 6),
-                _ => 1,
-            };
+            let level = b.int_attr("level").map_or(1, |n| n.clamp(1, 6));
             let style = format!(r#"<w:pStyle w:val="Heading{level}"/>"#);
             named_refs.insert(format!("Heading{level}"));
             let ppr = block_ppr(b, &[(b"w:pStyle", style)], ids);
@@ -1793,10 +1696,7 @@ fn render_block(
         }
         "list_item" => {
             let numid = numbering.num_id(b);
-            let level = match b.attrs.get("level") {
-                Some(AttrVal::Int(n)) => (*n).clamp(0, 8),
-                _ => 0,
-            };
+            let level = b.int_attr("level").map_or(0, |n| n.clamp(0, 8));
             // A list item keeps its own paragraph style when it had one.
             let style = match b.attrs.get(super::paragraph::ATTR_PPR) {
                 Some(AttrVal::Str(kept)) if super::paragraph::has_style(kept) => String::new(),

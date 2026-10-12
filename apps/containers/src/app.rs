@@ -7,31 +7,31 @@
 //! Dialogs (confirming a removal, asking for a name, the new-container form,
 //! pull progress) are [`ModalDialog`]s mounted beside the shell.
 //!
-//! The new-container draft is the resource's document (see [`crate::doc`]),
+//! The new-container draft is the resource's record (see [`crate::draft`]),
 //! edited a splice at a time through the framework's dispatcher; where the
 //! user is (section, selection, detail tab) is this window's own, and the
 //! engine projection is host data that stays in memory.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
+use ui::widget::TaffyTreeExt;
 
 use crate::resource::ContainersEffect;
 #[cfg(test)]
 use automerge::AutoCommit;
 use automerge::ObjId;
 use taffy::prelude::*;
-use ui::a11y::{AccessNode, Politeness, Role};
-use ui::control_custody::RawControlSlot;
+use ui::a11y::{AccessNode, Role};
 use ui::framework::{Dispatcher, LiveRow};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::ActionSpec;
-use ui::tilo_actions::{ActionAddress, ControlInvocation};
 use ui::tilo_resource::Effect as _;
 use ui::time::Instant;
 use ui::tokens::TextRole;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::{Notice, ToastAnchor, ToastKind};
 use ui::widget::{
     AppModel, Column, ModalDialog, ModelPath, ModelView, NavPane, PromptBody, Text, TextInput,
     Widget,
@@ -41,14 +41,11 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::doc::{CreateDoc, CreateField};
+use crate::draft::CreateField;
 use crate::model::{DetailTab, Engine, Section};
 use crate::podman::{self, Action, StreamMsg};
-use crate::resource::{Containers, ContainersAction};
+use crate::resource::Containers;
 use crate::view::{self, Intent, Intents};
-
-/// How long a result toast stays on screen.
-const TOAST_MS: u128 = 4000;
 
 /// What a destructive confirm targets — a container, an image, or a volume.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -153,13 +150,6 @@ pub(crate) struct PullProgress {
     pub(crate) lines: Vec<String>,
     pub(crate) done: bool,
     pub(crate) failed: Option<String>,
-}
-
-/// A transient status toast.
-pub(crate) struct Toast {
-    pub(crate) message: String,
-    pub(crate) error: bool,
-    pub(crate) born: Instant,
 }
 
 /// Background-thread message: a fresh engine probe arrived, or a streaming
@@ -312,11 +302,14 @@ pub struct ContainersApp {
     pub(crate) pull: Option<PullProgress>,
     pull_dialog: Option<ModalDialog<Column>>,
     pull_dirty: bool,
-    /// In-app lifecycle controls emit the same inert resource intent as
-    /// search and agents. The host re-resolves authority, records the
-    /// Effect, then calls `Widget::start_operation`.
-    pub(crate) pending_control_invocation: RawControlSlot,
-    pub(crate) toast: Option<Toast>,
+    /// The engine effects the window's controls asked the host for, for
+    /// tests of a bare widget.
+    #[cfg(test)]
+    pub(crate) requested: Vec<(String, ContainersEffect)>,
+    /// What a search hit or an agent's `open` named, shown with the next
+    /// frame.
+    opened: Rc<RefCell<Vec<String>>>,
+    pub(crate) toast: Notice,
     /// Background refresh plumbing. `None` in headless/shots mode.
     bg_rx: Option<Receiver<Bg>>,
     bg_tx: Option<Sender<Bg>>,
@@ -333,7 +326,6 @@ pub struct ContainersApp {
     structure_dirty: bool,
     /// Where the user is: the section, the selected container, its tab.
     pub(crate) view: ViewState,
-    motion_reduced: bool,
     /// Where edits of the draft go, once the framework attached the surface.
     dispatcher: Option<Dispatcher<Containers>>,
 }
@@ -408,8 +400,10 @@ impl ContainersApp {
             pull: None,
             pull_dialog: None,
             pull_dirty: false,
-            pending_control_invocation: RawControlSlot::replace_one(),
-            toast: None,
+            #[cfg(test)]
+            requested: Vec::new(),
+            opened: Rc::default(),
+            toast: Notice::default(),
             bg_rx: None,
             bg_tx: None,
             #[cfg(test)]
@@ -421,7 +415,6 @@ impl ContainersApp {
             past: false,
             structure_dirty: true,
             view: ViewState::default(),
-            motion_reduced: false,
             dispatcher: None,
         }
     }
@@ -478,15 +471,14 @@ impl ContainersApp {
     /// Edit the draft through `dispatcher` from now on.
     pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Containers>) {
         crate::create_form::for_each_input(self.create.content_mut(), &mut |input| {
-            let field = input.field();
-            input.attach(crate::resource::create_field_dispatcher(&dispatcher, field));
+            input.attach(dispatcher.clone());
         });
         self.dispatcher = Some(dispatcher);
     }
 
     /// The draft as the document holds it now. A past version with a draft
     /// shows the form, which is all it holds.
-    pub(crate) fn present_draft(&mut self, draft: &crate::doc::CreateDraft) {
+    pub(crate) fn present_draft(&mut self, draft: &crate::draft::CreateDraft) {
         if self.past {
             self.set_create_open(!draft.is_empty());
         }
@@ -536,8 +528,65 @@ impl ContainersApp {
         let Some(dispatcher) = &self.dispatcher else {
             return;
         };
-        if let Err(error) = dispatcher.apply_now(doc, &ContainersAction::ClearCreate) {
+        if let Err(error) = dispatcher.submit_now(doc, Containers::CLEAR_CREATE.with(())) {
             self.show_toast(format!("The draft was not cleared: {error}"), true);
+        }
+    }
+
+    /// Ask the host for `effect` as the live row `row` offers it: it
+    /// checks permission, availability and confirmation, records the effect
+    /// in activity history, and only then does the surface run it.
+    #[cfg_attr(
+        not(test),
+        allow(
+            clippy::needless_pass_by_ref_mut,
+            clippy::needless_pass_by_value,
+            reason = "a test also keeps what was asked for"
+        )
+    )]
+    fn request(&mut self, row: String, effect: ContainersEffect) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect_on(&row, &effect);
+        }
+        #[cfg(test)]
+        self.requested.push((row, effect));
+    }
+
+    /// What a search hit or an agent's `open` runs: show the row its
+    /// anchor names, as choosing it does.
+    pub(crate) fn opener(&self) -> impl FnMut(&str) -> Result<(), &'static str> + 'static {
+        let opened = Rc::clone(&self.opened);
+        move |anchor| {
+            if !["container:", "image:", "volume:", "distrobox:"]
+                .iter()
+                .any(|prefix| anchor.starts_with(prefix))
+            {
+                return Err("not a container, image, volume or distrobox");
+            }
+            opened.borrow_mut().push(anchor.to_owned());
+            Ok(())
+        }
+    }
+
+    /// Show what the openers named since the last frame.
+    fn show_opened(&mut self) {
+        let opened = std::mem::take(&mut *self.opened.borrow_mut());
+        for anchor in opened {
+            if let Some(id) = anchor
+                .strip_prefix("container:")
+                .and_then(|rest| rest.strip_suffix(":logs"))
+            {
+                self.select_container(Some(id.to_owned()));
+                self.show_tab(DetailTab::Logs);
+            } else if let Some(id) = anchor.strip_prefix("container:") {
+                self.select_container(Some(id.to_owned()));
+            } else if anchor.starts_with("image:") {
+                self.show_section(Section::Images);
+            } else if anchor.starts_with("volume:") {
+                self.show_section(Section::Volumes);
+            } else if anchor.starts_with("distrobox:") {
+                self.show_section(Section::Distrobox);
+            }
         }
     }
 
@@ -627,11 +676,12 @@ impl ContainersApp {
     }
 
     pub(crate) fn show_toast(&mut self, message: impl Into<String>, error: bool) {
-        self.toast = Some(Toast {
-            message: message.into(),
-            error,
-            born: ui::time::now(),
-        });
+        let kind = if error {
+            ToastKind::Error
+        } else {
+            ToastKind::Success
+        };
+        self.toast.show(message, kind);
     }
 
     /// Whether lifecycle affordances are live. The deterministic sample
@@ -781,18 +831,16 @@ impl ContainersApp {
     /// dialog, so this only runs once the person has agreed.
     pub(crate) fn apply_action(&mut self, action: Action, id: &str) {
         if self.engine.live {
-            let verb = match action {
-                Action::Start => "start",
-                Action::Stop => "stop",
-                Action::Restart => "restart",
-                Action::Pause => "pause",
-                Action::Unpause => "unpause",
-                Action::Remove => "remove",
+            let container = id.to_owned();
+            let effect = match action {
+                Action::Start => ContainersEffect::Start { container },
+                Action::Stop => ContainersEffect::Stop { container },
+                Action::Restart => ContainersEffect::Restart { container },
+                Action::Pause => ContainersEffect::Pause { container },
+                Action::Unpause => ContainersEffect::Unpause { container },
+                Action::Remove => ContainersEffect::RemoveContainer { container },
             };
-            let _ = self.pending_control_invocation.emit(ControlInvocation {
-                address: ActionAddress::new(format!("container:{id}"), verb),
-                arguments: serde_json::Map::new(),
-            });
+            self.request(format!("container:{id}"), effect);
         } else if !self.live {
             // The sample answers the click so a demo responds.
             let name = self.container_name(id);
@@ -914,10 +962,12 @@ impl ContainersApp {
     /// goes even if a stopped container references it.
     pub(crate) fn remove_image(&mut self, reference: &str) {
         if self.engine.live {
-            let _ = self.pending_control_invocation.emit(ControlInvocation {
-                address: ActionAddress::new(format!("image:{reference}"), "remove"),
-                arguments: serde_json::Map::new(),
-            });
+            self.request(
+                format!("image:{reference}"),
+                ContainersEffect::RemoveImage {
+                    image: reference.to_owned(),
+                },
+            );
         } else if !self.live {
             self.engine.images.retain(|i| i.reference() != reference);
             self.engine_changed();
@@ -1005,10 +1055,12 @@ impl ContainersApp {
     /// Remove a named volume (post-confirmation).
     pub(crate) fn remove_volume(&mut self, name: &str) {
         if self.engine.live {
-            let _ = self.pending_control_invocation.emit(ControlInvocation {
-                address: ActionAddress::new(format!("volume:{name}"), "remove"),
-                arguments: serde_json::Map::new(),
-            });
+            self.request(
+                format!("volume:{name}"),
+                ContainersEffect::RemoveVolume {
+                    volume: name.to_owned(),
+                },
+            );
         } else if !self.live {
             self.engine.volumes.retain(|v| v.name != name);
             self.engine_changed();
@@ -1022,10 +1074,12 @@ impl ContainersApp {
     /// terminal running `podman exec -it <id> /bin/sh`.
     pub(crate) fn attach_shell(&mut self, id: &str) {
         if self.engine.live {
-            let _ = self.pending_control_invocation.emit(ControlInvocation {
-                address: ActionAddress::new(format!("container:{id}"), "shell"),
-                arguments: serde_json::Map::new(),
-            });
+            self.request(
+                format!("container:{id}"),
+                ContainersEffect::Shell {
+                    container: id.to_owned(),
+                },
+            );
         } else if !self.live {
             let name = self.container_name(id);
             self.show_toast(format!("Opened a shell in {name}"), false);
@@ -1037,15 +1091,12 @@ impl ContainersApp {
     /// Enter a distrobox in the Tilo terminal.
     fn enter_distrobox(&mut self, name: &str) {
         if self.engine.live {
-            let _ = self
-                .pending_control_invocation
-                .emit(ui::tilo_actions::ControlInvocation {
-                    address: ui::tilo_actions::ActionAddress::new(
-                        format!("distrobox:{name}"),
-                        "enter",
-                    ),
-                    arguments: serde_json::Map::new(),
-                });
+            self.request(
+                format!("distrobox:{name}"),
+                ContainersEffect::EnterDistrobox {
+                    distrobox: name.to_owned(),
+                },
+            );
         } else if !self.live {
             self.show_toast(format!("Entered {name}"), false);
         } else {
@@ -1054,7 +1105,9 @@ impl ContainersApp {
     }
 
     pub(crate) fn submit_create(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        let draft = CreateDoc::read(doc.doc());
+        let draft = <Containers as ui::tilo_resource::Resource>::read(doc.doc())
+            .map(|record| record.draft)
+            .unwrap_or_default();
         let Some(args) = draft.run_args() else {
             self.show_toast("Choose an image to create the container from", true);
             return;
@@ -1292,6 +1345,7 @@ impl ContainersApp {
 
     /// Apply what the window's controls asked for.
     pub(crate) fn drain_intents(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        self.show_opened();
         let intents = self.intents.take();
         if intents.is_empty() {
             return;
@@ -1481,20 +1535,13 @@ impl ContainersApp {
         theme: &Theme,
         window: Rect,
     ) {
-        let Some(toast) = &self.toast else { return };
-        let kind = if toast.error {
-            ToastKind::Error
-        } else {
-            ToastKind::Success
-        };
-        paint_transient(
+        self.toast.paint(
             scene,
             transform,
             tr,
             theme,
             window,
             ToastAnchor::BottomCenter,
-            &ToastCard::new(&toast.message, kind),
         );
     }
 }
@@ -1547,11 +1594,7 @@ impl Widget for ContainersApp {
             if self.pull_dirty {
                 self.rebuild_pull();
             }
-            if let Some(t) = &self.toast
-                && t.born.elapsed().as_millis() > TOAST_MS
-            {
-                self.toast = None;
-            }
+            self.toast.expire();
             self.publish_model();
         }
         self.window.sync(state, path);
@@ -1581,7 +1624,6 @@ impl Widget for ContainersApp {
 
     fn needs_idle_sync(&self) -> bool {
         self.live
-            || self.toast.is_some()
             || self
                 .pull
                 .as_ref()
@@ -1589,11 +1631,21 @@ impl Widget for ContainersApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        let mut needed = !self.motion_reduced && self.toast.is_some();
+        let mut needed = false;
         self.for_each_child(&mut |child| {
             needed = needed || child.needs_animation_frame();
         });
         needed
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        let mut earliest = self.toast.deadline();
+        self.for_each_child(&mut |child| {
+            if let Some(deadline) = child.next_wake_deadline() {
+                earliest = Some(earliest.map_or(deadline, |old: Instant| old.min(deadline)));
+            }
+        });
+        earliest
     }
 
     fn build_layout(
@@ -1611,33 +1663,19 @@ impl Widget for ContainersApp {
             let _ = taffy.set_style(node, style);
             children.push(node);
         }
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    size: Size {
-                        width: percent(1.0_f32),
-                        height: percent(1.0_f32),
-                    },
-                    ..Default::default()
-                },
-                &children,
-            )
-            .unwrap_or(shell);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            display: Display::Flex,
+            size: Size {
+                width: percent(1.0_f32),
+                height: percent(1.0_f32),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let children = taffy.children(node).unwrap_or_default();
         let at = Point::new(self.rect.x0, self.rect.y0);
         let mut nodes = children.iter();
@@ -1762,23 +1800,15 @@ impl Widget for ContainersApp {
             .with_name("Containers")
             .with_description(&self.engine.connection)
             .with_bounds(self.rect);
-        if let Some(toast) = &self.toast {
-            root.children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(&toast.message)
-                    .with_hashed_key("containers.toast")
-                    .with_live(if toast.error {
-                        Politeness::Assertive
-                    } else {
-                        Politeness::Polite
-                    }),
-            );
-        }
+        root.children.extend(
+            self.toast
+                .access_node()
+                .map(|node| node.with_hashed_key("containers.toast")),
+        );
         Some(root)
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
-        self.motion_reduced = reduced;
         for child in self.children_mut() {
             child.set_motion_reduced(reduced);
         }
@@ -1806,9 +1836,6 @@ impl ui::widget::controls::ActionControls for ContainersApp {
         for child in self.children_mut() {
             ui::widget::controls::install_control_custody(child, domain, attachment);
         }
-        let _ = self
-            .pending_control_invocation
-            .install_custody(domain, attachment);
     }
 
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
@@ -1817,7 +1844,7 @@ impl ui::widget::controls::ActionControls for ContainersApp {
                 return Some(invocation);
             }
         }
-        self.pending_control_invocation.take_legacy_compatibility()
+        None
     }
 }
 
@@ -2069,8 +2096,6 @@ impl ContainersApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::tilo_actions::ActionAddress;
-    use ui::tilo_resource::TextEdit;
 
     /// The sample engine, staged as a plain `--shots` opens it.
     fn staged() -> ContainersApp {
@@ -2079,11 +2104,11 @@ mod tests {
         app
     }
 
-    fn driver(app: ContainersApp) -> ui::headless::Driver {
-        ui::headless::Driver::for_root(ui::State::new(), app, (1280, 800), ui::Theme::dark())
+    fn driver(app: ContainersApp) -> ui::headless::FrameHarness {
+        ui::headless::FrameHarness::for_root(ui::State::new(), app, (1280, 800), ui::Theme::dark())
     }
 
-    fn app_of(driver: &mut ui::headless::Driver) -> &mut ContainersApp {
+    fn app_of(driver: &mut ui::headless::FrameHarness) -> &mut ContainersApp {
         driver.root_mut::<ContainersApp>()
     }
 
@@ -2157,7 +2182,7 @@ mod tests {
 
     #[test]
     fn escape_closes_the_detail_in_a_narrow_window_too() {
-        let mut d = ui::headless::Driver::for_root(
+        let mut d = ui::headless::FrameHarness::for_root(
             ui::State::new(),
             staged(),
             (390, 844),
@@ -2287,13 +2312,16 @@ mod tests {
             app.engine.live = true;
             let id = app.engine.containers[0].id.clone();
             app.apply_action(Action::Stop, &id);
-            let intent = ui::widget::controls::take_control_invocation(&mut app)
-                .expect("the host receives an inert resource intent");
             assert_eq!(
-                intent.address,
-                ActionAddress::new(format!("container:{id}"), "stop")
+                app.requested.last(),
+                Some(&(
+                    format!("container:{id}"),
+                    ContainersEffect::Stop {
+                        container: id.clone()
+                    }
+                )),
+                "the host is asked for the exported effect on the container's row"
             );
-            assert!(intent.arguments.is_empty());
             assert_eq!(
                 app.engine.find(&id).map(|container| container.status),
                 Some(crate::model::ContainerStatus::Running),
@@ -2377,9 +2405,9 @@ mod tests {
             requests.recv().unwrap(),
             ControlledRuntimeRequest::Refresh(_)
         ));
-        let terminal = app.toast.as_ref().map(|toast| toast.born);
+        let terminal = app.toast.deadline();
         app.drain_bg();
-        assert_eq!(app.toast.as_ref().map(|toast| toast.born), terminal);
+        assert_eq!(app.toast.deadline(), terminal);
         assert!(
             requests.try_recv().is_err(),
             "terminal event was reduced once"
@@ -2403,21 +2431,17 @@ mod tests {
     #[test]
     fn controlled_create_runs_the_draft_and_drains_one_snapshot() {
         let (mut app, requests, _results) = ContainersApp::controlled_runtime_root();
-        let mut doc = AutoCommit::new();
+        let mut record = ui::tilo_resource::Replica::<Containers>::new();
         for (field, text) in [
             (CreateField::Name, "web"),
             (CreateField::Image, "nginx:1"),
             (CreateField::Ports, "8080:80"),
         ] {
-            ui::tilo_actions::Action::apply(
-                &ContainersAction::EditCreate {
-                    field,
-                    edit: TextEdit::ReplaceText { text: text.into() },
-                },
-                &mut doc,
-            )
-            .unwrap();
+            record
+                .apply(ui::tilo_resource::Invoke::edit(&field.path().replace(text)).unwrap())
+                .unwrap();
         }
+        let mut doc = record.doc().clone();
         app.set_create_open(true);
         app.submit_create(&mut ui::widget::Edits::lend(&mut doc));
         let ControlledRuntimeRequest::Create(request) = requests.recv().unwrap() else {
@@ -2492,19 +2516,26 @@ mod tests {
     }
 
     #[test]
-    fn pending_control_intent_keeps_exact_target_until_host_take() {
+    fn a_lifecycle_control_asks_the_host_for_its_exact_target() {
         let (mut app, requests, _results) = ContainersApp::controlled_runtime_root();
         app.apply_action(Action::Restart, "retained-target");
         let doc = AutoCommit::new();
         app.sync(&doc, &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
-        let intent =
-            ui::widget::controls::take_control_invocation(&mut app).expect("retained intent");
-        assert_eq!(intent.address.resource, "container:retained-target");
-        assert_eq!(intent.address.action, "restart");
-        assert!(intent.arguments.is_empty());
-        assert!(ui::widget::controls::take_control_invocation(&mut app).is_none());
-        assert!(requests.try_recv().is_err());
+        assert_eq!(
+            app.requested,
+            [(
+                "container:retained-target".to_owned(),
+                ContainersEffect::Restart {
+                    container: "retained-target".into()
+                }
+            )],
+            "one effect on exactly that container's row"
+        );
+        assert!(
+            requests.try_recv().is_err(),
+            "nothing reaches the engine before the host answers"
+        );
     }
 
     /// A controlled live engine selects and hydrates its one container.

@@ -9,6 +9,7 @@
 //!
 //! [`ApplicationsProvider`]: super::applications::ApplicationsProvider
 
+use super::background_index::BackgroundIndex;
 use crate::shell::chrome_state::Chrome;
 use crate::shell::host_apps::{self, HostApp};
 use crate::shell::i18n::{t, t_args};
@@ -16,42 +17,29 @@ use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
-use std::cell::RefCell;
 use std::collections::HashSet;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 use tilo_desktop::notifications::{Notification, NotificationSeverity};
-use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
+use tilo_search::{Document, FieldWeight, Matching, SearchIndex};
 
 /// Chip label / group header, mirroring [`ResourceKind::HostApplication`].
 pub const HOST_APPLICATIONS_KIND: &str = "Host Apps";
 
 pub struct HostApplicationsProvider {
     kinds: Vec<ResourceKind>,
-    snapshot: RefCell<Option<HostAppsSnapshot>>,
-    build: RefCell<Option<Receiver<HostAppsSnapshot>>>,
+    index: BackgroundIndex<(u64, u64), HostAppsSnapshot>,
     #[cfg(test)]
     source: Option<Arc<HostAppsTestSource>>,
-    #[cfg(test)]
-    build_probe: Arc<BuildProbe>,
 }
 
 struct HostAppsSnapshot {
-    source_generation: (u64, u64),
     apps: Vec<HostApp>,
     /// Lower-cased ids of installed Tilo packages; a host app with one of
     /// these ids is answered by the package instead.
     installed_ids: HashSet<String>,
     /// Apps no Tilo package answers for, keyed by position in `apps`.
     index: SearchIndex,
-}
-
-#[cfg(test)]
-#[derive(Default)]
-struct BuildProbe {
-    builds: std::sync::atomic::AtomicUsize,
-    thread: Mutex<Option<std::thread::ThreadId>>,
 }
 
 #[cfg(test)]
@@ -93,12 +81,9 @@ impl HostApplicationsProvider {
     pub fn new() -> Self {
         Self {
             kinds: vec![ResourceKind::HostApplication],
-            snapshot: RefCell::new(None),
-            build: RefCell::new(None),
+            index: BackgroundIndex::new("tilo-host-search-index"),
             #[cfg(test)]
             source: None,
-            #[cfg(test)]
-            build_probe: Arc::new(BuildProbe::default()),
         }
     }
 
@@ -126,28 +111,24 @@ impl HostApplicationsProvider {
     /// refreshing sources, never from `query_page` itself.
     fn build_snapshot(
         #[cfg(test)] source: Option<Arc<HostAppsTestSource>>,
-        #[cfg(test)] probe: &BuildProbe,
-    ) -> HostAppsSnapshot {
-        #[cfg(test)]
-        {
-            probe
-                .builds
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            *probe.thread.lock().expect("host app build thread lock") =
-                Some(std::thread::current().id());
-        }
+    ) -> ((u64, u64), HostAppsSnapshot) {
         #[cfg(test)]
         if let Some(source) = source {
             let (generation, apps, installed) = source.snapshot();
-            return Self::snapshot_from_parts((generation, generation), apps, &installed);
+            return (
+                (generation, generation),
+                Self::snapshot_from_parts(apps, &installed),
+            );
         }
         let (host_generation, apps) = host_apps::host_apps_snapshot();
         let (installed_generation, installed) = crate::shell::launcher::gui_apps_snapshot();
-        Self::snapshot_from_parts((host_generation, installed_generation), apps, &installed)
+        (
+            (host_generation, installed_generation),
+            Self::snapshot_from_parts(apps, &installed),
+        )
     }
 
     fn snapshot_from_parts(
-        source_generation: (u64, u64),
         apps: Vec<HostApp>,
         installed: &[crate::shell::launcher::InstalledApp],
     ) -> HostAppsSnapshot {
@@ -157,84 +138,26 @@ impl HostApplicationsProvider {
             .collect();
         let index = index_apps(&apps, &installed_ids);
         HostAppsSnapshot {
-            source_generation,
             apps,
             installed_ids,
             index,
         }
     }
 
-    fn refresh_snapshot(&self) {
-        let receiver = self.build.borrow_mut().take();
-        if let Some(receiver) = receiver {
-            match receiver.try_recv() {
-                Ok(snapshot) => *self.snapshot.borrow_mut() = Some(snapshot),
-                Err(TryRecvError::Empty) => *self.build.borrow_mut() = Some(receiver),
-                Err(TryRecvError::Disconnected) => {}
-            }
-        }
-        let current = self.source_generation();
-        if self
-            .snapshot
-            .borrow()
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.source_generation == current)
-            || self.build.borrow().is_some()
-        {
-            return;
-        }
-        let (sender, receiver) = mpsc::sync_channel(1);
-        if std::thread::Builder::new()
-            .name("tilo-host-search-index".into())
-            .spawn({
+    #[allow(clippy::unused_self, reason = "test builds use the injected source")]
+    fn builder(&self) -> impl FnOnce() -> ((u64, u64), HostAppsSnapshot) + Send + 'static {
+        #[cfg(test)]
+        let source = self.source.clone();
+        move || {
+            Self::build_snapshot(
                 #[cfg(test)]
-                let source = self.source.clone();
-                #[cfg(test)]
-                let probe = Arc::clone(&self.build_probe);
-                move || {
-                    let _ = sender.send(Self::build_snapshot(
-                        #[cfg(test)]
-                        source,
-                        #[cfg(test)]
-                        &probe,
-                    ));
-                }
-            })
-            .is_ok()
-        {
-            *self.build.borrow_mut() = Some(receiver);
-        }
-    }
-
-    /// Wait, at most `bound`, for the index build [`Self::refresh_snapshot`]
-    /// starts, so an address resolves on a session's first request too.
-    fn settle_snapshot(&self, bound: std::time::Duration) {
-        let started = std::time::Instant::now();
-        loop {
-            self.refresh_snapshot();
-            if self.snapshot().is_some() {
-                return;
-            }
-            let Some(receiver) = self.build.borrow_mut().take() else {
-                return;
-            };
-            match receiver.recv_timeout(bound.saturating_sub(started.elapsed())) {
-                Ok(snapshot) => *self.snapshot.borrow_mut() = Some(snapshot),
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    *self.build.borrow_mut() = Some(receiver);
-                    return;
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
-            }
+                source,
+            )
         }
     }
 
     fn snapshot(&self) -> Option<std::cell::Ref<'_, HostAppsSnapshot>> {
-        let generation = self.source_generation();
-        let snapshot = self.snapshot.borrow();
-        std::cell::Ref::filter_map(snapshot, Option::as_ref)
-            .ok()
-            .filter(|snapshot| snapshot.source_generation == generation)
+        self.index.current(&self.source_generation())
     }
 
     /// [`Self::results_for`] with the installed-package list supplied, so a
@@ -252,7 +175,7 @@ impl HostApplicationsProvider {
             .collect();
         let index = index_apps(apps, &installed_ids);
         index
-            .search(needle, Page::first(apps.len()))
+            .search(needle, tilo_search::Page::first(apps.len()))
             .hits
             .iter()
             .filter_map(|hit| {
@@ -423,7 +346,8 @@ impl SearchProvider for HostApplicationsProvider {
     }
 
     fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
-        self.refresh_snapshot();
+        self.index
+            .refresh(&self.source_generation(), self.builder());
     }
 
     /// An address is looked up in the whole snapshot. An empty query's first
@@ -435,7 +359,11 @@ impl SearchProvider for HostApplicationsProvider {
             return None;
         }
         if self.snapshot().is_none() {
-            self.settle_snapshot(crate::shell::search::RESOLVE_INDEX_WAIT);
+            self.index.settle(
+                crate::shell::search::RESOLVE_INDEX_WAIT,
+                || self.source_generation(),
+                || self.builder(),
+            );
         }
         let snapshot = self.snapshot()?;
         snapshot
@@ -452,11 +380,7 @@ impl SearchProvider for HostApplicationsProvider {
 
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
         let (host, installed) = self.source_generation();
-        let ready = self
-            .snapshot
-            .borrow()
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.source_generation == (host, installed));
+        let ready = self.index.is_ready(&(host, installed));
         format!(
             "{}:{host}:{installed}",
             if ready { "ready" } else { "indexing" }
@@ -479,61 +403,19 @@ impl SearchProvider for HostApplicationsProvider {
         let Some(snapshot) = self.snapshot() else {
             return SearchPage::exhausted(revision, Vec::new());
         };
-        let offset = match cursor {
-            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
-            Some(cursor) => match cursor.token.strip_prefix("host:").and_then(|token| {
-                token
-                    .split_once('\u{1f}')
-                    .filter(|(_, query)| *query == ctx.needle)
-                    .and_then(|(offset, _)| offset.parse::<usize>().ok())
-            }) {
-                Some(offset) => offset,
-                None => return SearchPage::stale(revision),
-            },
-            None => 0,
-        };
-        let found = snapshot.index.search(
+        crate::shell::search::index_page(
+            revision,
+            cursor,
             ctx.needle,
-            Page {
-                offset,
-                limit: budget.max_work.min(budget.max_results),
+            budget,
+            |page| snapshot.index.search(ctx.needle, page),
+            |hit| {
+                let app = usize::try_from(hit.key)
+                    .ok()
+                    .and_then(|at| snapshot.apps.get(at))?;
+                Some(self.row(app, score_for(ctx.needle, hit.rank)))
             },
-        );
-        let mut shown = 0usize;
-        let mut bytes = 0usize;
-        let mut results = Vec::new();
-        for hit in &found.hits {
-            let Some(app) = usize::try_from(hit.key)
-                .ok()
-                .and_then(|at| snapshot.apps.get(at))
-            else {
-                continue;
-            };
-            let row = self.row(app, score_for(ctx.needle, hit.rank));
-            let row_bytes = row
-                .title
-                .len()
-                .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
-            if bytes.saturating_add(row_bytes) > budget.max_bytes {
-                break;
-            }
-            bytes = bytes.saturating_add(row_bytes);
-            shown = shown.saturating_add(1);
-            results.push(row);
-        }
-        let exhausted = !found.more && shown == found.hits.len();
-        let next = offset.saturating_add(shown);
-        SearchPage {
-            revision: revision.clone(),
-            results,
-            next_cursor: (!exhausted).then(|| SearchCursor {
-                revision,
-                token: format!("host:{next}\u{1f}{}", ctx.needle),
-            }),
-            exhausted,
-            stale_cursor: false,
-            budget_exhausted: !exhausted,
-        }
+        )
     }
 }
 
@@ -545,11 +427,11 @@ mod tests {
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
-    use parking_lot::RwLock;
     use std::sync::Arc;
 
     fn chrome_rc() -> Chrome {
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::default()));
+        let handle: WorkspaceTreeHandle =
+            crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
         ChromeState::new_with_handle(handle)
     }
 
@@ -778,7 +660,7 @@ mod tests {
                 .is_empty()
         );
         assert!(
-            cold.build.borrow().is_none(),
+            !cold.index.building(),
             "a public cold query must not start or clone a full host-app corpus"
         );
 
@@ -796,12 +678,14 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let index = index_apps(&apps, &HashSet::new());
-        *provider.snapshot.borrow_mut() = Some(HostAppsSnapshot {
-            source_generation: provider.source_generation(),
-            apps,
-            installed_ids: HashSet::new(),
-            index,
-        });
+        provider.index.set_ready(
+            provider.source_generation(),
+            HostAppsSnapshot {
+                apps,
+                installed_ids: HashSet::new(),
+                index,
+            },
+        );
         let page = provider.query_page(
             SearchContext {
                 query_scope: None,
@@ -822,7 +706,7 @@ mod tests {
         assert_eq!(page.results.len(), 1);
         assert_eq!(page.results[0].title, "Open unique-tail");
         assert!(page.exhausted, "the rare posting needs one warm inspection");
-        assert!(provider.build.borrow().is_none());
+        assert!(!provider.index.building());
     }
 
     #[test]
@@ -865,7 +749,8 @@ mod tests {
         );
         assert_eq!(
             provider
-                .build_probe
+                .index
+                .probe
                 .builds
                 .load(std::sync::atomic::Ordering::Relaxed),
             0
@@ -876,7 +761,7 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             0
         );
-        assert!(provider.build.borrow().is_none());
+        assert!(!provider.index.building());
         for _ in 0..6_000 {
             provider.refresh_search_index(&ctx);
             if provider.search_revision(&ctx).starts_with("ready:") {
@@ -887,17 +772,19 @@ mod tests {
         assert!(provider.search_revision(&ctx).starts_with("ready:"));
         assert_eq!(
             provider
-                .build_probe
+                .index
+                .probe
                 .builds
                 .load(std::sync::atomic::Ordering::Relaxed),
             1
         );
         assert_ne!(
             *provider
-                .build_probe
+                .index
+                .probe
                 .thread
                 .lock()
-                .expect("host app build thread lock"),
+                .expect("index build probe lock"),
             Some(query_thread)
         );
         let page = provider.query_page(

@@ -13,7 +13,6 @@
 //! path typing, Ctrl+K and agents share) on two replicas and merge both ways.
 
 use automerge::AutoCommit;
-use tilo_actions::Action;
 use tilo_automerge::ApplyIncoming as _;
 use word_processor::actions::{
     MarkVal, RegionKind, RichTextAction, Span, set_mark_action, splice_text_action,
@@ -35,7 +34,7 @@ fn fork(doc: &mut AutoCommit) -> (AutoCommit, AutoCommit) {
 }
 
 fn apply(doc: &mut AutoCommit, action: &RichTextAction) {
-    action.apply(doc).unwrap();
+    word_processor::model::apply(doc, action).unwrap();
     doc.commit();
 }
 
@@ -55,12 +54,12 @@ fn merge_both(a: &mut AutoCommit, b: &mut AutoCommit) -> tilo_doc::DocSnapshot {
 }
 
 fn snapshot(doc: &AutoCommit) -> tilo_doc::DocSnapshot {
-    let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+    let c = word_processor::model::open(doc).unwrap();
     tilo_doc::model::materialize(doc, &c)
 }
 
 fn blocks(doc: &AutoCommit) -> Vec<String> {
-    let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+    let c = word_processor::model::open(doc).unwrap();
     tilo_doc::model::blocks_in_order(doc, &c)
 }
 

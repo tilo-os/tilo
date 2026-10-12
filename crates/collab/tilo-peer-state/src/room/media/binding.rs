@@ -99,8 +99,11 @@ fn resolve<R: ObjectIdWrite>(
     channel: &str,
     room: &R,
 ) -> Result<Binding, Error> {
+    // Chat keeps its channels as a collection: each entry holds its order
+    // key and, under `v`, the channel itself.
     let channels = read::strict_map(room, &room.root(), "channels").map_err(strict_error)?;
-    let object = read::strict_map(room, &channels, channel).map_err(strict_error)?;
+    let entry = read::strict_map(room, &channels, channel).map_err(strict_error)?;
+    let object = read::strict_map(room, &entry, "v").map_err(strict_error)?;
     if read::strict_string(room, &object, "kind").map_err(strict_error)? != "voice" {
         return Err(policy(MediaPolicyError::Binding));
     }

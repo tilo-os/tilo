@@ -27,12 +27,11 @@ use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
-use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::Widget as _;
 use vello::kurbo::Point;
-use winit::dpi::PhysicalPosition;
-use winit::event::WindowEvent;
+use winit::event::Modifiers;
+
+use crate::support::host::{Layout, dispatch, lay_out};
 
 const W: f32 = 1280.0;
 const H: f32 = 800.0;
@@ -116,84 +115,23 @@ fn two_strip_two_tab_tree() -> (WorkspaceTree, StripId, StripId, [u64; 2], [u64;
 
 /// Full build/layout/apply pass mirroring `App::layout`, so every rect
 /// lands in screen-space coords.
-struct Layout {
-    taffy: TaffyTree<()>,
-    root_node: NodeId,
-    child_node: NodeId,
-}
-
 fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
-    let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = host.build_layout(&mut taffy, &theme, &mut node_map);
-    let root_node = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(W),
-                    height: Dimension::length(H),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-
-    let mut tr = ui::text_render::TextRenderer::new();
-    let measure_map = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            root_node,
-            Size {
-                width: AvailableSpace::Definite(W),
-                height: AvailableSpace::Definite(H),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    host.apply_layout(&taffy, child, Point::ORIGIN);
-    Layout {
-        taffy,
-        root_node,
-        child_node: child,
-    }
+    lay_out(host, W, H)
 }
 
 /// Pump a no-op `CursorMoved` so a pre-staged `pending_detach` flows
 /// through `WindowGroup::handle_event` into `GroupRow`'s detach sweep.
 fn pump_no_op(host: &mut ShellOverlayHost, layout: &Layout) {
-    let event = WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: PhysicalPosition::new(9000.0, 9000.0),
-    };
-    let mut doc = automerge::AutoCommit::new();
-    let doc_root = automerge::ROOT.clone();
-    let modifiers = winit::event::Modifiers::default();
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
-    host.handle_event(
+    let event = ui::synthetic_input::cursor_moved(9000.0, 9000.0);
+    dispatch(
+        host,
+        &layout.taffy,
+        layout.child_node,
+        Modifiers::default(),
         &event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(&mut doc),
-            path: &doc_root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: layout.child_node,
-            taffy: &layout.taffy,
-        },
     );
     // This harness stops short of `Widget::update`; tests invoke the
     // cross-strip dispatch via `tick_cross_strip_dispatch_for_tests`.
-    let _ = layout.root_node;
 }
 
 #[test]

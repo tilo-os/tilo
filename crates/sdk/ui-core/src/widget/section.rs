@@ -47,6 +47,7 @@ use crate::a11y::{AccessNode, AccessState, Role};
 use crate::chrome::{RowJoin, SelectionState, paint_row_selection, row_bleed};
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
+use crate::pointer_replay::{PressAt, Release};
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
@@ -404,12 +405,11 @@ impl Widget for CountPill {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.metrics = Some(HeaderMetrics::new(theme));
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -429,14 +429,7 @@ impl Widget for CountPill {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -489,27 +482,19 @@ impl Widget for Chevron {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let side = theme.tokens.metrics.icon_sm;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             flex_shrink: 0.0,
             size: Size {
                 width: length(side),
                 height: length(side),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -542,6 +527,8 @@ struct Disclosure {
     expanded: Rc<Cell<bool>>,
     on_toggle: Option<Box<dyn FnMut(bool)>>,
     interaction: Interaction,
+    /// The press on the header; `interaction.pressed` mirrors it.
+    press: crate::pointer_replay::HeldPress,
     cursor: Point,
     toggled: bool,
 }
@@ -734,6 +721,8 @@ impl Widget for HeaderRow {
         }
         let rect = self.parts.rect;
         let action = self.action_rect();
+        // The title names the header across a rebuild.
+        let title = self.title.as_str();
         let Some(disclosure) = &mut self.disclosure else {
             return;
         };
@@ -751,19 +740,24 @@ impl Widget for HeaderRow {
                 ..
             } => match state {
                 ElementState::Pressed if disclosure.interaction.hovered => {
+                    disclosure.press.press(PressAt::one(title, rect));
                     disclosure.interaction.pressed = true;
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                 }
-                ElementState::Released if disclosure.interaction.pressed => {
+                ElementState::Released => {
+                    let over = disclosure.interaction.hovered;
+                    let release = disclosure
+                        .press
+                        .release(over.then_some(PressAt::one(title, rect)));
                     disclosure.interaction.pressed = false;
-                    *ctx.handled = true;
-                    if disclosure.interaction.hovered {
+                    *ctx.handled |= release.ended();
+                    if release == Release::Click(()) {
                         let open = !disclosure.expanded.get();
                         disclosure.set(open);
                     }
                 }
-                _ => {}
+                ElementState::Pressed => {}
             },
             WindowEvent::KeyboardInput { event, .. }
                 if disclosure.interaction.focused && event.state == ElementState::Pressed =>
@@ -840,6 +834,7 @@ impl Widget for HeaderRow {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &crate::widget::ModelPath,
     ) -> bool {
@@ -926,6 +921,7 @@ impl Section {
             expanded: Rc::clone(expanded),
             on_toggle: None,
             interaction: Interaction::default(),
+            press: crate::pointer_replay::HeldPress::default(),
             cursor: Point::ZERO,
             toggled: false,
         });
@@ -986,6 +982,7 @@ impl Section {
                 expanded: Rc::clone(&state),
                 on_toggle,
                 interaction: Interaction::default(),
+                press: crate::pointer_replay::HeldPress::default(),
                 cursor: Point::ZERO,
                 toggled: false,
             });
@@ -1391,7 +1388,7 @@ impl Widget for StatusLine {
         self.style = Some(theme.text(TextRole::Caption));
         self.dot = f64::from(theme.tokens.spacing.s2);
         self.gap = f64::from(theme.tokens.spacing.rhythm.related);
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: percent(1.0_f32),
                 height: auto(),
@@ -1402,9 +1399,8 @@ impl Widget for StatusLine {
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -1433,14 +1429,7 @@ impl Widget for StatusLine {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -1619,7 +1608,7 @@ impl Widget for ObjectHeader {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.metrics = Some(ObjectMetrics::new(theme));
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: percent(1.0_f32),
                 height: auto(),
@@ -1630,9 +1619,8 @@ impl Widget for ObjectHeader {
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -1657,14 +1645,7 @@ impl Widget for ObjectHeader {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(

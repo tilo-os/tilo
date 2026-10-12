@@ -799,13 +799,12 @@ impl App {
                 | CollabEvent::ActionCatalogue { .. }
                 | CollabEvent::ActionDirectoryPage { .. }
                 | CollabEvent::PublishedActionResolution { .. }
-                | CollabEvent::EnrolledTask(_)
-                | CollabEvent::EnrolledTaskReply { .. }
-                | CollabEvent::EnrolledTaskDisconnected { .. }
                 | CollabEvent::NativeMediaCommandResult { .. }
                 | CollabEvent::TaskRun(_)
                 | CollabEvent::TaskActionInvocationResult { .. }
                 | CollabEvent::TaskRunCancellation { .. }
+                | CollabEvent::TaskRunControl { .. }
+                | CollabEvent::TaskRunReportResult { .. }
                 | CollabEvent::WorkspaceControl { .. }
                 | CollabEvent::RealtimeCommandResult { .. }
                 | CollabEvent::Realtime(_)
@@ -899,13 +898,12 @@ impl App {
             | CollabEvent::ActionCatalogue { .. }
             | CollabEvent::ActionDirectoryPage { .. }
             | CollabEvent::PublishedActionResolution { .. }
-            | CollabEvent::EnrolledTask(_)
-            | CollabEvent::EnrolledTaskReply { .. }
-            | CollabEvent::EnrolledTaskDisconnected { .. }
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }
             | CollabEvent::TaskRunCancellation { .. }
+            | CollabEvent::TaskRunControl { .. }
+            | CollabEvent::TaskRunReportResult { .. }
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
@@ -956,34 +954,6 @@ impl App {
                 self.apply_document_scrollback(ops, &decrypted_payloads);
             }
             _ => {}
-        }
-    }
-
-    /// A history view reports how many loaded ops of `artifact` lie above
-    /// its viewport; older history is fetched as it nears the loaded edge.
-    pub fn document_history_viewport(
-        &mut self,
-        artifact: collab_types::ArtifactId,
-        loaded_ops_above_viewport: usize,
-    ) {
-        if let Some(request) = self
-            .collaboration
-            .history
-            .on_viewport(artifact, loaded_ops_above_viewport)
-        {
-            self.send_history_request(request);
-        }
-    }
-
-    /// Something needs `artifact`'s history back to `seq` (opening an older
-    /// version, a backwards search); pages are fetched until it is loaded.
-    pub fn load_document_history_back_to(&mut self, artifact: collab_types::ArtifactId, seq: u64) {
-        if let Some(request) = self
-            .collaboration
-            .history
-            .ensure_loaded_back_to(artifact, seq)
-        {
-            self.send_history_request(request);
         }
     }
 
@@ -1216,7 +1186,7 @@ impl App {
                 Some(crate::permissions::UserId(from_user_id.to_string())),
             );
             self.needs_sync = true;
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
         }
     }
 

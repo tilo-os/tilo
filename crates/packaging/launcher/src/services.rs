@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 
 use wire_frame::Framing;
 
-use crate::manifest::{ServiceReq, ServiceReqParseError};
+use crate::manifest::ServiceReq;
 
 /// Exit code for "required service missing" — mirrors `EX_SOFTWARE`
 /// (70) from sysexits.h.
@@ -140,9 +140,15 @@ const COMPAT_PROTOCOL_VERSION: u16 = 1;
 pub const COMPAT_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024).reject_empty();
 /// The model gateway's handoff: a little-endian `u32` length, then JSON.
 const MODEL_GATEWAY_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024);
-/// The collaboration launch preamble (magic + protocol version) is shared
-/// with the broker through `collab-types`.
-pub use collab_types::local_transport::{COLLAB_LAUNCH_MAGIC, COLLAB_LAUNCH_PROTOCOL_VERSION};
+/// Length-prefixed launcher handoff consumed before Cap'n Proto starts on a
+/// collaboration descriptor. The broker binds it to `SO_PEERCRED` and a
+/// compositor-created one-shot launch record.
+pub const COLLAB_LAUNCH_PROTOCOL_VERSION: u16 = 1;
+/// Prefix that separates a launcher-authenticated connection from a raw
+/// Cap'n Proto diagnostic client. It is deliberately not an authority: the
+/// broker still verifies the peer process against the compositor's one-shot
+/// record before it accepts the following frame.
+pub const COLLAB_LAUNCH_MAGIC: [u8; 4] = *b"QCL1";
 /// After [`COLLAB_LAUNCH_MAGIC`]: a little-endian `u32` length, then the JSON
 /// handoff. It is deliberately tiny: it only binds a socket to the shell's
 /// already-created process record, while the certificate the app presents
@@ -182,8 +188,6 @@ pub enum ServiceError {
         version: u32,
         path: PathBuf,
     },
-    #[error("malformed service requirement `{0}`: {1}")]
-    BadRequirement(String, ServiceReqParseError),
     #[error("failed to open service socket `{path}`: {source}")]
     OpenFailed {
         path: PathBuf,
@@ -218,7 +222,7 @@ pub struct ServiceLaunchContext<'a> {
 
 /// Discover `$XDG_RUNTIME_DIR/tilo/services/`.
 pub fn services_root() -> PathBuf {
-    let runtime = xdg_paths::xdg::runtime_dir().unwrap_or_else(|| {
+    let runtime = tilo_paths::xdg::runtime_dir().unwrap_or_else(|| {
         let uid = unsafe { libc::geteuid() };
         PathBuf::from(format!("/run/user/{uid}"))
     });
@@ -254,6 +258,7 @@ pub fn identity_socket() -> PathBuf {
 pub fn authenticate_shell_ui_bind(
     resolved: &[ResolvedService],
     app_id: &str,
+    egress: &crate::netgate::EgressDecision,
 ) -> Result<(), ServiceError> {
     let Some(service) = resolved
         .iter()
@@ -275,6 +280,7 @@ pub fn authenticate_shell_ui_bind(
     let mut frame = serde_json::to_vec(&serde_json::json!({
         "protocol": SHELL_UI_LAUNCH_PROTOCOL,
         "app_id": app_id,
+        "network_status_allowed": !matches!(egress, crate::netgate::EgressDecision::Blocked),
     }))
     .map_err(|error| ServiceError::OpenFailed {
         path: path.clone(),
@@ -557,12 +563,11 @@ pub fn ensure_services_root() -> std::io::Result<PathBuf> {
 ///
 /// # Errors
 ///
-/// Returns [`ServiceError::BadRequirement`] if a manifest entry doesn't
-/// parse, [`ServiceError::RequiredMissing`] if a required service's socket
+/// Returns [`ServiceError::RequiredMissing`] if a required service's socket
 /// doesn't exist, or [`ServiceError::OpenFailed`] if a required service's
 /// socket exists but refuses the connection.
 pub fn resolve_service_binds(
-    services: &BTreeMap<String, String>,
+    services: &BTreeMap<String, ServiceReq>,
     no_services: bool,
 ) -> Result<Vec<ResolvedService>, ServiceError> {
     resolve_service_binds_inner(services, no_services, None)
@@ -576,7 +581,7 @@ pub fn resolve_service_binds(
 /// Returns the same service resolution errors as [`resolve_service_binds`],
 /// plus a context or handoff error when the `compat` service is connected.
 pub fn resolve_service_binds_for_launch(
-    services: &BTreeMap<String, String>,
+    services: &BTreeMap<String, ServiceReq>,
     no_services: bool,
     context: ServiceLaunchContext<'_>,
 ) -> Result<Vec<ResolvedService>, ServiceError> {
@@ -603,7 +608,7 @@ fn handoff_failure(
 
 fn authenticate_service(
     name: &str,
-    requirement: ServiceReq,
+    requirement: &ServiceReq,
     path: &Path,
     stream: &mut UnixStream,
     context: Option<ServiceLaunchContext<'_>>,
@@ -720,7 +725,7 @@ fn write_app_host_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Res
 }
 
 fn resolve_service_binds_inner(
-    services: &BTreeMap<String, String>,
+    services: &BTreeMap<String, ServiceReq>,
     no_services: bool,
     context: Option<ServiceLaunchContext<'_>>,
 ) -> Result<Vec<ResolvedService>, ServiceError> {
@@ -729,9 +734,7 @@ fn resolve_service_binds_inner(
     let mut next_child_fd: i32 = 17;
     let mut out = Vec::with_capacity(services.len());
 
-    for (name, raw_req) in services {
-        let req = ServiceReq::parse(raw_req)
-            .map_err(|e| ServiceError::BadRequirement(raw_req.clone(), e))?;
+    for (name, req) in services {
         if name == SYSTEM_SERVICE {
             continue;
         }
@@ -753,7 +756,7 @@ fn resolve_service_binds_inner(
             if req.is_required() {
                 return Err(ServiceError::RequiredMissing {
                     name: name.clone(),
-                    version: req.version(),
+                    version: req.version,
                     path,
                 });
             }
@@ -1231,7 +1234,10 @@ mod tests {
                 )
             });
             let mut services = BTreeMap::new();
-            services.insert(COLLAB_SERVICE.to_string(), "required@1".to_string());
+            services.insert(
+                COLLAB_SERVICE.to_string(),
+                crate::manifest::service_req("required@1"),
+            );
             let resolved = resolve_service_binds_for_launch(
                 &services,
                 false,
@@ -1258,16 +1264,31 @@ mod tests {
             let listener =
                 std::os::unix::net::UnixListener::bind(root.join("shell-ui.sock")).unwrap();
             let mut services = BTreeMap::new();
-            services.insert(SHELL_UI_SERVICE.to_string(), "optional@1".to_string());
-            let resolved = resolve_service_binds(&services, false).unwrap();
-            authenticate_shell_ui_bind(&resolved, "so.tilo.chat").unwrap();
+            services.insert(
+                SHELL_UI_SERVICE.to_string(),
+                crate::manifest::service_req("optional@1"),
+            );
+            for (mode, hosts, allowed) in [
+                ("off", Vec::new(), false),
+                ("host", Vec::new(), true),
+                ("allowlist", vec!["example.com".to_owned()], true),
+                ("allowlist", Vec::new(), false),
+            ] {
+                let egress = crate::netgate::EgressDecision::resolve(mode, &hosts, &[]);
+                let resolved = resolve_service_binds(&services, false).unwrap();
+                authenticate_shell_ui_bind(&resolved, "so.tilo.chat", &egress).unwrap();
 
-            let (stream, _) = listener.accept().unwrap();
-            let mut line = String::new();
-            BufReader::new(stream).read_line(&mut line).unwrap();
-            let handshake: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-            assert_eq!(handshake["protocol"], SHELL_UI_LAUNCH_PROTOCOL);
-            assert_eq!(handshake["app_id"], "so.tilo.chat");
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(stream).read_line(&mut line).unwrap();
+                let handshake: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+                assert_eq!(handshake["protocol"], SHELL_UI_LAUNCH_PROTOCOL);
+                assert_eq!(handshake["app_id"], "so.tilo.chat");
+                assert_eq!(
+                    handshake["network_status_allowed"], allowed,
+                    "{mode}: {hosts:?}"
+                );
+            }
         }
     }
 
@@ -1286,7 +1307,10 @@ mod tests {
         // Phase `app_host_capability_is_not_self_grantable_by_third_party_packages`.
         {
             let mut services = BTreeMap::new();
-            services.insert(APP_HOST_SERVICE.to_string(), "required@1".to_string());
+            services.insert(
+                APP_HOST_SERVICE.to_string(),
+                crate::manifest::service_req("required@1"),
+            );
             let error = resolve_service_binds_for_launch(
                 &services,
                 false,
@@ -1306,7 +1330,10 @@ mod tests {
             dead_socket(&root, "collab");
 
             let mut svcs = BTreeMap::new();
-            svcs.insert("collab".to_string(), "optional@1".to_string());
+            svcs.insert(
+                "collab".to_string(),
+                crate::manifest::service_req("optional@1"),
+            );
             let out = resolve_service_binds(&svcs, false)
                 .expect("a stale optional socket must degrade, not fail the launch");
             assert!(
@@ -1322,7 +1349,10 @@ mod tests {
             dead_socket(&root, "collab");
 
             let mut svcs = BTreeMap::new();
-            svcs.insert("collab".to_string(), "required@1".to_string());
+            svcs.insert(
+                "collab".to_string(),
+                crate::manifest::service_req("required@1"),
+            );
             let err = resolve_service_binds(&svcs, false)
                 .expect_err("a required service that does not answer must fail the launch");
             assert!(
@@ -1340,7 +1370,10 @@ mod tests {
                 std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
             let mut svcs = BTreeMap::new();
-            svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
+            svcs.insert(
+                "test-lifecycle".to_string(),
+                crate::manifest::service_req("optional@1"),
+            );
             let out = resolve_service_binds(&svcs, false).expect("a live socket resolves");
             assert_eq!(out.len(), 1, "the one live service must be handed over");
             assert_eq!(out[0].name, "test-lifecycle");
@@ -1352,21 +1385,20 @@ mod tests {
         // Phase `no_services_flag_skips_required_silently`.
         {
             let mut svcs = BTreeMap::new();
-            svcs.insert("collab".to_string(), "required@1".to_string());
+            svcs.insert(
+                "collab".to_string(),
+                crate::manifest::service_req("required@1"),
+            );
             let out = resolve_service_binds(&svcs, true).expect("no-services path is infallible");
             assert!(out.is_empty(), "required service must be skipped");
-        }
-        // Phase `malformed_requirement_is_an_error`.
-        {
-            let mut svcs = BTreeMap::new();
-            svcs.insert("collab".to_string(), "wrong-form".to_string());
-            let err = resolve_service_binds(&svcs, false).unwrap_err();
-            assert!(matches!(err, ServiceError::BadRequirement(_, _)));
         }
         // Phase `required_missing_returns_required_missing_error`.
         {
             let mut svcs = BTreeMap::new();
-            svcs.insert("collab".to_string(), "required@1".to_string());
+            svcs.insert(
+                "collab".to_string(),
+                crate::manifest::service_req("required@1"),
+            );
             // Point XDG_RUNTIME_DIR at a tempdir with nothing in it.
             let dir = tempfile::tempdir().unwrap();
             let _env = runtime_dir_env(dir.path());
@@ -1427,7 +1459,10 @@ mod tests {
             std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
         let mut svcs = BTreeMap::new();
-        svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
+        svcs.insert(
+            "test-lifecycle".to_string(),
+            crate::manifest::service_req("optional@1"),
+        );
 
         let mut handed_out: Vec<String> = Vec::with_capacity(LAUNCHES);
         for _ in 0..LAUNCHES {
@@ -1483,7 +1518,10 @@ mod tests {
                 std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
             let mut svcs = BTreeMap::new();
-            svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
+            svcs.insert(
+                "test-lifecycle".to_string(),
+                crate::manifest::service_req("optional@1"),
+            );
             let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
             assert_eq!(
                 resolved.len(),
@@ -1530,7 +1568,10 @@ mod tests {
                 std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
             let mut svcs = BTreeMap::new();
-            svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
+            svcs.insert(
+                "test-lifecycle".to_string(),
+                crate::manifest::service_req("optional@1"),
+            );
             let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
             let (mut served, _) = listener.accept().expect("the connection has to arrive");
 
@@ -1586,7 +1627,10 @@ mod tests {
                 std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
             let mut svcs = BTreeMap::new();
-            svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
+            svcs.insert(
+                "test-lifecycle".to_string(),
+                crate::manifest::service_req("optional@1"),
+            );
             let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
             let raw = resolved[0].host_fd();
 
@@ -1733,7 +1777,7 @@ impl EnrolledServiceContext {
     pub fn take_for_launch(
         &mut self,
         binding: &crate::managed::ManagedBinding,
-        required: &BTreeMap<String, String>,
+        required: &BTreeMap<String, ServiceReq>,
     ) -> Result<Vec<ResolvedService>, String> {
         if binding != &self.binding {
             return Err("managed descriptor binding mismatch".into());
@@ -1742,10 +1786,9 @@ impl EnrolledServiceContext {
             .connected
             .as_ref()
             .ok_or("managed descriptors already consumed")?;
-        for (name, raw) in required {
-            let requirement = ServiceReq::parse(raw).map_err(|e| e.to_string())?;
+        for (name, requirement) in required {
             if requirement.is_required()
-                && (requirement.version() != 1 || !connected.contains_key(name))
+                && (requirement.version != 1 || !connected.contains_key(name))
             {
                 return Err(format!("required managed service unavailable: {name}"));
             }

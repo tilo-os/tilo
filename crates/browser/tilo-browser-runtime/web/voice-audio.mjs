@@ -30,6 +30,16 @@ const encoderConfig = Object.freeze({
   bitrate: BITRATE,
   opus: {format: 'opus', frameDuration: FRAME_MICROSECONDS},
 });
+// Opus DTX: in silence the encoder sends one comfort-noise update per 400 ms
+// instead of 50 packets a second, entering DTX only after ~200 ms without
+// activity and leaving it on the first active frame, so onsets are coded
+// normally. Used wherever the browser's encoder confirms it (the support
+// answer echoes only the members it understood); the worker accounts for
+// the frames it then never outputs (web/voice-audio-worker.mjs).
+const dtxEncoderConfig = Object.freeze({
+  ...encoderConfig,
+  opus: {...encoderConfig.opus, usedtx: true},
+});
 const decoderConfig = Object.freeze({
   codec: CODEC,
   sampleRate: SAMPLE_RATE,
@@ -55,8 +65,19 @@ function baseCapabilities() {
     channels: CHANNELS,
     frameSamples: FRAME_SAMPLES,
     bitrate: BITRATE,
+    dtx: false,
     reason: null,
   };
+}
+
+/** Whether the encoder confirms Opus DTX; any doubt keeps every frame. */
+async function supportsDtx(environment) {
+  try {
+    const support = await environment.AudioEncoder.isConfigSupported(dtxEncoderConfig);
+    return support?.supported === true && support.config?.opus?.usedtx === true;
+  } catch {
+    return false;
+  }
 }
 
 async function qualifyCodecs(environment) {
@@ -143,6 +164,7 @@ async function inspectCapabilities(environment) {
   try {
     await qualifyCodecs(environment);
     result.qualified = true;
+    result.dtx = await supportsDtx(environment);
   } catch (error) {
     result.reason = `WebCodecs Opus qualification failed: ${error.message}`;
     return result;
@@ -487,7 +509,7 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
           readyReject(error);
           void stop().catch(closeError => report({type: 'error', stage: 'audio-context-close', error: closeError.message}));
         });
-        worker.postMessage({type: 'init', encoderConfig, decoderConfig});
+        worker.postMessage({type: 'init', encoderConfig: support.dtx ? dtxEncoderConfig : encoderConfig, decoderConfig});
         await Promise.race([Promise.all([workerReady, captureMuted ? Promise.resolve() : attachInput(selectedInputId)]), aborted]);
         if (signal?.aborted) throw abortError(signal);
 

@@ -2,7 +2,6 @@
 //! out, links and the clipboard. A control, the palette, an agent and a
 //! script all reach [`NotesApp`](crate::NotesApp)'s handler with one of these.
 
-use tilo_actions::ActionSpec;
 use ui::prelude::Effect;
 use ui::tilo_resource;
 use uuid::Uuid;
@@ -14,7 +13,7 @@ pub enum NotesEffect {
     ///
     /// Read the selected and bound page identities, content-free body hashes,
     /// editor focus and caret without selecting a note or changing its body.
-    #[effect(view, returns, permission = "read")]
+    #[effect(view, returns, kind = "read")]
     InspectEditor,
     /// Back
     ///
@@ -30,7 +29,7 @@ pub enum NotesEffect {
     ///
     /// Choose a Markdown file and add it to the notebook as a note.
     #[effect(job, cancellable, device_only)]
-    ImportMarkdown,
+    ImportMarkdownFile,
     /// Import Markdown content
     ///
     /// Add Markdown text to the notebook as a note, with no file to choose.
@@ -44,7 +43,7 @@ pub enum NotesEffect {
     /// Export Markdown
     ///
     /// Save a note as a Markdown file, its images inside it.
-    #[effect(row, job, cancellable, device_only)]
+    #[effect(job, cancellable, device_only, row, item = pages)]
     ExportMarkdown {
         #[param("The note")]
         page: Uuid,
@@ -52,7 +51,7 @@ pub enum NotesEffect {
     /// Insert image
     ///
     /// Choose an image and add it to a note.
-    #[effect(row, job, cancellable, device_only)]
+    #[effect(job, cancellable, device_only, row, item = pages)]
     InsertImage {
         #[param("The note")]
         page: Uuid,
@@ -60,7 +59,7 @@ pub enum NotesEffect {
     /// Copy note link
     ///
     /// Copy a link to a note that pastes into another note.
-    #[effect(row, device_only)]
+    #[effect(device_only, row, item = pages)]
     CopyLink {
         #[param("The note")]
         page: Uuid,
@@ -76,8 +75,8 @@ pub enum NotesEffect {
     /// Open note
     ///
     /// Show a note, and the block in it when one is named.
-    #[effect(view, row, idempotent)]
-    Open {
+    #[effect(view, idempotent, item = pages)]
+    OpenNote {
         #[param("The note")]
         page: Uuid,
         #[param("The block to reveal")]
@@ -86,7 +85,7 @@ pub enum NotesEffect {
     /// Reveal block range
     ///
     /// Select an exact range in a note block without changing its text.
-    #[effect(view, row, idempotent)]
+    #[effect(view, idempotent, row, item = pages)]
     RevealBlockRange {
         #[param("The note")]
         page: Uuid,
@@ -102,20 +101,9 @@ pub enum NotesEffect {
     /// Browse tagged notes
     ///
     /// Show the notes carrying a tag.
-    #[effect(view, row, idempotent)]
+    #[effect(view, idempotent, item = tags)]
     OpenTag {
         #[param("The tag")]
         tag: Uuid,
     },
-}
-
-impl NotesEffect {
-    /// This effect as the action `id` an item offers, labelled `label`:
-    /// opening a note from its row, a backlink or a tag.
-    pub(crate) fn offered(&self, id: impl Into<String>, label: impl Into<String>) -> ActionSpec {
-        let mut spec = self.bound();
-        spec.id = id.into();
-        spec.label = label.into();
-        spec
-    }
 }

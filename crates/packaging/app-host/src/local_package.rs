@@ -1,9 +1,17 @@
 //! Trusted local files through the existing Store capability and installer.
+//!
+//! The Store reads an archive ([`review_archive`]) and holds a host review;
+//! reviewing against host trust and installing ([`review`], [`install`]) run
+//! in the daemon and need the `service` feature.
+#[cfg(feature = "service")]
 use std::io::Write;
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "service")]
+use tilo_app_package::BlobHash;
+#[cfg(feature = "service")]
 use tilo_app_package::trust::{RevocationList, TrustedAttestors};
-use tilo_app_package::{BlobHash, DiscardBlobs, Kind, Manifest, Verification};
+use tilo_app_package::{DiscardBlobs, Kind, Manifest, Verification};
 
 pub const MAX_LOCAL_BYTES: usize = 64 * 1024 * 1024;
 
@@ -101,6 +109,7 @@ pub fn local_expectation(
     })
 }
 
+#[cfg(feature = "service")]
 /// Verify a local archive against existing host trust, without installing it.
 ///
 /// # Errors
@@ -125,6 +134,7 @@ pub fn review(bytes: &[u8]) -> Result<LocalReview, String> {
     Ok(checked)
 }
 
+#[cfg(feature = "service")]
 fn review_with_trust(
     bytes: &[u8],
     attestors: &TrustedAttestors,
@@ -167,6 +177,7 @@ fn review_with_trust(
     })
 }
 
+#[cfg(feature = "service")]
 /// Revalidate review and current host trust, then use the canonical installer.
 ///
 /// # Errors
@@ -218,4 +229,5 @@ pub fn install(bytes: &[u8], root: &str, archive_hash: &str) -> Result<String, S
 }
 
 #[cfg(test)]
+#[cfg(feature = "service")]
 mod tests;

@@ -1,0 +1,120 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "clocks.collection"
+label = "Clocks"
+version = 1
+fields = [
+  { path = "world_clocks", type = "Collection<WorldClock>", stored = "collection" },
+  { path = "world_clocks.*.city", type = "String", label = true },
+  { path = "world_clocks.*.timezone", type = "Atom", readonly = true },
+  { path = "alarms", type = "Collection<Alarm>", stored = "collection" },
+  { path = "alarms.*.label", type = "String", label = true },
+  { path = "alarms.*.hour", type = "u8" },
+  { path = "alarms.*.minute", type = "u8" },
+  { path = "alarms.*.repeat", type = "u8" },
+  { path = "alarms.*.enabled", type = "bool", readonly = true },
+  { path = "alarms.*.enabled_at_ms", type = "i64", readonly = true },
+  { path = "timers", type = "Collection<Timer>", stored = "collection" },
+  { path = "timers.*.label", type = "String", label = true },
+  { path = "timers.*.duration_ms", type = "u64", readonly = true },
+  { path = "timers.*.ends_at_ms", type = "Option<i64>", readonly = true },
+  { path = "timers.*.paused_remaining_ms", type = "Option<u64>", readonly = true },
+  { path = "stopwatch", type = "Stopwatch", readonly = true, stored = "record" },
+  { path = "stopwatch.accumulated_ms", type = "u64" },
+  { path = "stopwatch.started_at_ms", type = "Option<i64>" },
+  { path = "stopwatch.laps_ms", type = "Vec<u64>" },
+]
+
+[[resources.verbs]]
+id = "add-world-clock"
+kind = "undoable"
+params = [
+  { name = "city", required = true, schema = { type = "string" } },
+  { name = "timezone", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-world-clock"
+kind = "undoable"
+params = [
+  { name = "world_clock", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "add-alarm"
+kind = "undoable"
+params = [
+  { name = "label", required = true, schema = { type = "string" } },
+  { name = "hour", required = true, schema = { type = "integer", maximum = 255, minimum = 0 } },
+  { name = "minute", required = true, schema = { type = "integer", maximum = 255, minimum = 0 } },
+  { name = "weekdays", required = true, schema = { type = "array", items = { type = "string", enum = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] } } },
+]
+
+[[resources.verbs]]
+id = "set-alarm-enabled"
+kind = "undoable"
+params = [
+  { name = "alarm", required = true, schema = { type = "string" } },
+  { name = "enabled", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "remove-alarm"
+kind = "undoable"
+params = [
+  { name = "alarm", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "add-timer"
+kind = "undoable"
+params = [
+  { name = "label", required = true, schema = { type = "string" } },
+  { name = "seconds", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "pause-timer"
+kind = "undoable"
+params = [
+  { name = "timer", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "resume-timer"
+kind = "undoable"
+params = [
+  { name = "timer", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "add-minute"
+kind = "undoable"
+params = [
+  { name = "timer", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-timer"
+kind = "undoable"
+params = [
+  { name = "timer", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "start-stopwatch"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "pause-stopwatch"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "lap"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "reset-stopwatch"
+kind = "undoable"
+

@@ -1,5 +1,7 @@
 //! Whether a certified device may act for the identity a workspace selected.
 
+use std::sync::Arc;
+
 use tilo_user_identity::{Authority, ChainPolicy, DeviceCert, verify_chain};
 
 use crate::device_fleet::{DeviceFleet, DeviceFleetStore};
@@ -27,12 +29,12 @@ pub fn authorize_join(room: &str, cert: &DeviceCert) -> Result<(), String> {
     check(cert, &user, &fleet, crate::device_fleet::now_ns(), true)
 }
 
-fn selected_fleet(room: &str) -> Result<([u8; 32], DeviceFleet), String> {
+fn selected_fleet(room: &str) -> Result<([u8; 32], Arc<DeviceFleet>), String> {
     let profile = crate::registry::selected_identity_profile(room)
         .map_err(|e| e.to_string())?
         .ok_or("workspace identity unavailable")?;
     let fleet = DeviceFleetStore::from_env()
-        .and_then(|store| store.load(&profile.id))
+        .and_then(|store| store.load_cached(&profile.id))
         .map_err(|e| e.to_string())?;
     Ok((profile.user_public_key, fleet))
 }
@@ -56,10 +58,10 @@ fn check(
     )
     .map_err(|error| format!("device refused for this workspace's identity: {error}"))?;
     if require_enrolled
-        && !fleet
-            .certificates
-            .iter()
-            .any(|known| known.device_public_key == cert.device_public_key)
+        && !fleet.certificates.iter().any(|known| {
+            known.user_public_key == *user_public_key
+                && known.device_public_key == cert.device_public_key
+        })
     {
         return Err("certified collaboration device is not enrolled".into());
     }
@@ -68,10 +70,14 @@ fn check(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, SystemTime};
+
     use super::*;
+    use crate::device_fleet::loads_on_this_thread;
     use tilo_user_identity::{
-        DeviceCapabilities, RevocationEntry, RevocationReason, UserIdentity, sign_device_cert,
-        sign_revocation_entry,
+        DeviceCapabilities, IdentityPaths, RevocationEntry, RevocationReason, UserIdentity,
+        sign_device_cert, sign_revocation_entry,
     };
 
     pub(crate) const NOW: u64 = 1_000_000;
@@ -119,6 +125,13 @@ pub(crate) mod tests {
         // Valid, but not yet enrolled: authorize passes, join does not.
         check(&joined, &user, &fleet, NOW, false).unwrap();
         assert!(check(&joined, &user, &fleet, NOW, true).is_err());
+        fleet.certificates.push(certify(
+            &other_root,
+            &device,
+            DeviceCapabilities::joined(),
+            None,
+        ));
+        assert!(check(&joined, &user, &fleet, NOW, true).is_err());
         fleet.certificates.push(joined.clone());
         check(&joined, &user, &fleet, NOW, true).unwrap();
 
@@ -143,5 +156,241 @@ pub(crate) mod tests {
             .push(revoke(&root, joined.device_public_key));
         let refusal = check(&joined, &user, &fleet, NOW, true).unwrap_err();
         assert!(refusal.contains("revoked"), "{refusal}");
+    }
+
+    const ROOM: &str = "workspace";
+
+    /// A provisioned identity the environment points at.
+    struct Fixture {
+        identity_dir: PathBuf,
+        identity_id: String,
+        cert: DeviceCert,
+        // Dropped after the fields above: the environment is restored before
+        // the directory it named is removed.
+        _env: tilo_test_env::ScopedEnv,
+        _root: tempfile::TempDir,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let root = tempfile::tempdir().expect("temp root");
+            let xdg = root.path().join("config");
+            let system_root = root.path().join("system");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &xdg)
+                .set("TILO_IDENTITY_ROOT", &system_root)
+                .set(crate::provisioning::FILE_SECRETS_ENV, "1");
+            let identity_dir = xdg.join("tilo/identity");
+            crate::provisioning::ensure_collaboration_identity(
+                &identity_dir,
+                &IdentityPaths::under(&system_root),
+                crate::provisioning::IdentityStorage::Files,
+            )
+            .expect("provision");
+            let profile = crate::registry::selected_identity_profile(ROOM)
+                .expect("registry")
+                .expect("selected identity");
+            let cert = store()
+                .load(&profile.id)
+                .expect("fleet")
+                .certificates
+                .first()
+                .cloned()
+                .expect("this device is enrolled");
+            Self {
+                identity_dir,
+                identity_id: profile.id,
+                cert,
+                _env: env,
+                _root: root,
+            }
+        }
+
+        fn fleet_file(&self) -> PathBuf {
+            self.identity_dir
+                .join("fleets")
+                .join(format!("{}.json", self.identity_id))
+        }
+
+        /// Authorizes this device twice; returns how many fleet loads it took.
+        fn authorize_join_twice(&self) -> usize {
+            let before = loads_on_this_thread();
+            authorize_join(ROOM, &self.cert).expect("an enrolled device joins");
+            authorize_join(ROOM, &self.cert).expect("an enrolled device joins again");
+            loads_on_this_thread().saturating_sub(before)
+        }
+
+        fn revoke(&self) {
+            store()
+                .revoke(
+                    &self.identity_id,
+                    self.cert.device_public_key,
+                    RevocationReason::Lost,
+                    self.cert.issued_at_ns.saturating_add(1),
+                )
+                .expect("revoke");
+        }
+    }
+
+    fn store() -> DeviceFleetStore {
+        DeviceFleetStore::from_env().expect("fleet store")
+    }
+
+    /// Date `path` back past the filesystem clock's granularity, as any file
+    /// is a few seconds after its last write.
+    fn settle(path: &Path) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("open fleet file")
+            .set_modified(
+                SystemTime::now()
+                    .checked_sub(Duration::from_secs(10))
+                    .expect("a time ten seconds ago"),
+            )
+            .expect("date fleet file back");
+    }
+
+    #[test]
+    fn authorize_join_loads_fleet_once() {
+        let fixture = Fixture::new();
+        settle(&fixture.fleet_file());
+        assert_eq!(
+            fixture.authorize_join_twice(),
+            1,
+            "one load serves both checks of the first call, and the unchanged fleet the second"
+        );
+    }
+
+    #[test]
+    fn cached_fleet_still_checks_certificate_validity_and_personal_authority() {
+        let fixture = Fixture::new();
+        settle(&fixture.fleet_file());
+        assert_eq!(fixture.authorize_join_twice(), 1, "the fleet is cached");
+        let record = crate::registry::selected_identity_path(ROOM)
+            .expect("registry")
+            .expect("selected identity record");
+        let root = runtime_identity::load_from_path(record).expect("fixture root");
+        let mut expired = fixture.cert.clone();
+        expired.expires_at_ns = Some(expired.issued_at_ns);
+        let mut future = fixture.cert.clone();
+        future.issued_at_ns = u64::MAX;
+        let mut host = fixture.cert;
+        host.capabilities = DeviceCapabilities::host();
+        let before = loads_on_this_thread();
+        for mut cert in [expired, future, host] {
+            let digest = tilo_user_identity::device_cert_signing_digest(&cert)
+                .expect("negative control signing digest");
+            cert.signature = root.sign(&digest).expect("root-signed negative control");
+            assert!(authorize(ROOM, &cert).is_err());
+            assert!(authorize_join(ROOM, &cert).is_err());
+        }
+        assert_eq!(loads_on_this_thread(), before, "no fleet was read again");
+    }
+
+    #[test]
+    fn cached_fleet_scopes_permanent_revocation_to_the_selected_identity() {
+        let fixture = Fixture::new();
+        let (other_root, _) = UserIdentity::generate("Other person", 1);
+        let mut fleet = store().load(&fixture.identity_id).expect("fleet");
+        fleet
+            .revocations
+            .push(revoke(&other_root, fixture.cert.device_public_key));
+        let path = fixture.fleet_file();
+        std::fs::write(&path, serde_json::to_vec(&fleet).expect("fleet bytes"))
+            .expect("foreign-root revocation");
+        settle(&path);
+        assert_eq!(fixture.authorize_join_twice(), 1, "the fleet is cached");
+        assert!(authorize(ROOM, &fixture.cert).is_ok());
+        assert!(
+            !store()
+                .load_cached(&fixture.identity_id)
+                .expect("cached fleet")
+                .is_revoked(&fixture.cert.device_public_key)
+        );
+
+        // Even a timestamp in the future revokes permanently. A foreign
+        // entry for this same key cannot hide the selected root's entry.
+        store()
+            .revoke(
+                &fixture.identity_id,
+                fixture.cert.device_public_key,
+                RevocationReason::Lost,
+                u64::MAX,
+            )
+            .expect("future-dated root revocation");
+        settle(&path);
+        let revoked = store()
+            .load_cached(&fixture.identity_id)
+            .expect("revoked fleet");
+        assert!(revoked.is_revoked(&fixture.cert.device_public_key));
+        assert_eq!(
+            authorize_join(ROOM, &fixture.cert),
+            Err(
+                "device refused for this workspace's identity: the identity revoked this device"
+                    .into()
+            )
+        );
+        assert_eq!(
+            authorize(ROOM, &fixture.cert),
+            Err(
+                "device refused for this workspace's identity: the identity revoked this device"
+                    .into()
+            )
+        );
+    }
+
+    #[test]
+    fn revocation_visible_immediately_after_revoke() {
+        let fixture = Fixture::new();
+        settle(&fixture.fleet_file());
+        assert_eq!(fixture.authorize_join_twice(), 1, "the fleet is cached");
+        fixture.revoke();
+        assert_eq!(
+            authorize_join(ROOM, &fixture.cert),
+            Err(
+                "device refused for this workspace's identity: the identity revoked this device"
+                    .into()
+            )
+        );
+        assert_eq!(
+            authorize(ROOM, &fixture.cert),
+            Err(
+                "device refused for this workspace's identity: the identity revoked this device"
+                    .into()
+            )
+        );
+    }
+
+    #[test]
+    fn external_fleet_write_invalidates() {
+        let fixture = Fixture::new();
+        let path = fixture.fleet_file();
+        let enrolled = std::fs::read(&path).expect("enrolled fleet");
+        fixture.revoke();
+        let revoked = std::fs::read(&path).expect("revoked fleet");
+
+        // Another process puts the enrolled fleet back; once old it is cached.
+        std::fs::write(&path, &enrolled).expect("external write");
+        settle(&path);
+        assert_eq!(fixture.authorize_join_twice(), 1, "the fleet is cached");
+
+        // Another process rewrites the file in place with the revocation.
+        std::fs::write(&path, &revoked).expect("external revocation");
+        assert_eq!(
+            authorize_join(ROOM, &fixture.cert),
+            Err(
+                "device refused for this workspace's identity: the identity revoked this device"
+                    .into()
+            )
+        );
+
+        // A fleet that no longer parses denies instead of serving the cache.
+        std::fs::write(&path, &enrolled).expect("external write");
+        settle(&path);
+        assert_eq!(fixture.authorize_join_twice(), 1, "the fleet is cached");
+        std::fs::write(&path, b"{ not a fleet").expect("external corruption");
+        assert!(authorize_join(ROOM, &fixture.cert).is_err());
+        assert!(authorize(ROOM, &fixture.cert).is_err());
     }
 }
