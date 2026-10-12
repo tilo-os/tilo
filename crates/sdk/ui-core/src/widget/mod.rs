@@ -113,6 +113,7 @@ pub fn semantic_action_bindings(
         matches!(
             role,
             Role::Button
+                | Role::Tab
                 | Role::ToggleButton
                 | Role::Checkbox
                 | Role::RadioButton
@@ -3006,7 +3007,8 @@ mod window_group;
 pub use window_group::{
     DEFAULT_STRIP_USABLE_PX, RESIZE_HANDLE_PX, WIDTH_FLOOR_PX, WIDTH_MAX_PERMILLE,
     WIDTH_MIN_PERMILLE, WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE,
-    WindowGroup, WindowWidth, max_group_px, min_group_px, permille_for_px,
+    WindowGroup, WindowGroupBounds, WindowWidth, max_group_px, maximized_chrome_height,
+    min_group_px, permille_for_px,
 };
 mod resize_handle;
 pub use resize_handle::{

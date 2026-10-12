@@ -3949,6 +3949,15 @@ impl ShellOverlayHost {
         started
     }
 
+    /// Keep OS identification labels in the current shared display order.
+    pub(crate) fn number_identified_displays(
+        &mut self,
+        layout: &settings_store::person_displays::Layout,
+    ) {
+        self.display_identify
+            .number_by_shared_order(&self.outputs, layout);
+    }
+
     /// Ask the person to keep or revert display transaction `transaction`,
     /// which a layout tool applied. Settings and the Super+P sheet ask in
     /// their own UI; this is for changes from anywhere else.
@@ -4131,6 +4140,9 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
+        let closing_visual = self
+            .desktop_surface_mut()
+            .is_some_and(|surface| surface.close_animation_in_flight());
         let (rebuild, stale) = {
             let st = chrome.borrow();
             let tree = st.tree();
@@ -4155,7 +4167,7 @@ impl ShellOverlayHost {
                 }
                 Some(cur)
                     if cur == active_raw
-                        && self.content_built_empty == Some(active_empty)
+                        && (self.content_built_empty == Some(active_empty) || closing_visual)
                         && self.rows_cover_active_strips(&tree) =>
                 {
                     None
@@ -4904,7 +4916,10 @@ impl ShellOverlayHost {
         chrome.borrow_mut().retry_new_tab_records();
         self.place_new_groups();
         let current_rev = chrome.borrow().revision;
-        if current_rev == self.last_chrome_revision {
+        let closing_visuals = self
+            .desktop_surface_mut()
+            .is_some_and(|surface| surface.has_closing_visuals());
+        if current_rev == self.last_chrome_revision && !closing_visuals {
             return false;
         }
         self.last_chrome_revision = current_rev;
@@ -6506,7 +6521,7 @@ impl ShellOverlayHost {
     /// This is read-only presentation state. The developer control transport
     /// serialises it when that transport is enabled, while normal production
     /// sessions never bind the transport at all.
-    pub fn active_window_control_rects(&self) -> Option<(Rect, Rect)> {
+    pub fn active_window_bounds(&self) -> Option<ui::widget::WindowGroupBounds> {
         let chrome = self.chrome.clone()?;
         let (strip_id, group_id) = {
             let st = chrome.borrow();
@@ -6522,8 +6537,17 @@ impl ShellOverlayHost {
         // SAFETY: same ownership contract as `group_at_for_tests` above.
         let row: &GroupRow = unsafe { &*ptr };
         let group = row.groups.iter().find(|group| group.id == group_id)?;
-        let maximize = group.active_maximize_rect().unwrap_or(Rect::ZERO);
-        Some((maximize, group.restore_rect()))
+        Some(group.presentation_bounds())
+    }
+
+    /// Compatibility view for the existing developer transport.
+    pub fn active_window_control_rects(&self) -> Option<(Rect, Rect)> {
+        self.active_window_bounds().map(|bounds| {
+            (
+                bounds.maximize.unwrap_or(Rect::ZERO),
+                bounds.restore.unwrap_or(Rect::ZERO),
+            )
+        })
     }
 
     /// Test-only: runs the per-frame active-group reconcile outside `update`.
@@ -8421,6 +8445,9 @@ impl ShellOverlayHost {
             // accessor.
             let row: &GroupRow = unsafe { &*ptr };
             for (idx, wg) in row.groups.iter().enumerate() {
+                if wg.is_closing() {
+                    continue;
+                }
                 live_active.insert(wg.id, wg.active_tab_id());
                 if !tree_ids.contains(&wg.id) {
                     writes.push((strip_id, idx, build_state_group_from_widget(wg)));
@@ -9887,16 +9914,21 @@ impl ShellOverlayHost {
     /// Mirror of the geometry in `draw_quick_settings`. The panel is sized
     /// from the controls actually visible on this device, not a fixed grid of
     /// unavailable radios.
-    fn quick_settings_rect(&self) -> Rect {
+    fn quick_settings_width(&self) -> f64 {
         // Under the tray, on the display whose full top bar holds it.
         let area = self.tray_area();
-        let popover_w = if area.width() >= 1200.0 {
+        if area.width() >= 1200.0 {
             400.0
         } else if area.width() >= 720.0 {
             360.0
         } else {
             320.0
-        };
+        }
+    }
+
+    fn quick_settings_rect(&self) -> Rect {
+        let area = self.tray_area();
+        let popover_w = self.quick_settings_width();
         let x1 = area.x1 - 16.0;
         let y0 = area.y0 + 48.0;
         let desired_h = self.chrome.as_ref().map_or(360.0, |chrome| {
@@ -9986,9 +10018,11 @@ impl ShellOverlayHost {
                 let rows = state.quick_settings.vpns.len();
                 DrillInList::list_height(qs::LIST_TOP, rows)
             }
-            QsLevel::Notifications => self
-                .notification_center
-                .preferred_height(state.notification_log(), self.qs_type_lines),
+            QsLevel::Notifications => self.notification_center.preferred_height_for_width(
+                state.notification_log(),
+                self.qs_type_lines,
+                self.quick_settings_width(),
+            ),
             QsLevel::Clipboard => {
                 let rows = self.filtered_clipboard_history().len().min(7);
                 (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
@@ -11601,9 +11635,13 @@ impl ShellOverlayHost {
     /// `Pressed` — otherwise `Released`/`CursorMoved` fall through and
     /// light up affordances underneath.
     pub(crate) fn cursor_over_open_overlay(&self, p: Point) -> bool {
+        (self.palette_visible && self.palette.get_rect().contains(p))
+            || self.cursor_over_other_open_overlay(p)
+    }
+
+    fn cursor_over_other_open_overlay(&self, p: Point) -> bool {
         let f = self.overlay_flags();
         self.dictation_pointer_at((p.x, p.y))
-            || (self.palette_visible && self.palette.get_rect().contains(p))
             || (f.collaborators && self.collaborators_overlay.contains(p))
             || (f.quick_settings && self.quick_settings_rect().contains(p))
             || (f.ws_settings && self.ws_settings_rect().contains(p))
@@ -12257,8 +12295,7 @@ impl ShellOverlayHost {
     fn route_absorbable_pointer_and_toast_click(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        handled: &mut bool,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let covered = self
             .last_cursor
@@ -12282,14 +12319,14 @@ impl ShellOverlayHost {
             let changed = self.notification_stack.handle_pointer_event(
                 &ChromeNotifications::new(&chrome),
                 event,
-                scale_factor,
+                ctx.scale_factor,
                 &mut banner_handled,
             );
             if changed {
                 chrome.borrow_mut().bump();
             }
             if banner_handled {
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
         }
@@ -12306,7 +12343,20 @@ impl ShellOverlayHost {
             && let Some(p) = self.last_cursor
             && self.cursor_over_open_overlay(p)
         {
-            *handled = true;
+            // The palette owns hover before this guard isolates the app below.
+            // Another covering overlay keeps its existing input priority.
+            if self.palette_visible
+                && self.palette.get_rect().contains(p)
+                && !self.cursor_over_other_open_overlay(p)
+            {
+                let palette_child = ctx
+                    .taffy
+                    .children(ctx.node_id)
+                    .ok()
+                    .and_then(|children| children.get(1).copied());
+                self.route_palette_event(event, ctx, palette_child);
+            }
+            *ctx.handled = true;
             return true;
         }
         false
@@ -18781,7 +18831,10 @@ impl Widget for ShellOverlayHost {
         {
             return;
         }
-        if self.route_absorbable_pointer_and_toast_click(event, ctx.scale_factor, ctx.handled) {
+        if self.route_absorbable_pointer_and_toast_click(
+            event,
+            &mut ctx.reborrow(ctx.path, ctx.node_id),
+        ) {
             return;
         }
         if self.route_permission_prompt_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {

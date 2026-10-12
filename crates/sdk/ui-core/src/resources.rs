@@ -77,7 +77,7 @@ pub trait PublishesResources: Widget {
 
     /// [`Self::resources_for`] as a [`SharedResource`] forest whose
     /// unchanged subtrees are the very nodes of the last one, so consumers
-    /// skip what they have seen (TIL-766). `None`, the default, has callers
+    /// skip what they have seen. `None`, the default, has callers
     /// wrap [`Self::resources_for`]. An answer must equal it exactly once
     /// materialised ([`SharedResource::to_resource`]).
     fn shared_resources_for(

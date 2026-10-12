@@ -33,6 +33,7 @@ pub(crate) struct NativeOwnerCommitService {
     tree: WorkspaceTreeHandle,
     owner: Option<super::native_workspace_owner::NativeWorkspaceOwner>,
     network: Option<Arc<super::network::ShellNetwork>>,
+    history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
 }
 impl NativeOwnerCommitService {
     pub(crate) fn new(
@@ -54,6 +55,7 @@ impl NativeOwnerCommitService {
             tree,
             owner,
             network,
+            history_keys: None,
         }
     }
     pub(crate) fn owner(&self) -> Option<super::native_workspace_owner::NativeWorkspaceOwner> {
@@ -291,6 +293,13 @@ impl WorkspaceAuthority for NativeWorkspaceAuthority {
     /// (`tilo_identity_host::policy_change`).
     fn announces_policy_changes(&self) -> bool {
         true
+    }
+    /// The room's agents whose delegation the room's governance verified for
+    /// exactly their device ([`super::state::WorkspaceTree::verified_agents`]).
+    fn history_agents(&self, room: &str) -> Vec<ui::history_source::RosterAgent> {
+        super::state::RoomId::parse(room)
+            .map(|room| self.0.read().verified_agents(room))
+            .unwrap_or_default()
     }
 }
 impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
@@ -691,6 +700,37 @@ fn launch_host_application(
 }
 
 impl LauncherServices for NativeLauncher {
+    fn begin_executing_binding_observation(&self, launcher_pid: u32) -> Option<u64> {
+        super::launcher::LaunchSession::current()
+            .launch_history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .binding(
+                launcher_pid,
+                super::launcher::launch_history::Phase::BindingStarted,
+            )
+    }
+    fn observe_executing_binding(
+        &self,
+        observation: u64,
+        phase: tilo_action_broker::services::ExecutingBindingPhase,
+    ) {
+        use super::launcher::launch_history::Phase;
+        use tilo_action_broker::services::ExecutingBindingPhase as Binding;
+        let phase = match phase {
+            Binding::Started => Phase::BindingStarted,
+            Binding::Challenge => Phase::BindingChallenge,
+            Binding::Answer => Phase::BindingAnswer,
+            Binding::Admitted => Phase::BindingAdmitted,
+            Binding::Refused => Phase::BindingRefused,
+            Binding::TimedOut => Phase::BindingTimedOut,
+        };
+        super::launcher::LaunchSession::current()
+            .launch_history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .event(observation, phase);
+    }
     fn applications(&self) -> Vec<LaunchableApplication> {
         launchable_applications(super::launcher::gui_apps(), super::host_apps::host_apps())
     }
@@ -1567,8 +1607,12 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for NativeCertificat
 fn native_document_reads(
     tree: &WorkspaceTreeHandle,
     network: Option<Arc<super::network::ShellNetwork>>,
+    history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
 ) -> Arc<dyn NativeDocumentReads> {
-    Arc::new(NativeOwnerCommitService::new(tree.clone(), network))
+    Arc::new(NativeOwnerCommitService {
+        history_keys,
+        ..NativeOwnerCommitService::new(tree.clone(), network)
+    })
 }
 
 fn native_workspace_memberships(
@@ -1603,10 +1647,11 @@ fn native_resource_views(
 pub fn native_services(
     membership: Option<WorkspaceTreeHandle>,
     network: Option<Arc<super::network::ShellNetwork>>,
+    history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
 ) -> HostServices {
     let committed_documents = membership
         .as_ref()
-        .map(|tree| native_document_reads(tree, network.clone()));
+        .map(|tree| native_document_reads(tree, network.clone(), history_keys));
     let workspace_memberships = membership
         .as_ref()
         .map(|tree| native_workspace_memberships(tree, network.clone()));
@@ -1753,6 +1798,32 @@ impl tilo_action_broker::services::WifiContinuityServices for NativeWifiContinui
             runtime_collab::PortableWifiSecurity::Wpa3 => os_actions::WifiSecurity::Wpa3,
         };
         match command {
+            runtime_collab::WifiContinuityCommand::NetworkWake {
+                profile_uuid,
+                enabled,
+            } => {
+                let result = match enabled {
+                    Some(enabled) => os_actions::network_wake::configure(&profile_uuid, enabled),
+                    None => os_actions::network_wake::status(&profile_uuid),
+                };
+                match result {
+                    Ok(status) => runtime_collab::WifiContinuityReply::NetworkWake {
+                        status: runtime_collab::NetworkWakeStatus {
+                            profile: status.profile,
+                            interface: status.interface,
+                            configured: status.configured,
+                            supported: status.supported,
+                            applied: status.applied,
+                            problem: status
+                                .problem
+                                .map(|problem| problem.chars().take(128).collect()),
+                        },
+                    },
+                    Err(reason) => runtime_collab::WifiContinuityReply::Rejected {
+                        reason: reason.chars().take(128).collect(),
+                    },
+                }
+            }
             runtime_collab::WifiContinuityCommand::Lookup {
                 ssid,
                 security: mode,
@@ -1864,23 +1935,6 @@ fn workspace_control_event(
             timestamp,
         },
         crate::network::WorkspaceControlUpdate::Closed(reason) => {
-            let reason = match reason {
-                crate::network::WorkspaceControlCloseReason::Denied(message) => {
-                    runtime_collab::WorkspaceControlCloseReason::Denied(message)
-                }
-                crate::network::WorkspaceControlCloseReason::Revoked => {
-                    runtime_collab::WorkspaceControlCloseReason::Revoked
-                }
-                crate::network::WorkspaceControlCloseReason::TargetDisconnected => {
-                    runtime_collab::WorkspaceControlCloseReason::TargetDisconnected
-                }
-                crate::network::WorkspaceControlCloseReason::RelayDisconnected => {
-                    runtime_collab::WorkspaceControlCloseReason::RelayDisconnected
-                }
-                crate::network::WorkspaceControlCloseReason::LocalDisconnect => {
-                    runtime_collab::WorkspaceControlCloseReason::LocalDisconnect
-                }
-            };
             runtime_collab::WorkspaceControlEvent::Closed(reason)
         }
     }

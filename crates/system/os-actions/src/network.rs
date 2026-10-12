@@ -1188,7 +1188,7 @@ fn parse_saved_profiles(out: &str) -> Vec<SavedNetworkProfile> {
         .collect()
 }
 
-fn validate_uuid(uuid: &str) -> Result<(), String> {
+pub(crate) fn validate_uuid(uuid: &str) -> Result<(), String> {
     let valid = uuid.len() == 36
         && uuid.bytes().enumerate().all(|(i, b)| {
             if matches!(i, 8 | 13 | 18 | 23) {

@@ -437,7 +437,8 @@ impl App {
             record: active_record.cloned(),
             document_identity: context.document_identity,
         };
-        let mut model = StandaloneHistory::open(target, &context, AuthorDirectory::new())?;
+        let mut model =
+            StandaloneHistory::open(target, &context, AuthorDirectory::with_room_agents())?;
         visit(&mut model, &context)
     }
 

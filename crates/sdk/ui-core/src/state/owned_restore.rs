@@ -468,9 +468,13 @@ impl State {
         {
             return Ok(None);
         }
+        let before = self.doc.get_heads();
         let changed = crate::history_mode::routes::merge_committed(&mut self.doc, mutation)?;
         if changed {
             self.undo.rebase(&mut self.doc);
+            // The owner that served this history holds it: the next primary
+            // delta must not echo it back as this replica's change.
+            self.outbound.observe_changes_after(&mut self.doc, &before);
         }
         Ok(Some(changed))
     }
