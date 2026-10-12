@@ -2659,7 +2659,12 @@ fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
         // instead of overflowing its panel.
         assert!(h.host.shortcut_guide_max_scroll > 0.0);
         let painted: Vec<_> = h.host.shortcut_binding_rects.clone();
-        let body = Rect::new(panel.x0 + 24.0, panel.y0 + 98.0, panel.x1 - 24.0, panel.y1 - 22.0);
+        let body = Rect::new(
+            panel.x0 + 24.0,
+            panel.y0 + 98.0,
+            panel.x1 - 24.0,
+            panel.y1 - 22.0,
+        );
         assert!(
             painted
                 .iter()
@@ -2675,7 +2680,10 @@ fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
         settle(&mut h, vw, vh);
         let panel = h.host.shortcut_help_panel_rect();
         assert_eq!(panel.width(), 960.0);
-        assert!(panel.height() < vh - 64.0, "a tall window keeps the card intrinsic");
+        assert!(
+            panel.height() < vh - 64.0,
+            "a tall window keeps the card intrinsic"
+        );
         assert!(panel.x0 >= 150.0 && panel.x1 <= 1130.0);
         assert!(panel.y0 >= 32.0 && panel.y1 <= vh - 32.0);
         assert_eq!(

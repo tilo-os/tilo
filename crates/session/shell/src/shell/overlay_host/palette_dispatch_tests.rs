@@ -1251,8 +1251,14 @@ fn shortcut_guide_panel_stays_inside_the_window_and_fits_its_content() {
     let (host, _chrome) = host_with_chrome();
     let area = host.overlay_area();
     let panel = host.shortcut_help_panel_rect();
-    assert!(panel.x0 >= area.x0 && panel.x1 <= area.x1, "{panel:?} in {area:?}");
-    assert!(panel.y0 >= area.y0 && panel.y1 <= area.y1, "{panel:?} in {area:?}");
+    assert!(
+        panel.x0 >= area.x0 && panel.x1 <= area.x1,
+        "{panel:?} in {area:?}"
+    );
+    assert!(
+        panel.y0 >= area.y0 && panel.y1 <= area.y1,
+        "{panel:?} in {area:?}"
+    );
     let done = host.shortcut_help_done_rect();
     assert!(
         done.x0 >= panel.x0 && done.x1 <= panel.x1 && done.y1 <= panel.y1,

@@ -80,9 +80,9 @@ use history::{
 use shortcuts::configured_shortcut_matches;
 pub(crate) use shortcuts::shortcut_chord_matches;
 use shortcuts::{
-    configured_shortcut_action, shortcut_action_label, shortcut_action_rows,
-    shortcut_action_summary, shortcut_chord_from_event, shortcut_guide_chord,
-    SHORTCUT_NAVIGATION_STEP, shortcut_chord_keycaps, shortcut_guide_content_height,
+    SHORTCUT_NAVIGATION_STEP, configured_shortcut_action, shortcut_action_label,
+    shortcut_action_rows, shortcut_action_summary, shortcut_chord_from_event,
+    shortcut_chord_keycaps, shortcut_guide_chord, shortcut_guide_content_height,
     shortcut_navigation_columns, shortcut_navigation_height, shortcut_reference_columns,
     shortcut_reference_group_height, shortcut_reference_rows, shortcut_reference_step,
 };
@@ -22370,8 +22370,9 @@ impl ShellOverlayHost {
                         clippy::cast_precision_loss,
                         reason = "at most two navigation columns convert exactly"
                     )]
-                    let column_width = (navigation_surface.width() - 28.0 - 8.0 * (nav_columns - 1) as f64)
-                        / nav_columns as f64;
+                    let column_width =
+                        (navigation_surface.width() - 28.0 - 8.0 * (nav_columns - 1) as f64)
+                            / nav_columns as f64;
                     let x = navigation_surface.x0
                         + 14.0
                         + f64_of_usize(column) * (column_width + 8.0);
@@ -22508,11 +22509,8 @@ impl ShellOverlayHost {
                     "guide-group-capture",
                 ];
                 let chord_style = theme.text(TextRole::Caption);
-                let label_gap = f64::from(
-                    text_renderer
-                        .measure_style("Ag", None, &chord_style)
-                        .1,
-                ) + 4.0;
+                let label_gap =
+                    f64::from(text_renderer.measure_style("Ag", None, &chord_style).1) + 4.0;
                 let mut groups_bottom = reference_top;
                 for (group_index, group_rows) in references
                     .chunks(shortcuts::SHORTCUT_REFERENCE_GROUP_ROWS)
@@ -22564,9 +22562,7 @@ impl ShellOverlayHost {
                                     scene,
                                     "/",
                                     colors.text_dim,
-                                    transform.pre_translate(
-                                        (cap_x + 6.0, cap_y + 4.0).into(),
-                                    ),
+                                    transform.pre_translate((cap_x + 6.0, cap_y + 4.0).into()),
                                     None,
                                     &chord_style,
                                 );
