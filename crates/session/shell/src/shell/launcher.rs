@@ -573,10 +573,26 @@ pub(crate) struct VerifiedLaunchIdentity {
     pub confined: bool,
 }
 
+/// Kernel-bound identity of one supervised launcher process. The start time
+/// makes a recycled numeric PID a different custody domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct VerifiedLaunchCustody {
+    pub supervisor_pid: u32,
+    pub supervisor_start_time: u64,
+}
+
 /// Resolve a descendant to the exact live launch record that owns it.
 /// Kernel parent links and process start-times prevent app-id spoofing and PID
 /// reuse; the bounded walk fails closed for daemonised or unknown clients.
-pub(crate) fn verified_launch_for_descendant(mut pid: u32) -> Option<VerifiedLaunchIdentity> {
+pub(crate) fn verified_launch_for_descendant(pid: u32) -> Option<VerifiedLaunchIdentity> {
+    verified_launch_custody_for_descendant(pid).map(|(identity, _)| identity)
+}
+
+/// Resolve both the durable launch identity and the exact live supervising
+/// process which authenticated this descendant.
+pub(crate) fn verified_launch_custody_for_descendant(
+    mut pid: u32,
+) -> Option<(VerifiedLaunchIdentity, VerifiedLaunchCustody)> {
     const MAX_ANCESTORS: usize = 32;
     for _ in 0..MAX_ANCESTORS {
         let (parent_pid, start_time) = proc_stat(pid)?;
@@ -584,11 +600,17 @@ pub(crate) fn verified_launch_for_descendant(mut pid: u32) -> Option<VerifiedLau
             && let Some(known) = map.get(&pid)
             && known.start_time == start_time
         {
-            return Some(VerifiedLaunchIdentity {
-                package_id: known.package_id.clone(),
-                workspace_id: known.workspace_id.clone(),
-                confined: known.confined,
-            });
+            return Some((
+                VerifiedLaunchIdentity {
+                    package_id: known.package_id.clone(),
+                    workspace_id: known.workspace_id.clone(),
+                    confined: known.confined,
+                },
+                VerifiedLaunchCustody {
+                    supervisor_pid: pid,
+                    supervisor_start_time: start_time,
+                },
+            ));
         }
         if parent_pid == 0 || parent_pid == pid {
             return None;
@@ -596,6 +618,27 @@ pub(crate) fn verified_launch_for_descendant(mut pid: u32) -> Option<VerifiedLau
         pid = parent_pid;
     }
     None
+}
+
+pub(crate) fn launch_custody_is_current(
+    custody: VerifiedLaunchCustody,
+    package_id: &str,
+    workspace_id: &str,
+) -> bool {
+    let Some((_, start_time)) = proc_stat(custody.supervisor_pid) else {
+        return false;
+    };
+    if start_time != custody.supervisor_start_time {
+        return false;
+    }
+    LAUNCHED_PROCESSES.lock().is_ok_and(|launches| {
+        launches.get(&custody.supervisor_pid).is_some_and(|launch| {
+            launch.start_time == custody.supervisor_start_time
+                && launch.confined
+                && launch.package_id == package_id
+                && launch.workspace_id.as_deref() == Some(workspace_id)
+        })
+    })
 }
 
 /// Resolve a host process (normally xdg-dbus-proxy) to the Tilo package
@@ -6549,8 +6592,24 @@ mod tests {
                     confined: true,
                 })
             );
+            let (_, custody) = verified_launch_custody_for_descendant(descendant)
+                .expect("the live descendant retains exact launcher custody");
+            assert!(launch_custody_is_current(
+                custody,
+                "so.tilo.mail",
+                "room-mail"
+            ));
+            assert!(!launch_custody_is_current(
+                custody,
+                "so.tilo.chat",
+                "room-mail"
+            ));
             unregister_launched_process(launcher.pid());
             assert_eq!(verified_package_for_descendant(descendant), None);
+            assert!(
+                !launch_custody_is_current(custody, "so.tilo.mail", "room-mail"),
+                "the persisted numeric pid/start pair loses authority when its live launch retires"
+            );
         }
 
         fn an_unconfined_launch_is_portal_attributed_without_service_authority() {

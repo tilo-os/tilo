@@ -117,6 +117,7 @@ impl StatePeer {
         };
         require_budget_owner(command, &actor, owner.as_ref())?;
         self.check_agent_task_approval(&actor, command, room, now)?;
+        self.check_task_steering(&actor, command, room, now)?;
         let mut candidate = room.clone();
         let AppliedTaskCommand { changed, result } = crate::workspace_task::apply(
             &mut candidate,
@@ -127,9 +128,137 @@ impl StatePeer {
             i64::try_from(seconds).unwrap_or(i64::MAX),
         )?;
         if changed {
+            if let tilo_desktop_model::WorkspaceTaskMutationResult::RunStarted { task_id, epoch } =
+                &result
+            {
+                self.mint_task_authority(&mut candidate, &actor, task_id, *epoch, now)?;
+            }
             self.core.room_doc = Some(candidate.into());
         }
         Ok((changed, result))
+    }
+
+    fn mint_task_authority(
+        &self,
+        doc: &mut automerge::AutoCommit,
+        actor: &AdmittedTaskActor,
+        task_id: &str,
+        epoch: u64,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let task = tilo_desktop_model::projection::workspace_tasks_of(doc)
+            .into_iter()
+            .find(|task| task.id == task_id)
+            .ok_or("task disappeared")?;
+        let mut controls = crate::workspace_task::controls_of(doc)?;
+        let device = match actor {
+            AdmittedTaskActor::Person { device, .. } => *device,
+            AdmittedTaskActor::Host { .. } => controls
+                .get(task_id)
+                .and_then(|control| control.receipts.first())
+                .map(|receipt| receipt.device)
+                .ok_or("task creator device evidence absent")?,
+            _ => return Err("an agent cannot mint task authority".into()),
+        };
+        let member = self.permissions(device, now)?;
+        if matches!(actor, AdmittedTaskActor::Host { .. }) && member.person != task.created_by {
+            return Err("task creator evidence was replaced".into());
+        }
+        let mut scope = TreePath::room(&self.core.room);
+        if let Some(resource) = &task.resource {
+            let app = resource
+                .app_id
+                .as_ref()
+                .ok_or("attached task scope has no app identity")?;
+            scope = scope.app(app).kind(&resource.kind).resource(&resource.id);
+        }
+        let control = controls
+            .get_mut(task_id)
+            .ok_or("task control disappeared")?;
+        let run = control.active_run.as_mut().ok_or("task run disappeared")?;
+        // Host starts inherit the creator's authority, not the host's authority.
+        if run.approval.is_none() {
+            run.approval = Some(tilo_desktop_model::WorkspaceTaskApproval {
+                person: member.person.clone(),
+                device,
+                approved_at: run.started_at,
+                instruction_revision: control.directions.last().map_or(0, |value| value.revision),
+            });
+        }
+        control.execution_authority = Some(tilo_desktop_model::WorkspaceTaskExecutionAuthority {
+            epoch,
+            scope,
+            starter: member.standing(),
+        });
+        crate::workspace_task::project_controls(doc, &controls)?;
+        doc.commit();
+        Ok(())
+    }
+
+    fn check_task_steering(
+        &self,
+        actor: &AdmittedTaskActor,
+        command: &WorkspaceTaskCommand,
+        doc: &automerge::AutoCommit,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let (WorkspaceTaskCommand::Direction { task_id, .. }
+        | WorkspaceTaskCommand::DirectionForRun { task_id, .. }
+        | WorkspaceTaskCommand::CancelForRun { task_id, .. }) = command
+        else {
+            return Ok(());
+        };
+        let AdmittedTaskActor::Person { device, .. } = actor else {
+            return Err("only a person may steer a task run".into());
+        };
+        let member = self.permissions(*device, now)?;
+        let controls = crate::workspace_task::controls_of(doc)?;
+        let control = controls.get(task_id).ok_or("task control absent")?;
+        let Some(run) = control.active_run.as_ref() else {
+            return Ok(());
+        };
+        let bound = control
+            .execution_authority
+            .as_ref()
+            .filter(|bound| bound.epoch == run.epoch && bound.epoch == control.run_epoch)
+            .ok_or("task execution authority absent or stale")?;
+        if bound.scope.room_id() != Some(self.core.room.as_str())
+            || bound
+                .scope
+                .segments()
+                .iter()
+                .any(|segment| segment.id().is_none())
+        {
+            return Err("task execution scope is not concrete in this room".into());
+        }
+        let caller = member.standing();
+        // An unbounded current owner structurally allows the entire room.
+        if caller.policy.owner.as_ref() == Some(&caller.person) && caller.bounds.is_empty() {
+            return Ok(());
+        }
+        let patterns = [&bound.starter, &caller]
+            .into_iter()
+            .flat_map(|standing| {
+                standing
+                    .policy
+                    .grants
+                    .iter()
+                    .chain(standing.bounds.iter().flat_map(|bound| &bound.grants))
+            })
+            .map(|grant| &grant.node)
+            .filter(|node| node.overlaps(&bound.scope))
+            .collect::<Vec<_>>();
+        let cx = tilo_action_policy::Context::at_time(now);
+        for node in task_policy_cells(&bound.scope, &patterns)? {
+            for kind in ActionKind::ALL {
+                if bound.starter.answer(&node, kind, &cx) == tilo_action_policy::Answer::Allow
+                    && caller.answer(&node, kind, &cx) != tilo_action_policy::Answer::Allow
+                {
+                    return Err("task steering requires every execution permission".into());
+                }
+            }
+        }
+        Ok(())
     }
 
     fn check_agent_task_approval(
@@ -143,7 +272,8 @@ impl StatePeer {
             let task_id = match command {
                 WorkspaceTaskCommand::AppliedAck { task_id, .. }
                 | WorkspaceTaskCommand::Finish { task_id, .. }
-                | WorkspaceTaskCommand::ExecutionPhase { task_id, .. } => Some(task_id),
+                | WorkspaceTaskCommand::ExecutionPhase { task_id, .. }
+                | WorkspaceTaskCommand::PublicProgress { task_id, .. } => Some(task_id),
                 _ => None,
             };
             let state = crate::workspace_task::snapshot(room)?;
@@ -155,6 +285,114 @@ impl StatePeer {
         }
         Ok(())
     }
+}
+
+/// Concrete representatives of every policy cell intersecting the execution
+/// scope. A cell is the product of grant-pattern automaton states: all paths
+/// in it match exactly the same grants, so specificity and answers are constant.
+/// Named segments plus one fresh name per level partition the infinite alphabet.
+/// This also handles interior `**` and arbitrary descendant depth, without ever
+/// asking the policy to decide on an unresolved wildcard as if it were a node.
+fn task_policy_cells(scope: &TreePath, patterns: &[&TreePath]) -> Result<Vec<TreePath>, String> {
+    use std::collections::{BTreeSet, VecDeque};
+    use tilo_action_policy::{Level, Segment};
+
+    const MAX_CELLS: usize = 4096;
+    if scope
+        .segments()
+        .iter()
+        .any(|segment| segment.id().is_none())
+    {
+        return Err("task execution scope is not concrete".into());
+    }
+    let mut alphabet = patterns
+        .iter()
+        .flat_map(|path| path.segments())
+        .chain(scope.segments())
+        .filter(|segment| matches!(segment, Segment::Name(..)))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for level in Level::ALL {
+        let mut fresh = "task-policy-other".to_owned();
+        while alphabet.contains(&Segment::Name(level, fresh.clone())) {
+            fresh.push('_');
+        }
+        alphabet.insert(Segment::Name(level, fresh));
+    }
+    let mut initial = patterns
+        .iter()
+        .map(|pattern| task_pattern_closure(pattern, vec![0]))
+        .collect::<Vec<_>>();
+    // Consume the concrete scope first: this intersects every pattern with it,
+    // including wildcard ancestors with concrete overrides inside the scope.
+    for segment in scope.segments() {
+        initial = patterns
+            .iter()
+            .zip(&initial)
+            .map(|(pattern, state)| task_pattern_step(pattern, state, segment))
+            .collect();
+    }
+    let mut seen = BTreeSet::from([initial.clone()]);
+    let mut queue = VecDeque::from([(initial, scope.clone())]);
+    let mut cells = Vec::new();
+    while let Some((states, node)) = queue.pop_front() {
+        for segment in &alphabet {
+            let next = patterns
+                .iter()
+                .zip(&states)
+                .map(|(pattern, state)| task_pattern_step(pattern, state, segment))
+                .collect::<Vec<_>>();
+            if seen.insert(next.clone()) {
+                if seen.len() > MAX_CELLS {
+                    return Err("task permission containment could not be established".into());
+                }
+                let Segment::Name(level, id) = segment else {
+                    unreachable!("the policy alphabet is concrete")
+                };
+                queue.push_back((next, node.clone().push(*level, id)));
+            }
+        }
+        cells.push(node);
+    }
+    Ok(cells)
+}
+
+fn task_pattern_closure(pattern: &TreePath, mut state: Vec<usize>) -> Vec<usize> {
+    use tilo_action_policy::Segment;
+    let mut index = 0;
+    while index < state.len() {
+        let position = state[index];
+        if pattern.segments().get(position) == Some(&Segment::Rest)
+            && !state.contains(&(position + 1))
+        {
+            state.push(position + 1);
+        }
+        index += 1;
+    }
+    state.sort_unstable();
+    state.dedup();
+    state
+}
+
+fn task_pattern_step(
+    pattern: &TreePath,
+    state: &[usize],
+    segment: &tilo_action_policy::Segment,
+) -> Vec<usize> {
+    use tilo_action_policy::Segment;
+    let next = state
+        .iter()
+        .filter_map(|&position| match pattern.segments().get(position) {
+            // A grant covers every descendant once its pattern has matched.
+            None | Some(Segment::Rest) => Some(position),
+            Some(Segment::Name(..)) if pattern.segments()[position] == *segment => {
+                Some(position + 1)
+            }
+            Some(Segment::Any(level)) if segment.level() == Some(*level) => Some(position + 1),
+            _ => None,
+        })
+        .collect();
+    task_pattern_closure(pattern, next)
 }
 
 fn require_budget_owner(
@@ -175,7 +413,8 @@ fn direction_agent(
     room: &automerge::AutoCommit,
 ) -> Result<Option<String>, String> {
     let (WorkspaceTaskCommand::Direction { task_id, .. }
-    | WorkspaceTaskCommand::DirectionForRun { task_id, .. }) = command
+    | WorkspaceTaskCommand::DirectionForRun { task_id, .. }
+    | WorkspaceTaskCommand::CancelForRun { task_id, .. }) = command
     else {
         return Ok(None);
     };
@@ -256,6 +495,31 @@ mod tests {
         )
     }
 
+    fn assert_stop_refused_after_agent_removal(
+        peer: &mut StatePeer,
+        governor: &DeviceCert,
+        task_id: &str,
+        now: SystemTime,
+    ) {
+        assert!(
+            peer.apply_workspace_task_command(
+                uuid::Uuid::from_u128(5),
+                [5; 32],
+                &WorkspaceTaskAuthority::Person {
+                    caller: governor.clone(),
+                },
+                &WorkspaceTaskCommand::CancelForRun {
+                    task_id: task_id.into(),
+                    run_epoch: 1,
+                    after_revision: 0,
+                },
+                now,
+            )
+            .is_err(),
+            "a removed agent cannot retain an owner-side stop door"
+        );
+    }
+
     /// Make the other person an editor who may only read the room.
     fn read_only_member(peer: &mut StatePeer, other: &DeviceCert, now: SystemTime) {
         let key = SigningKey::from_bytes(&[2; 32]);
@@ -287,6 +551,237 @@ mod tests {
             now,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn steering_intersects_frozen_wildcards_with_attached_scope_and_live_grants() {
+        use crate::workspace_membership::WorkspaceMembershipCommand;
+        use tilo_action_policy::Level;
+
+        let (mut peer, governor, other, now) = peer();
+        let key = SigningKey::from_bytes(&[2; 32]);
+        read_only_member(&mut peer, &other, now);
+        peer.apply_workspace_membership_command(
+            &governor,
+            &WorkspaceMembershipCommand::Revoke {
+                grant: tilo_action_policy::GrantId::new("read-only-member"),
+            },
+            &key,
+            now,
+        )
+        .unwrap();
+        let documents = TreePath::room(ROOM).app("notes").kind("document");
+        let scope = documents.clone().resource("A");
+        let wildcard = documents.clone().any(Level::Resource);
+        let subject = Subject::person(hex::encode(other.user_public_key));
+        peer.put_governed_grants(
+            &[
+                Grant::new(
+                    "starter-wildcard-deny",
+                    subject.clone(),
+                    wildcard.clone(),
+                    KindSet::UNDOABLE,
+                    Answer::Deny,
+                    Subject::person("governor"),
+                ),
+                Grant::new(
+                    "starter-concrete-allow",
+                    subject.clone(),
+                    scope.clone(),
+                    KindSet::UNDOABLE,
+                    Answer::Allow,
+                    Subject::person("governor"),
+                ),
+            ],
+            &key,
+            now,
+        )
+        .unwrap();
+        let caller = WorkspaceTaskAuthority::Person {
+            caller: other.clone(),
+        };
+        let (_, queued) = peer
+            .apply_workspace_task_command(
+                uuid::Uuid::new_v4(),
+                [1; 32],
+                &caller,
+                &WorkspaceTaskCommand::Queue {
+                    title: "Edit attached document".into(),
+                    assigned_agent: "scribe".into(),
+                    route: WorkspaceTaskRoute::Model,
+                    resource: Some(Box::new(tilo_desktop_model::WorkspaceTaskResource {
+                        app_id: Some("notes".into()),
+                        app_label: Some("Notes".into()),
+                        id: "A".into(),
+                        kind: "document".into(),
+                        label: "Document A".into(),
+                        agent_request: None,
+                    })),
+                },
+                now,
+            )
+            .unwrap();
+        let tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id } = queued else {
+            panic!("queued task")
+        };
+        peer.apply_workspace_task_command(
+            uuid::Uuid::new_v4(),
+            [2; 32],
+            &WorkspaceTaskAuthority::Host {
+                attestor: governor.clone(),
+            },
+            &WorkspaceTaskCommand::StartRun {
+                task_id: task_id.clone(),
+                agent_id: "scribe".into(),
+            },
+            now,
+        )
+        .unwrap();
+        // The ceiling retains the concrete override, even after its live grant
+        // is revoked. Live caller authority is now the ordinary Editor preset.
+        for grant in ["starter-wildcard-deny", "starter-concrete-allow"] {
+            peer.apply_workspace_membership_command(
+                &governor,
+                &WorkspaceMembershipCommand::Revoke {
+                    grant: tilo_action_policy::GrantId::new(grant),
+                },
+                &key,
+                now,
+            )
+            .unwrap();
+        }
+        let command = WorkspaceTaskCommand::DirectionForRun {
+            task_id: task_id.clone(),
+            run_epoch: 1,
+            after_revision: 0,
+            text: "Append the result".into(),
+        };
+        // An allow on one concrete item must not stand in for every item
+        // matched by a wildcard deny: the unnamed remainder is a separate cell.
+        peer.put_governed_grants(
+            &[Grant::new(
+                "caller-selected-item-allow",
+                subject.clone(),
+                wildcard.clone().item("selected").action("append"),
+                KindSet::UNDOABLE,
+                Answer::Allow,
+                Subject::person("governor"),
+            )],
+            &key,
+            now,
+        )
+        .unwrap();
+        // Each denial crosses a different policy boundary inside the same
+        // concrete attachment, including a concrete exception to a wildcard.
+        for node in [
+            wildcard.clone().action("append"),
+            wildcard.clone().any(Level::Item).action("append"),
+            wildcard.clone().item("selected").action("append"),
+            wildcard.rest().action("append"),
+        ] {
+            peer.put_governed_grants(
+                &[Grant::new(
+                    "caller-missing-append",
+                    subject.clone(),
+                    node,
+                    KindSet::UNDOABLE,
+                    Answer::Deny,
+                    Subject::person("governor"),
+                )],
+                &key,
+                now,
+            )
+            .unwrap();
+            let before = peer.durable().unwrap();
+            assert_eq!(
+                peer.apply_workspace_task_command(
+                    uuid::Uuid::new_v4(),
+                    [3; 32],
+                    &caller,
+                    &command,
+                    now,
+                )
+                .unwrap_err(),
+                "task steering requires every execution permission"
+            );
+            assert_eq!(peer.durable().unwrap(), before);
+            peer.apply_workspace_membership_command(
+                &governor,
+                &WorkspaceMembershipCommand::Revoke {
+                    grant: tilo_action_policy::GrantId::new("caller-missing-append"),
+                },
+                &key,
+                now,
+            )
+            .unwrap();
+        }
+        // Revoking a live permission that the frozen ceiling still allows
+        // must not shrink the ceiling used to authorize steering.
+        peer.put_governed_grants(
+            &[Grant::new(
+                "caller-attached-revoked",
+                subject,
+                scope,
+                KindSet::UNDOABLE,
+                Answer::Deny,
+                Subject::person("governor"),
+            )],
+            &key,
+            now,
+        )
+        .unwrap();
+        let before = peer.durable().unwrap();
+        assert!(
+            peer.apply_workspace_task_command(
+                uuid::Uuid::new_v4(),
+                [4; 32],
+                &caller,
+                &command,
+                now,
+            )
+            .is_err()
+        );
+        assert_eq!(peer.durable().unwrap(), before);
+        // Even an owner cannot steer using another epoch's frozen ceiling.
+        let saved_room = peer.core.room_doc.clone();
+        let mut stale_doc = saved_room.clone().unwrap();
+        let mut controls = crate::workspace_task::controls_of(&stale_doc).unwrap();
+        controls
+            .get_mut(&task_id)
+            .unwrap()
+            .execution_authority
+            .as_mut()
+            .unwrap()
+            .epoch = 0;
+        crate::workspace_task::project_controls(&mut stale_doc, &controls).unwrap();
+        stale_doc.commit();
+        peer.core.room_doc = Some(stale_doc);
+        let owner = WorkspaceTaskAuthority::Person { caller: governor };
+        let before = peer.durable().unwrap();
+        assert!(
+            peer.apply_workspace_task_command(
+                uuid::Uuid::new_v4(),
+                [5; 32],
+                &owner,
+                &command,
+                now,
+            )
+            .is_err()
+        );
+        assert_eq!(peer.durable().unwrap(), before);
+        peer.core.room_doc = saved_room;
+        // A current unbounded owner still has ordinary full steering rights.
+        assert!(
+            peer.apply_workspace_task_command(
+                uuid::Uuid::new_v4(),
+                [5; 32],
+                &owner,
+                &command,
+                now,
+            )
+            .unwrap()
+            .0
+        );
     }
 
     #[test]
@@ -753,6 +1248,8 @@ mod tests {
             )
             .is_err()
         );
+        assert_eq!(peer.durable().unwrap(), before);
+        assert_stop_refused_after_agent_removal(&mut peer, &governor, &task_id, now);
         assert_eq!(peer.durable().unwrap(), before);
         let phase = crate::workspace_task::snapshot(peer.admitted_room().unwrap())
             .unwrap()

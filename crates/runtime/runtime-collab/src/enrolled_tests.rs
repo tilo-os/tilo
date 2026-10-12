@@ -14,6 +14,7 @@ fn envelope() -> EnrolledTaskEnvelope {
             version: 1,
             task_id: "task-1".into(),
             title: "Private instruction".into(),
+            instruction: None,
             run_id: 9,
             lease: "lease-1".into(),
             planning: TaskRunPlanning::Model,

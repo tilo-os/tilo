@@ -10,7 +10,10 @@
 //! to the wrapped content, and an open palette gets first crack at every
 //! event so typing and Enter work without the desktop stealing focus.
 
+mod agent_actions;
+mod agent_markers;
 mod axis_navigation;
+pub(crate) use agent_markers::AccessibleAgentMarker;
 
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
@@ -902,6 +905,11 @@ pub struct ShellOverlayHost {
     /// Hit targets over live peer cursors. Rebuilt from room presence every
     /// paint; a click is an explicit spatial request to follow that person.
     follow_cursor_targets: Vec<(String, Rect)>,
+    agent_markers: agent_markers::AgentMarkers,
+    agent_actions:
+        HashMap<crate::shell::agent_quick_composer::ComposerOwner, agent_actions::AgentActions>,
+    agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer,
+    agent_quick_composer_node: Option<NodeId>,
     /// The tiles shown and the pointer, kept current for a presence pump
     /// that runs outside this tree (the hosted shell's). `None` unless
     /// [`Self::share_desk`] asked; the native frame loop reads them directly.
@@ -2477,6 +2485,10 @@ impl ShellOverlayHost {
             follow_chip_rect: Rect::ZERO,
             follow_stop_rect: Rect::ZERO,
             follow_cursor_targets: Vec::new(),
+            agent_markers: agent_markers::AgentMarkers::default(),
+            agent_actions: HashMap::new(),
+            agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer::default(),
+            agent_quick_composer_node: None,
             shared_desk: None,
             capture_studio: ui::widget::CaptureStudio::default(),
             instant_captures: Vec::new(),
@@ -2701,6 +2713,7 @@ impl ShellOverlayHost {
         self.layers.power_menu.is_open()
             || self.screenshot_markup.is_some()
             || self.capture_studio.modal_capture().is_some()
+            || self.agent_quick_composer.modal_capture().is_some()
     }
 
     /// Whether the pointer is over the shell-owned controls painted above a
@@ -17681,6 +17694,7 @@ impl Widget for ShellOverlayHost {
             sidebar.sync(s, p);
         }
         self.palette.sync(s, p);
+        self.agent_quick_composer.sync(s, p);
         self.capture_studio.sync(s, p);
         for (_, mirror) in &mut self.capture_mirrors {
             mirror.sync(s, p);
@@ -17706,6 +17720,19 @@ impl Widget for ShellOverlayHost {
     )]
     fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         let (doc, path) = ui::doc::document_ref(doc, path);
+        let action_dirty = self
+            .agent_actions
+            .values_mut()
+            .fold(false, |changed, actions| {
+                actions.pump(&mut self.agent_quick_composer) | changed
+            });
+        if action_dirty {
+            self.agent_quick_composer.sync(doc, path);
+        }
+        let agent_quick_dirty = action_dirty | self.agent_quick_composer.update(doc, path);
+        let marker_dirty = self
+            .agent_markers
+            .retain(|source| source.is_fresh(Instant::now()));
         if let Some(chrome) = &self.chrome
             && let Some(apps) = chrome.borrow().hosted_inputs.in_process()
         {
@@ -17885,7 +17912,9 @@ impl Widget for ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow().tree_mut().commit_room_change();
         }
-        content_dirty
+        agent_quick_dirty
+            || marker_dirty
+            || content_dirty
             || quick_settings_dirty
             || radio_dirty
             || display_storage_dirty
@@ -17987,6 +18016,10 @@ impl Widget for ShellOverlayHost {
         self.push_display_layout();
         let content_node = self.content.build_layout(taffy, theme, node_map);
         let palette_node = self.palette.build_layout(taffy, theme, node_map);
+        let agent_node = self
+            .agent_quick_composer
+            .build_layout(taffy, theme, node_map);
+        self.agent_quick_composer_node = Some(agent_node);
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
         self.capture_node = Some(capture_node);
         self.screenshot_markup_node = self
@@ -18097,6 +18130,11 @@ impl Widget for ShellOverlayHost {
             Some(s) => vec![content_node, palette_node, s, capture_node],
             None => vec![content_node, palette_node, capture_node],
         };
+        children.push(agent_node);
+        children.extend(
+            self.agent_markers
+                .build(taffy, theme, node_map, self.rect.origin()),
+        );
         if let Some(markup_node) = self.screenshot_markup_node {
             children.push(markup_node);
         }
@@ -18151,6 +18189,11 @@ impl Widget for ShellOverlayHost {
         };
         self.rect = ui::widget::placed(l, origin);
         self.workspace_settings_overlay.layout(self.overlay_area());
+        if let Some(agent_node) = self.agent_quick_composer_node {
+            self.agent_quick_composer
+                .apply_layout(taffy, agent_node, self.rect.origin());
+        }
+        self.agent_markers.apply(taffy, self.rect.origin());
         let contextual_tour = self
             .onboarding
             .as_ref()
@@ -18363,6 +18406,13 @@ impl Widget for ShellOverlayHost {
         self.draw_overview_and_ws_settings_overlays(scene, transform, text_renderer, theme, flags);
         self.draw_dropdowns_and_sheets(scene, transform, text_renderer, theme, presence, flags);
         self.draw_top_overlays(scene, transform, text_renderer, theme, presence);
+        let suppress_agent_markers = self.agent_quick_composer.is_open()
+            || self.onboarding_active()
+            || self.inner_surface_captures_input()
+            || self.modal_sheet_owns_keyboard();
+        self.agent_markers.refresh(presence, suppress_agent_markers);
+        self.agent_quick_composer
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
         if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(scene, transform, text_renderer, theme, presence);
             self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
@@ -18695,6 +18745,19 @@ impl Widget for ShellOverlayHost {
         if self.route_capture_mirror_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
+        if self.agent_quick_composer.is_open()
+            && let Some(node) = self.agent_quick_composer_node
+        {
+            self.agent_quick_composer
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled || self.agent_quick_composer.modal_capture().is_some() {
+                return;
+            }
+        }
+        self.agent_markers.route_event(event, ctx);
+        if *ctx.handled {
+            return;
+        }
         if let Some(chrome) = self.chrome.clone() {
             let reading = {
                 let st = chrome.borrow();
@@ -18908,6 +18971,8 @@ impl Widget for ShellOverlayHost {
                 | LayerId::Dictation => {}
                 LayerId::CommandPalette => {
                     if let Some(mut palette) = self.palette.accessibility() {
+                        // The query owns focus, not its synthetic parent dialog.
+                        palette.state.focused = false;
                         // The filter band is the host's, painted over the
                         // palette's reserved strip; it joins the palette's
                         // tree after the palette's own children (query,
@@ -19394,6 +19459,14 @@ impl Widget for ShellOverlayHost {
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
+        if target.starts_with(agent_markers::TARGET_PREFIX) {
+            if self.accessible_agent_marker_request_is_inert(target) {
+                return true;
+            }
+            return self
+                .agent_markers
+                .semantic_action(target, action, state, path);
+        }
         // The palette is published inside this host's tree (see
         // `accessibility_represents_child`), so its query's semantic target
         // arrives here, not at the palette widget. Setting it is typing it:
@@ -19627,6 +19700,10 @@ impl Widget for ShellOverlayHost {
         if let Some(pairing) = self.pairing.view() {
             out.push(pairing);
         }
+        if self.agent_quick_composer.is_open() {
+            out.push(&self.agent_quick_composer);
+        }
+        out.extend(self.agent_markers.children());
         out
     }
 
@@ -19655,11 +19732,16 @@ impl Widget for ShellOverlayHost {
         if let Some(pairing) = self.pairing.view_mut() {
             out.push(pairing);
         }
+        if self.agent_quick_composer.is_open() {
+            out.push(&mut self.agent_quick_composer);
+        }
+        out.extend(self.agent_markers.children_mut());
         out
     }
 
     fn take_focus_reset(&mut self) -> bool {
-        self.pairing.take_focus_reset()
+        self.agent_quick_composer.take_focus_reset()
+            | self.pairing.take_focus_reset()
             | std::mem::take(&mut self.onboarding_focus_reset)
             | self
                 .onboarding
@@ -19711,7 +19793,15 @@ impl Widget for ShellOverlayHost {
         let palette = std::mem::take(&mut self.palette_layout_dirty);
         let capture_mirrors = std::mem::take(&mut self.capture_mirrors_structure_dirty);
         let pairing = self.pairing.take_structure_dirty();
-        content | sidebar | palette | capture_mirrors | resynced | workspace_layout | pairing
+        content
+            | sidebar
+            | palette
+            | capture_mirrors
+            | resynced
+            | workspace_layout
+            | pairing
+            | self.agent_markers.take_structure_dirty()
+            | self.agent_quick_composer.take_structure_dirty()
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -19722,6 +19812,13 @@ impl Widget for ShellOverlayHost {
         self.wake_deadline_sources(Instant::now())
             .into_iter()
             .filter_map(|(_, deadline)| deadline)
+            .chain(self.agent_markers.deadline())
+            .chain(
+                self.agent_actions
+                    .values()
+                    .filter_map(agent_actions::AgentActions::deadline),
+            )
+            .chain(self.agent_quick_composer.next_wake_deadline())
             .min()
     }
 }

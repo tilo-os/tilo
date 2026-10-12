@@ -4536,6 +4536,7 @@ impl FloatingSurfaceProvider for MapsApp {
             return Vec::new();
         }
         vec![ui::floating_surface::FloatingSurfacePresentation {
+            input_rect: Some(self.navigation_rect()),
             id,
             content_rect: self.navigation_rect(),
             window_rect: self.navigation_rect().inflate(8.0, 8.0),

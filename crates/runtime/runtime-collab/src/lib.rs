@@ -2439,6 +2439,9 @@ pub struct TaskRunEnvelope {
     pub version: u16,
     pub task_id: String,
     pub title: String,
+    /// Private full instruction. Older senders omit it and use `title`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction: Option<String>,
     pub run_id: u64,
     pub lease: String,
     pub planning: TaskRunPlanning,
@@ -2446,6 +2449,13 @@ pub struct TaskRunEnvelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     pub action_context: serde_json::Value,
+}
+
+impl TaskRunEnvelope {
+    #[must_use]
+    pub fn instruction(&self) -> &str {
+        self.instruction.as_deref().unwrap_or(&self.title)
+    }
 }
 
 /// How the task owner allowed its delegated agent to choose actions.
@@ -3072,6 +3082,8 @@ impl EnrolledTaskEnvelope {
             || self.task.title.is_empty()
             || self.task.title.len() > 32 * 1024
             || self.task.title.chars().count() > 8000
+            || self.task.instruction().trim().is_empty()
+            || self.task.instruction().len() > 32 * 1024
             || self
                 .history
                 .as_ref()
