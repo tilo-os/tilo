@@ -372,14 +372,11 @@ fn render_list_item(layout: &mut Layout, block: &BlockView) {
         Some(AttrVal::Int(n)) => (*n).clamp(0, 20) as f32,
         _ => 0.0,
     };
-    let ordered = matches!(block.attrs.get("ordered"), Some(AttrVal::Bool(true)));
+    let ordered = block.flag("ordered");
     let indent = MARGIN + level * LIST_INDENT;
     // Marker: ordered lists use the block's `index` attr if present, else "1.".
     let marker = if ordered {
-        let n = match block.attrs.get("index") {
-            Some(AttrVal::Int(i)) => *i,
-            _ => 1,
-        };
+        let n = block.int_attr("index").unwrap_or(1);
         format!("{n}.")
     } else {
         "\u{2022}".to_string() // bullet
