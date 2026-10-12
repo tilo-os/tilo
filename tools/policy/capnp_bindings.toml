@@ -22,7 +22,7 @@ path = "crates/runtime/runtime-collab"
 src_prefix = "schema"
 schemas = ["schema/collab.capnp"]
 schema_sha256 = "2c06acf2b135902c0378886e5a1995e43911097fa59ec4e1454e6cbf7fcd496d"
-bindings_sha256 = "db38464585a9f68ec777d269bb5f0de445586144ebe9d8affcb6d7108969408e"
+bindings_sha256 = "7233b3cba733d9b0a25598cdf711ec7bda6d68cb5d81189711111902af54402f"
 
 [[crate]]
 path = "crates/runtime/runtime-fs"
