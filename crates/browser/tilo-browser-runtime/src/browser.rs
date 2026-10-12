@@ -985,7 +985,7 @@ fn present_component(
             reveal: None,
         },
         None if named_new.is_some() => LaunchTarget::New,
-        None => definition.unsaved_target(&record),
+        None => definition.unsaved_target(&record).map_err(error)?,
     };
     let views = Rc::new(
         InstanceViewStore::with_store(dyn_store, &config.device, &config.room).map_err(error)?,
