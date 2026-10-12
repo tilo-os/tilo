@@ -876,34 +876,50 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if let Some(read) = levels.get(parent) {
             return Ok(read.clone());
         }
+        // A level is one snapshot: every page of it at one revision. When the
+        // app's directory moves on between pages (its document changed, or an
+        // invocation refreshed it), what was read belongs to the old revision
+        // and the read starts again from the first page at the new one, for
+        // as long as an action is waited for.
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_millis(DEFAULT_WAIT_MS));
         let mut rows = Vec::new();
-        let mut cursor = Vec::new();
-        let mut revision = None;
-        for _ in 0..LEVEL_PAGES {
-            let page = self
-                .ask(CatalogueQuery {
-                    provider: Some(provider.to_owned()),
-                    parent_resource: (!parent.is_empty()).then(|| parent.to_owned()),
-                    cursor: std::mem::take(&mut cursor),
-                    revision: revision.take(),
-                    max_results: PAGE_ROWS,
-                    limits: Some(CatalogueLimits {
-                        max_bytes: Some(65536),
-                        max_work: Some(512),
-                        max_depth: Some(16),
-                    }),
-                    ..CatalogueQuery::default()
-                })
-                .await?;
-            if page.stale_cursor {
-                return Err("the app's directory changed while it was read; try again".into());
+        'snapshot: loop {
+            rows.clear();
+            let mut cursor = Vec::new();
+            let mut revision = None;
+            for _ in 0..LEVEL_PAGES {
+                let page = self
+                    .ask(CatalogueQuery {
+                        provider: Some(provider.to_owned()),
+                        parent_resource: (!parent.is_empty()).then(|| parent.to_owned()),
+                        cursor: std::mem::take(&mut cursor),
+                        revision: revision.take(),
+                        max_results: PAGE_ROWS,
+                        limits: Some(CatalogueLimits {
+                            max_bytes: Some(65536),
+                            max_work: Some(512),
+                            max_depth: Some(16),
+                        }),
+                        ..CatalogueQuery::default()
+                    })
+                    .await?;
+                if page.stale_cursor {
+                    if deadline.is_some_and(|deadline| std::time::Instant::now() < deadline) {
+                        continue 'snapshot;
+                    }
+                    return Err(
+                        "the app's directory kept changing while it was read; try again".into(),
+                    );
+                }
+                rows.extend(page.rows);
+                if page.exhausted || page.next_cursor.is_empty() {
+                    break 'snapshot;
+                }
+                revision = Some(page.revision);
+                cursor = page.next_cursor;
             }
-            rows.extend(page.rows);
-            if page.exhausted || page.next_cursor.is_empty() {
-                break;
-            }
-            revision = Some(page.revision);
-            cursor = page.next_cursor;
+            break;
         }
         let read = level_of(&rows, parent);
         levels.insert(parent.to_owned(), read.clone());

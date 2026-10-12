@@ -40,6 +40,10 @@ struct Notes {
     /// Which publication the bound ids belong to: a restart changes it.
     publication: &'static str,
     invoked: Arc<Mutex<Vec<InvokeRequest>>>,
+    /// How many times the app's directory moves on while a level is being
+    /// read: while it is above zero the app's top level comes in two pages,
+    /// and asking for the second finds the revision changed.
+    moves: Arc<Mutex<u32>>,
 }
 
 impl Notes {
@@ -48,6 +52,7 @@ impl Notes {
             running: Arc::new(Mutex::new(running)),
             publication: "2a4120d7-2f63-4578-aed8-11cb91ed3628",
             invoked: Arc::default(),
+            moves: Arc::default(),
         }
     }
 
@@ -332,6 +337,25 @@ impl ActionHost for Notes {
         } else if query.needle.is_empty() {
             let parent = query.parent_resource.clone().unwrap_or_default();
             rows.retain(|row| row.parent_resource == parent);
+            let moves = *self.moves.lock().unwrap();
+            if provider != WORKSPACE && parent.is_empty() && moves > 0 {
+                if query.cursor.is_empty() {
+                    rows.truncate(1);
+                    return Pending::ready(Ok(CataloguePage {
+                        revision: format!("v{moves}"),
+                        rows,
+                        next_cursor: b"second".to_vec(),
+                        ..CataloguePage::default()
+                    }));
+                }
+                let after = moves.saturating_sub(1);
+                *self.moves.lock().unwrap() = after;
+                return Pending::ready(Ok(CataloguePage {
+                    revision: format!("v{after}"),
+                    stale_cursor: true,
+                    ..CataloguePage::default()
+                }));
+            }
         } else {
             rows.retain(|row| host_matches(row, &query.needle));
         }
@@ -1020,4 +1044,35 @@ fn a_block_action_takes_the_id_a_read_showed_and_an_abbreviation_of_its_name() {
             ("set-block-done", &json!({"block": "b1"}))
         );
     });
+}
+
+/// A level is read as one snapshot: when the app's directory moves on
+/// between its pages, the read starts again at the new revision and the agent
+/// sees the whole level, not an error or a mix of two revisions.
+#[test]
+fn a_level_read_across_a_moving_directory_starts_again_at_the_new_revision() {
+    let steady = Notes::new(true);
+    let moving = Notes::new(true);
+    *moving.moves.lock().unwrap() = 2;
+    let (expected, failed) = run(tool(&agent(&steady), "tilo_ls", json!({"path": "notes"})));
+    assert!(!failed, "{expected}");
+    let (listed, failed) = run(tool(&agent(&moving), "tilo_ls", json!({"path": "notes"})));
+    assert!(!failed, "{listed}");
+    assert_eq!(listed, expected);
+    assert_eq!(
+        *moving.moves.lock().unwrap(),
+        0,
+        "both moves were read past"
+    );
+}
+
+/// A directory that never holds still for one read is reported, once the
+/// time an action is waited for has passed.
+#[test]
+fn a_directory_that_never_holds_still_is_reported() {
+    let moving = Notes::new(true);
+    *moving.moves.lock().unwrap() = u32::MAX;
+    let (text, failed) = run(tool(&agent(&moving), "tilo_ls", json!({"path": "notes"})));
+    assert!(failed, "{text}");
+    assert!(text.contains("kept changing"), "{text}");
 }
