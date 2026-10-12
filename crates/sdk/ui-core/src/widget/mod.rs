@@ -3230,8 +3230,9 @@ pub mod history_scrubber;
 pub mod name_field;
 pub use activity_timeline::ActivityTimeline;
 pub use history::{
-    AuthorRelation, EntryKind, HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId,
-    HistoryFilter, RedactionDisplay, format_relative_time, hue_to_rgb,
+    AuthorRelation, EntryKind, HistoryAttribution, HistoryAuthor, HistoryClassification,
+    HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay, format_relative_time,
+    hue_to_rgb,
 };
 pub use history_scrubber::HistoryScrubber;
 // The artifact vocabulary a `HistoryEntry` is written in. Re-exported so a
