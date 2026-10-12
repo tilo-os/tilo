@@ -659,7 +659,10 @@ fn scrolling(app: &mut tilo_app::App, step: f64, copying: bool) -> Scrolling {
 fn host_section(
     tile: &mut tilo_app::app::EmbeddedApp,
     text: &mut tilo_app::text_render::TextRenderer,
-) -> (Box<Scene>, tilo_app::scene_parts::SectionParts) {
+) -> (
+    Box<tilo_app::advanced::Scene>,
+    tilo_app::scene_parts::SectionParts,
+) {
     use tilo_app::app::AppSurface as _;
     use tilo_app::kurbo::{Affine, RoundedRect};
     use tilo_app::peniko::{BlendMode, Fill};
@@ -669,7 +672,7 @@ fn host_section(
     let size = Surface.inner_size();
     let region = Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
     let recording = tilo_app::scene_parts::Recording::begin();
-    let mut scene = Box::new(Scene::new());
+    let mut scene = Box::new(tilo_app::advanced::Scene::new());
     tilo_app::scene_parts::track(&scene);
     let shape = RoundedRect::from_rect(region, f64::from(theme.tokens.radii.tile));
     scene.fill(
