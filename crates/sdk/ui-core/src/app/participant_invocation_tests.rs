@@ -73,13 +73,7 @@ impl Widget for TwoViews {
         dyn crate::resources::PublishesResources
     );
 
-    crate::testing::inert_widget_methods!(
-        leaf_layout,
-        apply_layout,
-        draw,
-        get_rect,
-        name = "two-views"
-    );
+    crate::testing::inert_widget_methods!(leaf_layout, name = "two-views");
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[VIEW_TYPE]
     }

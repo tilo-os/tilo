@@ -366,9 +366,6 @@ impl Widget for Probe {
     fn name(&self) -> &'static str {
         "bound-probe"
     }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
-    }
     fn is_focusable(&self) -> bool {
         Self::capture("focus-order");
         true

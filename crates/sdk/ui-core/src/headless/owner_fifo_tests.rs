@@ -46,13 +46,7 @@ impl Widget for OwnerProbe {
         self.seen.updates.set(self.seen.updates.get() + 1);
         false
     }
-    crate::testing::inert_widget_methods!(
-        leaf_layout,
-        apply_layout,
-        draw,
-        get_rect,
-        name = "shared-owner-probe"
-    );
+    crate::testing::inert_widget_methods!(leaf_layout, name = "shared-owner-probe");
     fn sync(&mut self, model: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
         let (doc, _) = crate::doc::document_ref(model, path);
         assert!(crate::record::identity(doc).is_some());
@@ -185,13 +179,7 @@ struct HiddenOwners {
     refuse: Rc<Cell<bool>>,
 }
 impl Widget for HiddenOwners {
-    crate::testing::inert_widget_methods!(
-        leaf_layout,
-        apply_layout,
-        draw,
-        get_rect,
-        name = "hidden-owner-host"
-    );
+    crate::testing::inert_widget_methods!(leaf_layout, name = "hidden-owner-host");
     fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {}
     fn children(&self) -> Vec<&dyn Widget> {
         self.owners.iter().map(|o| o as &dyn Widget).collect()

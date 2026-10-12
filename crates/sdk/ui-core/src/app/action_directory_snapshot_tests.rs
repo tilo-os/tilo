@@ -20,14 +20,8 @@ impl Widget for DeclaredDirectory {
     ) -> NodeId {
         t.new_leaf(taffy::Style::default()).unwrap()
     }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
     fn name(&self) -> &'static str {
         "declared-directory"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.semantic_calls.set(self.semantic_calls.get() + 1);
@@ -632,14 +626,8 @@ impl Widget for ExtendedDirectory {
     ) -> NodeId {
         t.new_leaf(taffy::Style::default()).unwrap()
     }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
     fn name(&self) -> &'static str {
         "extended-directory"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]

@@ -1154,18 +1154,6 @@ impl Widget for FooterKey {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "ModalAction"
     }
@@ -2144,18 +2132,6 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         }
         self.stale = false;
         self.remeasure = false;
-    }
-
-    /// Nothing: a modal is presented in the window's top layer
-    /// ([`Self::draw_overlay`]), so it covers chrome drawn after the app.
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
 
     fn draw_overlay(
