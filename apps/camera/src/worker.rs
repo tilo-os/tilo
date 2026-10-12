@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
-use tilo_actions::InvocationId;
 use tilo_content::ContentStore;
+use ui::tilo_actions::InvocationId;
 
 use crate::frame::FrameBuf;
 use crate::model::ScannedCode;

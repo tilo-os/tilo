@@ -5,7 +5,15 @@
 //! render, a unit test and a live session resolve the same copy. The locale
 //! follows the usual POSIX variables and falls back per message to `en-US`.
 
-ui::embedded_catalog!(pub fn, "display-arrangement-title", ["en-US", "de-DE"]);
+ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
+
+/// The English names of a `(label, value)` table, as an effect's or verb's
+/// choices.
+pub(crate) fn english<T>(
+    table: &'static [(&'static str, T)],
+) -> impl Iterator<Item = &'static str> {
+    table.iter().map(|(label, _)| *label)
+}
 
 #[cfg(test)]
 mod tests {

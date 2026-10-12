@@ -12,31 +12,37 @@ mod common;
 
 use collab_types::DocumentMutation;
 use common::catalogue;
-use tilo_actions::door::ActionAddress;
 use tilo_agent_participant::{Replica, Seed};
 
 const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
 #[test]
 fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
-    use ui::permissions::{Actor, PermissionContext, Role};
+    use ui::permissions::{PermissionContext, Role};
     let catalogue = catalogue();
     let app = "so.tilo.chat";
     let mut page = Replica::open(&catalogue, app, ROOM, "ada", false, Seed::New).unwrap();
     let mut doc = page.read(Clone::clone).unwrap();
-    let workspace = chat::doc::ChatDoc::create_workspace(&mut doc, "Resource view fixture");
+    chat::demo::apply_as(
+        &mut doc,
+        "ada",
+        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
+            name: "Resource view fixture".into(),
+        }),
+    )
+    .unwrap();
+    let workspace = chat::projection::read(&doc)
+        .workspace_rows()
+        .into_iter()
+        .find(|workspace| workspace.name == "Resource view fixture")
+        .unwrap()
+        .id;
     page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
-    let resource = format!("chat.workspace:{workspace}");
+    let resource = chat::projection::item_id("workspaces", &workspace);
     let before = body(&page);
-    let viewer = PermissionContext::from_capabilities(
-        Actor::person(Some(Role::Viewer), "ada").in_room(ROOM),
-        Vec::new(),
-    );
-    let denied = PermissionContext::from_capabilities(
-        Actor::person(Some(Role::Denied), "ada").in_room(ROOM),
-        Vec::new(),
-    );
-    let views = page.resource_views(&resource, "chat.workspace", &viewer);
+    let viewer = PermissionContext::member_of(ROOM, "ada", Role::Viewer);
+    let denied = PermissionContext::stranger("ada");
+    let views = page.resource_views(&resource, "chat.workspace.workspaces", &viewer);
     assert!(
         !views.is_empty(),
         "the actual Chat resource declares a viewer navigation door"
@@ -47,11 +53,11 @@ fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
             .all(|view| view.kind == tilo_actions::OperationKind::View)
     );
     assert!(
-        page.resource_views(&resource, "chat.workspace", &denied)
+        page.resource_views(&resource, "chat.workspace.workspaces", &denied)
             .is_empty()
     );
     assert!(
-        page.resource_views("missing", "chat.workspace", &viewer)
+        page.resource_views("missing", "chat.workspace.workspaces", &viewer)
             .is_empty()
     );
     assert!(
@@ -106,15 +112,8 @@ fn an_agent_mount_and_a_person_mount_converge() {
     if let Some(opened) = agent.take_mutation() {
         page.apply(&opened).unwrap();
     }
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("text".into(), "Drafted by the agent".into());
-    agent
-        .invoke(
-            &ActionAddress::new("scratchpad.note", "edit"),
-            &arguments,
-            false,
-        )
-        .unwrap();
+    let (note, arguments) = common::scratchpad_body("Drafted by the agent");
+    agent.invoke(&note, &arguments, false).unwrap();
     let edit = agent
         .take_mutation()
         .expect("the edit is the agent's own change");
@@ -128,13 +127,8 @@ fn an_agent_mount_and_a_person_mount_converge() {
 
     // And back: the person's edit reaches the agent, and the agent never
     // republishes it as its own.
-    arguments.insert("text".into(), "Ada's revision".into());
-    page.invoke(
-        &ActionAddress::new("scratchpad.note", "edit"),
-        &arguments,
-        false,
-    )
-    .unwrap();
+    let (note, arguments) = common::scratchpad_body("Ada's revision");
+    page.invoke(&note, &arguments, false).unwrap();
     agent.apply(&page.take_mutation().unwrap()).unwrap();
     assert!(body(&agent).contains("Ada's revision"), "{}", body(&agent));
     assert!(
@@ -144,32 +138,36 @@ fn an_agent_mount_and_a_person_mount_converge() {
 }
 
 /// The record's identity alone, as a participant holds it before the
-/// creator's content arrives.
+/// creator's content arrives: the shortest prefix of the creator's history
+/// that names the record and its schema.
 fn identity_only(page: &Replica) -> Vec<u8> {
-    use automerge::transaction::Transactable as _;
-    use automerge::{ObjType, ROOT, ReadDoc as _};
-    let (identity, version) = page
+    use automerge::{ROOT, ReadDoc as _};
+    let changes = page
         .read(|doc| {
-            let (_, record) = doc.get(ROOT, "tilo:record").unwrap().unwrap();
-            let fields: Vec<(String, String)> = ["home", "id", "kind", "room"]
-                .iter()
-                .map(|key| {
-                    let (value, _) = doc.get(&record, *key).unwrap().unwrap();
-                    ((*key).to_owned(), value.into_string().unwrap())
-                })
-                .collect();
-            let (version, _) = doc.get(ROOT, "tilo:schema_version").unwrap().unwrap();
-            (fields, version.as_i64().unwrap())
+            doc.clone()
+                .get_changes(&[])
+                .into_iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect::<Vec<_>>()
         })
         .unwrap();
-    let mut doc = automerge::AutoCommit::new();
-    let record = doc.put_object(ROOT, "tilo:record", ObjType::Map).unwrap();
-    for (key, value) in identity {
-        doc.put(&record, key, value).unwrap();
-    }
-    doc.put_object(&record, "refs", ObjType::List).unwrap();
-    doc.put(ROOT, "tilo:schema_version", version).unwrap();
-    doc.save()
+    let mut prefix = automerge::AutoCommit::new();
+    changes
+        .into_iter()
+        .find_map(|change| {
+            tilo_automerge::ApplyIncoming::load_incoming(&mut prefix, &change).unwrap();
+            let named = prefix
+                .get(ROOT, "tilo:record")
+                .unwrap()
+                .is_some_and(|(_, record)| {
+                    ["home", "id", "kind", "room"]
+                        .iter()
+                        .all(|key| prefix.get(&record, *key).unwrap().is_some())
+                });
+            (named && prefix.get(ROOT, "tilo:schema_version").unwrap().is_some())
+                .then(|| prefix.save())
+        })
+        .expect("the creator's history names the record")
 }
 
 fn joined(
@@ -280,9 +278,9 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
         tilo_browser_peer::transport::read_presence_anchors(&anchor, &head).unwrap();
     let last = agent
         .read(|doc| {
-            let state =
-                <tilo_document::RichText as ui::tilo_resource::Resource>::read(doc).unwrap();
-            let body = state.body();
+            let state = <word_processor::model::Document as ui::tilo_resource::Resource>::read(doc)
+                .unwrap();
+            let body = state.text().unwrap().body();
             body.id_at(body.len() - 1).unwrap().to_owned()
         })
         .unwrap();
@@ -292,7 +290,7 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
     let written = ui::presence::PresenceKey::Resource {
         app: app.to_owned(),
         id: last,
-        kind: "tilo.rich-text".to_owned(),
+        kind: "word-processor.document".to_owned(),
     };
     assert!(
         key == written || Some(&key) == written.digest_form().as_ref(),

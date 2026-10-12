@@ -6,15 +6,17 @@
 //! about vello, taffy or `lsblk`.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Id, Identified, JsonSchema, Model};
 
 // ---------------------------------------------------------------------------
 // Source — what we are going to write or install.
 // ---------------------------------------------------------------------------
 
 /// Where the bytes to be written come from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 pub enum SourceKind {
     /// An arbitrary local disk image picked from disk.
+    #[default]
     IsoFile,
     /// A Tilo installer/live image authenticated by the release catalog.
     TiloImage,
@@ -37,13 +39,14 @@ impl SourceKind {
 
 /// A selected image source with the metadata we can show without reading
 /// the whole file (name, on-disk size, volume label / image type).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 pub struct Source {
     pub kind: SourceKind,
     /// Absolute path to the image file (empty for a not-yet-downloaded
     /// known release).
     pub path: String,
     /// Display name (file name or release name).
+    #[model(label)]
     pub name: String,
     /// Size in bytes (0 when not yet known / not downloaded).
     pub size: u64,
@@ -62,8 +65,67 @@ pub struct Source {
     pub expected_sha256: Option<String>,
 }
 
+impl Source {
+    /// Stable identity of a reviewed source. Prefer immutable digest, then
+    /// platform identity, then the canonical path/name fallback.
+    pub fn id(&self) -> String {
+        let material = self
+            .expected_sha256
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map_or_else(
+                || {
+                    self.identity.map_or_else(
+                        || format!("{}\u{1f}{}\u{1f}{}", self.kind.tag(), self.path, self.name),
+                        |identity| {
+                            format!(
+                                "{}\u{1f}{}:{}",
+                                self.kind.tag(),
+                                identity.volume,
+                                identity.file
+                            )
+                        },
+                    )
+                },
+                |digest| format!("{}\u{1f}{digest}", self.kind.tag()),
+            );
+        // FNV-1a is a stable identifier, not a security boundary. The writer
+        // independently rechecks identity/digest at the privileged boundary.
+        let hash = material
+            .bytes()
+            .fold(0xcbf2_9ce4_8422_2325u64, |acc, byte| {
+                (acc ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+            });
+        format!("imager.source:{hash:016x}")
+    }
+}
+
+/// An image reviewed before the current one, stored under its source's id
+/// so two people choosing at once keep both records.
+#[derive(Clone, Debug, PartialEq, Eq, Model)]
+pub struct RecentSource {
+    /// The source's [`Source::id`].
+    pub id: Id,
+    /// Where it sorts: the most recent has the lowest rank; equal ranks
+    /// (concurrent choices) sort by id.
+    pub rank: i64,
+    /// Image
+    pub source: Source,
+}
+
+impl Identified for RecentSource {
+    fn id(&self) -> Id {
+        self.id.clone()
+    }
+
+    /// Most recent first; concurrent choices of one rank keep id order.
+    fn order(&self, other: &Self) -> std::cmp::Ordering {
+        self.rank.cmp(&other.rank)
+    }
+}
+
 /// Platform file identity, portable across the helper request boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 pub struct SourceIdentity {
     pub volume: u64,
     pub file: u64,
@@ -537,52 +599,8 @@ impl Step {
 // serialises to the installation-media preconfiguration profile.
 // ---------------------------------------------------------------------------
 
-/// Whether a USB target is a throwaway live stick or a real, persistent
-/// install you can boot and keep using.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum InstallMode {
-    /// Boot-once installer / live environment (writes the image as-is).
-    Live,
-    /// Persistent install written onto the stick — survives reboots,
-    /// keeps user data.
-    Persistent,
-    /// Full install onto an internal disk.
-    DiskInstall,
-}
-
-impl InstallMode {
-    pub fn key(&self) -> &'static str {
-        match self {
-            InstallMode::Live => "live",
-            InstallMode::Persistent => "persistent",
-            InstallMode::DiskInstall => "disk",
-        }
-    }
-    pub fn label(&self) -> &'static str {
-        match self {
-            InstallMode::Live => "Live / installer stick",
-            InstallMode::Persistent => "Persistent USB install",
-            InstallMode::DiskInstall => "Install to disk",
-        }
-    }
-    pub fn from_key(k: &str) -> InstallMode {
-        match k {
-            "persistent" => InstallMode::Persistent,
-            "disk" => InstallMode::DiskInstall,
-            _ => InstallMode::Live,
-        }
-    }
-    pub fn all() -> [InstallMode; 3] {
-        [
-            InstallMode::Live,
-            InstallMode::Persistent,
-            InstallMode::DiskInstall,
-        ]
-    }
-}
-
 /// Filesystem used for the installed system.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Filesystem {
     #[default]
@@ -619,17 +637,19 @@ impl Filesystem {
     }
 }
 
-/// The user account created during install.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// The user account created during install. Only the names are authored
+/// in the document; the password is entered on the target.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct UserAccount {
+    /// Full name
     pub full_name: String,
+    /// Username
     pub username: String,
     /// Held only for the current host-side UI session. It is deliberately
     /// excluded from the installation-media profile and must be entered on
     /// the target device.
+    #[model(skip)]
     pub password: String,
-    pub is_admin: bool,
-    pub autologin: bool,
 }
 
 impl Default for UserAccount {
@@ -638,8 +658,6 @@ impl Default for UserAccount {
             full_name: "Tilo User".into(),
             username: "quser".into(),
             password: String::new(),
-            is_admin: true,
-            autologin: false,
         }
     }
 }
@@ -648,20 +666,26 @@ impl Default for UserAccount {
 /// emits only its validated, non-secret preferences; target selection,
 /// destructive consent, credentials, and recovery acknowledgement stay local
 /// to the device being installed.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+///
+/// The document holds the secret-free choices the media profile and the
+/// on-write setup carry; credentials are not part of that contract and
+/// stay on this machine.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct InstallProfile {
-    pub mode: InstallMode,
+    /// Hostname
     pub hostname: String,
     pub user: UserAccount,
+    /// Locale
     pub locale: String,
+    /// Keyboard layout
     pub keyboard: String,
+    /// Time zone
     pub timezone: String,
+    /// Filesystem
     pub filesystem: Filesystem,
-    pub encrypt: bool,
     /// Host-session draft value only; never serialized into installation media.
+    #[model(skip)]
     pub encryption_passphrase: String,
-    /// Persistence overlay size in MB, for `InstallMode::Persistent`.
-    pub persist_mb: u64,
     /// Wi-Fi network the new machine should join. The passphrase stays in the
     /// write request, never in this collaborative profile.
     #[serde(default)]
@@ -669,8 +693,9 @@ pub struct InstallProfile {
     /// Name of the device identity created for the target.
     #[serde(default)]
     pub device_label: String,
-    /// Certify a new device under the setup machine's person and place it on
-    /// the target. The human root secret stays on the setup machine.
+    /// Enroll as a new device: certify a new device under the setup
+    /// machine's person and place it on the target. The human root secret
+    /// stays on the setup machine.
     #[serde(default)]
     pub enroll_local_identity: bool,
 }
@@ -694,16 +719,13 @@ pub const DEFAULT_HOSTNAME: &str = "tilo";
 impl Default for InstallProfile {
     fn default() -> Self {
         Self {
-            mode: InstallMode::Live,
             hostname: DEFAULT_HOSTNAME.into(),
             user: UserAccount::default(),
             locale: "en_US.UTF-8".into(),
             keyboard: "us".into(),
             timezone: "UTC".into(),
             filesystem: Filesystem::Btrfs,
-            encrypt: false,
             encryption_passphrase: String::new(),
-            persist_mb: 4096,
             wifi_ssid: String::new(),
             device_label: String::new(),
             enroll_local_identity: false,
@@ -865,22 +887,17 @@ impl InstallProfile {
     /// A named saved-profile snapshot for the "saved install profiles" list.
     pub fn sample_workstation() -> Self {
         InstallProfile {
-            mode: InstallMode::DiskInstall,
             hostname: "tilo-workstation".into(),
             user: UserAccount {
                 full_name: "Quinten".into(),
                 username: "quinten".into(),
                 password: "•••••••••".into(),
-                is_admin: true,
-                autologin: false,
             },
             locale: "en_US.UTF-8".into(),
             keyboard: "us".into(),
             timezone: "Europe/Amsterdam".into(),
             filesystem: Filesystem::Btrfs,
-            encrypt: true,
             encryption_passphrase: "•••••••••".into(),
-            persist_mb: 0,
             wifi_ssid: String::new(),
             device_label: String::new(),
             enroll_local_identity: false,
@@ -1411,7 +1428,7 @@ mod tests {
             let json = serde_json::to_string(&prof).unwrap();
             let back: InstallProfile = serde_json::from_str(&json).unwrap();
             assert_eq!(back.hostname, prof.hostname);
-            assert_eq!(back.encrypt, prof.encrypt);
+            assert_eq!(back.user.username, prof.user.username);
             assert_eq!(back.filesystem, prof.filesystem);
         }
     }

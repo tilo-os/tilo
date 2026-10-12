@@ -103,6 +103,10 @@ QUALITY_ONLY_HELPERS = {
 # file in the mandatory repository-policy suite. A file missing from this exact
 # map retains native Rust checks.
 QUALITY_ONLY_CONTROL_INPUTS = {
+    "os/dev/ci-native-podman-store.sh": (
+        "tools/tests/test_ci_native_podman_store.py",
+        "os/tests/disk_image_root_podman_store.sh",
+    ),
     # These wrappers select/request the existing image workflow; they change
     # no compiler, app source or packaging inputs. Mandatory policy tests
     # observe their request gate, paths, architecture selection and delegation.

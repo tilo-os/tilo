@@ -1,4 +1,40 @@
 use super::*;
+
+#[test]
+fn installed_sdk_refuses_the_zero_signed_local_peer_certificate() {
+    use whatsapp_rust::wacore::handshake::{HandshakeError, HandshakeUtils};
+    use whatsapp_rust::waproto::{
+        buffa::{Message, MessageField},
+        whatsapp::{
+            CertChain, cert_chain::NoiseCertificate, cert_chain::noise_certificate::Details,
+        },
+    };
+    let static_key = [0x42; 32];
+    let certificate = |serial, issuer_serial, key: Vec<u8>| NoiseCertificate {
+        details: Some(
+            Details {
+                serial: Some(serial),
+                issuer_serial: Some(issuer_serial),
+                key: Some(key),
+                not_before: Some(1_700_000_000),
+                not_after: Some(1_900_000_000),
+            }
+            .encode_to_vec(),
+        ),
+        signature: Some(vec![0; 64]),
+    };
+    let chain = CertChain {
+        intermediate: MessageField::some(certificate(1, 0, vec![0x33; 32])),
+        leaf: MessageField::some(certificate(2, 1, static_key.to_vec())),
+    };
+    let result = HandshakeUtils::verify_server_cert(&chain.encode_to_vec(), &static_key);
+    assert!(
+        matches!(result, Err(HandshakeError::CertVerification(ref reason))
+            if reason == "intermediate signature failed XEdDSA verify"),
+        "the installed SDK must verify service certificate signatures: {result:?}"
+    );
+}
+
 use crate::supervisor::whatsapp::WhatsappBootstrap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tilo_messaging::SendError;

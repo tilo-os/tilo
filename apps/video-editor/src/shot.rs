@@ -298,7 +298,7 @@ mod tests {
         assert!(
             app.versions()
                 .iter()
-                .any(|version| version.summary().is_some()),
+                .any(|version| version.context.as_ref().is_some_and(|c| c.what.is_some())),
             "the load is an attributed version"
         );
     }

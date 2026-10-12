@@ -9,12 +9,9 @@
 use std::collections::HashMap;
 
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
 use super::{AppModel, Element, ModelPath, TaffyTreeExt, Widget};
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
 /// A placeholder that takes no room: no layout box, no gap, no paint.
@@ -50,16 +47,6 @@ impl Widget for Absent {
 
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, origin: Point) {
         self.rect = Rect::from_origin_size(origin, (0.0, 0.0));
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
 
     fn needs_redraw(&self) -> bool {

@@ -206,15 +206,6 @@ impl ui::widget::Widget for OverlayApp {
     ) -> taffy::NodeId {
         self.leaf.build_layout(tree, theme, map)
     }
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut ui::TextRenderer,
-        _: &ui::Theme,
-        _: &ui::presence::PresenceCtx,
-    ) {
-    }
     fn draw_overlay(
         &mut self,
         _: &mut vello::Scene,
@@ -300,7 +291,7 @@ fn replacing_the_room_requires_fresh_component_contexts() {
     let records = RecordStore::in_memory();
     let mut surface =
         DesktopSurface::build(&tree, &records, &mut Unavailable, SurfaceChrome::default());
-    tree.workspaces[0].room = tilo_desktop_model::RoomId::new();
+    tree.workspaces[0].set_room(tilo_desktop_model::RoomId::new());
     assert_eq!(
         surface.reconcile(&tree, &records, &mut Unavailable),
         tilo_desktop::composition::ReconcileOutcome::RebuildRequired

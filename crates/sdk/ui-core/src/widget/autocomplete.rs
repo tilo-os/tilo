@@ -22,6 +22,7 @@
 //! The editable path bar in the file manager is the canonical consumer, but
 //! the widget knows nothing about paths.
 
+use crate::num::{f32_of_f64, f64_of_usize};
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
@@ -107,27 +108,6 @@ pub enum AutocompleteOutcome {
 pub type Suggester = Box<dyn Fn(&str) -> Vec<Suggestion>>;
 
 const DEFAULT_MAX_VISIBLE: usize = 8;
-
-/// Widens a small UI count (row/suggestion index or count, always far
-/// below `f64`'s exact-integer range) for layout math.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "UI row/suggestion counts are always far below f64's exact-integer range"
-)]
-fn count_f64(n: usize) -> f64 {
-    n as f64
-}
-
-/// Narrows a screen-space `f64` layout value to `f32` for text rendering;
-/// every call site here is a bounded panel/row dimension, well within
-/// `f32` range.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen-space px value, always well within f32 range"
-)]
-fn px(v: f64) -> f32 {
-    v as f32
-}
 
 /// The geometry of a suggestion list in one theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -381,7 +361,7 @@ impl SuggestionList {
         } else {
             self.visible_count()
         };
-        let height = count_f64(rows) * m.row + 2.0 * m.inset;
+        let height = f64_of_usize(rows) * m.row + 2.0 * m.inset;
         let viewport = self
             .viewport
             .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6));
@@ -405,7 +385,7 @@ impl SuggestionList {
     /// Row `visible` (0 = the first in view) inside `panel`.
     fn row_in(&self, panel: Rect, visible: usize) -> Rect {
         let m = &self.metrics;
-        let y0 = panel.y0 + m.inset + count_f64(visible) * m.row;
+        let y0 = panel.y0 + m.inset + f64_of_usize(visible) * m.row;
         Rect::new(panel.x0 + m.inset, y0, panel.x1 - m.inset, y0 + m.row)
     }
 
@@ -517,8 +497,11 @@ impl SuggestionList {
             }
             if let Some(status) = &self.status {
                 let style = theme.text(self.role);
-                let shown =
-                    text.elide_to_width_style(status, px((row.x1 - m.pad - x).max(0.0)), &style);
+                let shown = text.elide_to_width_style(
+                    status,
+                    f32_of_f64((row.x1 - m.pad - x).max(0.0)),
+                    &style,
+                );
                 let (_, h) = text.measure_style(&shown, None, &style);
                 text.draw_style(
                     scene,
@@ -594,7 +577,7 @@ impl SuggestionList {
         // The detail column is trailing; the label takes what is left.
         let mut label_x1 = row.x1 - m.pad;
         if let Some(detail) = &s.detail {
-            let room = px(((row.x1 - m.pad) - x).max(0.0) / 2.0);
+            let room = f32_of_f64(((row.x1 - m.pad) - x).max(0.0) / 2.0);
             let shown = text.elide_to_width_style(detail, room, &detail_style);
             let (dw, dh) = text.measure_style(&shown, None, &detail_style);
             let dx = row.x1 - m.pad - f64::from(dw);
@@ -608,7 +591,8 @@ impl SuggestionList {
             );
             label_x1 = dx - 2.0 * m.spacing;
         }
-        let label = text.elide_to_width_style(&s.label, px((label_x1 - x).max(0.0)), &label_style);
+        let label =
+            text.elide_to_width_style(&s.label, f32_of_f64((label_x1 - x).max(0.0)), &label_style);
         let (_, lh) = text.measure_style(&label, None, &label_style);
         text.draw_style(
             scene,
@@ -1033,7 +1017,7 @@ impl Widget for Autocomplete {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // The field's own band: its control size, grown with its line.
-        let height = px(self.input.band_in(theme));
+        let height = f32_of_f64(self.input.band_in(theme));
         let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),

@@ -485,6 +485,11 @@ jobs:
           target/release/examples/framework-scaling 5000,50000 open | tee perf/framework-open.log
           python3 tools/perf/adapters.py framework-open --env-json perf/env.json \
             perf/framework-open.log >> perf/render.jsonl
+          # Scrolling a long framework list, each frame presented as a window
+          # that copies what a scroll keeps on screen presents it.
+          target/release/examples/framework-scaling 5000 scroll | tee perf/framework-scroll.log
+          python3 tools/perf/adapters.py framework-scroll --env-json perf/env.json \
+            perf/framework-scroll.log >> perf/render.jsonl
           cat perf/render.jsonl
 
       - name: Check the render counters

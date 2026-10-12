@@ -30,11 +30,9 @@ use crate::reader_theme::ReaderPalette;
 use crate::resource::Ebook;
 
 /// The SDK editor a note or comment is written in, bound to the note's rich
-/// text: each keystroke is an [`EbookAction::EditNoteText`] the library's
+/// text: each keystroke is a field edit of the note's text the library's
 /// dispatcher applies, undone a word at a time. Enter asks to finish,
 /// Shift+Enter breaks the line and Escape cancels.
-///
-/// [`EbookAction::EditNoteText`]: crate::actions::EbookAction::EditNoteText
 pub(crate) struct NoteEditor {
     id: Uuid,
     host: tilo_rich_text::RichTextComposer<RichTextField>,
@@ -44,10 +42,10 @@ pub(crate) struct NoteEditor {
 
 impl NoteEditor {
     pub(crate) fn new(id: Uuid, hint: &str, library: Option<&Dispatcher<Ebook>>) -> Self {
-        let mut field =
-            RichTextField::view_only(move |doc| crate::doc::BooksDoc::annotation_text(doc, id));
+        let text = crate::resource::note_text(id);
+        let mut field = RichTextField::view_only(move |doc| text.object(doc));
         if let Some(library) = library {
-            field.attach(crate::actions::note_text_dispatcher(library, id));
+            field.attach(crate::resource::note_text_dispatcher(library, id));
         }
         let mut surface = RichTextSurface::field(field)
             .with_editor(
@@ -167,6 +165,25 @@ impl InputEventCtx<'_> {
             node_id: self.node_id,
             taffy: self.taffy,
             handled,
+        }
+    }
+
+    /// A toolkit widget's event context for this input, with the widget's
+    /// own `handled` and `focus` flags.
+    pub(crate) fn widget_ctx<'a>(
+        &'a mut self,
+        handled: &'a mut bool,
+        focus: &'a mut Option<NodeId>,
+    ) -> ui::widget::EventCtx<'a> {
+        ui::widget::EventCtx {
+            scale_factor: self.scale_factor,
+            modifiers: &self.modifiers,
+            state: self.state.reborrow(),
+            path: self.root,
+            handled,
+            focus_target: focus,
+            node_id: self.node_id,
+            taffy: self.taffy,
         }
     }
 }
@@ -348,16 +365,7 @@ impl NumberControls {
             let mut focus_target = None;
             control.input.handle_event(
                 ctx.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.root,
-                    handled: &mut local_handled,
-                    focus_target: &mut focus_target,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
+                &mut ctx.widget_ctx(&mut local_handled, &mut focus_target),
             );
             if focus_target.is_some() {
                 control.input.set_focus(true);
@@ -723,33 +731,17 @@ impl NoteComposer {
 mod tests {
     use super::*;
     use taffy::TaffyTree;
-    use winit::event::ElementState;
-    use winit::keyboard::{Key, NamedKey};
-
-    fn key(logical_key: Key) -> WindowEvent {
-        let text = match &logical_key {
-            Key::Character(text) => Some(text.clone()),
-            _ => None,
-        };
-        let event = ui::synthetic_input::key_event(logical_key, text, ElementState::Pressed);
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
-    }
+    use winit::keyboard::NamedKey;
 
     /// The note composer writes the note as it is typed and Enter finishes; hit testing keeps the card modal and tap-away saves.
     #[test]
     fn note_composer_edits_through_shared_input_and_keeps_its_card_modal() {
         // --- phase: note_composer_writes_the_note_as_typed_and_enter_finishes ---
         {
-            let mut doc = AutoCommit::new();
             let note = crate::model::Annotation::new("book:x", crate::model::AnnoKind::Note, 0, 0)
                 .with_note("hello");
             let id = note.id;
-            crate::doc::BooksDoc::upsert_annotation(&mut doc, &note);
-            doc.commit();
+            let mut doc = crate::resource::doc_with(&[], std::slice::from_ref(&note));
             let library = crate::resource::library_dispatcher_for_test();
             let mut composer = NoteComposer::default();
             composer.open(id, Some(&library));
@@ -774,11 +766,12 @@ mod tests {
                 assert!(!press(
                     &mut composer,
                     &mut doc,
-                    key(Key::Character(ch.into()))
+                    ui::synthetic_input::char_key(ch)
                 ));
             }
             let stored = |doc: &AutoCommit| {
-                crate::doc::BooksDoc::list_annotations(doc)
+                crate::resource::read_doc(doc)
+                    .marks()
                     .into_iter()
                     .find(|annotation| annotation.id == id)
                     .unwrap()
@@ -792,7 +785,7 @@ mod tests {
             assert!(press(
                 &mut composer,
                 &mut doc,
-                key(Key::Named(NamedKey::Enter))
+                ui::synthetic_input::named_key(NamedKey::Enter)
             ));
             assert_eq!(
                 stored(&doc),
@@ -1051,16 +1044,7 @@ impl SchemeColorSheet {
             let mut local_handled = false;
             picker.handle_event(
                 ctx.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.root,
-                    handled: &mut local_handled,
-                    focus_target: &mut focus_target,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
+                &mut ctx.widget_ctx(&mut local_handled, &mut focus_target),
             );
             if focus_target.is_some() {
                 picker.set_focus(true);

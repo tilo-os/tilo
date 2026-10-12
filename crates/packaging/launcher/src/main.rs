@@ -690,7 +690,7 @@ fn received_file_capability(
         collab_types::Subject::app("so.tilo.file-explorer"),
         collab_types::Scope::FsPath(path.display().to_string()),
         collab_types::Effect::Grant,
-        collab_types::Verb::Read,
+        collab_types::caps::Access::Read,
     );
     let bytes = serde_json::to_vec(&vec![capability])
         .map_err(|_| "could not encode the received-file capability".to_string())?;

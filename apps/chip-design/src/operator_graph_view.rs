@@ -1,15 +1,15 @@
 //! Generic structural graph, rendered by the shared retained canvas.
-use crate::operator_graph::{OperatorAction, OperatorKind, OperatorNode, OperatorState};
-use crate::resource::{ChipProject, ProjectAction};
+use crate::operator_graph::{OperatorKind, OperatorNode, OperatorState};
+use crate::resource::{Project as ChipProject, project};
 use crate::view::ChipEffect;
 use ui::framework::{EffectCx, Effected, ViewCx};
 use ui::graph_editor::{Edge, GraphEditor};
 use ui::i18n::I18nManager;
-use ui::tilo_resource::{ActionRef, Invoke};
+use ui::tilo_resource::{Id, Invoke};
 use ui::tokens::TextRole;
 use ui::widget::{
     Button, Column, Container, Element, Field, GraphCanvas, GraphCanvasConnection, GraphCanvasNode,
-    Property, PropertyList, Row, ScrollAxis, Scrollable, Text,
+    Property, PropertyList, Row, ScrollAxis, Scrollable, Text, TextInput,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -20,9 +20,24 @@ pub struct Selection {
 fn tr(key: &str) -> String {
     I18nManager::lookup_plain(key)
 }
-fn invoke(edit: OperatorAction) -> Invoke<ChipProject> {
-    ActionRef::new(ui::tilo_resource::APPLY, &[ui::tilo_resource::APPLY_PARAM])
-        .with(ProjectAction::EditGraph { edit })
+/// Connecting `edge`, as the project's verb.
+fn connect(edge: Edge) -> Invoke<ChipProject> {
+    ChipProject::CONNECT.with(project::Connect {
+        from_node: edge.from_node,
+        from_port: edge.from_port,
+        to_node: edge.to_node,
+        to_port: edge.to_port,
+    })
+}
+
+/// Moving the operator `node` to `x`, `y`: two field edits, one step.
+fn move_to(node: &str, x: u16, y: u16) -> Invoke<ChipProject> {
+    let at = ChipProject::paths().nodes.item(&Id::from_raw(node));
+    Invoke::group(
+        [at.x.set(x), at.y.set(y)]
+            .iter()
+            .filter_map(|edit| Invoke::edit(edit).ok()),
+    )
 }
 pub fn port_id(node: &str, port: &str, input: bool) -> String {
     format!(
@@ -74,8 +89,8 @@ pub fn body(cx: &ViewCx<ChipProject>, state: &OperatorState, selection: &Selecti
             y: (n / 4).saturating_mul(320),
         };
         add = add.push(Box::new(cx.button(
-            &format!("{} {}", tr("chip-graph-add"), tr(kind.key())),
-            invoke(OperatorAction::AddNode { node }),
+            format!("{} {}", tr("chip-graph-add"), tr(kind.key())),
+            ChipProject::ADD_NODE.with(node),
         )));
     }
     let graph = state.graph();
@@ -104,7 +119,7 @@ pub fn body(cx: &ViewCx<ChipProject>, state: &OperatorState, selection: &Selecti
         ))
         .push(Box::new(add))
         .push(Box::new(cx.effect_button(
-            &tr("chip-graph-clear-output"),
+            tr("chip-graph-clear-output"),
             &ChipEffect::InspectOperator { node: None },
         )));
     if let Some((node, port)) = &selection.output {
@@ -188,7 +203,7 @@ fn node_view(
                     cx,
                     &port_id(&node.id, &port.id, true),
                     &label,
-                    invoke(OperatorAction::Connect { edge }),
+                    connect(edge),
                 )
                 .with_enabled(enabled),
             ));
@@ -265,14 +280,7 @@ fn inspector(cx: &ViewCx<ChipProject>, node: &OperatorNode, state: &OperatorStat
             node.y.saturating_add(32).min(8192),
         ),
     ] {
-        moves = moves.push(Box::new(cx.button(
-            &tr(key),
-            invoke(OperatorAction::MoveNode {
-                node: node.id.clone(),
-                x,
-                y,
-            }),
-        )));
+        moves = moves.push(Box::new(cx.button(tr(key), move_to(&node.id, x, y))));
     }
     column = column.push(Box::new(moves));
     for edge in state
@@ -281,44 +289,37 @@ fn inspector(cx: &ViewCx<ChipProject>, node: &OperatorNode, state: &OperatorStat
         .filter(|edge| edge.to_node == node.id)
     {
         column = column.push(Box::new(cx.button(
-            &format!(
+            format!(
                 "{} {}",
                 tr("chip-graph-disconnect"),
                 tr(&format!("chip-port-{}", edge.to_port))
             ),
-            invoke(OperatorAction::Disconnect {
+            ChipProject::DISCONNECT.with(project::Disconnect {
                 node: node.id.clone(),
                 port: edge.to_port.clone(),
             }),
         )));
     }
     Box::new(column.push(Box::new(cx.button(
-        &tr("chip-graph-remove"),
-        invoke(OperatorAction::RemoveNode {
-            node: node.id.clone(),
-        }),
+        tr("chip-graph-remove"),
+        ChipProject::REMOVE_NODE.with(node.id.as_str()),
     ))))
 }
 
 fn shape_field(cx: &ViewCx<ChipProject>, node: &OperatorNode) -> Element {
     let read_node = node.id.clone();
     let edit_node = node.id.clone();
-    let action: ActionRef<ChipProject, ProjectAction> =
-        ActionRef::new(ui::tilo_resource::APPLY, &[ui::tilo_resource::APPLY_PARAM]);
     let input = cx
-        .input(
+        .control_with(
+            TextInput::from_state,
             move |state| {
                 state
-                    .operator_graph
-                    .nodes
-                    .get(&read_node)
+                    .node(&read_node)
                     .map_or_else(String::new, |node| format!("{:?}", node.shape))
             },
-            action.map(move |value: String| ProjectAction::EditGraph {
-                edit: OperatorAction::SetShape {
-                    node: edit_node.clone(),
-                    shape: serde_json::from_str(&value).unwrap_or_default(),
-                },
+            ChipProject::SET_SHAPE.map(move |value: String| project::SetShape {
+                node: edit_node.clone(),
+                shape: serde_json::from_str(&value).unwrap_or_default(),
             }),
         )
         .with_id(&format!("chip-operator-shape-{}", node.id));
@@ -327,31 +328,19 @@ fn shape_field(cx: &ViewCx<ChipProject>, node: &OperatorNode) -> Element {
 
 fn output_width_field(cx: &ViewCx<ChipProject>, node: &OperatorNode) -> Option<Element> {
     node.output_width?;
-    {
-        let read_node = node.id.clone();
-        let edit_node = node.id.clone();
-        let action: ActionRef<ChipProject, ProjectAction> =
-            ActionRef::new(ui::tilo_resource::APPLY, &[ui::tilo_resource::APPLY_PARAM]);
-        let input = cx
-            .input(
-                move |state| {
-                    state
-                        .operator_graph
-                        .nodes
-                        .get(&read_node)
-                        .and_then(|node| node.output_width)
-                        .map_or_else(String::new, |width| width.to_string())
-                },
-                action.map(move |value: String| ProjectAction::EditGraph {
-                    edit: OperatorAction::SetOutputWidth {
-                        node: edit_node.clone(),
-                        width: value.parse().unwrap_or(0),
-                    },
-                }),
-            )
-            .with_id(&format!("chip-matrix-output-width-{}", node.id));
-        Some(Box::new(Field::new(tr("chip-graph-output-width"), input)) as Element)
-    }
+    let path = ChipProject::paths()
+        .nodes
+        .item(&Id::from_raw(node.id.clone()))
+        .output_width;
+    let input = cx
+        .control_map(
+            TextInput::from_state,
+            path,
+            |width: &Option<u32>| width.map_or_else(String::new, |width| width.to_string()),
+            |value: String| value.trim().parse().ok(),
+        )
+        .with_id(&format!("chip-matrix-output-width-{}", node.id));
+    Some(Box::new(Field::new(tr("chip-graph-output-width"), input)) as Element)
 }
 
 pub fn scenario() -> Vec<Invoke<ChipProject>> {
@@ -368,23 +357,21 @@ pub fn scenario() -> Vec<Invoke<ChipProject>> {
     let mut actions: Vec<_> = kinds
         .into_iter()
         .map(|(id, kind, x, y)| {
-            invoke(OperatorAction::AddNode {
-                node: OperatorNode {
-                    id: id.into(),
+            ChipProject::ADD_NODE.with(OperatorNode {
+                id: id.into(),
+                kind,
+                shape: if matches!(
                     kind,
-                    shape: if matches!(
-                        kind,
-                        OperatorKind::NormWeightInput | OperatorKind::MatrixWeightInput
-                    ) {
-                        vec![8]
-                    } else {
-                        vec![4, 8]
-                    },
-                    normalization_width: 8,
-                    output_width: None,
-                    x,
-                    y,
+                    OperatorKind::NormWeightInput | OperatorKind::MatrixWeightInput
+                ) {
+                    vec![8]
+                } else {
+                    vec![4, 8]
                 },
+                normalization_width: 8,
+                output_width: None,
+                x,
+                y,
             })
         })
         .collect();
@@ -397,13 +384,11 @@ pub fn scenario() -> Vec<Invoke<ChipProject>> {
         ("silu", "result", "mul", "right"),
         ("mul", "result", "output", "value"),
     ] {
-        actions.push(invoke(OperatorAction::Connect {
-            edge: Edge {
-                from_node: from_node.into(),
-                from_port: from_port.into(),
-                to_node: to_node.into(),
-                to_port: to_port.into(),
-            },
+        actions.push(connect(Edge {
+            from_node: from_node.into(),
+            from_port: from_port.into(),
+            to_node: to_node.into(),
+            to_port: to_port.into(),
         }));
     }
     actions
@@ -418,10 +403,10 @@ pub fn present(
     match effect {
         ChipEffect::OperatorGraph => {}
         ChipEffect::InspectOperator { node } => {
-            if node.as_ref().is_some_and(|id| {
-                !cx.live()
-                    .with(|state| state.operator_graph.nodes.contains_key(id))
-            }) {
+            if node
+                .as_ref()
+                .is_some_and(|id| !cx.live().with(|state| state.node(id).is_some()))
+            {
                 return Err(tr("chip-graph-node-missing"));
             }
             selection.set(Selection { node, output: None });
@@ -429,9 +414,7 @@ pub fn present(
         ChipEffect::SelectOutput { node, port } => {
             let valid = cx.live().with(|state| {
                 state
-                    .operator_graph
-                    .nodes
-                    .get(&node)
+                    .node(&node)
                     .is_some_and(|n| n.visual().outputs.iter().any(|p| p.id == port))
             });
             if !valid {

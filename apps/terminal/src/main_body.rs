@@ -557,24 +557,18 @@ pub struct TerminalWidget {
     /// default-background cell is the surface the framework already painted.
     palette: ui::tokens::TerminalPalette,
 
-    /// What the terminal shows. A widget running a process keeps the
-    /// emulator's screen here; one without (a past version, a collaborator's
-    /// view, a screenshot before its output) shows the session record's,
-    /// presented to it.
+    /// What the terminal shows: the emulator's screen of the process it
+    /// runs. It is live output and never part of the session record.
     screen: crate::screen::Screen,
     /// The lines `grid`/`grid_attrs` were last built from, so a rebuild
     /// converts only lines that changed.
     mirrored: Vec<std::rc::Rc<crate::screen::Line>>,
     /// Whether this widget's own emulator draws `screen`: set by the first
-    /// output it parses. Until then the screen is the record's.
+    /// output it parses.
     emulating: bool,
-    /// The screen the session record holds, as this widget last wrote it;
-    /// `None` while the record's is unknown (a new process, a refused
-    /// write), so the next write replaces it whole.
-    synced: Option<crate::screen::Screen>,
     /// Session changes waiting for the next sync, where the record is at
-    /// hand: they apply in order, before the output parsed since.
-    pending_actions: Vec<crate::resource::TerminalAction>,
+    /// hand: they apply in order.
+    pending_actions: Vec<ui::tilo_resource::Invoke<crate::resource::Terminal>>,
     /// Where the session record says this session runs.
     recorded_target: Option<crate::target::SessionTarget>,
     /// Identity of the process attached here, distinct from a replica's record.
@@ -755,6 +749,47 @@ pub struct TerminalWidget {
     /// While the open context menu is the target picker: what each row does.
     target_menu_rows: Option<Vec<Option<TargetMenuRow>>>,
     environments_panel: EnvironmentsPanel,
+    /// The command runs of the process this terminal runs: its shell's
+    /// marks, the run going on and the runs `run` asked for.
+    runs: RunState,
+}
+
+/// The person's command history this terminal adds its runs to.
+struct RunHistory {
+    record: ui::framework::PersonRecord<crate::history::CommandHistory>,
+    /// The address of the session record its runs name.
+    session: String,
+    /// Who types at this terminal.
+    me: String,
+}
+
+/// Where this terminal is with its process's command runs
+/// (docs/app-model/ush.md, "Command runs").
+#[derive(Default)]
+struct RunState {
+    /// The marks of the process's shell, when it marks its runs.
+    marks: Option<crate::runs::Marks>,
+    /// The run going on.
+    current: crate::runs::Runs,
+    /// The command lines `run` asked for, shared with the view that carries
+    /// out the session's outbox.
+    queue: crate::runs::RunQueue,
+    /// Asked, waiting for the shell to be at its prompt.
+    waiting: std::collections::VecDeque<crate::runs::Asked>,
+    /// Typed at the prompt, waiting for the shell to start it.
+    typed: Option<crate::runs::Asked>,
+    /// Started for whoever asked.
+    running: Option<crate::runs::Asked>,
+    /// Ended, waiting to be recorded.
+    ended: Vec<(crate::runs::FinishedRun, Option<crate::runs::Asked>)>,
+    /// The shell showed its prompt and has not started a run since.
+    at_prompt: bool,
+    /// The person's command history, and the address of the session record
+    /// its runs name.
+    history: Option<RunHistory>,
+    /// The session as its record was last presented: the runs to show
+    /// items of.
+    session: Option<std::rc::Rc<crate::resource::Terminal>>,
 }
 
 impl TerminalWidget {
@@ -823,7 +858,6 @@ impl TerminalWidget {
             screen: crate::screen::Screen::default(),
             mirrored: Vec::new(),
             emulating: false,
-            synced: None,
             pending_actions: Vec::new(),
             recorded_target: None,
             local_session: None,
@@ -887,23 +921,19 @@ impl TerminalWidget {
             chip_rect: Rect::ZERO,
             target_menu_rows: None,
             environments_panel: EnvironmentsPanel::default(),
+            runs: RunState::default(),
         }
     }
 
-    /// A new process takes this terminal. Its screen starts blank, and the
-    /// session record drops the previous process's screen, title and pane
-    /// before this one's output reaches it: a tab is durable, its process is
-    /// not, and a shell started after a logout must not inherit the grid of
-    /// the one before it.
+    /// A new process takes this terminal. Its screen starts blank and it
+    /// claims the session's pane: a tab is durable, its process is not, and
+    /// a shell started after a logout must not inherit the grid of the one
+    /// before it.
     fn begin_local_session(&mut self) {
-        let session_id = uuid::Uuid::new_v4().to_string();
-        self.local_session = Some(session_id.clone());
+        self.local_session = Some(uuid::Uuid::new_v4().to_string());
         self.pane_id = uuid::Uuid::new_v4().to_string();
-        self.submit(crate::resource::TerminalAction::BindLocalSession { session_id });
-        self.submit(crate::resource::TerminalAction::ClaimPane {
-            pane_id: self.pane_id.clone(),
-        });
-        self.synced = None;
+        self.submit(crate::resource::Terminal::CLAIM_PANE.with(self.pane_id.clone()));
+        self.begin_runs();
         self.emulating = true;
         self.screen = crate::screen::Screen::default();
         self.cursor_x = 0;
@@ -1146,7 +1176,6 @@ impl TerminalWidget {
         if let Some((code, reason)) = self.input_unavailable() {
             statuses.extend([
                 EffectStatus::unavailable(E::SEND, code, reason),
-                EffectStatus::unavailable(E::RUN, code, reason),
                 EffectStatus::unavailable(E::INTERRUPT, code, reason),
                 EffectStatus::unavailable(E::CLEAR, code, reason),
                 EffectStatus::unavailable(E::PASTE, code, reason),
@@ -1183,6 +1212,26 @@ impl TerminalWidget {
             "session_disconnected",
             "The terminal process has ended or its PTY failed; input cannot be sent.",
         ))
+    }
+
+    /// What the session shows, for an agent or a script: its output (the
+    /// newest part of the screen and scrollback), title, cursor and where it
+    /// runs.
+    pub(crate) fn read_session(&self) -> serde_json::Value {
+        let (output, truncated) = crate::resource::readable_output(&self.screen);
+        serde_json::json!({
+            "kind": <crate::resource::Terminal as ui::tilo_resource::Resource>::KIND,
+            "title": self.title,
+            "target": self.sessions.target.as_ref().or(self.recorded_target.as_ref()),
+            "session": self.local_session,
+            "relay_session": self.recorded_relay_session,
+            "pane": self.pane_id,
+            "alternate": self.screen.alternate,
+            "cursor": { "column": self.screen.cursor.0, "row": self.screen.cursor.1 },
+            "output": output,
+            "output_truncated": truncated,
+            "retained_lines": self.screen.active().len(),
+        })
     }
 
     pub(crate) fn inspect_session(&self) -> serde_json::Value {
@@ -1861,12 +1910,6 @@ impl TerminalWidget {
         activity || native_activity
     }
 
-    /// The screen this terminal shows. Test accessor.
-    #[cfg(test)]
-    pub(crate) fn screen(&self) -> &crate::screen::Screen {
-        &self.screen
-    }
-
     #[cfg(test)]
     pub(crate) fn has_received_pty_output(&self) -> bool {
         self.ever_nonblank
@@ -1879,6 +1922,20 @@ impl TerminalWidget {
     /// very same path. From here on the terminal shows its own emulator's
     /// screen; the session record follows it at the next sync.
     pub fn feed(&mut self, bytes: &[u8]) {
+        let Some(marks) = self.runs.marks.as_mut() else {
+            self.feed_output(bytes);
+            return;
+        };
+        for piece in marks.push(bytes) {
+            if let crate::runs::Piece::Output(output) = &piece {
+                self.feed_output(output);
+            }
+            self.follow_run(&piece);
+        }
+    }
+
+    /// [`Self::feed`] of output with the session's marks taken out.
+    fn feed_output(&mut self, bytes: &[u8]) {
         if !bytes.is_empty() {
             // A native edit's own redisplay must preserve its acknowledged
             // checkpoint. The producer fences actual Readline state changes.
@@ -1958,12 +2015,8 @@ impl TerminalWidget {
             self.write_input(&responses);
         }
 
-        // Record an OSC 0/2 title change so a collaborator sees it, and
-        // reflect it locally for `app_title`.
-        if let Some(t) = title_out
-            && t != self.title
-        {
-            self.submit(crate::resource::TerminalAction::SetTitle { title: t.clone() });
+        // An OSC 0/2 title change shows as the window's title.
+        if let Some(t) = title_out {
             self.title = t;
         }
         self.show_screen();
@@ -2154,7 +2207,6 @@ impl TerminalWidget {
                 effect,
                 E::Send { .. }
                     | E::ReplaceEditorSelection { .. }
-                    | E::Run { .. }
                     | E::Paste { .. }
                     | E::PastePrimary { .. }
                     | E::Interrupt
@@ -2236,9 +2288,9 @@ impl TerminalWidget {
             return Err("agents may not send input to the device's own shell".into());
         }
         match effect {
-            E::InspectSession => {
+            E::InspectSession | E::ReadScreen => {
                 return Err(
-                    "Inspect session is answered by the resource's read-only handler".into(),
+                    "inspecting and reading the session are answered by the resource's read-only handler".into(),
                 );
             }
             E::InspectEditor | E::ReplaceEditorSelection { .. } => {
@@ -2262,26 +2314,6 @@ impl TerminalWidget {
                     );
                 }
                 self.try_write_input(text.as_bytes())?;
-            }
-            E::Run { command } => {
-                if command.trim().is_empty() {
-                    return Err("command to run cannot be empty".to_string());
-                }
-                if command.len() > MAX_RESOURCE_SEND_BYTES {
-                    return Err(format!(
-                        "command exceeds the {} KiB reviewed-command limit",
-                        MAX_RESOURCE_SEND_BYTES / 1024
-                    ));
-                }
-                if !is_reviewable_terminal_text(&command) {
-                    return Err(
-                        "command must be one line and may not contain terminal control characters"
-                            .to_string(),
-                    );
-                }
-                let mut command = command.into_bytes();
-                command.push(b'\r');
-                self.try_write_input(&command)?;
             }
             E::Paste { text } | E::PastePrimary { text } => self.try_paste(&text)?,
             E::Interrupt => self.try_write_input(&[0x03])?,
@@ -2317,6 +2349,7 @@ impl TerminalWidget {
                 }
                 open_url(&url);
             }
+            E::OpenItem { run, position } => self.show_item(&run, position)?,
             E::OpenIn { target } => self.open_in(&target)?,
             E::CreateEnvironment { name } => {
                 self.sessions.create_environment(&name)?;
@@ -2419,6 +2452,258 @@ impl TerminalWidget {
 }
 
 impl TerminalWidget {
+    /// The command lines `run` asks this terminal's process to run reach it
+    /// through `queue`, which the view carrying out the session's outbox
+    /// shares.
+    pub fn run_through(&mut self, queue: crate::runs::RunQueue) {
+        queue.set_pane(if self.emulating { &self.pane_id } else { "" });
+        self.runs.queue = queue;
+    }
+
+    /// Remember every run this terminal records in the person's `history`,
+    /// as runs of the session record at `session`.
+    pub(crate) fn remember_in(
+        &mut self,
+        record: ui::framework::PersonRecord<crate::history::CommandHistory>,
+        session: String,
+        me: String,
+    ) {
+        self.runs.history = Some(RunHistory {
+            record,
+            session,
+            me,
+        });
+    }
+
+    /// A new process takes the session: what was asked of the last one and
+    /// has not run settles as failed, and the queue follows the new pane.
+    fn begin_runs(&mut self) {
+        let runs = &mut self.runs;
+        runs.current = crate::runs::Runs::default();
+        runs.at_prompt = false;
+        let unanswered: Vec<_> = runs
+            .waiting
+            .drain(..)
+            .chain(runs.typed.take())
+            .chain(runs.running.take())
+            .collect();
+        for asked in unanswered {
+            fail_run(asked, "the session's process ended before the command ran");
+        }
+        runs.marks = None;
+        runs.queue.set_pane(&self.pane_id);
+    }
+
+    /// Follow one piece of the session's output: a mark moves its runs on.
+    fn follow_run(&mut self, piece: &crate::runs::Piece) {
+        use crate::runs::{Mark, Piece};
+        let runs = &mut self.runs;
+        match piece {
+            Piece::Mark(Mark::Prompt) => {
+                runs.at_prompt = true;
+                if let Some(asked) = runs.typed.take() {
+                    fail_run(asked, "the shell did not run the command");
+                }
+            }
+            Piece::Mark(Mark::Started { .. }) => {
+                runs.at_prompt = false;
+                runs.running = runs.typed.take();
+            }
+            Piece::Mark(Mark::Ended { .. }) | Piece::Output(_) => {}
+        }
+        if let Some(run) = runs
+            .current
+            .follow(piece, ui::tilo_resource::origin_now_ms())
+        {
+            let asked = runs.running.take();
+            runs.ended.push((run, asked));
+        }
+    }
+
+    /// Type the next command line `run` asked for, once the shell is at its
+    /// prompt and nothing typed for it is waiting to start.
+    fn type_asked_run(&mut self) {
+        for asked in self.runs.queue.take() {
+            // The same request handed over again (its invocation took it
+            // over from the drain) runs once and answers the newest asker.
+            let runs = &mut self.runs;
+            match runs
+                .waiting
+                .iter_mut()
+                .chain(runs.typed.as_mut())
+                .chain(runs.running.as_mut())
+                .find(|known| known.request == asked.request)
+            {
+                Some(known) => known.reply = asked.reply,
+                None => runs.waiting.push_back(asked),
+            }
+        }
+        if self.runs.waiting.is_empty() {
+            return;
+        }
+        if self.runs.marks.is_none() {
+            for asked in self.runs.waiting.drain(..) {
+                fail_run(asked, "this session's shell does not mark its runs");
+            }
+            return;
+        }
+        if self
+            .sessions
+            .target
+            .as_ref()
+            .is_some_and(crate::target::SessionTarget::is_host)
+        {
+            for asked in self.runs.waiting.drain(..) {
+                fail_run(
+                    asked,
+                    "commands are not run in the device's own shell for anyone",
+                );
+            }
+            return;
+        }
+        if !self.runs.at_prompt || self.runs.typed.is_some() {
+            return;
+        }
+        let Some(asked) = self.runs.waiting.pop_front() else {
+            return;
+        };
+        // Ctrl-U first: what was half typed at the prompt does not become
+        // part of the command.
+        let mut line = vec![0x15];
+        line.extend_from_slice(asked.command.as_bytes());
+        line.push(b'\r');
+        match self.try_write_input(&line) {
+            Ok(()) => {
+                self.runs.at_prompt = false;
+                self.runs.typed = Some(asked);
+            }
+            Err(error) => fail_run(asked, &error),
+        }
+    }
+
+    /// Record the runs that ended, their output in the content store, and
+    /// answer whoever asked for each.
+    fn record_runs(
+        &mut self,
+        dispatch: &ui::framework::Dispatcher<crate::resource::Terminal>,
+        edits: &mut ui::widget::Edits<'_>,
+    ) {
+        for (run, asked) in std::mem::take(&mut self.runs.ended) {
+            let output = if run.output.is_empty() {
+                None
+            } else {
+                match self.content.put(&run.output) {
+                    Ok(hash) => Some(hash),
+                    Err(error) => {
+                        tracing::warn!(%error, "terminal could not keep a run's output");
+                        None
+                    }
+                }
+            };
+            let request = asked.as_ref().map(|asked| asked.request.clone());
+            let id = request.clone().unwrap_or_else(|| {
+                ui::tilo_resource::Id::from_raw(uuid::Uuid::new_v4().simple().to_string())
+            });
+            let finished = crate::resource::Finished {
+                tool: crate::parse::tool_of(&run.command).to_owned(),
+                items: crate::parse::items(&run.command, &run.output),
+                output_len: if output.is_some() {
+                    u64::try_from(run.output.len()).unwrap_or(u64::MAX)
+                } else {
+                    0
+                },
+                output,
+                command: run.command,
+                cwd: run.cwd,
+                started_ms: run.started_ms,
+                ended_ms: run.ended_ms,
+                exit: run.exit,
+                truncated: run.truncated,
+                request: request.clone(),
+                run: id.clone(),
+            };
+            let ran = crate::history::Ran {
+                command: finished.command.clone(),
+                cwd: finished.cwd.clone(),
+                environment: self
+                    .sessions
+                    .target
+                    .as_ref()
+                    .map(crate::target::SessionTarget::encode),
+                exit: finished.exit,
+                ended_ms: finished.ended_ms,
+                actor: asked
+                    .as_ref()
+                    .map(|asked| asked.requested_by.clone())
+                    .unwrap_or_default(),
+                session: String::new(),
+                run: id.clone(),
+            };
+            let recorded =
+                dispatch.submit_now(edits, crate::resource::Terminal::RECORD_RUN.with(finished));
+            match &recorded {
+                Ok(()) => self.remember(ran),
+                Err(error) => tracing::warn!(%error, "terminal session record refused a run"),
+            }
+            if let Some(asked) = asked {
+                let answer = crate::resource::RunAnswer {
+                    run: recorded.is_ok().then_some(asked.request.clone()),
+                    exit: Some(run.exit),
+                };
+                asked.reply.finish(Ok(ui::tilo_actions::ActionOutput {
+                    value: serde_json::to_value(answer).ok(),
+                    resources: Vec::new(),
+                }));
+            }
+        }
+    }
+
+    /// Show the item at `position` of the run `run`: open its page or its
+    /// file.
+    fn show_item(&self, run: &str, position: u32) -> Result<(), String> {
+        let session = self
+            .runs
+            .session
+            .as_ref()
+            .ok_or("the session's runs are not here")?;
+        let run = session
+            .runs
+            .get(&ui::tilo_resource::Id::from_raw(run))
+            .ok_or("no such run")?;
+        let position = usize::try_from(position).unwrap_or(usize::MAX);
+        match crate::parse::shown(&run.cwd.0, &run.items, position)? {
+            crate::parse::Shown::Page(url) => {
+                if !is_public_web_link(&url) {
+                    return Err("the link is not a public web page".into());
+                }
+                open_url(&url);
+            }
+            crate::parse::Shown::File { path, .. } => {
+                if !path.is_file() {
+                    return Err(format!("{} is not a file on this device", path.display()));
+                }
+                ui::widget::open_external_url(&format!("file://{}", path.display()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Remember `ran`, which the session record now holds, in the person's
+    /// history.
+    fn remember(&self, mut ran: crate::history::Ran) {
+        let Some(history) = &self.runs.history else {
+            return;
+        };
+        if ran.actor.is_empty() {
+            ran.actor.clone_from(&history.me);
+        }
+        ran.session.clone_from(&history.session);
+        let remember = crate::history::CommandHistory::REMEMBER.with(ran);
+        if let Err(error) = history.record.invoke(&remember) {
+            tracing::warn!(%error, "the command history refused a run");
+        }
+    }
+
     /// Open the session, drain the PTY and mirror the document's screen.
     fn sync_document(&mut self, _state: &AppModel, _root: &ModelPath) {
         if self.sessions.is_live() {
@@ -2430,62 +2715,42 @@ impl TerminalWidget {
         // still advances the terminal: pumping from `sync`, driven by the
         // waker (or an embedding host's own pump), is what shows output.
         self.pump();
+        self.type_asked_run();
     }
 
     /// Bring the session record up to date with this terminal: the session
-    /// changes waiting since the last sync, in order, then what the output
-    /// parsed since did to the screen, as one action. Nothing is recorded
+    /// changes waiting since the last sync, in order. Nothing is recorded
     /// for a terminal that has no record.
     fn record(&mut self, edits: &mut ui::widget::Edits<'_>) {
         let Some(dispatch) = self.dispatch.clone() else {
             self.pending_actions.clear();
+            self.runs.ended.clear();
             return;
         };
         for action in std::mem::take(&mut self.pending_actions) {
-            if dispatch.apply_now(edits, &action).is_err() {
-                self.synced = None;
+            if let Err(error) = dispatch.submit_now(edits, action) {
+                tracing::warn!(%error, "terminal session record refused a change");
             }
         }
-        if !self.emulating {
-            return;
-        }
-        let screen_edits = crate::screen::edits(self.synced.as_ref(), &self.screen);
-        if screen_edits.is_empty() {
-            return;
-        }
-        let output = crate::resource::TerminalAction::Output {
-            edits: screen_edits,
-        };
-        // A refused write leaves the record's screen unknown: the next one
-        // replaces it whole.
-        self.synced = dispatch
-            .apply_now(edits, &output)
-            .is_ok()
-            .then(|| self.screen.clone());
+        self.record_runs(&dispatch, edits);
     }
 
     /// Queue a session change for the next sync.
-    fn submit(&mut self, action: crate::resource::TerminalAction) {
+    fn submit(&mut self, action: ui::tilo_resource::Invoke<crate::resource::Terminal>) {
         if self.dispatch.is_some() {
             self.pending_actions.push(action);
         }
     }
 
-    /// Show the session as its record holds it, unless this terminal's own
-    /// emulator draws the screen: a past version, a collaborator's view of
-    /// a session running elsewhere, a screenshot before its output.
-    pub(crate) fn present_session(&mut self, state: &crate::resource::SessionState) {
-        self.recorded_target.clone_from(&state.target);
-        self.recorded_relay_session.clone_from(&state.relay_session);
-        if !state.pane_id.is_empty() {
-            self.pane_id.clone_from(&state.pane_id);
+    /// Follow the session as its record holds it: where it runs, the relay
+    /// session it re-attaches to and the pane presence is scoped to.
+    pub(crate) fn present_session(&mut self, state: &std::rc::Rc<crate::resource::Terminal>) {
+        self.runs.session = Some(std::rc::Rc::clone(state));
+        self.recorded_target = state.session_target();
+        self.recorded_relay_session = state.relay().map(str::to_owned);
+        if !state.pane_id().is_empty() {
+            state.pane_id().clone_into(&mut self.pane_id);
         }
-        if self.emulating {
-            return;
-        }
-        self.title.clone_from(&state.title);
-        self.screen = state.screen.clone();
-        self.show_screen();
     }
 
     /// Rebuild what is drawn from `screen`: the rows of the active buffer,
@@ -3376,18 +3641,15 @@ impl TerminalWidget {
     /// Record this terminal's session through `dispatcher`: the session
     /// record's own when the framework hosts the terminal, or a parent's
     /// child dispatcher when the terminal is nested in another resource (an
-    /// editor's terminal panel), whose action carries each
-    /// [`TerminalAction`](crate::resource::TerminalAction) and applies it
-    /// with [`apply_under`](crate::resource::TerminalAction::apply_under).
+    /// editor's terminal panel), whose action carries each of the session's
+    /// actions and applies it with
+    /// [`Terminal::apply_under`](crate::resource::Terminal::apply_under).
     /// The parent then presents the nested session with
     /// [`ResourceSurface::present`](ui::framework::ResourceSurface::present)
     /// as it changes, read with
     /// [`Terminal::read_under`](crate::resource::Terminal::read_under).
-    /// Everything the session is already running is recorded from the next
-    /// sync on, in full.
     pub fn bind(&mut self, dispatcher: ui::framework::Dispatcher<crate::resource::Terminal>) {
         self.dispatch = Some(dispatcher);
-        self.synced = None;
     }
 }
 
@@ -6362,6 +6624,8 @@ pub struct TerminalBackend {
     /// For an environment on a relay: the session's id there, which
     /// re-attaches to it.
     pub relay_session: Option<String>,
+    /// The key the session's shell marks its command runs with, when it does.
+    pub runs: Option<String>,
     native_editor: Option<crate::native_editor::Socket>,
     service_lifetime: Option<runtime_portal::pending_connection::SessionLifetime>,
     #[cfg(windows)]
@@ -6378,6 +6642,7 @@ impl TerminalBackend {
             master: Box::new(NullMaster),
             shell_name: "test".into(),
             relay_session: None,
+            runs: None,
             native_editor: None,
             service_lifetime: None,
         }
@@ -6423,11 +6688,19 @@ impl TerminalBackend {
             ConfineRoute::SelfHosted(bin) => {
                 let mut cmd = CommandBuilder::new(&bin);
                 cmd.arg("run");
-                if !program.is_empty() {
+                // The runtime's interactive bash marks its runs with this
+                // session's key, as it does for the supervisor's sessions.
+                let key = program.is_empty().then(crate::runs::new_key);
+                if let Some(key) = &key {
+                    cmd.env("TILO_USH_RUNS", key);
+                } else {
                     cmd.arg("-c");
                     cmd.arg(exec_script(&program));
                 }
-                Self::with_command(cmd).map_err(|error| OpenError::Failed(error.to_string()))
+                let mut backend = Self::with_command(cmd)
+                    .map_err(|error| OpenError::Failed(error.to_string()))?;
+                backend.runs = key;
+                Ok(backend)
             }
             ConfineRoute::Host => {
                 if requested_by == Requester::Agent {
@@ -6481,6 +6754,7 @@ impl TerminalBackend {
             master: pair.master,
             shell_name,
             relay_session: None,
+            runs: None,
             native_editor: None,
             service_lifetime: None,
             #[cfg(windows)]
@@ -6854,6 +7128,7 @@ pub(crate) fn ush_request(
     target: &crate::target::SessionTarget,
     requested_by: Requester,
     relay_session: Option<&str>,
+    runs: Option<&str>,
     (cols, rows): (u16, u16),
 ) -> Result<Vec<u8>, OpenError> {
     let wire_target = target.to_supervisor().ok_or_else(|| {
@@ -6879,6 +7154,9 @@ pub(crate) fn ush_request(
         }
         if let Some(session) = relay_session {
             fields.insert("relay_session".to_string(), serde_json::json!(session));
+        }
+        if let Some(key) = runs {
+            fields.insert("runs".to_string(), serde_json::json!(key));
         }
     }
     let mut request =
@@ -6915,7 +7193,15 @@ pub(crate) fn ush_backend_on(
     // bound, nor add one where the connection has none.
     const USH_OPEN_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
     let failed = |error: &dyn std::fmt::Display| OpenError::Failed(error.to_string());
-    let request = ush_request(program, target, requested_by, relay_session, (80, 24))?;
+    let key = crate::runs::new_key();
+    let request = ush_request(
+        program,
+        target,
+        requested_by,
+        relay_session,
+        Some(&key),
+        (80, 24),
+    )?;
     {
         let mut w = stream;
         w.write_all(&request).map_err(|e| failed(&e))?;
@@ -6986,11 +7272,35 @@ pub(crate) fn ush_backend_on(
         master: Box::new(FdMaster { file: master }),
         shell_name: if target.is_host() { "host" } else { "ush" }.into(),
         relay_session: response.relay_session,
+        runs: marks_runs(&payload).then_some(key),
         native_editor,
         service_lifetime: Some(runtime_portal::pending_connection::SessionLifetime::new(
             stream.try_clone().map_err(|e| failed(&e))?,
         )),
     })
+}
+
+/// Whether a supervisor's answer says the session's shell marks its runs
+/// with the key the request named.
+pub(crate) fn marks_runs(payload: &[u8]) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Reply {
+        #[serde(default)]
+        runs: bool,
+    }
+    serde_json::from_slice::<Reply>(payload).is_ok_and(|reply| reply.runs)
+}
+
+/// Settle a run asked for as failed for good: it did not run, and will not.
+fn fail_run(asked: crate::runs::Asked, reason: &str) {
+    let settled = ui::tilo_resource::Settled::Failed {
+        reason: reason.to_owned(),
+        partial: crate::resource::RunAnswer::default(),
+    };
+    asked.reply.finish(Ok(ui::tilo_actions::ActionOutput {
+        value: serde_json::to_value(settled).ok(),
+        resources: Vec::new(),
+    }));
 }
 
 /// What a supervisor reply without a descriptor means.
@@ -7136,6 +7446,7 @@ impl TerminalWidget {
         self.session_status_message =
             Arc::new(Mutex::new("Session ended — input unavailable".into()));
         self.begin_local_session();
+        self.runs.marks = backend.runs.map(crate::runs::Marks::new);
         let widget = self;
         widget.attach_native_editor(backend.native_editor);
         widget.service_lifetime = backend.service_lifetime;

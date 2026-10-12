@@ -1,0 +1,28 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "example.review"
+label = "Results"
+version = 1
+
+[[resources.fields]]
+owner = "review"
+path = "opened"
+stored = "value"
+title = "Recently opened row ids, newest first"
+type = "Vec<u64>"
+
+[[resources.verbs]]
+id = "open-row"
+kind = "undoable"
+label = "Open a row"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"

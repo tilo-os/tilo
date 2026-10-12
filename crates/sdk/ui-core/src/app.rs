@@ -744,7 +744,7 @@ impl AppConstructionInputs {
             presence_ctx: ConstructionValue::Lazy(App::initial_presence_context),
             screen_reader: || {
                 if crate::host::environment().accessibility.screen_reader
-                    || App::persisted_accessibility_bool("screen_reader")
+                    || settings_store::screen_reader::ScreenReaderSettings::load().enabled
                 {
                     Some(App::configured_screen_reader())
                 } else {
@@ -2112,11 +2112,12 @@ impl App {
         // Screen reader is a device/personal setting, not a per-application
         // opt-in. Every Tilo app watches the same file and changes its real
         // narrator lifecycle when Personal Settings changes it.
-        let configured_reader = Self::persisted_accessibility_bool("screen_reader")
-            || crate::host::environment().accessibility.screen_reader;
-        self.set_screen_reader_enabled(configured_reader);
+        let settings = settings_store::screen_reader::ScreenReaderSettings::load();
+        self.set_screen_reader_enabled(
+            settings.enabled || crate::host::environment().accessibility.screen_reader,
+        );
         if let Some(reader) = self.accessibility.screen_reader.as_mut() {
-            Self::configure_screen_reader(reader);
+            reader.configure(&settings);
         }
         self.accessibility.a11y.screen_reader = self.accessibility.screen_reader.is_some();
     }
@@ -2165,23 +2166,6 @@ impl App {
     fn tooltip_target_at(&self, point: Point) -> Option<(vello::kurbo::Rect, String)> {
         self.tooltip_placed_at(point)
             .map(|(rect, label, _)| (rect, label))
-    }
-
-    /// Where in the app the pointer would raise a tooltip: the centre of the
-    /// topmost, then leftmost, laid-out control that shows one there, in the
-    /// app's logical coordinates. For a test that hovers it.
-    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
-    pub fn tooltip_region_for_test(&self) -> Option<Point> {
-        self.layout
-            .node_map
-            .keys()
-            .filter_map(|&node| {
-                let centre = self
-                    .inspect_node(node, |widget| widget.get_rect().center())
-                    .ok()?;
-                self.tooltip_target_at(centre).map(|_| centre)
-            })
-            .min_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)))
     }
 
     /// [`Self::tooltip_target_at`] with the side of its control the
@@ -2424,6 +2408,9 @@ impl App {
         );
         self.bindings.clear();
         self.layout.node_map.clear();
+        // The map built now describes the tree as it is: a replacement the
+        // widgets reported before is part of it, not a change after it.
+        self.take_composition_dirty();
         tilo_startup_metrics::span("init-layout-history", || self.build_history_presentation());
         tilo_startup_metrics::span("init-layout-focus-order", || {
             self.update_focusable_order();
@@ -2493,7 +2480,10 @@ impl App {
     pub fn rebuild_structure(&mut self) {
         let _entry = self.enter_wake_scope();
         // A reported mutation can already have invalidated old widget pointers.
-        let topology_changed = self.layout.structure_dirty || self.take_composition_dirty();
+        // Always take the widgets' report, so it is not mistaken later for a
+        // change after the map this rebuild makes.
+        let reported = self.take_composition_dirty();
+        let topology_changed = self.layout.structure_dirty || reported;
         // Whether this rebuild is one the widgets describe, for a frame that
         // compares itself with the last; none is outstanding after it.
         self.layout.frame_rebuilds_described &= self.layout.rebuild_described;
@@ -3002,21 +2992,8 @@ mod legacy_owner_routing_tests {
             nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
-        fn apply_layout(&mut self, _: &taffy::TaffyTree<()>, _: NodeId, _: Point) {}
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "LegacyOwnerProbe"
-        }
-        fn get_rect(&self) -> KurboRect {
-            KurboRect::ZERO
         }
         fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
             use crate::a11y::{AccessNode, AccessState, Role};
@@ -3723,10 +3700,7 @@ pub(crate) mod ordinary_confirmation_tests {
         fn revoke(&self) {
             if let Self::Component { binding, .. } = self {
                 *binding.permissions.borrow_mut() =
-                    crate::permissions::PermissionContext::from_capabilities(
-                        crate::permissions::Actor::person(None, "fixture"),
-                        vec![],
-                    );
+                    crate::permissions::PermissionContext::stranger("fixture");
             }
         }
     }
@@ -3805,7 +3779,7 @@ pub(crate) mod ordinary_confirmation_tests {
     }
     enum Host {
         Native(Box<App>),
-        Driver(Box<crate::headless::Driver>),
+        FrameHarness(Box<crate::headless::FrameHarness>),
     }
     impl Host {
         fn new(native: bool, root: ManagedRoot) -> Self {
@@ -3815,8 +3789,8 @@ pub(crate) mod ordinary_confirmation_tests {
                 layout(&mut app);
                 Self::Native(Box::new(app))
             } else {
-                Self::Driver(Box::new(
-                    crate::headless::Driver::from_managed_root_with_controlled_inputs(
+                Self::FrameHarness(Box::new(
+                    crate::headless::FrameHarness::from_managed_root_with_controlled_inputs(
                         State::new(),
                         root,
                         (900, 650),
@@ -3836,7 +3810,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     app.controlled_local_idle_for_test();
                     layout(app);
                 }
-                Self::Driver(driver) => {
+                Self::FrameHarness(driver) => {
                     if label == "Emit request" {
                         driver
                             .perform_semantic_named("ordinary-emitter", None, &action)
@@ -3853,7 +3827,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 }
             }
         }
-        fn published_target(driver: &crate::headless::Driver, label: &str) -> String {
+        fn published_target(driver: &crate::headless::FrameHarness, label: &str) -> String {
             fn access(node: &crate::a11y::AccessNode, label: &str) -> Option<String> {
                 if node.name.as_deref() == Some(label) {
                     return node.action_target.clone();
@@ -3884,7 +3858,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     app.root_widget.sync(&app.state.doc, &app.state.root);
                     layout(app)
                 }
-                Self::Driver(driver) => driver.relayout(),
+                Self::FrameHarness(driver) => driver.relayout(),
             }
         }
         fn key(&mut self, key: &str) {
@@ -3897,7 +3871,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     assert!(app.action_palette_handle_key(&event));
                     layout(app)
                 }
-                Self::Driver(driver) => driver.send(&event),
+                Self::FrameHarness(driver) => driver.send(&event),
             }
         }
         fn focused_label(&mut self) -> Option<String> {
@@ -3909,7 +3883,7 @@ pub(crate) mod ordinary_confirmation_tests {
                         .find(|(id, _)| *id == tree.focus)
                         .and_then(|(_, node)| node.label().map(str::to_owned))
                 }
-                Self::Driver(driver) => driver
+                Self::FrameHarness(driver) => driver
                     .a11y_focus()
                     .and_then(|(_, node)| node.label().map(str::to_owned)),
             }
@@ -3917,7 +3891,7 @@ pub(crate) mod ordinary_confirmation_tests {
         fn submit_id(&mut self) -> accesskit::NodeId {
             match self {
                 Self::Native(app) => named(app, "Confirm"),
-                Self::Driver(driver) => driver.a11y_node_named("Confirm").unwrap(),
+                Self::FrameHarness(driver) => driver.a11y_node_named("Confirm").unwrap(),
             }
         }
         fn stale(&mut self, id: accesskit::NodeId) {
@@ -3926,7 +3900,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     app.dispatch_a11y_action(id, &crate::a11y::Action::Activate);
                     layout(app);
                 }
-                Self::Driver(driver) => {
+                Self::FrameHarness(driver) => {
                     assert!(
                         driver
                             .perform_a11y_action(id, &crate::a11y::Action::Activate)
@@ -3936,13 +3910,10 @@ pub(crate) mod ordinary_confirmation_tests {
             }
         }
         fn revoke(&mut self) {
-            let denied = crate::permissions::PermissionContext::from_capabilities(
-                crate::permissions::Actor::person(None, "fixture"),
-                vec![],
-            );
+            let denied = crate::permissions::PermissionContext::stranger("fixture");
             match self {
                 Self::Native(app) => app.set_permission_ctx(denied),
-                Self::Driver(driver) => driver.set_permission_ctx(denied),
+                Self::FrameHarness(driver) => driver.set_permission_ctx(denied),
             }
         }
     }
@@ -3958,7 +3929,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 );
                 app.root_widget.get_rect()
             }
-            Host::Driver(_) => unreachable!(),
+            Host::FrameHarness(_) => unreachable!(),
         };
         assert!(expected_rect.width() > 0.0 && expected_rect.height() > 0.0);
         host.activate("Emit request");
@@ -4008,7 +3979,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 .find(|(_, node)| node.label() == Some("Confirmation"))
                 .and_then(|(_, node)| node.description().map(str::to_owned))
                 .expect("native published field describes how to confirm"),
-            Host::Driver(driver) => {
+            Host::FrameHarness(driver) => {
                 fn access(node: &crate::a11y::AccessNode) -> Option<String> {
                     if node.name.as_deref() == Some("Confirmation") {
                         return node.description.clone();
@@ -4022,7 +3993,7 @@ pub(crate) mod ordinary_confirmation_tests {
                         .or_else(|| node.children.iter().find_map(widget))
                 }
                 widget(&driver.inspection().root)
-                    .expect("Driver published field describes how to confirm")
+                    .expect("FrameHarness published field describes how to confirm")
             }
         }
     }
@@ -4369,7 +4340,7 @@ pub(crate) mod ordinary_confirmation_tests {
                         app.dispatch_a11y_action(stale, &crate::a11y::Action::Activate);
                         layout(app)
                     }
-                    Host::Driver(driver) => {
+                    Host::FrameHarness(driver) => {
                         let _ = driver.perform_a11y_action(stale, &crate::a11y::Action::Activate);
                     }
                 }
@@ -4514,14 +4485,14 @@ pub(crate) mod ordinary_confirmation_tests {
                 Host::Native(app) => app
                     .action_registry_mut()
                     .register::<FixtureEdit>("fixture.edit"),
-                Host::Driver(driver) => driver
+                Host::FrameHarness(driver) => driver
                     .action_registry_mut()
                     .register::<FixtureEdit>("fixture.edit"),
             }
             fn state(host: &mut Host) -> &mut State {
                 match host {
                     Host::Native(app) => &mut app.state,
-                    Host::Driver(driver) => driver.state_mut(),
+                    Host::FrameHarness(driver) => driver.state_mut(),
                 }
             }
             use automerge::ReadDoc;
@@ -4532,7 +4503,7 @@ pub(crate) mod ordinary_confirmation_tests {
             host.activate("Confirm");
             let author = match &host {
                 Host::Native(app) => app.collaboration.local_author.clone(),
-                Host::Driver(_) => crate::permissions::UserId("fixture".into()),
+                Host::FrameHarness(_) => crate::permissions::UserId("fixture".into()),
             };
             let state = state(&mut host);
             assert_eq!(
@@ -4550,7 +4521,7 @@ pub(crate) mod ordinary_confirmation_tests {
             assert_ne!(entry.after, entry.before);
             assert_eq!(entry.author.as_ref(), Some(&author));
             let committed = state.doc.get_heads();
-            assert!(state.undo_for_author(&author, None, None).is_some());
+            assert!(state.undo_as(Some(&author), None, None, None).is_some());
             assert!(
                 state
                     .doc
@@ -4585,7 +4556,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 let label = if cancel { "Cancel" } else { "Confirm" };
                 let nodes = match &mut host {
                     Host::Native(app) => app.build_a11y_tree_update(1.0).nodes,
-                    Host::Driver(driver) => driver.a11y_nodes(),
+                    Host::FrameHarness(driver) => driver.a11y_nodes(),
                 };
                 let bounds = nodes
                     .iter()
@@ -4608,7 +4579,7 @@ pub(crate) mod ordinary_confirmation_tests {
                         assert!(app.action_palette_handle_event(event, scale));
                         layout(app)
                     }
-                    Host::Driver(driver) => driver.send(event),
+                    Host::FrameHarness(driver) => driver.send(event),
                 };
                 send(&event);
                 for state in [ElementState::Pressed, ElementState::Released] {
@@ -4634,7 +4605,7 @@ pub(crate) mod ordinary_confirmation_tests {
                         assert!(app.action_palette_handle_event(&event, 1.0));
                         layout(app)
                     }
-                    Host::Driver(driver) => driver.send(&event),
+                    Host::FrameHarness(driver) => driver.send(&event),
                 }
             }
             assert_eq!(host.focused_label().as_deref(), Some("Cancel"));
@@ -4647,7 +4618,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     assert!(app.action_palette_handle_event(&event, 1.0));
                     layout(app)
                 }
-                Host::Driver(driver) => driver.send(&event),
+                Host::FrameHarness(driver) => driver.send(&event),
             }
             assert!(ledger.borrow().is_empty());
         }
@@ -4918,7 +4889,7 @@ pub(crate) mod ordinary_confirmation_tests {
     #[test]
     fn ordinary_confirmation_driver_publishes_actual_prompt() {
         let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
-        let mut driver = crate::headless::Driver::from_managed_root_with_controlled_inputs(
+        let mut driver = crate::headless::FrameHarness::from_managed_root_with_controlled_inputs(
             State::new(),
             root,
             (900, 650),

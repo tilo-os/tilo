@@ -13,7 +13,7 @@
 //! Every change is a [`DisplayEffect`] the area's [`DisplayModel`] carries
 //! out.
 
-mod shared_displays;
+pub(crate) mod shared_displays;
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -26,7 +26,7 @@ use tracing::warn;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::{self, ActionRef, Effect};
-use ui::widget::{Button, Dropdown, Slider, Toggle, Widget};
+use ui::widget::{Dropdown, Slider, Toggle, Widget};
 
 use crate::dispatcher::dispatcher_or_real;
 use crate::effects::{SettingsEffect, effect};
@@ -37,7 +37,7 @@ use crate::prefs::DisplayPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, caption, card, choice_row, error_row, rows, setting_row, setting_row_described, value_row,
+    El, caption, card, error_row, rows, setting_row, setting_row_described, value_row,
 };
 use settings_store::hardware::{
     DisplayConfig, DisplayHardwareSnapshot, DisplaySet, DisplayTransaction,
@@ -48,6 +48,9 @@ use settings_store::hardware::{
 impl ui::storage::SettingsSchema for DisplayPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display");
 }
+
+#[ui::tilo_resource::resource(kind = "settings.display", label = "Displays")]
+impl DisplayPrefs {}
 
 /// What Displays changes: this device's outputs and their arrangement, its
 /// brightness, and the person's display comforts.
@@ -60,24 +63,6 @@ pub enum DisplayEffect {
     /// Follow the ambient light.
     #[effect(returns, idempotent)]
     SetAutomaticBrightness { on: bool },
-    /// Warm the screen's colours.
-    #[effect(returns, idempotent)]
-    SetNightLight { on: bool },
-    /// Warm the colours from sunset to sunrise.
-    #[effect(returns, idempotent)]
-    SetNightLightSchedule { on: bool },
-    /// How warm Night Light makes the screen.
-    #[effect(returns, idempotent)]
-    SetNightLightWarmth {
-        #[param("The warmth, as the list names it")]
-        warmth: String,
-    },
-    /// The scale apps prefer for their interface.
-    #[effect(returns, idempotent)]
-    SetDisplayScale {
-        #[param("100%, 125%, 150%, 175% or 200%")]
-        scale: String,
-    },
     /// An external monitor's brightness, from 0 to 1.
     #[effect(returns, row, idempotent)]
     SetMonitorBrightness { display: String, brightness: f64 },
@@ -106,12 +91,8 @@ pub enum DisplayEffect {
         x: i32,
         y: i32,
     },
-    /// Opt this device into automatic grants to its enrolled online input devices.
-    /// The separate Continuity master and Display/input switches must also be on.
-    #[effect(returns, permission = "admin", idempotent)]
-    SetAutomaticDisplayInput { on: bool },
     /// Inspect the observed displays and their shared arrangement, including offline devices.
-    #[effect(view, returns, permission = "read", label = "Inspect shared displays")]
+    #[effect(view, returns, kind = "read", label = "Inspect shared displays")]
     InspectSharedDisplays,
     /// Include a display in the shared layout. This does not allow remote input.
     #[effect(returns, row, idempotent)]
@@ -153,24 +134,19 @@ pub enum DisplayEffect {
     #[effect(returns, row, idempotent)]
     SetColorProfile { display: String, profile: String },
     /// Read the compositor observations, staged configuration and preview transaction.
-    #[effect(
-        view,
-        returns,
-        permission = "read",
-        label = "Inspect display configuration"
-    )]
+    #[effect(view, returns, kind = "read", label = "Inspect display configuration")]
     InspectDisplayConfiguration,
     /// Show each display's number and name on it for a few seconds.
-    #[effect(returns, permission = "admin", label = "Identify displays")]
+    #[effect(returns, label = "Identify displays")]
     IdentifyDisplays,
     /// Preview the staged arrangement; it is kept only when confirmed.
-    #[effect(returns, permission = "admin", label = "Apply display changes")]
+    #[effect(returns, label = "Apply display changes")]
     ApplyDisplayChanges,
     /// Keep the arrangement being previewed.
-    #[effect(returns, permission = "admin", label = "Keep display changes")]
+    #[effect(returns, label = "Keep display changes")]
     KeepDisplayChanges,
     /// Go back to the arrangement before the preview.
-    #[effect(returns, permission = "admin", label = "Revert display changes")]
+    #[effect(returns, label = "Revert display changes")]
     RevertDisplayChanges,
     /// Ask again before keeping display changes from a layout tool.
     #[effect(returns, row, label = "Ask again")]
@@ -178,6 +154,10 @@ pub enum DisplayEffect {
         #[param("The tool's executable")]
         tool: String,
     },
+    /// Opt this device into automatic grants to its enrolled online input devices.
+    /// The separate Continuity master and Display/input switches must also be on.
+    #[effect(returns, idempotent)]
+    SetAutomaticDisplayInput { on: bool },
 }
 
 /// Answer `effect` on the area's model.
@@ -1091,10 +1071,6 @@ impl DisplayModel {
         self
     }
 
-    pub fn outputs(&self) -> &[DisplayOutput] {
-        &self.outputs
-    }
-
     /// The outputs the arrangement card lists as rows: only the connected
     /// ones. Disconnected physical ports are unused hardware, not displays —
     /// enumerating each one (a laptop's GPU can expose a dozen idle DP
@@ -1536,28 +1512,6 @@ impl DisplayModel {
                 } else {
                     "Automatic brightness disabled.".into()
                 })
-            }
-            DisplayEffect::SetNightLight { on } => {
-                let on = *on;
-                self.save(|prefs| prefs.night_light = on)?;
-                Ok(String::new())
-            }
-            DisplayEffect::SetNightLightSchedule { on } => {
-                let on = *on;
-                self.save(|prefs| prefs.night_light_schedule = on)?;
-                Ok(String::new())
-            }
-            DisplayEffect::SetNightLightWarmth { warmth } => {
-                let kelvin = temperature_from_label(warmth)
-                    .ok_or_else(|| format!("`{warmth}` is not a Night Light warmth"))?;
-                self.save(|prefs| prefs.night_light_temperature = kelvin)?;
-                Ok(String::new())
-            }
-            DisplayEffect::SetDisplayScale { scale } => {
-                let factor =
-                    scale_factor_of(scale).ok_or_else(|| format!("`{scale}` is not a scale"))?;
-                self.save(|prefs| prefs.scale = factor)?;
-                Ok(format!("Display scale set to {scale}."))
             }
             DisplayEffect::SetMonitorBrightness {
                 display,
@@ -2140,15 +2094,10 @@ impl DisplayModel {
                 self.arrangement_drag.clone(),
             )),
             caption(&crate::i18n::t("display-arrangement-hint")),
-            setting_row(
-                &crate::i18n::t("display-identify-row"),
-                Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        "settings.display.identify",
-                        &crate::i18n::t("display-identify"),
-                    ),
-                    DisplayEffect::IdentifyDisplays,
-                )),
+            self.cx.row(crate::i18n::t("display-identify-row")).button(
+                "settings.display.identify",
+                &crate::i18n::t("display-identify"),
+                DisplayEffect::IdentifyDisplays,
             ),
         ];
         // One honest line about the idle ports rather than a row each.
@@ -2239,16 +2188,13 @@ impl DisplayModel {
     fn build_brightness_card(&self) -> El {
         let prefs = *self.prefs.get();
         let automatic_brightness = if self.ambient_sensor_available {
-            setting_row(
-                &t("display-auto-brightness"),
-                Box::new(
-                    self.cx.bind(
-                        Toggle::from_state(&LocalState::new(prefs.auto_brightness))
-                            .with_id("display.auto_brightness"),
-                        effect(DisplayEffect::SET_AUTOMATIC_BRIGHTNESS),
-                    ),
-                ),
-            )
+            self.cx
+                .row(t("display-auto-brightness"))
+                .id("display.auto_brightness")
+                .toggle_effect(
+                    &LocalState::new(prefs.auto_brightness),
+                    effect(DisplayEffect::SET_AUTOMATIC_BRIGHTNESS),
+                )
         } else {
             value_row(&t("display-auto-brightness"), &t("display-no-ambient"))
         };
@@ -2263,53 +2209,43 @@ impl DisplayModel {
                             &[("error", error.as_str().into())],
                         ),
                     ),
-                    None => setting_row(
-                        &t("display-brightness"),
-                        Box::new(
-                            self.cx.bind(
-                                Slider::from_state(&LocalState::new(f64::from(self.brightness)))
-                                    .with_id("display.brightness"),
-                                effect(DisplayEffect::SET_BRIGHTNESS),
-                            ),
+                    None => self
+                        .cx
+                        .row(t("display-brightness"))
+                        .id("display.brightness")
+                        .slider_effect(
+                            &LocalState::new(f64::from(self.brightness)),
+                            effect(DisplayEffect::SET_BRIGHTNESS),
                         ),
-                    ),
                 },
                 automatic_brightness,
-                setting_row(
-                    &t("display-night-light"),
-                    Box::new(
-                        self.cx.bind(
-                            Toggle::from_state(&LocalState::new(prefs.night_light))
-                                .with_id("display.night_light"),
-                            effect(DisplayEffect::SET_NIGHT_LIGHT),
-                        ),
+                self.cx
+                    .row(t("display-night-light"))
+                    .id("display.night_light")
+                    .toggle(
+                        &LocalState::new(prefs.night_light),
+                        crate::prefs::DisplayPrefs::paths().night_light,
                     ),
-                ),
-                setting_row_described(
-                    &t("display-night-light-schedule"),
-                    &t("display-night-light-schedule-desc"),
-                    Box::new(
-                        self.cx.bind(
-                            Toggle::from_state(&LocalState::new(prefs.night_light_schedule))
-                                .with_id("display.night_light_schedule"),
-                            effect(DisplayEffect::SET_NIGHT_LIGHT_SCHEDULE),
-                        ),
+                self.cx
+                    .row(t("display-night-light-schedule"))
+                    .described(t("display-night-light-schedule-desc"))
+                    .id("display.night_light_schedule")
+                    .toggle(
+                        &LocalState::new(prefs.night_light_schedule),
+                        crate::prefs::DisplayPrefs::paths().night_light_schedule,
                     ),
-                ),
-                choice_row(
-                    &t("display-night-light-warmth"),
-                    Box::new(
-                        self.cx.bind(
-                            Dropdown::from_state(
-                                temperature_options(),
-                                &LocalState::new(temperature_label(prefs.night_light_temperature)),
-                            )
-                            .with_id("display.night_light_temperature")
-                            .with_placeholder(&temperature_label(prefs.night_light_temperature)),
-                            effect(DisplayEffect::SET_NIGHT_LIGHT_WARMTH),
-                        ),
+                self.cx
+                    .row(t("display-night-light-warmth"))
+                    .id("display.night_light_temperature")
+                    .choice(
+                        temperature_options(),
+                        &LocalState::new(temperature_label(prefs.night_light_temperature)),
+                        crate::prefs::DisplayPrefs::paths().night_light_temperature,
+                        |label: String| {
+                            temperature_from_label(&label)
+                                .ok_or_else(|| format!("`{label}` is not a Night Light warmth"))
+                        },
                     ),
-                ),
                 caption(&t("display-night-light-caption")),
             ]),
         )
@@ -2409,7 +2345,7 @@ impl DisplayModel {
                     )
                 }),
             ),
-            choice_row(
+            setting_row(
                 &t("display-scale"),
                 Box::new(self.choice(
                     &output.connector,
@@ -2419,7 +2355,7 @@ impl DisplayModel {
                     effect(DisplayEffect::SET_OUTPUT_SCALE),
                 )),
             ),
-            choice_row(
+            setting_row(
                 &t("display-position"),
                 Box::new(self.choice(
                     &output.connector,
@@ -2429,7 +2365,7 @@ impl DisplayModel {
                     effect(DisplayEffect::PLACE_DISPLAY),
                 )),
             ),
-            choice_row(
+            setting_row(
                 &t("display-mirroring"),
                 Box::new(self.choice(
                     &output.connector,
@@ -2465,7 +2401,7 @@ impl DisplayModel {
                 .mode
                 .or(output.current_mode)
                 .map_or_else(|| "Preferred".into(), OutputMode::label);
-            out_rows.push(choice_row(
+            out_rows.push(setting_row(
                 "Resolution & refresh rate",
                 Box::new(self.choice(
                     &output.connector,
@@ -2478,7 +2414,7 @@ impl DisplayModel {
         }
         let rotation = transform_options();
         let rotation_current = transform_label(config.transform);
-        out_rows.push(choice_row(
+        out_rows.push(setting_row(
             &t("display-rotation"),
             Box::new(self.choice(
                 &output.connector,
@@ -2572,7 +2508,7 @@ impl DisplayModel {
                         .map(|label| format!("{label} ({id})"))
                 })
                 .unwrap_or_else(|| "System default".into());
-            out_rows.push(choice_row(
+            out_rows.push(setting_row(
                 &t("display-colour-profile"),
                 Box::new(self.choice(
                     &output.connector,
@@ -2607,19 +2543,15 @@ impl DisplayModel {
                             "display-keep-caption",
                             &[("seconds", seconds.into())],
                         )),
-                        setting_row(
-                            &t("display-keep-ok"),
-                            Box::new(self.cx.bind_invocation(
-                                Button::new("settings.display.keep", &keep),
-                                DisplayEffect::KeepDisplayChanges,
-                            )),
+                        self.cx.row(t("display-keep-ok")).button(
+                            "settings.display.keep",
+                            &keep,
+                            DisplayEffect::KeepDisplayChanges,
                         ),
-                        setting_row(
-                            &t("display-keep-wrong"),
-                            Box::new(self.cx.bind_invocation(
-                                Button::new("settings.display.revert", &revert),
-                                DisplayEffect::RevertDisplayChanges,
-                            )),
+                        self.cx.row(t("display-keep-wrong")).button(
+                            "settings.display.revert",
+                            &revert,
+                            DisplayEffect::RevertDisplayChanges,
                         ),
                     ]),
                 )
@@ -2643,12 +2575,10 @@ impl DisplayModel {
                 let mut content = vec![caption(&rejected)];
                 if self.pending_candidate.is_some() {
                     let try_again = t("display-try-again");
-                    content.push(setting_row(
-                        &t("display-retry"),
-                        Box::new(self.cx.bind_invocation(
-                            Button::new("settings.display.apply", &try_again),
-                            DisplayEffect::ApplyDisplayChanges,
-                        )),
+                    content.push(self.cx.row(t("display-retry")).button(
+                        "settings.display.apply",
+                        &try_again,
+                        DisplayEffect::ApplyDisplayChanges,
                     ));
                 }
                 card(&t("display-rejected-title"), rows(content))
@@ -2659,12 +2589,10 @@ impl DisplayModel {
                     &t("display-apply-title"),
                     rows(vec![
                         caption(&t("display-apply-caption")),
-                        setting_row(
-                            &t("display-apply-row"),
-                            Box::new(self.cx.bind_invocation(
-                                Button::new("settings.display.apply", &apply),
-                                DisplayEffect::ApplyDisplayChanges,
-                            )),
+                        self.cx.row(t("display-apply-row")).button(
+                            "settings.display.apply",
+                            &apply,
+                            DisplayEffect::ApplyDisplayChanges,
                         ),
                     ]),
                 )
@@ -2688,17 +2616,12 @@ impl DisplayModel {
         }
         let mut content = vec![caption(&crate::i18n::t("display-tools-caption"))];
         for tool in &trusted.tools {
-            content.push(setting_row(
-                tool.name(),
-                Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        "settings.display.tool.forget",
-                        &crate::i18n::t("display-tools-forget"),
-                    ),
-                    DisplayEffect::ForgetDisplayTool {
-                        tool: tool.executable.clone(),
-                    },
-                )),
+            content.push(self.cx.row(tool.name()).button(
+                "settings.display.tool.forget",
+                &crate::i18n::t("display-tools-forget"),
+                DisplayEffect::ForgetDisplayTool {
+                    tool: tool.executable.clone(),
+                },
             ));
         }
         Some(card(&crate::i18n::t("display-tools-title"), rows(content)))
@@ -3044,9 +2967,13 @@ mod tests {
     #[test]
     fn peer_drag_uses_the_mounted_app_semantic_door_and_fixed_revision() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
-        let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
-        app.call_on(&open.resource, &open.action, serde_json::json!({}))
-            .unwrap();
+        app.call(
+            "open",
+            serde_json::json!({
+                "anchor": crate::effects::pane_row_id(crate::categories::Category::Displays)
+            }),
+        )
+        .unwrap();
         app.surface::<SettingsApp, _>(|settings| {
             settings.displays().model().borrow_mut().device_displays =
                 vec![settings_store::device_displays::DeviceDisplay {
@@ -3117,9 +3044,12 @@ mod tests {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new()
             .expect("settings opens headlessly");
         app.settle();
-        let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
-        app.call_on(&open.resource, &open.action, serde_json::json!({}))
-            .expect("Displays opens through its declared operation");
+        let open = crate::categories::Category::Displays;
+        app.effect_on(
+            &crate::effects::pane_row_id(open),
+            &crate::effects::open_pane(open),
+        )
+        .expect("Displays opens through its declared operation");
         app.settle();
         let surface = app.agent_surface();
         let rows = surface.as_array().expect("published actions");
@@ -3265,9 +3195,12 @@ mod tests {
         for role in [ui::Role::Viewer, ui::Role::Editor] {
             let mut app =
                 ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(role).unwrap();
-            let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
-            app.call_on(&open.resource, &open.action, serde_json::json!({}))
-                .unwrap();
+            let open = crate::categories::Category::Displays;
+            app.effect_on(
+                &crate::effects::pane_row_id(open),
+                &crate::effects::open_pane(open),
+            )
+            .unwrap();
             app.settle();
             let audit = app.harness().native_app_audit();
             assert!(
@@ -3819,10 +3752,10 @@ mod tests {
 
         let _guard = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = model(vec![panel()]);
-        pane.apply(&DisplayEffect::SetDisplayScale {
-            scale: "150%".into(),
-        })
-        .unwrap();
+        pane.cx
+            .settings::<DisplayPrefs>()
+            .update(|prefs| prefs.scale = 1.5)
+            .unwrap();
         assert!((pane.cx.settings::<DisplayPrefs>().get().scale - 1.5).abs() < 1e-9);
 
         let mut committed = DisplayConfig::default();

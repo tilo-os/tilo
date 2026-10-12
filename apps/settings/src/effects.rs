@@ -111,9 +111,7 @@ settings_effects! {
     Navigation(NavigationEffect) => answer_navigation,
     Appearance(crate::panes::appearance::AppearanceEffect) => crate::panes::appearance::answer,
     Accessibility(crate::panes::accessibility::AccessibilityEffect) => crate::panes::accessibility::answer,
-    Notifications(crate::panes::notifications::NotificationEffect) => crate::panes::notifications::answer,
     DefaultApps(crate::panes::personal_apps::DefaultAppsEffect) => crate::panes::personal_apps::answer,
-    Region(crate::panes::region::RegionEffect) => crate::panes::region::answer,
     TimeDate(crate::panes::time_date::TimeDateEffect) => crate::panes::time_date::answer,
     Shortcuts(crate::panes::keyboard_shortcuts::ShortcutEffect) => crate::panes::keyboard_shortcuts::answer,
     Input(crate::panes::mouse_keyboard::InputEffect) => crate::panes::mouse_keyboard::answer,
@@ -502,14 +500,29 @@ pub fn pane_row_id(category: Category) -> String {
     format!("settings.section:{}", category.slug())
 }
 
-/// What opens `category`'s pane, for search, agents and accessibility: its
-/// row's [`NavigationEffect::OpenPane`].
+/// What opens `category`'s pane, offered on its row ([`pane_row_id`]).
 #[must_use]
-pub fn open_pane_address(category: Category) -> tilo_actions::ActionAddress {
-    let open = NavigationEffect::OpenPane {
+pub fn open_pane(category: Category) -> SettingsEffect {
+    NavigationEffect::OpenPane {
         pane: category.slug().to_owned(),
-    };
-    tilo_actions::ActionAddress::new(pane_row_id(category), open.id())
+    }
+    .into()
+}
+
+/// Open `category`'s pane in `app` through its row, as the sidebar does.
+#[cfg(test)]
+pub(crate) fn show_pane(
+    app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
+    category: Category,
+) {
+    app.effect_on(&pane_row_id(category), &open_pane(category))
+        .expect("the pane opens");
+}
+
+/// The pane whose live row is `row` ([`pane_row_id`]).
+#[must_use]
+pub fn pane_of_row(row: &str) -> Option<Category> {
+    Category::from_slug(row.strip_prefix("settings.section:")?)
 }
 
 /// One row per pane, each opening it.
@@ -522,12 +535,7 @@ fn pane_rows() -> Vec<ui::framework::LiveRow> {
                 "settings.section",
                 category.label(),
             )
-            .operation(
-                SettingsEffect::from(NavigationEffect::OpenPane {
-                    pane: category.slug().to_owned(),
-                })
-                .bound(),
-            )
+            .operation(open_pane(*category).bound())
         })
         .collect()
 }
@@ -626,8 +634,8 @@ mod tests {
             };
             assert_eq!(survey(direct.clone()), survey(reference.clone()));
             assert_eq!(
-                direct.permission_for_json(&args),
-                reference.permission_for_json(&args)
+                direct.need_for(Some(&args), None),
+                reference.need_for(Some(&args), None)
             );
             assert_eq!(
                 direct.confirmation_for_json(&args),
@@ -711,8 +719,8 @@ mod tests {
                     "all published metadata including role/risk/result and confirmation is preserved"
                 );
                 assert_eq!(
-                    direct.permission_for_json(&serde_json::Map::new()),
-                    flattened.permission_for_json(&serde_json::Map::new()),
+                    direct.need_for(Some(&serde_json::Map::new()), None),
+                    flattened.need_for(Some(&serde_json::Map::new()), None),
                     "invocation permission classification is unchanged",
                 );
                 assert_eq!(

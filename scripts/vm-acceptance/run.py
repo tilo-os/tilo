@@ -96,13 +96,13 @@ DE_PASS = ("U03", "U04", "S03")
 # timestamps, so it may run anywhere. A15 times apps R02 has already opened once. R08 signs
 # the dev account in at seat0's greeter, which starts a second compositor: it runs after
 # every check that measures or renders the slot's session.
-ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "R04",
+ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "A17", "R04",
          "W01", "W02", "W03", "W04", "W05", "W06", "W07", "W08", "W09", "W10", "W11", "W12",
          "W13", "W14", "W15", "W16", "W17", "W18", "W19", "W20", "W21",
          "A01", "A02", "A03", "A04", "A05", "A06", "A07",
          "A08", "A09", "A10", "A11", "A12", "A13",
          "S01", "S02", "S04", "S05", "S06", "S07", "S08", "S09",
-         "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06", "B07", "R07", "A16", "R05", "R08", "P03"]
+         "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06", "R07", "A16", "R05", "R08", "P03"]
 
 
 def git(*args: str, repo: Path = REPO) -> str:
@@ -507,6 +507,9 @@ def main() -> int:
         if ctx is not None and ctx.facts.get("session_recovered_after"):
             # The checks after which the harness restarted a session left locked.
             meta["session_recovered_after"] = ctx.facts["session_recovered_after"]
+        if ctx is not None and ctx.facts.get("session_restarted_during"):
+            # Where the slot's session unit restarted on its own: each lost every window.
+            meta["session_restarted_during"] = ctx.facts["session_restarted_during"]
         if ctx is not None and ctx.facts.get("dialog_recovered_after"):
             # The checks that left a dialog open, what it was, and how the harness closed it.
             meta["dialog_recovered_after"] = ctx.facts["dialog_recovered_after"]

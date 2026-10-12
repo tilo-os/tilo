@@ -309,6 +309,22 @@ fn collect_unexpected(root: &Path, dir: &Path, expected: &BTreeSet<&str>, out: &
     }
 }
 
+/// Where a package ships its public surface: the resources its records
+/// hold, their verbs and fields, and which are the person's own.
+pub const SURFACE_FILE: &str = "surface.toml";
+
+/// The surface the signed package ships: its `surface.toml` bytes from the
+/// payload, only when they hash to the blob the signed collection names.
+/// `None` for a package that ships none, one whose surface changed after
+/// install, or one without a signed record.
+#[must_use]
+pub fn signed_surface(package: &InstalledPackage) -> Option<Vec<u8>> {
+    let record = read_record(&record_dir(package), &package.id, &package.package_id_hex).ok()?;
+    let signed = record.collection.entries.get(SURFACE_FILE)?;
+    let bytes = std::fs::read(package.payload_root.join(SURFACE_FILE)).ok()?;
+    (BlobHash::of(&bytes) == *signed).then_some(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::{Signer, SigningKey};

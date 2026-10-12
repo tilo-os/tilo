@@ -34,22 +34,17 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         other => return Err(format!("unsupported filesystem: {other}").into()),
     };
     let profile = InstallProfile {
-        mode: crate::model::InstallMode::DiskInstall,
         hostname: value(args, "--hostname")?,
         user: crate::model::UserAccount {
             full_name: value(args, "--full-name")?,
             username: value(args, "--username")?,
             password: String::new(),
-            is_admin: true,
-            autologin: false,
         },
         locale: value(args, "--locale")?,
         keyboard: value(args, "--keyboard")?,
         timezone: value(args, "--timezone")?,
         filesystem,
-        encrypt: false,
         encryption_passphrase: String::new(),
-        persist_mb: 0,
         wifi_ssid: String::new(),
         device_label: String::new(),
         enroll_local_identity: false,

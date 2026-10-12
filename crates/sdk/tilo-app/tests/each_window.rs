@@ -6,6 +6,7 @@
 use tilo_app::accesskit::Role;
 use tilo_app::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
+use tilo_app::winit::event::WindowEvent;
 
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
@@ -13,7 +14,6 @@ static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
         "en-US",
         "window-draft = Next task\nwindow-done = Completed\n",
     )],
-    "window-draft",
 );
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -91,9 +91,11 @@ impl ResourceApp for Window {
     }
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
-        let draft = cx
-            .input(|list| list.draft.clone(), Checklist::DRAFT)
-            .with_id("draft");
+        let draft = cx.control_with(
+            |shown| TextInput::from_state(shown).with_id("draft"),
+            |list| list.draft.clone(),
+            Checklist::DRAFT,
+        );
         let rows = cx.each(
             |list| &list.tasks,
             |row| {
@@ -110,10 +112,13 @@ fn task_row(row: &ViewCx<Checklist, Task>) -> Element {
     let Some(id) = row.item().cloned() else {
         return Box::new(Column::new());
     };
+    let control = format!("set-done-{id}");
     Box::new(tilo_app::row![
         row.text(|task| task.title.clone()),
-        row.checkbox(
-            "window-done",
+        row.control_with(
+            |shown| Checkbox::from_state(shown)
+                .with_id(&control)
+                .with_label("window-done"),
             |task| {
                 READS.with(|reads| reads.set(reads.get().saturating_add(1)));
                 task.done
@@ -202,23 +207,37 @@ fn the_published_tree_lists_every_row_while_only_the_window_is_mounted() {
     let mut app = seeded();
     let total = usize::try_from(TASKS).unwrap();
 
-    // Agents and the palette: every task is published with its actions,
-    // mounted or not.
+    // Agents and the palette: the published tree carries a page of the
+    // tasks with their actions, mounted or not; every other task is
+    // resolved by its id when addressed, as an agent addresses it.
     let resources = app.harness().resources();
     let root = resources
         .iter()
         .find(|resource| resource.kind == Checklist::KIND)
         .unwrap();
-    assert_eq!(root.children.len(), total, "every item is published");
-    let last = root
+    let page = total.min(tilo_resource::items::ITEM_PAGE);
+    assert_eq!(
+        root.children.len(),
+        page,
+        "a page of the items is published"
+    );
+    let paged = root
         .children
         .iter()
-        .find(|child| child.label == format!("Task {}", total.saturating_sub(1)))
-        .expect("the last item is published while its row is not mounted");
+        .find(|child| child.label == format!("Task {}", page.saturating_sub(1)))
+        .expect("the page's last item is published while its row is not mounted");
     assert!(
-        last.actions.iter().any(|spec| spec.id == "set-done"),
+        paged.actions.iter().any(|spec| spec.id == "set-done"),
         "its actions are bound to it"
     );
+    let last = task_id(&app, total.saturating_sub(1));
+    app.call_on(
+        &tilo_resource::items::item_resource_id::<Checklist>("tasks", &last),
+        "set-done",
+        serde_json::json!({ "done": true }),
+    )
+    .expect("an item past the page is reached by its id");
+    assert!(app.state().tasks.get(&last).unwrap().done);
 
     // Assistive technology: the mounted rows, each placed in the whole list.
     let items = list_items(&mut app);
@@ -240,19 +259,9 @@ fn the_published_tree_lists_every_row_while_only_the_window_is_mounted() {
         app.harness().click_named(&control(&far)).is_err(),
         "its row is not mounted"
     );
-    let item = root
-        .children
-        .iter()
-        .find(|child| child.label == format!("Task {}", total.saturating_sub(2)))
-        .unwrap()
-        .id
-        .clone();
-    app.call_on(
-        item.as_str(),
-        "set-done",
-        serde_json::json!({ "done": true }),
-    )
-    .unwrap();
+    let item = tilo_resource::items::item_resource_id::<Checklist>("tasks", &far);
+    app.call_on(&item, "set-done", serde_json::json!({ "done": true }))
+        .unwrap();
     assert!(app.state().tasks.get(&far).unwrap().done);
 }
 
@@ -366,19 +375,8 @@ fn a_row_out_of_view_shows_its_item_as_it_is_when_it_mounts() {
     assert!(!mounted(&mut app, &far), "the row starts out unmounted");
     // Another participant (here an agent) completes the task while its row
     // is out of view.
-    let item = app
-        .harness()
-        .resources()
-        .iter()
-        .find(|resource| resource.kind == Checklist::KIND)
-        .and_then(|root| {
-            root.children
-                .iter()
-                .find(|child| child.label == format!("Task {}", total.saturating_sub(3)))
-        })
-        .unwrap()
-        .id
-        .clone();
+    // Past the published page, the item is addressed by its id.
+    let item = tilo_resource::items::item_resource_id::<Checklist>("tasks", &far);
     app.call_on(
         item.as_str(),
         "set-done",
@@ -469,13 +467,27 @@ fn opening_a_long_list_builds_only_the_rows_it_mounts() {
     app.harness().relayout();
     assert_eq!(builds(), before, "rows added below the view are not built");
 
-    // Every item is still published with its actions, built or not.
+    // Every item is still published with its actions, built or not: a page
+    // of them in the tree, every other one reached by its id.
     let resources = app.harness().resources();
     let root = resources
         .iter()
         .find(|resource| resource.kind == Checklist::KIND)
         .unwrap();
-    assert_eq!(root.children.len(), total.saturating_add(10));
+    assert_eq!(
+        root.children.len(),
+        total
+            .saturating_add(11)
+            .min(tilo_resource::items::ITEM_PAGE)
+    );
+    let last = app.state().tasks.ids().last().cloned().unwrap();
+    app.call_on(
+        &tilo_resource::items::item_resource_id::<Checklist>("tasks", &last),
+        "set-done",
+        serde_json::json!({ "done": true }),
+    )
+    .expect("an item whose row was never built is reached by its id");
+    assert!(app.state().tasks.get(&last).unwrap().done);
 }
 
 #[test]

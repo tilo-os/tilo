@@ -17,8 +17,6 @@ impl Widget for DrawUpdatedDamage {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
 
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-
     fn draw(
         &mut self,
         _scene: &mut Scene,
@@ -110,16 +108,6 @@ impl Widget for Shiftable {
             x + f64::from(layout.size.width),
             y + f64::from(layout.size.height),
         );
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
 
     fn name(&self) -> &'static str {

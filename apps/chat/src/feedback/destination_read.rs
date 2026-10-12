@@ -2,9 +2,7 @@
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
-use tilo_actions::{
-    ActionContract, ActionSpec, EncodedAction, OperationKind, Resource, ResultSpec,
-};
+use tilo_actions::{ActionSpec, Resource};
 use ui::semantic_document_read::{
     MAX_REQUEST_BYTES, ReadPage, RegisteredSemanticReader, SemanticReadError,
 };
@@ -25,10 +23,14 @@ fn validate(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError
     }
     let request: Request =
         serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
+    let named =
+        ui::tilo_resource::items::item_of_resource::<crate::resource::Chat>(resource.id.as_str());
     if request.channel.is_empty()
         || request.channel.len() > 256
-        || resource.kind != "chat.channel"
-        || resource.id.as_str() != format!("chat.channel:{}", request.channel)
+        || resource.kind != "chat.workspace.channels"
+        || !named.is_some_and(|(field, channel)| {
+            field == "channels" && channel.as_str() == request.channel
+        })
     {
         return Err(SemanticReadError::InvalidRequest);
     }
@@ -37,32 +39,19 @@ fn validate(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError
 
 pub(crate) fn spec(channel: &str) -> ActionSpec {
     let channel = channel.to_owned();
-    ActionSpec::typed_operation(
-        "read-feedback-destination",
-        "Read feedback destination",
-        "Inspect this existing text channel",
-        OperationKind::Effect,
+    super::receipt_read::read_spec(
+        (
+            ui::feedback::destination::READ_DESTINATION,
+            "Read feedback destination",
+            "Inspect this existing text channel",
+        ),
         OPERATION,
         Vec::new(),
-        move |_| {
-            EncodedAction::encode_operation(
-                OPERATION,
-                &Request {
-                    channel: channel.clone(),
-                },
-            )
-            .unwrap_or_else(|_| EncodedAction {
-                type_id: OPERATION.into(),
-                payload: Vec::new(),
-            })
+        schema,
+        move |_| Request {
+            channel: channel.clone(),
         },
     )
-    .with_contract(ActionContract {
-        result: ResultSpec::Json {
-            schema: schema().clone(),
-        },
-        ..ActionContract::view()
-    })
 }
 
 fn project(
@@ -76,7 +65,8 @@ fn project(
         .clone()
         .fork_at(heads)
         .map_err(|_| SemanticReadError::Malformed)?;
-    if !crate::doc::ChatDoc::list_channels(&document)
+    if !crate::projection::read(&document)
+        .channel_rows()
         .iter()
         .any(|channel| {
             channel.id == request.channel && channel.kind != crate::model::ChannelKind::Voice
@@ -108,10 +98,9 @@ mod tests {
 
     #[test]
     fn destination_read_requires_an_existing_text_channel() {
-        let mut document = automerge::AutoCommit::new();
-        crate::doc::ChatDoc::seed_if_empty(&mut document);
+        let mut document = crate::testing::demo_doc();
         document.commit();
-        let channels = crate::doc::ChatDoc::list_channels(&document);
+        let channels = crate::testing::channels(&document);
         let text = channels
             .iter()
             .find(|channel| channel.kind == crate::model::ChannelKind::Text)

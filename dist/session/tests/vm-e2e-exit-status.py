@@ -25,7 +25,7 @@ class VmAcceptanceExitTests(unittest.TestCase):
         self.assertEqual(keys.count("minus"), 2)
         self.assertNotIn("-", keys)
 
-    def exercise(self, app_state):
+    def exercise(self, app_state, settings=None):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             rpms = root / "rpms"
@@ -37,10 +37,19 @@ class VmAcceptanceExitTests(unittest.TestCase):
                                    image_cache=str(root / "images"), apps="")
             noop = lambda *args, **kwargs: None
             typed = []
-            qmp = SimpleNamespace(keys=noop, type_text=lambda text: typed.append(text), screendump=noop)
+            layouts = []
+
+            def type_text(text, layout="us"):
+                typed.append(text)
+                layouts.append(layout)
+
+            imported = settings if settings is not None else {
+                "input": {**harness.IMPORTED_INPUT, harness.IMPORT_MARKER: 4}}
+            qmp = SimpleNamespace(keys=noop, type_text=type_text, screendump=noop)
             guest = SimpleNamespace(
                 qmp=qmp, wait_ssh=noop, ssh=noop, scp_to=noop, stop=noop,
                 alive=lambda: False,
+                settings=lambda: json.dumps(imported),
                 guest=lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="fixture OK"),
                 status=lambda apps: {"compositor_pid": "100", "modeset": 1,
                                      **{f"app.{app}": int(app_state != "missing") for app in apps},
@@ -56,6 +65,7 @@ class VmAcceptanceExitTests(unittest.TestCase):
             self.assertEqual(typed[0], harness.GUEST_PASSWORD,
                              "normal authentication must precede every app search")
             report = json.loads((root / "out/report.json").read_text())
+            self.layouts = layouts
             return status, report
 
     def test_missing_apps_fail_process_and_report(self):
@@ -72,8 +82,19 @@ class VmAcceptanceExitTests(unittest.TestCase):
     def test_healthy_session_and_all_apps_pass_process_and_report(self):
         status, report = self.exercise("healthy")
         self.assertEqual(report["overall"], "pass")
-        self.assertEqual(len(report["checks"]), 8)
+        self.assertEqual(len(report["checks"]), 9)
         self.assertEqual(status, 0)
+        self.assertEqual(set(self.layouts), {"de"},
+                         "everything is typed on the German layout the session imported")
+
+    def test_a_session_that_did_not_import_fails_and_still_tries_the_apps(self):
+        status, report = self.exercise("healthy", settings={"input": {"keyboard_layout": "us",
+                                                                      "keyboard_layouts": ["us"]}})
+        self.assertEqual(status, 1)
+        self.assertEqual(report["overall"], "fail")
+        failed = [c["id"] for c in report["checks"] if c["status"] == "fail"]
+        self.assertEqual(failed, ["H05"])
+        self.assertEqual(set(self.layouts), {"us"})
 
 
 if __name__ == "__main__":

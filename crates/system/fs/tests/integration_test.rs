@@ -16,7 +16,7 @@ use std::{
     os::unix::fs::MetadataExt,
 };
 
-use collab_types::{CapOverride, Ed25519PublicKey, Effect, Role, Scope, Subject, Verb};
+use collab_types::{Access as CapAccess, CapOverride, Ed25519PublicKey, Effect, Scope, Subject};
 use fs::namespace::ROOT_INO;
 use fs::{Access, ContentStore, Heuristics, Hydrator, Namespace, QuickFS, WorkspaceAcl};
 use fuser::{Config, MountOption};
@@ -198,7 +198,7 @@ fn read_cap(who: [u8; 32], path: &str) -> CapOverride {
         Subject::User(Ed25519PublicKey(who)),
         Scope::FsPath(path.into()),
         Effect::Grant,
-        Verb::Read,
+        CapAccess::Read,
     )
 }
 
@@ -221,7 +221,7 @@ async fn normal_permissions_scope_enforces_native_namespace_paths() {
     );
     f.shutdown().await;
     let mut root = read_cap(ALICE, "/var/workspace");
-    root.verb = Verb::Write;
+    root.access = CapAccess::Write;
     let f = cap_fixture(ALICE, &[root], Some(1_000)).await;
     assert_eq!(f.fs.check_access(ROOT_INO, Access::Read), Ok(()));
     assert_eq!(f.fs.check_access(f.docs_child, Access::Write), Ok(()));
@@ -279,7 +279,7 @@ async fn capabilities_grant_exactly_their_path_verb_and_lifetime() {
         f.shutdown().await;
     }
     // Phase `a_read_capability_is_denied_a_write`.
-    // `Verb::Read` does not imply `Verb::Write`. A share that says "read"
+    // `CapAccess::Read` does not imply `CapAccess::Write`. A share that says "read"
     // must not become a write when it reaches the filesystem.
     {
         let f = cap_fixture(ALICE, &[read_cap(ALICE, "/w/docs")], Some(1_000)).await;
@@ -364,24 +364,23 @@ async fn capabilities_grant_exactly_their_path_verb_and_lifetime() {
         );
         f.shutdown().await;
     }
-    // Phase `a_role_wide_grant_does_not_authorise_a_path`.
-    // A role is not a key to the filesystem. `role_base_applies` is false
-    // for every `FsPath`, so even an Owner reaches a path only through an
-    // explicit capability, and a role-scoped grant doesn't cover a mount
-    // actor (which holds no role).
+    // Phase `a_grant_to_another_room_does_not_authorise_a_path`.
+    // A room is not a key to the filesystem unless the mount proves it is in
+    // that room: a grant to a room's members doesn't cover a mount actor
+    // that presents no such room.
     {
-        let role_cap = CapOverride::new(
-            Subject::Role(Role::Owner),
+        let room_cap = CapOverride::new(
+            Subject::room("another-room"),
             Scope::FsPath("/w/docs".into()),
             Effect::Grant,
-            Verb::Write,
+            CapAccess::Write,
         );
-        let f = cap_fixture(ALICE, &[role_cap], Some(1_000)).await;
+        let f = cap_fixture(ALICE, &[room_cap], Some(1_000)).await;
 
         assert_eq!(
             f.fs.check_access(f.docs_child, Access::Read),
             Err(libc::ENOENT),
-            "an Owner-role grant must not authorise a path for a mount that holds no role"
+            "a grant to another room's members must not authorise a path for this mount"
         );
         f.shutdown().await;
     }
@@ -1313,9 +1312,13 @@ fn read_sync_xattr(path: &std::path::Path) -> Option<String> {
 // from absent. What these tests turn on is that the answer *changes*
 // when the list is re-read.
 
-/// Write `caps` to `path` as the JSON array the mount reads.
+/// Write `caps` to `path` as the file authority the mount reads.
 fn put_caps(path: &std::path::Path, caps: &[CapOverride]) {
-    std::fs::write(path, serde_json::to_vec(caps).unwrap()).unwrap();
+    std::fs::write(
+        path,
+        serde_json::to_vec(&collab_types::FsAuthority::from(caps.to_vec())).unwrap(),
+    )
+    .unwrap();
     // Make the ordering of two writes unambiguous regardless of the
     // filesystem's mtime resolution.
     std::thread::sleep(Duration::from_millis(10));
@@ -1833,7 +1836,7 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
                 Subject::User(Ed25519PublicKey(BOB)),
                 Scope::FsPath("/shared".into()),
                 Effect::Grant,
-                Verb::Write,
+                CapAccess::Write,
             )],
             &[],
             None,

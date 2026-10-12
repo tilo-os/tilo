@@ -588,7 +588,7 @@ impl ApplicationsProvider {
                         );
                         tree.desktop
                             .active_workspace()
-                            .map(|ws| (ws.room, ws.capabilities.clone()))
+                            .map(|ws| (ws.room, ws.launch_grants(tilo_clock::unix_now())))
                     };
                     let Some((room, capabilities)) = context else {
                         // No active workspace is no room to launch into —
@@ -700,14 +700,14 @@ fn grant_user_home_to_file_manager(chrome: &Chrome, package_id: &str) {
 /// Every member mints their own rather than receiving a copy, since the path
 /// names *this* machine's home and is meaningless on anybody else's. Doesn't
 /// mirror into the room document the way `GrantStoreHandle::insert` does,
-/// but the workspace projection writes `ws.capabilities` wholesale
+/// but the workspace projection writes `ws.sandbox` wholesale
 /// (`state.rs`), so the grant still reaches every peer on the next persist.
 pub(crate) fn grant_file_manager_home(
     tree: &mut crate::shell::state::WorkspaceTree,
     workspace: crate::shell::state::WorkspaceId,
     package_id: &str,
 ) -> bool {
-    use crate::shell::state::{Capability, FsMode, GRANT_SESSION, ResourceRef, Verb};
+    use crate::shell::state::{Access, Capability, FsMode, GRANT_SESSION, ResourceRef};
 
     if package_id != SYSTEM_FILE_MANAGER {
         return false;
@@ -728,7 +728,7 @@ pub(crate) fn grant_file_manager_home(
     if ws.allows(
         &actor,
         &ResourceRef::FsPath(home.to_string_lossy().into_owned()),
-        Verb::Read,
+        Access::Read,
     ) {
         return false;
     }
@@ -744,10 +744,17 @@ pub(crate) fn grant_file_manager_home(
     if !remembered && tree.native_authority.requires(ws.room) {
         // Native session consent must have exact live local provenance. A
         // missing identity or full ledger must not leave an unbound home row.
-        ws.capabilities
+        ws.sandbox
             .retain(|capability| !ids.contains(&capability.id));
         return false;
     }
+    // The launch that follows captures this grant, and its sandbox is
+    // released only once the accepted policy holds it: publish it with a
+    // save, which the launch waits for. Nothing else may save before then:
+    // when Files is already an author (any session after the first, the
+    // home grant ending with each session while authorship persists) every
+    // later open of it was refused for the rest of the session.
+    tree.queue_save();
     true
 }
 
@@ -1283,6 +1290,37 @@ mod tests {
         let handle: WorkspaceTreeHandle =
             crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
         ChromeState::new_with_handle(handle)
+    }
+
+    /// Files' home grant lasts one session; its authorship of the workspace
+    /// persists. So in any session after the first, opening Files adds the
+    /// home grant and no authorship grant, and nothing else saves before the
+    /// launch, which is released only once the accepted policy (published by
+    /// a save) holds the grant. The grant itself must queue that save, or
+    /// every open of Files is refused for the rest of the session.
+    #[test]
+    fn the_files_home_grant_queues_the_save_that_publishes_it() {
+        let home = tilo_test_env::TestHome::new().unwrap();
+        let state = home.state().join("files-home-grant").join("state.json");
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.persist_path = Some(state.clone());
+        let workspace = tree.desktop.active;
+        crate::shell::persist::wait_for_saves();
+        assert!(!state.exists(), "nothing saved the tree before the grant");
+        assert!(grant_file_manager_home(
+            &mut tree,
+            workspace,
+            SYSTEM_FILE_MANAGER
+        ));
+        crate::shell::persist::wait_for_saves();
+        assert!(
+            state.exists(),
+            "the grant queued a save, whose publication the launch waits for"
+        );
+        assert!(
+            !grant_file_manager_home(&mut tree, workspace, SYSTEM_FILE_MANAGER),
+            "a second open finds the grant in place"
+        );
     }
 
     #[test]

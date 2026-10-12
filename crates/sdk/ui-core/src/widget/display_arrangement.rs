@@ -12,6 +12,7 @@
 pub use settings_store::display_placement as placement;
 
 use crate as ui;
+use crate::num::f32_of_f64;
 use crate::widget::TaffyTreeExt;
 
 use std::collections::HashMap;
@@ -169,11 +170,6 @@ fn round_to_i32(value: f64) -> i32 {
     value
         .round()
         .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
-}
-
-#[allow(clippy::cast_possible_truncation, reason = "canvas pixels fit f32")]
-fn px(value: f64) -> f32 {
-    value as f32
 }
 
 pub struct DisplayArrangement {
@@ -491,7 +487,7 @@ impl DisplayArrangement {
         );
         let label = text_renderer.elide_to_width_style(
             &caption,
-            px(rect.width() - f64::from(theme.tokens.spacing.s3)),
+            f32_of_f64(rect.width() - f64::from(theme.tokens.spacing.s3)),
             &caption_style,
         );
         let (lw, _) = text_renderer.measure_style(&label, None, &caption_style);
@@ -796,7 +792,7 @@ mod tests {
                     ui::tilo_actions::Resource::new("settings.root", "settings.root", "Settings")
                         .with_action(spec.clone());
                 let connector = display.connector.clone();
-                let binding = ui::tilo_actions::ActionBinding::new(
+                let binding = ui::tilo_actions::ActionBinding::fallible(
                     &resource,
                     &spec,
                     move |(x, y): (i32, i32)| {

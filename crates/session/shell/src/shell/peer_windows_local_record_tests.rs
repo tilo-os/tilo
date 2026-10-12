@@ -219,7 +219,7 @@ fn local_record_restart_removes_closed_and_revalidates_live_tabs() {
             let tile = &mut workspace.strips[0].window_groups[0].tabs[0].tile;
             let remote_record = next_id();
             match mode {
-                "room" => workspace.room = RoomId::new(),
+                "room" => workspace.set_room(RoomId::new()),
                 "app" => {
                     *tile = TileContent::LocalApp {
                         app_id: "dev.tilo.changed-record-test".into(),

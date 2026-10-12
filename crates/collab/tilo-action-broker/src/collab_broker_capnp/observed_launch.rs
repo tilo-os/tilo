@@ -1,5 +1,5 @@
 //! Completion of a launch admitted on an application's original channel.
-use super::{BrokerActor, CapDecision, CapnpChannelHandle, InvocationOwner, ResourceRef, Verb};
+use super::{BrokerActor, CapnpChannelHandle, InvocationOwner, app_node};
 use crate::services::LaunchReadiness;
 use tilo_actions::InvocationId;
 
@@ -182,10 +182,12 @@ impl CapnpChannelHandle {
         membership
             .decide_in_room(&self.route().cluster_id, |workspace| {
                 let workspace = workspace.ok_or("the application workspace is no longer hosted")?;
-                let caller = actor.policy_in(workspace, now);
-                if workspace.decide_at(&caller, &ResourceRef::App(app.to_owned()), Verb::Write, now)
-                    != CapDecision::Allow
-                {
+                if !actor.may_in(
+                    workspace,
+                    &app_node(workspace, app),
+                    tilo_action_policy::ActionKind::Undoable,
+                    now,
+                ) {
                     return Err("the caller is no longer allowed to launch that application");
                 }
                 Ok(())
@@ -269,13 +271,12 @@ pub(super) fn launch_author(
     workspace: &tilo_desktop_model::Workspace,
     now: u64,
 ) -> Option<String> {
-    (!actor.is_agent()
-        && !actor.id().starts_with("app:")
-        && workspace.decide_at(
-            &actor.policy_in(workspace, now),
-            &ResourceRef::Workspace,
-            Verb::Write,
+    (actor.direct()
+        && actor.may_in(
+            workspace,
+            &workspace.node(),
+            tilo_action_policy::ActionKind::Undoable,
             now,
-        ) == CapDecision::Allow)
-        .then(|| actor.id().to_owned())
+        ))
+    .then(|| actor.id().to_owned())
 }

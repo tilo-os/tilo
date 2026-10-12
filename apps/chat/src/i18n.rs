@@ -5,11 +5,31 @@
 //! is no build step and no runtime file I/O — a `--shots` render and a unit test
 //! resolve the same strings a live session does.
 
-ui::embedded_catalog!(pub fn, "chat-mention-agent-tag", ["en-US"]);
+use ui::i18n::{ArgValue, EmbeddedCatalog};
+
+/// Loaded per thread on first use; a host's manager is joined, never replaced.
+/// The probe is a key every catalogue revision defines.
+pub(crate) static CATALOG: EmbeddedCatalog =
+    EmbeddedCatalog::new("en-US", &[("en-US", include_str!("../locales/en-US.ftl"))]);
 
 /// Load the catalogue on this thread if it is not loaded yet.
 pub fn ensure() {
     CATALOG.ensure();
+}
+
+/// Resolve a Chat string key.
+pub fn t(key: &str) -> String {
+    CATALOG.t(key)
+}
+
+/// Resolve a Chat string key that interpolates variables.
+///
+/// The values are the app's own words — an operation's label, a participant's
+/// name — so the *sentence* around them stays in the catalogue and only the
+/// nouns are substituted. Building the line with `format!` instead would put
+/// English word order in the source and leave nothing to translate.
+pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
+    CATALOG.t_args(key, args)
 }
 
 /// The emoji catalogue in the desktop's language: names, group labels and

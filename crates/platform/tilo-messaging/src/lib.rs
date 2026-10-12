@@ -10,7 +10,14 @@
 
 pub use accounts::person::{PersonAccount, PersonAccounts};
 
+mod groups;
 mod history;
+pub use groups::{
+    GroupActionFuture, GroupChange, GroupChangeRequest, GroupClient, GroupHistory,
+    GroupHistoryFuture, GroupHost, GroupList, GroupMember, GroupMembership, GroupMessage,
+    GroupReceipt, GroupRole, GroupSendRequest, GroupSummary, GroupsFuture, MAX_GROUP_MEMBERS,
+    MAX_GROUPS, MembershipFuture,
+};
 pub use history::{
     Delivery, Direction, HistoryClient, HistoryError, HistoryFuture, HistoryHost, HistoryPage,
     MAX_HISTORY_MESSAGES, Message,

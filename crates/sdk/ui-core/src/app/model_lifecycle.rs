@@ -297,14 +297,24 @@ impl super::App {
             &self.state.root,
         );
         let settled = crate::widget::settle_mark(&self.state.doc) != before;
+        // The record's durability changed and the root synced with it: a
+        // frame presents it. Nothing about the tree changed, so it is not a
+        // rebuild (which would repaint the whole window for a save bubble).
+        // Taken before replaced widgets are looked for, which would read it
+        // as a structure change.
+        let mut save_status =
+            crate::component_lifecycle::take_save_status_presentation(self.root_widget.as_mut());
+        // Settlement can have replaced widgets (a surface closing its own
+        // dialog): forget their nodes before dispatch, which may open a
+        // confirmation that captures where focus returns.
+        self.forget_replaced_widgets();
         let submitted = self.dispatch_control_invocations() != 0;
         if settled || submitted {
             self.root_widget.sync(&self.state.doc, &self.state.root);
         }
-        // The record's durability changed and the root synced with it: a
-        // frame presents it. Nothing about the tree changed, so it is not a
-        // rebuild (which would repaint the whole window for a save bubble).
-        if crate::component_lifecycle::take_save_status_presentation(self.root_widget.as_mut()) {
+        save_status |=
+            crate::component_lifecycle::take_save_status_presentation(self.root_widget.as_mut());
+        if save_status {
             self.layout.layout_dirty = true;
         }
         self.invalidate_widget_resource_cache();
@@ -318,6 +328,29 @@ impl super::App {
     /// until the next layout rebuilds it. Drop the map now, so nothing in
     /// between (the cursor and tooltip a pointer move looks up, a key's
     /// focused target) reaches a widget that is gone. Whether it did.
+    /// Where focus is, as an identity that survives a rebuild. The layout's
+    /// map is read only while it still describes the live tree: replaced
+    /// widgets are forgotten first, and then the focused control is found
+    /// in the live tree instead.
+    pub(super) fn capture_focus_identity(
+        &mut self,
+    ) -> Option<crate::widget::layout::CompositionFocus> {
+        if self.forget_replaced_widgets() || self.layout.node_map.is_empty() {
+            return crate::widget::layout::CompositionFocus::capture_live(
+                self.root_widget.as_ref(),
+            );
+        }
+        // SAFETY: no widget was replaced since the map was admitted, so it
+        // describes this exclusively owned live tree.
+        unsafe {
+            crate::widget::layout::CompositionFocus::capture(
+                self.focused_node,
+                &self.layout.node_map,
+                &self.bindings,
+            )
+        }
+    }
+
     pub(super) fn forget_replaced_widgets(&mut self) -> bool {
         if !self.take_composition_dirty() {
             return false;

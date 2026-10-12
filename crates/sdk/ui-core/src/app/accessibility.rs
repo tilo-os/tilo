@@ -1,42 +1,9 @@
 // Accessibility configuration, semantic focus, announcements, and action routing.
 
 impl App {
-    fn persisted_accessibility_bool(key: &str) -> bool {
-        settings_store::load_section("accessibility")
-            .get(key)
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-    }
-
-    fn configure_screen_reader(reader: &mut crate::screen_reader::ScreenReader) {
-        let section = settings_store::load_section("accessibility");
-        let rate_pct = section
-            .get("screen_reader_rate")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(100)
-            .clamp(50, 200);
-        // Always in 50..=200, so this always fits u8 losslessly.
-        let rate = f32::from(u8::try_from(rate_pct).unwrap_or(100)) / 100.0;
-        reader.set_rate(rate);
-        let voice = section
-            .get("screen_reader_voice")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|voice| match voice {
-                "english_us" => Some("en-us"),
-                "english_gb" => Some("en-gb"),
-                "german" => Some("de"),
-                "french" => Some("fr"),
-                "spanish" => Some("es"),
-                _ => None,
-            });
-        if let Some(voice) = voice {
-            reader.set_voice(voice);
-        }
-    }
-
     fn configured_screen_reader() -> crate::screen_reader::ScreenReader {
         let mut reader = crate::screen_reader::ScreenReader::new();
-        Self::configure_screen_reader(&mut reader);
+        reader.configure(&settings_store::screen_reader::ScreenReaderSettings::load());
         reader
     }
 
@@ -440,6 +407,10 @@ impl App {
         {
             return false;
         }
+        // The sweep follows every mapped node: forget widgets replaced since
+        // the map was admitted first. Survivors keep what they queued for the
+        // sweep after the next layout.
+        self.forget_replaced_widgets();
         // SAFETY: App exclusively owns this stable live layout for the sweep.
         let mut changed = unsafe {
             crate::undo::record_dispatched_action_bound(
@@ -451,6 +422,15 @@ impl App {
                 &self.permission_ctx,
             )
         };
+        // What the whole view says about history is read once per sweep, not
+        // once per node (each read walks the tree, a bound status opens its
+        // record): only a request taken in the sweep can change it.
+        let mut embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
+        let mut local_status = crate::undo::local_undo_status(self.root_widget.as_ref());
+        let mut bound_statuses: Vec<(
+            crate::bound_dispatch::CallbackBinding,
+            crate::undo::UndoStatus,
+        )> = Vec::new();
         let mut visited = std::collections::HashSet::new();
         for (&node, pointer) in &self.layout.node_map {
             // SAFETY: this layout is unchanged, so every node pointer is live.
@@ -486,13 +466,13 @@ impl App {
                     .flatten()
                 } else {
                     match request {
-                        crate::undo::UndoRequest::Undo => self.state.undo_as_with_registry(
+                        crate::undo::UndoRequest::Undo => self.state.undo_as(
                             Some(&self.collaboration.local_author),
                             None,
                             None,
                             Some(&self.actions.action_registry),
                         ),
-                        crate::undo::UndoRequest::Redo => self.state.redo_as_with_registry(
+                        crate::undo::UndoRequest::Redo => self.state.redo_as(
                             Some(&self.collaboration.local_author),
                             None,
                             None,
@@ -501,11 +481,14 @@ impl App {
                     }
                 };
                 changed |= entry.is_some();
+                embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
+                local_status = crate::undo::local_undo_status(self.root_widget.as_ref());
+                bound_statuses.clear();
             }
             // The former eager status read flushed open transactions whenever
             // history existed. Preserve that boundary without deriving labels.
             if binding.is_none()
-                && !crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
+                && !embedded
                 && (self
                     .state
                     .can_undo_as(Some(&self.collaboration.local_author))
@@ -519,13 +502,21 @@ impl App {
             // across pending edits and dynamically mounted controls.
             let bound_status = binding
                 .as_ref()
-                .map(|binding| binding.undo_status(&mut self.state.doc).unwrap_or_default())
+                .map(|binding| {
+                    if let Some((_, status)) = bound_statuses
+                        .iter()
+                        .find(|(seen, _)| seen.same_component(binding))
+                    {
+                        return status.clone();
+                    }
+                    let status = binding.undo_status(&mut self.state.doc).unwrap_or_default();
+                    bound_statuses.push((binding.clone(), status.clone()));
+                    status
+                })
                 .or_else(|| {
                     self.bindings
                         .legacy_status(node, &self.collaboration.local_author)
                 });
-            let embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
-            let local_status = crate::undo::local_undo_status(self.root_widget.as_ref());
             let mut status = || {
                 bound_status.clone().unwrap_or_else(|| {
                     if let Some(local) = &local_status {
@@ -1054,6 +1045,10 @@ impl App {
         use crate::accesskit_bridge::A11yTarget;
 
         let _entry = self.enter_wake_scope();
+        // The target is resolved through the layout's map: widgets replaced
+        // since it was built are forgotten first, and an action that arrives
+        // before the next layout admits their replacements finds nothing.
+        self.forget_replaced_widgets();
 
         self.refresh_control_action_availability();
         // A retained AT id is operable only while the exact target is exported
@@ -1123,6 +1118,19 @@ impl App {
         if framework {
             self.suspend_history_focus(Some(taffy_id));
         }
+        // Who is acted on, as an identity that survives a rebuild the action
+        // itself may cause.
+        // SAFETY: the action below reaches this node through the same
+        // admitted, unchanged maps.
+        let mut acted = matches!(action, Action::Focus)
+            .then(|| unsafe {
+                crate::widget::layout::CompositionFocus::capture(
+                    Some(taffy_id),
+                    &self.layout.node_map,
+                    &self.bindings,
+                )
+            })
+            .flatten();
         let handled = self
             .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
@@ -1145,12 +1153,20 @@ impl App {
             })
             .ok()?;
         drop(history_frame);
+        // The action may have replaced widgets: their nodes are forgotten
+        // before anything below looks a node up, and the node acted on is
+        // focused only while it is still the one the map names.
+        let replaced = self.forget_replaced_widgets();
+        if handled && replaced {
+            self.actions.focus_after_rebuild = acted.take();
+        }
         if handled {
-            if matches!(action, Action::Focus)
-                || (matches!(action, Action::SetSelection { .. })
-                    && self
-                        .inspect_node(taffy_id, |widget| widget.is_focused())
-                        .unwrap_or(false))
+            if !replaced
+                && (matches!(action, Action::Focus)
+                    || (matches!(action, Action::SetSelection { .. })
+                        && self
+                            .inspect_node(taffy_id, |widget| widget.is_focused())
+                            .unwrap_or(false)))
             {
                 self.set_focused_node(Some(taffy_id));
             }
@@ -1180,6 +1196,15 @@ impl App {
             return None;
         }
 
+        if replaced {
+            // The map that named this node is gone with the widgets the
+            // action replaced: only focus resumes, once the next layout
+            // admits the new composition; nothing is clicked at a guess.
+            if matches!(action, Action::Focus) {
+                self.actions.focus_after_rebuild = acted.take();
+            }
+            return None;
+        }
         match action {
             Action::Focus => {
                 if synthetic && !ordinal_path.is_empty() {
@@ -1247,6 +1272,11 @@ impl App {
             let mut handled = false;
             let mut focus_target = None;
             self.presentation_handle_event(&event, 1.0, &mut handled, &mut focus_target);
+            // A target named by the map the event saw is gone once the
+            // event replaced widgets.
+            if self.forget_replaced_widgets() {
+                focus_target = None;
+            }
             if let Some(id) = focus_target {
                 self.set_focused_node(Some(id));
             }

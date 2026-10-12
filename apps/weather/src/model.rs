@@ -1,18 +1,120 @@
 //! Pure data model for the weather app.
 //!
-//! Everything here is plain serde data with no IO and no rendering. The
-//! saved locations project from the Automerge CRDT (see `doc.rs`); provider
-//! responses and presentation state stay local. These structs are the
-//! in-memory projection the widgets render from and the shape the network
-//! layer (`api.rs`) deserialises into.
+//! Everything here is plain data with no IO and no rendering. What is
+//! shared is the [`Weather`] record: the saved places, in order, and the
+//! default one. Provider responses and presentation state stay local. The
+//! other structs are the in-memory projection the widgets render from and
+//! the shape the network layer (`api.rs`) deserialises into.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Atom, Collection, Id, Model, Refusal};
 use uuid::Uuid;
 
 use crate::units::Units;
 
 /// Stable id for a saved location.
 pub type LocationId = Uuid;
+
+/// A saved place as the document shares it. Its item id is the place's
+/// uuid and its position in [`Weather::places`] is its place in the list.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+#[model(check = Place::valid)]
+pub struct Place {
+    /// Name
+    #[model(label)]
+    pub name: String,
+    /// Region
+    pub region: String,
+    /// Country
+    pub country: String,
+    /// ISO country code
+    pub country_code: Atom,
+    /// Latitude
+    pub latitude: f64,
+    /// Longitude
+    pub longitude: f64,
+    /// IANA timezone, or `auto`.
+    pub timezone: Atom,
+}
+
+impl Place {
+    /// The shared part of `location`.
+    pub fn of(location: &SavedLocation) -> Self {
+        Self {
+            name: location.name.clone(),
+            region: location.region.clone(),
+            country: location.country.clone(),
+            country_code: Atom(location.country_code.clone()),
+            latitude: location.latitude,
+            longitude: location.longitude,
+            timezone: Atom(location.timezone.clone()),
+        }
+    }
+
+    /// A place has a name and coordinates on the globe.
+    fn valid(&self) -> Result<(), Refusal> {
+        if self.name.trim().is_empty() {
+            return Err(Refusal::new("a place has a name"));
+        }
+        if !(-90.0..=90.0).contains(&self.latitude) || !(-180.0..=180.0).contains(&self.longitude) {
+            return Err(Refusal::new(
+                "a place lies between latitudes -90 and 90 and longitudes -180 and 180",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Whether `other` is the same place: within about five kilometres.
+    pub fn near(&self, latitude: f64, longitude: f64) -> bool {
+        (self.latitude - latitude).abs() < 0.05 && (self.longitude - longitude).abs() < 0.05
+    }
+}
+
+/// The saved places a person follows, in order, and the one shown first.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+pub struct Weather {
+    pub places: Collection<Place>,
+    /// The id of the default place; empty for the first.
+    pub default_place: Atom,
+}
+
+impl Weather {
+    /// The item id of the place with uuid `id`.
+    pub fn item(id: LocationId) -> Id {
+        Id::from_raw(id.to_string())
+    }
+
+    /// The places as the window shows them, the default one selected.
+    pub fn model(&self) -> WeatherModel {
+        let locations: Vec<SavedLocation> = self
+            .places
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (id, place))| {
+                Some(SavedLocation {
+                    id: id.as_str().parse().ok()?,
+                    order_rank: (index + 1) as f64 * 1024.0,
+                    name: place.name.clone(),
+                    region: place.region.clone(),
+                    country: place.country.clone(),
+                    country_code: place.country_code.0.clone(),
+                    latitude: place.latitude,
+                    longitude: place.longitude,
+                    timezone: place.timezone.0.clone(),
+                })
+            })
+            .collect();
+        let selected = locations
+            .iter()
+            .position(|location| location.id.to_string() == self.default_place.0)
+            .unwrap_or_default();
+        WeatherModel {
+            locations,
+            selected,
+            ..WeatherModel::default()
+        }
+    }
+}
 
 /// A place the user has pinned. Coordinates + timezone drive fetches; the
 /// label fields are for display.
@@ -322,12 +424,6 @@ impl WeatherModel {
         } else if self.selected >= self.locations.len() {
             self.selected = self.locations.len() - 1;
         }
-    }
-
-    /// Apply a whole-system preset (metric / imperial). Units are a system
-    /// preference read from Settings — this app never hosts a toggle for them.
-    pub fn set_units(&mut self, units: Units) {
-        self.units = units;
     }
 }
 

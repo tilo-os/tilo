@@ -94,16 +94,18 @@ fn a_look_job_keeps_its_snapshot_while_another_edit_is_applied() {
         json!({"width": 64, "height": 64, "ground_colour": "#ff0000", "texture": "smooth"}),
     )
     .unwrap();
-    let look = canvas::resource::ViewOp::Look(Look {
-        size: Some(64),
-        format: Some("png".into()),
-        ..Default::default()
-    });
+    let look = canvas::resource::ViewOp::Look {
+        look: Look {
+            size: Some(64),
+            format: Some("png".into()),
+            ..Default::default()
+        },
+    };
     let invocation = app.start_effect(&look).unwrap();
     app.call("set-artwork", json!({"ground_colour": "#0000ff"}))
         .unwrap();
     app.harness()
-        .wait_until(ui::time::Duration::from_secs(10), |harness| {
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
             harness
                 .job_updates(invocation)
                 .iter()
@@ -336,7 +338,8 @@ fn opening_a_picture_makes_a_new_artwork_of_it() {
         json!({"marks": [{"id": "old", "shape": {"kind": "rect", "x": 0, "y": 0, "width": 9, "height": 9}}]}),
     )
     .unwrap();
-    app.call("open", json!({"path": halves(320, 180)})).unwrap();
+    app.call("open-picture", json!({"path": halves(320, 180)}))
+        .unwrap();
     let art = app.state();
     assert_eq!((art.width, art.height), (320.0, 180.0));
     assert_eq!(art.layers.len(), 1);
@@ -371,7 +374,8 @@ fn the_artwork_is_cut_to_a_region_or_to_what_a_mark_shows() {
 #[test]
 fn exports_are_png_jpeg_or_webp_at_any_scale() {
     let mut app = TestApp::<App>::new().unwrap();
-    app.call("open", json!({"path": halves(400, 200)})).unwrap();
+    app.call("open-picture", json!({"path": halves(400, 200)}))
+        .unwrap();
     let art = app.state();
     let mut renderer = Renderer::default();
     renderer.pictures.read_from(app.content());
@@ -416,7 +420,8 @@ fn exports_are_png_jpeg_or_webp_at_any_scale() {
 #[test]
 fn exports_are_written_where_the_caller_names() {
     let mut app = TestApp::<App>::new().unwrap();
-    app.call("open", json!({"path": halves(40, 20)})).unwrap();
+    app.call("open-picture", json!({"path": halves(40, 20)}))
+        .unwrap();
     let dir = std::env::temp_dir().join(format!("canvas-export-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let jpeg = dir.join("halves.jpg");
@@ -519,15 +524,8 @@ fn the_canvas_decodes_a_picture_in_the_background_and_a_look_waits_for_it() {
     canvas.pictures.read_from(app.content());
     assert_eq!(canvas.pictures.size(src), None, "a frame does not wait");
     assert!(canvas.pictures.decoding());
-    let mut ready = None;
-    for _ in 0..500 {
-        ready = canvas.pictures.size(src);
-        if ready.is_some() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert_eq!(ready, Some((200, 100)));
+    let ready = tilo_test_env::wait_for("the picture to decode", || canvas.pictures.size(src));
+    assert_eq!(ready, (200, 100));
     assert!(!canvas.pictures.decoding());
     let mut look = Renderer::default();
     look.pictures.read_from(app.content());

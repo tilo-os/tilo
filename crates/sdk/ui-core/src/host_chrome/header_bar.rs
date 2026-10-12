@@ -449,7 +449,7 @@ mod tests {
 
     use super::{HeaderBar, HeaderRequest, app_draws_frame, resize_edge};
     use crate::app::App;
-    use crate::headless::Driver;
+    use crate::headless::FrameHarness;
     use crate::host_chrome::HostChrome;
     use crate::host_chrome::model::{CommandGroup, HostCommand};
     use crate::widget::Widget;
@@ -467,8 +467,8 @@ mod tests {
         app
     }
 
-    fn driver(commands: &[HostCommand], theme: crate::Theme) -> Driver {
-        let mut driver = Driver::for_root(
+    fn driver(commands: &[HostCommand], theme: crate::Theme) -> FrameHarness {
+        let mut driver = FrameHarness::for_root(
             crate::State::new(),
             HeaderBar::new("Notes", commands),
             (900, 120),
@@ -717,7 +717,7 @@ mod tests {
             ("dark", crate::Theme::dark()),
             ("high-contrast", crate::Theme::high_contrast()),
         ] {
-            let mut driver = Driver::for_root(
+            let mut driver = FrameHarness::for_root(
                 crate::State::new(),
                 HeaderBar::new("Notes", &commands),
                 (900, 260),

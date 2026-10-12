@@ -387,8 +387,6 @@ pub trait FreezeThaw {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PresenceCtx;
-    use crate::TextRenderer;
     use crate::Theme;
     use crate::app::App;
     use crate::record::{RecordCheckout, RecordId, RecordKind};
@@ -398,8 +396,7 @@ mod tests {
     use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
     use std::collections::HashMap;
     use taffy::TaffyTree;
-    use vello::Scene;
-    use vello::kurbo::{Affine, Point, Rect as KurboRect};
+    use vello::kurbo::Rect as KurboRect;
 
     /// A minimal root widget that owns all the presentation state a View
     /// captures: a caret (via `get_state`/`set_state`), a scroll offset and a
@@ -441,16 +438,6 @@ mod tests {
             node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
             taffy.widget_leaf(taffy::Style::default(), node_map, self)
-        }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: taffy::NodeId, _o: Point) {}
-        fn draw(
-            &mut self,
-            _s: &mut Scene,
-            _t: Affine,
-            _tr: &mut TextRenderer,
-            _th: &Theme,
-            _p: &PresenceCtx,
-        ) {
         }
         fn name(&self) -> &'static str {
             "doc-root"

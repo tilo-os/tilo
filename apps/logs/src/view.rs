@@ -347,7 +347,7 @@ impl JournalPane {
         let boot = self.boot.build_layout(taffy, theme, node_map);
         let severity = self.severity.build_layout(taffy, theme, node_map);
         for facet in [unit, boot, severity] {
-            flexed(taffy, facet, 1.0);
+            ui::widget::share_row(taffy, facet, 1.0);
         }
         let band = taffy.parent_node(
             Style {
@@ -421,17 +421,6 @@ fn empty_state(kind: Placeholder, bridge: &Bridge) -> EmptyState {
         Placeholder::NoMatches => {
             EmptyState::new("No entries match these filters").with_action("Clear filters")
         }
-    }
-}
-
-/// `style` grown or shrunk along a band's main axis.
-fn flexed(taffy: &mut TaffyTree<()>, node: NodeId, grow: f32) {
-    if let Ok(mut style) = taffy.style(node).cloned() {
-        style.flex_grow = grow;
-        style.flex_shrink = 1.0;
-        style.flex_basis = length(0.0_f32);
-        style.size.width = Dimension::auto();
-        let _ = taffy.set_style(node, style);
     }
 }
 

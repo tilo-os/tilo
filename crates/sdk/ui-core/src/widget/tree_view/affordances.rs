@@ -6,9 +6,9 @@
 
 use super::{
     Affine, Icon, NodeId, Point, Rect, Scene, TextRenderer, Theme, TreeModel, TreeRowKey, TreeView,
-    idx_to_f64, px,
 };
 use crate::a11y::{AccessNode, AccessState, Role};
+use crate::num::f32_of_f64;
 use crate::text_render::TextStyle;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::{ChipFace, ChipLead, Widget};
@@ -198,7 +198,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         for item in items {
             menu.push(item);
         }
-        menu.open_at([px(at.x), px(at.y)]);
+        menu.open_at([f32_of_f64(at.x), f32_of_f64(at.y)]);
         self.menu = menu;
         self.menu_target = target;
         self.rename = None;
@@ -311,7 +311,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
             return nav;
         }
         let (_, depth) = self.index.row_at(&self.model, index)?;
-        let x0 = row.x0 + self.row_inset + idx_to_f64(depth) * self.indent_px;
+        let x0 = row.x0 + self.row_inset + crate::num::f64_of_usize(depth) * self.indent_px;
         Some(Rect::new(x0, row.y0, x0 + self.disclosure_w, row.y1))
     }
 
@@ -341,7 +341,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let top = row.y0 + (row.height() - side) / 2.0;
         (0..count)
             .map(|i| {
-                let from_end = idx_to_f64(count - 1 - i);
+                let from_end = crate::num::f64_of_usize(count - 1 - i);
                 let x1 = right - from_end * (side + gap);
                 Rect::new(x1 - side, top, x1, top + side)
             })
@@ -490,7 +490,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         for level in 0..depth {
             let x = row.x0
                 + self.row_inset
-                + idx_to_f64(level) * self.indent_px
+                + crate::num::f64_of_usize(level) * self.indent_px
                 + self.disclosure_w / 2.0;
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -564,7 +564,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         );
         let x = ghost.x0 + self.disclosure_w;
         let max_w = (ghost.x1 - x - self.row_gap).max(0.0);
-        let label = text_renderer.elide_to_width_style(label, px(max_w), text_style);
+        let label = text_renderer.elide_to_width_style(label, f32_of_f64(max_w), text_style);
         #[allow(
             clippy::arithmetic_side_effects,
             reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"

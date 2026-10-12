@@ -129,6 +129,7 @@ fn the_apply_descriptor_names_every_edit_with_its_fields() {
         "RemoveBlocks",
         "MoveBlocks",
         "ReplaceBody",
+        "ReplaceClips",
         "AcceptChanges",
         "RejectChanges",
         "ResolveComment",

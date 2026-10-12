@@ -1,210 +1,35 @@
-//! Code Editor as a [`tilo_resource::Resource`]: one action vocabulary, one
-//! publish path. Buffer text lives in the shared document as collaborative
-//! file records under the project root.
+//! Code Editor on the framework: the [`Project`] record, its editor, and
+//! what launching it on a folder or a file does.
 //!
-//! Document mutations (create / rename / move / language / delete / replace-text)
-//! live on this resource via [`Resource::declarations`] / [`Resource::children`].
-//! Opening and saving real files and the editor's commands are the surface's
-//! [`CodeEditorEffect`]s; what the surface shows that is not in the document —
-//! the files it can open or save, symbols, search results — are its live rows.
+//! The project's files, folders and texts are the record's
+//! ([`crate::project`]). Opening and saving real files and the editor's
+//! commands are the surface's [`CodeEditorEffect`]s; what the surface shows
+//! that is not in the document — the files it can open or save, symbols,
+//! search results — are its live rows.
 
-use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
-
-use terminal::resource::{SessionState, Terminal};
 
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
     ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
 use ui::record::RecordId;
-use ui::tilo_actions::{
-    ActionAddress, ActionParam, PROMPTED_PARAM, ParamType, Resource as PublishedResource,
-};
-use ui::tilo_resource::{
-    ActionDecl, ActionRef, Demand, Doc, Invoke, ModelError, Resource, SearchEntry,
-};
+use ui::tilo_resource::{ActionRef, Invoke, SearchEntry};
 use ui::widget::Element;
 
-use crate::actions::{
-    CODE_EDITOR_ACTION_TYPE, CodeEditorAction, create_file_action, publish_document_children,
-    register,
-};
 use crate::app::CodeApp;
-use crate::doc::{CollaborativeFile, EditorDoc};
 use crate::effects::CodeEditorEffect;
+use crate::project::Project;
 
-#[path = "buffer_demand_cache.rs"]
-mod buffer_demand_cache;
-use buffer_demand_cache::BufferDemandCache;
+/// The editor's Fluent catalog: what its history entries say.
+static CATALOG: ui::i18n::EmbeddedCatalog =
+    ui::i18n::EmbeddedCatalog::new("en-US", &[("en-US", include_str!("../locales/en-US.ftl"))]);
 
-/// Stable id prefix for the published project root.
-pub const PROJECT_KIND: &str = <CodeEditor as Resource>::KIND;
+/// The id the project's embedded terminal is published under.
+pub const TERMINAL_RESOURCE_ID: &str = "code_editor.project/derived/terminal";
 
-/// The project: its file and folder records, and the text of the files a
-/// view is showing.
-#[derive(Clone, Debug, Default)]
-pub struct ProjectState {
-    pub files: Vec<CollaborativeFile>,
-    /// The text of the files views demanded, keyed by file id. Only these
-    /// are read: a project holds every file it has opened, and reading them
-    /// all on every keystroke would cost what the project weighs.
-    pub buffers: HashMap<String, String>,
-    /// Existing authoritative Text objects, without materializing their bodies.
-    /// Disk reopening can compare its saved baseline without resubmitting a
-    /// potentially large seed to a buffer that already exists.
-    pub opened_buffers: HashSet<String>,
-    /// The embedded terminal's session, once the project has one.
-    pub terminal: Option<SessionState>,
-    /// Private bounded projections; only `buffers` exposes demanded text.
-    buffer_cache: BufferDemandCache,
-}
-
-/// The project's embedded terminal, published as the terminal session it is.
-pub const TERMINAL_RESOURCE_ID: &str = "code_editor.terminal";
-
-/// The code-editor project resource.
-pub struct CodeEditor;
-
-impl Resource for CodeEditor {
-    // The normal packager signs literal resource declarations into its manifest.
-    const KIND: &'static str = "code_editor.project";
-    const LABEL: &'static str = "Code Editor";
-    const ACTION_TYPE: &'static str = CODE_EDITOR_ACTION_TYPE;
-    const AUDITED_LOW_MUTATIONS: bool = true;
-
-    type State = ProjectState;
-    type Action = CodeEditorAction;
-
-    fn allows_low_mutation(action: &Self::Action) -> bool {
-        matches!(
-            action,
-            CodeEditorAction::ImportEntry { .. }
-                | CodeEditorAction::EnsureBuffer { .. }
-                | CodeEditorAction::EditText(_)
-        )
-    }
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
-    }
-
-    fn read(doc: &Doc) -> Result<ProjectState, ModelError> {
-        let files: Vec<_> = EditorDoc::files(doc)
-            .into_iter()
-            .filter(|file| !file.deleted)
-            .collect();
-        let opened_buffers = files
-            .iter()
-            .filter(|file| EditorDoc::buffer_text_key(doc, &file.id).is_some())
-            .map(|file| file.id.clone())
-            .collect();
-        Ok(ProjectState {
-            files,
-            buffers: HashMap::new(),
-            opened_buffers,
-            terminal: EditorDoc::terminal_panel(doc).map(|panel| Terminal::read_under(doc, &panel)),
-            buffer_cache: BufferDemandCache::default(),
-        })
-    }
-
-    /// The text of the demanded files (their ids are the demand's keys).
-    fn load(state: &mut ProjectState, doc: &Doc, demand: &Demand) -> Result<(), ModelError> {
-        state.load_buffers(doc, demand);
-        Ok(())
-    }
-
-    fn initialize(_doc: &mut Doc) -> Result<(), ModelError> {
-        // Live editor starts empty — no demo tree and no sample files.
-        Ok(())
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        vec![
-            ActionDecl::new(
-                "new-file",
-                "New file",
-                vec![ActionParam::optional(
-                    PROMPTED_PARAM,
-                    ParamType::Text,
-                    "File name",
-                )],
-                |args, _| {
-                    let name = args
-                        .text(PROMPTED_PARAM)
-                        .filter(|value| !value.trim().is_empty())
-                        .unwrap_or("untitled")
-                        .to_string();
-                    Ok(create_file_action(
-                        uuid::Uuid::new_v4().to_string(),
-                        name,
-                        None,
-                        i64::MAX / 2,
-                        String::new(),
-                    ))
-                },
-            )
-            .describe("Create a new collaborative file at the project root."),
-            ActionDecl::new(
-                "new-folder",
-                "New folder",
-                vec![ActionParam::optional(
-                    PROMPTED_PARAM,
-                    ParamType::Text,
-                    "Folder name",
-                )],
-                |args, _| {
-                    let name = args
-                        .text(PROMPTED_PARAM)
-                        .filter(|value| !value.trim().is_empty())
-                        .unwrap_or("untitled")
-                        .to_string();
-                    Ok(CodeEditorAction::CreateFolder {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        name,
-                        parent: None,
-                        order: i64::MAX / 2,
-                    })
-                },
-            )
-            .describe("Create a new folder at the project root."),
-        ]
-    }
-
-    fn children(state: &ProjectState) -> Vec<PublishedResource> {
-        let mut children = publish_document_children(&state.files);
-        if let Some(session) = &state.terminal {
-            children.push(ui::tilo_resource::publish_child::<Terminal, Self>(
-                TERMINAL_RESOURCE_ID,
-                "Terminal",
-                Some(session),
-                CodeEditorAction::Terminal,
-            ));
-        }
-        children
-    }
-
-    fn search(state: &ProjectState) -> Vec<SearchEntry> {
-        state
-            .files
-            .iter()
-            .map(|file| {
-                let anchor = format!("code_editor.{}:{}", file.kind, file.id);
-                SearchEntry {
-                    action: (file.kind == "file")
-                        .then(|| ActionAddress::new(anchor.clone(), CodeEditorEffect::OPEN.id)),
-                    anchor: Some(anchor),
-                    title: file.name.clone(),
-                    text: file.path.clone(),
-                    ..Default::default()
-                }
-            })
-            .collect()
-    }
-}
-
-/// Framework app: the code editor widget is the surface over [`CodeEditor`].
+/// Framework app: the code editor widget is the surface over [`Project`].
 pub struct CodeEditorShell;
 
 /// Every screenshot scenario, over the sample project the fixture writes.
@@ -226,8 +51,8 @@ const SCENARIOS: &[&str] = &[
 
 /// A launch naming a folder opens it as the project; naming a file opens it in
 /// a project of its own.
-const OPEN_FOLDER: ActionRef<CodeEditor, Option<String>> = ActionRef::new("open-folder", &["path"]);
-const OPEN_FILE: ActionRef<CodeEditor, Option<String>> = ActionRef::new("open-file", &["path"]);
+const OPEN_FOLDER: ActionRef<Project, Option<String>> = ActionRef::new("open-folder", &["path"]);
+const OPEN_FILE: ActionRef<Project, Option<String>> = ActionRef::new("open-file", &["path"]);
 
 /// The project a capture shows: the bundled sample written to a scratch
 /// folder, opened the way `code-editor FOLDER` opens one.
@@ -240,15 +65,38 @@ fn launched_path(argument: &str) -> PathBuf {
 }
 
 impl ResourceApp for CodeEditorShell {
-    type Resource = CodeEditor;
+    type Resource = Project;
     const ID: &'static str = "so.tilo.code-editor";
     const TITLE: &'static str = "Code Editor";
     const ICON: Option<&'static str> = Some("code-editor");
     /// The folder or file to open (`code-editor .`, `code-editor src/main.rs`).
     const ARGUMENTS: usize = 1;
 
-    fn view(cx: &mut ViewCx<CodeEditor>) -> Element {
-        cx.surface(CodeApp::new())
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&CATALOG)
+    }
+
+    fn view(cx: &mut ViewCx<Project>) -> Element {
+        let app = CodeApp::new();
+        cx.on_open_item(app.opener());
+        // The embedded terminal carries out the commands asked of its
+        // session, as Terminal's own window does.
+        let queue = app.terminal_runs();
+        let owner = queue.clone();
+        cx.outbox_awaited(
+            Project::paths().terminal_requests,
+            move |_, request: &terminal::resource::RunRequest| owner.runs(&request.pane.0),
+            move |id, request, cx: &mut EffectCx<Project>| {
+                queue.ask(terminal::runs::Asked {
+                    request: id.clone(),
+                    command: request.command.0,
+                    requested_by: request.requested_by.0,
+                    reply: cx.reply(),
+                });
+                Ok(ui::framework::Effected::Pending)
+            },
+        );
+        cx.surface(app)
     }
 
     /// Every folder and every file opened on its own is a project of its own,
@@ -263,7 +111,7 @@ impl ResourceApp for CodeEditorShell {
 
     /// Opening the project reads the folder (or the file) every time it is
     /// launched: where its files are on this machine is not in the document.
-    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<CodeEditor>> {
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Project>> {
         let Some(argument) = input.argument() else {
             return Vec::new();
         };
@@ -288,7 +136,7 @@ impl ResourceApp for CodeEditorShell {
         }
     }
 
-    fn fixture(fixture: &mut Fixture<CodeEditor>) {
+    fn fixture(fixture: &mut Fixture<Project>) {
         match fixture.directory() {
             Ok(directory) => {
                 let root = directory.join(crate::sample_project::NAME);
@@ -302,14 +150,14 @@ impl ResourceApp for CodeEditorShell {
     }
 }
 
-impl ResourceSurface<CodeEditor, CodeEditorEffect> for CodeApp {
-    fn present(&mut self, state: &Rc<ProjectState>) {
+impl ResourceSurface<Project, CodeEditorEffect> for CodeApp {
+    fn present(&mut self, state: &Rc<Project>) {
         // Adopt shared file records only — never wipe an unpublished local tree.
         self.adopt_resource_state(state);
-        self.present_terminal(state.terminal.as_ref());
+        self.present_terminal(state.terminal_panel.as_ref());
     }
 
-    fn attach(&mut self, cx: SurfaceCx<CodeEditor>) {
+    fn attach(&mut self, cx: SurfaceCx<Project>) {
         self.set_highlight_waker(cx.waker());
         self.attach_framework(
             cx.dispatcher(),
@@ -331,7 +179,7 @@ impl ResourceSurface<CodeEditor, CodeEditorEffect> for CodeApp {
     fn effect(
         &mut self,
         effect: CodeEditorEffect,
-        cx: &mut EffectCx<CodeEditor, Self>,
+        cx: &mut EffectCx<Project, Self>,
     ) -> EffectAnswer {
         self.answer_effect(effect, cx)
     }
@@ -364,16 +212,17 @@ mod tests {
     use ui::tilo_actions::OperationKind;
     use ui::tilo_resource::Effect as _;
 
+    use crate::doc::{CollaborativeFile, EditorDoc};
     use crate::test_support::{editor, sample};
+    use ui::tilo_actions::Resource as PublishedResource;
+    const PROJECT_KIND: &str = <Project as ui::tilo_resource::Resource>::KIND;
 
-    fn file_id(state: &ProjectState, path: &str) -> String {
-        state
-            .files
-            .iter()
+    fn file_id(state: &Project, path: &str) -> String {
+        CollaborativeFile::all(state)
+            .into_iter()
             .find(|file| file.path == path)
             .unwrap_or_else(|| panic!("{path} is a file of the project"))
             .id
-            .clone()
     }
 
     fn find<'a>(resources: &'a [PublishedResource], id: &str) -> Option<&'a PublishedResource> {
@@ -471,7 +320,11 @@ mod tests {
         let address = crate::actions::file_resource_id(&main);
         assert_eq!(count(&resources, &address), 1, "one resource per file");
         let file = find(&resources, &address).unwrap();
-        for id in ["rename", "move", "set-language", "delete", "replace-text"] {
+        assert!(
+            root.actions.iter().any(|action| action.id == "field-edit"),
+            "a file's text and language are edited at their paths"
+        );
+        for id in ["rename", "move-entry", "delete", "replace-text"] {
             assert!(
                 file.actions
                     .iter()
@@ -479,7 +332,7 @@ mod tests {
                 "{id} edits the file"
             );
         }
-        for id in ["open", "save"] {
+        for id in ["show-file", "save"] {
             assert!(
                 file.actions
                     .iter()
@@ -501,7 +354,7 @@ mod tests {
             .app
             .call_on(
                 &crate::actions::file_resource_id(&prime),
-                "open",
+                "show-file",
                 serde_json::json!({}),
             )
             .unwrap();
@@ -514,7 +367,7 @@ mod tests {
         sample.app.settle();
         let (address, line) = editor(&mut sample.app, |app| {
             let source =
-                ui::framework::testing::search_source::<CodeEditor>(app.code_search_entries());
+                ui::framework::testing::search_source::<Project>(app.code_search_entries());
             let hit = ui::search::SearchProvider::search(&source, "primes_below")
                 .into_iter()
                 .find(|hit| hit.kind == crate::search_entries::SYMBOL_KIND)
@@ -588,7 +441,7 @@ mod tests {
         let readme = file_id(&state, "ferris-cli/README.md");
         sample
             .app
-            .effect(&CodeEditorEffect::Open {
+            .effect(&CodeEditorEffect::ShowFile {
                 file: readme.clone(),
             })
             .unwrap();
@@ -649,13 +502,13 @@ mod tests {
     fn hardware_scenario_opens_real_rtl_with_the_detected_dialect() {
         let mut app = TestApp::<CodeEditorShell>::capture(Some("hardware")).unwrap();
         let state = app.state();
-        let file = state
+        let (file_id, file) = state
             .files
             .iter()
-            .find(|file| file.name == "signed_mac.sv")
+            .find(|(_, file)| file.name == "signed_mac.sv")
             .expect("fixture RTL is a published file");
         assert_eq!(file.language, "SystemVerilog");
-        let file_id = file.id.clone();
+        let file_id = file_id.to_string();
         assert_eq!(
             editor(&mut app, |app| app.active_buffer_name()).as_deref(),
             Some("signed_mac.sv")
@@ -731,10 +584,7 @@ mod tests {
         let mut sample = sample();
         sample.open("src/main.rs");
         let state = sample.app.state();
-        assert!(
-            state.buffers.is_empty(),
-            "reading the project reads no text"
-        );
+        assert_eq!(state.read_texts().0, 0, "reading the project reads no text");
         let main = file_id(&state, "ferris-cli/src/main.rs");
         assert_eq!(
             editor(&mut sample.app, |app| app.read_buffers_for_test()),
@@ -759,7 +609,7 @@ mod tests {
         let mut sample = sample();
         sample.open("src/main.rs");
         let id = file_id(&sample.app.state(), "ferris-cli/src/main.rs");
-        assert!(sample.app.state().opened_buffers.contains(&id));
+        assert!(sample.app.state().buffers.contains_key(&id));
         sample.open("Cargo.toml");
         std::fs::write(sample.root.join("src/main.rs"), "changed disk baseline").unwrap();
         let before = sample.app.read_document(|doc| {
@@ -784,8 +634,9 @@ mod tests {
             .active_buffer()
             .unwrap()
             .dirty));
-        assert!(
-            sample.app.state().buffers.is_empty(),
+        assert_eq!(
+            sample.app.state().read_texts().0,
+            0,
             "metadata must not read buffer bodies"
         );
     }

@@ -75,9 +75,17 @@ host-session issue and requires a live password-prompt check after login.
 the fedora-44 RPMs from Release / desktop installed with dnf on the Fedora 44
 Cloud image under KVM, a gnome-keyring Secret Service unlocked on the user's
 bus, the identity provisioned there (`--provision-identity`, the same
-platform-storage minting the setup screen does), SDDM autologin into
+platform-storage minting the setup screen does), GNOME input sources seeded
+in the user's dconf database as a GNOME user has them (`de+nodeadkeys`,
+`compose:ralt`; `guest.sh gnome-input`), SDDM autologin into
 `tilo.desktop`, then Settings, Notes, Files and Terminal opened through
-Super+Space search on the VM's keyboard (QMP). There is no control socket in
+Super+Space search on the VM's keyboard (QMP). The first login must import the
+GNOME input settings into the session's `settings.json` (`de:nodeadkeys`,
+Compose on Right Alt, the import's completion marker; check H05), and the lock
+screen password and app names are then typed on that German layout, so the
+imported keymap is what unlocks the session. This is the only place the
+import is exercised: it runs only with `--host-desktop-session`, which the Tilo
+OS session never passes. There is no control socket in
 this session, so the run sees it only through SSH, the keyboard and
 screenshots. Each app must start, and the compositor must stay the same
 process for the dwell after it, with no crash log, core dump, unexpected

@@ -823,14 +823,16 @@ impl VideoEditorApp {
             let open = header(&mut l, &mut y, Section::Effects);
             l.effects_label_y = y;
             if open {
-                for i in 0..clip.effects.len() {
+                for effect in &*clip.effects {
                     let row = Rect::new(x0, y, x1, y + 24.0);
                     l.effect_rows.push(row);
                     // The row's key control joins the panel's one list of
                     // them, so drawing, hit-testing and the keyframe menu all
                     // reach it without a second code path.
-                    l.keys
-                        .push((Param::EffectAmount(i as u32), Self::effect_row_parts(row).0));
+                    l.keys.push((
+                        Param::EffectAmount(effect.id),
+                        Self::effect_row_parts(row).0,
+                    ));
                     y += 28.0;
                     l.breaks.push(y);
                 }

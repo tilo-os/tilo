@@ -220,6 +220,59 @@ fn a_linux_launch_without_tilo_launcher_is_refused() {
     assert!(apps.launched.0.lock().unwrap().is_empty());
 }
 
+/// A launched package keeps the person's records it declares in its
+/// signed surface as a built-in app does: the runtime takes the surface
+/// from the signed package as it launches it and hands it to its identity
+/// service and broker. A surface changed after install declares nothing.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_launched_package_declares_the_persons_records_its_signed_surface_names() {
+    use tilo_identity_host::broker::PersonRecordKinds as _;
+
+    const KEEPER: &str = "so.tilo.person-keeper";
+    const TAMPERED: &str = "so.tilo.person-tampered";
+    let surface = |kind: &str| {
+        format!(
+            "[[resources]]\nkind = \"{kind}.page\"\nlabel = \"Page\"\nversion = 1\n\n\
+             [[resources]]\nkind = \"{kind}.history\"\nlabel = \"History\"\nperson = true\nversion = 1\n"
+        )
+    };
+    let (_temp, root) = canonical_temp();
+    let mut store = Store::new(&root);
+    let keeper = surface("person-keeper");
+    store.install(
+        KEEPER,
+        &manifest(KEEPER, "gui", ""),
+        &[("probe", b"binary"), ("surface.toml", keeper.as_bytes())],
+    );
+    let tampered = store.install(
+        TAMPERED,
+        &manifest(TAMPERED, "gui", ""),
+        &[
+            ("probe", b"binary"),
+            ("surface.toml", surface("person-tampered").as_bytes()),
+        ],
+    );
+    std::fs::write(
+        tampered.payload_root.join("surface.toml"),
+        surface("person-forged"),
+    )
+    .unwrap();
+    let declared = |app: &str| tilo_action_broker::SurfacePersonRecords.person_record_kinds(app);
+    assert!(declared(KEEPER).is_empty(), "nothing before it is launched");
+
+    // This builder has no launcher: the launch stops there, after the
+    // runtime took the package's surface.
+    let apps = apps(&store, &root, vec![root.join("missing/tilo-launcher")]);
+    let _ = apps.start(KEEPER, ROOM);
+    let _ = apps.start(TAMPERED, ROOM);
+    assert_eq!(declared(KEEPER), ["person-keeper.history"]);
+    assert!(
+        declared(TAMPERED).is_empty(),
+        "a surface that is not the signed one declares nothing"
+    );
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn a_payload_that_does_not_verify_is_refused() {

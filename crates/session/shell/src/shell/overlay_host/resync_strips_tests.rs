@@ -6,8 +6,8 @@ use super::*;
 use crate::shell::build_tilo_overlay_host_with_chrome;
 use crate::shell::state::FreshId as _;
 use crate::shell::state::{
-    AppKind, GroupId, PeerOrigin, SharedSurfaces, Strip, StripId, Tab, TileContent,
-    WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
+    AppKind, GroupId, PeerOrigin, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+    WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
 };
 use std::collections::HashMap as StdHashMap;
 
@@ -35,23 +35,10 @@ fn one_group_seed() -> (WorkspaceTree, StripId, GroupId) {
         }],
     };
     let ws = Workspace {
-        owner: None,
-        pending_ownership_transfer: None,
-        ownership_transfer_audit: Vec::new(),
-        ownership_transfer_cancellations: Vec::new(),
-        permission_profiles: Vec::new(),
-        capabilities: Vec::new(),
-        default_apps: desktop_policy::WorkspaceDefaults::default(),
-        tasks: Vec::new(),
-        effect_receipts: Vec::new(),
-        shortcuts: Vec::new(),
-        schedule_claims: Vec::new(),
         id: ws_id,
-        room: crate::shell::state::RoomId::new(),
         name: "Test".into(),
         strips: vec![strip],
-        collaborators: vec![],
-        shared_surfaces: SharedSurfaces::default(),
+        ..Workspace::new(ws_id, String::new())
     };
     let mut active_strip = StdHashMap::new();
     active_strip.insert(ws_id, strip_id);
@@ -313,7 +300,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
                         "/untouched/different.txt".into();
                 }
                 if cancellation == "room" {
-                    tree.desktop.workspaces[0].room = crate::shell::state::RoomId::new();
+                    tree.desktop.workspaces[0].set_room(crate::shell::state::RoomId::new());
                 }
                 if cancellation == "app" {
                     for tab in tree

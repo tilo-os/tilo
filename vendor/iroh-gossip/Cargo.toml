@@ -73,10 +73,7 @@ test-utils = [
 
 [lib]
 name = "iroh_gossip"
-crate-type = [
-    "cdylib",
-    "rlib",
-]
+crate-type = ["rlib"]
 path = "src/lib.rs"
 
 [[bin]]

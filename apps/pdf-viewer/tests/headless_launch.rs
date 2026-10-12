@@ -145,28 +145,20 @@ fn run(root: &Path, name: &str, source: &Path, extra: Vec<Value>) -> (Value, Val
     )
 }
 
-/// A dumped comment's text: the paragraphs of its rich text, a line each.
-fn comment_text(comment: &Value) -> String {
-    let mut blocks: Vec<(String, String)> = comment["text"]["blocks"]
+/// The items of a dumped collection, keyed by their ids; none when the
+/// record has not stored the collection yet.
+fn entries(collection: &Value) -> Vec<&Value> {
+    collection
         .as_object()
-        .map(|blocks| {
-            blocks
-                .values()
-                .map(|block| {
-                    (
-                        block["order"].to_string(),
-                        block["text"].as_str().unwrap_or_default().to_owned(),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    blocks.sort();
-    blocks
-        .into_iter()
-        .map(|(_, text)| text)
-        .collect::<Vec<_>>()
-        .join("\n")
+        .map(|items| items.values().collect())
+        .unwrap_or_default()
+}
+
+/// The kind of a dumped annotation's mark.
+fn mark_kind(annotation: &Value) -> String {
+    let mark: Value =
+        serde_json::from_str(annotation["mark"].as_str().unwrap_or("null")).unwrap_or(Value::Null);
+    mark["kind"].as_str().unwrap_or_default().to_owned()
 }
 
 /// Every semantic node named after the first page's canvas, wherever the
@@ -194,8 +186,8 @@ fn cli_note_survives_other_document_and_restart() {
     std::fs::write(&a, &bytes).unwrap();
     std::fs::write(&b, &bytes).unwrap();
     let (initial, inspection) = run(&root, "a-first", &a, vec![]);
-    assert_eq!(initial["page-plan"].as_array().unwrap().len(), 3);
-    assert_eq!(initial["annotations"].as_array().unwrap().len(), 0);
+    assert_eq!(entries(&initial["pages"]).len(), 3);
+    assert_eq!(entries(&initial["annotations"]).len(), 0);
     let record = initial["tilo:record"]["id"].as_str().unwrap();
     let mut canvases = vec![];
     find_canvas(&inspection, &mut canvases);
@@ -228,15 +220,15 @@ fn cli_note_survives_other_document_and_restart() {
             json!({"key": "Enter"}),
         ],
     );
-    assert_eq!(edited["annotations"].as_array().unwrap().len(), 1);
-    assert_eq!(edited["comments"].as_array().unwrap().len(), 1);
-    assert_eq!(edited["annotations"][0]["kind"], "note");
-    assert_eq!(comment_text(&edited["comments"][0]), marker);
+    assert_eq!(entries(&edited["annotations"]).len(), 1);
+    assert_eq!(entries(&edited["comments"]).len(), 1);
+    assert_eq!(mark_kind(entries(&edited["annotations"])[0]), "note");
+    assert_eq!(entries(&edited["comments"])[0]["text"], marker);
     assert_eq!(edited["tilo:record"]["id"], record);
     let (other, _) = run(&root, "b-open", &b, vec![]);
     assert_ne!(other["tilo:record"]["id"], record);
-    assert_eq!(other["annotations"].as_array().unwrap().len(), 0);
-    assert_eq!(other["comments"].as_array().unwrap().len(), 0);
+    assert_eq!(entries(&other["annotations"]).len(), 0);
+    assert_eq!(entries(&other["comments"]).len(), 0);
     let (reopened, _) = run(&root, "a-restart", &a, vec![]);
     assert_eq!(reopened["tilo:record"]["id"], record);
     assert_eq!(reopened["annotations"], edited["annotations"]);

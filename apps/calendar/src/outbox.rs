@@ -1,12 +1,14 @@
-//! The calendar's uploads and deletes for the servers of this device's
-//! accounts, drained as its actions queue them.
+//! Telling the servers of this device's accounts what changed.
 //!
-//! Creating, editing or deleting an event on a remote calendar records the
-//! outside consequence in the document (the push and delete queues). Every
-//! participant's live window drains those queues to the servers of the
-//! accounts its device holds, and acknowledges each confirmed entry with an
-//! action, so an entry stays queued — and is tried again when the calendar
-//! next changes — until a server confirmed it.
+//! Each remote item carries what its server last confirmed holding
+//! ([`Calendar::remote`]). After every change — a click, the palette, an
+//! agent, a collaborator, an undo — the calendar queues the upload of each
+//! remote event its server does not hold as it is, and the delete of each
+//! copy a server holds of an event gone from that calendar here
+//! ([`Calendar::uploads`], [`Calendar::deletes`]). The device holding the
+//! account carries each entry out, records what the server confirmed
+//! (`server-applied`, `server-removed`) and settles it; one that fails stays
+//! pending and is tried again when the calendar next changes.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -14,99 +16,168 @@ use std::rc::Rc;
 use ui::framework::{EffectAnswer, EffectCx, Effected, SurfaceCx};
 
 use crate::account::AccountStore;
-use crate::actions::CalendarAction;
 use crate::caldav::{self, MutationResult, RemoveJob, UploadJob};
-use crate::model::{Id, Model};
-use crate::resource::Calendar;
+use crate::model::{Calendar, Id, RemoteCopy};
+use crate::resource::{RemoteAt, calendar, fingerprint};
 
 /// The accounts configured on this device, as the drains read them.
 pub(crate) type DeviceAccounts = Rc<RefCell<AccountStore>>;
 
-/// Each queued upload whose calendar an account on this device holds.
-pub(crate) fn uploads(state: &Model, accounts: &AccountStore) -> Vec<(Id, UploadJob)> {
+/// Whether an account on this device holds the remote calendar `id`.
+fn holds(accounts: &AccountStore, id: &str) -> bool {
+    accounts
+        .all_calendars()
+        .any(|(_, calendar)| calendar.id == id)
+}
+
+/// The upload of `event` to the calendar `calendar_id`, as this device
+/// sends it: the event as it is now, guarded by the version the server
+/// last confirmed.
+fn upload_job(
+    state: &Calendar,
+    accounts: &AccountStore,
+    event: Id,
+    calendar_id: &str,
+) -> Option<UploadJob> {
+    let event = state.event(event)?;
+    if event.calendar_id.as_deref() != Some(calendar_id) {
+        return None;
+    }
+    let (account, calendar) = accounts
+        .all_calendars()
+        .find(|(_, calendar)| calendar.id == calendar_id)?;
+    let held = state
+        .remote
+        .get(&event.id.to_string())
+        .filter(|copy| copy.calendar == calendar_id);
+    Some(UploadJob {
+        config: account.config.clone(),
+        calendar: calendar.clone(),
+        event: event.clone(),
+        href: held
+            .map(|copy| copy.href.clone())
+            .filter(|href| !href.is_empty()),
+        etag: held.and_then(|copy| copy.etag.clone()),
+    })
+}
+
+/// Each queued upload this device carries out.
+#[cfg(test)]
+pub(crate) fn uploads(state: &Calendar, accounts: &AccountStore) -> Vec<(Id, UploadJob)> {
     state
-        .push_queue
-        .iter()
-        .filter_map(|id| {
-            let event = state.event(*id)?;
-            let calendar_id = event.calendar_id.as_ref()?;
-            let (account, calendar) = accounts
-                .all_calendars()
-                .find(|(_, calendar)| &calendar.id == calendar_id)?;
-            let binding = state.bindings.get(id);
-            Some((
-                *id,
-                UploadJob {
-                    config: account.config.clone(),
-                    calendar: calendar.clone(),
-                    event: event.clone(),
-                    href: binding.map(|(_, href, _)| href.clone()),
-                    etag: binding.and_then(|(_, _, etag)| etag.clone()),
-                },
-            ))
+        .uploads
+        .pending()
+        .filter_map(|(_, upload)| {
+            upload_job(state, accounts, upload.event, &upload.calendar)
+                .map(|job| (upload.event, job))
         })
         .collect()
 }
 
-/// Each queued delete whose calendar an account on this device holds.
-pub(crate) fn deletes(state: &Model, accounts: &AccountStore) -> Vec<(Id, RemoveJob)> {
+/// Each queued delete this device carries out.
+#[cfg(test)]
+pub(crate) fn deletes(state: &Calendar, accounts: &AccountStore) -> Vec<(Id, RemoveJob)> {
     state
-        .delete_queue
-        .iter()
-        .filter_map(|(calendar_id, id)| {
+        .deletes
+        .pending()
+        .filter_map(|(_, removal)| {
             let (account, calendar) = accounts
                 .all_calendars()
-                .find(|(_, calendar)| &calendar.id == calendar_id)?;
-            let binding = state.bindings.get(id);
+                .find(|(_, calendar)| calendar.id == removal.calendar)?;
             Some((
-                *id,
+                removal.item,
                 RemoveJob {
                     config: account.config.clone(),
                     calendar: calendar.clone(),
-                    id: *id,
-                    href: binding.map(|(_, href, _)| href.clone()),
-                    etag: binding.and_then(|(_, _, etag)| etag.clone()),
+                    id: removal.item,
+                    href: Some(removal.href.clone()).filter(|href| !href.is_empty()),
+                    etag: removal.etag.clone(),
                 },
             ))
         })
         .collect()
 }
 
-/// Drain both queues to the servers of `accounts` for as long as the
-/// surface lives.
+/// The copies on servers an upload waits to replace: what protects the
+/// local version from what the server sends meanwhile.
+pub(crate) fn pending_copies(state: &Calendar) -> Vec<&RemoteCopy> {
+    state
+        .uploads
+        .pending()
+        .filter_map(|(_, upload)| {
+            state
+                .remote
+                .get(&upload.event.to_string())
+                .filter(|copy| copy.calendar == upload.calendar)
+        })
+        .collect()
+}
+
+/// Carry out the queued uploads and deletes of the calendars `accounts`
+/// holds for as long as the surface lives.
 pub(crate) fn drain(cx: &SurfaceCx<Calendar>, accounts: &DeviceAccounts) {
+    let owner = Rc::clone(accounts);
     let held = Rc::clone(accounts);
-    cx.drain(
-        move |state: &Model| uploads(state, &held.borrow()),
-        |job: UploadJob, cx: &mut EffectCx<Calendar>| {
+    cx.outbox(
+        Calendar::paths().uploads,
+        move |_, upload| holds(&owner.borrow(), &upload.calendar),
+        move |_, upload, cx: &mut EffectCx<Calendar>| {
+            let state = cx.live().get();
+            let Some(job) = upload_job(&state, &held.borrow(), upload.event, &upload.calendar)
+            else {
+                // Gone, or moved off that calendar since: nothing to send.
+                return Ok(Effected::done());
+            };
+            let holds = fingerprint(&job.event);
             Ok(cx.spawn(
                 move |_| async move { caldav::push_jobs(std::slice::from_ref(&job)).await },
-                |(), result: MutationResult, cx| {
+                move |(), result: MutationResult, cx| {
                     for revision in &result.revisions {
-                        cx.apply(&CalendarAction::SetRemoteBinding {
-                            id: revision.id.to_string(),
-                            calendar_id: revision.calendar_id.clone(),
-                            href: revision.href.clone(),
-                            etag: revision.etag.clone().unwrap_or_default(),
-                        });
-                    }
-                    for id in &result.confirmed {
-                        cx.apply(&CalendarAction::AcknowledgeRemotePush { id: id.to_string() });
+                        if result.confirmed.contains(&revision.id) {
+                            cx.submit(Calendar::SERVER_APPLIED.with(calendar::ServerApplied {
+                                event: revision.id,
+                                at: RemoteAt {
+                                    calendar: revision.calendar_id.clone(),
+                                    href: revision.href.clone(),
+                                    etag: revision.etag.clone(),
+                                },
+                                holds: holds.clone(),
+                            }));
+                        }
                     }
                     outcome(&result)
                 },
             ))
         },
     );
+    let owner = Rc::clone(accounts);
     let held = Rc::clone(accounts);
-    cx.drain(
-        move |state: &Model| deletes(state, &held.borrow()),
-        |job: RemoveJob, cx: &mut EffectCx<Calendar>| {
+    cx.outbox(
+        Calendar::paths().deletes,
+        move |_, removal| holds(&owner.borrow(), &removal.calendar),
+        move |_, removal, cx: &mut EffectCx<Calendar>| {
+            let Some((account, calendar)) = held
+                .borrow()
+                .all_calendars()
+                .find(|(_, calendar)| calendar.id == removal.calendar)
+                .map(|(account, calendar)| (account.config.clone(), calendar.clone()))
+            else {
+                return Err(format!("no account here holds {}", removal.calendar));
+            };
+            let job = RemoveJob {
+                config: account,
+                calendar,
+                id: removal.item,
+                href: Some(removal.href).filter(|href| !href.is_empty()),
+                etag: removal.etag,
+            };
             Ok(cx.spawn(
                 move |_| async move { caldav::remove_jobs(std::slice::from_ref(&job)).await },
                 |(), result: MutationResult, cx| {
                     for id in &result.confirmed {
-                        cx.apply(&CalendarAction::AcknowledgeRemoteDelete { id: id.to_string() });
+                        cx.submit(
+                            Calendar::SERVER_REMOVED.with(calendar::ServerRemoved { item: *id }),
+                        );
                     }
                     outcome(&result)
                 },
@@ -115,11 +186,11 @@ pub(crate) fn drain(cx: &SurfaceCx<Calendar>, accounts: &DeviceAccounts) {
     );
 }
 
-/// What one upload or delete came to: done, or why the entry stays queued.
+/// What one upload or delete came to: done, or why it is tried again.
 fn outcome(result: &MutationResult) -> EffectAnswer {
     if let Some((_, href)) = result.conflicts.first() {
         return Err(format!(
-            "{href} also changed on the server; the local version stays queued"
+            "{href} also changed on the server; the local version waits to be uploaded"
         ));
     }
     if let Some((_, reason)) = result.failures.first() {
@@ -129,60 +200,4 @@ fn outcome(result: &MutationResult) -> EffectAnswer {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::actions::{CalendarAction, EventData};
-    use tilo_actions::Action as _;
-
-    /// Only what an account on this device can reach is drained here; the
-    /// rest stays queued for a device that holds its account.
-    #[test]
-    fn the_queues_drain_to_the_calendars_this_device_holds() {
-        let accounts = AccountStore::sample();
-        let (_, calendar) = accounts.all_calendars().next().expect("a sample calendar");
-        let mut doc = automerge::AutoCommit::new();
-        let mut held = crate::model::seed_demo(chrono::Local::now().date_naive()).events[0].clone();
-        held.calendar_id = Some(calendar.id.clone());
-        held.project = None;
-        let mut elsewhere = held.clone();
-        elsewhere.id = uuid::Uuid::new_v4();
-        elsewhere.calendar_id = Some("another-device/calendar".into());
-        for event in [&held, &elsewhere] {
-            CalendarAction::UpsertEvent(EventData::from_event(event))
-                .apply(&mut doc)
-                .expect("create");
-        }
-        let state = crate::doc::CalDoc::read_model(&doc);
-        assert_eq!(state.push_queue.len(), 2, "both creations are queued");
-        let jobs = uploads(&state, &accounts);
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].0, held.id);
-        assert_eq!(jobs[0].1.calendar.id, calendar.id);
-
-        CalendarAction::DeleteEvent {
-            id: held.id.to_string(),
-            remote_delete: Some(calendar.id.clone()),
-        }
-        .apply(&mut doc)
-        .expect("delete");
-        let state = crate::doc::CalDoc::read_model(&doc);
-        assert!(
-            uploads(&state, &accounts).is_empty(),
-            "a deleted event is not uploaded"
-        );
-        let jobs = deletes(&state, &accounts);
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].0, held.id);
-
-        CalendarAction::AcknowledgeRemoteDelete {
-            id: held.id.to_string(),
-        }
-        .apply(&mut doc)
-        .expect("acknowledge");
-        let state = crate::doc::CalDoc::read_model(&doc);
-        assert!(
-            deletes(&state, &accounts).is_empty(),
-            "a confirmed delete leaves the queue"
-        );
-    }
-}
+mod tests;

@@ -1872,7 +1872,7 @@ mod tests {
                 let root = Column::new()
                     .push(Box::new(Text::new("title")))
                     .push(Box::new(Button::new("localized-action", "action")));
-                let mut driver = crate::headless::Driver::new_with_controlled_inputs(
+                let mut driver = crate::headless::FrameHarness::new_with_controlled_inputs(
                     crate::State::new(),
                     Box::new(root),
                     (700, 300),

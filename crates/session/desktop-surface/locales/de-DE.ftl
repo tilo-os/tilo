@@ -304,6 +304,7 @@ activity-removed-workspace = ein entfernter Arbeitsbereich
 activity-receipt-completed = Abgeschlossen
 activity-receipt-failed = Fehlgeschlagen
 activity-receipt-cancelled = Abgebrochen
+activity-receipt-ended = { $status }: { $what }
 activity-replay-pending = Die Wiedergabe wartet auf laufende Bearbeitungen
 activity-replay-unavailable = Für diese Prüfpunkte ist keine Wiedergabe des Arbeitsbereichs verfügbar
 activity-replay-empty = Noch keine wiedergebbaren Prüfpunkte
@@ -345,6 +346,33 @@ activity-task-mark-done = Als erledigt markieren
 activity-task-cancel = Aufgabe abbrechen
 activity-task-retry-agent = Agent erneut versuchen
 activity-task-audit-trail = PRÜFPROTOKOLL
+activity-task-audit-noted = { $what }: { $note }
+workspace-create-task = { $manual ->
+    [true] Aufgabe „{ $title }“ zum Selbermachen angelegt
+   *[false] Aufgabe „{ $title }“ angelegt
+}
+workspace-attach-resource = { $resource } an die Aufgabe angehängt
+workspace-set-execution-budget = Laufzeit der Aufgabe festgelegt
+workspace-approve-run = Lauf { $run } freigegeben
+workspace-start-run = Lauf { $run } gestartet
+workspace-add-direction = Anweisung { $revision } gegeben
+workspace-apply-direction = Anweisung { $revision } befolgt
+workspace-finish = { $outcome ->
+    [done] Aufgabe erledigt
+    [waiting] Angehalten, um zu warten
+   *[cancelled] Aufgabe abgebrochen
+}
+workspace-abandon = Lauf aufgegeben
+workspace-retry = Aufgabe erneut eingereiht
+workspace-cancel = Aufgabe abgebrochen
+workspace-report = Fortschritt gemeldet
+workspace-set-status = { $status ->
+    [queued] Aufgabe eingereiht
+    [in-progress] Aufgabe begonnen
+    [waiting] Aufgabe auf Warten gesetzt
+    [done] Aufgabe als erledigt markiert
+   *[cancelled] Aufgabe abgebrochen
+}
 activity-task-unassigned-by = Nicht zugewiesen · angelegt von { $creator }
 activity-task-agent-badge = Agent · { $name }
 activity-task-status-queued = In der Warteschlange
@@ -411,32 +439,45 @@ activity-titles-more = { $first }, { $second } und { $count } weitere
 activity-capability = { $effect ->
         [restrict] eingeschränktes { $verb ->
             [read] Lesen
-            [comment] Kommentieren
-            [write] Schreiben
-            [invite] Einladen
-           *[admin] Verwalten
+           *[write] Schreiben
         }
        *[grant] { $verb ->
             [read] Lesen
-            [comment] Kommentieren
-            [write] Schreiben
-            [invite] Einladen
-           *[admin] Verwalten
+           *[write] Schreiben
         }
     } für { $scope } an { $subject }
 activity-capability-unknown = eine Berechtigung
 activity-capability-this-workspace = diesen Arbeitsbereich
-activity-capability-every-type = jede Ressource vom Typ { $kind }
-activity-capability-action-on-kind = { $app }:{ $action } auf jeder Ressource vom Typ { $kind }
-activity-capability-one-artifact = ein Artefakt
 activity-capability-one-shared-file = eine geteilte Datei
 activity-capability-network = Netzwerk { $host }
 activity-capability-role = { $role ->
         [owner] Eigentümer
         [editor] Bearbeitende
         [commenter] Kommentierende
-        [viewer] Betrachtende
-       *[denied] gesperrte Mitglieder
+       *[viewer] Betrachtende
+    }
+activity-grant = { $kinds ->
+        [read] Lesen
+        [undoable] Änderungen
+        [outside] Wirkungen nach außen
+        [read-undoable] Lesen und Änderungen
+        [read-outside] Lesen und Wirkungen nach außen
+        [undoable-outside] Änderungen und Wirkungen nach außen
+        [none] nichts
+       *[all] alles
+    } { $answer ->
+        [deny] verweigert
+        [ask] nach Rückfrage
+       *[allow] erlaubt
+    } für { $node } an { $subject }
+activity-grant-task = Aufgabe { $task }
+activity-grant-shortcut = Kurzbefehl { $shortcut }
+activity-grant-foreign-device = Geräte, die nicht die eigenen sind
+activity-member = { $person } als { $role ->
+        [owner] Eigentümer
+        [editor] Bearbeitende
+        [commenter] Kommentierende
+       *[viewer] Betrachtende
     }
 activity-capability-a-person = eine Person
 activity-capability-agent = Agent { $agent }
@@ -633,6 +674,17 @@ workspace-settings-allows-edit = { $what } bearbeiten
 workspace-settings-allows-comment = { $what } kommentieren
 workspace-settings-allows-invite = Andere einladen: { $what }
 workspace-settings-allows-view = { $what } ansehen
+workspace-settings-grant-allows = Erlaubt: { $kinds } in { $where }
+workspace-settings-grant-asks = Fragt zuerst: { $kinds } in { $where }
+workspace-settings-grant-denies = Verweigert: { $kinds } in { $where }
+workspace-settings-kind-read = Lesen
+workspace-settings-kind-undoable = Änderungen
+workspace-settings-kind-outside = Wirkungen nach außen
+workspace-settings-subject-foreign-device = Geräte, die nicht die eigenen sind
+workspace-settings-grant-placeholder = Wer, wo und was
+workspace-settings-grant-description = Jemandem, einem Agenten oder einer App eine Antwort für Arten von Aktionen in einem Teil dieses Arbeitsbereichs geben.
+workspace-settings-revoke-placeholder = Welche Berechtigung
+workspace-settings-revoke-description = Eine Berechtigung anhand ihrer Kennung zurücknehmen.
 workspace-settings-expiry-once = Einmal
 workspace-settings-expiry-session = Sitzung
 workspace-settings-expiry-until = Bis

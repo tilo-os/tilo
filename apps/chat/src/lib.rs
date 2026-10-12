@@ -2,9 +2,9 @@
 //!
 //! A collaborative chat + calls surface tied to workspaces. The
 //! convergent state — workspaces, categories, channels, messages, reactions,
-//! edits + edit history, threads, members and drafts — lives in an
-//! Automerge document ([`doc`]), the room's own record of the chat, changed
-//! only through [`actions::ChatAction`]s. Attachments are content-addressed references:
+//! edits + edit history, threads, members and drafts — is the [`record::Chat`]
+//! model, the room's own record of the chat, changed only through its verbs
+//! and field edits. Attachments are content-addressed references:
 //! the CRDT stores their identity and bounded metadata, while bytes stay in the
 //! app's content store. The [`app::ChatApp`] widget is a projection of that
 //! document plus an input router.
@@ -46,13 +46,12 @@
     )
 )]
 
-pub mod actions;
 pub mod app;
 pub mod body;
 pub mod call;
 pub mod composer;
 pub mod continuity;
-pub mod doc;
+pub mod demo;
 pub mod effects;
 pub mod events;
 mod external;
@@ -69,6 +68,8 @@ pub mod paint;
 pub mod permissions;
 pub mod picker;
 pub mod preferences;
+pub mod projection;
+pub mod record;
 pub mod render_call;
 pub mod render_chat;
 pub mod resource;
@@ -79,6 +80,8 @@ pub use app::ChatApp;
 
 #[cfg(test)]
 mod component_tests;
+#[cfg(test)]
+mod testing;
 
 mod local_view;
 pub use resource::{Chat, ChatShell};

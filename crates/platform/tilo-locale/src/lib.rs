@@ -18,21 +18,31 @@
 
 use serde::{Deserialize, Serialize};
 use ui::clock::TimeStyle;
+use ui::tilo_resource;
 
 /// World currency, by ISO-4217 code. Each carries its own symbol,
 /// placement, and conventional number of decimals — `$1,234.50` vs
 /// `1.234,50 €` vs `¥1,235` (yen has no minor unit). The serde repr is the
 /// bare variant name, which equals the ISO code.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 pub enum Currency {
+    #[model(rename = "USD")]
     USD,
+    #[model(rename = "EUR")]
     EUR,
+    #[model(rename = "GBP")]
     GBP,
+    #[model(rename = "JPY")]
     JPY,
+    #[model(rename = "CHF")]
     CHF,
+    #[model(rename = "CAD")]
     CAD,
+    #[model(rename = "AUD")]
     AUD,
+    #[model(rename = "CNY")]
     CNY,
+    #[model(rename = "INR")]
     INR,
 }
 
@@ -122,19 +132,23 @@ impl Currency {
 
 /// How dates render. The serde names are the exact strings the settings
 /// file uses (`ISO`/`US`/`EU`/`Long`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 pub enum DateStyle {
     /// `2023-03-15`
     #[serde(rename = "ISO")]
+    #[model(rename = "ISO")]
     Iso,
     /// `03/15/2023`
     #[serde(rename = "US")]
+    #[model(rename = "US")]
     Us,
     /// `15/03/2023`
     #[serde(rename = "EU")]
+    #[model(rename = "EU")]
     Eu,
     /// `15 Mar 2023`
     #[serde(rename = "Long")]
+    #[model(rename = "Long")]
     Long,
 }
 
@@ -156,18 +170,6 @@ impl DateStyle {
         }
     }
 
-    /// Today's date in this style, read through the toolkit clock.
-    pub fn today(self) -> String {
-        ui::clock::today()
-            .format(match self {
-                DateStyle::Iso => "%Y-%m-%d",
-                DateStyle::Us => "%m/%d/%Y",
-                DateStyle::Eu => "%d/%m/%Y",
-                DateStyle::Long => "%-d %b %Y",
-            })
-            .to_string()
-    }
-
     /// User-facing name for the dropdown.
     pub fn label(self) -> &'static str {
         match self {
@@ -180,7 +182,9 @@ impl DateStyle {
 }
 
 /// Measurement system.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default, ui::tilo_resource::Model,
+)]
 pub enum Measurement {
     #[default]
     Metric,
@@ -201,7 +205,9 @@ impl Measurement {
 /// Decimal/grouping convention used by locale-aware consumers. Keeping this
 /// separate from currency lets someone use EUR with either continental or
 /// English-language formatting.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
 pub enum NumberStyle {
     #[default]
     DecimalPoint,
@@ -223,7 +229,9 @@ impl NumberStyle {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
 pub enum FirstDayOfWeek {
     #[default]
     Monday,
@@ -245,7 +253,7 @@ impl FirstDayOfWeek {
 
 /// The `locale` section of the shared store. Every field has a sensible
 /// default so a brand-new install needs no file at all.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[serde(default)]
 pub struct Locale {
     pub currency: Currency,
@@ -272,6 +280,9 @@ impl Default for Locale {
 impl ui::storage::SettingsSchema for Locale {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("locale");
 }
+
+#[ui::tilo_resource::resource(kind = "settings.locale", label = "Region and language")]
+impl Locale {}
 
 #[cfg(test)]
 mod tests {

@@ -445,6 +445,7 @@ pub fn open_ush_session(
         // never the host's shell, which no relay session reaches.
         requested_by: ush::host::RequestedBy::Person,
         relay_session: None,
+        runs: None,
         // Native editor custody is participant-private and never relayed.
         editor_protocol: None,
     };
@@ -1071,6 +1072,7 @@ mod tests {
                 session: "s".into(),
                 environment: "relay-key".into(),
                 relay_session: None,
+                runs: false,
                 editor_protocol: None,
             })
             .unwrap();

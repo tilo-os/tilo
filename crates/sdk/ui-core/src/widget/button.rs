@@ -1,4 +1,5 @@
 use crate::i18n;
+use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
 use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
@@ -250,10 +251,9 @@ impl Button {
         } else {
             self.label.clone()
         };
-        let mut spec =
+        let spec =
             tilo_actions::ActionSpec::operation("invoke", label.clone(), kind, TYPE_ID, &self.id)
                 .expect("a control id is always JSON serializable");
-        spec.contract.discovery = tilo_actions::DiscoveryScope::Launchable;
         let resource =
             tilo_actions::Resource::new(resource_id, "tilo.control", label).with_action(spec);
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "invoke")
@@ -935,7 +935,7 @@ impl FaceContent<'_> {
         // elides it over shaping round-off.
         let label =
             ctx.text
-                .elide_to_width_style(self.label, px_f32(label_room.max(1.0) + 0.5), style);
+                .elide_to_width_style(self.label, f32_of_f64(label_room.max(1.0) + 0.5), style);
         let (label_w, label_h) = ctx.text.measure_style(&label, None, style);
         let hint_w = hint.map_or(0.0, |(_, w)| metrics.hint_gap + w);
         let cluster = lead + f64::from(label_w) + hint_w;
@@ -1233,15 +1233,6 @@ impl<'a> ButtonFace<'a> {
 const FOCUS_RING_WIDTH: f64 = 2.0;
 const REST_BORDER_WIDTH: f64 = 1.0;
 
-/// `measure` works in taffy's `f32`; the painters work in kurbo's `f64`.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "logical pixel counts far below f32 precision"
-)]
-fn px_f32(value: f64) -> f32 {
-    value as f32
-}
-
 /// Resolve a label key for painting, measuring or speaking. An empty key is
 /// an icon-only face and stays empty: routed through `i18n!` it would come
 /// back as the pseudo-locale's `⟦⟧` markers — a visible bracket pair beside
@@ -1317,7 +1308,7 @@ impl Button {
     /// captured in `build_layout`.
     fn intrinsic_width(&self, text: &mut TextRenderer) -> f32 {
         let (label, hint) = self.content();
-        px_f32(
+        f32_of_f64(
             FaceContent {
                 flush: self.role.flush() && !label.is_empty(),
                 icon: self.icon,
@@ -1430,7 +1421,7 @@ impl Widget for Button {
             self.dirty = true;
             self.metrics = metrics;
         }
-        let height = px_f32(self.face_height());
+        let height = f32_of_f64(self.face_height());
         let style = Style {
             // An intrinsic button never shrinks below its label: a parent
             // with room shows it whole, and only a parent without room
@@ -1471,7 +1462,9 @@ impl Widget for Button {
         }
         Size {
             width: known.width.unwrap_or(intrinsic),
-            height: known.height.unwrap_or_else(|| px_f32(self.face_height())),
+            height: known
+                .height
+                .unwrap_or_else(|| f32_of_f64(self.face_height())),
         }
     }
 

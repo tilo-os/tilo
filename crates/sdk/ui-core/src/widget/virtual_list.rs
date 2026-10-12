@@ -312,6 +312,9 @@ pub struct VirtualList<M: ListModel> {
     mounted: Vec<MountedRow<M::Key>>,
     selection: KeySelection<M::Key>,
     multi_select: bool,
+    /// Moving the focused row by keyboard (or assistive technology) also
+    /// selects it.
+    follow_focus: bool,
     focused_key: Option<M::Key>,
     on_select: Option<SelectCallback<M::Key>>,
     on_activate: Option<KeyCallback<M::Key>>,
@@ -336,6 +339,8 @@ pub struct VirtualList<M: ListModel> {
     bleed: f64,
     /// Whether the rows were last laid out beside a scroll bar.
     rows_beside_bar: bool,
+    /// The list takes its parent's height, and its viewport follows it.
+    fill_height: bool,
     last_tick: Option<Instant>,
     last_anchor: Option<SparseAnchor<M::Key>>,
     requested_range: Option<Range<usize>>,
@@ -411,6 +416,7 @@ impl<M: ListModel> VirtualList<M> {
             mounted: Vec::new(),
             selection: KeySelection::new(),
             multi_select: false,
+            follow_focus: false,
             focused_key: None,
             on_select: None,
             on_activate: None,
@@ -431,6 +437,7 @@ impl<M: ListModel> VirtualList<M> {
             gutter: f64::from(crate::tokens::Metrics::BASE.scrollbar_gutter),
             bleed: f64::from(crate::tokens::Spacing::BASE.s2),
             rows_beside_bar: false,
+            fill_height: false,
             last_tick: None,
             last_anchor: None,
             requested_range: None,
@@ -482,9 +489,26 @@ impl<M: ListModel> VirtualList<M> {
         self.visible_window_changed();
     }
 
+    /// Take the parent's full height (a pane's one list) instead of a fixed
+    /// viewport; the viewport follows the laid-out height.
+    #[must_use]
+    pub fn filling(mut self) -> Self {
+        self.fill_height = true;
+        self
+    }
+
     #[must_use]
     pub fn multi_select(mut self, enabled: bool) -> Self {
         self.multi_select = enabled;
+        self
+    }
+
+    /// Select the row the keyboard moves to, as a single-selection list
+    /// whose selection is what it shows elsewhere (the open item of a
+    /// master-detail window) does. A modifier-extended move still extends.
+    #[must_use]
+    pub fn selection_follows_focus(mut self) -> Self {
+        self.follow_focus = true;
         self
     }
 
@@ -1029,13 +1053,21 @@ impl<M: ListModel> VirtualList<M> {
             return false;
         };
         self.focused_key = Some(key.clone());
-        if extend {
-            self.apply_selection(key, false, true);
-        }
+        self.select_focused(key, extend);
         self.viewport
             .scroll_to_index(index, ScrollAlignment::Nearest);
         self.visible_window_changed();
         true
+    }
+
+    /// The selection after the keyboard moved to `key`: extended to it, or
+    /// moved onto it when the selection follows focus.
+    fn select_focused(&mut self, key: M::Key, extend: bool) {
+        if extend {
+            self.apply_selection(key, false, true);
+        } else if self.follow_focus && !self.selection.is_selected(&key) {
+            self.apply_selection(key, false, false);
+        }
     }
 
     fn page_focus(&mut self, forward: bool, extend: bool) -> bool {
@@ -1052,9 +1084,7 @@ impl<M: ListModel> VirtualList<M> {
             return false;
         };
         self.focused_key = Some(key.clone());
-        if extend {
-            self.apply_selection(key, false, true);
-        }
+        self.select_focused(key, extend);
         self.visible_window_changed();
         scrolled || index != current
     }
@@ -1324,7 +1354,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             Style {
                 size: Size {
                     width: percent(1.0_f32),
-                    height: Dimension::length(px(self.viewport.viewport())),
+                    height: if self.fill_height {
+                        percent(1.0_f32)
+                    } else {
+                        Dimension::length(px(self.viewport.viewport()))
+                    },
                 },
                 overflow: taffy::Point {
                     x: taffy::Overflow::Clip,
@@ -1341,6 +1375,13 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        if self.fill_height
+            && self.rect.height() > 0.0
+            && (self.rect.height() - self.viewport.viewport()).abs() > 0.5
+        {
+            self.viewport.set_viewport(self.rect.height());
+            self.visible_window_changed();
+        }
         let child_origin = Point::new(self.rect.x0, self.rect.y0);
         let mut measurements = Vec::with_capacity(self.mounted.len());
         for row in &mut self.mounted {
@@ -1575,8 +1616,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     WheelStep::Ignored => false,
                 };
             }
+            // A key a focused row left alone moves through the list, and
+            // the list takes the focus from the row.
             WindowEvent::KeyboardInput { event, .. }
-                if self.is_focused && event.state == ElementState::Pressed =>
+                if (self.is_focused || self.mounted.iter().any(|row| row.widget.is_focused()))
+                    && event.state == ElementState::Pressed =>
             {
                 self.momentum.stop();
                 if event.logical_key == Key::Named(NamedKey::Escape) && self.reorder.cancel() {
@@ -1589,6 +1633,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                         toggle,
                         ctx.modifiers.state().shift_key(),
                     );
+                    if *ctx.handled && !self.is_focused {
+                        *ctx.focus_target = Some(ctx.node_id);
+                    }
                 }
             }
             _ => {}
@@ -1766,7 +1813,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         };
         match action {
             Action::Focus => {
-                self.focused_key = Some(key);
+                self.focused_key = Some(key.clone());
+                self.select_focused(key, false);
                 self.viewport
                     .scroll_to_index(index, ScrollAlignment::Nearest);
                 self.visible_window_changed();
@@ -1995,16 +2043,6 @@ mod tests {
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
-
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
         }
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -2756,6 +2794,71 @@ mod tests {
         let row = short.mounted[0].widget.get_rect();
         assert!((row.x1 - (300.0 - bleed)).abs() < 0.5);
         assert!(short.scrollbar_track().is_none());
+    }
+
+    #[test]
+    fn a_filling_list_takes_its_parents_height_as_its_viewport() {
+        let mut list = plain_rows(1000).filling();
+        let doc = AutoCommit::new();
+        let mut taffy = TaffyTree::new();
+        let mut node_map = HashMap::new();
+        let mut lay_out_in = |list: &mut VirtualList<_>, taffy: &mut TaffyTree<()>| {
+            list.sync(&doc, &automerge::ROOT);
+            taffy.clear();
+            node_map.clear();
+            let node = list.build_layout(taffy, &Theme::dark(), &mut node_map);
+            let parent = taffy
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: length(300.0_f32),
+                            height: length(600.0_f32),
+                        },
+                        ..Default::default()
+                    },
+                    &[node],
+                )
+                .unwrap();
+            taffy
+                .compute_layout(
+                    parent,
+                    Size {
+                        width: AvailableSpace::MaxContent,
+                        height: AvailableSpace::MaxContent,
+                    },
+                )
+                .unwrap();
+            list.apply_layout(taffy, node, Point::ZERO);
+        };
+        lay_out_in(&mut list, &mut taffy);
+        assert!((list.get_rect().height() - 600.0).abs() < 0.5);
+        lay_out_in(&mut list, &mut taffy);
+        let rows = list.visible_range();
+        assert!(
+            rows.end * 40 >= 600,
+            "the window covers the height: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn selection_can_follow_the_keyboard_focus() {
+        let selected = Rc::new(RefCell::new(Vec::new()));
+        let record = Rc::clone(&selected);
+        let mut list = plain_rows(10)
+            .selection_follows_focus()
+            .on_select(move |key, on| record.borrow_mut().push((key, on)));
+        let (taffy, node) = lay_out(&mut list, 300.0);
+        list.set_focus(true);
+        assert!(list.reveal(&2));
+        let down = crate::synthetic_input::named_key(NamedKey::ArrowDown);
+        assert!(dispatch(&mut list, &down, &taffy, node));
+        assert_eq!(list.focused_key(), Some(&3));
+        assert!(
+            list.selection().is_selected(&3),
+            "the focused row is chosen"
+        );
+        assert!(!list.selection().is_selected(&2));
+        assert_eq!(selected.borrow().last(), Some(&(3, true)));
     }
 
     #[test]

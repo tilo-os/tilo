@@ -7,7 +7,7 @@
 //! are the single source of truth the rest of the system follows, exactly
 //! like Appearance owns the theme.
 //!
-//! Every control is bound to a [`NotificationEffect`]:
+//! Every control is a field edit of that section, or its `mute-app` verb:
 //! - **Do Not Disturb** — master mute for banners and sounds.
 //! - **Show banners** — pop-up banners for incoming notifications.
 //! - **Show previews** — reveal the message body (off shows only the app name).
@@ -16,7 +16,7 @@
 //! - **Focus** — a scheduled quiet period that only priority apps pierce.
 //! - **Per app** — overrides of the delivery choices for one verified app,
 //!   priority during focus, and a temporary mute. An app's rows are live rows
-//!   (`settings.notification-app:<id>`) offering the same effects bound to it.
+//!   (`settings.notification-app:<id>`) offering the same edits bound to it.
 
 use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, HashMap};
@@ -25,20 +25,16 @@ use settings_store::notification_policy::AppNotificationRule;
 use taffy::{NodeId, TaffyTree};
 use tilo_clock::unix_now_i64;
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx, LiveRow};
+use ui::framework::LiveRow;
 use ui::theme::Theme;
-use ui::tilo_resource::{self, ActionRef, Effect};
-use ui::widget::{AppModel, Dropdown, ModelPath, Toggle, Widget};
+use ui::tilo_resource;
+use ui::widget::{AppModel, ModelPath, Widget};
 
-use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
-use crate::i18n::{t, t_args};
+use crate::i18n::{english, t, t_args};
 use crate::prefs::NotificationPrefs;
-use crate::resource::Settings;
-use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, StatusTone, caption, card, choice_row, error_row, rows, semantic_status_pill,
-    setting_row_described, value_row,
+    El, StatusTone, caption, card, error_row, rows, semantic_status_pill, value_row,
 };
 
 const FOCUS_DAYS: &[(&str, u8)] = &[
@@ -64,7 +60,7 @@ pub(crate) struct InstalledNotificationApp {
     name: String,
 }
 
-fn valid_app_id(id: &str) -> bool {
+pub(crate) fn valid_app_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 160
         && id
@@ -136,164 +132,42 @@ fn installed_notification_apps_from(
     apps
 }
 
-fn english<T>(table: &'static [(&'static str, T)]) -> impl Iterator<Item = &'static str> {
-    table.iter().map(|(label, _)| *label)
+/// One of an app's delivery choices a person turns on or off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AppChoice {
+    Banners,
+    Previews,
+    Sounds,
+    Badges,
+    Priority,
+    PriorityContacts,
 }
 
-/// How notifications reach the person: globally, during focus, and per app.
-#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(operation = "settings.effect")]
-pub enum NotificationEffect {
-    /// Turn Do Not Disturb on or off.
-    #[effect(idempotent)]
-    SetDoNotDisturb { on: bool },
-    /// Show notification banners, or stop.
-    #[effect(idempotent)]
-    SetBanners { on: bool },
-    /// Show message previews in notifications, or only the app's name.
-    #[effect(idempotent)]
-    SetPreviews { on: bool },
-    /// Play a sound when a notification arrives, or stop.
-    #[effect(idempotent)]
-    SetSounds { on: bool },
-    /// Show notifications on the lock screen, or stop.
-    #[effect(idempotent)]
-    SetLockScreen { on: bool },
-    /// Show notification badges on app icons, or stop.
-    #[effect(idempotent)]
-    SetBadges { on: bool },
-    /// Turn the scheduled focus period on or off.
-    #[effect(idempotent)]
-    SetFocus { on: bool },
-    /// Set when the focus period begins.
-    #[effect(idempotent)]
-    SetFocusStart {
-        #[param("The time, HH:MM", choices = english(FOCUS_TIMES))]
-        time: String,
-    },
-    /// Set when the focus period ends.
-    #[effect(idempotent)]
-    SetFocusEnd {
-        #[param("The time, HH:MM", choices = english(FOCUS_TIMES))]
-        time: String,
-    },
-    /// Set on which days the focus period applies.
-    #[effect(idempotent)]
-    SetFocusDays {
-        #[param("The days", choices = english(FOCUS_DAYS))]
-        days: String,
-    },
-    /// Show one app's notification banners, or stop.
-    #[effect(idempotent)]
-    SetAppBanners {
-        #[param("The app's id")]
-        app: String,
-        on: bool,
-    },
-    /// Show previews in one app's notifications, or stop.
-    #[effect(idempotent)]
-    SetAppPreviews {
-        #[param("The app's id")]
-        app: String,
-        on: bool,
-    },
-    /// Play one app's notification sounds, or stop.
-    #[effect(idempotent)]
-    SetAppSounds {
-        #[param("The app's id")]
-        app: String,
-        on: bool,
-    },
-    /// Show one app's notification badges, or stop.
-    #[effect(idempotent)]
-    SetAppBadges {
-        #[param("The app's id")]
-        app: String,
-        on: bool,
-    },
-    /// Let one app's notifications through during focus, or stop.
-    #[effect(idempotent)]
-    SetAppPriority {
-        #[param("The app's id")]
-        app: String,
-        on: bool,
-    },
-    /// Let one app's notifications from priority contacts through during
-    /// focus, or stop.
-    #[effect(idempotent)]
-    SetAppPriorityContacts {
-        #[param("The app's id")]
-        app: String,
-        on: bool,
-    },
-    /// Mute one app's notifications for a while, or unmute it.
-    #[effect(idempotent)]
-    MuteApp {
-        #[param("The app's id")]
-        app: String,
-        #[param("For how long", choices = english(MUTE_OPTIONS))]
-        duration: String,
-    },
-}
-
-/// One app's override of a delivery choice.
-fn app_rule(
-    app: &str,
-    change: impl FnOnce(&mut AppNotificationRule),
-) -> Result<impl FnOnce(&mut NotificationPrefs), String> {
-    if !valid_app_id(app) {
-        return Err(format!("`{app}` is not an app id"));
+impl AppChoice {
+    /// The field edit turning this choice of `app` on or off: the one field
+    /// of its rule, the rest untouched (a rule the app has none of yet
+    /// starts from the default).
+    fn edit(self, app: &str, on: bool) -> tilo_resource::Edit<NotificationPrefs> {
+        let rule = NotificationPrefs::paths().per_app.key(app);
+        match self {
+            Self::Banners => rule.banners.set(Some(on)),
+            Self::Previews => rule.previews.set(Some(on)),
+            Self::Sounds => rule.sounds.set(Some(on)),
+            Self::Badges => rule.badges.set(Some(on)),
+            Self::Priority => rule.priority.set(on),
+            Self::PriorityContacts => rule.priority_contacts.set(on),
+        }
     }
-    let app = app.to_owned();
-    Ok(move |prefs: &mut NotificationPrefs| change(prefs.per_app.entry(app).or_default()))
-}
 
-/// Answer `effect`.
-pub(crate) fn answer(
-    app: &SettingsApp,
-    effect: NotificationEffect,
-    _cx: &mut EffectCx<Settings, SettingsApp>,
-) -> EffectAnswer {
-    use NotificationEffect as E;
-    let host = app.host();
-    match effect {
-        E::SetDoNotDisturb { on } => host.update(|p: &mut NotificationPrefs| p.do_not_disturb = on),
-        E::SetBanners { on } => host.update(|p: &mut NotificationPrefs| p.show_banners = on),
-        E::SetPreviews { on } => host.update(|p: &mut NotificationPrefs| p.show_previews = on),
-        E::SetSounds { on } => host.update(|p: &mut NotificationPrefs| p.play_sounds = on),
-        E::SetLockScreen { on } => {
-            host.update(|p: &mut NotificationPrefs| p.show_on_lock_screen = on)
-        }
-        E::SetBadges { on } => host.update(|p: &mut NotificationPrefs| p.show_badges = on),
-        E::SetFocus { on } => host.update(|p: &mut NotificationPrefs| p.focus.enabled = on),
-        E::SetFocusStart { time } => {
-            let minute =
-                focus_time_minutes(&time).ok_or_else(|| format!("`{time}` is not offered"))?;
-            host.update(|p: &mut NotificationPrefs| p.focus.start_minute = minute)
-        }
-        E::SetFocusEnd { time } => {
-            let minute =
-                focus_time_minutes(&time).ok_or_else(|| format!("`{time}` is not offered"))?;
-            host.update(|p: &mut NotificationPrefs| p.focus.end_minute = minute)
-        }
-        E::SetFocusDays { days } => {
-            let days =
-                focus_days_from_label(&days).ok_or_else(|| format!("`{days}` is not offered"))?;
-            host.update(|p: &mut NotificationPrefs| p.focus.weekdays = days)
-        }
-        E::SetAppBanners { app, on } => host.update(app_rule(&app, |r| r.banners = Some(on))?),
-        E::SetAppPreviews { app, on } => host.update(app_rule(&app, |r| r.previews = Some(on))?),
-        E::SetAppSounds { app, on } => host.update(app_rule(&app, |r| r.sounds = Some(on))?),
-        E::SetAppBadges { app, on } => host.update(app_rule(&app, |r| r.badges = Some(on))?),
-        E::SetAppPriority { app, on } => host.update(app_rule(&app, |r| r.priority = on)?),
-        E::SetAppPriorityContacts { app, on } => {
-            host.update(app_rule(&app, |r| r.priority_contacts = on)?)
-        }
-        E::MuteApp { app, duration } => {
-            let seconds =
-                mute_seconds(&duration).ok_or_else(|| format!("`{duration}` is not offered"))?;
-            let until = (seconds > 0).then(|| unix_now_i64().saturating_add(seconds));
-            host.update(app_rule(&app, |r| r.muted_until = until)?)
+    /// The id a row offers this choice under.
+    const fn id(self) -> &'static str {
+        match self {
+            Self::Banners => "set-app-banners",
+            Self::Previews => "set-app-previews",
+            Self::Sounds => "set-app-sounds",
+            Self::Badges => "set-app-badges",
+            Self::Priority => "set-app-priority",
+            Self::PriorityContacts => "set-app-priority-contacts",
         }
     }
 }
@@ -301,6 +175,7 @@ pub(crate) fn answer(
 /// What the notification area keeps for the window: the policy as last
 /// read, and the apps it lists.
 pub struct NotificationsArea {
+    cx: PaneCx,
     prefs: RefCell<Followed<NotificationPrefs>>,
     apps: OnceCell<Vec<InstalledNotificationApp>>,
     sample: bool,
@@ -314,6 +189,7 @@ impl NotificationsArea {
     /// rather than the ones this device has installed.
     pub fn new(cx: &PaneCx) -> Self {
         Self {
+            cx: cx.clone(),
             prefs: RefCell::new(cx.follow::<NotificationPrefs>()),
             apps: OnceCell::new(),
             sample: !cx.reaches_devices(),
@@ -376,7 +252,7 @@ impl NotificationsArea {
         let prefs = prefs.get();
         apps.iter()
             .take(MAX_APP_ROWS)
-            .map(|app| app_row(prefs, app))
+            .map(|app| app_row(&self.cx, prefs, app))
             .collect()
     }
 }
@@ -396,92 +272,71 @@ fn sample_apps() -> Vec<InstalledNotificationApp> {
     .collect()
 }
 
-/// `effect` offered on a row as `label`.
-fn offered(effect: impl Into<SettingsEffect>, label: String) -> tilo_actions::ActionSpec {
-    let mut spec = effect.into().bound();
-    spec.label = label;
-    spec
+/// The live row of `app` under `prefs`: each delivery choice offered as the
+/// flip of what applies to it now, and its mute lifted or set, all changes
+/// of the app's rule in the notification section.
+fn app_row(cx: &PaneCx, prefs: &NotificationPrefs, app: &InstalledNotificationApp) -> LiveRow {
+    let rule = prefs.per_app.get(&app.id).copied().unwrap_or_default();
+    let flips = [
+        (
+            AppChoice::Banners,
+            !rule.banners.unwrap_or(prefs.show_banners),
+            "notification banners",
+        ),
+        (
+            AppChoice::Previews,
+            !rule.previews.unwrap_or(prefs.show_previews),
+            "message previews",
+        ),
+        (
+            AppChoice::Sounds,
+            !rule.sounds.unwrap_or(prefs.play_sounds),
+            "notification sounds",
+        ),
+        (
+            AppChoice::Badges,
+            !rule.badges.unwrap_or(prefs.show_badges),
+            "notification badges",
+        ),
+        (AppChoice::Priority, !rule.priority, "priority during focus"),
+        (
+            AppChoice::PriorityContacts,
+            !rule.priority_contacts,
+            "priority contacts during focus",
+        ),
+    ];
+    let muted = rule.muted_until.is_some_and(|until| until > unix_now_i64());
+    let (duration, mute_label) = if muted {
+        ("Not muted", "Unmute notifications")
+    } else {
+        ("For 1 hour", "Mute notifications for an hour")
+    };
+    let params = crate::prefs::notification_prefs::MuteApp::paths();
+    let mute = NotificationPrefs::MUTE_APP
+        .bind(params.app, app.id.clone())
+        .and(params.duration, duration.to_owned())
+        .declaration("mute-app", mute_label);
+    let offered = flips
+        .into_iter()
+        .map(|(choice, on, noun)| {
+            tilo_resource::ActionDecl::edit(choice.id(), flip(on, noun), choice.edit(&app.id, on))
+        })
+        .chain(mute);
+    offered.fold(
+        LiveRow::new(
+            format!("settings.notification-app:{}", app.id),
+            "settings.notification-app",
+            app.name.clone(),
+        ),
+        |row, decl| match cx.row_operation(&decl) {
+            Some(operation) => row.operation(operation),
+            None => row,
+        },
+    )
 }
 
 fn flip(on: bool, noun: &str) -> String {
     format!("Turn {} {noun}", if on { "on" } else { "off" })
-}
-
-/// The live row of `app` under `prefs`: each delivery choice offered as the
-/// flip of what applies to it now.
-fn app_row(prefs: &NotificationPrefs, app: &InstalledNotificationApp) -> LiveRow {
-    let rule = prefs.per_app.get(&app.id).copied().unwrap_or_default();
-    let id = app.id.clone();
-    let banners = !rule.banners.unwrap_or(prefs.show_banners);
-    let previews = !rule.previews.unwrap_or(prefs.show_previews);
-    let sounds = !rule.sounds.unwrap_or(prefs.play_sounds);
-    let badges = !rule.badges.unwrap_or(prefs.show_badges);
-    let muted = rule.muted_until.is_some_and(|until| until > unix_now_i64());
-    let mute = if muted {
-        offered(
-            NotificationEffect::MuteApp {
-                app: id.clone(),
-                duration: "Not muted".into(),
-            },
-            "Unmute notifications".into(),
-        )
-    } else {
-        offered(
-            NotificationEffect::MuteApp {
-                app: id.clone(),
-                duration: "For 1 hour".into(),
-            },
-            "Mute notifications for an hour".into(),
-        )
-    };
-    LiveRow::new(
-        format!("settings.notification-app:{}", app.id),
-        "settings.notification-app",
-        app.name.clone(),
-    )
-    .operation(offered(
-        NotificationEffect::SetAppBanners {
-            app: id.clone(),
-            on: banners,
-        },
-        flip(banners, "notification banners"),
-    ))
-    .operation(offered(
-        NotificationEffect::SetAppPreviews {
-            app: id.clone(),
-            on: previews,
-        },
-        flip(previews, "message previews"),
-    ))
-    .operation(offered(
-        NotificationEffect::SetAppSounds {
-            app: id.clone(),
-            on: sounds,
-        },
-        flip(sounds, "notification sounds"),
-    ))
-    .operation(offered(
-        NotificationEffect::SetAppBadges {
-            app: id.clone(),
-            on: badges,
-        },
-        flip(badges, "notification badges"),
-    ))
-    .operation(offered(
-        NotificationEffect::SetAppPriority {
-            app: id.clone(),
-            on: !rule.priority,
-        },
-        flip(!rule.priority, "priority during focus"),
-    ))
-    .operation(offered(
-        NotificationEffect::SetAppPriorityContacts {
-            app: id,
-            on: !rule.priority_contacts,
-        },
-        flip(!rule.priority_contacts, "priority contacts during focus"),
-    ))
-    .operation(mute)
 }
 
 fn mute_ftl(english: &str) -> &'static str {
@@ -514,7 +369,7 @@ fn mute_label(deadline: Option<i64>, now: i64) -> String {
     mute_shown(english)
 }
 
-fn mute_seconds(label: &str) -> Option<i64> {
+pub(crate) fn mute_seconds(label: &str) -> Option<i64> {
     MUTE_OPTIONS.iter().find_map(|(english, seconds)| {
         (*english == label || mute_shown(english) == label).then_some(*seconds)
     })
@@ -554,6 +409,12 @@ fn focus_time_label(minutes: u16) -> &'static str {
         .map_or("22:00", |(label, _)| *label)
 }
 
+/// The minute of the day a focus time label stands for, as the focus
+/// dropdowns store it.
+fn focus_minutes(label: &str) -> Result<u16, String> {
+    focus_time_minutes(label).ok_or_else(|| format!("`{label}` is not offered"))
+}
+
 fn focus_time_minutes(label: &str) -> Option<u16> {
     FOCUS_TIMES
         .iter()
@@ -584,14 +445,6 @@ fn focus_days_from_label(label: &str) -> Option<u8> {
     FOCUS_DAYS.iter().find_map(|(english, days)| {
         (*english == label || focus_days_shown(english) == label).then_some(*days)
     })
-}
-
-/// The English name of a day set shown in either language.
-fn focus_days_english(shown: &str) -> String {
-    english(FOCUS_DAYS)
-        .find(|english| *english == shown || focus_days_shown(english) == shown)
-        .unwrap_or(shown)
-        .to_owned()
 }
 
 fn focus_days_options() -> Vec<String> {
@@ -737,45 +590,6 @@ impl NotificationsPane {
         }
     }
 
-    fn toggle(
-        &self,
-        id: &str,
-        state: &LocalState<bool>,
-        on: ActionRef<NotificationEffect, bool>,
-    ) -> El {
-        Box::new(
-            self.cx
-                .bind(Toggle::from_state(state).with_id(id), effect(on)),
-        )
-    }
-
-    /// A per-app toggle: the app is bound, the control supplies the value.
-    fn app_toggle(
-        &self,
-        app: &str,
-        field: &str,
-        state: &LocalState<bool>,
-        set: ActionRef<NotificationEffect, (String, bool)>,
-    ) -> El {
-        let id = format!("notifications.app.{app}.{field}");
-        let app = app.to_owned();
-        Box::new(self.cx.bind(
-            Toggle::from_state(state).with_id(&id),
-            effect(set).map(move |on: bool| (app.clone(), on)),
-        ))
-    }
-
-    fn choice(
-        options: Vec<String>,
-        state: &LocalState<String>,
-        bind: impl FnOnce(Dropdown) -> Dropdown,
-    ) -> El {
-        let placeholder = state.get();
-        Box::new(bind(
-            Dropdown::from_state(options, state).with_placeholder(&placeholder),
-        ))
-    }
-
     fn build_composition(&self) -> Box<dyn Widget> {
         let app_cards = self.build_app_cards();
         let mut cards = vec![
@@ -810,15 +624,14 @@ impl NotificationsPane {
             &t("notif-dnd-title"),
             rows(vec![
                 status_row,
-                setting_row_described(
-                    &t("notif-dnd"),
-                    &t("notif-dnd-desc"),
-                    self.toggle(
-                        "notifications.dnd",
+                self.cx
+                    .row(t("notif-dnd"))
+                    .described(t("notif-dnd-desc"))
+                    .id("notifications.dnd")
+                    .toggle(
                         &self.shown.do_not_disturb,
-                        NotificationEffect::SET_DO_NOT_DISTURB,
+                        NotificationPrefs::paths().do_not_disturb,
                     ),
-                ),
             ]),
         )
     }
@@ -827,24 +640,19 @@ impl NotificationsPane {
         card(
             &t("notif-banners-title"),
             rows(vec![
-                setting_row_described(
-                    &t("notif-show-banners"),
-                    &t("notif-show-banners-desc"),
-                    self.toggle(
-                        "notifications.banners",
-                        &self.shown.banners,
-                        NotificationEffect::SET_BANNERS,
-                    ),
-                ),
-                setting_row_described(
-                    &t("notif-previews"),
-                    &t("notif-previews-desc"),
-                    self.toggle(
-                        "notifications.previews",
+                self.cx
+                    .row(t("notif-show-banners"))
+                    .described(t("notif-show-banners-desc"))
+                    .id("notifications.banners")
+                    .toggle(&self.shown.banners, NotificationPrefs::paths().show_banners),
+                self.cx
+                    .row(t("notif-previews"))
+                    .described(t("notif-previews-desc"))
+                    .id("notifications.previews")
+                    .toggle(
                         &self.shown.previews,
-                        NotificationEffect::SET_PREVIEWS,
+                        NotificationPrefs::paths().show_previews,
                     ),
-                ),
             ]),
         )
     }
@@ -868,81 +676,69 @@ impl NotificationsPane {
         card(
             &t("notif-delivery-title"),
             rows(vec![
-                setting_row_described(
-                    &t("notif-lock-screen"),
-                    &t("notif-lock-screen-desc"),
-                    self.toggle(
-                        "notifications.lock_screen",
+                self.cx
+                    .row(t("notif-lock-screen"))
+                    .described(t("notif-lock-screen-desc"))
+                    .id("notifications.lock_screen")
+                    .toggle(
                         &self.shown.lock_screen,
-                        NotificationEffect::SET_LOCK_SCREEN,
+                        NotificationPrefs::paths().show_on_lock_screen,
                     ),
-                ),
                 sounds_row,
-                setting_row_described(
-                    &t("notif-play-sounds"),
-                    &t("notif-play-sounds-desc"),
-                    self.toggle(
-                        "notifications.sounds",
-                        &self.shown.sounds,
-                        NotificationEffect::SET_SOUNDS,
-                    ),
-                ),
-                setting_row_described(
-                    &t("notif-badges"),
-                    &t("notif-badges-desc"),
-                    self.toggle(
-                        "notifications.badges",
-                        &self.shown.badges,
-                        NotificationEffect::SET_BADGES,
-                    ),
-                ),
+                self.cx
+                    .row(t("notif-play-sounds"))
+                    .described(t("notif-play-sounds-desc"))
+                    .id("notifications.sounds")
+                    .toggle(&self.shown.sounds, NotificationPrefs::paths().play_sounds),
+                self.cx
+                    .row(t("notif-badges"))
+                    .described(t("notif-badges-desc"))
+                    .id("notifications.badges")
+                    .toggle(&self.shown.badges, NotificationPrefs::paths().show_badges),
             ]),
         )
     }
 
     fn build_focus_card(&self) -> Box<dyn Widget> {
-        let cx = &self.cx;
         let focus_options: Vec<String> = english(FOCUS_TIMES).map(str::to_owned).collect();
         card(
             &t("notif-focus-title"),
             rows(vec![
-                setting_row_described(
-                    &t("notif-focus-enabled"),
-                    &t("notif-focus-enabled-desc"),
-                    self.toggle(
-                        "notifications.focus.enabled",
-                        &self.shown.focus,
-                        NotificationEffect::SET_FOCUS,
+                self.cx
+                    .row(t("notif-focus-enabled"))
+                    .described(t("notif-focus-enabled-desc"))
+                    .id("notifications.focus.enabled")
+                    .toggle(&self.shown.focus, NotificationPrefs::paths().focus.enabled),
+                self.cx
+                    .row(t("notif-focus-from"))
+                    .id("notifications.focus.start")
+                    .choice(
+                        focus_options.clone(),
+                        &self.shown.focus_start,
+                        NotificationPrefs::paths().focus.start_minute,
+                        |label: String| focus_minutes(&label),
                     ),
-                ),
-                choice_row(
-                    &t("notif-focus-from"),
-                    Self::choice(focus_options.clone(), &self.shown.focus_start, |control| {
-                        cx.bind(
-                            control.with_id("notifications.focus.start"),
-                            effect(NotificationEffect::SET_FOCUS_START),
-                        )
-                    }),
-                ),
-                choice_row(
-                    &t("notif-focus-days"),
-                    Self::choice(focus_days_options(), &self.shown.focus_days, |control| {
-                        cx.bind(
-                            control.with_id("notifications.focus.days"),
-                            effect(NotificationEffect::SET_FOCUS_DAYS)
-                                .map(|shown: String| focus_days_english(&shown)),
-                        )
-                    }),
-                ),
-                choice_row(
-                    &t("notif-focus-until"),
-                    Self::choice(focus_options, &self.shown.focus_end, |control| {
-                        cx.bind(
-                            control.with_id("notifications.focus.end"),
-                            effect(NotificationEffect::SET_FOCUS_END),
-                        )
-                    }),
-                ),
+                self.cx
+                    .row(t("notif-focus-days"))
+                    .id("notifications.focus.days")
+                    .choice(
+                        focus_days_options(),
+                        &self.shown.focus_days,
+                        NotificationPrefs::paths().focus.weekdays,
+                        |shown: String| {
+                            focus_days_from_label(&shown)
+                                .ok_or_else(|| format!("`{shown}` is not offered"))
+                        },
+                    ),
+                self.cx
+                    .row(t("notif-focus-until"))
+                    .id("notifications.focus.end")
+                    .choice(
+                        focus_options,
+                        &self.shown.focus_end,
+                        NotificationPrefs::paths().focus.end_minute,
+                        |label: String| focus_minutes(&label),
+                    ),
                 caption(&t("notif-focus-caption")),
             ]),
         )
@@ -966,19 +762,25 @@ impl NotificationsPane {
                 t("notif-app-history")
             };
             let id = app.id.clone();
-            let mute = Self::choice(mute_options(), &shown.mute, |control| {
-                self.cx.bind(
-                    control.with_id(&format!("notifications.app.{}.mute", app.id)),
-                    effect(NotificationEffect::MUTE_APP)
+            let mute = self
+                .cx
+                .row(t("notif-app-mute"))
+                .id(format!("notifications.app.{}.mute", app.id))
+                .choice_verb(
+                    mute_options(),
+                    &shown.mute,
+                    NotificationPrefs::MUTE_APP
                         .map(move |shown: String| (id.clone(), mute_english(&shown))),
-                )
-            });
-            let toggle = |field, description: &str, label: &str, state, set| {
-                setting_row_described(
-                    &t(label),
-                    &t(description),
-                    self.app_toggle(&app.id, field, state, set),
-                )
+                );
+            let toggle = |field: &str, description: &str, label: &str, state, choice: AppChoice| {
+                let app = app.id.clone();
+                self.cx
+                    .row(t(label))
+                    .described(t(description))
+                    .id(format!("notifications.app.{app}.{field}"))
+                    .toggle_edit(state, NotificationPrefs::paths().per_app, move |on| {
+                        choice.edit(&app, on)
+                    })
             };
             app_cards.push(card(
                 &app.name,
@@ -989,44 +791,44 @@ impl NotificationsPane {
                         "notif-app-banners-desc",
                         "notif-app-banners",
                         &shown.banners,
-                        NotificationEffect::SET_APP_BANNERS,
+                        AppChoice::Banners,
                     ),
                     toggle(
                         "previews",
                         "notif-app-previews-desc",
                         "notif-app-previews",
                         &shown.previews,
-                        NotificationEffect::SET_APP_PREVIEWS,
+                        AppChoice::Previews,
                     ),
                     toggle(
                         "sounds",
                         "notif-app-sounds-desc",
                         "notif-app-sounds",
                         &shown.sounds,
-                        NotificationEffect::SET_APP_SOUNDS,
+                        AppChoice::Sounds,
                     ),
                     toggle(
                         "badges",
                         "notif-app-badges-desc",
                         "notif-app-badges",
                         &shown.badges,
-                        NotificationEffect::SET_APP_BADGES,
+                        AppChoice::Badges,
                     ),
                     toggle(
                         "priority",
                         "notif-app-priority-desc",
                         "notif-app-priority",
                         &shown.priority,
-                        NotificationEffect::SET_APP_PRIORITY,
+                        AppChoice::Priority,
                     ),
                     toggle(
                         "priority_contacts",
                         "notif-app-contacts-desc",
                         "notif-app-contacts",
                         &shown.priority_contacts,
-                        NotificationEffect::SET_APP_PRIORITY_CONTACTS,
+                        AppChoice::PriorityContacts,
                     ),
-                    choice_row(&t("notif-app-mute"), mute),
+                    mute,
                     caption(&app_caption),
                 ]),
             ));
@@ -1102,12 +904,29 @@ impl Widget for NotificationsPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::testing::{NOTIFICATIONS, edit_field, edit_path, invoke_section};
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
 
-    fn set(app: &mut TestApp<SettingsShell>, effect: NotificationEffect) {
-        app.effect(&SettingsEffect::from(effect))
-            .expect("the notification effect is answered");
+    /// Set `field` of the rule of `app_id` through the door, as an agent
+    /// does: a field edit of the notification section.
+    fn edit_rule(
+        app: &mut TestApp<SettingsShell>,
+        app_id: &str,
+        field: &str,
+        value: bool,
+    ) -> Result<(), String> {
+        app.call_on(
+            "settings:settings.notifications",
+            "field-edit",
+            serde_json::json!({ "edit": {
+                "path": [{ "field": "per_app" }, { "key": app_id }, { "field": field }],
+                "op": "set",
+                "value": value,
+            }}),
+        )
+        .map(drop)
+        .map_err(|error| format!("{error:?}"))
     }
 
     /// Rules enumerate system and Flatpak desktop identities.
@@ -1155,37 +974,23 @@ mod tests {
     /// person's `notifications` section, where the compositor's notification
     /// layer reads them; an override touches only its own field.
     #[test]
-    fn notification_effects_write_the_policy() {
+    fn notification_edits_write_the_policy() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        set(&mut app, NotificationEffect::SetDoNotDisturb { on: true });
-        set(&mut app, NotificationEffect::SetBanners { on: false });
-        set(&mut app, NotificationEffect::SetFocus { on: true });
-        set(
+        edit_field(&mut app, NOTIFICATIONS, "do_not_disturb", true).unwrap();
+        edit_field(&mut app, NOTIFICATIONS, "show_banners", false).unwrap();
+        edit_path(&mut app, NOTIFICATIONS, &["focus", "enabled"], true).unwrap();
+        edit_path(&mut app, NOTIFICATIONS, &["focus", "start_minute"], 20 * 60).unwrap();
+        edit_path(&mut app, NOTIFICATIONS, &["focus", "weekdays"], 0b0001_1111).unwrap();
+        // An agent sets one field of a rule the app has none of yet.
+        edit_rule(&mut app, "so.tilo.chat", "sounds", false).unwrap();
+        edit_rule(&mut app, "so.tilo.chat", "priority", true).unwrap();
+        invoke_section(
             &mut app,
-            NotificationEffect::SetFocusStart {
-                time: "20:00".into(),
-            },
-        );
-        set(
-            &mut app,
-            NotificationEffect::SetFocusDays {
-                days: "Weekdays".into(),
-            },
-        );
-        set(
-            &mut app,
-            NotificationEffect::SetAppSounds {
-                app: "so.tilo.chat".into(),
-                on: false,
-            },
-        );
-        set(
-            &mut app,
-            NotificationEffect::MuteApp {
-                app: "so.tilo.mail".into(),
-                duration: "For 8 hours".into(),
-            },
-        );
+            NOTIFICATIONS,
+            "mute-app",
+            serde_json::json!({ "app": "so.tilo.mail", "duration": "For 8 hours" }),
+        )
+        .unwrap();
         let prefs = app.settings::<NotificationPrefs>().get();
         assert!(prefs.do_not_disturb);
         assert!(!prefs.show_banners);
@@ -1194,26 +999,58 @@ mod tests {
         assert_eq!(prefs.focus.weekdays, 0b0001_1111);
         let chat = prefs.per_app["so.tilo.chat"];
         assert_eq!(chat.sounds, Some(false));
-        assert_eq!(chat.banners, None, "only the changed field is an override");
+        assert!(chat.priority);
+        assert_eq!(chat.banners, None, "only the changed fields are overrides");
         let muted = prefs.per_app["so.tilo.mail"].muted_until.unwrap();
         assert!(muted > unix_now_i64() + 7 * 60 * 60);
 
-        for refused in [
-            NotificationEffect::SetFocusStart {
-                time: "13:37".into(),
-            },
-            NotificationEffect::SetAppBadges {
-                app: "not an id".into(),
-                on: true,
-            },
-        ] {
-            assert!(app.effect(&SettingsEffect::from(refused)).is_err());
-        }
+        assert!(
+            edit_path(&mut app, NOTIFICATIONS, &["focus", "start_minute"], 24 * 60).is_err(),
+            "a minute past the day is refused"
+        );
+        assert!(edit_rule(&mut app, "so.tilo.mail", "frobnicate", true).is_err());
+        assert!(edit_rule(&mut app, "not an id", "badges", true).is_err());
+        assert!(
+            invoke_section(
+                &mut app,
+                NOTIFICATIONS,
+                "mute-app",
+                serde_json::json!({ "app": "so.tilo.mail", "duration": "forever" }),
+            )
+            .is_err()
+        );
         assert_eq!(app.settings::<NotificationPrefs>().get(), prefs);
+
+        // An agent sets one app's rule as a typed edit of the section, and
+        // the section refuses a rule for something that is not an app id.
+        let rule = |app_id: &str, value: serde_json::Value| {
+            serde_json::json!({ "edit": {
+                "path": [{ "field": "per_app" }, { "key": app_id }],
+                "op": "set",
+                "value": value,
+            }})
+        };
+        app.call_on(
+            "settings:settings.notifications",
+            "field-edit",
+            rule("so.tilo.calendar", serde_json::json!({ "priority": true })),
+        )
+        .unwrap();
+        let calendar = app.settings::<NotificationPrefs>().get().per_app["so.tilo.calendar"];
+        assert!(calendar.priority);
+        assert_eq!(calendar.banners, None);
+        assert!(
+            app.call_on(
+                "settings:settings.notifications",
+                "field-edit",
+                rule("not an id", serde_json::json!({ "priority": true })),
+            )
+            .is_err()
+        );
     }
 
     /// Every app is a live row offering the flip of what applies to it now,
-    /// through the same effects as the pane's toggles; opening the pane
+    /// through the same edits as the pane's toggles; opening the pane
     /// writes nothing.
     #[test]
     fn apps_are_live_rows_offering_their_rules() {
@@ -1223,15 +1060,24 @@ mod tests {
             settings.document().section("notifications").is_empty(),
             "showing the inherited values is not an override"
         );
-        app.effect_on(
+        app.call_on(
             "settings.notification-app:so.tilo.chat",
-            &SettingsEffect::from(NotificationEffect::SetAppBanners {
-                app: "so.tilo.chat".into(),
-                on: false,
-            }),
+            "set-app-banners",
+            serde_json::json!({}),
         )
         .expect("the row offers turning banners off");
         assert_eq!(settings.get().per_app["so.tilo.chat"].banners, Some(false));
+        app.call_on(
+            "settings.notification-app:so.tilo.chat",
+            "mute-app",
+            serde_json::json!({}),
+        )
+        .expect("the row offers muting the app for an hour");
+        assert!(
+            settings.get().per_app["so.tilo.chat"]
+                .muted_until
+                .is_some_and(|until| until > unix_now_i64())
+        );
         let surface = app.agent_surface().to_string();
         assert!(
             surface.contains("settings.notification-app:so.tilo.mail"),
@@ -1249,6 +1095,7 @@ mod tests {
         let profile = tempfile::tempdir().unwrap();
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
         let area = NotificationsArea {
+            cx: cx.clone(),
             prefs: RefCell::new(cx.follow::<NotificationPrefs>()),
             apps: OnceCell::from(sample_apps()),
             sample: true,

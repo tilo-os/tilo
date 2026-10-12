@@ -24,7 +24,7 @@ use tilo_moq::client::Status;
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
 
-use call::{CHANNEL, GovernedCall, carrier, native, operate, until};
+use call::{GovernedCall, carrier, native, operate, until};
 use support::{ready, start_peer, wait_for};
 
 /// The next call event of `peer` that `pick` accepts.
@@ -88,7 +88,13 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     .unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].state, room.call);
-    assert_eq!(calls[0].channel_id, CHANNEL);
+    // Exactly what the shared voice controls look up to join
+    // (`voice-controls.mjs`): Chat's app, its record, and the voice
+    // channel's own id, the one the chat minted, active.
+    assert!(calls[0].state.active);
+    assert_eq!(calls[0].app_id, call::CHAT);
+    assert_eq!(calls[0].record_id, "");
+    assert_eq!(calls[0].channel_id, room.channel);
     assert!(calls[0].participants.is_empty());
 
     // Alice joins from her laptop, Bob through his page's session.

@@ -131,7 +131,7 @@ fn execute() -> Result<bool, String> {
             .active_workspace()
             .ok_or("fixture has no active workspace")?;
         let actor = workspace.actor_for_person(&chrome.local_user_for_room(&workspace.room));
-        let gate = shell::shell::search::visibility::CapabilityVisibility::new(workspace, actor);
+        let gate = shell::shell::search::visibility::PolicyVisibility::new(workspace, actor);
         let entries = session.host.action_catalog("",&chrome,&ui_state.doc,&ui_state.root,&gate).enumerate()
             .into_iter().map(|a|serde_json::json!({"provider":a.resource.provider,"id":a.resource.id,"title":a.title,"kind":format!("{:?}",a.kind),"contract":a.contract})).collect::<Vec<_>>();
         drop(tree);
@@ -142,7 +142,7 @@ fn execute() -> Result<bool, String> {
         serde_json::to_vec_pretty(&catalogue).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
-    let mut driver = ui::headless::Driver::new_with_theme(
+    let mut driver = ui::headless::FrameHarness::new_with_theme(
         ui_state,
         Box::new(session.host),
         (scenario.viewport[0], scenario.viewport[1]),

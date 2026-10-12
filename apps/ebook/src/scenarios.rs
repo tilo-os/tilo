@@ -4,25 +4,23 @@
 //! What a scenario shows splits in three. The books' text is the sample
 //! shelf, a [`Fixture`] value the reader reads instead of files. The shelf
 //! rows, reading settings, fonts, schemes, progress and annotations are the
-//! library's, staged by [`actions`] through the same door as every control.
+//! library's, staged by [`actions`] as field edits through the same door as
+//! every control, under ids and times fixed so every capture is the same.
 //! Where the reader is — the view, the open book, a selection, an open panel
 //! — is the reader's own view state, staged by `BooksApp::stage`.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use tilo_document::RichText;
 use ui::framework::Fixture;
-use ui::tilo_resource::Invoke;
+use ui::tilo_resource::{Edit, Id, Invoke};
 use uuid::Uuid;
 
-use crate::actions::{
-    CommentDraft, EbookAction, HiPiece, HighlightPlan, NoteDraft, finalize_annotation_action,
-    restore_library_book_action, set_bookmark_action, set_progress_action,
-    set_reading_settings_action, upsert_color_scheme_action, upsert_font_action,
-};
 use crate::content;
 use crate::model::{
-    AnnotationAnchor, Book, ColorScheme, FontEntry, FontKind, HiColor, LibraryEntry, Progress,
-    ReadMode, ReadTheme, Settings, default_schemes,
+    AnnoKind, Book, ColorScheme, FontEntry, FontKind, HiColor, LibraryEntry, Mark, Progress,
+    ReadMode, ReadTheme, Settings, default_fonts, default_schemes,
 };
 use crate::resource::Ebook;
 
@@ -126,71 +124,93 @@ const fn staged_id(index: u128) -> Uuid {
     Uuid::from_u128(0xB00C_0000_0000_0000_0000_0000_0002_0000 + index)
 }
 
-/// The library `scenario` shows, as the actions that stage it.
+/// The library `scenario` shows, as the edits that stage it.
 pub(crate) fn actions(scenario: Option<&str>) -> Vec<Invoke<Ebook>> {
     let scenario = scenario.unwrap_or("read");
     if scenario == "onboarding" {
         return Vec::new();
     }
     let shelf = content::load_sample_library();
-    let mut actions: Vec<EbookAction> = shelf
+    let paths = Ebook::paths();
+    let mut edits: Vec<Edit<Ebook>> = shelf
         .iter()
         .enumerate()
         .map(|(index, book)| {
-            restore_library_book_action(&LibraryEntry {
-                id: book.id.clone(),
-                shared: false,
-                title: book.title.clone(),
-                author: book.author.clone(),
-                subject: book.subject.clone(),
-                added: STAGED_AT + index as u64,
-                content: None,
-            })
+            paths.entries.insert_as(
+                &Id::from_raw(book.id.clone()),
+                index,
+                &LibraryEntry {
+                    id: book.id.clone(),
+                    shared: false,
+                    title: book.title.clone(),
+                    author: book.author.clone(),
+                    subject: book.subject.clone(),
+                    added: STAGED_AT + index as u64,
+                    content: ui::tilo_resource::Bytes::Empty,
+                },
+            )
         })
         .collect();
+    let mut marks = Vec::new();
     if lived_in(scenario) {
-        actions.extend(lived_in_shelf(&shelf));
+        edits.push(paths.progress.set(lived_in_progress(&shelf)));
+        marks.extend(lived_in_shelf(&shelf));
     }
     if let Some(settings) = settings(scenario) {
-        actions.push(set_reading_settings_action(Settings::default(), settings));
+        edits.extend(paths.settings.path().edits(&Settings::default(), &settings));
     }
     match scenario {
         "settings-colours" => {
-            let mut built_in = default_schemes();
-            if let Some(first) = built_in.first_mut() {
-                first.enabled = false;
-                actions.push(upsert_color_scheme_action(first.clone()));
+            if let Some(first) = default_schemes().first() {
+                edits.push(
+                    paths
+                        .schemes
+                        .item(&Id::from_raw(first.id.clone()))
+                        .enabled
+                        .set(false),
+                );
             }
-            actions.push(upsert_color_scheme_action(custom_scheme([
-                0x15, 0x1A, 0x24,
-            ])));
+            edits.push(new_scheme(&custom_scheme([0x15, 0x1A, 0x24])));
         }
-        "scheme-editor" => {
-            actions.push(upsert_color_scheme_action(custom_scheme([
-                0x15, 0x1A, 0x24,
-            ])));
-        }
-        "picker" => {
-            actions.push(upsert_color_scheme_action(custom_scheme(PICKED_PAGE)));
-        }
+        "scheme-editor" => edits.push(new_scheme(&custom_scheme([0x15, 0x1A, 0x24]))),
+        "picker" => edits.push(new_scheme(&custom_scheme(PICKED_PAGE))),
         "settings-fonts" | "settings-fonts-rename" => {
-            actions.push(upsert_font_action(FontEntry::new(
-                ADDED_FONT,
-                FontKind::Named("DejaVu Serif".into()),
-                "DejaVu Serif",
-                1.08,
-                true,
-            )));
+            edits.push(paths.fonts.insert_as(
+                &Id::from_raw(ADDED_FONT),
+                default_fonts().len(),
+                &FontEntry::new(
+                    ADDED_FONT,
+                    FontKind::Named("DejaVu Serif".into()),
+                    "DejaVu Serif",
+                    1.08,
+                    true,
+                ),
+            ));
         }
-        "note" => actions.extend(composed_note(&shelf)),
-        "comments" => actions.extend(commented_highlight(&shelf)),
-        "long-annotations" => actions.extend(long_annotations(&shelf)),
+        "note" => marks.extend(composed_note(&shelf)),
+        "comments" => marks.extend(commented_highlight(&shelf)),
+        "long-annotations" => marks.extend(long_annotations(&shelf)),
         _ => {}
     }
-    actions
+    edits.extend(
+        marks
+            .iter()
+            .enumerate()
+            .map(|(at, mark)| paths.annotations.insert_as(&mark.key(), at, mark)),
+    );
+    edits
         .iter()
-        .filter_map(|action| Invoke::apply(action).ok())
+        .filter_map(|edit| Invoke::edit(edit).ok())
         .collect()
+}
+
+/// Adding the colour scheme `scheme` after the built-in ones.
+fn new_scheme(scheme: &ColorScheme) -> Edit<Ebook> {
+    Ebook::paths().schemes.insert_as(
+        &Id::from_raw(scheme.id.clone()),
+        default_schemes().len(),
+        scheme,
+    )
 }
 
 /// The page colour of the scheme the "picker" scenario edits.
@@ -266,11 +286,11 @@ fn word_end(book: &Book, index: usize, target: usize) -> usize {
         .unwrap_or(end)
 }
 
-/// Progress across the shelf (a couple of books finished) and, in the first
-/// book, a bookmark, two highlights and a note.
-fn lived_in_shelf(shelf: &[Book]) -> Vec<EbookAction> {
+/// Progress across the shelf: a couple of books finished, each opened an
+/// hour before the next.
+fn lived_in_progress(shelf: &[Book]) -> BTreeMap<String, Progress> {
     const FRACTIONS: [f32; 5] = [0.34, 0.72, 0.08, 0.5, 1.0];
-    let mut actions: Vec<EbookAction> = shelf
+    shelf
         .iter()
         .enumerate()
         .map(|(index, book)| {
@@ -278,8 +298,8 @@ fn lived_in_shelf(shelf: &[Book]) -> Vec<EbookAction> {
                 .get(index % FRACTIONS.len())
                 .copied()
                 .unwrap_or(0.5);
-            set_progress_action(
-                &book.id,
+            (
+                book.id.clone(),
                 Progress {
                     chapter: 0,
                     block: (fraction * 6.0) as usize,
@@ -288,123 +308,117 @@ fn lived_in_shelf(shelf: &[Book]) -> Vec<EbookAction> {
                 },
             )
         })
-        .collect();
+        .collect()
+}
+
+/// In the first book, a bookmark, two highlights and a note.
+fn lived_in_shelf(shelf: &[Book]) -> Vec<Mark> {
     let Some(book) = shelf.first() else {
-        return actions;
+        return Vec::new();
     };
-    actions.push(set_bookmark_action(
-        &book.id,
+    let mut marks = vec![mark(
+        book,
         staged_id(1),
-        0,
-        0,
-        &excerpt(book, 0),
-        true,
-        Vec::new(),
-    ));
+        AnnoKind::Bookmark,
+        (0, 0, 0),
+        excerpt(book, 0),
+    )];
     for (index, (block, end, color)) in [(1, 70, HiColor::Yellow), (3, 58, HiColor::Green)]
         .into_iter()
         .enumerate()
     {
         let index = index as u128;
-        actions.push(
-            HighlightPlan {
-                book_id: book.id.clone(),
-                group: staged_id(10 + index).to_string(),
-                chapter: 0,
-                color: color.as_str().into(),
-                remove_groups: Vec::new(),
-                pieces: vec![HiPiece {
-                    id: staged_id(20 + index).to_string(),
-                    block,
-                    start: 0,
-                    end: word_end(book, block, end),
-                    excerpt: excerpt(book, block),
-                }],
-            }
-            .into_action(),
-        );
+        marks.push(Mark {
+            color,
+            group: staged_id(10 + index),
+            ..mark(
+                book,
+                staged_id(20 + index),
+                AnnoKind::Highlight,
+                (block, 0, word_end(book, block, end)),
+                excerpt(book, block),
+            )
+        });
     }
-    let note = staged_id(30);
-    actions.push(
-        NoteDraft {
-            book_id: book.id.clone(),
-            id: note,
-            anchor: anchor(0, 2, 0, 0, excerpt(book, 2)),
-            color: HiColor::Blue,
-            text:
-                "The blue and the amber meeting in the middle — keep this image for the last pane."
-                    .into(),
-        }
-        .into_action(),
-    );
-    actions.push(finalize_annotation_action(note, STAGED_AT));
-    actions
+    marks.push(Mark {
+        color: HiColor::Blue,
+        text: RichText::from_markdown(
+            "The blue and the amber meeting in the middle — keep this image for the last pane.",
+        ),
+        ..mark(
+            book,
+            staged_id(30),
+            AnnoKind::Note,
+            (2, 0, 0),
+            excerpt(book, 2),
+        )
+    });
+    marks
 }
 
-fn anchor(
-    chapter: usize,
-    block: usize,
-    start: usize,
-    end: usize,
+/// An annotation `id` of `kind` on chapter 0 of `book` at `(block, start,
+/// end)`, made when the scenes were written.
+fn mark(
+    book: &Book,
+    id: Uuid,
+    kind: AnnoKind,
+    (block, start, end): (usize, usize, usize),
     excerpt: String,
-) -> AnnotationAnchor {
-    AnnotationAnchor {
-        chapter,
+) -> Mark {
+    Mark {
+        id,
+        doc_id: book.id.clone(),
+        kind,
+        chapter: 0,
         block,
         start,
         end,
         excerpt,
+        text: RichText::default(),
+        color: HiColor::Yellow,
+        created: STAGED_AT,
+        group: id,
     }
 }
 
 /// The note the "note" scenario is writing, on the selected passage.
-fn composed_note(shelf: &[Book]) -> Vec<EbookAction> {
+fn composed_note(shelf: &[Book]) -> Vec<Mark> {
     let Some(book) = shelf.first() else {
         return Vec::new();
     };
-    vec![
-        NoteDraft {
-            book_id: book.id.clone(),
-            id: COMPOSED_NOTE,
-            anchor: anchor(
-                0,
-                1,
-                0,
-                0,
-                "the keeper climbed the iron stair and set the great wick alight".into(),
-            ),
-            color: HiColor::Blue,
-            text: "A note, written right here on the page — no separate screen.".into(),
-        }
-        .into_action(),
-    ]
+    vec![Mark {
+        color: HiColor::Blue,
+        text: RichText::from_markdown(
+            "A note, written right here on the page — no separate screen.",
+        ),
+        ..mark(
+            book,
+            COMPOSED_NOTE,
+            AnnoKind::Note,
+            (1, 0, 0),
+            "the keeper climbed the iron stair and set the great wick alight".into(),
+        )
+    }]
 }
 
 /// A highlight in the Tideglass letters with two comments on it.
-fn commented_highlight(shelf: &[Book]) -> Vec<EbookAction> {
+fn commented_highlight(shelf: &[Book]) -> Vec<Mark> {
     let Some(book) = shelf.get(2) else {
         return Vec::new();
     };
     let quote = "the trick of pouring colour into a pane";
     let (block, start) = (2, 200);
     let end = start + quote.chars().count();
-    let mut actions = vec![
-        HighlightPlan {
-            book_id: book.id.clone(),
-            group: COMMENTED_HIGHLIGHT.to_string(),
-            chapter: 0,
-            color: HiColor::Yellow.as_str().into(),
-            remove_groups: Vec::new(),
-            pieces: vec![HiPiece {
-                id: staged_id(40).to_string(),
-                block,
-                start,
-                end,
-                excerpt: quote.into(),
-            }],
-        }
-        .into_action(),
-    ];
+    let mut marks = vec![Mark {
+        group: COMMENTED_HIGHLIGHT,
+        ..mark(
+            book,
+            staged_id(40),
+            AnnoKind::Highlight,
+            (block, start, end),
+            quote.into(),
+        )
+    }];
     for (index, text) in [
         "Love this image — colour that keeps the time of day.",
         "Compare with the amber/ebb line later in the letter.",
@@ -412,62 +426,53 @@ fn commented_highlight(shelf: &[Book]) -> Vec<EbookAction> {
     .into_iter()
     .enumerate()
     {
-        let id = staged_id(41 + index as u128);
-        actions.push(
-            CommentDraft {
-                group: COMMENTED_HIGHLIGHT,
-                note: NoteDraft {
-                    book_id: book.id.clone(),
-                    id,
-                    anchor: anchor(0, block, start, end, quote.into()),
-                    color: HiColor::Yellow,
-                    text: text.into(),
-                },
-            }
-            .into_action(),
-        );
-        actions.push(finalize_annotation_action(id, STAGED_AT + index as u64));
+        marks.push(Mark {
+            group: COMMENTED_HIGHLIGHT,
+            text: RichText::from_markdown(text),
+            created: STAGED_AT + index as u64,
+            ..mark(
+                book,
+                staged_id(41 + index as u128),
+                AnnoKind::Note,
+                (block, start, end),
+                quote.into(),
+            )
+        });
     }
-    actions
+    marks
 }
 
 /// Thirty notes down the first book, one of them the target of a jump.
-fn long_annotations(shelf: &[Book]) -> Vec<EbookAction> {
+fn long_annotations(shelf: &[Book]) -> Vec<Mark> {
     let Some(book) = shelf.first() else {
         return Vec::new();
     };
-    let mut actions = Vec::new();
-    for index in 0..30_usize {
-        let id = long_note(index as u128);
-        let color = HiColor::ALL
-            .get(index % HiColor::ALL.len())
-            .copied()
-            .unwrap_or(HiColor::Yellow);
-        let text = if index == 25 {
-            "Targeted annotation — revealed here after a jump from search.".into()
-        } else {
-            format!("Reading note {} — a durable, shared thought.", index + 1)
-        };
-        actions.push(
-            NoteDraft {
-                book_id: book.id.clone(),
-                id,
-                anchor: anchor(
-                    0,
-                    index,
-                    0,
-                    0,
+    (0..30_usize)
+        .map(|index| {
+            let color = HiColor::ALL
+                .get(index % HiColor::ALL.len())
+                .copied()
+                .unwrap_or(HiColor::Yellow);
+            let text = if index == 25 {
+                "Targeted annotation — revealed here after a jump from search.".into()
+            } else {
+                format!("Reading note {} — a durable, shared thought.", index + 1)
+            };
+            Mark {
+                color,
+                text: RichText::from_markdown(text),
+                created: STAGED_AT + index as u64,
+                ..mark(
+                    book,
+                    long_note(index as u128),
+                    AnnoKind::Note,
+                    (index, 0, 0),
                     format!(
                         "Saved passage {} from the lantern keeper's journal",
                         index + 1
                     ),
-                ),
-                color,
-                text,
+                )
             }
-            .into_action(),
-        );
-        actions.push(finalize_annotation_action(id, STAGED_AT + index as u64));
-    }
-    actions
+        })
+        .collect()
 }

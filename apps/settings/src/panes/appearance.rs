@@ -18,8 +18,9 @@
 //! - **Reduce motion** — snaps animations to their resting state.
 //! - **Text size** — a UI-wide text-scale multiplier for low-vision comfort.
 //!
-//! Every control is bound to an [`AppearanceEffect`]; the effect writes the
-//! section and the pane shows what the section holds, whoever changed it.
+//! A control that sets one field is bound to that field of the section, the
+//! others to an [`AppearanceEffect`]; either writes the section, and the pane
+//! shows what the section holds, whoever changed it.
 
 use std::collections::HashMap;
 
@@ -28,16 +29,15 @@ use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::theme::Theme;
 use ui::tilo_resource;
-use ui::widget::{AppModel, Button, Dropdown, ModelPath, Row, Spacer, Toggle, Widget};
+use ui::widget::{AppModel, Button, ModelPath, Row, Spacer, Widget};
 use vello::kurbo::Rect;
 
-use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::prefs::AppearancePrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{caption, card, choice_row, rows, setting_row_described, value_row};
+use crate::widgets::{caption, card, rows, value_row};
 
 /// `(label, persisted value)` of each day/night schedule.
 pub const SCHEDULES: [(&str, &str); 2] = [("Sunset to sunrise", "sun"), ("Custom times", "custom")];
@@ -165,6 +165,15 @@ pub fn text_size_scale(label: &str) -> Option<f64> {
         .map(|(_, s)| *s)
 }
 
+/// The text scale a text-size label (English or shown) stands for, as
+/// the text-size dropdowns store it.
+///
+/// # Errors
+/// The label names no offered size.
+pub fn text_size_value(label: &str) -> Result<f64, String> {
+    text_size_scale(label).ok_or_else(|| format!("`{label}` is not a text size"))
+}
+
 /// Localised labels for the shared text-size dropdown.
 pub fn text_size_options() -> Vec<String> {
     TEXT_SIZES
@@ -173,24 +182,8 @@ pub fn text_size_options() -> Vec<String> {
         .collect()
 }
 
-/// The persisted values of a `(label, value)` table, as an effect's choices.
-fn values(table: &'static [(&'static str, &'static str)]) -> impl Iterator<Item = &'static str> {
-    table.iter().map(|(_, value)| *value)
-}
-
-/// The English text-size names an effect takes.
-pub const TEXT_SIZE_NAMES: [&str; 4] = ["Small", "Default", "Large", "Larger"];
-
 /// The UI-scale steps an effect takes.
 pub const UI_SCALE_NAMES: [&str; 5] = ["90%", "100%", "110%", "125%", "150%"];
-
-/// The English name of a text size shown in either language.
-pub fn text_size_name(shown: &str) -> String {
-    TEXT_SIZES
-        .iter()
-        .find(|(english, _)| *english == shown || t(text_size_ftl(english)) == shown)
-        .map_or_else(|| shown.to_owned(), |(english, _)| (*english).to_owned())
-}
 
 /// The person's current appearance selectors and controls, before the OS
 /// resolves Automatic mode. Theme documents and their private content are not
@@ -198,7 +191,7 @@ pub fn text_size_name(shown: &str) -> String {
 #[derive(serde::Serialize)]
 struct AppearanceInspection<'a> {
     schema: &'static str,
-    theme: &'a str,
+    theme: String,
     mode: &'a str,
     dark_theme: &'a str,
     light_theme: &'a str,
@@ -218,7 +211,7 @@ impl<'a> From<&'a AppearancePrefs> for AppearanceInspection<'a> {
     fn from(prefs: &'a AppearancePrefs) -> Self {
         Self {
             schema: "tilo.settings.appearance.v1",
-            theme: &prefs.theme,
+            theme: prefs.theme_choice(),
             mode: &prefs.mode,
             dark_theme: &prefs.dark_theme,
             light_theme: &prefs.light_theme,
@@ -238,7 +231,7 @@ impl<'a> From<&'a AppearancePrefs> for AppearanceInspection<'a> {
 
 /// The look of the desktop and every app: theme, scale, contrast, motion,
 /// the day-and-night schedule and the wallpaper.
-#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[derive(Clone, Copy, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AppearanceEffect {
     /// Read the person's current selectors and schedule without resolving
@@ -247,70 +240,10 @@ pub enum AppearanceEffect {
         view,
         returns,
         device_only,
-        permission = "read",
+        kind = "read",
         label = "Inspect appearance preferences"
     )]
     InspectAppearance,
-    /// Set the theme every app draws with.
-    #[effect(idempotent)]
-    SetTheme {
-        #[param("The theme; Automatic is light by day and dark by night", choices = AppearancePrefs::THEMES.iter().copied())]
-        theme: String,
-    },
-    /// Set the interface scale.
-    #[effect(idempotent)]
-    SetUiScale {
-        #[param("How large the whole interface is drawn", choices = UI_SCALE_NAMES)]
-        scale: String,
-    },
-    /// Set the text size.
-    #[effect(idempotent)]
-    SetTextSize {
-        #[param("How large text is drawn", choices = TEXT_SIZE_NAMES)]
-        size: String,
-    },
-    /// Turn high contrast on or off.
-    #[effect(idempotent)]
-    SetHighContrast {
-        #[param("Whether high contrast is on")]
-        on: bool,
-    },
-    /// Turn reduced motion on or off.
-    #[effect(idempotent)]
-    SetReduceMotion {
-        #[param("Whether animations are skipped")]
-        on: bool,
-    },
-    /// Set when day and night begin.
-    #[effect(idempotent)]
-    SetDayNightSchedule {
-        #[param("`sun`: at sunrise and sunset; `custom`: at the day and night times", choices = values(&SCHEDULES))]
-        schedule: String,
-    },
-    /// Set when day begins on the custom schedule.
-    #[effect(idempotent)]
-    SetDayStart {
-        #[param("The time day begins, HH:MM", choices = TIMES)]
-        time: String,
-    },
-    /// Set when night begins on the custom schedule.
-    #[effect(idempotent)]
-    SetNightStart {
-        #[param("The time night begins, HH:MM", choices = TIMES)]
-        time: String,
-    },
-    /// Set which workspaces a new wallpaper covers.
-    #[effect(idempotent)]
-    SetWallpaperScope {
-        #[param("`workspace`: this workspace; `all`: every workspace", choices = values(&WALLPAPER_SCOPES))]
-        scope: String,
-    },
-    /// Set where a new wallpaper shows.
-    #[effect(idempotent)]
-    SetWallpaperTarget {
-        #[param("The desktop, the lock screen or both", choices = values(&WALLPAPER_TARGETS))]
-        target: String,
-    },
     /// Choose a picture and make it the wallpaper.
     #[effect(job)]
     ChooseWallpaper,
@@ -323,13 +256,6 @@ pub(crate) fn answer(
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
     let host = app.host();
-    let pick = |table: &[(&str, &'static str)], value: &str, what: &str| {
-        table
-            .iter()
-            .find(|(_, known)| *known == value)
-            .map(|(_, known)| (*known).to_owned())
-            .ok_or_else(|| format!("`{value}` is not a {what}"))
-    };
     match effect {
         AppearanceEffect::InspectAppearance => {
             let prefs = host.settings::<AppearancePrefs>().get();
@@ -337,57 +263,8 @@ pub(crate) fn answer(
                 .map(Effected::value)
                 .map_err(|error| format!("the appearance preferences could not be read: {error}"))
         }
-        AppearanceEffect::SetTheme { theme } => {
-            if !AppearancePrefs::THEMES.contains(&theme.as_str()) {
-                return Err(format!("`{theme}` is not a theme"));
-            }
-            host.update(|prefs: &mut AppearancePrefs| prefs.choose_legacy_theme(theme))
-        }
-        AppearanceEffect::SetUiScale { scale } => {
-            let factor =
-                ui_scale_factor(&scale).ok_or_else(|| format!("`{scale}` is not a UI scale"))?;
-            host.update(|prefs: &mut AppearancePrefs| prefs.ui_scale = factor)
-        }
-        AppearanceEffect::SetTextSize { size } => {
-            let scale =
-                text_size_scale(&size).ok_or_else(|| format!("`{size}` is not a text size"))?;
-            host.update(|prefs: &mut AppearancePrefs| prefs.text_scale = scale)
-        }
-        AppearanceEffect::SetHighContrast { on } => {
-            host.update(|prefs: &mut AppearancePrefs| prefs.high_contrast = on)
-        }
-        AppearanceEffect::SetReduceMotion { on } => {
-            host.update(|prefs: &mut AppearancePrefs| prefs.reduce_motion = on)
-        }
-        AppearanceEffect::SetDayNightSchedule { schedule } => {
-            let schedule = pick(&SCHEDULES, &schedule, "day and night schedule")?;
-            host.update(|prefs: &mut AppearancePrefs| prefs.schedule = schedule)
-        }
-        AppearanceEffect::SetDayStart { time } => {
-            let time = schedule_time(&time)?;
-            host.update(|prefs: &mut AppearancePrefs| prefs.sunrise = time)
-        }
-        AppearanceEffect::SetNightStart { time } => {
-            let time = schedule_time(&time)?;
-            host.update(|prefs: &mut AppearancePrefs| prefs.sunset = time)
-        }
-        AppearanceEffect::SetWallpaperScope { scope } => {
-            let scope = pick(&WALLPAPER_SCOPES, &scope, "wallpaper scope")?;
-            host.update(|prefs: &mut AppearancePrefs| prefs.wallpaper_scope = scope)
-        }
-        AppearanceEffect::SetWallpaperTarget { target } => {
-            let target = pick(&WALLPAPER_TARGETS, &target, "wallpaper target")?;
-            host.update(|prefs: &mut AppearancePrefs| prefs.wallpaper_target = target)
-        }
         AppearanceEffect::ChooseWallpaper => choose_wallpaper(app, cx),
     }
-}
-
-/// A time of day `HH:MM`, normalised.
-fn schedule_time(time: &str) -> Result<String, String> {
-    settings_store::day_schedule::parse_hhmm(time)
-        .map(settings_store::day_schedule::format_hhmm)
-        .ok_or_else(|| format!("`{time}` is not a time of day (HH:MM)"))
 }
 
 /// Ask for a picture through the file-chooser portal, then hand it to the
@@ -497,7 +374,7 @@ impl Shown {
     }
 
     fn show(&self, prefs: &AppearancePrefs) {
-        self.theme.set(prefs.theme.clone());
+        self.theme.set(prefs.theme_choice());
         self.ui_scale.set(ui_scale_label(prefs.ui_scale).to_owned());
         self.text_size.set(text_size_label(prefs.text_scale));
         self.high_contrast.set(prefs.high_contrast);
@@ -543,95 +420,63 @@ impl AppearancePane {
         self.prefs.get()
     }
 
-    fn dropdown(
-        options: Vec<String>,
-        state: &LocalState<String>,
-        id: &str,
-        bind: impl FnOnce(Dropdown) -> Dropdown,
-    ) -> Box<dyn Widget> {
-        let placeholder = state.get();
-        Box::new(bind(
-            Dropdown::from_state(options, state)
-                .with_id(id)
-                .with_placeholder(&placeholder),
-        ))
-    }
-
-    fn toggle(
-        &self,
-        state: &LocalState<bool>,
-        id: &str,
-        effect: tilo_resource::ActionRef<AppearanceEffect, bool>,
-    ) -> Box<dyn Widget> {
-        Box::new(
-            self.cx
-                .bind(Toggle::from_state(state).with_id(id), self::effect(effect)),
+    /// The theme, the interface scale and the text size.
+    fn theme_card(&self) -> Box<dyn Widget> {
+        let cx = &self.cx;
+        card(
+            &t("settings-appearance-theme-card"),
+            rows(vec![
+                cx.row(t("settings-appearance-theme"))
+                    .id("appearance.theme")
+                    .choice_verb(
+                        AppearancePrefs::THEMES.iter().copied(),
+                        &self.shown.theme,
+                        AppearancePrefs::PICK_THEME,
+                    ),
+                cx.row(t("settings-appearance-ui-scale"))
+                    .id("appearance.ui_scale")
+                    .choice(
+                        UI_SCALE_NAMES.iter().copied(),
+                        &self.shown.ui_scale,
+                        AppearancePrefs::paths().ui_scale,
+                        |shown: String| {
+                            ui_scale_factor(&shown)
+                                .ok_or_else(|| format!("`{shown}` is not a UI scale"))
+                        },
+                    ),
+                cx.row(t("settings-appearance-text-size"))
+                    .id("appearance.text_size")
+                    .choice(
+                        text_size_options(),
+                        &self.shown.text_size,
+                        AppearancePrefs::paths().text_scale,
+                        |label: String| text_size_value(&label),
+                    ),
+            ]),
         )
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let cx = &self.cx;
-        let theme = Self::dropdown(
-            AppearancePrefs::THEMES
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
-            &self.shown.theme,
-            "appearance.theme",
-            |control| cx.bind(control, effect(AppearanceEffect::SET_THEME)),
-        );
-        let ui_scale = Self::dropdown(
-            UI_SCALE_NAMES
-                .iter()
-                .map(|name| (*name).to_owned())
-                .collect(),
-            &self.shown.ui_scale,
-            "appearance.ui_scale",
-            |control| cx.bind(control, effect(AppearanceEffect::SET_UI_SCALE)),
-        );
-        let size = Self::dropdown(
-            text_size_options(),
-            &self.shown.text_size,
-            "appearance.text_size",
-            |control| {
-                cx.bind(
-                    control,
-                    effect(AppearanceEffect::SET_TEXT_SIZE)
-                        .map(|shown: String| text_size_name(&shown)),
-                )
-            },
-        );
-
-        let theme_card = card(
-            &t("settings-appearance-theme-card"),
-            rows(vec![
-                choice_row(&t("settings-appearance-theme"), theme),
-                choice_row(&t("settings-appearance-ui-scale"), ui_scale),
-                choice_row(&t("settings-appearance-text-size"), size),
-            ]),
-        );
-
+        let theme_card = self.theme_card();
         let access_card = card(
             &t("settings-appearance-access-card"),
             rows(vec![
-                setting_row_described(
-                    &t("settings-appearance-high-contrast"),
-                    &t("settings-appearance-high-contrast-desc"),
-                    self.toggle(
+                self.cx
+                    .row(t("settings-appearance-high-contrast"))
+                    .described(t("settings-appearance-high-contrast-desc"))
+                    .id("appearance.high_contrast")
+                    .toggle(
                         &self.shown.high_contrast,
-                        "appearance.high_contrast",
-                        AppearanceEffect::SET_HIGH_CONTRAST,
+                        AppearancePrefs::paths().high_contrast,
                     ),
-                ),
-                setting_row_described(
-                    &t("settings-appearance-reduce-motion"),
-                    &t("settings-appearance-reduce-motion-desc"),
-                    self.toggle(
+                self.cx
+                    .row(t("settings-appearance-reduce-motion"))
+                    .described(t("settings-appearance-reduce-motion-desc"))
+                    .id("appearance.reduce_motion")
+                    .toggle(
                         &self.shown.reduce_motion,
-                        "appearance.reduce_motion",
-                        AppearanceEffect::SET_REDUCE_MOTION,
+                        AppearancePrefs::paths().reduce_motion,
                     ),
-                ),
             ]),
         );
 
@@ -676,48 +521,32 @@ impl AppearancePane {
         let cx = &self.cx;
         let mut body = vec![
             caption(&t("settings-appearance-wallpaper-body")),
-            choice_row(
-                &t("settings-appearance-use-for"),
-                Self::dropdown(
-                    WALLPAPER_SCOPES
-                        .iter()
-                        .map(|(_, value)| scope_label(value))
-                        .collect(),
+            cx.row(t("settings-appearance-use-for"))
+                .id("appearance.wallpaper_scope")
+                .choice(
+                    WALLPAPER_SCOPES.iter().map(|(_, value)| scope_label(value)),
                     &self.shown.wallpaper_scope,
-                    "appearance.wallpaper_scope",
-                    |control| {
-                        cx.bind(
-                            control,
-                            effect(AppearanceEffect::SET_WALLPAPER_SCOPE).map(|shown: String| {
-                                value_for_shown(&WALLPAPER_SCOPES, &shown, scope_label)
-                                    .unwrap_or_default()
-                                    .to_owned()
-                            }),
-                        )
+                    AppearancePrefs::paths().wallpaper_scope,
+                    |shown: String| {
+                        value_for_shown(&WALLPAPER_SCOPES, &shown, scope_label)
+                            .map(str::to_owned)
+                            .ok_or_else(|| format!("`{shown}` is not offered"))
                     },
                 ),
-            ),
-            choice_row(
-                &t("settings-appearance-show-on"),
-                Self::dropdown(
+            cx.row(t("settings-appearance-show-on"))
+                .id("appearance.wallpaper_target")
+                .choice(
                     WALLPAPER_TARGETS
                         .iter()
-                        .map(|(_, value)| target_label(value))
-                        .collect(),
+                        .map(|(_, value)| target_label(value)),
                     &self.shown.wallpaper_target,
-                    "appearance.wallpaper_target",
-                    |control| {
-                        cx.bind(
-                            control,
-                            effect(AppearanceEffect::SET_WALLPAPER_TARGET).map(|shown: String| {
-                                value_for_shown(&WALLPAPER_TARGETS, &shown, target_label)
-                                    .unwrap_or_default()
-                                    .to_owned()
-                            }),
-                        )
+                    AppearancePrefs::paths().wallpaper_target,
+                    |shown: String| {
+                        value_for_shown(&WALLPAPER_TARGETS, &shown, target_label)
+                            .map(str::to_owned)
+                            .ok_or_else(|| format!("`{shown}` is not offered"))
                     },
                 ),
-            ),
             Box::new(
                 Row::new()
                     .push(Box::new(cx.bind_invocation(
@@ -744,47 +573,42 @@ impl AppearancePane {
                 .map(|time| (*time).to_string())
                 .collect::<Vec<_>>()
         };
-        let mut body = vec![choice_row(
-            &t("settings-appearance-schedule"),
-            Self::dropdown(
-                SCHEDULES
-                    .iter()
-                    .map(|(_, value)| schedule_label(value))
-                    .collect(),
-                &self.shown.schedule,
-                "appearance.schedule",
-                |control| {
-                    cx.bind(
-                        control,
-                        effect(AppearanceEffect::SET_DAY_NIGHT_SCHEDULE).map(|shown: String| {
-                            value_for_shown(&SCHEDULES, &shown, schedule_label)
-                                .unwrap_or_default()
-                                .to_owned()
-                        }),
-                    )
-                },
-            ),
-        )];
+        let mut body = vec![
+            cx.row(t("settings-appearance-schedule"))
+                .id("appearance.schedule")
+                .choice(
+                    SCHEDULES.iter().map(|(_, value)| schedule_label(value)),
+                    &self.shown.schedule,
+                    AppearancePrefs::paths().schedule,
+                    |shown: String| {
+                        value_for_shown(&SCHEDULES, &shown, schedule_label)
+                            .map(str::to_owned)
+                            .ok_or_else(|| format!("`{shown}` is not offered"))
+                    },
+                ),
+        ];
         let schedule = self.prefs().schedule();
         if !schedule.config.follow_sun {
-            body.push(choice_row(
-                &t("settings-appearance-day-starts"),
-                Self::dropdown(
-                    times(),
-                    &self.shown.sunrise,
-                    "appearance.sunrise",
-                    |control| cx.bind(control, effect(AppearanceEffect::SET_DAY_START)),
-                ),
-            ));
-            body.push(choice_row(
-                &t("settings-appearance-night-starts"),
-                Self::dropdown(
-                    times(),
-                    &self.shown.sunset,
-                    "appearance.sunset",
-                    |control| cx.bind(control, effect(AppearanceEffect::SET_NIGHT_START)),
-                ),
-            ));
+            body.push(
+                cx.row(t("settings-appearance-day-starts"))
+                    .id("appearance.sunrise")
+                    .choice(
+                        times(),
+                        &self.shown.sunrise,
+                        AppearancePrefs::paths().sunrise,
+                        Ok,
+                    ),
+            );
+            body.push(
+                cx.row(t("settings-appearance-night-starts"))
+                    .id("appearance.sunset")
+                    .choice(
+                        times(),
+                        &self.shown.sunset,
+                        AppearancePrefs::paths().sunset,
+                        Ok,
+                    ),
+            );
         }
         let today = schedule
             .config
@@ -881,10 +705,7 @@ mod tests {
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
 
-    fn set(app: &mut TestApp<SettingsShell>, effect: AppearanceEffect) {
-        app.effect(&SettingsEffect::from(effect))
-            .expect("the appearance effect is answered");
-    }
+    use crate::host::testing::{APPEARANCE, edit_field, invoke_section};
 
     /// Every appearance control's effect writes the person's `appearance`
     /// section, where the compositor and every app read it; a value outside
@@ -892,53 +713,48 @@ mod tests {
     #[test]
     fn appearance_effects_write_the_shared_section() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        set(
+        invoke_section(
             &mut app,
-            AppearanceEffect::SetTheme {
-                theme: "Automatic".into(),
-            },
-        );
-        set(
+            APPEARANCE,
+            "choose-theme",
+            serde_json::json!({ "theme": "Automatic" }),
+        )
+        .unwrap();
+        crate::host::testing::edit_field(
             &mut app,
-            AppearanceEffect::SetUiScale {
-                scale: "150%".into(),
-            },
-        );
-        set(
+            crate::host::testing::APPEARANCE,
+            "ui_scale",
+            1.5,
+        )
+        .unwrap();
+        crate::host::testing::edit_field(
             &mut app,
-            AppearanceEffect::SetTextSize {
-                size: "Large".into(),
-            },
-        );
-        set(&mut app, AppearanceEffect::SetHighContrast { on: true });
-        set(
+            crate::host::testing::APPEARANCE,
+            "text_scale",
+            1.15,
+        )
+        .unwrap();
+        edit_field(&mut app, APPEARANCE, "high_contrast", true).unwrap();
+        crate::host::testing::edit_field(
             &mut app,
-            AppearanceEffect::SetDayNightSchedule {
-                schedule: "custom".into(),
-            },
-        );
-        set(
+            crate::host::testing::APPEARANCE,
+            "schedule",
+            "custom",
+        )
+        .unwrap();
+        edit_field(&mut app, APPEARANCE, "sunrise", "06:30").unwrap();
+        edit_field(&mut app, APPEARANCE, "sunset", "21:00").unwrap();
+        crate::host::testing::edit_field(
             &mut app,
-            AppearanceEffect::SetDayStart {
-                time: "06:30".into(),
-            },
-        );
-        set(
-            &mut app,
-            AppearanceEffect::SetNightStart {
-                time: "21:00".into(),
-            },
-        );
-        set(
-            &mut app,
-            AppearanceEffect::SetWallpaperScope {
-                scope: "all".into(),
-            },
-        );
+            crate::host::testing::APPEARANCE,
+            "wallpaper_scope",
+            "all",
+        )
+        .unwrap();
 
         let settings = app.settings::<AppearancePrefs>();
         let prefs = settings.get();
-        assert_eq!(prefs.theme, "Automatic");
+        assert_eq!(prefs.theme_choice(), "Automatic");
         assert_eq!(prefs.ui_scale, 1.50);
         assert_eq!(prefs.text_scale, 1.15);
         assert!(prefs.high_contrast);
@@ -952,16 +768,16 @@ mod tests {
         assert_eq!(config.fixed.sunrise, 6 * 60 + 30);
         assert_eq!(config.fixed.sunset, 21 * 60);
 
-        for refused in [
-            AppearanceEffect::SetTheme {
-                theme: "Neon".into(),
-            },
-            AppearanceEffect::SetDayStart {
-                time: "25:00".into(),
-            },
-        ] {
-            assert!(app.effect(&SettingsEffect::from(refused)).is_err());
-        }
+        assert!(
+            invoke_section(
+                &mut app,
+                APPEARANCE,
+                "choose-theme",
+                serde_json::json!({ "theme": "Neon" })
+            )
+            .is_err()
+        );
+        assert!(edit_field(&mut app, APPEARANCE, "sunrise", "25:00").is_err());
         assert_eq!(app.settings::<AppearancePrefs>().get(), prefs);
     }
 
@@ -973,7 +789,8 @@ mod tests {
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
         cx.settings::<AppearancePrefs>()
             .set(&AppearancePrefs {
-                theme: "Dark cool".into(),
+                mode: "dark".into(),
+                dark_theme: "dark-cool".into(),
                 text_scale: 1.15,
                 ui_scale: 1.25,
                 ..AppearancePrefs::default()
@@ -986,7 +803,7 @@ mod tests {
 
         cx.settings::<AppearancePrefs>()
             .update(|prefs| {
-                prefs.theme = "Dark graphite".into();
+                prefs.choose_theme("Dark graphite");
                 prefs.reduce_motion = true;
             })
             .unwrap();

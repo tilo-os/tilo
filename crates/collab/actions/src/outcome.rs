@@ -44,6 +44,7 @@ impl Default for InvocationId {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct ActionOutput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<serde_json::Value>,
@@ -52,7 +53,10 @@ pub struct ActionOutput {
     pub resources: Vec<String>,
 }
 
+read_through_json_value!(ActionOutput);
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct ActionFailure {
     pub code: String,
     pub message: String,
@@ -62,10 +66,12 @@ pub struct ActionFailure {
     pub retryable: bool,
 }
 
+read_through_json_value!(ActionFailure);
+
 /// Monotonic lifecycle of one invocation. A transport timeout is not a failed
 /// action: callers retain the invocation id and can resume observing it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
+#[serde(remote = "Self", tag = "state", rename_all = "snake_case")]
 pub enum InvocationUpdate {
     Accepted {
         invocation: InvocationId,
@@ -97,6 +103,8 @@ pub enum InvocationUpdate {
         message: Option<String>,
     },
 }
+
+read_through_json_value!(InvocationUpdate);
 
 impl InvocationUpdate {
     pub fn invocation(&self) -> InvocationId {

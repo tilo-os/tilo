@@ -77,9 +77,6 @@ impl Widget for ConsumingKeyboardRoot {
         nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if matches!(
             event,
@@ -91,9 +88,6 @@ impl Widget for ConsumingKeyboardRoot {
                 .unwrap();
             *ctx.handled = true;
         }
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn name(&self) -> &'static str {
         "consuming-keyboard-root"
@@ -113,21 +107,8 @@ impl Widget for Publisher {
     ) -> NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "publisher"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 }
 
@@ -175,8 +156,7 @@ impl crate::resources::PublishesResources for Publisher {
                         key: "lazy-flipped".into(),
                     },
                 )
-                .unwrap()
-                .requiring(tilo_actions::PermissionRequirement::Write),
+                .unwrap(),
             )
         })
     }
@@ -195,21 +175,8 @@ impl Widget for CountingPublisher {
     ) -> NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "counting-publisher"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 }
 
@@ -309,9 +276,8 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
         assert_eq!(app.collect_local_resources().len(), 1);
         app.actions.permission_generation.set(u64::MAX);
 
-        app.set_permission_ctx(PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(None, "restricted"),
-            Vec::new(),
+        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+            "restricted",
         ));
 
         assert_eq!(app.actions.permission_generation.get(), u64::MAX);
@@ -393,9 +359,8 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
                     .any(|label| label.contains("Flip it"))
             );
             if revoke {
-                app.set_permission_ctx(PermissionContext::from_capabilities(
-                    collab_types::caps::Actor::person(None, "restricted"),
-                    Vec::new(),
+                app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+                    "restricted",
                 ));
             }
             assert!(app.action_palette_handle_key(&synth_enter()));
@@ -426,9 +391,8 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
     {
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
         app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-        app.set_permission_ctx(PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(None, "restricted"),
-            Vec::new(),
+        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+            "restricted",
         ));
         app.open_action_palette();
         app.actions
@@ -907,12 +871,7 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
         assert!(app.state.peek_last_undo().is_none());
 
         app.state.doc.put(ROOT, "draft", "finished").unwrap();
-        let context = tilo_actions::ActionContext::for_resource(
-            "Finish draft",
-            "test.draft",
-            "note",
-            "Draft",
-        );
+        let context = tilo_actions::ActionContext::for_resource("test.draft", "note", "Draft");
         assert!(app.state.commit_action_authored_with_context(
             None,
             None,
@@ -925,7 +884,13 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
             .message()
             .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
             .unwrap();
-        assert_eq!(context.action_label, "Finish draft");
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.label.as_str()),
+            Some("Draft")
+        );
     }
 
     // Case `ctrl_k_invokes_a_projected_semantic_view_control`.
@@ -1099,9 +1064,6 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
         fn name(&self) -> &str {
             "Native history fixture"
         }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
-        }
         fn build_layout(
             &mut self,
             tree: &mut TaffyTree<()>,
@@ -1111,16 +1073,6 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
             let node = tree.new_leaf(taffy::Style::default()).unwrap();
             nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
-        }
-        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
         }
         fn handle_event(&mut self, _: &WindowEvent, _: &mut crate::widget::EventCtx<'_>) {}
     }

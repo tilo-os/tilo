@@ -1,61 +1,47 @@
-//! System Monitor as a [`tilo_resource::Resource`]: the shared table layout
-//! (sort, tree or flat) syncs in the document; this machine's processes are
-//! the surface's [`ResourceSurface::live_rows`], and everything Monitor does
-//! to them (refresh, inspect, copy a PID, stop, kill) is its typed effect
-//! vocabulary [`MonitorEffect`], answered by the surface.
+//! System Monitor as a resource: the shared table layout (sort, tree or
+//! flat) is the [`Monitor`] model, edited at its paths; this machine's
+//! processes are the surface's [`ResourceSurface::live_rows`], and
+//! everything Monitor does to them (refresh, inspect, copy a PID, stop,
+//! kill) is its typed effect vocabulary [`MonitorEffect`], answered by the
+//! surface.
 
 use std::rc::Rc;
 
-use serde::{Deserialize, Serialize};
 use ui::framework::{
     EffectAnswer, EffectCx, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface, RunMode,
     SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::{Action, ActionError, ActionParam, ActionRegistry, ParamType};
-use ui::tilo_resource::{self, ActionDecl, Doc, Effect, Invoke, ModelError, Resource};
+use ui::i18n::EmbeddedCatalog;
+use ui::tilo_resource::{self, Effect, Invoke, Model, resource};
 use ui::widget::Element;
 
-use crate::app::MonitorApp;
-use crate::doc::ViewDoc;
+use crate::app::{MonitorApp, SortKey};
 use crate::model::MonitorModel;
 
-/// The shared table layout.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum MonitorAction {
-    SetSort { key: String, desc: bool },
-    SetTreeMode { tree: bool },
+/// Monitor's Fluent catalogs, source locale first.
+pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
+
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+
+/// How the process table is laid out, shared with everyone who sees it.
+/// Each part is edited at its path (`Monitor::paths().flat.set(true)`); the
+/// tab, the filter and the selection are each window's own.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Monitor {
+    /// Sort column
+    pub sort: SortKey,
+    /// Ascending
+    ///
+    /// The smallest value, or A, first.
+    pub ascending: bool,
+    /// Flat list
+    ///
+    /// Every process in one sorted list rather than the process tree.
+    pub flat: bool,
 }
 
-impl Action for MonitorAction {
-    fn apply(&self, doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
-        match self {
-            Self::SetSort { key, desc } => {
-                ViewDoc::set_sort_key(doc, key);
-                ViewDoc::set_sort_desc(doc, *desc);
-            }
-            Self::SetTreeMode { tree } => ViewDoc::set_tree_mode(doc, *tree),
-        }
-        Ok(())
-    }
-}
-
-/// How the process table is laid out, as the document holds it.
-#[derive(Clone, Debug)]
-pub struct MonitorState {
-    pub sort_key: String,
-    pub sort_desc: bool,
-    pub tree_mode: bool,
-}
-
-impl Default for MonitorState {
-    fn default() -> Self {
-        Self {
-            sort_key: "cpu".into(),
-            sort_desc: true,
-            tree_mode: true,
-        }
-    }
-}
+#[resource(kind = "monitor.processes", label = "Processes")]
+impl Monitor {}
 
 /// What Monitor does on this machine: work with no document delta, invoked
 /// from its own controls, the palette, an agent or a script alike. A
@@ -66,117 +52,44 @@ impl Default for MonitorState {
 #[effect(operation = "monitor.effect", device_only)]
 pub enum MonitorEffect {
     /// Refresh processes.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Refresh,
     /// Show tab.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ShowTab {
         #[param("processes | resources")]
         tab: String,
     },
     /// Filter processes.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Filter {
         #[param("Process filter text, or omit to clear")]
         query: Option<String>,
     },
     /// Show process details.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Inspect {
         #[param("The process row's id")]
         process: String,
     },
     /// Copy PID.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     CopyPid {
         #[param("The process row's id")]
         process: String,
     },
     /// Stop process.
-    #[effect(destructive, permission = "admin")]
+    #[effect(destructive)]
     Stop {
         #[param("The process row's id")]
         process: String,
     },
     /// Force kill.
-    #[effect(destructive, permission = "admin")]
+    #[effect(destructive)]
     Kill {
         #[param("The process row's id")]
         process: String,
     },
-}
-
-/// The live process catalogue resource.
-pub struct Monitor;
-
-impl Resource for Monitor {
-    const KIND: &'static str = "monitor.processes";
-    const LABEL: &'static str = "Processes";
-    const ACTION_TYPE: &'static str = "monitor.action";
-
-    type State = MonitorState;
-    type Action = MonitorAction;
-
-    fn register(registry: &mut ActionRegistry) {
-        registry.register::<MonitorAction>(Self::ACTION_TYPE);
-    }
-
-    fn read(doc: &Doc) -> Result<MonitorState, ModelError> {
-        Ok(MonitorState {
-            sort_key: ViewDoc::sort_key(doc),
-            sort_desc: ViewDoc::sort_desc(doc),
-            tree_mode: ViewDoc::tree_mode(doc),
-        })
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        vec![
-            ActionDecl::new(
-                "set-sort",
-                "Sort process table",
-                vec![
-                    ActionParam::required(
-                        "key",
-                        ParamType::Text,
-                        "pid | name | user | cpu | mem | threads",
-                    )
-                    .with_choices(["pid", "name", "user", "cpu", "mem", "threads"]),
-                    ActionParam::optional(
-                        "desc",
-                        ParamType::Boolean,
-                        "Descending when true; omit for the column default",
-                    ),
-                ],
-                |args, _| {
-                    let key = args
-                        .text("key")
-                        .ok_or_else(|| "missing sort key".to_owned())?
-                        .to_owned();
-                    let desc = args
-                        .boolean("desc")
-                        .unwrap_or(!matches!(key.as_str(), "name" | "user"));
-                    Ok(MonitorAction::SetSort { key, desc })
-                },
-            )
-            .describe("Set the shared process-table sort."),
-            ActionDecl::new(
-                "set-tree-mode",
-                "Set tree mode",
-                vec![ActionParam::required(
-                    "tree",
-                    ParamType::Boolean,
-                    "true for parent→child tree, false for a flat list",
-                )],
-                |args, _| {
-                    let tree = args
-                        .boolean("tree")
-                        .ok_or_else(|| "missing tree flag".to_owned())?;
-                    Ok(MonitorAction::SetTreeMode { tree })
-                },
-            )
-            .describe("Switch the shared tree vs flat process layout."),
-        ]
-    }
 }
 
 /// The screenshot scenarios: the sample machine, staged.
@@ -217,13 +130,15 @@ impl ResourceApp for MonitorShell {
     /// The flat list is the shared table layout, set as a person sets it.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Monitor>> {
         match name {
-            Some("flat" | "kernel-threads") => {
-                Invoke::apply(&MonitorAction::SetTreeMode { tree: false })
-                    .into_iter()
-                    .collect()
-            }
+            Some("flat" | "kernel-threads") => Invoke::edit(&Monitor::paths().flat.set(true))
+                .into_iter()
+                .collect(),
             _ => Vec::new(),
         }
+    }
+
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&CATALOG)
     }
 
     fn view(cx: &mut ViewCx<Monitor>) -> Element {
@@ -237,12 +152,14 @@ impl ResourceApp for MonitorShell {
             ),
             RunMode::Past => MonitorApp::past(),
         };
+        // A search hit, or an agent's `open`, shows the process it names.
+        cx.on_open(app.opener());
         cx.surface(app)
     }
 }
 
 impl ResourceSurface<Monitor, MonitorEffect> for MonitorApp {
-    fn present(&mut self, state: &Rc<MonitorState>) {
+    fn present(&mut self, state: &Rc<Monitor>) {
         self.adopt_resource_state(state);
     }
 
@@ -487,8 +404,7 @@ mod tests {
             .map(|action| action.id.as_str())
             .collect();
         for id in [
-            "set-sort",
-            "set-tree-mode",
+            "field-edit",
             "refresh",
             "show-tab",
             "filter",
@@ -503,17 +419,23 @@ mod tests {
             );
         }
 
-        // Sorting is an edit of the shared layout, one undo step.
+        // Sorting is an edit of the shared layout, one call and one undo
+        // step each.
         let versions = app.versions().len();
-        app.call("set-sort", serde_json::json!({ "key": "name" }))
-            .unwrap();
-        assert_eq!(app.state().sort_key, "name");
-        assert!(!app.state().sort_desc, "text columns sort ascending first");
-        assert_eq!(app.versions().len(), versions + 1);
+        let paths = Monitor::paths();
+        for edit in [paths.sort.set(SortKey::Name), paths.ascending.set(true)] {
+            app.call("field-edit", serde_json::json!({ "edit": edit }))
+                .unwrap();
+        }
+        assert_eq!(app.state().sort, SortKey::Name);
+        assert!(app.state().ascending);
+        assert_eq!(app.versions().len(), versions + 2);
         click(&mut app, "Tree view");
-        assert!(!app.state().tree_mode);
+        assert!(app.state().flat);
         assert!(app.undo());
-        assert!(app.state().tree_mode);
+        assert!(!app.state().flat);
+        assert!(app.undo());
+        assert!(!app.state().ascending, "each edit is its own step");
 
         // The filter and the tab are the window's own: no document change.
         let versions = app.versions().len();
@@ -602,6 +524,35 @@ mod tests {
         app.call_on(&id, "inspect", serde_json::json!({})).unwrap();
         app.harness().relayout();
         assert!(inspected(&mut app, child.id()), "the child is selected");
+
+        // A search hit is anchored at the row, and opening it inspects it.
+        let hit = app
+            .surface_mut::<MonitorApp>()
+            .process_search_entries()
+            .into_iter()
+            .find(|entry| entry.anchor.as_deref() == Some(id.as_str()))
+            .expect("the child is found");
+        assert!(hit.action.is_none(), "a hit names its row, never an action");
+        app.harness()
+            .perform_named("monitor.tabs:segment:1", &ui::a11y::Action::Activate)
+            .unwrap();
+        app.settle();
+        assert_eq!(tab_shown(&mut app, 1), Some(true));
+        app.call("open", serde_json::json!({ "anchor": id }))
+            .unwrap();
+        assert!(
+            app.call("open", serde_json::json!({ "anchor": "a-process" }))
+                .is_err(),
+            "an anchor that names no process is refused"
+        );
+        app.settle();
+        app.harness().relayout();
+        assert_eq!(
+            tab_shown(&mut app, 1),
+            Some(false),
+            "open shows the processes"
+        );
+        assert!(inspected(&mut app, child.id()), "and the child in them");
 
         // Killing it asks first, then signals exactly that process.
         assert!(
@@ -699,7 +650,7 @@ mod tests {
         let audit = app.harness().native_app_audit();
         assert!(audit.is_certified(), "processes: {audit:?}");
         click(&mut app, "Tree view");
-        assert!(!app.state().tree_mode);
+        assert!(app.state().flat);
         let audit = app.harness().native_app_audit();
         assert!(audit.is_certified(), "flat processes: {audit:?}");
         app.harness()
@@ -714,9 +665,97 @@ mod tests {
     ui::action_contract_tests! {
         seed: ui::automerge::AutoCommit::new(),
         registry: {
-            ActionRegistry::with(Monitor::register)
+            let mut registry = ui::tilo_actions::ActionRegistry::new();
+            <Monitor as ui::tilo_resource::Resource>::register(&mut registry);
+            registry
         },
         resources: |_| TestApp::<MonitorShell>::new().unwrap().harness().resources(),
         palette: ["Refresh processes", "Show process details", "Copy PID", "Stop process"],
+    }
+
+    /// Two people changing the layout at once converge: each part is its
+    /// own field, so a sort and a switch to the flat list both land.
+    #[test]
+    fn concurrent_layout_edits_converge() {
+        use ui::tilo_resource::Replica;
+        let paths = Monitor::paths();
+        let mut ours = Replica::<Monitor>::new();
+        let mut theirs = ours.fork();
+        ours.apply(Invoke::edit(&paths.sort.set(SortKey::Mem)).unwrap())
+            .unwrap();
+        theirs
+            .apply(Invoke::edit(&paths.flat.set(true)).unwrap())
+            .unwrap();
+        ours.sync_with(&mut theirs).unwrap();
+        assert_eq!(ours.state().unwrap(), theirs.state().unwrap());
+        assert_eq!(
+            ours.state().unwrap(),
+            Monitor {
+                sort: SortKey::Mem,
+                ascending: false,
+                flat: true,
+            }
+        );
+    }
+
+    /// A fresh layout is the process tree by CPU, busiest first.
+    #[test]
+    fn a_new_layout_is_the_tree_by_cpu() {
+        let app = TestApp::<MonitorShell>::new().unwrap();
+        assert_eq!(app.state(), Monitor::default());
+        assert_eq!(Monitor::default().sort, SortKey::Cpu);
+    }
+
+    /// What an agent changes in the shared layout is history a person
+    /// reads as Monitor's own sentences, with who did it for whom.
+    #[test]
+    fn history_entries_render_as_the_apps_sentences() {
+        use ui::tilo_actions::{ActionInvoker, ActorKind};
+
+        let mut app = TestApp::<MonitorShell>::new().unwrap();
+        let agent = ActionInvoker::actor("agent:claude")
+            .with_kind(ActorKind::Agent)
+            .acting_for("ada");
+        let kind = <Monitor as ui::tilo_resource::Resource>::KIND;
+        let paths = Monitor::paths();
+        for edit in [
+            paths.sort.set(SortKey::Mem),
+            paths.ascending.set(true),
+            paths.flat.set(true),
+            paths.flat.set(false),
+        ] {
+            app.call_by(
+                agent.clone(),
+                kind,
+                "field-edit",
+                serde_json::json!({ "edit": edit }),
+            )
+            .unwrap();
+        }
+        let entries: Vec<_> = app
+            .history()
+            .into_iter()
+            .filter(|entry| {
+                entry
+                    .invoker
+                    .as_ref()
+                    .is_some_and(|invoker| invoker.actor == "agent:claude")
+            })
+            .collect();
+        let sentences = app.sentences(&entries);
+        assert_eq!(
+            sentences,
+            [
+                "Sorted the processes by memory",
+                "Sorted the processes ascending",
+                "Listed the processes flat",
+                "Showed the process tree",
+            ]
+        );
+        let invoker = entries[0].invoker.as_ref().unwrap();
+        assert_eq!(
+            (invoker.kind, invoker.on_behalf_of.as_deref()),
+            (ActorKind::Agent, Some("ada"))
+        );
     }
 }
