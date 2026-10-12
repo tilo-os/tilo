@@ -197,7 +197,35 @@ fn scenario(desktop: &Desktop, max_idle_cpu: f64) {
         let (cx, cy) = centre(*rect);
         desktop.click_at(cx, cy);
         // Keys go to whoever holds keyboard focus when they arrive: wait for
-        // the click to have given it to this client.
+        // the compositor's seat to say the click gave it to this client. The
+        // client's own enter/leave events trail the seat and can still show
+        // the focus it held before another window took it.
+        let surface = desktop
+            .foreign_frames()
+            .iter()
+            .find(|frame| rect_of(frame) == Some(*rect))
+            .and_then(|frame| frame.get("surface_id").and_then(Value::as_u64))
+            .expect("the clicked rectangle is a tracked client surface");
+        desktop.wait_for_with(
+            "the click to give the client keyboard focus",
+            || {
+                format!(
+                    "{}\nseat focus: {:?}\nthe client reported:\n{}",
+                    client.fate(),
+                    desktop.chrome().get("seat_focus"),
+                    client.output()
+                )
+            },
+            || {
+                desktop
+                    .chrome()
+                    .get("seat_focus")
+                    .and_then(|seat| seat.get("keyboard"))
+                    .and_then(|keyboard| keyboard.get("surface"))
+                    .and_then(Value::as_u64)
+                    == Some(surface)
+            },
+        );
         desktop.wait_for("the client to hold keyboard focus", || {
             client.count("EVENT:KEYBOARD ENTER") > client.count("EVENT:KEYBOARD LEAVE")
         });
@@ -206,7 +234,17 @@ fn scenario(desktop: &Desktop, max_idle_cpu: f64) {
         let wanted = before.saturating_add(5);
         desktop.wait_for_with(
             "the client to receive its keys",
-            || format!("{}\nthe client reported:\n{}", client.fate(), client.output()),
+            || {
+                // Who holds the keyboard when the keys fail to arrive: the
+                // client may have lost it to another surface after the click.
+                let seat = desktop.chrome().get("seat_focus").cloned();
+                format!(
+                    "{}\nseat focus: {seat:?}\nforeign frames: {:?}\nthe client reported:\n{}",
+                    client.fate(),
+                    desktop.foreign_frames(),
+                    client.output()
+                )
+            },
             || client.count("EVENT:KEY PRESS") >= wanted,
         );
     }
