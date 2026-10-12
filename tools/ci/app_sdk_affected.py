@@ -63,6 +63,13 @@ GLOBAL_INPUTS = (
 # fixtures, not Rust sources. Bind that audit to its exact bytes: any build
 # script change restores the SDK lanes until its inputs have been re-audited.
 AUDITED_UNIT_MODULES = {
+    # Shell has no build script. Pin its manifest and reject new automatic
+    # or declared build targets before trusting the observed cfg(test) edge.
+    "crates/session/shell/src/shell/frame_retained_tests.rs": (
+        "crates/session/shell/src/shell/frame.rs",
+        "crates/session/shell/Cargo.toml",
+        "a1d18f5d3b1aa4d0d4af0a93c878280b113332da8707b64315fa1b27e5421062",
+    ),
     "crates/sdk/ui-core/src/app/bound_component_tests.rs": (
         "crates/sdk/ui-core/src/app/host.rs",
         "crates/sdk/ui-core/build.rs",
@@ -87,6 +94,15 @@ def audited_unit_module_only(root: Path, path: str, packages: dict, by_dir: dict
         changed.read_text()
         if hashlib.sha256(build.read_bytes()).hexdigest() != digest:
             return False
+        if build.name == "Cargo.toml":
+            package = packages[owner]
+            directory = Path(package["manifest_path"]).parent
+            automatic = directory / "build.rs"
+            if (build.resolve() != Path(package["manifest_path"]).resolve()
+                    or automatic.exists() or automatic.is_symlink()
+                    or any("custom-build" in target.get("kind", [])
+                           for target in package.get("targets", []))):
+                return False
         text = parent.read_text()
         module = (r'^#\[cfg\(test\)\]\s*#\[path\s*=\s*"'
                   + re.escape(changed.name) + r'"\]\s*mod\s+\w+\s*;')
