@@ -12966,7 +12966,6 @@ dependencies = [
  "runtime-fs",
  "runtime-identity",
  "runtime-portal",
- "runtime-portal-xdg",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -13127,19 +13126,6 @@ dependencies = [
  "tilo-test-env",
  "tokio",
  "tokio-util",
- "workspace-hack",
-]
-
-[[package]]
-name = "runtime-portal-xdg"
-version = "0.1.0"
-dependencies = [
- "ashpd",
- "tempfile",
- "thiserror 2.0.21",
- "tilo-clock",
- "tilo-rt",
- "tilo-test-env",
  "workspace-hack",
 ]
 

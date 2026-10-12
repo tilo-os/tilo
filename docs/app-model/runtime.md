@@ -1,10 +1,10 @@
 # The `runtime` SDK
 
-Every Tilo app depends on the `runtime` umbrella crate. It re-exports five
+Every Tilo app depends on the `runtime` umbrella crate. It re-exports four
 submodules and one error type; everything else in the SDK is layered on top.
 
 ```rust
-use runtime::{collab, fs, identity, portal, portal_xdg};
+use runtime::{collab, fs, identity, portal};
 use runtime::{NotAvailable, is_tilo_native};
 ```
 
@@ -26,7 +26,6 @@ Re-exports:
 | `runtime::fs`          | The workspace filesystem client (`runtime_fs`). |
 | `runtime::identity`    | Local Ed25519 signing (`runtime_identity`). |
 | `runtime::portal`      | Service-fd + Cap'n Proto plumbing (`runtime_portal`). |
-| `runtime::portal_xdg`  | XDG desktop portal client (`runtime_portal_xdg`). |
 | `runtime::NotAvailable`| The single error type every fallible SDK entry returns. |
 | `runtime::is_tilo_native` | `bool` — heuristic ("is `TILO_WORKSPACE_ID` set?"). |
 
@@ -177,54 +176,15 @@ connection, but the key does not. `is_single_device()` distinguishes
 single-device signing from threshold (multi-device) identities. The legacy
 `TILO_USER_IDENTITY` file path remains only for unsandboxed development.
 
-## `runtime::portal_xdg` — XDG desktop portals
+## XDG desktop portals
 
-The freedesktop portals via `ashpd`. Reachable only when the manifest's
+The freedesktop portals are reachable only when the manifest's
 `[sandbox.portals]` block declared a `"via-host"` policy and the launcher
-plumbed the D-Bus session bus into the sandbox.
-
-```rust
-pub enum PortalError {
-    NotAvailable,       // bus unreachable / not proxied
-    Cancelled,          // user closed the dialog
-    NoResponse,
-    PortalNotFound,     // bus reachable but no frontend installed
-    Other(String),
-}
-
-pub fn is_portal_available() -> bool;  // cheap probe: is the bus reachable?
-```
-
-Every portal has a sync form and an `_async` form. The sync one spins up a
-current-thread tokio runtime just for that call; use the async one if you
-already own a runtime.
-
-```rust
-impl ScreenCast {
-    pub fn start() -> Result<Vec<ScreenCastStream>, PortalError>;
-    pub async fn start_async() -> Result<Vec<ScreenCastStream>, PortalError>;
-}
-impl Notification {
-    pub fn send(title: &str) -> Result<(), PortalError>;
-    pub fn send_full(/* … */) -> Result<(), PortalError>;
-    pub async fn send_full_async(/* … */) -> Result<(), PortalError>;
-}
-impl Secret {
-    pub fn retrieve() -> Result<Vec<u8>, PortalError>;
-    pub async fn retrieve_async() -> Result<Vec<u8>, PortalError>;
-}
-```
-
-File choosing and opening URIs or files are not part of this module: use
+plumbed the D-Bus session bus into the sandbox. Without it, a portal call
+fails as it would on a system without a session bus, and the app falls back
+to a local flow. File choosing and opening URIs or files go through
 `ui::portal` (`PickRequest`, `LaunchRequest`, `open_uri`/`send_open_uri`),
-which validates every returned URI before it becomes a path and is the one
-`OpenURI` client.
-
-The graceful-degradation contract is uniform: `PortalError::NotAvailable`
-means "no bus reachable; fall back". `PortalError::PortalNotFound` means
-"bus reachable but no frontend registered for that interface" (rare;
-usually indicates a stock GNOME / KDE setup didn't install
-`xdg-desktop-portal-<flavour>`).
+which validates every returned URI before it becomes a path.
 
 ## Portal / service fds
 
@@ -272,20 +232,16 @@ tilo-hello: a Tilo-native app, running.
   write(/tmp/tilo-hello-probe): OK
   write(/var/tilo-apps/probe): permission denied — blocked (bwrap or Landlock)
 
-== xdg portal probes ==
-  is_portal_available: false
+== xdg portals ==
   DBUS_SESSION_BUS_ADDRESS: unix:path=/run/user/1000/bus
-  notifications : unavailable — graceful (no bus / launcher didn't plumb)
-  secret        : unavailable — graceful (no bus / launcher didn't plumb)
 
 tilo-hello: done.
 ```
 
 The last block shows that the D-Bus bus address is set (bwrap inherited it),
-but because the manifest did not declare any `[sandbox.portals]` entry,
-the launcher did not bind the bus socket into the sandbox — so
-`is_portal_available()` returns false and every portal call surfaces
-`NotAvailable`, as an app on stock Linux without a bus would see.
+but because the manifest did not declare any `[sandbox.portals]` entry, the
+launcher did not bind the bus socket into the sandbox, so a portal call fails
+as it would on stock Linux without a bus.
 
 ## Depending on `runtime`
 
