@@ -1688,7 +1688,7 @@ Measurements from `ui`'s test binary:
 | change | effect |
 |---|---|
 | mold instead of GNU ld | none (40 s vs 41 s, and 61 s vs 61 s) |
-| `-C split-debuginfo=unpacked` | binary 697 -> 507 MB, build 14% **slower** |
+| `-C split-debuginfo=unpacked` | binary 697 -> 507 MB, build 14% **slower**; see [debug info in test binaries](#debug-info-in-test-binaries) |
 | `-C debuginfo=0` | binary 665 -> 475 MB, build unchanged |
 | nightly `--jobs-frontend=4` / `=8` | +13% / 0% |
 | nightly cranelift backend | 23% slower |
@@ -1727,6 +1727,34 @@ fully cold rebuild.
 
 One worktree's `target/` reaches 150+ GB. Delete `target/` from worktrees whose
 branches have landed; sccache retains reusable compilation results.
+
+### Debug info in test binaries
+
+Each test binary links every crate it depends on, line tables included, so a
+workspace test build holds ~460 copies of overlapping debug info. Even at
+`debug = "line-tables-only"`, about 75% of shell's `it` binary was DWARF
+(`.debug_str` 557 MB, `.debug_line` 229 MB, `.debug_info` 121 MB against 219 MB
+of `.text`). The linker therefore compresses debug sections with zlib
+(`.cargo/config.toml`). Measured on `cargo test -p shell --tests --no-run`:
+
+| variant | `target/debug` | test binaries | `it` | file:line backtraces | sccache |
+|---|---|---|---|---|---|
+| uncompressed | 22 GB | 10.3 GB | 1730 MB | yes | 100% cacheable |
+| `split-debuginfo = "unpacked"` | 19 GB | 6.5 GB | 1095 MB | yes | hits drop the `.dwo` files |
+| zlib (current) | 15 GB | 5.0 GB | 897 MB | yes | 100% hits on a rebuild |
+
+`zstd` compresses as well but std's backtrace symbolizer only reads zlib:
+with zstd, panics lose file:line. The cost is at the point of use: linking
+`it` with mold took 2.7 s against 1.8-3.3 s uncompressed (within noise), and the first backtrace in a process
+decompresses the sections (1.8 s -> 4.4 s for a panicking `it` test).
+
+`split-debuginfo = "unpacked"` leaves line tables, ranges and aranges in each
+binary and moves the rest into per-codegen-unit `.dwo` files under
+`target/debug/deps`. sccache 0.17 caches those compilations but does not
+store the `.dwo` files: after a cached rebuild, 4,361 of the 4,409 `.dwo`
+files `it` referenced were missing, and a hit replayed from another worktree
+points at that worktree's paths. `packed` would write a `.dwp` per binary,
+duplicating the data again.
 
 If builds *hang* rather than run slowly — uninterruptible sleep, no progress at
 all — that is btrfs metadata exhaustion, and deleting files alone will not fix
