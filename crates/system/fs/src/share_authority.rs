@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use collab_types::{Ed25519PublicKey, canonical_bytes};
 use fs_protocol::{
@@ -49,6 +49,24 @@ struct GrantState {
     redemption_actors: Vec<FileActor>,
 }
 
+impl AuthorityState {
+    /// The registered, unrevoked grant `id`, whose stored token hashes to
+    /// `hash`.
+    fn live_grant(&self, id: Uuid, hash: &[u8; 32]) -> Result<&GrantState, ShareAuthorityError> {
+        let grant = self
+            .grants
+            .get(&id)
+            .ok_or(ShareAuthorityError::UnknownGrant)?;
+        if grant.token_hash != *hash {
+            return Err(ShareAuthorityError::GrantIdCollision);
+        }
+        if grant.revoked {
+            return Err(ShareAuthorityError::Revoked);
+        }
+        Ok(grant)
+    }
+}
+
 pub struct ShareAuthority {
     path: PathBuf,
     state: Mutex<AuthorityState>,
@@ -59,6 +77,12 @@ pub struct ShareAuthority {
 }
 
 impl ShareAuthority {
+    fn state(&self) -> Result<MutexGuard<'_, AuthorityState>, ShareAuthorityError> {
+        self.state
+            .lock()
+            .map_err(|_| ShareAuthorityError::StatePoisoned)
+    }
+
     /// Open and fully validate a durable share authority.
     ///
     /// # Errors
@@ -114,10 +138,7 @@ impl ShareAuthority {
             return Err(ShareAuthorityError::UntrustedIssuer);
         }
         let hash = token_hash(token)?;
-        let mut current = self
-            .state
-            .lock()
-            .map_err(|_| ShareAuthorityError::StatePoisoned)?;
+        let mut current = self.state()?;
         if let Some(existing) = current.grants.get(&token.id) {
             if existing.token_hash != hash {
                 return Err(ShareAuthorityError::GrantIdCollision);
@@ -191,10 +212,7 @@ impl ShareAuthority {
         reason = "the writer lock intentionally spans revocation checks, durable replacement, and in-memory publication"
     )]
     pub fn revoke(&self, id: Uuid) -> Result<bool, ShareAuthorityError> {
-        let mut current = self
-            .state
-            .lock()
-            .map_err(|_| ShareAuthorityError::StatePoisoned)?;
+        let mut current = self.state()?;
         let Some(grant) = current.grants.get(&id) else {
             return Ok(false);
         };
@@ -262,21 +280,7 @@ impl ShareAuthority {
             return Err(ShareAuthorityError::InsufficientPermission);
         }
         let hash = token_hash(token)?;
-        let current = self
-            .state
-            .lock()
-            .map_err(|_| ShareAuthorityError::StatePoisoned)?;
-        let grant = current
-            .grants
-            .get(&token.id)
-            .ok_or(ShareAuthorityError::UnknownGrant)?;
-        if grant.token_hash != hash {
-            return Err(ShareAuthorityError::GrantIdCollision);
-        }
-        if grant.revoked {
-            return Err(ShareAuthorityError::Revoked);
-        }
-        drop(current);
+        self.state()?.live_grant(token.id, &hash)?;
         Ok(())
     }
 
@@ -306,20 +310,8 @@ impl ShareAuthority {
             return Err(ShareAuthorityError::WrongSecret);
         }
         let hash = token_hash(token)?;
-        let mut current = self
-            .state
-            .lock()
-            .map_err(|_| ShareAuthorityError::StatePoisoned)?;
-        let grant = current
-            .grants
-            .get(&token.id)
-            .ok_or(ShareAuthorityError::UnknownGrant)?;
-        if grant.token_hash != hash {
-            return Err(ShareAuthorityError::GrantIdCollision);
-        }
-        if grant.revoked {
-            return Err(ShareAuthorityError::Revoked);
-        }
+        let mut current = self.state()?;
+        let grant = current.live_grant(token.id, &hash)?;
         if let Some(index) = grant
             .redemption_actors
             .iter()
@@ -384,20 +376,8 @@ impl ShareAuthority {
             return Err(ShareAuthorityError::InvalidRedemption);
         }
         let hash = token_hash(token)?;
-        let current = self
-            .state
-            .lock()
-            .map_err(|_| ShareAuthorityError::StatePoisoned)?;
-        let grant = current
-            .grants
-            .get(&token.id)
-            .ok_or(ShareAuthorityError::UnknownGrant)?;
-        if grant.token_hash != hash {
-            return Err(ShareAuthorityError::GrantIdCollision);
-        }
-        if grant.revoked {
-            return Err(ShareAuthorityError::Revoked);
-        }
+        let current = self.state()?;
+        let grant = current.live_grant(token.id, &hash)?;
         if redemption.redemption_number > grant.redemptions {
             return Err(ShareAuthorityError::InvalidRedemption);
         }
