@@ -1,8 +1,8 @@
-# Tilo patch: wake on a resume, not on a 15 s clock poll
+# Tilo patches: wake on a resume, not on a 15 s clock poll; let the kernel drop address-lifetime refreshes
 
 crates.io `netwatch` 0.19.1, verbatim (archive SHA-256
 `4d9cbe01741347ef750d743d6690603f5eed8341e679fb51c8e629337aa11976`, upstream
-commit `051ab8761006d7f2155e34a49f6bb881b582d5ab`) but for the change below,
+commit `051ab8761006d7f2155e34a49f6bb881b582d5ab`) but for the two changes below,
 marked `TILO PATCH` in the source. netwatch 0.19.3, the newest release when
 this was written, has the same actor loop. Pinned by
 `crates/system/fs/tests/iroh_idle.rs`.
@@ -44,3 +44,33 @@ opened):
 > `timerfd_resume`), and tell a resume from a clock step by the growth of
 > `CLOCK_BOOTTIME - CLOCK_MONOTONIC`; keep the poll as a fallback and on
 > other platforms.
+
+## Address-lifetime refreshes no longer wake the process
+
+The monitor subscribes to the kernel's address notifications and, since
+upstream's own cache, ignores an `RTM_NEWADDR` that repeats an address it
+knows. Ignoring one still costs a wakeup: reading it is what wakes the
+process. On a wifi network a router that advertises its prefix every few
+seconds makes the kernel send exactly such a lifetime-only `RTM_NEWADDR` to
+every subscriber each time, 0.3 wakeups a second for as long as the process
+lives, in every process with an endpoint. `src/netmon/linux.rs` now attaches
+a classic BPF program to the netlink socket (`SO_ATTACH_FILTER`) that makes
+the kernel drop IPv6 `RTM_NEWADDR` messages with the interface, prefix
+length, flags, scope and address of one the monitor already knows. New
+addresses, changes of flags or prefix length, removals and every other
+message still pass. The program is rebuilt when the known set changes (it
+lists at most 32 addresses; beyond that the monitor reads every message as
+before). A test runs the program on a datagram socket, where the kernel sees
+a message exactly as on a netlink socket, and checks what is dropped and what
+passes; `crates/system/fs/tests/iroh_idle.rs` and the shell's lone-desktop
+wakeup test refresh an address's lifetimes five times a second and assert the
+endpoint still sleeps.
+
+### Upstream
+
+> **netmon wakes on every IPv6 lifetime refresh.** A router sending router
+> advertisements every few seconds makes the kernel send `RTM_NEWADDR` for
+> each address of the prefix to every `RTMGRP_IPV6_IFADDR` subscriber; netmon
+> reads and discards each one as "already known", at a wakeup apiece. Proposed:
+> attach a BPF filter to the netlink socket that drops `RTM_NEWADDR`
+> repeating a known (interface, prefix length, flags, scope, address).

@@ -244,6 +244,12 @@ impl Desktop {
             // Every round of channel-key questions is logged, so the gate counts
             // the rounds the shovel starts, not how often contention woke it.
             .env("RUST_LOG", "warn,tilo::collab::key_rounds=debug")
+            // As the session starts the compositor (os/usr/libexec/tilo-session):
+            // glibc reads its tunables when a process starts.
+            .env(
+                "GLIBC_TUNABLES",
+                launcher::hardening::NO_HUGE_PAGES_TUNABLES,
+            )
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
             .stdout(Stdio::piped())
