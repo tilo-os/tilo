@@ -91,6 +91,9 @@ fn an_idle_shared_document_with_watched_identity_files_is_checked_only_when_told
 pub(super) struct Counter {
     captures: AtomicUsize,
     checks: AtomicUsize,
+    /// Reads answered with the whole document, and with only changes.
+    whole: AtomicUsize,
+    changes: AtomicUsize,
 }
 impl Counter {
     pub(super) fn new() -> Arc<Self> {
@@ -112,6 +115,20 @@ impl Counter {
             self.captures.load(Ordering::Acquire),
             self.checks.load(Ordering::Acquire),
         )
+    }
+    /// Whole reads and changes reads handed out so far.
+    fn handed(&self) -> (usize, usize) {
+        (
+            self.whole.load(Ordering::Acquire),
+            self.changes.load(Ordering::Acquire),
+        )
+    }
+    fn count(&self, read: &NativeDocumentRead) {
+        match read {
+            NativeDocumentRead::Captured { .. } => self.whole.fetch_add(1, Ordering::AcqRel),
+            NativeDocumentRead::Changes { .. } => self.changes.fetch_add(1, Ordering::AcqRel),
+            NativeDocumentRead::Unchanged(_) | NativeDocumentRead::Pending => 0,
+        };
     }
 }
 
@@ -150,7 +167,9 @@ impl NativeDocumentReads for Reads {
         maximum: usize,
     ) -> Result<NativeDocumentRead, String> {
         self.counter.captures.fetch_add(1, Ordering::AcqRel);
-        self.inner.capture(context, revision, maximum)
+        let read = self.inner.capture(context, revision, maximum)?;
+        self.counter.count(&read);
+        Ok(read)
     }
     fn capture_since(
         &self,
@@ -159,7 +178,9 @@ impl NativeDocumentReads for Reads {
         maximum: usize,
     ) -> Result<NativeDocumentRead, String> {
         self.counter.captures.fetch_add(1, Ordering::AcqRel);
-        self.inner.capture_since(context, held, maximum)
+        let read = self.inner.capture_since(context, held, maximum)?;
+        self.counter.count(&read);
+        Ok(read)
     }
     fn unchanged(
         &self,
@@ -184,10 +205,10 @@ impl NativeDocumentReads for Reads {
     clippy::future_not_send,
     reason = "mounted UI roots use Rc and run on this test runtime thread"
 )]
-pub(super) async fn run(mounted: &Mounted, announced: bool) {
+pub(super) async fn run(device: &Device, mounted: &mut Mounted, announced: bool) {
     let counter = mounted
         .idle_reads
-        .as_ref()
+        .clone()
         .expect("the idle journey counts the first mounted app's reads");
     assert!(
         mounted.code.app.collaboration_is_connected(),
@@ -257,4 +278,42 @@ pub(super) async fn run(mounted: &Mounted, announced: bool) {
             "the broker thread woke {broker_wakeups:.2} times a second while its readers idled with every change announced (budget {ANNOUNCED_BROKER_WAKEUPS_PER_S_BUDGET}/s)"
         );
     }
+    changes_reach_the_idle_reader(device, mounted, &counter).await;
+}
+
+/// A committed edit then reaches the reader that held the document as only
+/// its changes, through the actual owner, broker and app.
+#[expect(
+    clippy::future_not_send,
+    reason = "mounted UI roots use Rc and run on this test runtime thread"
+)]
+async fn changes_reach_the_idle_reader(device: &Device, mounted: &mut Mounted, counter: &Counter) {
+    let owner = mounted.network.native_owner().unwrap();
+    let (whole, changes) = counter.handed();
+    let edited = format!("{BODY}// committed while the reader waited\n");
+    super::blocked_read::commit_edit(device, &owner, BODY, &edited);
+    tilo_test_env::within("the committed edit to show in the waiting app", async {
+        loop {
+            mounted.frame();
+            if mounted.has_body(&edited) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let (whole_after, changes_after) = counter.handed();
+    eprintln!(
+        "IDLE-SHARED-WORKSPACE-EDIT whole_reads={} changes_reads={}",
+        whole_after.saturating_sub(whole),
+        changes_after.saturating_sub(changes)
+    );
+    assert!(
+        changes_after > changes,
+        "the edit reached the waiting reader as its changes"
+    );
+    assert_eq!(
+        whole_after, whole,
+        "a reader that holds the document is not handed it whole for one edit"
+    );
 }
