@@ -289,6 +289,18 @@ fn document(store: &dyn Store, entry: &CheckpointEntry) -> Result<Vec<u8>, Strin
     }
     Ok(bytes)
 }
+fn documents(store: &dyn Store, checkpoint: &NativeCheckpoint) -> Result<Vec<Vec<u8>>, String> {
+    let mut documents = Vec::new();
+    let mut total = 0usize;
+    for entry in &checkpoint.entries {
+        total = total
+            .checked_add(entry.bytes)
+            .filter(|n| *n <= MAX_CAPTURE)
+            .ok_or("native checkpoint read byte capacity")?;
+        documents.push(document(store, entry)?);
+    }
+    Ok(documents)
+}
 /// A receiving member may hold signed references without the governor's retained
 /// blocks. It still cannot read them successfully until verified content arrives.
 pub(crate) fn validate_restore(
@@ -429,8 +441,6 @@ impl NativeWorkspaceOwner {
             }
             CheckpointCommand::Find { name } => {
                 let ack = self.resolve_checkpoint_name(room, &request.caller, name, now)?;
-                // Resolution also validates retained content, not just the index/manifest.
-                self.read_checkpoint(room, &request.caller, ack.id, now)?;
                 serde_json::to_value(ack).map_err(|e| e.to_string())
             }
         }
@@ -633,10 +643,11 @@ impl NativeWorkspaceOwner {
         self.publish_checkpoint_index(room, candidate, &index, key, now)?;
         Ok(ack)
     }
-    /// Resolve a movable name only if every retained route is currently readable.
+    /// Resolve a movable name only if every retained route is currently readable
+    /// and all retained snapshots verify against the authenticated manifest.
     ///
     /// # Errors
-    /// Unknown name, current read refusal or damaged authenticated metadata.
+    /// Unknown name, current read refusal or absent/corrupt retained content.
     pub fn resolve_checkpoint_name(
         &self,
         room: RoomId,
@@ -664,6 +675,7 @@ impl NativeWorkspaceOwner {
                     now,
                 )?;
             }
+            documents(self.0.store.as_ref(), &checkpoint)?;
             Ok(ack.clone())
         })
     }
@@ -695,15 +707,7 @@ impl NativeWorkspaceOwner {
                     now,
                 )?;
             }
-            let mut documents = Vec::new();
-            let mut total = 0usize;
-            for entry in &checkpoint.entries {
-                total = total
-                    .checked_add(entry.bytes)
-                    .filter(|n| *n <= MAX_CAPTURE)
-                    .ok_or("native checkpoint read byte capacity")?;
-                documents.push(document(self.0.store.as_ref(), entry)?);
-            }
+            let documents = documents(self.0.store.as_ref(), &checkpoint)?;
             Ok(MaterializedCheckpoint {
                 manifest: checkpoint,
                 documents,
